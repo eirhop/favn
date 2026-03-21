@@ -3,16 +3,13 @@
 ## Project overview
 
 Flux is an Elixir library for defining and orchestrating business-oriented data assets.
-
-The core idea is:
-
-- developers write normal Elixir functions
-- `Flux.Assets` captures asset metadata at compile time
-- dependencies form a pipeline graph
-- the runtime will later plan and execute assets deterministically
-- documentation is a first-class part of the developer experience
-
 This repository currently focuses on the **core Flux library**.
+The main api interface for library is found in `/lib/flux.ex`. This file contains extensive documentation and main interface functions. We will use this file to document our progress and roadmap and documentation should be continuously updated as we progress. 
+
+**Important rules**
+- Always start by reading `/lib/flux.ex` to get overview of project, code interface and progres
+- Always update TODOS as we work on each of the interfaces in `/lib/flux.ex`
+- Always keep user documentation up to date in `/lib/flux.ex`.
 
 ## What the agent should optimize for
 
@@ -42,22 +39,6 @@ Follow Elixir best practices and idiomatic Elixir style:
 - Raise only for truly exceptional situations; otherwise return explicit values
 - Keep side effects at the edges of the system
 - Make code easy to test with ExUnit through deterministic, isolated units
-
-## Flux-specific instructions
-
-When working in this codebase:
-
-- Preserve the business-first authoring experience for asset modules
-- Do not push runtime orchestration logic into `Flux.Assets`
-- Do not turn `Flux.Pipeline` into a mutable execution object
-- Favor explicit asset references and dependency graphs over hidden magic
-- Keep cross-module dependencies ergonomic but internally normalized
-- Treat documentation as part of the product, not as an afterthought
-- Prefer incremental architecture that supports the next milestone:
-  - plan a target asset
-  - resolve dependencies across modules
-  - execute deterministically
-  - expose docs and metadata cleanly
 
 ## Preferred change style
 
