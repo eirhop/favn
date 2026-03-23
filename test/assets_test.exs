@@ -28,12 +28,11 @@ defmodule Flux.AssetsTest do
   use ExUnit.Case, async: true
 
   alias Flux.Asset
-  alias Flux.Assets
 
   require Logger
 
   test "captures canonical asset metadata in source order" do
-    assert {:ok, assets} = Assets.list_assets(Flux.AssetsTest.Sample)
+    assets = Flux.AssetsTest.Sample.__flux_assets__()
 
     Logger.debug("module assets: #{inspect(assets, pretty: true)}")
 
@@ -60,26 +59,6 @@ defmodule Flux.AssetsTest do
     assert fact.depends_on == [{Flux.AssetsTest.Upstream, :source_rows}]
   end
 
-  test "fetches a single asset by name" do
-    assert {:ok, %Asset{} = asset} = Assets.get_asset(Flux.AssetsTest.Sample, :normalize_orders)
-
-    Logger.debug("looked up asset: #{inspect(asset, pretty: true)}")
-
-    assert asset.name == :normalize_orders
-
-    assert {:error, :asset_not_found} = Assets.get_asset(Flux.AssetsTest.Sample, :missing)
-    assert {:error, :not_asset_module} = Assets.get_asset(Enum, :map)
-  end
-
-  test "reports whether a module is an asset module" do
-    Logger.debug(
-      "asset module? sample=#{inspect(Assets.asset_module?(Flux.AssetsTest.Sample))} enum=#{inspect(Assets.asset_module?(Enum))}"
-    )
-
-    assert Assets.asset_module?(Flux.AssetsTest.Sample)
-    refute Assets.asset_module?(Enum)
-  end
-
   test "rejects invalid asset declarations at compile time" do
     Logger.info("compiling invalid asset declarations to verify compile-time validation")
 
@@ -98,6 +77,24 @@ defmodule Flux.AssetsTest do
 
       @asset tags: :sales
       def bad_tags, do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/asset tags must be atoms or strings/, fn ->
+      compile_test_module("""
+      use Flux.Assets
+
+      @asset tags: [:sales, 1]
+      def bad_tag_entry, do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/asset depends_on must be a list/, fn ->
+      compile_test_module("""
+      use Flux.Assets
+
+      @asset depends_on: :extract_orders
+      def bad_depends_on_shape, do: :ok
       """)
     end
 

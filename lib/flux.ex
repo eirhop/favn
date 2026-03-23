@@ -184,8 +184,8 @@ defmodule Flux do
     * the roadmap boundary for what still needs to be implemented underneath
 
   The first concrete deliverable is intentionally small and now available: define assets,
-  inspect assets for a module, and fetch a single asset by canonical reference before building
-  registry, planning, and runtime layers.
+  inspect assets for a module, and fetch a single asset by canonical reference through this
+  public facade before building registry, planning, and runtime layers.
 
   ## Roadmap
 
@@ -193,7 +193,7 @@ defmodule Flux do
 
     1. asset authoring DSL with `use Flux.Assets` and `@asset` - done
     2. canonical asset metadata and asset references - done
-    3. per-module asset introspection - done
+    3. per-module asset introspection through `Flux` - done
     4. global registry and asset discovery
     5. dependency resolution and graph construction
     6. execution planning
@@ -293,7 +293,11 @@ defmodule Flux do
   """
   @spec list_assets(module()) :: {:ok, [asset()]} | {:error, asset_error()}
   def list_assets(module) when is_atom(module) do
-    Flux.Assets.list_assets(module)
+    if asset_module?(module) do
+      {:ok, module.__flux_assets__()}
+    else
+      {:error, :not_asset_module}
+    end
   end
 
   @doc """
@@ -315,7 +319,21 @@ defmodule Flux do
   """
   @spec get_asset(asset_ref()) :: {:ok, asset()} | {:error, asset_error()}
   def get_asset({module, name}) when is_atom(module) and is_atom(name) do
-    Flux.Assets.get_asset(module, name)
+    with {:ok, assets} <- list_assets(module),
+         %Flux.Asset{} = asset <- Enum.find(assets, &(&1.name == name)) do
+      {:ok, asset}
+    else
+      {:error, :not_asset_module} -> {:error, :not_asset_module}
+      nil -> {:error, :asset_not_found}
+    end
+  end
+
+  @doc false
+  @spec asset_module?(module()) :: boolean()
+  def asset_module?(module) when is_atom(module) do
+    function_exported?(module, :__flux_asset_module__, 0) and
+      function_exported?(module, :__flux_assets__, 0) and
+      module.__flux_asset_module__() == true
   end
 
   @doc """

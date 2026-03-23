@@ -4,12 +4,17 @@ defmodule Flux.Assets do
 
   `use Flux.Assets` lets a module mark public functions with `@asset` so Flux
   can capture canonical `%Flux.Asset{}` metadata for later introspection.
+
+  This module is intentionally focused on compile-time authoring behavior:
+
+    * collecting metadata from `@asset`
+    * enforcing authoring rules
+    * normalizing DSL-friendly dependency declarations
+    * emitting `__flux_assets__/0` for later runtime inspection
   """
 
   alias Flux.Asset
   alias Flux.Ref
-
-  @type asset_error :: :not_asset_module | :asset_not_found
 
   @doc false
   defmacro __using__(_opts) do
@@ -24,32 +29,28 @@ defmodule Flux.Assets do
 
   @doc false
   def __on_definition__(env, kind, name, args, _guards, _body) do
-    asset_opts = Module.get_attribute(env.module, :asset)
+    case Module.get_attribute(env.module, :asset) do
+      nil ->
+        :ok
 
-    if asset_opts != nil do
-      Module.delete_attribute(env.module, :asset)
+      asset_opts ->
+        Module.delete_attribute(env.module, :asset)
 
-      case kind do
-        :def ->
-          arity = length(args || [])
-
-          if not already_recorded?(env.module, name, arity) do
-            raw_asset = %{
+        case kind do
+          :def ->
+            Module.put_attribute(env.module, :flux_assets_raw, %{
               module: env.module,
               name: name,
-              arity: arity,
+              arity: length(args || []),
               doc: normalize_doc(Module.get_attribute(env.module, :doc)),
               file: normalize_file(env.file),
               line: env.line,
-              opts: asset_opts || []
-            }
+              opts: asset_opts
+            })
 
-            Module.put_attribute(env.module, :flux_assets_raw, raw_asset)
-          end
-
-        :defp ->
-          compile_error!(env.file, env.line, "@asset can only be used on public functions")
-      end
+          :defp ->
+            compile_error!(env.file, env.line, "@asset can only be used on public functions")
+        end
     end
   end
 
@@ -71,7 +72,7 @@ defmodule Flux.Assets do
       env.module
       |> Module.get_attribute(:flux_assets_raw)
       |> Enum.reverse()
-      |> validate_unique_names!(env.file)
+      |> validate_unique_names!()
       |> Enum.map(&build_asset!/1)
 
     quote do
@@ -82,57 +83,10 @@ defmodule Flux.Assets do
       @doc false
       @spec __flux_assets__() :: [Flux.Asset.t()]
       def __flux_assets__, do: unquote(Macro.escape(assets))
-
-      @doc false
-      @spec __flux_asset__(atom()) :: Flux.Asset.t() | nil
-      def __flux_asset__(name) when is_atom(name) do
-        Enum.find(unquote(Macro.escape(assets)), &(&1.name == name))
-      end
     end
   end
 
-  @doc """
-  Return whether the module exposes Flux asset introspection.
-  """
-  @spec asset_module?(module()) :: boolean()
-  def asset_module?(module) when is_atom(module) do
-    function_exported?(module, :__flux_asset_module__, 0) and
-      module.__flux_asset_module__() == true
-  end
-
-  @doc """
-  List all assets defined by a Flux asset module.
-  """
-  @spec list_assets(module()) :: {:ok, [Asset.t()]} | {:error, asset_error()}
-  def list_assets(module) when is_atom(module) do
-    if asset_module?(module) do
-      {:ok, module.__flux_assets__()}
-    else
-      {:error, :not_asset_module}
-    end
-  end
-
-  @doc """
-  Fetch one asset from a Flux asset module.
-  """
-  @spec get_asset(module(), atom()) :: {:ok, Asset.t()} | {:error, asset_error()}
-  def get_asset(module, name) when is_atom(module) and is_atom(name) do
-    with true <- asset_module?(module),
-         %Asset{} = asset <- module.__flux_asset__(name) do
-      {:ok, asset}
-    else
-      false -> {:error, :not_asset_module}
-      nil -> {:error, :asset_not_found}
-    end
-  end
-
-  defp already_recorded?(module, name, arity) do
-    module
-    |> Module.get_attribute(:flux_assets_raw)
-    |> Enum.any?(fn asset -> asset.name == name and asset.arity == arity end)
-  end
-
-  defp validate_unique_names!(raw_assets, file) do
+  defp validate_unique_names!(raw_assets) do
     raw_assets
     |> Enum.group_by(& &1.name)
     |> Enum.each(fn {name, assets} ->
@@ -142,7 +96,7 @@ defmodule Flux.Assets do
 
         [first | _rest] ->
           compile_error!(
-            file,
+            first.file,
             first.line,
             "duplicate asset name #{inspect(name)}; asset names must be unique within a module"
           )
@@ -153,9 +107,9 @@ defmodule Flux.Assets do
   end
 
   defp build_asset!(raw_asset) do
-    opts = normalize_opts!(raw_asset)
+    opts = normalize_asset_opts!(raw_asset.opts, raw_asset)
 
-    %Asset{
+    asset = %Asset{
       module: raw_asset.module,
       name: raw_asset.name,
       ref: Ref.new(raw_asset.module, raw_asset.name),
@@ -163,53 +117,17 @@ defmodule Flux.Assets do
       doc: raw_asset.doc,
       file: raw_asset.file,
       line: raw_asset.line,
-      kind: opts.kind,
-      tags: opts.tags,
-      depends_on: opts.depends_on
+      kind: Keyword.get(opts, :kind, :materialized),
+      tags: Keyword.get(opts, :tags, []),
+      depends_on: normalize_depends_on!(Keyword.get(opts, :depends_on, []), raw_asset)
     }
-  end
 
-  defp normalize_opts!(raw_asset) do
-    opts = normalize_asset_opts!(raw_asset.opts, raw_asset)
-
-    kind = Keyword.get(opts, :kind, :materialized)
-    tags = Keyword.get(opts, :tags, [])
-    depends_on = Keyword.get(opts, :depends_on, [])
-
-    validate_kind!(kind, raw_asset)
-    validate_tags!(tags, raw_asset)
-
-    %{kind: kind, tags: tags, depends_on: normalize_depends_on!(depends_on, raw_asset)}
-  end
-
-  defp validate_kind!(kind, raw_asset) do
-    if kind in Asset.valid_kinds() do
-      :ok
-    else
-      compile_error!(raw_asset.file, raw_asset.line, "invalid asset kind #{inspect(kind)}")
+    try do
+      Asset.validate!(asset)
+    rescue
+      error in ArgumentError ->
+        compile_error!(raw_asset.file, raw_asset.line, error.message)
     end
-  end
-
-  defp validate_tags!(tags, raw_asset) when is_list(tags) do
-    Enum.each(tags, fn
-      tag when is_atom(tag) or is_binary(tag) ->
-        :ok
-
-      tag ->
-        compile_error!(
-          raw_asset.file,
-          raw_asset.line,
-          "asset tags must be atoms or strings, got: #{inspect(tag)}"
-        )
-    end)
-  end
-
-  defp validate_tags!(tags, raw_asset) do
-    compile_error!(
-      raw_asset.file,
-      raw_asset.line,
-      "asset tags must be a list of atoms or strings, got: #{inspect(tags)}"
-    )
   end
 
   defp normalize_depends_on!(depends_on, raw_asset) when is_list(depends_on) do

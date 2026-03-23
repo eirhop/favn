@@ -51,4 +51,63 @@ defmodule Flux.AssetTest do
     assert asset.tags == [:warehouse, "finance"]
     assert asset.depends_on == [{Example.Assets, :normalize_orders}]
   end
+
+  test "validate!/1 validates and returns an asset struct" do
+    asset = %Asset{
+      module: Example.Assets,
+      name: :fact_sales,
+      ref: Ref.new(Example.Assets, :fact_sales),
+      arity: 1,
+      doc: "Builds the sales fact table",
+      file: "lib/example/assets.ex",
+      line: 27,
+      kind: :view,
+      tags: [:warehouse, "finance"],
+      depends_on: [Ref.new(Example.Assets, :normalize_orders)]
+    }
+
+    assert Asset.validate!(asset) == asset
+  end
+
+  test "validate!/1 rejects an invalid kind" do
+    assert_raise ArgumentError, ~r/invalid asset kind/, fn ->
+      Asset.validate!(%Asset{
+        module: Example.Assets,
+        name: :bad_kind,
+        ref: Ref.new(Example.Assets, :bad_kind),
+        arity: 0,
+        file: "lib/example/assets.ex",
+        line: 10,
+        kind: :invalid
+      })
+    end
+  end
+
+  test "validate!/1 rejects invalid tags" do
+    assert_raise ArgumentError, ~r/asset tags must be atoms or strings/, fn ->
+      Asset.validate!(%Asset{
+        module: Example.Assets,
+        name: :bad_tags,
+        ref: Ref.new(Example.Assets, :bad_tags),
+        arity: 0,
+        file: "lib/example/assets.ex",
+        line: 10,
+        tags: [:ok, 1]
+      })
+    end
+  end
+
+  test "validate!/1 rejects invalid canonical depends_on values" do
+    assert_raise ArgumentError, ~r/asset depends_on must be a list of Flux\.Ref values/, fn ->
+      Asset.validate!(%Asset{
+        module: Example.Assets,
+        name: :bad_deps,
+        ref: Ref.new(Example.Assets, :bad_deps),
+        arity: 0,
+        file: "lib/example/assets.ex",
+        line: 10,
+        depends_on: [:not_a_ref]
+      })
+    end
+  end
 end

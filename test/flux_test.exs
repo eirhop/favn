@@ -17,6 +17,10 @@ defmodule FluxTest do
     def normalize_orders(orders), do: orders
   end
 
+  defmodule SpoofedAssets do
+    def __flux_assets__, do: :oops
+  end
+
   test "lists assets for a module through the public facade" do
     assert {:ok, assets} = Flux.list_assets(SampleAssets)
 
@@ -34,5 +38,16 @@ defmodule FluxTest do
 
     assert {:error, :asset_not_found} = Flux.get_asset({SampleAssets, :missing})
     assert {:error, :not_asset_module} = Flux.get_asset({Enum, :map})
+  end
+
+  test "reports whether a module exposes Flux asset metadata" do
+    assert Flux.asset_module?(SampleAssets)
+    refute Flux.asset_module?(Enum)
+    refute Flux.asset_module?(SpoofedAssets)
+  end
+
+  test "rejects modules that only spoof __flux_assets__/0" do
+    assert {:error, :not_asset_module} = Flux.list_assets(SpoofedAssets)
+    assert {:error, :not_asset_module} = Flux.get_asset({SpoofedAssets, :normalize_orders})
   end
 end
