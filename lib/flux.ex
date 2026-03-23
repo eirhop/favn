@@ -184,8 +184,13 @@ defmodule Flux do
     * the roadmap boundary for what still needs to be implemented underneath
 
   The first concrete deliverable is intentionally small and now available: define assets,
-  inspect assets for a module, and fetch a single asset by canonical reference through this
-  public facade before building registry, planning, and runtime layers.
+  inspect assets for a module, and fetch assets by canonical reference through this public
+  facade before building planning and runtime layers.
+
+  Global asset discovery now starts from an explicit registry scope configured through
+  `config :flux, asset_modules: [...]`. Flux uses that configured module list to build a
+  global asset catalog without scanning arbitrary loaded modules in the VM, and it loads
+  that catalog into memory during application startup for fast read-heavy lookups.
 
   ## Roadmap
 
@@ -194,12 +199,13 @@ defmodule Flux do
     1. asset authoring DSL with `use Flux.Assets` and `@asset` - done
     2. canonical asset metadata and asset references - done
     3. per-module asset introspection through `Flux` - done
-    4. global registry and asset discovery
-    5. dependency resolution and graph construction
-    6. execution planning
-    7. run model and in-memory execution
-    8. run storage and retrieval
-    9. live run event subscriptions
+    4. global registry and configured asset discovery - done
+    5. startup registry loading and caching - done
+    6. dependency resolution and graph construction
+    7. execution planning
+    8. run model and in-memory execution
+    9. run storage and retrieval
+    10. live run event subscriptions
 
   """
 
@@ -257,22 +263,25 @@ defmodule Flux do
   This is the main discovery function for orchestrator applications that need
   to render an asset catalog, search UI, or operator dashboard.
 
+  Global discovery is scoped to modules configured under
+  `config :flux, asset_modules: [...]`.
+
   ## Examples
 
       iex> Flux.list_assets()
-      ** (RuntimeError) TODO: implement Flux.list_assets/0
+      {:ok, []}
 
   ## TODO
 
-    * Implement after `Flux.Assets` and per-module introspection exist
-    * Delegate to `Flux.Registry` once global discovery is introduced
-    * Decide how asset modules are registered or discovered
+    * Keep `Flux.Registry` as the canonical global discovery layer
+    * Keep startup-loaded caching read-only unless a real dynamic loading use case appears
+    * Expand discovery beyond explicit module lists only when a concrete use case appears
     * Define stable ordering for returned assets
     * Consider filtering and pagination later
   """
-  @spec list_assets() :: [asset()]
+  @spec list_assets() :: {:ok, [asset()]} | {:error, term()}
   def list_assets do
-    todo!("Flux.list_assets/0")
+    Flux.Registry.list_assets()
   end
 
   @doc """
@@ -288,7 +297,7 @@ defmodule Flux do
 
   ## TODO
 
-    * Keep this backed by module-level introspection until the global registry exists
+    * Keep this backed by module-level introspection as the targeted inspection API
     * Consider whether richer filtering belongs here or in a registry layer later
   """
   @spec list_assets(module()) :: {:ok, [asset()]} | {:error, asset_error()}
@@ -314,17 +323,21 @@ defmodule Flux do
 
   ## TODO
 
-    * Keep this backed by module-level asset metadata until the global registry exists
-    * Revisit whether lookup by canonical ref should hit a registry once global discovery lands
+    * Keep the registry-backed lookup as the default global path for canonical refs
+    * Preserve module-level metadata as the source of truth underneath the registry
+    * Add richer dependency validation once graph construction is introduced
   """
   @spec get_asset(asset_ref()) :: {:ok, asset()} | {:error, asset_error()}
   def get_asset({module, name}) when is_atom(module) and is_atom(name) do
-    with {:ok, assets} <- list_assets(module),
-         %Flux.Asset{} = asset <- Enum.find(assets, &(&1.name == name)) do
-      {:ok, asset}
+    if asset_module?(module) do
+      with {:ok, asset} <- Flux.Registry.get_asset({module, name}) do
+        {:ok, asset}
+      else
+        {:error, {:duplicate_asset, _ref}} -> {:error, :asset_not_found}
+        {:error, :asset_not_found} -> {:error, :asset_not_found}
+      end
     else
-      {:error, :not_asset_module} -> {:error, :not_asset_module}
-      nil -> {:error, :asset_not_found}
+      {:error, :not_asset_module}
     end
   end
 
