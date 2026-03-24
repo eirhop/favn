@@ -46,6 +46,11 @@ defmodule Flux do
   Assets can depend on other assets. Flux uses those dependency declarations to derive the
   execution graph automatically.
 
+  Flux models those relationships as a directed acyclic graph (DAG), not as a strict tree.
+  Shared upstream assets are therefore allowed, cycles are rejected, and a later runtime
+  planner can ensure an asset runs at most once in a single run even when multiple downstream
+  assets depend on it.
+
   In practice, this means users generally do not need to manually define pipelines. When an
   asset is run, Flux can compute the dependency graph for the requested target and form the
   execution pipeline from that graph.
@@ -126,6 +131,10 @@ defmodule Flux do
       Flux.list_assets(MyApp.SalesETL)
 
       Flux.get_asset({MyApp.SalesETL, :normalize_orders})
+
+      Flux.upstream_assets({MyApp.GoldETL, :fact_sales})
+
+      Flux.dependency_graph({MyApp.GoldETL, :fact_sales}, tags: [:warehouse])
 
       Flux.run({MyApp.GoldETL, :fact_sales})
 
@@ -211,12 +220,18 @@ defmodule Flux do
   ## Configuration lifecycle
 
   The global asset registry is loaded from application config during startup and
-  then kept in memory for fast lookups.
+  then kept in memory for fast lookups. Flux also builds a global dependency
+  graph index during startup from that same canonical asset catalog.
+
+  The graph index is intended to stay read-only for the lifetime of the booted
+  node and supports DAG validation, upstream and downstream inspection,
+  transitive dependency queries, and deterministic topological ordering for
+  later execution planning.
 
   That means changes to `config :flux, asset_modules: [...]` are not picked up
   automatically by an already-running node. In normal usage, update the config
-  and restart the host application so Flux reloads the configured registry
-  during boot.
+  and restart the host application so Flux reloads the configured registry and
+  dependency graph during boot.
 
   ## Public API responsibilities
 
@@ -224,6 +239,7 @@ defmodule Flux do
 
     * asset discovery
     * asset inspection
+    * dependency graph inspection
     * run execution
     * run inspection
     * listing historical runs
@@ -254,7 +270,7 @@ defmodule Flux do
 
     * `Flux` defines the intended public API first
     * asset authoring and compile-time metadata collection now back module-level inspection APIs
-    * dependencies declared by assets will define the execution graph
+    * dependencies declared by assets now build a startup-loaded global DAG index
     * runtime execution, eventing, and storage will be implemented underneath that API
 
   This module therefore acts as both:
@@ -281,11 +297,12 @@ defmodule Flux do
     3. per-module asset introspection through `Flux` - done
     4. global registry and configured asset discovery - done
     5. startup registry loading and caching - done
-    6. dependency resolution and graph construction
-    7. execution planning
-    8. run model and in-memory execution
-    9. run storage and retrieval
-    10. live run event subscriptions
+    6. dependency resolution and graph construction - in progress
+    7. graph inspection queries - in progress
+    8. execution planning
+    9. run model and in-memory execution
+    10. run storage and retrieval
+    11. live run event subscriptions
 
   """
 
@@ -421,6 +438,112 @@ defmodule Flux do
     end
   end
 
+  @typedoc """
+  Direction used by dependency graph inspection APIs.
+  """
+  @type dependency_direction :: Flux.GraphIndex.direction()
+
+  @typedoc """
+  Options for dependency graph inspection APIs.
+  """
+  @type graph_opts :: [
+          direction: dependency_direction(),
+          include_target: boolean(),
+          transitive: boolean(),
+          tags: [Flux.Asset.tag()],
+          kinds: [Flux.Asset.kind()],
+          modules: [module()],
+          names: [atom()]
+        ]
+
+  @doc """
+  List upstream assets for a target reference.
+
+  This query delegates to the startup-built global DAG index and returns asset
+  metadata rather than bare refs so operator tooling can inspect tags, docs,
+  source locations, and kinds together with dependency shape.
+
+  ## Examples
+
+      iex> Flux.upstream_assets({Unknown.Module, :normalize_orders})
+      {:error, :not_asset_module}
+
+  ## TODO
+
+    * Keep this backed by `Flux.GraphIndex.related_assets/2`
+    * Keep the default query transitive so planners and UIs get the full closure
+    * Add richer view-specific formatting later rather than here
+  """
+  @spec upstream_assets(asset_ref(), graph_opts()) ::
+          {:ok, [asset()]} | {:error, asset_error() | term()}
+  def upstream_assets({module, name}, opts \\ [])
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    if asset_module?(module) do
+      Flux.GraphIndex.related_assets(
+        {module, name},
+        opts |> Keyword.put_new(:direction, :upstream) |> Keyword.put_new(:include_target, false)
+      )
+    else
+      {:error, :not_asset_module}
+    end
+  end
+
+  @doc """
+  List downstream assets for a target reference.
+
+  ## Examples
+
+      iex> Flux.downstream_assets({Unknown.Module, :normalize_orders})
+      {:error, :not_asset_module}
+
+  ## TODO
+
+    * Keep this backed by `Flux.GraphIndex.related_assets/2`
+    * Support immediate and transitive traversal through `transitive: false | true`
+    * Keep filtering in the graph layer rather than duplicating it in the facade
+  """
+  @spec downstream_assets(asset_ref(), graph_opts()) ::
+          {:ok, [asset()]} | {:error, asset_error() | term()}
+  def downstream_assets({module, name}, opts \\ [])
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    if asset_module?(module) do
+      Flux.GraphIndex.related_assets(
+        {module, name},
+        Keyword.put_new(opts, :direction, :downstream)
+      )
+    else
+      {:error, :not_asset_module}
+    end
+  end
+
+  @doc """
+  Build a filtered dependency subgraph for a target reference.
+
+  This returns another `%Flux.GraphIndex{}` limited to the selected asset set,
+  which keeps graph queries and planner inputs on one canonical shape.
+
+  ## Examples
+
+      iex> Flux.dependency_graph({Unknown.Module, :normalize_orders})
+      {:error, :not_asset_module}
+
+  ## TODO
+
+    * Keep this backed by `Flux.GraphIndex.subgraph/2`
+    * Use this as the input boundary for execution planning
+    * Extend filtering only when real UI or planner needs appear
+  """
+  @spec dependency_graph(asset_ref(), graph_opts()) ::
+          {:ok, Flux.GraphIndex.t()} | {:error, asset_error() | term()}
+  def dependency_graph({module, name}, opts \\ [])
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    if asset_module?(module) do
+      Flux.GraphIndex.subgraph({module, name}, opts)
+    else
+      {:error, :not_asset_module}
+    end
+  end
+
   @doc false
   @spec asset_module?(module()) :: boolean()
   def asset_module?(module) when is_atom(module) do
@@ -454,11 +577,13 @@ defmodule Flux do
 
   ## TODO
 
-    * Implement after asset authoring, introspection, and dependency graph construction exist
+    * Implement on top of the startup-built DAG index in `Flux.GraphIndex`
     * Delegate to `Flux.Runner.run/2`
     * Define the return contract, likely `{:ok, run}` or `{:error, reason}`
     * Support `dependencies: :all | :none` first
-    * Add more advanced inclusion or exclusion rules only if truly needed
+    * Plan execution from a target subgraph with run-once semantics
+    * Add parallel scheduling only after the basic plan format is stable
+    * Add freshness-aware skipping after the planner can reason about materialized assets
   """
   @spec run(asset_ref(), run_opts()) :: term()
   def run({module, name}, opts \\ [])

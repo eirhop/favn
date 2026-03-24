@@ -5,7 +5,8 @@ defmodule Flux.Application do
 
   @impl true
   def start(_type, _args) do
-    with :ok <- Flux.Registry.load() do
+    with :ok <- Flux.Registry.load(),
+         :ok <- Flux.GraphIndex.load() do
       Supervisor.start_link([], strategy: :one_for_one, name: Flux.Supervisor)
     end
   end

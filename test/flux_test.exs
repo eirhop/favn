@@ -85,6 +85,32 @@ defmodule FluxTest do
     assert {:error, :not_asset_module} = Flux.get_asset({Enum, :map})
   end
 
+  test "inspects dependency queries through the public facade" do
+    Application.put_env(:flux, :asset_modules, [SampleAssets, CrossModuleAssets])
+    assert :ok = Flux.Registry.reload()
+    assert :ok = Flux.GraphIndex.reload()
+
+    assert {:ok, upstream_assets} = Flux.upstream_assets({CrossModuleAssets, :publish_orders})
+
+    assert Enum.map(upstream_assets, & &1.ref) == [
+             {SampleAssets, :extract_orders},
+             {SampleAssets, :normalize_orders}
+           ]
+
+    assert {:ok, downstream_assets} =
+             Flux.downstream_assets({SampleAssets, :extract_orders}, transitive: false)
+
+    assert Enum.map(downstream_assets, & &1.ref) == [{SampleAssets, :normalize_orders}]
+
+    assert {:ok, dependency_graph} =
+             Flux.dependency_graph({CrossModuleAssets, :publish_orders}, tags: [:sales])
+
+    assert Map.keys(dependency_graph.assets_by_ref) |> Enum.sort() == [
+             {CrossModuleAssets, :publish_orders},
+             {SampleAssets, :normalize_orders}
+           ]
+  end
+
   test "reports whether a module exposes Flux asset metadata" do
     assert Flux.asset_module?(SampleAssets)
     refute Flux.asset_module?(Enum)
