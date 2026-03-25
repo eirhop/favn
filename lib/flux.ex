@@ -299,7 +299,7 @@ defmodule Flux do
     5. startup registry loading and caching - done
     6. dependency resolution and graph construction - in progress
     7. graph inspection queries - in progress
-    8. execution planning
+    8. execution planning - in progress
     9. run model and in-memory execution
     10. run storage and retrieval
     11. live run event subscriptions
@@ -353,6 +353,11 @@ defmodule Flux do
   @type run_opts :: [
           dependencies: dependencies_mode()
         ]
+
+  @typedoc """
+  Options for `plan_run/2`.
+  """
+  @type plan_run_opts :: run_opts()
 
   @doc """
   List all registered assets.
@@ -553,6 +558,32 @@ defmodule Flux do
   end
 
   @doc """
+  Build a deterministic execution plan for one or more targets.
+
+  This API returns a run-once plan shape where nodes are deduplicated by
+  canonical ref and grouped into topological stages for parallel execution.
+
+  ## Examples
+
+      iex> Flux.plan_run({Unknown.Module, :fact_sales})
+      {:error, {:asset_not_found, {Unknown.Module, :fact_sales}}}
+
+      iex> Flux.plan_run([])
+      {:error, :empty_targets}
+
+  ## TODO
+
+    * Keep this planner deterministic and graph-derived
+    * Keep plan nodes deduplicated by canonical ref
+    * Add freshness-aware actions after run storage exists
+  """
+  @spec plan_run(asset_ref() | [asset_ref()], plan_run_opts()) ::
+          {:ok, Flux.Plan.t()} | {:error, term()}
+  def plan_run(targets, opts \\ []) when is_list(opts) do
+    Flux.Planner.plan(targets, opts)
+  end
+
+  @doc """
   Start a run for the given asset.
 
   By default, a run should include the full upstream dependency chain so that
@@ -581,7 +612,7 @@ defmodule Flux do
     * Delegate to `Flux.Runner.run/2`
     * Define the return contract, likely `{:ok, run}` or `{:error, reason}`
     * Support `dependencies: :all | :none` first
-    * Plan execution from a target subgraph with run-once semantics
+    * Execute the plan built by `plan_run/2`
     * Add parallel scheduling only after the basic plan format is stable
     * Add freshness-aware skipping after the planner can reason about materialized assets
   """
