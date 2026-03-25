@@ -33,6 +33,15 @@ defmodule Flux.RunnerTest do
     def crashes(_ctx, _deps) do
       raise "boom"
     end
+
+    @asset true
+    def with_meta(_ctx, _deps) do
+      {:ok,
+       %Flux.Asset.Output{
+         output: {:rows, [1, 2, 3]},
+         meta: %{row_count: 123, source: :test}
+       }}
+    end
   end
 
   setup do
@@ -107,6 +116,18 @@ defmodule Flux.RunnerTest do
     assert error.kind == :error
     assert is_list(error.stacktrace)
     assert error.message == "boom"
+  end
+
+  test "preserves asset metadata in asset_results while keeping outputs as business values" do
+    assert {:ok, run} = Flux.run({RunnerAssets, :with_meta})
+
+    ref = {RunnerAssets, :with_meta}
+    output = {:rows, [1, 2, 3]}
+    meta = %{row_count: 123, source: :test}
+
+    assert run.outputs[ref] == output
+    assert run.asset_results[ref].output == output
+    assert run.asset_results[ref].meta == meta
   end
 
   defp restore_registry({:ok, _catalog}) do
