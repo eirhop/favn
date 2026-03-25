@@ -307,8 +307,33 @@ defmodule Flux do
     7. graph inspection queries - in progress
     8. execution planning - done
     9. run model and in-memory execution - in progress
-    10. run storage and retrieval
+    10. run storage and retrieval - in progress
     11. live run event subscriptions
+    12. pre-release refactor pass for shared helpers and consistent module patterns
+    13. pre-release documentation and test hardening for v0.1
+    14. storage adapter boundary for memory/SQLite/Postgres and third-party plugins
+
+  ## v0.1 release focus
+
+  In addition to finishing the remaining runtime APIs, the first release should include a
+  deliberate quality pass over internals, docs, and tests so the public facade stays small and
+  predictable as usage grows.
+
+  The v0.1 closeout checklist is:
+
+    * finish run lifecycle APIs (`get_run/1`, `list_runs/1`, `subscribe_run/1`, `unsubscribe_run/1`)
+    * refactor reusable logic into small shared helpers where duplication exists across modules
+    * align coding patterns across modules (naming, return shapes, and error conventions)
+    * tighten and refresh user-facing docs in this module and related public interfaces
+    * consolidate test fixtures so one canonical test asset module set is reused across suites
+    * keep tests deterministic and focused on public contracts
+
+  Production deployment note:
+
+  Flux is expected to run on multiple BEAM nodes in clustered environments (for example
+  Kubernetes). The in-memory run store is intentionally node-local and non-durable for
+  development. Production and multi-node consistency are expected to use durable shared
+  adapters (Postgres first, with SQLite and third-party adapters as follow-up options).
 
   """
 
@@ -349,9 +374,14 @@ defmodule Flux do
   Filter options for `list_runs/1`.
   """
   @type list_runs_opts :: [
-          status: :pending | :running | :ok | :error,
+          status: :running | :ok | :error,
           limit: pos_integer()
         ]
+
+  @typedoc """
+  Run retrieval/listing errors returned by storage-backed APIs.
+  """
+  @type run_error :: :not_found | :invalid_opts | {:store_error, term()}
 
   @typedoc """
   Options for `run/2`.
@@ -616,6 +646,7 @@ defmodule Flux do
     * Keep this planner deterministic and graph-derived
     * Keep plan nodes deduplicated by canonical ref
     * Add freshness-aware actions after run storage exists
+    * Reuse planner normalization and sorting helpers from one shared internal module
   """
   @spec plan_run(asset_ref() | [asset_ref()], plan_run_opts()) ::
           {:ok, Flux.Plan.t()} | {:error, term()}
@@ -657,6 +688,7 @@ defmodule Flux do
     * Keep execution in-memory and synchronous for the first cut
     * Add run process supervision and stage-level parallelism in follow-up work
     * Add freshness-aware skipping after the planner can reason about materialized assets
+    * Share common execution result-shaping helpers with planner and storage layers
   """
   @spec run(asset_ref(), run_opts()) :: {:ok, Flux.Run.t()} | {:error, Flux.Run.t() | term()}
   def run({module, name}, opts \\ [])
@@ -673,19 +705,17 @@ defmodule Flux do
   ## Examples
 
       iex> Flux.get_run("run_123")
-      ** (RuntimeError) TODO: implement Flux.get_run/1
+      {:error, :not_found}
 
   ## TODO
 
-    * Implement after the run model and runner exist
-    * Delegate to `Flux.Storage` or a dedicated run store
-    * Define the canonical run shape
-    * Decide how much execution detail belongs in the run record itself
+    * Delegate to `Flux.Storage`
+    * Keep return contract stable across storage adapters
+    * Preserve the canonical `%Flux.Run{}` shape in storage
   """
-  @spec get_run(run_id()) :: term()
+  @spec get_run(run_id()) :: {:ok, Flux.Run.t()} | {:error, run_error()}
   def get_run(run_id) do
-    _ = run_id
-    todo!("Flux.get_run/1")
+    Flux.Storage.get_run(run_id)
   end
 
   @doc """
@@ -697,21 +727,21 @@ defmodule Flux do
   ## Examples
 
       iex> Flux.list_runs()
-      ** (RuntimeError) TODO: implement Flux.list_runs/1
+      {:ok, []}
 
       iex> Flux.list_runs(status: :running)
-      ** (RuntimeError) TODO: implement Flux.list_runs/1
+      {:ok, []}
 
   ## TODO
 
-    * Implement after the run model and storage layer exist
     * Delegate to `Flux.Storage`
-    * Define default ordering, likely newest first
+    * Keep default ordering newest-first
+    * Keep filter semantics stable across storage adapters
     * Consider pagination rather than large unbounded lists
   """
-  @spec list_runs(list_runs_opts()) :: [term()]
+  @spec list_runs(list_runs_opts()) :: {:ok, [Flux.Run.t()]} | {:error, run_error()}
   def list_runs(opts \\ []) when is_list(opts) do
-    todo!("Flux.list_runs/1")
+    Flux.Storage.list_runs(opts)
   end
 
   @doc """
