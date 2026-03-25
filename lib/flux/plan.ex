@@ -5,7 +5,7 @@ defmodule Flux.Plan do
   Plans are built from a target set and a dependency mode. Nodes are deduplicated
   by canonical asset reference so shared dependencies execute at most once.
 
-  `stages` groups refs by topological rank so each stage can run in parallel
+  `stages` groups refs by topological depth so each stage can run in parallel
   after all refs in previous stages are satisfied.
   """
 

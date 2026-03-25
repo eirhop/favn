@@ -4,6 +4,12 @@ defmodule Flux.Planner do
 
   The planner produces a deduplicated run graph for one or more targets and
   groups plan nodes into topological stages for parallel execution.
+
+  Determinism guarantees:
+
+    * target refs are normalized, deduplicated, and sorted
+    * `stages` contain refs sorted by canonical ref order
+    * stage number equals topological depth (`0` for source assets)
   """
 
   alias Flux.GraphIndex
@@ -44,18 +50,21 @@ defmodule Flux.Planner do
   defp normalize_targets({module, name}) when is_atom(module) and is_atom(name),
     do: {:ok, [{module, name}]}
 
-  defp normalize_targets(targets) when is_list(targets) do
-    cond do
-      targets == [] -> {:error, :empty_targets}
-      Enum.all?(targets, &valid_ref?/1) -> {:ok, targets |> Enum.uniq() |> Enum.sort()}
-      true -> {:error, :invalid_target_ref}
-    end
-  end
+  defp normalize_targets([]), do: {:error, :empty_targets}
+
+  defp normalize_targets(targets) when is_list(targets),
+    do: normalize_target_list(targets, [])
 
   defp normalize_targets(_targets), do: {:error, :invalid_target_ref}
 
-  defp valid_ref?({module, name}) when is_atom(module) and is_atom(name), do: true
-  defp valid_ref?(_other), do: false
+  defp normalize_target_list([], refs), do: {:ok, refs |> Enum.uniq() |> Enum.sort()}
+
+  defp normalize_target_list([{module, name} | rest], refs)
+       when is_atom(module) and is_atom(name) do
+    normalize_target_list(rest, [{module, name} | refs])
+  end
+
+  defp normalize_target_list([_invalid | _rest], _refs), do: {:error, :invalid_target_ref}
 
   defp validate_dependencies_mode(:all), do: :ok
   defp validate_dependencies_mode(:none), do: :ok
@@ -64,7 +73,7 @@ defmodule Flux.Planner do
   defp validate_target_refs(index, refs) do
     case Enum.find(refs, &(not Map.has_key?(index.assets_by_ref, &1))) do
       nil -> :ok
-      ref -> {:error, {:asset_not_found, ref}}
+      _ref -> {:error, :asset_not_found}
     end
   end
 

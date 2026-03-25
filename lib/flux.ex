@@ -357,7 +357,9 @@ defmodule Flux do
   @typedoc """
   Options for `plan_run/2`.
   """
-  @type plan_run_opts :: run_opts()
+  @type plan_run_opts :: [
+          dependencies: dependencies_mode()
+        ]
 
   @doc """
   List all registered assets.
@@ -562,14 +564,45 @@ defmodule Flux do
 
   This API returns a run-once plan shape where nodes are deduplicated by
   canonical ref and grouped into topological stages for parallel execution.
+  Planning is deterministic:
+
+    * target refs are normalized, deduplicated, and sorted
+    * node refs inside each stage are sorted
+    * stage number is computed as topological depth from source assets
 
   ## Examples
 
       iex> Flux.plan_run({Unknown.Module, :fact_sales})
-      {:error, {:asset_not_found, {Unknown.Module, :fact_sales}}}
+      {:error, :asset_not_found}
 
       iex> Flux.plan_run([])
       {:error, :empty_targets}
+
+  ## Output shape
+
+      %Flux.Plan{
+        target_refs: [{MyApp.GoldETL, :fact_sales}],
+        dependencies: :all,
+        topo_order: [
+          {MyApp.SourceETL, :raw_orders},
+          {MyApp.WarehouseETL, :normalize_orders},
+          {MyApp.GoldETL, :fact_sales}
+        ],
+        stages: [
+          [{MyApp.SourceETL, :raw_orders}],
+          [{MyApp.WarehouseETL, :normalize_orders}],
+          [{MyApp.GoldETL, :fact_sales}]
+        ],
+        nodes: %{
+          {MyApp.WarehouseETL, :normalize_orders} => %{
+            ref: {MyApp.WarehouseETL, :normalize_orders},
+            upstream: [{MyApp.SourceETL, :raw_orders}],
+            downstream: [{MyApp.GoldETL, :fact_sales}],
+            stage: 1,
+            action: :run
+          }
+        }
+      }
 
   ## TODO
 

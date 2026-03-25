@@ -99,8 +99,21 @@ defmodule Flux.PlannerTest do
     assert {:error, {:invalid_dependencies_mode, :invalid}} =
              Flux.plan_run({GoldAssets, :gold_sales}, dependencies: :invalid)
 
-    assert {:error, {:asset_not_found, {GoldAssets, :missing}}} =
-             Flux.plan_run({GoldAssets, :missing})
+    assert {:error, :asset_not_found} = Flux.plan_run({GoldAssets, :missing})
+  end
+
+  test "normalizes duplicate targets into deterministic sorted order" do
+    assert {:ok, plan} =
+             Flux.plan_run([
+               {GoldAssets, :gold_sales},
+               {GoldAssets, :gold_finance},
+               {GoldAssets, :gold_sales}
+             ])
+
+    assert plan.target_refs == [
+             {GoldAssets, :gold_finance},
+             {GoldAssets, :gold_sales}
+           ]
   end
 
   defp restore_registry({:ok, _catalog}) do
