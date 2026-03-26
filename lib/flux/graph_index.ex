@@ -44,6 +44,7 @@ defmodule Flux.GraphIndex do
   @type error ::
           {:missing_dependency, Ref.t(), Ref.t()}
           | {:cycle, [Ref.t()]}
+          | :invalid_opts
           | Flux.Registry.error()
 
   @typedoc """
@@ -227,32 +228,68 @@ defmodule Flux.GraphIndex do
   end
 
   defp selected_refs(index, ref, opts) do
-    transitive? = Keyword.get(opts, :transitive, true)
+    with :ok <- validate_opts(opts) do
+      transitive? = Keyword.get(opts, :transitive, true)
 
-    case {Keyword.get(opts, :direction, :upstream), transitive?} do
-      {:upstream, false} ->
-        fetch_set(index.upstream, ref)
+      case {Keyword.get(opts, :direction, :upstream), transitive?} do
+        {:upstream, false} ->
+          fetch_set(index.upstream, ref)
 
-      {:downstream, false} ->
-        fetch_set(index.downstream, ref)
+        {:downstream, false} ->
+          fetch_set(index.downstream, ref)
 
-      {:upstream, true} ->
-        fetch_set(index.transitive_upstream, ref)
+        {:upstream, true} ->
+          fetch_set(index.transitive_upstream, ref)
 
-      {:downstream, true} ->
-        fetch_set(index.transitive_downstream, ref)
+        {:downstream, true} ->
+          fetch_set(index.transitive_downstream, ref)
 
-      {:both, false} ->
-        with {:ok, upstream} <- fetch_set(index.upstream, ref),
-             {:ok, downstream} <- fetch_set(index.downstream, ref) do
-          {:ok, MapSet.union(upstream, downstream)}
-        end
+        {:both, false} ->
+          with {:ok, upstream} <- fetch_set(index.upstream, ref),
+               {:ok, downstream} <- fetch_set(index.downstream, ref) do
+            {:ok, MapSet.union(upstream, downstream)}
+          end
 
-      {:both, true} ->
-        with {:ok, upstream} <- fetch_set(index.transitive_upstream, ref),
-             {:ok, downstream} <- fetch_set(index.transitive_downstream, ref) do
-          {:ok, MapSet.union(upstream, downstream)}
-        end
+        {:both, true} ->
+          with {:ok, upstream} <- fetch_set(index.transitive_upstream, ref),
+               {:ok, downstream} <- fetch_set(index.transitive_downstream, ref) do
+            {:ok, MapSet.union(upstream, downstream)}
+          end
+      end
+    end
+  end
+
+  defp validate_opts(opts) do
+    direction = Keyword.get(opts, :direction, :upstream)
+
+    with :ok <- validate_inclusion(direction, [:upstream, :downstream, :both]),
+         :ok <- validate_boolean_opt(opts, :transitive),
+         :ok <- validate_boolean_opt(opts, :include_target),
+         :ok <- validate_list_opt(opts, :tags),
+         :ok <- validate_list_opt(opts, :kinds),
+         :ok <- validate_list_opt(opts, :modules),
+         :ok <- validate_list_opt(opts, :names) do
+      :ok
+    end
+  end
+
+  defp validate_inclusion(value, allowed) do
+    if value in allowed, do: :ok, else: {:error, :invalid_opts}
+  end
+
+  defp validate_boolean_opt(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, value} when is_boolean(value) -> :ok
+      {:ok, _invalid} -> {:error, :invalid_opts}
+    end
+  end
+
+  defp validate_list_opt(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, value} when is_list(value) -> :ok
+      {:ok, _invalid} -> {:error, :invalid_opts}
     end
   end
 

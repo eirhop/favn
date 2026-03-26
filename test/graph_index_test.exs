@@ -179,6 +179,34 @@ defmodule Flux.GraphIndexTest do
              MapSet.new([{ReportingAssets, :dashboard}])
   end
 
+  test "returns invalid_opts for invalid graph query options" do
+    Application.put_env(:flux, :asset_modules, [SourceAssets, WarehouseAssets, ReportingAssets])
+
+    assert :ok = Flux.Registry.reload()
+    assert :ok = Flux.GraphIndex.reload()
+
+    assert {:error, :invalid_opts} =
+             Flux.GraphIndex.related_assets({ReportingAssets, :dashboard}, direction: :sideways)
+
+    assert {:error, :invalid_opts} =
+             Flux.GraphIndex.related_assets({ReportingAssets, :dashboard}, transitive: :yes)
+
+    assert {:error, :invalid_opts} =
+             Flux.GraphIndex.related_assets({ReportingAssets, :dashboard}, include_target: 1)
+
+    assert {:error, :invalid_opts} =
+             Flux.GraphIndex.related_assets({ReportingAssets, :dashboard}, tags: :warehouse)
+
+    assert {:error, :invalid_opts} =
+             Flux.GraphIndex.related_assets({ReportingAssets, :dashboard}, kinds: :table)
+
+    assert {:error, :invalid_opts} =
+             Flux.GraphIndex.related_assets({ReportingAssets, :dashboard}, modules: ReportingAssets)
+
+    assert {:error, :invalid_opts} =
+             Flux.GraphIndex.subgraph({ReportingAssets, :dashboard}, names: :dashboard)
+  end
+
   test "reports missing dependencies during graph construction" do
     missing = %Flux.Asset{
       module: __MODULE__,
