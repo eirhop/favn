@@ -409,6 +409,9 @@ defmodule Flux.GraphIndex do
     end
   end
 
+  # Kahn-style topological consumption with deterministic queue ordering.
+  # We use lexical ref tie-breaking so repeated builds with the same input
+  # produce identical output ordering.
   defp consume_topology([], indegree, _downstream, order) do
     remaining = Enum.any?(indegree, fn {_ref, count} -> count > 0 end)
 
@@ -476,6 +479,9 @@ defmodule Flux.GraphIndex do
     end
   end
 
+  # Depth-first cycle detection over upstream edges. `path` keeps traversal
+  # history and `stack` tracks the active recursion branch so back-edges can
+  # reconstruct a concrete cycle path for error messages.
   defp dfs_cycle(ref, upstream, globally_visited, path, stack) do
     next_path = [ref | path]
     next_stack = MapSet.put(stack, ref)
@@ -500,6 +506,7 @@ defmodule Flux.GraphIndex do
     end)
   end
 
+  # Extract only the cyclic segment starting at the repeated node.
   defp extract_cycle(path, repeated_ref) do
     cycle =
       path
@@ -539,6 +546,7 @@ defmodule Flux.GraphIndex do
     end)
   end
 
+  # Canonical ref ordering: module first, then function name.
   defp compare_refs({left_module, left_name}, {right_module, right_name}) do
     case compare_terms(left_module, right_module) do
       :lt -> true

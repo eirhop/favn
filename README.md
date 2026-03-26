@@ -58,16 +58,16 @@ import Config
 config :flux,
   asset_modules: [MyApp.SalesAssets],
   pubsub_name: MyApp.PubSub,
-  run_store: Flux.RunStore.Memory,
-  run_store_opts: []
+  storage_adapter: Flux.Storage.Adapter.Memory,
+  storage_adapter_opts: []
 ```
 
 Key settings:
 
 - `asset_modules`: modules that define assets with `use Flux.Assets`.
 - `:pubsub_name`: PubSub server name used for run event broadcasting.
-- `:run_store`: run store implementation module.
-- `:run_store_opts`: options passed to the configured run store.
+- `:storage_adapter`: run storage adapter module.
+- `:storage_adapter_opts`: options passed to the configured storage adapter.
 
 ## Current limitations
 

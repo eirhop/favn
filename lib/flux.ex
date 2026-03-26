@@ -284,75 +284,6 @@ defmodule Flux do
       feature/limitation matrix.
     * `Flux` moduledoc is canonical for API behavior, contracts, and examples.
 
-  ## Status
-
-  Flux is currently being rebuilt from the asset authoring layer upward.
-
-  The current direction is:
-
-    * `Flux` defines the intended public API first
-    * asset authoring and compile-time metadata collection now back module-level inspection APIs
-    * dependencies declared by assets now build a startup-loaded global DAG index
-    * runtime execution, eventing, and storage will be implemented underneath that API
-
-  This module therefore acts as both:
-
-    * the public contract for users of the library
-    * the roadmap boundary for what still needs to be implemented underneath
-
-  The first concrete deliverable is intentionally small and now available: define assets,
-  inspect assets for a module, and fetch assets by canonical reference through this public
-  facade before building planning and runtime layers.
-
-  Global asset discovery now starts from an explicit registry scope configured through
-  `config :flux, asset_modules: [...]` in the host application. Flux uses that configured
-  module list to build a global asset catalog without scanning arbitrary loaded modules in
-  the VM, and it loads that catalog into memory during application startup for fast
-  read-heavy lookups.
-
-  ## Roadmap
-
-  The planned implementation work is roughly:
-
-    1. asset authoring DSL with `use Flux.Assets` and `@asset` - done
-    2. canonical asset metadata and asset references - done
-    3. per-module asset introspection through `Flux` - done
-    4. global registry and configured asset discovery - done
-    5. startup registry loading and caching - done
-    6. dependency resolution and graph construction - done
-    7. graph inspection queries - done
-    8. execution planning - done
-    9. run model and in-memory execution - done
-    10. run storage and retrieval - done
-    11. live run event subscriptions - done
-    12. runtime namespace reorganization (`Flux.Runtime.*`) with compatibility wrappers - done
-    13. storage namespace consolidation (`Flux.Storage.*`) with compatibility wrappers - done
-    14. pre-release refactor pass for shared helpers and consistent module patterns
-    15. pre-release documentation and test hardening for v0.1
-    16. storage adapter boundary for memory/SQLite/Postgres and third-party plugins
-
-  ## v0.1 release focus
-
-  In addition to finishing the remaining runtime APIs, the first release should include a
-  deliberate quality pass over internals, docs, and tests so the public facade stays small and
-  predictable as usage grows.
-
-  The v0.1 closeout checklist is:
-
-    * harden run lifecycle APIs (`get_run/1`, `list_runs/1`, `subscribe_run/1`, `unsubscribe_run/1`)
-    * refactor reusable logic into small shared helpers where duplication exists across modules
-    * align coding patterns across modules (naming, return shapes, and error conventions)
-    * tighten and refresh user-facing docs in this module and related public interfaces
-    * consolidate test fixtures so one canonical test asset module set is reused across suites
-    * keep tests deterministic and focused on public contracts
-
-  Production deployment note:
-
-  Flux is expected to run on multiple BEAM nodes in clustered environments (for example
-  Kubernetes). The in-memory run store is intentionally node-local and non-durable for
-  development. Production and multi-node consistency are expected to use durable shared
-  adapters (Postgres first, with SQLite and third-party adapters as follow-up options).
-
   """
 
   @typedoc """
@@ -429,14 +360,6 @@ defmodule Flux do
 
       iex> Flux.list_assets()
       {:ok, []}
-
-  ## TODO
-
-    * Keep `Flux.Registry` as the canonical global discovery layer
-    * Keep startup-loaded caching read-only unless a real dynamic loading use case appears
-    * Expand discovery beyond explicit module lists only when a concrete use case appears
-    * Define stable ordering for returned assets
-    * Consider filtering and pagination later
   """
   @spec list_assets() :: {:ok, [asset()]} | {:error, term()}
   def list_assets do
@@ -453,11 +376,6 @@ defmodule Flux do
 
       iex> Flux.list_assets(Unknown.Module)
       {:error, :not_asset_module}
-
-  ## TODO
-
-    * Keep this backed by module-level introspection as the targeted inspection API
-    * Consider whether richer filtering belongs here or in a registry layer later
   """
   @spec list_assets(module()) :: {:ok, [asset()]} | {:error, asset_error()}
   def list_assets(module) when is_atom(module) do
@@ -479,12 +397,6 @@ defmodule Flux do
 
       iex> Flux.get_asset({Unknown.Module, :normalize_orders})
       {:error, :not_asset_module}
-
-  ## TODO
-
-    * Keep the registry-backed lookup as the default global path for canonical refs
-    * Preserve module-level metadata as the source of truth underneath the registry
-    * Add richer dependency validation once graph construction is introduced
   """
   @spec get_asset(asset_ref()) :: {:ok, asset()} | {:error, asset_error()}
   def get_asset({module, name}) when is_atom(module) and is_atom(name) do
@@ -529,12 +441,6 @@ defmodule Flux do
 
       iex> Flux.upstream_assets({Unknown.Module, :normalize_orders})
       {:error, :not_asset_module}
-
-  ## TODO
-
-    * Keep this backed by `Flux.GraphIndex.related_assets/2`
-    * Keep the default query transitive so planners and UIs get the full closure
-    * Add richer view-specific formatting later rather than here
   """
   @spec upstream_assets(asset_ref(), graph_opts()) ::
           {:ok, [asset()]} | {:error, asset_error() | term()}
@@ -557,12 +463,6 @@ defmodule Flux do
 
       iex> Flux.downstream_assets({Unknown.Module, :normalize_orders})
       {:error, :not_asset_module}
-
-  ## TODO
-
-    * Keep this backed by `Flux.GraphIndex.related_assets/2`
-    * Support immediate and transitive traversal through `transitive: false | true`
-    * Keep filtering in the graph layer rather than duplicating it in the facade
   """
   @spec downstream_assets(asset_ref(), graph_opts()) ::
           {:ok, [asset()]} | {:error, asset_error() | term()}
@@ -588,12 +488,6 @@ defmodule Flux do
 
       iex> Flux.dependency_graph({Unknown.Module, :normalize_orders})
       {:error, :not_asset_module}
-
-  ## TODO
-
-    * Keep this backed by `Flux.GraphIndex.subgraph/2`
-    * Use this as the input boundary for execution planning
-    * Extend filtering only when real UI or planner needs appear
   """
   @spec dependency_graph(asset_ref(), graph_opts()) ::
           {:ok, Flux.GraphIndex.t()} | {:error, asset_error() | term()}
@@ -658,13 +552,6 @@ defmodule Flux do
           }
         }
       }
-
-  ## TODO
-
-    * Keep this planner deterministic and graph-derived
-    * Keep plan nodes deduplicated by canonical ref
-    * Add freshness-aware actions after run storage exists
-    * Reuse planner normalization and sorting helpers from one shared internal module
   """
   @spec plan_run(asset_ref() | [asset_ref()], plan_run_opts()) ::
           {:ok, Flux.Plan.t()} | {:error, term()}
@@ -696,18 +583,6 @@ defmodule Flux do
     3. Produce an execution plan
     4. Execute stage-by-stage in deterministic order
     5. Return run status, outputs, timings, and errors
-
-  ## TODO
-
-    * Implement on top of the startup-built DAG index in `Flux.GraphIndex`
-    * Delegate to `Flux.Runtime.Runner.run/2`
-    * Keep return contract `{:ok, run}` or `{:error, run | reason}`
-    * Persist both started and terminal run states through `Flux.Storage`
-    * Keep `dependencies: :all | :none` as the first execution mode toggle
-    * Keep execution in-memory and synchronous for the first cut
-    * Add run process supervision and stage-level parallelism in follow-up work
-    * Add freshness-aware skipping after the planner can reason about materialized assets
-    * Share common execution result-shaping helpers with planner and storage layers
   """
   @spec run(asset_ref(), run_opts()) :: {:ok, Flux.Run.t()} | {:error, Flux.Run.t() | term()}
   def run({module, name}, opts \\ [])
@@ -725,12 +600,6 @@ defmodule Flux do
 
       iex> Flux.get_run("run_123")
       {:error, :not_found}
-
-  ## TODO
-
-    * Delegate to `Flux.Storage` facade (backed by `Flux.Storage.Adapter.*`)
-    * Keep return contract stable across storage adapters
-    * Preserve the canonical `%Flux.Run{}` shape in storage
   """
   @spec get_run(run_id()) :: {:ok, Flux.Run.t()} | {:error, run_error()}
   def get_run(run_id) do
@@ -745,18 +614,13 @@ defmodule Flux do
 
   ## Examples
 
-      iex> Flux.list_runs()
-      {:ok, []}
+      iex> {:ok, runs} = Flux.list_runs()
+      iex> is_list(runs)
+      true
 
-      iex> Flux.list_runs(status: :running)
-      {:ok, []}
-
-  ## TODO
-
-    * Delegate to `Flux.Storage` facade (backed by `Flux.Storage.Adapter.*`)
-    * Keep default ordering newest-first
-    * Keep filter semantics stable across storage adapters
-    * Consider pagination rather than large unbounded lists
+      iex> {:ok, running_runs} = Flux.list_runs(status: :running)
+      iex> is_list(running_runs)
+      true
   """
   @spec list_runs(list_runs_opts()) :: {:ok, [Flux.Run.t()]} | {:error, run_error()}
   def list_runs(opts \\ []) when is_list(opts) do
@@ -777,13 +641,6 @@ defmodule Flux do
 
       iex> Flux.subscribe_run("run_123")
       :ok
-
-  ## TODO
-
-    * Delegate to `Flux.Runtime.Events`
-    * Keep topic naming run-scoped by canonical run ID
-    * Keep the event envelope stable for UI consumers
-    * Extend to broader event streams only after a concrete need appears
   """
   @spec subscribe_run(run_id()) :: :ok | {:error, term()}
   def subscribe_run(run_id) do
@@ -800,12 +657,6 @@ defmodule Flux do
 
       iex> Flux.unsubscribe_run("run_123")
       :ok
-
-  ## TODO
-
-    * Delegate to `Flux.Runtime.Events`
-    * Mirror the behavior and return contract of `subscribe_run/1`
-    * Keep unsubscribe idempotent for callers
   """
   @spec unsubscribe_run(run_id()) :: :ok
   def unsubscribe_run(run_id) do

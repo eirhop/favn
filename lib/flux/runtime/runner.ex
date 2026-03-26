@@ -72,6 +72,9 @@ defmodule Flux.Runtime.Runner do
     end
   end
 
+  # Stage execution is intentionally sequential in the first runner:
+  # each ref in a stage executes in deterministic order and any failure halts
+  # the remaining stage and marks the run as failed.
   defp run_stage({refs, stage}, %Run{} = run) do
     refs
     |> Enum.reduce_while(run, fn ref, acc_run ->
@@ -209,6 +212,9 @@ defmodule Flux.Runtime.Runner do
     }
   end
 
+  # Runner failures may originate from raised/caught exceptions (already
+  # structured) or from explicit `{:error, reason}` tuples (unstructured).
+  # Normalize both paths so `asset_results.error` always has a stable shape.
   defp normalize_reason(%{kind: _kind, reason: _reason, stacktrace: _stacktrace} = reason),
     do: reason
 
@@ -244,8 +250,8 @@ defmodule Flux.Runtime.Runner do
     )
   end
 
-  # Event publishing is best-effort observability only: run execution and run
-  # storage persistence must continue even when PubSub delivery fails.
+  # Event publishing is best-effort observability only: execution and storage
+  # semantics must not depend on PubSub availability.
   defp emit_run_event(%Run{} = run, event, payload, opts \\ [])
        when is_atom(event) and is_map(payload) and is_list(opts) do
     next_seq = run.event_seq + 1

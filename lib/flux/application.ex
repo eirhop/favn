@@ -1,5 +1,17 @@
 defmodule Flux.Application do
-  @moduledoc false
+  @moduledoc """
+  OTP application entrypoint for Flux.
+
+  Startup order is intentional:
+
+    1. load the global asset registry
+    2. build the global dependency graph index
+    3. validate the configured storage adapter
+    4. start PubSub and any storage adapter child processes
+
+  If any of the preflight steps fail, startup returns that error and Flux does
+  not boot in a partially initialized state.
+  """
 
   use Application
 
