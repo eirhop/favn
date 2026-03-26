@@ -700,6 +700,7 @@ defmodule Flux do
     * Implement on top of the startup-built DAG index in `Flux.GraphIndex`
     * Delegate to `Flux.Runner.run/2`
     * Keep return contract `{:ok, run}` or `{:error, run | reason}`
+    * Persist both started and terminal run states through `Flux.Storage`
     * Keep `dependencies: :all | :none` as the first execution mode toggle
     * Keep execution in-memory and synchronous for the first cut
     * Add run process supervision and stage-level parallelism in follow-up work
