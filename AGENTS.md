@@ -7,8 +7,8 @@ This repository currently focuses on the **core Flux library**.
 The main api interface for library is found in `/lib/flux.ex`. This file contains extensive documentation and main interface functions. We will use this file to document our progress and roadmap and documentation should be continuously updated as we progress. 
 
 **Important rules**
-- Always start by reading `/lib/flux.ex` to get overview of project, code interface and progres
-- Always update TODOS as we work on each of the interfaces in `/lib/flux.ex`
+- Always start by reading `/lib/flux.ex` and `readme.md` to get overview of project, code interface and progress
+- Keep status of roadmap features always up to date in readme.md
 - Always keep user documentation up to date in `/lib/flux.ex`.
 - We are using git dependencies and not hex. Therefore following commands must be run before compile and testing:
     - mix archive.install github hexpm/hex branch latest --force
