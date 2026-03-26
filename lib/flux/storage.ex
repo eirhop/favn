@@ -1,13 +1,13 @@
 defmodule Flux.Storage do
   @moduledoc """
-  Storage facade that delegates run persistence to the configured run-store adapter.
+  Storage facade that delegates run persistence to the configured storage adapter.
 
-  This module is the only storage entrypoint used by `Flux` and `Flux.Runner`.
+  This module is the only storage entrypoint used by `Flux` and `Flux.Runtime.Runner`.
   """
 
   alias Flux.Run
 
-  @default_adapter Flux.RunStore.Memory
+  @default_adapter Flux.Storage.Adapter.Memory
 
   @type error :: :not_found | :invalid_opts | {:store_error, term()}
 
@@ -44,12 +44,12 @@ defmodule Flux.Storage do
 
   @spec adapter_module() :: module()
   def adapter_module do
-    Application.get_env(:flux, :run_store, @default_adapter)
+    Application.get_env(:flux, :storage_adapter, @default_adapter)
   end
 
   @spec adapter_opts() :: keyword()
   def adapter_opts do
-    Application.get_env(:flux, :run_store_opts, [])
+    Application.get_env(:flux, :storage_adapter_opts, [])
   end
 
   @spec validate_adapter(module()) :: :ok | {:error, error()}
@@ -68,7 +68,7 @@ defmodule Flux.Storage do
            end) do
       :ok
     else
-      _ -> {:error, {:store_error, {:invalid_run_store_adapter, adapter}}}
+      _ -> {:error, {:store_error, {:invalid_storage_adapter, adapter}}}
     end
   end
 

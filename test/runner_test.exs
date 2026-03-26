@@ -8,11 +8,11 @@ defmodule Flux.RunnerTest do
     state = Flux.TestSetup.capture_state()
 
     :ok = Flux.TestSetup.setup_asset_modules([RunnerAssets], reload_graph?: true)
-    :ok = Flux.TestSetup.configure_run_store(Flux.RunStore.Memory, [])
-    :ok = Flux.TestSetup.clear_memory_run_store()
+    :ok = Flux.TestSetup.configure_storage_adapter(Flux.Storage.Adapter.Memory, [])
+    :ok = Flux.TestSetup.clear_memory_storage_adapter()
 
     on_exit(fn ->
-      Flux.TestSetup.restore_state(state, reload_graph?: true, clear_run_store_env?: true)
+      Flux.TestSetup.restore_state(state, reload_graph?: true, clear_storage_adapter_env?: true)
     end)
 
     :ok
@@ -117,7 +117,7 @@ defmodule Flux.RunnerTest do
   end
 
   test "returns execution result even when terminal persistence fails" do
-    :ok = Flux.TestSetup.configure_run_store(TerminalFailingStore, [])
+    :ok = Flux.TestSetup.configure_storage_adapter(TerminalFailingStore, [])
     TerminalFailingStore.reset!()
 
     assert {:ok, run} = Flux.run({RunnerAssets, :final})

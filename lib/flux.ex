@@ -325,9 +325,11 @@ defmodule Flux do
     9. run model and in-memory execution - done
     10. run storage and retrieval - done
     11. live run event subscriptions - done
-    12. pre-release refactor pass for shared helpers and consistent module patterns
-    13. pre-release documentation and test hardening for v0.1
-    14. storage adapter boundary for memory/SQLite/Postgres and third-party plugins
+    12. runtime namespace reorganization (`Flux.Runtime.*`) with compatibility wrappers - done
+    13. storage namespace consolidation (`Flux.Storage.*`) with compatibility wrappers - done
+    14. pre-release refactor pass for shared helpers and consistent module patterns
+    15. pre-release documentation and test hardening for v0.1
+    16. storage adapter boundary for memory/SQLite/Postgres and third-party plugins
 
   ## v0.1 release focus
 
@@ -698,7 +700,7 @@ defmodule Flux do
   ## TODO
 
     * Implement on top of the startup-built DAG index in `Flux.GraphIndex`
-    * Delegate to `Flux.Runner.run/2`
+    * Delegate to `Flux.Runtime.Runner.run/2`
     * Keep return contract `{:ok, run}` or `{:error, run | reason}`
     * Persist both started and terminal run states through `Flux.Storage`
     * Keep `dependencies: :all | :none` as the first execution mode toggle
@@ -710,7 +712,7 @@ defmodule Flux do
   @spec run(asset_ref(), run_opts()) :: {:ok, Flux.Run.t()} | {:error, Flux.Run.t() | term()}
   def run({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    Flux.Runner.run({module, name}, opts)
+    Flux.Runtime.Runner.run({module, name}, opts)
   end
 
   @doc """
@@ -726,7 +728,7 @@ defmodule Flux do
 
   ## TODO
 
-    * Delegate to `Flux.Storage`
+    * Delegate to `Flux.Storage` facade (backed by `Flux.Storage.Adapter.*`)
     * Keep return contract stable across storage adapters
     * Preserve the canonical `%Flux.Run{}` shape in storage
   """
@@ -751,7 +753,7 @@ defmodule Flux do
 
   ## TODO
 
-    * Delegate to `Flux.Storage`
+    * Delegate to `Flux.Storage` facade (backed by `Flux.Storage.Adapter.*`)
     * Keep default ordering newest-first
     * Keep filter semantics stable across storage adapters
     * Consider pagination rather than large unbounded lists
@@ -778,14 +780,14 @@ defmodule Flux do
 
   ## TODO
 
-    * Delegate to `Flux.Events`
+    * Delegate to `Flux.Runtime.Events`
     * Keep topic naming run-scoped by canonical run ID
     * Keep the event envelope stable for UI consumers
     * Extend to broader event streams only after a concrete need appears
   """
   @spec subscribe_run(run_id()) :: :ok | {:error, term()}
   def subscribe_run(run_id) do
-    Flux.Events.subscribe_run(run_id)
+    Flux.Runtime.Events.subscribe_run(run_id)
   end
 
   @doc """
@@ -801,12 +803,12 @@ defmodule Flux do
 
   ## TODO
 
-    * Delegate to `Flux.Events`
+    * Delegate to `Flux.Runtime.Events`
     * Mirror the behavior and return contract of `subscribe_run/1`
     * Keep unsubscribe idempotent for callers
   """
   @spec unsubscribe_run(run_id()) :: :ok
   def unsubscribe_run(run_id) do
-    Flux.Events.unsubscribe_run(run_id)
+    Flux.Runtime.Events.unsubscribe_run(run_id)
   end
 end

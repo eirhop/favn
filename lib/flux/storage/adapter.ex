@@ -1,11 +1,11 @@
-defmodule Flux.RunStore do
+defmodule Flux.Storage.Adapter do
   @moduledoc """
   Behaviour for run persistence adapters.
 
   Run store adapters are the boundary between Flux runtime orchestration and
   concrete persistence backends.
 
-  The default adapter in v0.1 is `Flux.RunStore.Memory`, which is node-local
+  The default adapter in v0.1 is `Flux.Storage.Adapter.Memory`, which is node-local
   and non-durable. Future adapters (for example Postgres or SQLite) should
   implement this behaviour without changing the `Flux` public API.
 

@@ -5,7 +5,7 @@ defmodule Flux.StorageTest do
   alias Flux.Storage
 
   defmodule RawErrorStore do
-    @behaviour Flux.RunStore
+    @behaviour Flux.Storage.Adapter
 
     @impl true
     def child_spec(_opts), do: {:error, :child_spec_failed}
@@ -21,7 +21,7 @@ defmodule Flux.StorageTest do
   end
 
   defmodule NormalizedErrorStore do
-    @behaviour Flux.RunStore
+    @behaviour Flux.Storage.Adapter
 
     @impl true
     def child_spec(_opts), do: {:error, {:store_error, :already_normalized}}
@@ -37,7 +37,7 @@ defmodule Flux.StorageTest do
   end
 
   defmodule CanonicalErrorStore do
-    @behaviour Flux.RunStore
+    @behaviour Flux.Storage.Adapter
 
     @impl true
     def child_spec(_opts), do: :none
@@ -53,25 +53,25 @@ defmodule Flux.StorageTest do
   end
 
   setup do
-    previous_store = Application.get_env(:flux, :run_store)
-    previous_store_opts = Application.get_env(:flux, :run_store_opts)
+    previous_store = Application.get_env(:flux, :storage_adapter)
+    previous_store_opts = Application.get_env(:flux, :storage_adapter_opts)
 
     on_exit(fn ->
-      restore_env(:run_store, previous_store)
-      restore_env(:run_store_opts, previous_store_opts)
+      restore_env(:storage_adapter, previous_store)
+      restore_env(:storage_adapter_opts, previous_store_opts)
     end)
 
     :ok
   end
 
   test "child_specs/0 does not double-wrap normalized store errors" do
-    Application.put_env(:flux, :run_store, NormalizedErrorStore)
+    Application.put_env(:flux, :storage_adapter, NormalizedErrorStore)
 
     assert {:error, {:store_error, :already_normalized}} = Storage.child_specs()
   end
 
   test "storage entrypoints wrap raw adapter errors as store_error" do
-    Application.put_env(:flux, :run_store, RawErrorStore)
+    Application.put_env(:flux, :storage_adapter, RawErrorStore)
 
     assert {:error, {:store_error, :child_spec_failed}} = Storage.child_specs()
     assert {:error, {:store_error, :write_failed}} = Storage.put_run(sample_run())
@@ -80,7 +80,7 @@ defmodule Flux.StorageTest do
   end
 
   test "storage entrypoints preserve canonical error shapes" do
-    Application.put_env(:flux, :run_store, CanonicalErrorStore)
+    Application.put_env(:flux, :storage_adapter, CanonicalErrorStore)
 
     assert :ok = Storage.put_run(sample_run()) |> expect_error(:invalid_opts)
     assert :ok = Storage.get_run("missing") |> expect_error(:not_found)
@@ -88,7 +88,7 @@ defmodule Flux.StorageTest do
   end
 
   test "list_runs/1 validates invalid options before adapter call" do
-    Application.put_env(:flux, :run_store, RawErrorStore)
+    Application.put_env(:flux, :storage_adapter, RawErrorStore)
 
     assert {:error, :invalid_opts} = Storage.list_runs(status: :pending)
     assert {:error, :invalid_opts} = Storage.list_runs(limit: 0)

@@ -42,7 +42,7 @@ defmodule Flux.Test.Fixtures.Assets.Runner.RunnerAssets do
 end
 
 defmodule Flux.Test.Fixtures.Assets.Runner.TerminalFailingStore do
-  @behaviour Flux.RunStore
+  @behaviour Flux.Storage.Adapter
 
   @counter_key {__MODULE__, :put_count}
 

@@ -28,15 +28,15 @@ defmodule Flux.TestSetup do
     :ok
   end
 
-  @spec configure_run_store(module(), keyword()) :: :ok
-  def configure_run_store(store, store_opts \\ []) do
-    Application.put_env(:flux, :run_store, store)
-    Application.put_env(:flux, :run_store_opts, store_opts)
+  @spec configure_storage_adapter(module(), keyword()) :: :ok
+  def configure_storage_adapter(store, store_opts \\ []) do
+    Application.put_env(:flux, :storage_adapter, store)
+    Application.put_env(:flux, :storage_adapter_opts, store_opts)
   end
 
-  @spec clear_memory_run_store() :: :ok
-  def clear_memory_run_store do
-    table = Flux.RunStore.Memory.Table
+  @spec clear_memory_storage_adapter() :: :ok
+  def clear_memory_storage_adapter do
+    table = Flux.Storage.Adapter.Memory.Table
 
     if :ets.whereis(table) != :undefined do
       :ets.delete_all_objects(table)
@@ -49,9 +49,9 @@ defmodule Flux.TestSetup do
   def restore_state(state, opts \\ []) do
     restore_asset_modules(state.previous_modules)
 
-    if Keyword.get(opts, :clear_run_store_env?, false) do
-      Application.delete_env(:flux, :run_store)
-      Application.delete_env(:flux, :run_store_opts)
+    if Keyword.get(opts, :clear_storage_adapter_env?, false) do
+      Application.delete_env(:flux, :storage_adapter)
+      Application.delete_env(:flux, :storage_adapter_opts)
     end
 
     restore_registry(state.previous_catalog, opts)

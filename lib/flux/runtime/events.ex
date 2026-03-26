@@ -1,6 +1,6 @@
-defmodule Flux.Events do
+defmodule Flux.Runtime.Events do
   @moduledoc """
-  Run-scoped event publishing and subscription utilities.
+  Runtime run-scoped event publishing and subscription utilities.
 
   Flux emits structured lifecycle events over Phoenix PubSub topics keyed by
   run ID so UIs and operators can observe in-flight and completed runs.

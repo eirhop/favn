@@ -1,10 +1,10 @@
-defmodule Flux.RunStore.Memory do
+defmodule Flux.Storage.Adapter.Memory do
   @moduledoc """
-  In-memory run store adapter.
+  In-memory storage adapter for runtime run records.
 
   This adapter is intended for development and testing:
 
-    * node-local
+    * node-local (per BEAM node)
     * non-durable (data is lost on restart)
     * deterministic listing for predictable assertions
   """

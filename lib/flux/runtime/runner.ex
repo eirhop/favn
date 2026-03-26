@@ -1,9 +1,9 @@
-defmodule Flux.Runner do
+defmodule Flux.Runtime.Runner do
   @moduledoc """
-  In-memory deterministic execution runner.
+  Runtime execution runner for Flux runs.
 
-  The first implementation executes plan stages serially and fails fast on the
-  first asset error.
+  This module contains the concrete in-memory runner used by the public
+  `Flux.run/2` facade.
   """
 
   alias Flux.Run
@@ -251,7 +251,7 @@ defmodule Flux.Runner do
     next_seq = run.event_seq + 1
 
     _ =
-      Flux.Events.publish_run_event(run.id, event, %{
+      Flux.Runtime.Events.publish_run_event(run.id, event, %{
         seq: next_seq,
         ref: Keyword.get(opts, :ref),
         stage: Keyword.get(opts, :stage),
