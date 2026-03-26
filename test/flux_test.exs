@@ -63,6 +63,16 @@ defmodule FluxTest do
            ]
   end
 
+  test "build_catalog preserves deterministic asset order across merge steps" do
+    assert {:ok, catalog} = Flux.Registry.build_catalog([SampleAssets, CrossModuleAssets])
+
+    assert Enum.map(catalog.assets, & &1.ref) == [
+             {SampleAssets, :extract_orders},
+             {SampleAssets, :normalize_orders},
+             {CrossModuleAssets, :publish_orders}
+           ]
+  end
+
   test "lists assets for a module through the public facade" do
     assert {:ok, assets} = Flux.list_assets(SampleAssets)
 
