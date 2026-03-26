@@ -3,8 +3,6 @@ defmodule FluxTest do
 
   doctest Flux
 
-  require Logger
-
   defmodule SampleAssets do
     use Flux.Assets
 
@@ -88,8 +86,6 @@ defmodule FluxTest do
   test "lists assets for a module through the public facade" do
     assert {:ok, assets} = Flux.list_assets(SampleAssets)
 
-    Logger.debug("facade asset list: #{inspect(assets, pretty: true)}")
-
     assert Enum.map(assets, & &1.name) == [:extract_orders, :normalize_orders]
   end
 
@@ -99,8 +95,6 @@ defmodule FluxTest do
 
     assert {:ok, asset} = Flux.get_asset({SampleAssets, :normalize_orders})
     assert {:ok, cross_module_asset} = Flux.get_asset({CrossModuleAssets, :publish_orders})
-
-    Logger.debug("facade asset lookup: #{inspect(asset, pretty: true)}")
 
     assert asset.depends_on == [{SampleAssets, :extract_orders}]
     assert cross_module_asset.depends_on == [{SampleAssets, :normalize_orders}]

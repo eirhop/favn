@@ -1,5 +1,3 @@
-require Logger
-
 trace? = "--trace" in System.argv()
 
 ExUnit.start(capture_log: !trace?)

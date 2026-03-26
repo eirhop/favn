@@ -33,12 +33,8 @@ defmodule Flux.AssetsTest do
 
   alias Flux.Asset
 
-  require Logger
-
   test "captures canonical asset metadata in source order" do
     assets = Flux.AssetsTest.Sample.__flux_assets__()
-
-    Logger.debug("module assets: #{inspect(assets, pretty: true)}")
 
     assert Enum.map(assets, & &1.name) == [:extract_orders, :normalize_orders, :fact_sales]
 
@@ -64,8 +60,6 @@ defmodule Flux.AssetsTest do
   end
 
   test "rejects invalid asset declarations at compile time" do
-    Logger.info("compiling invalid asset declarations to verify compile-time validation")
-
     assert_raise CompileError, ~r/invalid asset kind/, fn ->
       compile_test_module("""
       use Flux.Assets

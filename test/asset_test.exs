@@ -4,8 +4,6 @@ defmodule Flux.AssetTest do
   alias Flux.Asset
   alias Flux.Ref
 
-  require Logger
-
   test "defaults optional fields" do
     asset = %Asset{
       module: Example.Assets,
@@ -15,8 +13,6 @@ defmodule Flux.AssetTest do
       file: "lib/example/assets.ex",
       line: 12
     }
-
-    Logger.debug("default asset metadata: #{inspect(asset, pretty: true)}")
 
     assert asset.kind == :materialized
     assert asset.tags == []
@@ -37,8 +33,6 @@ defmodule Flux.AssetTest do
       tags: [:warehouse, "finance"],
       depends_on: [Ref.new(Example.Assets, :normalize_orders)]
     }
-
-    Logger.debug("canonical asset metadata: #{inspect(asset, pretty: true)}")
 
     assert asset.module == Example.Assets
     assert asset.name == :fact_sales
