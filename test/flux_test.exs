@@ -80,6 +80,17 @@ defmodule FluxTest do
              {CrossModuleAssets, :publish_orders},
              {AdditionalAssets, :archive_orders}
            ]
+
+    :ok = Flux.TestSetup.setup_asset_modules([SampleAssets, CrossModuleAssets, AdditionalAssets])
+
+    assert {:ok, listed_assets} = Flux.list_assets()
+
+    assert Enum.map(listed_assets, & &1.ref) == [
+             {SampleAssets, :extract_orders},
+             {SampleAssets, :normalize_orders},
+             {CrossModuleAssets, :publish_orders},
+             {AdditionalAssets, :archive_orders}
+           ]
   end
 
   test "lists assets for a module through the public facade" do
