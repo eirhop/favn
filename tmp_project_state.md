@@ -2,6 +2,10 @@ Dev review feedback:
 - Duplicate type from asset.ex -> @valid_kinds [:materialized, :view, :ephemeral]. please reuse type from asset.ex
 - In tests add logging of what test and results so that i can see results when running tests. 
 
+Maintenance checklist (required on every API or roadmap change):
+- Update `README.md` as the canonical source for release status, roadmap, and feature/limitation matrix changes.
+- Update `lib/flux.ex` moduledoc as the canonical source for API behavior/contracts and usage examples.
+
 
 
 Natural next steps:
