@@ -7,6 +7,7 @@ This repository currently focuses on the **core Flux library**.
 The main api interface for library is found in `/lib/flux.ex`. This file contains extensive documentation and main interface functions. We will use this file to document our progress and roadmap and documentation should be continuously updated as we progress. 
 
 **Important rules**
+- Flix is cuttentluyi private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
 - Always start by reading `/lib/flux.ex` and `readme.md` to get overview of project, code interface and progress
 - Keep status of roadmap features always up to date in readme.md
 - Always keep user documentation up to date in `/lib/flux.ex`.
