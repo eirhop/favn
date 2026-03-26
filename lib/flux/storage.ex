@@ -20,6 +20,7 @@ defmodule Flux.Storage do
       {:ok, [child_spec]}
     else
       :none -> {:ok, []}
+      {:error, {:store_error, _reason}} = error -> error
       {:error, reason} -> {:error, {:store_error, reason}}
     end
   end
