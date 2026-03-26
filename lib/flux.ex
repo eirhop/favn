@@ -276,6 +276,14 @@ defmodule Flux do
     * the public API stays small and stable
     * implementation details are pushed into focused modules
 
+  ## Documentation policy
+
+  Documentation ownership is split intentionally:
+
+    * `README.md` is canonical for release status, roadmap planning, and the
+      feature/limitation matrix.
+    * `Flux` moduledoc is canonical for API behavior, contracts, and examples.
+
   ## Status
 
   Flux is currently being rebuilt from the asset authoring layer upward.
