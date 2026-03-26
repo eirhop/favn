@@ -204,6 +204,14 @@ defmodule Flux do
   The configured module list is the global discovery scope used by
   `Flux.list_assets/0` and `Flux.get_asset/1`.
 
+  Run event subscriptions use Phoenix PubSub and default to `Flux.PubSub`.
+  Host applications can override the pubsub server name:
+
+      import Config
+
+      config :flux,
+        pubsub_name: MyApp.PubSub
+
   ## Starting Flux
 
   There is no separate Flux server process that operators start manually.
@@ -308,7 +316,7 @@ defmodule Flux do
     8. execution planning - done
     9. run model and in-memory execution - done
     10. run storage and retrieval - done
-    11. live run event subscriptions
+    11. live run event subscriptions - done
     12. pre-release refactor pass for shared helpers and consistent module patterns
     13. pre-release documentation and test hardening for v0.1
     14. storage adapter boundary for memory/SQLite/Postgres and third-party plugins
@@ -321,7 +329,7 @@ defmodule Flux do
 
   The v0.1 closeout checklist is:
 
-    * finish run lifecycle APIs (`get_run/1`, `list_runs/1`, `subscribe_run/1`, `unsubscribe_run/1`)
+    * harden run lifecycle APIs (`get_run/1`, `list_runs/1`, `subscribe_run/1`, `unsubscribe_run/1`)
     * refactor reusable logic into small shared helpers where duplication exists across modules
     * align coding patterns across modules (naming, return shapes, and error conventions)
     * tighten and refresh user-facing docs in this module and related public interfaces
@@ -751,47 +759,45 @@ defmodule Flux do
   explicit and can later grow with other subscription types if needed.
 
   The expected event model is structured run events rather than raw log lines.
+  Live event delivery is observability-only (best-effort) and is not part of
+  run correctness semantics.
 
   ## Examples
 
       iex> Flux.subscribe_run("run_123")
-      ** (RuntimeError) TODO: implement Flux.subscribe_run/1
+      :ok
 
   ## TODO
 
-    * Implement after run execution exists
     * Delegate to `Flux.Events`
-    * Decide whether to use Phoenix.PubSub directly or hide it behind an adapter
-    * Define the event envelope and topic naming convention
-    * Return `:ok` or a subscription handle if needed later
+    * Keep topic naming run-scoped by canonical run ID
+    * Keep the event envelope stable for UI consumers
+    * Extend to broader event streams only after a concrete need appears
   """
   @spec subscribe_run(run_id()) :: :ok | {:error, term()}
   def subscribe_run(run_id) do
-    _ = run_id
-    todo!("Flux.subscribe_run/1")
+    Flux.Events.subscribe_run(run_id)
   end
 
   @doc """
   Unsubscribe from live events for a single run.
 
+  Live subscriptions are observability-only and do not affect run execution,
+  persistence, or final status outcomes.
+
   ## Examples
 
       iex> Flux.unsubscribe_run("run_123")
-      ** (RuntimeError) TODO: implement Flux.unsubscribe_run/1
+      :ok
 
   ## TODO
 
-    * Implement after run execution exists
     * Delegate to `Flux.Events`
     * Mirror the behavior and return contract of `subscribe_run/1`
+    * Keep unsubscribe idempotent for callers
   """
-  @spec unsubscribe_run(run_id()) :: :ok | {:error, term()}
+  @spec unsubscribe_run(run_id()) :: :ok
   def unsubscribe_run(run_id) do
-    _ = run_id
-    todo!("Flux.unsubscribe_run/1")
-  end
-
-  defp todo!(function_name) do
-    raise RuntimeError, "TODO: implement #{function_name}"
+    Flux.Events.unsubscribe_run(run_id)
   end
 end

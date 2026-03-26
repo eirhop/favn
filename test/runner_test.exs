@@ -120,6 +120,7 @@ defmodule Flux.RunnerTest do
 
     assert run.asset_results[{RunnerAssets, :base}].duration_ms >= 0
     assert run.asset_results[{RunnerAssets, :final}].status == :ok
+    assert run.event_seq == 8
   end
 
   test "supports dependencies: :none target-only runs" do
@@ -139,6 +140,8 @@ defmodule Flux.RunnerTest do
     assert run.asset_results[{RunnerAssets, :invalid_return}].error.reason ==
              {:invalid_return_shape, {:ok, :bad_shape},
               expected: "{:ok, %Flux.Asset.Output{}} | {:error, reason}"}
+
+    assert run.event_seq == 6
   end
 
   test "captures raised exceptions with stacktrace details" do
