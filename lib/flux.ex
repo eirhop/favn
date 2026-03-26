@@ -796,7 +796,7 @@ defmodule Flux do
     * Mirror the behavior and return contract of `subscribe_run/1`
     * Keep unsubscribe idempotent for callers
   """
-  @spec unsubscribe_run(run_id()) :: :ok | {:error, term()}
+  @spec unsubscribe_run(run_id()) :: :ok
   def unsubscribe_run(run_id) do
     Flux.Events.unsubscribe_run(run_id)
   end

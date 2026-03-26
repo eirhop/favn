@@ -37,7 +37,7 @@ defmodule Flux.Events do
   @doc """
   Unsubscribe a process from run events for `run_id`.
   """
-  @spec unsubscribe_run(Flux.run_id()) :: :ok | {:error, term()}
+  @spec unsubscribe_run(Flux.run_id()) :: :ok
   def unsubscribe_run(run_id) do
     Phoenix.PubSub.unsubscribe(pubsub_name(), run_topic(run_id))
   end
