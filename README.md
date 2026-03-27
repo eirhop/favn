@@ -1,4 +1,5 @@
 # Flux
+**State:** Not production ready, API and DSL may change. 
 
 Flux is an Elixir library for defining business-oriented data assets, discovering their dependencies, and orchestrating deterministic runs from those dependency relationships. It is designed as a core runtime that host applications can use to power workflow execution, inspection, and operator-facing tooling.
 
