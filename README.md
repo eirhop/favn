@@ -1,17 +1,28 @@
-# Flux
-**State:** Not recommended for production, API and DSL may change. 
+# Favn
+**State:** Not recommended for production, API and DSL may change
 
-Flux is an Elixir library for defining business-oriented data assets, discovering their dependencies, and orchestrating deterministic runs from those dependency relationships. It is designed as a core runtime that host applications can use to power workflow execution, inspection, and operator-facing tooling.
+## Introduction
 
-## Features
+Favn is an asset-first orchestration library for Elixir.
 
-- **Asset DSL** via `use Flux.Assets` and `@asset` annotations on normal Elixir functions.
-- **Registry** for loading configured asset modules and exposing a stable discovery surface.
-- **Graph inspection** for upstream/downstream traversal and dependency-aware introspection.
-- **Planner** for deriving an executable order from a target asset and its transitive dependencies.
-- **Runner** for executing planned asset steps for a run target.
-- **Run store** for recording run metadata and statuses.
-- **Run events** for publishing run lifecycle updates to subscribers.
+It helps you define business logic as simple, well-documented functions, automatically discover their relationships, and reliably execute them as deterministic workflows.
+
+Favn means to hold or embrace—reflecting its role in keeping your workflows connected and reliable.
+
+Instead of building pipelines manually, you describe your system through assets and their dependencies. Favn takes care of planning, execution, and coordination—ensuring that everything runs in the correct order, at the right time, and on the right machine.
+
+Designed for the BEAM, Favn scales from a single node to distributed systems where work is executed in parallel across available resources.
+
+Favn is built to be:
+- predictable — deterministic runs based on explicit dependencies  
+- reliable — execution you can trust in production  
+- observable — clear insight into runs, state, and flow  
+- ergonomic — simple APIs with strong documentation at the center  
+- agent-friendly — easy for both humans and AI to understand, use, and extend  
+
+Whether you're building ETL pipelines, system integrations, workflows, or AI-driven processes, Favn acts as the layer that holds everything together and ensures it runs as expected.
+
+Favn doesn’t just run your workflows—it takes care of them.
 
 ## Quickstart
 
@@ -19,17 +30,17 @@ Define an asset module:
 
 ```elixir
 defmodule MyApp.SalesAssets do
-  use Flux.Assets
+  use Favn.Assets
 
   @asset true
   def extract_orders(_ctx, _deps) do
-    {:ok, %Flux.Asset.Output{output: [%{id: 1, total: 100}]}}
+    {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}]}}
   end
 
   @asset depends_on: [:extract_orders]
   def build_daily_report(_ctx, deps) do
     orders = Map.fetch!(deps, {__MODULE__, :extract_orders})
-    {:ok, %Flux.Asset.Output{output: %{count: length(orders)}}}
+    {:ok, %Favn.Asset.Output{output: %{count: length(orders)}}}
   end
 end
 ```
@@ -40,32 +51,32 @@ Register the module and run a target asset:
 # config/config.exs
 import Config
 
-config :flux,
+config :favn,
   asset_modules: [MyApp.SalesAssets]
 ```
 
 ```elixir
 # from your app runtime / iex
-{:ok, run} = Flux.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
+{:ok, run} = Favn.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
 ```
 
 ## Configuration
 
-Flux is configured through the `:flux` application environment:
+Favn is configured through the `:favn` application environment:
 
 ```elixir
 import Config
 
-config :flux,
+config :favn,
   asset_modules: [MyApp.SalesAssets],
   pubsub_name: MyApp.PubSub,
-  storage_adapter: Flux.Storage.Adapter.Memory,
+  storage_adapter: Favn.Storage.Adapter.Memory,
   storage_adapter_opts: []
 ```
 
 Key settings:
 
-- `asset_modules`: modules that define assets with `use Flux.Assets`.
+- `asset_modules`: modules that define assets with `use Favn.Assets`.
 - `:pubsub_name`: PubSub server name used for run event broadcasting.
 - `:storage_adapter`: run storage adapter module.
 - `:storage_adapter_opts`: options passed to the configured storage adapter.
@@ -78,7 +89,7 @@ Key settings:
 
 ## Runtime behavior in this release
 
-- **Planning and execution**: Flux plans dependency-aware runs with deterministic topological stages and executes each stage in deterministic ref order.
+- **Planning and execution**: Favn plans dependency-aware runs with deterministic topological stages and executes each stage in deterministic ref order.
 - **Run lifecycle**: each run transitions through `:running` to terminal `:ok` or `:error`, recording timestamps, per-asset results, outputs, and terminal error details.
 - **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
   - `:not_found`
@@ -89,14 +100,14 @@ Key settings:
 ## Guarantees in this release
 
 - **Run lifecycle semantics**
-  - `Flux.run/2` returns `{:ok, %Flux.Run{status: :ok}}` on success or `{:error, %Flux.Run{status: :error}}` on execution failure.
+  - `Favn.run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error}}` on execution failure.
   - Failed runs preserve structured failure context in both `run.error` and `run.asset_results[ref].error`.
-  - `Flux.get_run/1` returns the latest stored run state for an ID.
+  - `Favn.get_run/1` returns the latest stored run state for an ID.
 - **Storage error contract**
-  - `Flux.get_run/1` and `Flux.list_runs/1` return storage errors only as `:not_found`, `:invalid_opts`, or `{:store_error, reason}`.
+  - `Favn.get_run/1` and `Favn.list_runs/1` return storage errors only as `:not_found`, `:invalid_opts`, or `{:store_error, reason}`.
   - Adapter-specific raw errors are wrapped as `{:store_error, reason}`.
 - **Event delivery scope**
-  - `Flux.subscribe_run/1` and `Flux.unsubscribe_run/1` manage PubSub subscriptions for run topics.
+  - `Favn.subscribe_run/1` and `Favn.unsubscribe_run/1` manage PubSub subscriptions for run topics.
   - Event delivery is best-effort; missing subscribers or publish failures do not change run success/failure outcomes.
 
 ## Not guaranteed yet / non-goals
@@ -115,26 +126,26 @@ Key settings:
 
 ## Installation
 
-Flux is not published on Hex yet.
+Favn is not published on Hex yet.
 
-Install it from the GitHub repository by adding `flux` to your list of
+Install it from the GitHub repository by adding `favn` to your list of
 dependencies in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:flux, git: "https://github.com/eirhop/flux.git", tag: "v0.1.0"}
+    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.1.0"}
   ]
 end
 ```
 
-Once Flux is published on Hex, the dependency can move to a normal versioned
+Once Favn is published on Hex, the dependency can move to a normal versioned
 package declaration:
 
 ```elixir
 def deps do
   [
-    {:flux, "~> 0.1.0"}
+    {:favn, "~> 0.1.0"}
   ]
 end
 ```
