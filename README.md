@@ -159,7 +159,7 @@ dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.1.0"}
+    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.1.1"}
   ]
 end
 ```
@@ -170,7 +170,7 @@ package declaration:
 ```elixir
 def deps do
   [
-    {:favn, "~> 0.1.0"}
+    {:favn, "~> 0.1.1"}
   ]
 end
 ```
