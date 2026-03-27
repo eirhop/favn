@@ -465,6 +465,180 @@ Add the controls needed by operators to manage live systems safely and predictab
 
 ---
 
+## v1.0 — Best-in-class orchestrator for heterogeneous ETL assets
+
+### Goal
+
+Evolve Flux from a development-grade core into a best-in-class orchestrator for heterogeneous ETL systems. By v1.0, Flux should orchestrate not only native Elixir assets, but also external transformation runtimes in a first-class way, starting with dbt. The core idea is that Flux owns orchestration, scheduling, cross-runtime dependencies, run history, and observability, while external runtimes continue to own their domain-specific execution semantics.
+
+### Features
+
+#### 1. Multi-runtime asset model
+
+**Status:** planned
+
+**Scope**
+
+Extend the Flux asset model so native Elixir assets and externally discovered assets can coexist in one graph with one orchestration API.
+
+**Todo list**
+
+* [ ] Define a runtime abstraction for asset execution backends.
+* [ ] Distinguish native Flux assets from external-runtime assets in the canonical asset model.
+* [ ] Define shared metadata fields required across runtimes.
+* [ ] Define runtime-specific metadata extension points.
+* [ ] Ensure graph inspection APIs work consistently across mixed-runtime graphs.
+* [ ] Add tests for mixed Elixir and external asset catalogs.
+
+#### 2. First-class dbt integration
+
+**Status:** planned
+
+**Scope**
+
+Support dbt as a first-class external runtime by discovering dbt resources from a project and exposing them as Flux assets.
+
+**Todo list**
+
+* [ ] Design a `flux_dbt` integration boundary or equivalent plugin/runtime package.
+* [ ] Detect dbt projects in a host application or monorepo layout.
+* [ ] Load dbt project metadata and artifacts needed for discovery.
+* [ ] Discover dbt models, seeds, snapshots, and tests as Flux assets.
+* [ ] Define canonical Flux refs for dbt-backed assets.
+* [ ] Preserve dbt metadata needed for inspection and operator tooling.
+* [ ] Add tests for discovery against representative dbt projects.
+
+#### 3. dbt dependency and lineage translation
+
+**Status:** planned
+
+**Scope**
+
+Translate dbt’s dependency graph into Flux’s asset graph so dbt resources participate correctly in planning, inspection, and orchestration.
+
+**Todo list**
+
+* [ ] Map dbt node dependencies into canonical Flux graph edges.
+* [ ] Preserve upstream/downstream lineage from dbt artifacts.
+* [ ] Decide how dbt tests should appear in the graph.
+* [ ] Decide how ephemeral or non-materialized dbt nodes should be represented.
+* [ ] Add tests for graph parity between dbt metadata and Flux graph inspection APIs.
+
+#### 4. External runtime execution bridge for dbt
+
+**Status:** planned
+
+**Scope**
+
+Execute dbt-backed assets through a supervised external runtime boundary rather than re-implementing dbt execution semantics inside Elixir.
+
+**Todo list**
+
+* [ ] Decide whether the execution bridge should be a sidecar, supervised OS process, or both.
+* [ ] Define the contract between Flux and the dbt runtime boundary.
+* [ ] Implement selection and invocation of dbt-backed assets through the bridge.
+* [ ] Capture stdout, stderr, exit status, timings, and emitted artifacts.
+* [ ] Normalize dbt execution results into Flux run-step records.
+* [ ] Add tests for successful, failed, and interrupted dbt execution.
+
+#### 5. Monorepo project layout support
+
+**Status:** planned
+
+**Scope**
+
+Support host applications that keep Elixir code and dbt code in the same repository while allowing Flux to discover both cleanly.
+
+**Todo list**
+
+* [ ] Define conventions for configuring one or more external project roots.
+* [ ] Support monorepo layouts with separate Elixir and dbt directories.
+* [ ] Ensure startup discovery can load both native and dbt-backed assets.
+* [ ] Add tests for common repository layouts.
+* [ ] Document recommended monorepo structure.
+
+#### 6. Cross-runtime orchestration
+
+**Status:** planned
+
+**Scope**
+
+Allow native Elixir assets and dbt-backed assets to participate in the same orchestrated runs with explicit cross-runtime dependencies.
+
+**Todo list**
+
+* [ ] Define dependency declarations from Elixir assets to dbt assets.
+* [ ] Define dependency declarations from dbt assets to Elixir assets where supported.
+* [ ] Ensure planning works across mixed-runtime dependency graphs.
+* [ ] Ensure run records and step records preserve runtime identity.
+* [ ] Add tests for mixed-runtime execution plans.
+* [ ] Add tests for mixed-runtime failure semantics.
+
+#### 7. Flux as scheduler and orchestrator of record
+
+**Status:** planned
+
+**Scope**
+
+Keep scheduling and orchestration responsibility inside Flux, even when execution is delegated to external runtimes.
+
+**Todo list**
+
+* [ ] Define scheduler behavior for externally backed assets.
+* [ ] Ensure external runtime runs are initiated through Flux scheduling and runtime APIs.
+* [ ] Prevent split-brain orchestration between Flux and external runtimes.
+* [ ] Ensure run history, retries, cancellation, and operator visibility stay centralized in Flux.
+* [ ] Add tests that verify Flux remains the source of truth for orchestration state.
+
+#### 8. External runtime observability ingestion
+
+**Status:** planned
+
+**Scope**
+
+Ingest runtime details from dbt execution into Flux so operator tooling can inspect heterogeneous runs through one surface.
+
+**Todo list**
+
+* [ ] Define which dbt artifacts and execution metadata should be ingested.
+* [ ] Map external runtime metadata into Flux event and run-step models.
+* [ ] Preserve raw external execution details where useful for debugging.
+* [ ] Add tests for ingestion of representative execution results.
+* [ ] Document observability limits and guarantees across runtimes.
+
+#### 9. Runtime plugin architecture for future integrations
+
+**Status:** candidate
+
+**Scope**
+
+Design the integration architecture so dbt is the first external runtime, not the last. This should allow later support for other transformation systems such as SQLMesh without redesigning Flux around a single integration.
+
+**Todo list**
+
+* [ ] Generalize the external runtime contract beyond dbt-specific assumptions.
+* [ ] Define plugin lifecycle and configuration model.
+* [ ] Separate runtime-agnostic orchestration concerns from runtime-specific adapters.
+* [ ] Add tests for plugin registration and mixed plugin catalogs.
+* [ ] Document extension points for future runtimes.
+
+#### 10. SQLMesh evaluation for future compatibility
+
+**Status:** candidate
+
+**Scope**
+
+Evaluate SQLMesh as a potential future runtime so the v1 architecture does not unnecessarily lock Flux into dbt-only assumptions.
+
+**Todo list**
+
+* [ ] Compare dbt and SQLMesh integration requirements.
+* [ ] Identify which runtime abstraction points are shared.
+* [ ] Identify dbt-specific assumptions that should be avoided in core Flux APIs.
+* [ ] Capture findings in an architecture note.
+
+---
+
 ## Explicitly out of scope for this roadmap
 
 The following item is intentionally not included here because it should live separately:
