@@ -369,7 +369,9 @@ defmodule Flux do
   """
   @spec list_assets() :: {:ok, [asset()]} | {:error, term()}
   def list_assets do
-    Flux.Registry.list_assets()
+    with {:ok, assets} <- Flux.Registry.list_assets() do
+      {:ok, Enum.sort_by(assets, & &1.ref)}
+    end
   end
 
   @doc """

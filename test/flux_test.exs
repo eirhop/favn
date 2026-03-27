@@ -80,9 +80,22 @@ defmodule FluxTest do
     assert {:ok, assets} = Flux.list_assets()
 
     assert Enum.map(assets, & &1.ref) == [
+             {CrossModuleAssets, :publish_orders},
              {SampleAssets, :extract_orders},
-             {SampleAssets, :normalize_orders},
-             {CrossModuleAssets, :publish_orders}
+             {SampleAssets, :normalize_orders}
+           ]
+  end
+
+  test "list_assets/0 sorts globally discovered assets by canonical ref" do
+    :ok = Flux.TestSetup.setup_asset_modules([SampleAssets, AdditionalAssets, CrossModuleAssets])
+
+    assert {:ok, assets} = Flux.list_assets()
+
+    assert Enum.map(assets, & &1.ref) == [
+             {AdditionalAssets, :archive_orders},
+             {CrossModuleAssets, :publish_orders},
+             {SampleAssets, :extract_orders},
+             {SampleAssets, :normalize_orders}
            ]
   end
 
@@ -102,10 +115,10 @@ defmodule FluxTest do
     assert {:ok, listed_assets} = Flux.list_assets()
 
     assert Enum.map(listed_assets, & &1.ref) == [
-             {SampleAssets, :extract_orders},
-             {SampleAssets, :normalize_orders},
+             {AdditionalAssets, :archive_orders},
              {CrossModuleAssets, :publish_orders},
-             {AdditionalAssets, :archive_orders}
+             {SampleAssets, :extract_orders},
+             {SampleAssets, :normalize_orders}
            ]
   end
 
@@ -195,9 +208,9 @@ defmodule FluxTest do
     assert {:ok, reloaded_assets} = Flux.list_assets()
 
     assert Enum.map(reloaded_assets, & &1.ref) == [
+             {CrossModuleAssets, :publish_orders},
              {SampleAssets, :extract_orders},
-             {SampleAssets, :normalize_orders},
-             {CrossModuleAssets, :publish_orders}
+             {SampleAssets, :normalize_orders}
            ]
   end
 
