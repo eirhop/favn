@@ -15,8 +15,5 @@ All notable changes to this project are documented in this file.
 - Run events API with run-topic subscribe/unsubscribe and lifecycle notifications.
 - Host app startup integration via configured asset modules, graph indexing, PubSub, and storage adapter configuration.
 - Baseline CI workflow for compilation and test coverage of the public API surface.
-
-### Changed
-
-- Updated installation documentation to recommend pinning the initial public tag (`v0.1.0`) for git dependency usage.
-- Hardened test environment restoration to isolate storage adapter config between tests and doctests.
+- Installation documentation for this first release recommends pinning the public git tag (`v0.1.0`) when adding Flux as a dependency.
+- Test environment restoration isolates storage adapter configuration across tests/doctests for repeatable public API validation.
