@@ -662,7 +662,8 @@ defmodule Favn do
     * first asset failure halts the run and sets `run.status` to `:error`
     * asset failures populate both `run.error` and `run.asset_results[ref].error`
     * unresolved pending/ready steps are finalized explicitly when a run fails
-    * terminal result persistence is attempted even if execution failed
+    * runtime checkpoint persistence is required; persistence failures return
+      `{:error, {:storage_persist_failed, reason}}`
     * run events are best-effort observability and do not affect correctness
 
   Asset invocation contract:

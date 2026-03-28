@@ -31,10 +31,13 @@ defmodule Favn.RuntimeTransitionsTest do
       ready_queue: [ref_a]
     }
 
-    assert {:ok, state, [:step_started]} = StepTransitions.start_step(state, ref_a)
+    assert {:ok, state, [{:step_started, ^ref_a}]} = StepTransitions.start_step(state, ref_a)
 
-    assert {:ok, state, [:step_finished]} =
+    assert {:ok, state, events} =
              StepTransitions.complete_success(state, ref_a, :ok, %{})
+
+    assert {:step_finished, ref_a} in events
+    assert {:step_ready, ref_b} in events
 
     assert state.steps[ref_b].status == :ready
     assert ref_b in state.ready_queue
@@ -60,6 +63,6 @@ defmodule Favn.RuntimeTransitionsTest do
     assert state.steps[ref_ready].status == :skipped
     assert state.steps[ref_done].status == :success
     assert state.ready_queue == []
-    assert Enum.count(events, &(&1 == :step_skipped)) == 2
+    assert Enum.count(events, &(elem(&1, 0) == :step_skipped)) == 2
   end
 end

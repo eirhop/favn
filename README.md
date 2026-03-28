@@ -122,6 +122,7 @@ Key settings:
   - `:not_found`
   - `:invalid_opts`
   - `{:store_error, reason}`
+- **Checkpoint persistence policy**: runtime checkpoints are required; if snapshot persistence fails, `Favn.run/2` returns `{:error, {:storage_persist_failed, reason}}`.
 - **Event delivery**: run events are published as best-effort observability signals and do not affect run correctness.
 
 ## Guarantees in this release

@@ -18,8 +18,9 @@ defmodule Favn.Runtime.Coordinator do
 
   @executor Application.compile_env(:favn, :runtime_executor, Local)
 
-  @spec run_sync(Favn.asset_ref(), keyword()) ::
-          {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
+  @type run_result :: {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
+
+  @spec run_sync(Favn.asset_ref(), keyword()) :: run_result()
   def run_sync(target_ref, opts) when is_list(opts) do
     dependencies = Keyword.get(opts, :dependencies, :all)
     params = Keyword.get(opts, :params, %{})
@@ -45,10 +46,6 @@ defmodule Favn.Runtime.Coordinator do
 
             {:DOWN, ^ref, :process, ^pid, reason} ->
               {:error, {:coordinator_down, reason}}
-          after
-            30_000 ->
-              Process.demonitor(ref, [:flush])
-              {:error, :coordinator_timeout}
           end
 
         {:error, reason} ->
@@ -59,28 +56,175 @@ defmodule Favn.Runtime.Coordinator do
 
   @impl true
   def init(opts) do
-    state = opts |> Keyword.fetch!(:state) |> persist_snapshot()
-    caller = Keyword.fetch!(opts, :caller)
     send(self(), :start_run)
-    {:ok, %{state: state, caller: caller}}
+    {:ok, %{state: Keyword.fetch!(opts, :state), caller: Keyword.fetch!(opts, :caller)}}
   end
 
   @impl true
-  def handle_info(:start_run, %{state: state} = data) do
-    {:ok, state, run_events} = RunTransitions.apply(state, :start)
+  def handle_info(:start_run, %{state: state, caller: caller} = data) do
+    result = start_and_execute(state)
+    send(caller, {:favn_coordinator_result, self(), result})
+    {:stop, :normal, data}
+  end
 
+  @impl true
+  def handle_info(msg, data) when msg != :start_run do
+    {:noreply, data}
+  end
+
+  @spec start_and_execute(State.t()) :: run_result()
+  defp start_and_execute(state) do
+    with {:ok, state} <- apply_run_transition(state, :start),
+         {:ok, state} <- persist_snapshot(state),
+         {:ok, state} <- emit_step_ready_for_sources(state),
+         {:ok, state} <- execute_until_terminal(state) do
+      public_run = Projector.to_public_run(state)
+      if public_run.status == :ok, do: {:ok, public_run}, else: {:error, public_run}
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp execute_until_terminal(%State{run_status: :running} = state) do
+    case pop_next_ready(state) do
+      {:ok, ref, next_state} ->
+        with {:ok, next_state} <- run_step(next_state, ref) do
+          execute_until_terminal(next_state)
+        end
+
+      :none ->
+        finalize_terminal(state)
+    end
+  end
+
+  defp execute_until_terminal(%State{} = state), do: {:ok, state}
+
+  defp run_step(%State{} = state, ref) do
+    with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, ref)),
+         {:ok, asset} <- Favn.Registry.get_asset(ref),
+         {:ok, deps} <- dependency_outputs(state, ref) do
+      ctx = build_context(state, ref)
+
+      case @executor.execute_step(asset, ctx, deps) do
+        {:ok, %{output: output, meta: meta}} ->
+          apply_step_transition(state, &StepTransitions.complete_success(&1, ref, output, meta))
+
+        {:error, error} ->
+          with {:ok, state} <-
+                 apply_step_transition(state, &StepTransitions.complete_failure(&1, ref, error)),
+               {:ok, state} <-
+                 apply_run_transition(
+                   state,
+                   {:mark_failed, %{ref: ref, stage: stage_for(state, ref), reason: error.reason}}
+                 ),
+               {:ok, state} <- apply_finalize_unresolved(state, :skipped) do
+            {:ok, state}
+          end
+      end
+    else
+      {:error, reason} ->
+        normalized = %{kind: :error, reason: reason, stacktrace: []}
+
+        with {:ok, state} <-
+               apply_step_transition(
+                 state,
+                 &StepTransitions.complete_failure(&1, ref, normalized)
+               ),
+             {:ok, state} <-
+               apply_run_transition(
+                 state,
+                 {:mark_failed, %{ref: ref, stage: stage_for(state, ref), reason: reason}}
+               ),
+             {:ok, state} <- apply_finalize_unresolved(state, :skipped) do
+          {:ok, state}
+        end
+    end
+  end
+
+  defp finalize_terminal(%State{} = state) do
+    if all_targets_success?(state) do
+      apply_run_transition(state, :mark_success)
+    else
+      reason = state.run_error || %{reason: :run_did_not_reach_targets}
+
+      with {:ok, state} <- apply_run_transition(state, {:mark_failed, reason}),
+           {:ok, state} <- apply_finalize_unresolved(state, :skipped) do
+        {:ok, state}
+      end
+    end
+  end
+
+  defp apply_run_transition(%State{} = state, command) do
+    with {:ok, state, events} <- RunTransitions.apply(state, command),
+         {:ok, state} <- emit_events(state, events),
+         {:ok, state} <- persist_snapshot(state) do
+      {:ok, state}
+    end
+  end
+
+  defp apply_step_transition(%State{} = state, transition_fun) do
+    with {:ok, state, events} <- transition_fun.(state),
+         {:ok, state} <- emit_events(state, events),
+         {:ok, state} <- persist_snapshot(state) do
+      {:ok, state}
+    end
+  end
+
+  defp apply_finalize_unresolved(%State{} = state, replacement_status) do
+    {state, events} = StepTransitions.finalize_unresolved(state, replacement_status)
+
+    with {:ok, state} <- emit_events(state, events),
+         {:ok, state} <- persist_snapshot(state) do
+      {:ok, state}
+    end
+  end
+
+  defp emit_step_ready_for_sources(%State{} = state) do
+    source_refs =
+      state.steps
+      |> Enum.filter(fn {_ref, step} -> step.status == :ready end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+
+    events = Enum.map(source_refs, &{:step_ready, &1})
+    emit_events(%{state | ready_queue: source_refs}, events)
+  end
+
+  defp emit_events(%State{} = state, events) when is_list(events) do
     state =
-      state
-      |> persist_snapshot()
-      |> emit_events(run_events)
-      |> seed_initial_ready()
-      |> execute_until_terminal()
+      Enum.reduce(events, state, fn event, acc ->
+        {event_name, attrs} = event_attrs(acc, event)
+        seq = acc.event_seq + 1
 
-    run = Projector.to_public_run(state)
-    result = if run.status == :ok, do: {:ok, run}, else: {:error, run}
+        _ =
+          Favn.Runtime.Events.publish_run_event(
+            acc.run_id,
+            event_name,
+            Map.merge(attrs, %{seq: seq})
+          )
 
-    send(data.caller, {:favn_coordinator_result, self(), result})
-    {:stop, :normal, %{data | state: state}}
+        %{acc | event_seq: seq}
+      end)
+
+    {:ok, state}
+  end
+
+  defp event_attrs(%State{} = state, {event_name, ref}) do
+    stage = stage_for(state, ref)
+    {event_name, %{ref: ref, stage: stage}}
+  end
+
+  defp event_attrs(%State{} = state, event_name) when is_atom(event_name) do
+    payload = if event_name == :run_failed, do: %{error: state.run_error}, else: %{}
+    {event_name, %{payload: payload}}
+  end
+
+  defp persist_snapshot(%State{} = state) do
+    case state |> Projector.to_public_run() |> Favn.Storage.put_run() do
+      :ok -> {:ok, state}
+      {:error, reason} -> {:error, {:storage_persist_failed, reason}}
+    end
   end
 
   defp validate_params(params) when is_map(params), do: :ok
@@ -102,67 +246,6 @@ defmodule Favn.Runtime.Coordinator do
     end)
   end
 
-  defp seed_initial_ready(%State{} = state) do
-    ready_refs =
-      state.steps
-      |> Enum.filter(fn {_ref, step} -> step.status == :ready end)
-      |> Enum.map(&elem(&1, 0))
-      |> Enum.sort()
-
-    %{state | ready_queue: ready_refs}
-  end
-
-  defp execute_until_terminal(%State{run_status: :running} = state) do
-    case pop_next_ready(state) do
-      {:ok, ref, next_state} ->
-        next_state |> run_step(ref) |> execute_until_terminal()
-
-      :none ->
-        if all_targets_success?(state) do
-          {:ok, state, run_events} = RunTransitions.apply(state, :mark_success)
-          state |> persist_snapshot() |> emit_events(run_events)
-        else
-          reason = infer_failure_reason(state)
-          {:ok, state, run_events} = RunTransitions.apply(state, {:mark_failed, reason})
-          {state, step_events} = StepTransitions.finalize_unresolved(state, :skipped)
-          state |> persist_snapshot() |> emit_events(step_events ++ run_events)
-        end
-    end
-  end
-
-  defp execute_until_terminal(state), do: state
-
-  defp run_step(%State{} = state, ref) do
-    {:ok, state, start_events} = StepTransitions.start_step(state, ref)
-    state = state |> persist_snapshot() |> emit_events(start_events)
-
-    with {:ok, asset} <- Favn.Registry.get_asset(ref),
-         {:ok, deps} <- dependency_outputs(state, ref) do
-      ctx = build_context(state, ref)
-
-      case @executor.execute_step(asset, ctx, deps) do
-        {:ok, %{output: output, meta: meta}} ->
-          {:ok, state, events} = StepTransitions.complete_success(state, ref, output, meta)
-          state |> persist_snapshot() |> emit_events(events)
-
-        {:error, error} ->
-          {:ok, state, events} = StepTransitions.complete_failure(state, ref, error)
-          reason = %{ref: ref, stage: Map.fetch!(state.steps, ref).stage, reason: error.reason}
-          {:ok, state, run_events} = RunTransitions.apply(state, {:mark_failed, reason})
-          {state, skipped_events} = StepTransitions.finalize_unresolved(state, :skipped)
-          state |> persist_snapshot() |> emit_events(events ++ skipped_events ++ run_events)
-      end
-    else
-      {:error, reason} ->
-        normalized = %{kind: :error, reason: reason, stacktrace: []}
-        {:ok, state, events} = StepTransitions.complete_failure(state, ref, normalized)
-        run_reason = %{ref: ref, stage: Map.fetch!(state.steps, ref).stage, reason: reason}
-        {:ok, state, run_events} = RunTransitions.apply(state, {:mark_failed, run_reason})
-        {state, skipped_events} = StepTransitions.finalize_unresolved(state, :skipped)
-        state |> persist_snapshot() |> emit_events(events ++ skipped_events ++ run_events)
-    end
-  end
-
   defp dependency_outputs(%State{} = state, ref) do
     upstream = state.steps |> Map.fetch!(ref) |> Map.get(:upstream)
 
@@ -180,10 +263,12 @@ defmodule Favn.Runtime.Coordinator do
       target_refs: state.target_refs,
       current_ref: ref,
       params: state.params,
-      run_started_at: state.started_at || DateTime.utc_now(),
-      stage: state.steps |> Map.fetch!(ref) |> Map.get(:stage)
+      run_started_at: state.started_at,
+      stage: stage_for(state, ref)
     }
   end
+
+  defp stage_for(%State{} = state, ref), do: state.steps |> Map.fetch!(ref) |> Map.get(:stage)
 
   defp pop_next_ready(%State{ready_queue: []}), do: :none
 
@@ -194,31 +279,6 @@ defmodule Favn.Runtime.Coordinator do
     Enum.all?(state.target_refs, fn ref ->
       state.steps |> Map.fetch!(ref) |> Map.get(:status) == :success
     end)
-  end
-
-  defp infer_failure_reason(%State{} = state),
-    do: state.run_error || %{reason: :run_did_not_reach_targets}
-
-  defp emit_events(%State{} = state, events) when is_list(events) do
-    Enum.reduce(events, state, fn event, acc ->
-      seq = acc.event_seq + 1
-
-      _ =
-        Favn.Runtime.Events.publish_run_event(acc.run_id, event, %{
-          seq: seq,
-          payload: event_payload(acc, event)
-        })
-
-      %{acc | event_seq: seq}
-    end)
-  end
-
-  defp event_payload(%State{} = state, :run_failed), do: %{error: state.run_error}
-  defp event_payload(%State{}, _event), do: %{}
-
-  defp persist_snapshot(%State{} = state) do
-    _ = state |> Projector.to_public_run() |> Favn.Storage.put_run()
-    state
   end
 
   defp new_run_id do

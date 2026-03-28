@@ -36,6 +36,32 @@ defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
     {:error, :domain_failure}
   end
 
+  @asset depends_on: [:returns_error]
+  def after_error(_ctx, _deps) do
+    {:ok, %Favn.Asset.Output{output: :should_not_run}}
+  end
+
+  @asset true
+  def slow_asset(_ctx, _deps) do
+    Process.sleep(100)
+    {:ok, %Favn.Asset.Output{output: :slow_ok}}
+  end
+
+  @asset true
+  def announce_source(ctx, _deps) do
+    if is_pid(ctx.params[:notify_pid]) do
+      send(ctx.params[:notify_pid], {:announced_run_id, ctx.run_id})
+    end
+
+    Process.sleep(60)
+    {:ok, %Favn.Asset.Output{output: :source_ok}}
+  end
+
+  @asset depends_on: [:announce_source]
+  def announce_target(_ctx, deps) do
+    {:ok, %Favn.Asset.Output{output: Map.fetch!(deps, {__MODULE__, :announce_source})}}
+  end
+
   @asset true
   def with_meta(_ctx, _deps) do
     {:ok,
