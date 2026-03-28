@@ -1,650 +1,248 @@
-# Favn Feature Roadmap
+# Favn Roadmap & Feature Status
 
-## Versioning model
+## Current Version
 
-Favn is planned in three stages:
+**Current release: v0.1.0**
 
-* **v0.1** — testable core release
-* **v0.2** — complete core usable in development
-* **v0.3** — production-grade release
+Favn is in an early development stage. The core foundation is implemented, but the system is not yet production-ready.
 
-This document is intended to be implementation-oriented. Each version includes:
-
-* a goal description
-* a feature list with status
-* a scope description for each feature
-* a task checklist that AI agents can execute against
-
-Status values used in this document:
-
-* **done** — implemented and expected to ship in that version
-* **planned** — intended for that version but not yet implemented
-* **candidate** — under consideration for that version
-* **deferred** — intentionally moved to a later version
+This document tracks both **direction (roadmap)** and **progress (feature completion)**.
 
 ---
 
-## v0.1 — Testable core release
+## Vision
 
-### Goal
+Favn is a BEAM-native, asset-first orchestrator for business code.
 
-Ship a small but coherent core library that can be installed, exercised, and tested in host applications. The focus of v0.1 is correctness of the public API and the core runtime model, not production guarantees.
+It should make it easy to:
+
+- define business-oriented assets in plain Elixir
+- discover and reason about dependencies through code and documentation
+- run deterministic workflows from those dependency relationships
+- trigger work manually, via API, on schedules, by polling, or from events
+- scale from one node to multiple BEAM nodes
+- inspect everything through a UI
+- extend via plugins
+- support ETL/ELT, integrations, workflows, and AI agents
+
+---
+
+## v0.1.0 — Foundation (Current)
+
+**Status: Released**
+
+This release proves the core architecture and programming model.
 
 ### Features
 
-#### 1. Asset authoring DSL
-
-**Status:** done
-
-**Scope**
-
-Provide a way to define business-oriented assets as normal Elixir functions with Favn metadata attached through `use Favn.Assets` and `@asset` annotations.
-
-**Todo list**
-
-* [x] Verify the DSL supports asset declaration on normal functions.
-* [x] Verify metadata capture for docs, dependencies, kind, tags, source file, and source line.
-* [x] Verify both local and cross-module dependency references are supported.
-* [x] Add or confirm tests for compile-time metadata extraction.
-* [x] Add or confirm tests for invalid asset declarations.
-
-#### 2. Asset registry and discovery
-
-**Status:** done
-
-**Scope**
-
-Expose a stable public surface for listing configured assets and fetching asset metadata by canonical reference.
-
-**Todo list**
-
-* [x] Verify `Favn.list_assets/0` returns the configured global asset catalog.
-* [x] Verify `Favn.list_assets/1` returns only assets for a target module.
-* [x] Verify `Favn.get_asset/1` returns canonical metadata.
-* [x] Verify unknown modules return `:not_asset_module`.
-* [x] Verify missing assets return `:asset_not_found`.
-* [x] Add regression tests for duplicate or conflicting asset references.
-
-#### 3. Dependency graph model and inspection
-
-**Status:** done
-
-**Scope**
-
-Model dependencies as a DAG and expose read APIs for upstream/downstream inspection and filtered subgraph generation.
-
-**Todo list**
-
-* [x] Verify DAG validation rejects cycles.
-* [x] Verify shared upstream dependencies are supported.
-* [x] Verify `Favn.upstream_assets/2` returns deterministic results.
-* [x] Verify `Favn.downstream_assets/2` returns deterministic results.
-* [x] Verify `Favn.dependency_graph/2` respects filters for tags, kinds, modules, names, direction, transitive, and include_target.
-* [x] Add tests for empty and single-node graphs.
-
-#### 4. Deterministic run planner
-
-**Status:** done
-
-**Scope**
-
-Build a deterministic execution plan from one or more targets, with deduplicated nodes, topological ordering, and stage grouping.
-
-**Todo list**
-
-* [x] Verify targets are normalized, deduplicated, and sorted.
-* [x] Verify the topological order is deterministic.
-* [x] Verify stage assignment is deterministic.
-* [x] Verify nodes run at most once per plan.
-* [x] Verify `dependencies: :all` and `dependencies: :none` semantics.
-* [x] Add regression tests for multi-target planning.
-
-#### 5. Synchronous run execution
-
-**Status:** done
-
-**Scope**
-
-Provide a first execution runtime that runs planned work synchronously and returns a structured run result.
-
-**Todo list**
-
-* [x] Verify assets are invoked as `asset(ctx, deps)`.
-* [x] Verify dependency outputs are passed using canonical refs.
-* [x] Verify success and error return contracts are enforced.
-* [x] Verify execution follows deterministic planner order.
-* [x] Verify failures stop execution in a predictable way.
-* [x] Add tests for dependency mode behavior.
-
-#### 6. Run store and run inspection
-
-**Status:** done
-
-**Scope**
-
-Persist run metadata through the configured storage adapter and expose `get_run/1` and `list_runs/1` as stable public APIs.
-
-**Todo list**
-
-* [x] Verify run records are created for started runs.
-* [x] Verify final statuses are persisted.
-* [x] Verify `Favn.get_run/1` returns expected run state.
-* [x] Verify `Favn.list_runs/1` supports status filtering and limit.
-* [x] Verify storage-layer failures are normalized into public errors.
-* [x] Add regression tests for invalid options.
-* [x] Add regression coverage for test-state isolation so storage adapter changes do not leak across tests/doctests.
-
-#### 7. Run events
-
-**Status:** done
-
-**Scope**
-
-Expose live run event subscription as a best-effort observability mechanism for active runs.
-
-**Todo list**
-
-* [x] Verify `Favn.subscribe_run/1` subscribes successfully.
-* [x] Verify `Favn.unsubscribe_run/1` unsubscribes successfully.
-* [x] Verify run lifecycle events are emitted in expected order.
-* [x] Verify event delivery is observability-only and not part of run correctness.
-* [x] Add tests for event payload consistency.
-
-#### 8. Host application integration
-
-**Status:** done
-
-**Scope**
-
-Support use of Favn as an OTP dependency configured through host app application config.
-
-**Todo list**
-
-* [x] Verify startup loads configured asset modules.
-* [x] Verify the global graph index is built during boot.
-* [x] Verify pubsub server configuration works.
-* [x] Verify storage adapter configuration works.
-* [x] Verify docs clearly describe startup and configuration lifecycle.
-
-#### 9. Release hygiene for first public tag
-
-**Status:** done
-
-**Scope**
-
-Ensure the repository is ready for a public `v0.1.0` release from a packaging and maintainability perspective.
-
-**Todo list**
-
-* [x] Verify `LICENSE` file exists and matches package metadata.
-* [x] Add release notes or `CHANGELOG.md` entry for `v0.1.0`.
-* [x] Verify README installation instructions match actual release workflow.
-* [x] Refresh README presentation with project branding assets.
-* [x] Verify package metadata in `mix.exs` is complete.
-* [x] Verify CI covers the public API surface at a minimum.
+- [x] Asset DSL (`@asset`) for defining business logic
+- [x] Asset discovery and registry
+- [x] Dependency graph construction (DAG)
+- [x] Deterministic planning from dependencies
+- [x] Local synchronous execution
+- [x] Run model with outputs
+- [x] Storage abstraction (in-memory)
+- [x] Run event emission (PubSub)
+- [x] Public API (`Flux` module)
+- [x] Host application integration (supervision tree)
+- [x] Basic tests across core modules
 
 ---
 
-## v0.2 — Complete core usable in development
+## v0.2.0 — Stateful Execution Foundation
 
-### Goal
+**Status: Planned**
 
-Expand Favn from a testable runtime into a complete development-grade core. v0.2 should allow a developer to define assets, schedule runs, execute work asynchronously with controlled parallelism, inspect results across restarts, and iterate locally with confidence.
+Turns Favn into a real execution engine with durable state and concurrency.
 
 ### Features
 
-#### 1. Durable storage via SQLite adapter
-
-**Status:** planned
-
-**Scope**
-
-Add a durable local storage adapter backed by SQLite so run history and execution state survive node restarts and can be queried during development.
-
-**Todo list**
-
-* [ ] Define the storage adapter behavior contract more explicitly if needed.
-* [ ] Design the SQLite schema for runs, run steps, statuses, timestamps, errors, and stored metadata.
-* [ ] Implement a SQLite storage adapter module.
-* [ ] Add migrations or schema bootstrap logic.
-* [ ] Persist run creation, updates, and final state transitions.
-* [ ] Persist per-step execution records.
-* [ ] Implement `get_run/1` support on top of SQLite.
-* [ ] Implement `list_runs/1` support on top of SQLite.
-* [ ] Add tests for restart persistence.
-* [ ] Add tests for storage errors and corrupted-state handling.
-
-#### 2. Richer run and step inspection
-
-**Status:** planned
-
-**Scope**
-
-Expand the stored and returned run model so developers can inspect execution in detail, including step-level progress and outcomes.
-
-**Todo list**
-
-* [ ] Define the canonical step record shape.
-* [ ] Add per-step status fields such as queued, running, ok, error, skipped, cancelled.
-* [ ] Add per-step start and finish timestamps.
-* [ ] Add per-step duration fields or derived timing support.
-* [ ] Add step error capture with normalized structure.
-* [ ] Decide whether outputs, output metadata, or output references are persisted.
-* [ ] Update `Favn.Run` to reflect the expanded model.
-* [ ] Add tests for partial and completed run inspection.
-
-#### 3. Asynchronous execution
-
-**Status:** planned
-
-**Scope**
-
-Allow runs to execute asynchronously so the caller can start a run and inspect it while work continues in the background.
-
-**Todo list**
-
-* [ ] Define async runtime semantics for `Favn.run/2` or introduce a dedicated async API if needed.
-* [ ] Decide whether sync execution remains the default or becomes an option.
-* [ ] Implement supervised async run processes.
-* [ ] Ensure run state transitions are persisted during async execution.
-* [ ] Ensure event emission works during async execution.
-* [ ] Add tests for concurrent run starts.
-* [ ] Add tests for shutdown/restart behavior during active runs.
-
-#### 4. Parallel stage execution with bounded concurrency
-
-**Status:** planned
-
-**Scope**
-
-Execute independent assets in parallel while respecting dependency stages and a configurable concurrency limit.
-
-**Todo list**
-
-* [ ] Define the concurrency model for stage execution.
-* [ ] Add a `max_concurrency` runtime option or equivalent configuration.
-* [ ] Execute assets within the same stage concurrently.
-* [ ] Preserve deterministic semantics for stage ordering even when step completion order varies.
-* [ ] Define failure behavior when one parallel step fails.
-* [ ] Add tests for parallel execution correctness.
-* [ ] Add tests for bounded concurrency under load.
-* [ ] Add benchmark coverage for representative development workloads.
-
-#### 5. Cron-based scheduler
-
-**Status:** planned
-
-**Scope**
-
-Add a scheduler that can trigger runs from cron expressions on a local node. This is intended for development and single-node usage, not distributed or exactly-once scheduling guarantees.
-
-**Todo list**
-
-* [ ] Define a schedule model for mapping cron entries to target assets and run options.
-* [ ] Choose whether schedules are configured statically, dynamically, or both.
-* [ ] Implement cron parsing and next-run computation.
-* [ ] Implement a scheduler supervisor/process tree.
-* [ ] Trigger runs through the normal runtime APIs rather than bypassing them.
-* [ ] Persist schedule definitions if required by the chosen design.
-* [ ] Emit schedule-triggered run metadata.
-* [ ] Add tests for cron matching and missed tick behavior.
-* [ ] Add tests for app boot with valid and invalid schedules.
-
-#### 6. Improved run events
-
-**Status:** planned
-
-**Scope**
-
-Expand the run event stream so it reflects both run-level and step-level progress with a stable payload schema useful for development tooling.
-
-**Todo list**
-
-* [ ] Define canonical event types.
-* [ ] Add step-started, step-completed, step-failed events.
-* [ ] Add run-started, run-completed, run-failed, run-cancelled events.
-* [ ] Define a versioned event payload shape.
-* [ ] Ensure events include enough metadata for UI inspection.
-* [ ] Document ordering expectations and best-effort semantics.
-* [ ] Add regression tests for payload consistency.
-
-#### 7. Run cancellation
-
-**Status:** candidate
-
-**Scope**
-
-Allow a user or host app to cancel a queued or active run and mark unfinished work accordingly.
-
-**Todo list**
-
-* [ ] Define public API for cancellation.
-* [ ] Define whether cancellation is best-effort or hard-stop.
-* [ ] Define state transitions for running, queued, and downstream steps.
-* [ ] Ensure cancellation updates storage consistently.
-* [ ] Ensure cancellation emits correct run and step events.
-* [ ] Add tests for cancelling during synchronous and asynchronous execution.
-
-#### 8. Basic retry support
-
-**Status:** candidate
-
-**Scope**
-
-Support limited retry behavior suitable for development workflows without introducing full production-grade orchestration policies.
-
-**Todo list**
-
-* [ ] Decide whether retries are configured per run, per asset, or both.
-* [ ] Define retryable failure semantics.
-* [ ] Add retry counters and attempt tracking to run-step records.
-* [ ] Implement bounded retry execution.
-* [ ] Ensure retries are reflected in events and persisted state.
-* [ ] Add tests for deterministic retry behavior.
-
-#### 9. Hex packaging and installability
-
-**Status:** candidate
-
-**Scope**
-
-Reduce adoption friction by publishing Favn on Hex and tightening package metadata, docs, and release process.
-
-**Todo list**
-
-* [ ] Verify package metadata is complete for Hex publishing.
-* [ ] Verify docs generation and published docs flow.
-* [ ] Add release checklist for version bumps and changelog updates.
-* [ ] Publish an initial Hex package when the project is ready.
-* [ ] Update README installation instructions after publish.
+- [ ] Asynchronous run execution
+- [ ] Parallel execution with bounded concurrency
+- [ ] Run + step state machine (pending → running → success/failure)
+- [ ] Retry mechanism (configurable)
+- [ ] Cancellation support
+- [ ] Timeout handling
+- [ ] SQLite storage adapter
+- [ ] Stable event schema (runs + steps)
+- [ ] Telemetry integration
+- [ ] Initial materialization/artifact model (replace in-memory-only outputs)
+- [ ] Separation of coordinator vs executor internally
 
 ---
 
-## v0.3 — Production-grade release
+## v0.3.0 — Jobs, Triggers, Single-Node Production
 
-### Goal
+**Status: Planned**
 
-Make Favn operationally trustworthy in real production environments. v0.3 should focus on correctness under failure, stronger execution and scheduling guarantees, better observability, and operational control.
+First production-usable version (single node).
 
 ### Features
 
-#### 1. Production-grade durable storage
-
-**Status:** planned
-
-**Scope**
-
-Strengthen the persistence model beyond local development durability so run state is robust under operational failure scenarios.
-
-**Todo list**
-
-* [ ] Evaluate whether SQLite remains sufficient for production use cases.
-* [ ] Define production storage requirements for consistency, concurrency, backup, and recovery.
-* [ ] Add or design a production-ready storage adapter strategy.
-* [ ] Verify migration and upgrade story for stored run data.
-* [ ] Add failure-injection tests for storage outages and partial writes.
-
-#### 2. Stronger scheduling guarantees
-
-**Status:** planned
-
-**Scope**
-
-Evolve scheduling from local-node development convenience into a production-safe subsystem with clearer guarantees.
-
-**Todo list**
-
-* [ ] Define desired scheduling guarantees.
-* [ ] Decide whether clustered scheduling is in scope.
-* [ ] Design leader election, locking, or other coordination if multi-node scheduling is required.
-* [ ] Add protection against duplicate triggers.
-* [ ] Add recovery behavior for scheduler downtime or process crashes.
-* [ ] Add tests for coordination and failover behavior.
-
-#### 3. Operationally safe concurrency and resource control
-
-**Status:** planned
-
-**Scope**
-
-Make parallel execution controllable and safe in production through explicit resource limits and isolation strategies.
-
-**Todo list**
-
-* [ ] Add queueing or admission control for active runs.
-* [ ] Add workload-level concurrency controls.
-* [ ] Add per-run or per-asset execution limits if needed.
-* [ ] Define backpressure behavior.
-* [ ] Add tests for overload and starvation scenarios.
-
-#### 4. Stronger observability and telemetry
-
-**Status:** planned
-
-**Scope**
-
-Provide production-ready visibility into system behavior through telemetry, metrics, and structured diagnostic hooks.
-
-**Todo list**
-
-* [ ] Define telemetry event coverage.
-* [ ] Emit metrics for run counts, durations, failures, queue depth, and retries.
-* [ ] Add hooks for tracing or structured logging integration.
-* [ ] Document telemetry contracts.
-* [ ] Add tests for telemetry emission and event compatibility.
-
-#### 5. Stronger event delivery semantics
-
-**Status:** planned
-
-**Scope**
-
-Improve run event delivery guarantees beyond best-effort pubsub where production use cases require it.
-
-**Todo list**
-
-* [ ] Define which event guarantees are required.
-* [ ] Decide whether durable event persistence is needed.
-* [ ] Define replay behavior for missed subscribers if in scope.
-* [ ] Evaluate transport options if pubsub alone is insufficient.
-* [ ] Add tests for reconnect and event-loss scenarios.
-
-#### 6. Operational controls and policy surface
-
-**Status:** candidate
-
-**Scope**
-
-Add the controls needed by operators to manage live systems safely and predictably.
-
-**Todo list**
-
-* [ ] Add pause/resume semantics if needed.
-* [ ] Add manual re-run controls with explicit scope.
-* [ ] Add policy controls for retries, cancellation, and concurrency.
-* [ ] Define administrative APIs and authorization boundaries if relevant.
-* [ ] Add tests for operator control flows.
+- [ ] Job / launch definition abstraction
+- [ ] Asset selection → job execution mapping
+- [ ] Manual run trigger
+- [ ] API-based trigger
+- [ ] Cron/schedule trigger
+- [ ] Postgres storage adapter
+- [ ] Queueing and admission control
+- [ ] Run deduplication (run keys)
+- [ ] Stable operator APIs (run, cancel, rerun)
+- [ ] `favn_view` alpha (graph + runs + schedules)
 
 ---
 
-## v1.0 — Best-in-class orchestrator for heterogeneous ETL assets
+## v0.4.0 — Distributed Execution (BEAM)
 
-### Goal
+**Status: Planned**
 
-Evolve Favn from a development-grade core into a best-in-class orchestrator for heterogeneous ETL systems. By v1.0, Favn should orchestrate not only native Elixir assets, but also external transformation runtimes in a first-class way, starting with dbt. The core idea is that Favn owns orchestration, scheduling, cross-runtime dependencies, run history, and observability, while external runtimes continue to own their domain-specific execution semantics.
+Introduces multi-node execution and placement.
 
 ### Features
 
-#### 1. Multi-runtime asset model
-
-**Status:** planned
-
-**Scope**
-
-Extend the Favn asset model so native Elixir assets and externally discovered assets can coexist in one graph with one orchestration API.
-
-**Todo list**
-
-* [ ] Define a runtime abstraction for asset execution backends.
-* [ ] Distinguish native Favn assets from external-runtime assets in the canonical asset model.
-* [ ] Define shared metadata fields required across runtimes.
-* [ ] Define runtime-specific metadata extension points.
-* [ ] Ensure graph inspection APIs work consistently across mixed-runtime graphs.
-* [ ] Add tests for mixed Elixir and external asset catalogs.
-
-#### 2. First-class dbt integration
-
-**Status:** planned
-
-**Scope**
-
-Support dbt as a first-class external runtime by discovering dbt resources from a project and exposing them as Favn assets.
-
-**Todo list**
-
-* [ ] Design a `favn_dbt` integration boundary or equivalent plugin/runtime package.
-* [ ] Detect dbt projects in a host application or monorepo layout.
-* [ ] Load dbt project metadata and artifacts needed for discovery.
-* [ ] Discover dbt models, seeds, snapshots, and tests as Favn assets.
-* [ ] Define canonical Favn refs for dbt-backed assets.
-* [ ] Preserve dbt metadata needed for inspection and operator tooling.
-* [ ] Add tests for discovery against representative dbt projects.
-
-#### 3. dbt dependency and lineage translation
-
-**Status:** planned
-
-**Scope**
-
-Translate dbt’s dependency graph into Favn’s asset graph so dbt resources participate correctly in planning, inspection, and orchestration.
-
-**Todo list**
-
-* [ ] Map dbt node dependencies into canonical Favn graph edges.
-* [ ] Preserve upstream/downstream lineage from dbt artifacts.
-* [ ] Decide how dbt tests should appear in the graph.
-* [ ] Decide how ephemeral or non-materialized dbt nodes should be represented.
-* [ ] Add tests for graph parity between dbt metadata and Favn graph inspection APIs.
-
-#### 4. External runtime execution bridge for dbt
-
-**Status:** planned
-
-**Scope**
-
-Execute dbt-backed assets through a supervised external runtime boundary rather than re-implementing dbt execution semantics inside Elixir.
-
-**Todo list**
-
-* [ ] Decide whether the execution bridge should be a sidecar, supervised OS process, or both.
-* [ ] Define the contract between Favn and the dbt runtime boundary.
-* [ ] Implement selection and invocation of dbt-backed assets through the bridge.
-* [ ] Capture stdout, stderr, exit status, timings, and emitted artifacts.
-* [ ] Normalize dbt execution results into Favn run-step records.
-* [ ] Add tests for successful, failed, and interrupted dbt execution.
-
-#### 5. Monorepo project layout support
-
-**Status:** planned
-
-**Scope**
-
-Support host applications that keep Elixir code and dbt code in the same repository while allowing Favn to discover both cleanly.
-
-**Todo list**
-
-* [ ] Define conventions for configuring one or more external project roots.
-* [ ] Support monorepo layouts with separate Elixir and dbt directories.
-* [ ] Ensure startup discovery can load both native and dbt-backed assets.
-* [ ] Add tests for common repository layouts.
-* [ ] Document recommended monorepo structure.
-
-#### 6. Cross-runtime orchestration
-
-**Status:** planned
-
-**Scope**
-
-Allow native Elixir assets and dbt-backed assets to participate in the same orchestrated runs with explicit cross-runtime dependencies.
-
-**Todo list**
-
-* [ ] Define dependency declarations from Elixir assets to dbt assets.
-* [ ] Define dependency declarations from dbt assets to Elixir assets where supported.
-* [ ] Ensure planning works across mixed-runtime dependency graphs.
-* [ ] Ensure run records and step records preserve runtime identity.
-* [ ] Add tests for mixed-runtime execution plans.
-* [ ] Add tests for mixed-runtime failure semantics.
-
-#### 7. Favn as scheduler and orchestrator of record
-
-**Status:** planned
-
-**Scope**
-
-Keep scheduling and orchestration responsibility inside Favn, even when execution is delegated to external runtimes.
-
-**Todo list**
-
-* [ ] Define scheduler behavior for externally backed assets.
-* [ ] Ensure external runtime runs are initiated through Favn scheduling and runtime APIs.
-* [ ] Prevent split-brain orchestration between Favn and external runtimes.
-* [ ] Ensure run history, retries, cancellation, and operator visibility stay centralized in Favn.
-* [ ] Add tests that verify Favn remains the source of truth for orchestration state.
-
-#### 8. External runtime observability ingestion
-
-**Status:** planned
-
-**Scope**
-
-Ingest runtime details from dbt execution into Favn so operator tooling can inspect heterogeneous runs through one surface.
-
-**Todo list**
-
-* [ ] Define which dbt artifacts and execution metadata should be ingested.
-* [ ] Map external runtime metadata into Favn event and run-step models.
-* [ ] Preserve raw external execution details where useful for debugging.
-* [ ] Add tests for ingestion of representative execution results.
-* [ ] Document observability limits and guarantees across runtimes.
-
-#### 9. Runtime plugin architecture for future integrations
-
-**Status:** candidate
-
-**Scope**
-
-Design the integration architecture so dbt is the first external runtime, not the last. This should allow later support for other transformation systems such as SQLMesh without redesigning Favn around a single integration.
-
-**Todo list**
-
-* [ ] Generalize the external runtime contract beyond dbt-specific assumptions.
-* [ ] Define plugin lifecycle and configuration model.
-* [ ] Separate runtime-agnostic orchestration concerns from runtime-specific adapters.
-* [ ] Add tests for plugin registration and mixed plugin catalogs.
-* [ ] Document extension points for future runtimes.
-
-#### 10. SQLMesh evaluation for future compatibility
-
-**Status:** candidate
-
-**Scope**
-
-Evaluate SQLMesh as a potential future runtime so the v1 architecture does not unnecessarily lock Favn into dbt-only assumptions.
-
-**Todo list**
-
-* [ ] Compare dbt and SQLMesh integration requirements.
-* [ ] Identify which runtime abstraction points are shared.
-* [ ] Identify dbt-specific assumptions that should be avoided in core Favn APIs.
-* [ ] Capture findings in an architecture note.
+- [ ] Worker registration
+- [ ] Worker heartbeats
+- [ ] Remote step execution (multi-node)
+- [ ] Resource requirements (memory, CPU, labels)
+- [ ] Placement strategy (resource-aware scheduling)
+- [ ] Distributed coordination (leases)
+- [ ] Worker failure detection
+- [ ] Retry/requeue on node failure
+- [ ] Node drain support
+- [ ] Supervision strategy for distributed execution
 
 ---
 
-## Explicitly out of scope for this roadmap
+## v0.5.0 — Plugin & Connector Platform
 
-The following item is intentionally not included here because it should live separately:
+**Status: Planned**
 
-* a standalone example repository such as `favn-demo` for a fully workable cloneable app
+Makes Favn extensible and ecosystem-ready.
 
-That repository can support adoption and documentation, but it should not be treated as a core library roadmap item.
+### Features
+
+- [ ] Storage plugin interface (stable)
+- [ ] Trigger plugin interface
+- [ ] Runtime/executor plugin interface
+- [ ] Connector plugin system
+- [ ] Connector registry (schema + docs + config)
+- [ ] Secret/config reference model
+- [ ] Metadata extensions for assets/jobs
+- [ ] Artifact handling plugin interface
+- [ ] Machine-readable catalog export (API)
+
+---
+
+## v0.6.0 — Heterogeneous Runtimes & dbt
+
+**Status: Planned**
+
+Supports non-Elixir execution.
+
+### Features
+
+- [ ] Runtime-agnostic asset identity
+- [ ] Mixed-runtime planning
+- [ ] External runtime execution bridge
+- [ ] dbt manifest ingestion
+- [ ] dbt asset mapping into catalog
+- [ ] dbt run execution via Favn
+- [ ] dbt test execution
+- [ ] Normalized dbt metadata (runs/tests/artifacts)
+- [ ] `favn_dbt` plugin (alpha)
+
+---
+
+## v0.7.0 — Favn View & UX
+
+**Status: Planned**
+
+Turns Favn into a usable product for operators.
+
+### Features
+
+- [ ] Asset catalog UI
+- [ ] Graph explorer (dependencies)
+- [ ] Run list view
+- [ ] Run timeline view
+- [ ] Step-level inspection
+- [ ] Schedule/trigger UI
+- [ ] Connector UI
+- [ ] Source/doc linking
+- [ ] Operator actions (cancel, rerun)
+- [ ] `favn_demo` project
+
+---
+
+## v0.8.0 — Hardening & Release Candidate
+
+**Status: Planned**
+
+Stabilization and production readiness.
+
+### Features
+
+- [ ] Upgrade/migration strategy
+- [ ] Compatibility guarantees (core + plugins)
+- [ ] Failure recovery testing
+- [ ] Performance benchmarks
+- [ ] Deployment reference architecture
+- [ ] Production documentation
+- [ ] Packaging strategy (core + UI + plugins)
+- [ ] Single-image deployment option
+
+---
+
+## v1.0.0 — Stable Release
+
+**Status: Planned**
+
+Production-ready orchestrator.
+
+### Features
+
+- [ ] Stable asset model
+- [ ] Stable job model
+- [ ] Stable trigger model
+- [ ] Durable orchestration state
+- [ ] Built-in storage (memory, SQLite, Postgres)
+- [ ] Local + distributed execution
+- [ ] Manual + API + scheduled triggers
+- [ ] Event/polling trigger framework
+- [ ] Observability (runs, steps, artifacts)
+- [ ] `favn_view` stable release
+- [ ] Official plugin interfaces
+- [ ] At least one external runtime (dbt)
+- [ ] Complete documentation
+- [ ] Demo project ready for onboarding
+
+---
+
+## Companion Projects
+
+### favn_view
+
+- [ ] Alpha (v0.3)
+- [ ] Usable (v0.7)
+- [ ] Stable (v1.0)
+
+### favn_demo
+
+- [ ] Initial example (v0.7)
+- [ ] Polished onboarding project (v1.0)
+
+### Official Plugins
+
+- [ ] Storage adapters
+- [ ] Trigger adapters
+- [ ] Connector integrations
+- [ ] Artifact handling
+- [ ] dbt plugin
+
+---
+
+## Notes
+
+- This roadmap defines **direction**, not exact implementation order.
+- Features may evolve, but architectural principles should remain stable.
+- Priority is always: **correct architecture > fast feature delivery**.
