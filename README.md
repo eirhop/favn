@@ -109,13 +109,15 @@ Key settings:
 ## Current limitations
 
 - The default run store is node-local in-memory storage.
-- Run execution is synchronous within a single BEAM node.
+- Public run execution is currently synchronous (`Favn.run/2`) even though the
+  runtime now uses an internal coordinator process.
 - Run events are best-effort pubsub notifications.
 
 ## Runtime behavior in this release
 
-- **Planning and execution**: Favn plans dependency-aware runs with deterministic topological stages and executes each stage in deterministic ref order.
-- **Run lifecycle**: each run transitions through `:running` to terminal `:ok` or `:error`, recording timestamps, per-asset results, outputs, and terminal error details.
+- **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator.
+- **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; the public `%Favn.Run{}` projection remains compatible with `:running | :ok | :error`.
+- **Execution boundary**: one-step asset invocation is isolated behind a runtime executor boundary.
 - **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
   - `:not_found`
   - `:invalid_opts`

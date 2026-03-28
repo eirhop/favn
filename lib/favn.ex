@@ -653,12 +653,15 @@ defmodule Favn do
   Deterministic behavior:
 
     * planning and stage ordering are deterministic for identical inputs
-    * refs within each stage execute sequentially in canonical ref order
+    * runnable refs are selected in canonical ref order
 
   Runtime semantics:
 
+    * orchestration is owned by an internal run-scoped coordinator process
+    * step invocation happens through an isolated executor boundary
     * first asset failure halts the run and sets `run.status` to `:error`
     * asset failures populate both `run.error` and `run.asset_results[ref].error`
+    * unresolved pending/ready steps are finalized explicitly when a run fails
     * terminal result persistence is attempted even if execution failed
     * run events are best-effort observability and do not affect correctness
 
