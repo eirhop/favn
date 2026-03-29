@@ -686,7 +686,7 @@ defmodule Favn do
   @spec run(asset_ref(), run_opts()) :: {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
   def run({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    Favn.Runtime.Runner.run({module, name}, opts)
+    Favn.Runtime.Engine.run_sync({module, name}, opts)
   end
 
   @doc """

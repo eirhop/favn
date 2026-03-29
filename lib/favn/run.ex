@@ -2,8 +2,8 @@ defmodule Favn.Run do
   @moduledoc """
   Canonical in-memory representation of one Favn run.
 
-  The first runner stores run state in memory and returns this struct directly
-  to callers. Persistence and subscriptions are intentionally deferred.
+  The runtime engine projects coordinator-owned runtime state into this public
+  struct for callers and storage adapters.
   """
 
   alias Favn.Ref
