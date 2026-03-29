@@ -10,12 +10,12 @@ defmodule Favn.Runtime.Coordinator do
 
   alias Favn.Run.Context
   alias Favn.Runtime.Executor.Local
+
+  require Logger
   alias Favn.Runtime.Projector
   alias Favn.Runtime.State
   alias Favn.Runtime.Transitions.Run, as: RunTransitions
   alias Favn.Runtime.Transitions.Step, as: StepTransitions
-
-  @executor Application.compile_env(:favn, :runtime_executor, Local)
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
@@ -116,7 +116,7 @@ defmodule Favn.Runtime.Coordinator do
          {:ok, asset} <- Favn.Registry.get_asset(ref),
          {:ok, deps} <- dependency_outputs(state, ref),
          {:ok, handle} <-
-           @executor.start_step(asset, build_context(state, ref), deps, self(), ref) do
+           executor_module().start_step(asset, build_context(state, ref), deps, self(), ref) do
       {:ok, put_execution_handle(state, ref, handle)}
     else
       {:error, reason} ->
@@ -139,18 +139,27 @@ defmodule Favn.Runtime.Coordinator do
          maybe_ref,
          {:ok, %{output: output, meta: meta}}
        ) do
-    with {:ok, ref, state} <- take_execution(state, exec_ref, maybe_ref) do
-      apply_step_transition(state, &StepTransitions.complete_success(&1, ref, output, meta))
+    case take_execution(state, exec_ref, maybe_ref) do
+      {:ok, ref, state} ->
+        apply_step_transition(state, &StepTransitions.complete_success(&1, ref, output, meta))
+
+      {:ignore, state} ->
+        {:ok, state}
     end
   end
 
   defp handle_step_result(%State{} = state, exec_ref, maybe_ref, {:error, error})
        when is_map(error) do
-    with {:ok, ref, state} <- take_execution(state, exec_ref, maybe_ref),
-         {:ok, state} <-
-           apply_step_transition(state, &StepTransitions.complete_failure(&1, ref, error)),
-         {:ok, state} <- close_admission_with_failure(state, ref, error[:reason]) do
-      {:ok, state}
+    case take_execution(state, exec_ref, maybe_ref) do
+      {:ok, ref, state} ->
+        with {:ok, state} <-
+               apply_step_transition(state, &StepTransitions.complete_failure(&1, ref, error)),
+             {:ok, state} <- close_admission_with_failure(state, ref, error[:reason]) do
+          {:ok, state}
+        end
+
+      {:ignore, state} ->
+        {:ok, state}
     end
   end
 
@@ -209,11 +218,15 @@ defmodule Favn.Runtime.Coordinator do
   defp take_execution(%State{} = state, exec_ref, maybe_ref) do
     case Map.pop(state.inflight_execs, exec_ref) do
       {nil, _} ->
-        {:ok, nil,
-         %{state | completed_exec_refs: MapSet.put(state.completed_exec_refs, exec_ref)}}
+        Logger.debug("Ignoring stale executor result for unknown exec_ref=#{inspect(exec_ref)}")
+        {:ignore, state}
 
       {%{ref: tracked_ref, monitor_ref: monitor_ref}, inflight} ->
-        ref = maybe_ref || tracked_ref
+        if maybe_ref != nil and maybe_ref != tracked_ref do
+          Logger.warning(
+            "Executor returned mismatched step ref; using tracked ref. exec_ref=#{inspect(exec_ref)} tracked_ref=#{inspect(tracked_ref)} received_ref=#{inspect(maybe_ref)}"
+          )
+        end
 
         next_state =
           state
@@ -221,14 +234,7 @@ defmodule Favn.Runtime.Coordinator do
           |> Map.put(:exec_refs_by_monitor, Map.delete(state.exec_refs_by_monitor, monitor_ref))
           |> Map.put(:completed_exec_refs, MapSet.put(state.completed_exec_refs, exec_ref))
 
-        {:ok, ref, next_state}
-    end
-    |> case do
-      {:ok, nil, next_state} ->
-        {:error, {:unknown_execution_result, exec_ref, maybe_ref, next_state.run_id}}
-
-      other ->
-        other
+        {:ok, tracked_ref, next_state}
     end
   end
 
@@ -370,4 +376,8 @@ defmodule Favn.Runtime.Coordinator do
 
   defp capacity(%State{} = state),
     do: max(state.max_concurrency - map_size(state.inflight_execs), 0)
+
+  defp executor_module do
+    Application.get_env(:favn, :runtime_executor, Local)
+  end
 end
