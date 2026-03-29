@@ -1,6 +1,6 @@
 defmodule Favn.Runtime.Executor do
   @moduledoc """
-  Behaviour boundary for single-step asset invocation.
+  Behaviour boundary for asynchronous single-step asset invocation.
   """
 
   alias Favn.Asset
@@ -17,5 +17,12 @@ defmodule Favn.Runtime.Executor do
           {:ok, %{output: term(), meta: map()}}
           | {:error, error_details()}
 
-  @callback execute_step(Asset.t(), Context.t(), map()) :: execution_result()
+  @type execution_handle :: %{
+          required(:exec_ref) => reference(),
+          required(:monitor_ref) => reference(),
+          required(:pid) => pid()
+        }
+
+  @callback start_step(Asset.t(), Context.t(), map(), pid(), Favn.asset_ref()) ::
+              {:ok, execution_handle()} | {:error, term()}
 end

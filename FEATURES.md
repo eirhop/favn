@@ -58,7 +58,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 ### Features
 
 - [x] Asynchronous run execution
-- [ ] Parallel execution with bounded concurrency
+- [x] Parallel execution with bounded concurrency
 - [x] Run + step state machine (pending → running → success/failure)
 - [ ] Retry mechanism (configurable)
 - [ ] Cancellation support

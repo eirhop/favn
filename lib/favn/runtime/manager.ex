@@ -28,10 +28,12 @@ defmodule Favn.Runtime.Manager do
   def handle_call({:submit_run, target_ref, opts}, _from, state) do
     dependencies = Keyword.get(opts, :dependencies, :all)
     params = Keyword.get(opts, :params, %{})
+    max_concurrency = resolve_max_concurrency(opts)
 
     with :ok <- validate_params(params),
+         :ok <- validate_max_concurrency(max_concurrency),
          {:ok, plan} <- Favn.plan_run(target_ref, dependencies: dependencies),
-         runtime_state <- build_runtime_state(plan, params),
+         runtime_state <- build_runtime_state(plan, params, max_concurrency),
          {:ok, pid} <- start_run_coordinator(runtime_state),
          :ok <- persist_initial_snapshot(runtime_state),
          :ok <- emit_run_created(runtime_state),
@@ -60,12 +62,13 @@ defmodule Favn.Runtime.Manager do
     {:noreply, %{state | run_monitors: remaining}}
   end
 
-  defp build_runtime_state(plan, params) do
+  defp build_runtime_state(plan, params, max_concurrency) do
     %State{
       run_id: new_run_id(),
       target_refs: plan.target_refs,
       plan: plan,
       params: params,
+      max_concurrency: max_concurrency,
       event_seq: 1,
       steps: build_steps(plan)
     }
@@ -156,6 +159,13 @@ defmodule Favn.Runtime.Manager do
 
   defp validate_params(params) when is_map(params), do: :ok
   defp validate_params(_), do: {:error, :invalid_run_params}
+
+  defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
+  defp validate_max_concurrency(_), do: {:error, :invalid_max_concurrency}
+
+  defp resolve_max_concurrency(opts) do
+    Keyword.get(opts, :max_concurrency, Application.get_env(:favn, :runtime_max_concurrency, 1))
+  end
 
   defp new_run_id do
     binary = :crypto.strong_rand_bytes(16)

@@ -1,6 +1,6 @@
 defmodule Favn.Runtime.Executor.Local do
   @moduledoc """
-  Local task-based executor for invoking one asset function.
+  Local asynchronous executor for invoking one asset function.
   """
 
   @behaviour Favn.Runtime.Executor
@@ -10,9 +10,17 @@ defmodule Favn.Runtime.Executor.Local do
   alias Favn.Run.Context
 
   @impl true
-  def execute_step(%Asset{} = asset, %Context{} = ctx, deps) when is_map(deps) do
-    task = Task.async(fn -> invoke(asset, ctx, deps) end)
-    Task.await(task, :infinity)
+  def start_step(%Asset{} = asset, %Context{} = ctx, deps, reply_to, step_ref)
+      when is_map(deps) and is_pid(reply_to) do
+    exec_ref = make_ref()
+
+    {pid, monitor_ref} =
+      spawn_monitor(fn ->
+        result = invoke(asset, ctx, deps)
+        send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
+      end)
+
+    {:ok, %{exec_ref: exec_ref, monitor_ref: monitor_ref, pid: pid}}
   end
 
   defp invoke(asset, %Context{} = ctx, deps) do

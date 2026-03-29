@@ -20,8 +20,90 @@ defmodule Favn.RunnerTest do
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
   end
 
+  defmodule ProtocolTestExecutor do
+    @behaviour Favn.Runtime.Executor
+
+    alias Favn.Asset
+    alias Favn.Asset.Output
+    alias Favn.Run.Context
+
+    @impl true
+    def start_step(%Asset{} = asset, %Context{} = ctx, deps, reply_to, step_ref)
+        when is_map(deps) and is_pid(reply_to) do
+      exec_ref = make_ref()
+
+      {pid, monitor_ref} =
+        spawn_monitor(fn ->
+          mode = ctx.params[:executor_mode]
+          result = invoke(asset, ctx, deps)
+
+          case mode do
+            :mismatch_ref ->
+              send(
+                reply_to,
+                {:executor_step_result, exec_ref, {asset.module, :not_the_step}, result}
+              )
+
+            :duplicate_result ->
+              send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
+              send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
+
+            :late_after_down ->
+              sender =
+                spawn(fn ->
+                  Process.sleep(10)
+                  send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
+                end)
+
+              Process.unlink(sender)
+              exit(:executor_down_before_result)
+
+            _ ->
+              send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
+          end
+        end)
+
+      {:ok, %{exec_ref: exec_ref, monitor_ref: monitor_ref, pid: pid}}
+    end
+
+    defp invoke(asset, %Context{} = ctx, deps) do
+      try do
+        case apply(asset.module, asset.name, [ctx, deps]) do
+          {:ok, %Output{} = asset_output} ->
+            {:ok, %{output: asset_output.output, meta: asset_output.meta}}
+
+          {:error, reason} ->
+            {:error, %{kind: :error, reason: reason, stacktrace: []}}
+
+          other ->
+            {:error,
+             %{
+               kind: :error,
+               reason:
+                 {:invalid_return_shape, other,
+                  expected: "{:ok, %Favn.Asset.Output{}} | {:error, reason}"},
+               stacktrace: []
+             }}
+        end
+      rescue
+        error ->
+          {:error,
+           %{
+             kind: :error,
+             reason: error,
+             stacktrace: __STACKTRACE__,
+             message: Exception.message(error)
+           }}
+      catch
+        :throw, reason -> {:error, %{kind: :throw, reason: reason, stacktrace: __STACKTRACE__}}
+        :exit, reason -> {:error, %{kind: :exit, reason: reason, stacktrace: __STACKTRACE__}}
+      end
+    end
+  end
+
   setup do
     state = Favn.TestSetup.capture_state()
+    previous_runtime_executor = Application.get_env(:favn, :runtime_executor)
 
     :ok = Favn.TestSetup.setup_asset_modules([RunnerAssets], reload_graph?: true)
     :ok = Favn.TestSetup.configure_storage_adapter(Favn.Storage.Adapter.Memory, [])
@@ -29,6 +111,12 @@ defmodule Favn.RunnerTest do
 
     on_exit(fn ->
       Favn.TestSetup.restore_state(state, reload_graph?: true, clear_storage_adapter_env?: true)
+
+      if is_nil(previous_runtime_executor) do
+        Application.delete_env(:favn, :runtime_executor)
+      else
+        Application.put_env(:favn, :runtime_executor, previous_runtime_executor)
+      end
     end)
 
     :ok
@@ -253,6 +341,152 @@ defmodule Favn.RunnerTest do
 
   test "rejects unsupported list_runs status filter values" do
     assert {:error, :invalid_opts} = Favn.list_runs(status: :pending)
+  end
+
+  test "executes independent ready steps in parallel with bounded concurrency" do
+    counter = :atomics.new(2, signed: false)
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :parallel_join},
+               max_concurrency: 2,
+               params: %{counter: counter}
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+
+    assert run.status == :ok
+    assert run.outputs[{RunnerAssets, :parallel_join}] == [:parallel_a, :parallel_b, :parallel_c]
+    assert :atomics.get(counter, 2) <= 2
+
+    join_started = run.asset_results[{RunnerAssets, :parallel_join}].started_at
+
+    latest_upstream_finish =
+      [:parallel_a, :parallel_b, :parallel_c]
+      |> Enum.map(fn name -> run.asset_results[{RunnerAssets, name}].finished_at end)
+      |> Enum.max(DateTime)
+
+    assert DateTime.compare(join_started, latest_upstream_finish) in [:eq, :gt]
+  end
+
+  test "admits ready steps deterministically while allowing non-deterministic completion" do
+    parent = self()
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :parallel_join},
+               max_concurrency: 2,
+               params: %{notify_pid: parent}
+             )
+
+    :ok = Favn.subscribe_run(run_id)
+    assert {:ok, _run} = Favn.await_run(run_id)
+
+    events =
+      Stream.repeatedly(fn ->
+        receive do
+          {:favn_run_event, event} -> event
+        after
+          250 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+
+    started_order =
+      events
+      |> Enum.filter(&(&1.event == :step_started))
+      |> Enum.map(& &1.ref)
+      |> Enum.filter(fn {mod, name} ->
+        mod == RunnerAssets and name in [:parallel_a, :parallel_b, :parallel_c]
+      end)
+
+    assert started_order == [
+             {RunnerAssets, :parallel_a},
+             {RunnerAssets, :parallel_b},
+             {RunnerAssets, :parallel_c}
+           ]
+  end
+
+  test "first failure closes admission and unresolved work is skipped after inflight drains" do
+    counter = :atomics.new(2, signed: false)
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :parallel_terminal},
+               max_concurrency: 2,
+               params: %{counter: counter}
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+
+    assert run.status == :error
+
+    assert run.error == %{
+             ref: {RunnerAssets, :parallel_fail},
+             stage: 1,
+             reason: :parallel_failure
+           }
+
+    case Map.get(run.asset_results, {RunnerAssets, :parallel_slow}) do
+      nil -> :ok
+      result -> assert result.status == :ok
+    end
+
+    refute Map.has_key?(run.asset_results, {RunnerAssets, :parallel_after_slow})
+    refute Map.has_key?(run.asset_results, {RunnerAssets, :parallel_terminal})
+    assert :atomics.get(counter, 2) <= 2
+  end
+
+  test "normalizes hard executor crashes into failed step results" do
+    assert {:ok, run_id} = Favn.run({RunnerAssets, :hard_crash}, max_concurrency: 1)
+    assert {:error, run} = Favn.await_run(run_id)
+
+    assert run.status == :error
+    assert run.error == %{ref: {RunnerAssets, :hard_crash}, stage: 1, reason: :killed}
+    assert run.asset_results[{RunnerAssets, :hard_crash}].error.kind == :exit
+  end
+
+  test "coordinator ignores mismatched ref in executor result and uses tracked ref" do
+    Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :slow_asset},
+               max_concurrency: 1,
+               params: %{executor_mode: :mismatch_ref}
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    assert run.status == :ok
+    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
+  end
+
+  test "duplicate executor result for same exec_ref is ignored and does not crash coordinator" do
+    Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :slow_asset},
+               max_concurrency: 1,
+               params: %{executor_mode: :duplicate_result}
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    assert run.status == :ok
+  end
+
+  test "late executor result after DOWN handling is ignored and does not crash coordinator" do
+    Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :slow_asset},
+               max_concurrency: 1,
+               params: %{executor_mode: :late_after_down}
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    assert run.status == :error
+
+    assert run.error == %{
+             ref: {RunnerAssets, :slow_asset},
+             stage: 0,
+             reason: :executor_down_before_result
+           }
   end
 
   test "run/2 returns immediately with a run id while execution continues" do

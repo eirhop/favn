@@ -164,15 +164,18 @@ defmodule Favn.Runtime.Transitions.Step do
   defp unlock_downstream(%State{} = state, ref) do
     step = Map.fetch!(state.steps, ref)
 
-    Enum.reduce(step.downstream, {state, []}, fn downstream_ref, {acc, events} ->
-      downstream = Map.fetch!(acc.steps, downstream_ref)
+    ready_refs =
+      step.downstream
+      |> Enum.uniq()
+      |> Enum.filter(fn downstream_ref ->
+        downstream = Map.fetch!(state.steps, downstream_ref)
+        downstream.status == :pending and all_upstream_success?(state, downstream.upstream)
+      end)
+      |> Enum.sort()
 
-      if downstream.status == :pending and all_upstream_success?(acc, downstream.upstream) do
-        {:ok, next_acc, next_events} = mark_ready(acc, downstream_ref)
-        {next_acc, events ++ next_events}
-      else
-        {acc, events}
-      end
+    Enum.reduce(ready_refs, {state, []}, fn downstream_ref, {acc, events} ->
+      {:ok, next_acc, next_events} = mark_ready(acc, downstream_ref)
+      {next_acc, events ++ next_events}
     end)
   end
 

@@ -111,13 +111,14 @@ Key settings:
 
 - The default run store is node-local in-memory storage.
 - Public run execution is asynchronous by default (`Favn.run/2` returns a run id).
+- Independent ready steps execute in parallel within a run, bounded by `max_concurrency`.
 - Run events are best-effort pubsub notifications.
 
 ## Runtime behavior in this release
 
-- **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator.
+- **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator with bounded parallel step dispatch per run.
 - **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; the public `%Favn.Run{}` projection remains compatible with `:running | :ok | :error`.
-- **Execution boundary**: one-step asset invocation is isolated behind a runtime executor boundary.
+- **Execution boundary**: one-step asset invocation is isolated behind an asynchronous runtime executor boundary.
 - **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
   - `:not_found`
   - `:invalid_opts`
@@ -129,6 +130,7 @@ Key settings:
 
 - **Run lifecycle semantics**
   - `Favn.run/2` returns `{:ok, run_id}` when a run is submitted.
+  - Step admission order is deterministic for equally-ready refs; completion order is naturally non-deterministic under parallel execution.
   - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error}}` on execution failure.
   - Failed runs preserve structured failure context in both `run.error` and `run.asset_results[ref].error`.
   - `Favn.get_run/1` returns the latest stored run state for an ID.
@@ -144,7 +146,7 @@ Key settings:
 - Durable distributed execution guarantees across nodes.
 - Exactly-once event delivery, replay, or durable event logs.
 - Persistent storage guarantees beyond the configured adapter behavior (default adapter is in-memory and node-local).
-- Asynchronous or parallel asset execution beyond the current deterministic stage-by-stage runtime model.
+- Global concurrency fairness across runs, retries, cancellation of already-running work, and timeout enforcement.
 
 ## Roadmap and release focus
 

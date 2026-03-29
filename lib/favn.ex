@@ -337,7 +337,8 @@ defmodule Favn do
   """
   @type run_opts :: [
           dependencies: dependencies_mode(),
-          params: map()
+          params: map(),
+          max_concurrency: pos_integer()
         ]
 
   @typedoc """
@@ -657,16 +658,18 @@ defmodule Favn do
     * `opts`:
       * `dependencies: :all | :none` (default `:all`)
       * `params: map()` (default `%{}`)
+      * `max_concurrency: pos_integer()` (default from runtime config, fallback `1`)
 
   Deterministic behavior:
 
     * planning and stage ordering are deterministic for identical inputs
-    * runnable refs are selected in canonical ref order
+    * runnable refs are admitted in canonical ref order when multiple refs are ready together
 
   Runtime semantics:
 
     * returns immediately with a generated `run_id`
     * orchestration is owned by supervised runtime processes
+    * independent ready steps may execute in parallel up to `max_concurrency`
     * callers can observe progress through `get_run/1`, `list_runs/1`,
       `await_run/2`, and run events
 
