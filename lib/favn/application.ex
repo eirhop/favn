@@ -27,7 +27,9 @@ defmodule Favn.Application do
          :ok <- Favn.GraphIndex.load(),
          :ok <- Favn.Storage.validate_adapter(adapter),
          {:ok, child_specs} <- Favn.Storage.child_specs() do
-      Supervisor.start_link([pubsub_child | child_specs],
+      runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]
+
+      Supervisor.start_link([pubsub_child | child_specs] ++ runtime_children,
         strategy: :one_for_one,
         name: Favn.Supervisor
       )

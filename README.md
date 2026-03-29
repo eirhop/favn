@@ -82,7 +82,8 @@ config :favn,
 
 ```elixir
 # from your app runtime / iex
-{:ok, run} = Favn.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
+{:ok, run_id} = Favn.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
+{:ok, run} = Favn.await_run(run_id)
 ```
 
 ## Configuration
@@ -109,8 +110,7 @@ Key settings:
 ## Current limitations
 
 - The default run store is node-local in-memory storage.
-- Public run execution is currently synchronous (`Favn.run/2`) even though the
-  runtime now uses an internal coordinator process.
+- Public run execution is asynchronous by default (`Favn.run/2` returns a run id).
 - Run events are best-effort pubsub notifications.
 
 ## Runtime behavior in this release
@@ -128,7 +128,8 @@ Key settings:
 ## Guarantees in this release
 
 - **Run lifecycle semantics**
-  - `Favn.run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error}}` on execution failure.
+  - `Favn.run/2` returns `{:ok, run_id}` when a run is submitted.
+  - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error}}` on execution failure.
   - Failed runs preserve structured failure context in both `run.error` and `run.asset_results[ref].error`.
   - `Favn.get_run/1` returns the latest stored run state for an ID.
 - **Storage error contract**

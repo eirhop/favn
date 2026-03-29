@@ -12,7 +12,6 @@ defmodule Favn.Runtime.Coordinator do
   alias Favn.Runtime.Executor.Local
   alias Favn.Runtime.Projector
   alias Favn.Runtime.State
-  alias Favn.Runtime.StepState
   alias Favn.Runtime.Transitions.Run, as: RunTransitions
   alias Favn.Runtime.Transitions.Step, as: StepTransitions
 
@@ -20,50 +19,20 @@ defmodule Favn.Runtime.Coordinator do
 
   @type run_result :: {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
 
-  @spec run_sync(Favn.asset_ref(), keyword()) :: run_result()
-  def run_sync(target_ref, opts) when is_list(opts) do
-    dependencies = Keyword.get(opts, :dependencies, :all)
-    params = Keyword.get(opts, :params, %{})
-
-    with :ok <- validate_params(params),
-         {:ok, plan} <- Favn.plan_run(target_ref, dependencies: dependencies) do
-      state = %State{
-        run_id: new_run_id(),
-        target_refs: plan.target_refs,
-        plan: plan,
-        params: params,
-        steps: build_steps(plan)
-      }
-
-      case GenServer.start_link(__MODULE__, state: state, caller: self()) do
-        {:ok, pid} ->
-          ref = Process.monitor(pid)
-
-          receive do
-            {:favn_coordinator_result, ^pid, result} ->
-              Process.demonitor(ref, [:flush])
-              result
-
-            {:DOWN, ^ref, :process, ^pid, reason} ->
-              {:error, {:coordinator_down, reason}}
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    end
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts) when is_list(opts) do
+    GenServer.start_link(__MODULE__, opts)
   end
 
   @impl true
   def init(opts) do
     send(self(), :start_run)
-    {:ok, %{state: Keyword.fetch!(opts, :state), caller: Keyword.fetch!(opts, :caller)}}
+    {:ok, %{state: Keyword.fetch!(opts, :state)}}
   end
 
   @impl true
-  def handle_info(:start_run, %{state: state, caller: caller} = data) do
-    result = start_and_execute(state)
-    send(caller, {:favn_coordinator_result, self(), result})
+  def handle_info(:start_run, %{state: state} = data) do
+    _result = start_and_execute(state)
     {:stop, :normal, data}
   end
 
@@ -226,25 +195,6 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp validate_params(params) when is_map(params), do: :ok
-  defp validate_params(_), do: {:error, :invalid_run_params}
-
-  defp build_steps(plan) do
-    Enum.reduce(plan.nodes, %{}, fn {ref, node}, acc ->
-      status = if node.upstream == [], do: :ready, else: :pending
-
-      step = %StepState{
-        ref: ref,
-        stage: node.stage,
-        upstream: node.upstream,
-        downstream: node.downstream,
-        status: status
-      }
-
-      Map.put(acc, ref, step)
-    end)
-  end
-
   defp dependency_outputs(%State{} = state, ref) do
     upstream = state.steps |> Map.fetch!(ref) |> Map.get(:upstream)
 
@@ -278,24 +228,5 @@ defmodule Favn.Runtime.Coordinator do
     Enum.all?(state.target_refs, fn ref ->
       state.steps |> Map.fetch!(ref) |> Map.get(:status) == :success
     end)
-  end
-
-  defp new_run_id do
-    binary = :crypto.strong_rand_bytes(16)
-    <<a::32, b::16, c::16, d::16, e::48>> = binary
-
-    c = Bitwise.bor(Bitwise.band(c, 0x0FFF), 0x4000)
-    d = Bitwise.bor(Bitwise.band(d, 0x3FFF), 0x8000)
-
-    Enum.join(
-      [
-        a |> Integer.to_string(16) |> String.pad_leading(8, "0"),
-        b |> Integer.to_string(16) |> String.pad_leading(4, "0"),
-        c |> Integer.to_string(16) |> String.pad_leading(4, "0"),
-        d |> Integer.to_string(16) |> String.pad_leading(4, "0"),
-        e |> Integer.to_string(16) |> String.pad_leading(12, "0")
-      ],
-      "-"
-    )
   end
 end

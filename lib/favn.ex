@@ -341,6 +341,14 @@ defmodule Favn do
         ]
 
   @typedoc """
+  Options for `await_run/2`.
+  """
+  @type await_run_opts :: [
+          timeout: non_neg_integer() | :infinity,
+          poll_interval_ms: pos_integer()
+        ]
+
+  @typedoc """
   Options for `plan_run/2`.
   """
   @type plan_run_opts :: [
@@ -641,7 +649,7 @@ defmodule Favn do
   end
 
   @doc """
-  Start a run for the given asset.
+  Submit an asynchronous run for the given asset.
 
   Accepted input:
 
@@ -657,14 +665,10 @@ defmodule Favn do
 
   Runtime semantics:
 
-    * orchestration is owned by an internal run-scoped coordinator process
-    * step invocation happens through an isolated executor boundary
-    * first asset failure halts the run and sets `run.status` to `:error`
-    * asset failures populate both `run.error` and `run.asset_results[ref].error`
-    * unresolved pending/ready steps are finalized explicitly when a run fails
-    * runtime checkpoint persistence is required; persistence failures return
-      `{:error, {:storage_persist_failed, reason}}`
-    * run events are best-effort observability and do not affect correctness
+    * returns immediately with a generated `run_id`
+    * orchestration is owned by supervised runtime processes
+    * callers can observe progress through `get_run/1`, `list_runs/1`,
+      `await_run/2`, and run events
 
   Asset invocation contract:
 
@@ -679,14 +683,34 @@ defmodule Favn do
 
   Returns:
 
-    * `{:ok, %Favn.Run{status: :ok}}` on success
-    * `{:error, %Favn.Run{status: :error}}` for execution failures
-    * `{:error, reason}` for preflight planning/storage validation failures
+    * `{:ok, run_id}` when submission succeeds
+    * `{:error, reason}` for validation/planning/storage submission failures
   """
-  @spec run(asset_ref(), run_opts()) :: {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
+  @spec run(asset_ref(), run_opts()) :: {:ok, run_id()} | {:error, term()}
   def run({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    Favn.Runtime.Engine.run_sync({module, name}, opts)
+    Favn.Runtime.Engine.submit_run({module, name}, opts)
+  end
+
+  @doc """
+  Block until one submitted run reaches a terminal state.
+
+  Accepted options:
+
+    * `timeout: non_neg_integer() | :infinity` (default `:infinity`)
+    * `poll_interval_ms: pos_integer()` (default `50`)
+
+  Returns:
+
+    * `{:ok, %Favn.Run{status: :ok}}` on successful completion
+    * `{:error, %Favn.Run{status: :error}}` when the run fails
+    * `{:error, :timeout}` when timeout elapses before terminal state
+    * `{:error, reason}` for storage retrieval failures
+  """
+  @spec await_run(run_id(), await_run_opts()) ::
+          {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
+  def await_run(run_id, opts \\ []) when is_list(opts) do
+    Favn.Runtime.Engine.await_run(run_id, opts)
   end
 
   @doc """
