@@ -3,7 +3,7 @@ defmodule Favn.Storage do
   Storage facade that delegates run persistence to the configured storage adapter.
 
   This module is the canonical storage boundary used by `Favn` and
-  `Favn.Runtime.Runner`. It validates adapter modules, normalizes adapter
+  `Favn.Runtime.Engine`. It validates adapter modules, normalizes adapter
   responses, and preserves stable error shapes for callers.
   """
 

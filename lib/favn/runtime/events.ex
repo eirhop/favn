@@ -8,12 +8,20 @@ defmodule Favn.Runtime.Events do
 
   @typedoc "Run lifecycle event type."
   @type event_type ::
-          :run_started
-          | :asset_started
-          | :asset_finished
-          | :asset_failed
-          | :run_finished
+          :run_created
+          | :run_started
+          | :run_cancel_requested
+          | :run_cancelled
           | :run_failed
+          | :run_finished
+          | :run_timed_out
+          | :step_ready
+          | :step_started
+          | :step_finished
+          | :step_failed
+          | :step_skipped
+          | :step_cancelled
+          | :step_timed_out
 
   @typedoc "Structured event payload broadcast to subscribers."
   @type event :: %{

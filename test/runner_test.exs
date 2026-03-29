@@ -4,6 +4,22 @@ defmodule Favn.RunnerTest do
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
   alias Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore
 
+  defmodule InitialFailingStore do
+    @behaviour Favn.Storage.Adapter
+
+    @impl true
+    def child_spec(_opts), do: :none
+
+    @impl true
+    def put_run(_run, _opts), do: {:error, :initial_write_failed}
+
+    @impl true
+    def get_run(_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_runs(_opts, _adapter_opts), do: {:ok, []}
+  end
+
   setup do
     state = Favn.TestSetup.capture_state()
 
@@ -49,7 +65,7 @@ defmodule Favn.RunnerTest do
              {RunnerAssets, :transform}
            ]
 
-    assert run.event_seq == 8
+    assert run.event_seq == 11
   end
 
   test "supports dependencies: :none target-only runs" do
@@ -70,7 +86,7 @@ defmodule Favn.RunnerTest do
              {:invalid_return_shape, {:ok, :bad_shape},
               expected: "{:ok, %Favn.Asset.Output{}} | {:error, reason}"}
 
-    assert run.event_seq == 6
+    assert run.event_seq == 8
   end
 
   test "captures raised exceptions with stacktrace details" do
@@ -150,8 +166,71 @@ defmodule Favn.RunnerTest do
     :ok = Favn.TestSetup.configure_storage_adapter(TerminalFailingStore, [])
     TerminalFailingStore.reset!()
 
-    assert {:ok, run} = Favn.run({RunnerAssets, :final})
+    assert {:error, {:storage_persist_failed, {:store_error, :terminal_write_failed}}} =
+             Favn.run({RunnerAssets, :final})
+  end
+
+  test "fails immediately when first persisted snapshot cannot be written" do
+    :ok = Favn.TestSetup.configure_storage_adapter(InitialFailingStore, [])
+
+    assert {:error, {:storage_persist_failed, {:store_error, :initial_write_failed}}} =
+             Favn.run({RunnerAssets, :final})
+  end
+
+  test "long-running assets are not capped by a hardcoded sync timeout" do
+    assert {:ok, run} = Favn.run({RunnerAssets, :slow_asset})
     assert run.status == :ok
+    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
+  end
+
+  test "emits step_ready and step_started/step_finished events with ref + stage" do
+    parent = self()
+
+    spawn(fn ->
+      assert {:ok, run} =
+               Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: parent})
+
+      send(parent, {:run_id, run.id})
+    end)
+
+    run_id =
+      receive do
+        {:announced_run_id, run_id} -> run_id
+      after
+        1_000 -> flunk("did not receive announced run_id from asset context")
+      end
+
+    :ok = Favn.subscribe_run(run_id)
+
+    receive do
+      {:run_id, run_id} -> run_id
+    after
+      2_000 -> flunk("run did not complete")
+    end
+
+    events =
+      Stream.repeatedly(fn ->
+        receive do
+          {:favn_run_event, event} -> event
+        after
+          250 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+
+    step_events = Enum.filter(events, &(&1.event in [:step_ready, :step_started, :step_finished]))
+
+    assert step_events != []
+    assert Enum.all?(step_events, &Map.has_key?(&1, :ref))
+    assert Enum.all?(step_events, &Map.has_key?(&1, :stage))
+  end
+
+  test "projected asset_results omit skipped steps that never executed" do
+    assert {:error, run} = Favn.run({RunnerAssets, :after_error})
+
+    assert run.status == :error
+    assert Map.has_key?(run.asset_results, {RunnerAssets, :returns_error})
+    refute Map.has_key?(run.asset_results, {RunnerAssets, :after_error})
   end
 
   test "rejects unsupported list_runs status filter values" do

@@ -59,7 +59,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 
 - [ ] Asynchronous run execution
 - [ ] Parallel execution with bounded concurrency
-- [ ] Run + step state machine (pending → running → success/failure)
+- [x] Run + step state machine (pending → running → success/failure)
 - [ ] Retry mechanism (configurable)
 - [ ] Cancellation support
 - [ ] Timeout handling
@@ -67,7 +67,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [ ] Stable event schema (runs + steps)
 - [ ] Telemetry integration
 - [ ] Initial materialization/artifact model (replace in-memory-only outputs)
-- [ ] Separation of coordinator vs executor internally
+- [x] Separation of coordinator vs executor internally
 
 ---
 

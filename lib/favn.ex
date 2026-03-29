@@ -653,13 +653,17 @@ defmodule Favn do
   Deterministic behavior:
 
     * planning and stage ordering are deterministic for identical inputs
-    * refs within each stage execute sequentially in canonical ref order
+    * runnable refs are selected in canonical ref order
 
   Runtime semantics:
 
+    * orchestration is owned by an internal run-scoped coordinator process
+    * step invocation happens through an isolated executor boundary
     * first asset failure halts the run and sets `run.status` to `:error`
     * asset failures populate both `run.error` and `run.asset_results[ref].error`
-    * terminal result persistence is attempted even if execution failed
+    * unresolved pending/ready steps are finalized explicitly when a run fails
+    * runtime checkpoint persistence is required; persistence failures return
+      `{:error, {:storage_persist_failed, reason}}`
     * run events are best-effort observability and do not affect correctness
 
   Asset invocation contract:
@@ -682,7 +686,7 @@ defmodule Favn do
   @spec run(asset_ref(), run_opts()) :: {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
   def run({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    Favn.Runtime.Runner.run({module, name}, opts)
+    Favn.Runtime.Engine.run_sync({module, name}, opts)
   end
 
   @doc """

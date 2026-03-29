@@ -8,7 +8,7 @@ defmodule Favn.EventsTest do
     assert :ok = Favn.subscribe_run(run_id)
 
     assert :ok =
-             Favn.Runtime.Events.publish_run_event(run_id, :asset_finished, %{
+             Favn.Runtime.Events.publish_run_event(run_id, :step_finished, %{
                seq: 1,
                ref: ref,
                stage: 2,
@@ -17,7 +17,7 @@ defmodule Favn.EventsTest do
 
     assert_receive {:favn_run_event,
                     %{
-                      event: :asset_finished,
+                      event: :step_finished,
                       run_id: ^run_id,
                       seq: 1,
                       ref: ^ref,
