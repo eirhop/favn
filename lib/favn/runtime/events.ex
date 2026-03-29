@@ -22,9 +22,6 @@ defmodule Favn.Runtime.Events do
           | :step_skipped
           | :step_cancelled
           | :step_timed_out
-          | :asset_started
-          | :asset_finished
-          | :asset_failed
 
   @typedoc "Structured event payload broadcast to subscribers."
   @type event :: %{
