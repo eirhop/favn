@@ -2,7 +2,7 @@
 
 ## Current Version
 
-**Current release: v0.1.0**
+**Current release: v0.1**
 
 Favn is in an early development stage. The core foundation is implemented, but the system is not yet production-ready.
 
