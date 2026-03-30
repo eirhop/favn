@@ -227,6 +227,11 @@ defmodule Favn do
           pool_size: 5
         ]
 
+  In SQLite mode, run ordering uses a dedicated `favn_counters` row
+  (`run_write_order`) to allocate `runs.updated_seq` transactionally.
+  `Favn.list_runs/1` ordering remains newest-first by
+  `updated_seq DESC, updated_at_us DESC, id DESC`.
+
   ## Starting Favn
 
   There is no separate Favn server process that operators start manually.

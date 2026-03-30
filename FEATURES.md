@@ -64,7 +64,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [x] Cancellation support
 - [x] Timeout handling
 - [x] SQLite storage adapter
-- [ ] SQLite `run_write_orders` growth management (prune/compact strategy)
+- [x] SQLite monotonic `updated_seq` allocation via `favn_counters` (replaces `run_write_orders` growth path)
 - [ ] Stable event schema (runs + steps)
 - [ ] Telemetry integration
 - [ ] Initial materialization/artifact model (replace in-memory-only outputs)

@@ -58,6 +58,15 @@ defmodule Favn.SQLiteStorageTest do
     assert {:error, :not_found} = Storage.get_run("missing-sqlite-run")
   end
 
+  test "does not keep run_write_orders helper table after migrations" do
+    assert {:ok, %{rows: [[0]]}} =
+             Ecto.Adapters.SQL.query(
+               Repo,
+               "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'run_write_orders'",
+               []
+             )
+  end
+
   test "concurrent writes preserve adapter ordering in list_runs/1" do
     base_started_at = DateTime.utc_now() |> DateTime.truncate(:second)
 
@@ -90,6 +99,33 @@ defmodule Favn.SQLiteStorageTest do
              )
 
     assert listed_ids == Enum.map(rows, &hd/1)
+
+    assert {:ok, %{rows: [[counter_value]]}} =
+             Ecto.Adapters.SQL.query(
+               Repo,
+               "SELECT value FROM favn_counters WHERE name = 'run_write_order'",
+               []
+             )
+
+    assert counter_value >= 12
+  end
+
+  test "updating the same run id advances sequence and moves run to front" do
+    base_started_at = DateTime.utc_now() |> DateTime.truncate(:second)
+    first = sample_run("run-a", :running, base_started_at)
+    second = sample_run("run-b", :running, base_started_at)
+
+    assert :ok = Storage.put_run(first)
+    assert :ok = Storage.put_run(second)
+
+    assert {:ok, initial_runs} = Storage.list_runs()
+    assert Enum.map(initial_runs, & &1.id) == ["run-b", "run-a"]
+
+    updated_first = %{first | status: :ok, finished_at: base_started_at}
+    assert :ok = Storage.put_run(updated_first)
+
+    assert {:ok, reordered_runs} = Storage.list_runs()
+    assert Enum.map(reordered_runs, & &1.id) == ["run-a", "run-b"]
   end
 
   defp sample_run(id, status, started_at \\ DateTime.utc_now()) do
