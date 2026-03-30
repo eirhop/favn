@@ -64,6 +64,18 @@ defmodule Favn.Runtime.Coordinator do
   end
 
   @impl true
+  def handle_info({:retry_due, ref, attempt}, %{state: state} = data) do
+    with {:ok, state} <- clear_retry_timer(state, ref),
+         {:ok, state} <- maybe_make_retry_ready(state, ref, attempt),
+         {:ok, state} <- dispatch_ready_work(state),
+         {:ok, state} <- maybe_finalize_terminal(state) do
+      {:noreply, %{data | state: state}}
+    else
+      {:error, reason} -> {:stop, reason, data}
+    end
+  end
+
+  @impl true
   def handle_info(:run_deadline_reached, %{state: state} = data) do
     with {:ok, state} <- request_timeout(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
@@ -141,16 +153,8 @@ defmodule Favn.Runtime.Coordinator do
       {:ok, put_execution_handle(state, ref, handle)}
     else
       {:error, reason} ->
-        normalized = %{kind: :error, reason: reason, stacktrace: []}
-
-        with {:ok, state} <-
-               apply_step_transition(
-                 state,
-                 &StepTransitions.complete_failure(&1, ref, normalized)
-               ),
-             {:ok, state} <- close_admission_with_failure(state, ref, reason) do
-          {:ok, state}
-        end
+        normalized = %{kind: :error, reason: reason, stacktrace: [], class: :executor_error}
+        handle_step_error(state, ref, normalized)
     end
   end
 
@@ -173,38 +177,66 @@ defmodule Favn.Runtime.Coordinator do
        when is_map(error) do
     case take_execution(state, exec_ref, maybe_ref) do
       {:ok, ref, state} ->
-        handle_terminal_step_error(state, ref, error)
+        handle_step_error(state, ref, error)
 
       {:ignore, state} ->
         {:ok, state}
     end
   end
 
-  defp handle_terminal_step_error(%State{run_status: :cancelling} = state, ref, _error) do
+  defp handle_step_error(%State{run_status: :cancelling} = state, ref, _error) do
     apply_step_transition(
       state,
       &StepTransitions.complete_cancelled(&1, ref, %{kind: :run_cancelled})
     )
   end
 
-  defp handle_terminal_step_error(%State{run_status: :timing_out} = state, ref, _error) do
+  defp handle_step_error(%State{run_status: :timing_out} = state, ref, _error) do
     apply_step_transition(
       state,
       &StepTransitions.complete_timed_out(&1, ref, %{kind: :run_timed_out})
     )
   end
 
-  defp handle_terminal_step_error(%State{} = state, ref, error) do
-    with {:ok, state} <-
-           apply_step_transition(state, &StepTransitions.complete_failure(&1, ref, error)),
-         {:ok, state} <- close_admission_with_failure(state, ref, error[:reason]) do
-      {:ok, state}
+  defp handle_step_error(%State{} = state, ref, error) do
+    step = Map.fetch!(state.steps, ref)
+    classification = classify_error(error)
+    retryable? = retryable?(state.retry_policy, classification)
+    exhausted? = step.attempt >= step.max_attempts
+    payload = enrich_error(error, classification)
+
+    if retryable? and not exhausted? do
+      with {:ok, state} <- emit_retryable_step_failed(state, ref, step, payload),
+           {:ok, state} <-
+             apply_step_transition(
+               state,
+               &StepTransitions.schedule_retry(&1, ref, payload, state.retry_policy.delay_ms)
+             ),
+           {:ok, state} <- schedule_retry_timer(state, ref) do
+        {:ok, state}
+      end
+    else
+      with {:ok, state} <-
+             apply_step_transition(
+               state,
+               &StepTransitions.complete_failure(&1, ref, payload,
+                 retryable?: retryable?,
+                 exhausted?: true
+               )
+             ),
+           {:ok, state} <- maybe_emit_retry_exhausted(state, ref, step, retryable?),
+           {:ok, state} <- close_admission_with_failure(state, ref, payload[:reason]) do
+        {:ok, state}
+      end
     end
   end
 
   defp maybe_finalize_terminal(%State{run_status: :running} = state) do
     cond do
       map_size(state.inflight_execs) > 0 ->
+        {:ok, state}
+
+      retries_pending?(state) ->
         {:ok, state}
 
       all_targets_success?(state) ->
@@ -344,6 +376,75 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
+  defp clear_retry_timer(%State{} = state, ref) do
+    {:ok, %{state | retry_timers: Map.delete(state.retry_timers, ref)}}
+  end
+
+  defp maybe_make_retry_ready(%State{} = state, ref, attempt) do
+    step = Map.fetch!(state.steps, ref)
+
+    cond do
+      state.run_status != :running ->
+        {:ok, state}
+
+      step.status != :retrying ->
+        {:ok, state}
+
+      step.attempt != attempt ->
+        {:ok, state}
+
+      true ->
+        apply_step_transition(state, &StepTransitions.requeue_retry(&1, ref))
+    end
+  end
+
+  defp schedule_retry_timer(%State{} = state, ref) do
+    step = Map.fetch!(state.steps, ref)
+    delay_ms = state.retry_policy.delay_ms
+
+    if delay_ms == 0 do
+      apply_step_transition(state, &StepTransitions.requeue_retry(&1, ref))
+    else
+      timer_ref = Process.send_after(self(), {:retry_due, ref, step.attempt}, delay_ms)
+      next_state = %{state | retry_timers: Map.put(state.retry_timers, ref, timer_ref)}
+      persist_snapshot(next_state)
+    end
+  end
+
+  defp emit_retryable_step_failed(%State{} = state, ref, step, error) do
+    payload = %{
+      attempt: step.attempt,
+      max_attempts: step.max_attempts,
+      remaining_attempts: max(step.max_attempts - step.attempt, 0),
+      retryable: true,
+      exhausted: false,
+      final: false,
+      class: error[:class],
+      reason: error[:reason]
+    }
+
+    emit_events(state, [{:step_failed, ref, payload}])
+  end
+
+  defp emit_retry_exhausted(%State{} = state, ref, step) do
+    payload = %{
+      attempt: step.attempt,
+      max_attempts: step.max_attempts,
+      exhausted: true
+    }
+
+    emit_events(state, [{:step_retry_exhausted, ref, payload}])
+  end
+
+  defp maybe_emit_retry_exhausted(%State{} = state, _ref, _step, false), do: {:ok, state}
+
+  defp maybe_emit_retry_exhausted(%State{} = state, ref, step, true),
+    do: emit_retry_exhausted(state, ref, step)
+
+  defp retries_pending?(%State{} = state) do
+    Enum.any?(state.steps, fn {_ref, step} -> step.status == :retrying end)
+  end
+
   defp clear_monitor(%State{} = state, exec_ref, monitor_ref) do
     %{
       state
@@ -435,6 +536,11 @@ defmodule Favn.Runtime.Coordinator do
     {event_name, %{ref: ref, stage: stage}}
   end
 
+  defp event_attrs(%State{} = state, {event_name, ref, payload}) when is_map(payload) do
+    stage = stage_for(state, ref)
+    {event_name, %{ref: ref, stage: stage, payload: payload}}
+  end
+
   defp event_attrs(%State{} = state, event_name) when is_atom(event_name) do
     payload =
       case event_name do
@@ -468,13 +574,17 @@ defmodule Favn.Runtime.Coordinator do
   end
 
   defp build_context(%State{} = state, ref) do
+    step = Map.fetch!(state.steps, ref)
+
     %Context{
       run_id: state.run_id,
       target_refs: state.target_refs,
       current_ref: ref,
       params: state.params,
       run_started_at: state.started_at,
-      stage: stage_for(state, ref)
+      stage: step.stage,
+      attempt: step.attempt,
+      max_attempts: step.max_attempts
     }
   end
 
@@ -492,7 +602,7 @@ defmodule Favn.Runtime.Coordinator do
   end
 
   defp unresolved_steps?(%State{} = state) do
-    Enum.any?(state.steps, fn {_ref, step} -> step.status in [:pending, :ready] end)
+    Enum.any?(state.steps, fn {_ref, step} -> step.status in [:pending, :ready, :retrying] end)
   end
 
   defp dispatch_allowed?(%State{} = state),
@@ -504,4 +614,17 @@ defmodule Favn.Runtime.Coordinator do
   defp executor_module do
     Application.get_env(:favn, :runtime_executor, Local)
   end
+
+  defp classify_error(%{class: class}) when is_atom(class), do: class
+  defp classify_error(%{kind: :throw}), do: :throw
+  defp classify_error(%{kind: :exit}), do: :exit
+  defp classify_error(%{kind: :error, reason: :timeout}), do: :timeout
+  defp classify_error(%{kind: :error, reason: {:timeout, _}}), do: :timeout
+  defp classify_error(%{kind: :error, reason: reason}) when is_struct(reason), do: :exception
+  defp classify_error(%{kind: :error}), do: :error_return
+  defp classify_error(_), do: :error_return
+
+  defp retryable?(policy, class), do: class in policy.retry_on
+
+  defp enrich_error(error, class), do: Map.put(error, :class, class)
 end

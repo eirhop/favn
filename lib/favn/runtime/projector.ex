@@ -20,6 +20,7 @@ defmodule Favn.Runtime.Projector do
       started_at: state.started_at,
       finished_at: state.finished_at,
       params: state.params,
+      retry_policy: state.retry_policy,
       outputs: state.outputs,
       target_outputs: target_outputs,
       asset_results: build_asset_results(state),
@@ -41,13 +42,17 @@ defmodule Favn.Runtime.Projector do
         result = %AssetResult{
           ref: ref,
           stage: step.stage,
-          status: if(step.status == :success, do: :ok, else: :error),
+          status: public_step_status(step.status),
           started_at: step.started_at,
           finished_at: step.finished_at,
           duration_ms: step.duration_ms || 0,
           output: step.output,
           meta: step.meta,
-          error: step.error
+          error: step.error,
+          attempt_count: step.attempt,
+          max_attempts: step.max_attempts,
+          attempts: step.attempts,
+          next_retry_at: step.next_retry_at
         }
 
         Map.put(acc, ref, result)
@@ -57,9 +62,14 @@ defmodule Favn.Runtime.Projector do
     end)
   end
 
+  defp public_step_status(:success), do: :ok
+  defp public_step_status(:failed), do: :error
+  defp public_step_status(:ready), do: :running
+  defp public_step_status(:pending), do: :running
+  defp public_step_status(status), do: status
+
   defp include_asset_result?(step) do
-    step.status in [:success, :failed, :cancelled, :timed_out] and
-      not is_nil(step.started_at) and
-      not is_nil(step.finished_at)
+    step.status in [:retrying, :success, :failed, :cancelled, :timed_out] and
+      (step.started_at != nil or step.status == :retrying or step.attempt > 0)
   end
 end

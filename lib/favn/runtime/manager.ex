@@ -44,12 +44,15 @@ defmodule Favn.Runtime.Manager do
     params = Keyword.get(opts, :params, %{})
     max_concurrency = resolve_max_concurrency(opts)
     timeout_ms = Keyword.get(opts, :timeout_ms)
+    retry_policy = resolve_retry_policy(opts)
 
     with :ok <- validate_params(params),
          :ok <- validate_max_concurrency(max_concurrency),
          :ok <- validate_timeout_ms(timeout_ms),
+         {:ok, retry_policy} <- validate_retry_policy(retry_policy),
          {:ok, plan} <- Favn.plan_run(target_ref, dependencies: dependencies),
-         runtime_state <- build_runtime_state(plan, params, max_concurrency, timeout_ms),
+         runtime_state <-
+           build_runtime_state(plan, params, max_concurrency, timeout_ms, retry_policy),
          {:ok, pid} <- start_run_coordinator(runtime_state),
          :ok <- persist_initial_snapshot(runtime_state),
          :ok <- emit_run_created(runtime_state),
@@ -115,7 +118,7 @@ defmodule Favn.Runtime.Manager do
     {:noreply, %{state | run_monitors: remaining, run_pids: run_pids}}
   end
 
-  defp build_runtime_state(plan, params, max_concurrency, timeout_ms) do
+  defp build_runtime_state(plan, params, max_concurrency, timeout_ms, retry_policy) do
     %State{
       run_id: new_run_id(),
       target_refs: plan.target_refs,
@@ -123,12 +126,13 @@ defmodule Favn.Runtime.Manager do
       params: params,
       max_concurrency: max_concurrency,
       timeout_ms: timeout_ms,
+      retry_policy: retry_policy,
       event_seq: 1,
-      steps: build_steps(plan)
+      steps: build_steps(plan, retry_policy)
     }
   end
 
-  defp build_steps(plan) do
+  defp build_steps(plan, retry_policy) do
     Enum.reduce(plan.nodes, %{}, fn {ref, node}, acc ->
       status = if node.upstream == [], do: :ready, else: :pending
 
@@ -137,7 +141,8 @@ defmodule Favn.Runtime.Manager do
         stage: node.stage,
         upstream: node.upstream,
         downstream: node.downstream,
-        status: status
+        status: status,
+        max_attempts: retry_policy.max_attempts
       }
 
       Map.put(acc, ref, step)
@@ -223,6 +228,57 @@ defmodule Favn.Runtime.Manager do
 
   defp resolve_max_concurrency(opts) do
     Keyword.get(opts, :max_concurrency, Application.get_env(:favn, :runtime_max_concurrency, 1))
+  end
+
+  defp resolve_retry_policy(opts) do
+    configured = Application.get_env(:favn, :runtime_retry, false)
+    normalize_retry_policy(Keyword.get(opts, :retry, configured))
+  end
+
+  defp normalize_retry_policy(false), do: %{max_attempts: 1, delay_ms: 0, retry_on: []}
+
+  defp normalize_retry_policy(true) do
+    %{
+      max_attempts: 3,
+      delay_ms: 0,
+      retry_on: [:exception, :exit, :throw, :timeout, :executor_error]
+    }
+  end
+
+  defp normalize_retry_policy(policy) when is_list(policy) do
+    policy = Enum.into(policy, %{})
+    normalize_retry_policy(policy)
+  end
+
+  defp normalize_retry_policy(policy) when is_map(policy) do
+    defaults = normalize_retry_policy(true)
+    Map.merge(defaults, policy)
+  end
+
+  defp normalize_retry_policy(_), do: :invalid_retry_policy
+
+  defp validate_retry_policy(:invalid_retry_policy), do: {:error, :invalid_retry_policy}
+
+  defp validate_retry_policy(%{max_attempts: max_attempts})
+       when not (is_integer(max_attempts) and max_attempts > 0),
+       do: {:error, :invalid_retry_max_attempts}
+
+  defp validate_retry_policy(%{delay_ms: delay_ms})
+       when not (is_integer(delay_ms) and delay_ms >= 0),
+       do: {:error, :invalid_retry_delay_ms}
+
+  defp validate_retry_policy(%{retry_on: retry_on})
+       when not is_list(retry_on),
+       do: {:error, :invalid_retry_retry_on}
+
+  defp validate_retry_policy(%{retry_on: retry_on} = policy) do
+    valid = [:exception, :exit, :throw, :timeout, :executor_error, :error_return]
+
+    if Enum.all?(retry_on, &(&1 in valid)) do
+      {:ok, %{policy | retry_on: Enum.uniq(retry_on)}}
+    else
+      {:error, :invalid_retry_retry_on}
+    end
   end
 
   defp new_run_id do

@@ -6,7 +6,7 @@ defmodule Favn.Runtime.Transitions.Step do
   alias Favn.Runtime.State
   alias Favn.Runtime.StepState
 
-  @type event :: {atom(), Favn.asset_ref()}
+  @type event :: {atom(), Favn.asset_ref()} | {atom(), Favn.asset_ref(), map()}
   @type transition_error :: {:invalid_step_transition, StepState.status(), atom()}
 
   @spec mark_ready(State.t(), Favn.asset_ref()) ::
@@ -25,14 +25,84 @@ defmodule Favn.Runtime.Transitions.Step do
     end
   end
 
+  @spec schedule_retry(State.t(), Favn.asset_ref(), map(), non_neg_integer()) ::
+          {:ok, State.t(), [event()]} | {:error, transition_error()}
+  def schedule_retry(%State{} = state, ref, error, delay_ms)
+      when is_map(error) and is_integer(delay_ms) and delay_ms >= 0 do
+    with {:ok, step} <- fetch_step(state, ref),
+         :ok <- require_status(step, :running, :schedule_retry) do
+      now = DateTime.utc_now()
+      duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
+      next_attempt_at = DateTime.add(now, delay_ms, :millisecond)
+      attempt = max(step.attempt, 1)
+
+      attempt_result = %{
+        attempt: attempt,
+        exec_ref: nil,
+        started_at: step.started_at || now,
+        finished_at: now,
+        duration_ms: max(duration_ms, 0),
+        status: :error,
+        output: nil,
+        meta: %{},
+        error: error
+      }
+
+      next_step = %{
+        step
+        | status: :retrying,
+          started_at: nil,
+          finished_at: nil,
+          duration_ms: nil,
+          output: nil,
+          meta: %{},
+          error: error,
+          next_retry_at: next_attempt_at,
+          attempts: step.attempts ++ [attempt_result]
+      }
+
+      payload = %{
+        attempt: attempt,
+        max_attempts: step.max_attempts,
+        remaining_attempts: max(step.max_attempts - attempt, 0),
+        delay_ms: delay_ms,
+        next_attempt_at: next_attempt_at
+      }
+
+      next_state =
+        state
+        |> put_step(next_step)
+        |> clear_running(ref)
+
+      {:ok, next_state, [{:step_retry_scheduled, ref, payload}]}
+    end
+  end
+
+  @spec requeue_retry(State.t(), Favn.asset_ref()) ::
+          {:ok, State.t(), [event()]} | {:error, transition_error()}
+  def requeue_retry(%State{} = state, ref) do
+    with {:ok, step} <- fetch_step(state, ref),
+         :ok <- require_status(step, :retrying, :requeue_retry) do
+      next_step = %{step | status: :ready, next_retry_at: nil}
+
+      next_state =
+        state
+        |> put_step(next_step)
+        |> enqueue_ready(ref)
+
+      {:ok, next_state, [{:step_ready, ref}]}
+    end
+  end
+
   @spec start_step(State.t(), Favn.asset_ref()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
   def start_step(%State{} = state, ref) do
     with {:ok, step} <- fetch_step(state, ref),
          :ok <- require_status(step, :ready, :start_step) do
       now = DateTime.utc_now()
+      attempt = step.attempt + 1
 
-      next_step = %{step | status: :running, started_at: now}
+      next_step = %{step | status: :running, started_at: now, attempt: attempt}
 
       next_state =
         state
@@ -40,7 +110,15 @@ defmodule Favn.Runtime.Transitions.Step do
         |> remove_ready(ref)
         |> put_running(ref)
 
-      {:ok, next_state, [{:step_started, ref}]}
+      {:ok, next_state,
+       [
+         {:step_started, ref,
+          %{
+            attempt: attempt,
+            max_attempts: step.max_attempts,
+            remaining_attempts: step.max_attempts - attempt
+          }}
+       ]}
     end
   end
 
@@ -52,6 +130,18 @@ defmodule Favn.Runtime.Transitions.Step do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
 
+      attempt_result = %{
+        attempt: step.attempt,
+        exec_ref: nil,
+        started_at: step.started_at || now,
+        finished_at: now,
+        duration_ms: max(duration_ms, 0),
+        status: :ok,
+        output: output,
+        meta: meta,
+        error: nil
+      }
+
       next_step = %{
         step
         | status: :success,
@@ -59,7 +149,9 @@ defmodule Favn.Runtime.Transitions.Step do
           duration_ms: max(duration_ms, 0),
           output: output,
           meta: meta,
-          error: nil
+          error: nil,
+          next_retry_at: nil,
+          attempts: step.attempts ++ [attempt_result]
       }
 
       state =
@@ -71,17 +163,32 @@ defmodule Favn.Runtime.Transitions.Step do
 
       {state, ready_events} = unlock_downstream(state, ref)
 
-      {:ok, state, [{:step_finished, ref} | ready_events]}
+      {:ok, state, [{:step_finished, ref, %{attempt: step.attempt}} | ready_events]}
     end
   end
 
-  @spec complete_failure(State.t(), Favn.asset_ref(), map()) ::
+  @spec complete_failure(State.t(), Favn.asset_ref(), map(), keyword()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def complete_failure(%State{} = state, ref, error) when is_map(error) do
+  def complete_failure(%State{} = state, ref, error, opts \\ [])
+      when is_map(error) and is_list(opts) do
     with {:ok, step} <- fetch_step(state, ref),
          :ok <- require_status(step, :running, :complete_failure) do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
+      retryable? = Keyword.get(opts, :retryable?, false)
+      exhausted? = Keyword.get(opts, :exhausted?, true)
+
+      attempt_result = %{
+        attempt: step.attempt,
+        exec_ref: nil,
+        started_at: step.started_at || now,
+        finished_at: now,
+        duration_ms: max(duration_ms, 0),
+        status: :error,
+        output: nil,
+        meta: %{},
+        error: error
+      }
 
       next_step = %{
         step
@@ -89,7 +196,18 @@ defmodule Favn.Runtime.Transitions.Step do
           finished_at: now,
           duration_ms: max(duration_ms, 0),
           output: nil,
-          error: error
+          error: error,
+          next_retry_at: nil,
+          attempts: step.attempts ++ [attempt_result]
+      }
+
+      payload = %{
+        attempt: step.attempt,
+        max_attempts: step.max_attempts,
+        remaining_attempts: max(step.max_attempts - step.attempt, 0),
+        retryable: retryable?,
+        exhausted: exhausted?,
+        final: true
       }
 
       next_state =
@@ -98,7 +216,7 @@ defmodule Favn.Runtime.Transitions.Step do
         |> clear_running(ref)
         |> put_completed(ref)
 
-      {:ok, next_state, [{:step_failed, ref}]}
+      {:ok, next_state, [{:step_failed, ref, payload}]}
     end
   end
 
@@ -110,6 +228,18 @@ defmodule Favn.Runtime.Transitions.Step do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
 
+      attempt_result = %{
+        attempt: step.attempt,
+        exec_ref: nil,
+        started_at: step.started_at || now,
+        finished_at: now,
+        duration_ms: max(duration_ms, 0),
+        status: :cancelled,
+        output: nil,
+        meta: %{},
+        error: nil
+      }
+
       next_step = %{
         step
         | status: :cancelled,
@@ -117,7 +247,8 @@ defmodule Favn.Runtime.Transitions.Step do
           duration_ms: max(duration_ms, 0),
           output: nil,
           error: nil,
-          terminal_reason: reason
+          terminal_reason: reason,
+          attempts: step.attempts ++ [attempt_result]
       }
 
       next_state =
@@ -126,7 +257,7 @@ defmodule Favn.Runtime.Transitions.Step do
         |> clear_running(ref)
         |> put_completed(ref)
 
-      {:ok, next_state, [{:step_cancelled, ref}]}
+      {:ok, next_state, [{:step_cancelled, ref, %{attempt: step.attempt}}]}
     end
   end
 
@@ -138,6 +269,18 @@ defmodule Favn.Runtime.Transitions.Step do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
 
+      attempt_result = %{
+        attempt: step.attempt,
+        exec_ref: nil,
+        started_at: step.started_at || now,
+        finished_at: now,
+        duration_ms: max(duration_ms, 0),
+        status: :timed_out,
+        output: nil,
+        meta: %{},
+        error: nil
+      }
+
       next_step = %{
         step
         | status: :timed_out,
@@ -145,7 +288,8 @@ defmodule Favn.Runtime.Transitions.Step do
           duration_ms: max(duration_ms, 0),
           output: nil,
           error: nil,
-          terminal_reason: reason
+          terminal_reason: reason,
+          attempts: step.attempts ++ [attempt_result]
       }
 
       next_state =
@@ -154,7 +298,7 @@ defmodule Favn.Runtime.Transitions.Step do
         |> clear_running(ref)
         |> put_completed(ref)
 
-      {:ok, next_state, [{:step_timed_out, ref}]}
+      {:ok, next_state, [{:step_timed_out, ref, %{attempt: step.attempt}}]}
     end
   end
 
@@ -168,7 +312,7 @@ defmodule Favn.Runtime.Transitions.Step do
     {next_steps, events} =
       Enum.reduce(state.steps, {%{}, []}, fn {ref, step}, {acc_steps, acc_events} ->
         case step.status do
-          status when status in [:pending, :ready] ->
+          status when status in [:pending, :ready, :retrying] ->
             event = event_for(replacement_status)
             reason = terminal_reason_for(replacement_status)
 

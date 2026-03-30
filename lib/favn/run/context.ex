@@ -11,7 +11,9 @@ defmodule Favn.Run.Context do
           current_ref: Ref.t(),
           params: map(),
           run_started_at: DateTime.t(),
-          stage: non_neg_integer()
+          stage: non_neg_integer(),
+          attempt: pos_integer(),
+          max_attempts: pos_integer()
         }
 
   defstruct [
@@ -20,6 +22,8 @@ defmodule Favn.Run.Context do
     :current_ref,
     :params,
     :run_started_at,
-    :stage
+    :stage,
+    :attempt,
+    :max_attempts
   ]
 end

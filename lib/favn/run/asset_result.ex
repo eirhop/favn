@@ -14,7 +14,18 @@ defmodule Favn.Run.AssetResult do
           optional(:message) => String.t()
         }
 
-  @type status :: :ok | :error
+  @type status :: :running | :retrying | :ok | :error | :cancelled | :timed_out
+
+  @type attempt_result :: %{
+          attempt: pos_integer(),
+          started_at: DateTime.t(),
+          finished_at: DateTime.t(),
+          duration_ms: non_neg_integer(),
+          status: :ok | :error | :cancelled | :timed_out,
+          output: term() | nil,
+          meta: map(),
+          error: error_details() | nil
+        }
 
   @type t :: %__MODULE__{
           ref: Ref.t(),
@@ -25,7 +36,11 @@ defmodule Favn.Run.AssetResult do
           duration_ms: non_neg_integer(),
           output: term() | nil,
           meta: map(),
-          error: error_details() | nil
+          error: error_details() | nil,
+          attempt_count: non_neg_integer(),
+          max_attempts: pos_integer(),
+          attempts: [attempt_result()],
+          next_retry_at: DateTime.t() | nil
         }
 
   defstruct [
@@ -37,6 +52,10 @@ defmodule Favn.Run.AssetResult do
     :duration_ms,
     output: nil,
     meta: %{},
-    error: nil
+    error: nil,
+    attempt_count: 0,
+    max_attempts: 1,
+    attempts: [],
+    next_retry_at: nil
   ]
 end

@@ -19,6 +19,15 @@ defmodule Favn.Runtime.State do
 
   @type exec_info :: %{ref: Ref.t(), monitor_ref: reference(), pid: pid()}
 
+  @type retry_class ::
+          :exception | :exit | :throw | :timeout | :executor_error | :error_return
+
+  @type retry_policy :: %{
+          max_attempts: pos_integer(),
+          delay_ms: non_neg_integer(),
+          retry_on: [retry_class()]
+        }
+
   @type t :: %__MODULE__{
           run_id: Favn.run_id(),
           run_status: run_status(),
@@ -34,6 +43,8 @@ defmodule Favn.Runtime.State do
           timeout_ms: pos_integer() | nil,
           deadline_at: DateTime.t() | nil,
           timeout_timer_ref: reference() | nil,
+          retry_policy: retry_policy(),
+          retry_timers: %{Ref.t() => reference()},
           steps: %{Ref.t() => StepState.t()},
           ready_queue: [Ref.t()],
           running_steps: MapSet.t(Ref.t()),
@@ -61,6 +72,8 @@ defmodule Favn.Runtime.State do
     timeout_ms: nil,
     deadline_at: nil,
     timeout_timer_ref: nil,
+    retry_policy: %{max_attempts: 1, delay_ms: 0, retry_on: []},
+    retry_timers: %{},
     steps: %{},
     ready_queue: [],
     running_steps: MapSet.new(),

@@ -60,7 +60,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [x] Asynchronous run execution
 - [x] Parallel execution with bounded concurrency
 - [x] Run + step state machine (pending → running → success/failure)
-- [ ] Retry mechanism (configurable)
+- [x] Retry mechanism (configurable, step-level fixed delay + max attempts + retry classes)
 - [x] Cancellation support
 - [x] Timeout handling
 - [ ] SQLite storage adapter
@@ -86,6 +86,7 @@ First production-usable version (single node).
 - [ ] Cron/schedule trigger
 - [ ] Postgres storage adapter
 - [ ] Queueing and admission control
+- [ ] Retry policy extensions (backoff + jitter + richer retry classifiers)
 - [ ] Run deduplication (run keys)
 - [ ] Stable operator APIs (run, cancel, rerun)
 - [ ] `favn_view` alpha (graph + runs + schedules)
@@ -108,6 +109,7 @@ Introduces multi-node execution and placement.
 - [ ] Distributed coordination (leases)
 - [ ] Worker failure detection
 - [ ] Retry/requeue on node failure
+- [ ] Cross-node retry attempt handoff and recovery semantics
 - [ ] Node drain support
 - [ ] Supervision strategy for distributed execution
 

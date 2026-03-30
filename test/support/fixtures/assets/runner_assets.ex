@@ -36,6 +36,24 @@ defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
     {:error, :domain_failure}
   end
 
+  @asset true
+  def transient_then_ok(ctx, _deps) do
+    if ctx.attempt == 1 do
+      raise "transient"
+    else
+      {:ok, %Favn.Asset.Output{output: :recovered}}
+    end
+  end
+
+  @asset true
+  def exits_then_ok(ctx, _deps) do
+    if ctx.attempt == 1 do
+      Process.exit(self(), :transient_exit)
+    else
+      {:ok, %Favn.Asset.Output{output: :exit_recovered}}
+    end
+  end
+
   @asset depends_on: [:returns_error]
   def after_error(_ctx, _deps) do
     {:ok, %Favn.Asset.Output{output: :should_not_run}}

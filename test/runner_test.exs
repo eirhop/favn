@@ -209,11 +209,8 @@ defmodule Favn.RunnerTest do
     assert run.error == %{ref: ref, stage: 1, reason: :domain_failure}
     assert run.target_outputs == %{}
 
-    assert run.asset_results[ref].error == %{
-             kind: :error,
-             reason: :domain_failure,
-             stacktrace: []
-           }
+    assert %{kind: :error, reason: :domain_failure, stacktrace: []} =
+             run.asset_results[ref].error
   end
 
   test "preserves asset metadata in asset_results while keeping outputs as business values" do
@@ -571,5 +568,72 @@ defmodule Favn.RunnerTest do
 
     assert {:ok, timed_out_runs} = Favn.list_runs(status: :timed_out)
     assert Enum.map(timed_out_runs, & &1.id) == [timed_out_run.id]
+  end
+
+  test "retries raised exception and succeeds on a later attempt" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :transient_then_ok},
+               retry: [max_attempts: 2]
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :transient_then_ok}
+
+    assert run.status == :ok
+    assert run.outputs[ref] == :recovered
+    assert run.asset_results[ref].attempt_count == 2
+    assert length(run.asset_results[ref].attempts) == 2
+  end
+
+  test "retries exits and succeeds on a later attempt" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :exits_then_ok},
+               retry: [max_attempts: 2]
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :exits_then_ok}
+
+    assert run.status == :ok
+    assert run.asset_results[ref].attempt_count == 2
+  end
+
+  test "explicit error returns are not retried by default" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_error},
+               retry: [max_attempts: 3]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 1
+  end
+
+  test "explicit error returns can be retried when configured" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_error},
+               retry: [max_attempts: 2, retry_on: [:error_return]]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 2
+  end
+
+  test "run validates retry options" do
+    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: :bad)
+
+    assert {:error, :invalid_retry_max_attempts} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [max_attempts: 0])
+
+    assert {:error, :invalid_retry_delay_ms} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [delay_ms: -1])
+
+    assert {:error, :invalid_retry_retry_on} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [retry_on: [:not_valid]])
   end
 end
