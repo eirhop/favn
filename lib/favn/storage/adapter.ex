@@ -13,7 +13,7 @@ defmodule Favn.Storage.Adapter do
 
     * Run IDs are treated as globally unique identifiers.
     * `put_run/2` is idempotent for the same run ID.
-    * `list_runs/2` returns deterministic newest-first ordering.
+    * `list_runs/2` returns deterministic newest-first ordering by latest persisted write.
     * Adapters should return `{:error, :not_found}` for missing run IDs.
 
   ## Lifecycle

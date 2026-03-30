@@ -42,11 +42,15 @@ defmodule Favn.Storage.Adapter.Memory do
   def put_run(%Run{} = run, _opts) do
     inserted_seq =
       case :ets.lookup(@table_name, run.id) do
-        [{_id, _stored_run, existing_inserted_seq}] -> existing_inserted_seq
-        [] -> System.unique_integer([:monotonic, :positive])
+        [{_id, _stored_run, existing_inserted_seq, _existing_updated_seq}] ->
+          existing_inserted_seq
+
+        [] ->
+          System.unique_integer([:monotonic, :positive])
       end
 
-    true = :ets.insert(@table_name, {run.id, run, inserted_seq})
+    updated_seq = System.unique_integer([:monotonic, :positive])
+    true = :ets.insert(@table_name, {run.id, run, inserted_seq, updated_seq})
     :ok
   rescue
     error -> {:error, error}
@@ -55,7 +59,7 @@ defmodule Favn.Storage.Adapter.Memory do
   @spec get_run(Favn.run_id(), keyword()) :: {:ok, Run.t()} | {:error, :not_found | term()}
   def get_run(run_id, _opts) do
     case :ets.lookup(@table_name, run_id) do
-      [{^run_id, run, _inserted_seq}] -> {:ok, run}
+      [{^run_id, run, _inserted_seq, _updated_seq}] -> {:ok, run}
       [] -> {:error, :not_found}
     end
   rescue
@@ -70,7 +74,7 @@ defmodule Favn.Storage.Adapter.Memory do
     runs =
       @table_name
       |> :ets.tab2list()
-      |> Enum.map(fn {_id, run, inserted_seq} -> {run, inserted_seq} end)
+      |> Enum.map(fn {_id, run, _inserted_seq, updated_seq} -> {run, updated_seq} end)
       |> maybe_filter_status(status)
       |> Enum.sort_by(&sort_key/1, :desc)
       |> Enum.map(&elem(&1, 0))
@@ -90,7 +94,7 @@ defmodule Favn.Storage.Adapter.Memory do
   defp maybe_limit(runs, nil), do: runs
   defp maybe_limit(runs, limit), do: Enum.take(runs, limit)
 
-  defp sort_key({run, inserted_seq}) do
-    {run.started_at, inserted_seq, run.id}
+  defp sort_key({run, updated_seq}) do
+    {updated_seq, run.id}
   end
 end
