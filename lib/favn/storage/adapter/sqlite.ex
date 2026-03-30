@@ -62,7 +62,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         run_blob = excluded.run_blob
       """
 
-      case Repo.transaction(fn ->
+      case Repo.transact(fn ->
              with {:ok, _} <-
                     Ecto.Adapters.SQL.query(
                       Repo,
@@ -81,12 +81,14 @@ defmodule Favn.Storage.Adapter.SQLite do
                     :erlang.term_to_binary(run)
                   ],
                   {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params) do
-               :ok
+               {:ok, :ok}
              else
-               {:error, reason} -> Repo.rollback(reason)
+               {:error, reason} -> {:error, reason}
              end
            end) do
         {:ok, :ok} -> :ok
+        {:ok, {:ok, :ok}} -> :ok
+        {:ok, {:error, reason}} -> {:error, reason}
         {:error, reason} -> {:error, reason}
       end
     end
