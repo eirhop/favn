@@ -2,6 +2,9 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
   use Ecto.Migration
 
   def change do
+    create table(:run_write_orders) do
+    end
+
     create table(:runs, primary_key: false) do
       add :id, :text, primary_key: true
       add :status, :text, null: false

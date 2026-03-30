@@ -30,6 +30,10 @@ defmodule Favn.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      # NOTE:
+      # This project runs in environments where Hex registry access may be blocked
+      # behind a proxy. We pin the Ecto/SQLite dependency chain to git sources and
+      # use overrides so dependency resolution does not require hex.pm metadata.
       {:decimal, git: "https://github.com/ericmj/decimal.git", tag: "v2.3.0", override: true},
       {:telemetry,
        git: "https://github.com/beam-telemetry/telemetry.git", tag: "v1.3.0", override: true},

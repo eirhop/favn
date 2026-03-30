@@ -40,7 +40,6 @@ defmodule Favn.Storage.Adapter.SQLite do
     with {:ok, _repo_config} <- repo_config(opts),
          :ok <- ensure_repo_started() do
       now_us = DateTime.utc_now() |> DateTime.to_unix(:microsecond)
-      updated_seq = System.unique_integer([:monotonic, :positive])
 
       sql = """
       INSERT INTO runs (
@@ -63,18 +62,31 @@ defmodule Favn.Storage.Adapter.SQLite do
         run_blob = excluded.run_blob
       """
 
-      params = [
-        run.id,
-        Atom.to_string(run.status),
-        datetime_to_iso(run.started_at),
-        datetime_to_iso(run.finished_at),
-        now_us,
-        updated_seq,
-        :erlang.term_to_binary(run)
-      ]
-
-      case Ecto.Adapters.SQL.query(Repo, sql, params) do
-        {:ok, _} -> :ok
+      case Repo.transaction(fn ->
+             with {:ok, _} <-
+                    Ecto.Adapters.SQL.query(
+                      Repo,
+                      "INSERT INTO run_write_orders DEFAULT VALUES",
+                      []
+                    ),
+                  {:ok, %{rows: [[updated_seq]]}} <-
+                    Ecto.Adapters.SQL.query(Repo, "SELECT last_insert_rowid()", []),
+                  params <- [
+                    run.id,
+                    Atom.to_string(run.status),
+                    datetime_to_iso(run.started_at),
+                    datetime_to_iso(run.finished_at),
+                    now_us,
+                    updated_seq,
+                    :erlang.term_to_binary(run)
+                  ],
+                  {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params) do
+               :ok
+             else
+               {:error, reason} -> Repo.rollback(reason)
+             end
+           end) do
+        {:ok, :ok} -> :ok
         {:error, reason} -> {:error, reason}
       end
     end
