@@ -7,12 +7,13 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
       add :status, :text, null: false
       add :started_at, :utc_datetime
       add :finished_at, :utc_datetime
-      add :inserted_at, :utc_datetime, null: false
-      add :updated_at, :utc_datetime, null: false
+      add :inserted_at_us, :bigint, null: false
+      add :updated_at_us, :bigint, null: false
+      add :updated_seq, :bigint, null: false
       add :run_blob, :binary, null: false
     end
 
     create index(:runs, [:status])
-    create index(:runs, [:updated_at, :inserted_at, :id])
+    create index(:runs, [:updated_seq, :updated_at_us, :id])
   end
 end

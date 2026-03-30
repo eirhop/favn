@@ -16,19 +16,19 @@ defmodule Favn.Storage.Adapter.SQLite do
   @behaviour Favn.Storage.Adapter
 
   alias Favn.Run
-  alias Favn.Storage.SQLite.Migrations
   alias Favn.Storage.SQLite.Repo
+  alias Favn.Storage.SQLite.Supervisor, as: SQLiteSupervisor
 
   @impl true
   def child_spec(opts) when is_list(opts) do
     with {:ok, repo_config} <- repo_config(opts) do
       child =
         Supervisor.child_spec(
-          {Repo, repo_config},
-          id: Repo,
+          {SQLiteSupervisor, repo_config},
+          id: SQLiteSupervisor,
           restart: :permanent,
           shutdown: 5_000,
-          type: :worker
+          type: :supervisor
         )
 
       {:ok, child}
@@ -38,17 +38,28 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def put_run(%Run{} = run, opts) do
     with {:ok, _repo_config} <- repo_config(opts),
-         :ok <- ensure_migrated() do
-      now = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+         :ok <- ensure_repo_started() do
+      now_us = DateTime.utc_now() |> DateTime.to_unix(:microsecond)
+      updated_seq = System.unique_integer([:monotonic, :positive])
 
       sql = """
-      INSERT INTO runs (id, status, started_at, finished_at, inserted_at, updated_at, run_blob)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
+      INSERT INTO runs (
+        id,
+        status,
+        started_at,
+        finished_at,
+        inserted_at_us,
+        updated_at_us,
+        updated_seq,
+        run_blob
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         started_at = excluded.started_at,
         finished_at = excluded.finished_at,
-        updated_at = excluded.updated_at,
+        updated_at_us = excluded.updated_at_us,
+        updated_seq = excluded.updated_seq,
         run_blob = excluded.run_blob
       """
 
@@ -57,7 +68,8 @@ defmodule Favn.Storage.Adapter.SQLite do
         Atom.to_string(run.status),
         datetime_to_iso(run.started_at),
         datetime_to_iso(run.finished_at),
-        now,
+        now_us,
+        updated_seq,
         :erlang.term_to_binary(run)
       ]
 
@@ -71,11 +83,11 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def get_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     with {:ok, _repo_config} <- repo_config(opts),
-         :ok <- ensure_migrated() do
+         :ok <- ensure_repo_started() do
       sql = "SELECT run_blob FROM runs WHERE id = ?1 LIMIT 1"
 
       case Ecto.Adapters.SQL.query(Repo, sql, [run_id]) do
-        {:ok, %{rows: [[blob]]}} -> {:ok, :erlang.binary_to_term(blob)}
+        {:ok, %{rows: [[blob]]}} -> deserialize_run(blob)
         {:ok, %{rows: []}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
       end
@@ -85,7 +97,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_runs(opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
     with {:ok, _repo_config} <- repo_config(adapter_opts),
-         :ok <- ensure_migrated() do
+         :ok <- ensure_repo_started() do
       status = Keyword.get(opts, :status)
       limit = Keyword.get(opts, :limit)
 
@@ -93,8 +105,17 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       case Ecto.Adapters.SQL.query(Repo, sql, params) do
         {:ok, %{rows: rows}} ->
-          runs = Enum.map(rows, fn [blob] -> :erlang.binary_to_term(blob) end)
-          {:ok, runs}
+          rows
+          |> Enum.reduce_while({:ok, []}, fn [blob], {:ok, acc} ->
+            case deserialize_run(blob) do
+              {:ok, run} -> {:cont, {:ok, [run | acc]}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+          |> case do
+            {:ok, runs} -> {:ok, Enum.reverse(runs)}
+            {:error, reason} -> {:error, reason}
+          end
 
         {:error, reason} ->
           {:error, reason}
@@ -104,41 +125,38 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp build_list_query(nil, nil) do
     {
-      "SELECT run_blob FROM runs ORDER BY updated_at DESC, inserted_at DESC, id DESC",
+      "SELECT run_blob FROM runs ORDER BY updated_seq DESC, updated_at_us DESC, id DESC",
       []
     }
   end
 
   defp build_list_query(status, nil) do
     {
-      "SELECT run_blob FROM runs WHERE status = ?1 ORDER BY updated_at DESC, inserted_at DESC, id DESC",
+      "SELECT run_blob FROM runs WHERE status = ?1 ORDER BY updated_seq DESC, updated_at_us DESC, id DESC",
       [Atom.to_string(status)]
     }
   end
 
   defp build_list_query(nil, limit) do
     {
-      "SELECT run_blob FROM runs ORDER BY updated_at DESC, inserted_at DESC, id DESC LIMIT ?1",
+      "SELECT run_blob FROM runs ORDER BY updated_seq DESC, updated_at_us DESC, id DESC LIMIT ?1",
       [limit]
     }
   end
 
   defp build_list_query(status, limit) do
     {
-      "SELECT run_blob FROM runs WHERE status = ?1 ORDER BY updated_at DESC, inserted_at DESC, id DESC LIMIT ?2",
+      "SELECT run_blob FROM runs WHERE status = ?1 ORDER BY updated_seq DESC, updated_at_us DESC, id DESC LIMIT ?2",
       [Atom.to_string(status), limit]
     }
   end
 
-  defp ensure_migrated do
+  defp ensure_repo_started do
     if Process.whereis(Repo) == nil do
       {:error, :sqlite_repo_not_started}
     else
-      Migrations.migrate!(Repo)
       :ok
     end
-  rescue
-    error -> {:error, error}
   end
 
   defp repo_config(opts) do
@@ -163,6 +181,13 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp datetime_to_iso(nil), do: nil
 
-  defp datetime_to_iso(%DateTime{} = dt),
-    do: DateTime.truncate(dt, :second) |> DateTime.to_iso8601()
+  defp datetime_to_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+
+  defp deserialize_run(blob) when is_binary(blob) do
+    try do
+      {:ok, :erlang.binary_to_term(blob, [:safe])}
+    rescue
+      error -> {:error, {:invalid_run_blob, error}}
+    end
+  end
 end
