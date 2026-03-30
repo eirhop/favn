@@ -212,6 +212,21 @@ defmodule Favn do
       config :favn,
         pubsub_name: MyApp.PubSub
 
+  Run persistence is configured with `:storage_adapter` and
+  `:storage_adapter_opts`.
+
+  For durable single-node SQLite storage:
+
+      import Config
+
+      config :favn,
+        storage_adapter: Favn.Storage.Adapter.SQLite,
+        storage_adapter_opts: [
+          database: "/var/lib/my_app/favn.db",
+          busy_timeout: 5_000,
+          pool_size: 5
+        ]
+
   ## Starting Favn
 
   There is no separate Favn server process that operators start manually.

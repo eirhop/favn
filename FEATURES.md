@@ -63,7 +63,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [x] Retry mechanism (configurable, step-level fixed delay + max attempts + retry classes)
 - [x] Cancellation support
 - [x] Timeout handling
-- [ ] SQLite storage adapter
+- [x] SQLite storage adapter
 - [ ] Stable event schema (runs + steps)
 - [ ] Telemetry integration
 - [ ] Initial materialization/artifact model (replace in-memory-only outputs)

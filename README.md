@@ -107,6 +107,20 @@ Key settings:
 - `:storage_adapter`: run storage adapter module.
 - `:storage_adapter_opts`: options passed to the configured storage adapter.
 
+SQLite durable storage (single-node) can be configured with:
+
+```elixir
+import Config
+
+config :favn,
+  storage_adapter: Favn.Storage.Adapter.SQLite,
+  storage_adapter_opts: [
+    database: "/var/lib/my_app/favn.db",
+    busy_timeout: 5_000,
+    pool_size: 5
+  ]
+```
+
 ## Current limitations
 
 - The default run store is node-local in-memory storage.
