@@ -62,30 +62,34 @@ defmodule Favn.Storage.Adapter.SQLite do
         run_blob = excluded.run_blob
       """
 
-      case Repo.transact(fn ->
-             with {:ok, _} <-
-                    Ecto.Adapters.SQL.query(
-                      Repo,
-                      "INSERT INTO run_write_orders DEFAULT VALUES",
-                      []
-                    ),
-                  {:ok, %{rows: [[updated_seq]]}} <-
-                    Ecto.Adapters.SQL.query(Repo, "SELECT last_insert_rowid()", []),
-                  params <- [
-                    run.id,
-                    Atom.to_string(run.status),
-                    datetime_to_iso(run.started_at),
-                    datetime_to_iso(run.finished_at),
-                    now_us,
-                    updated_seq,
-                    :erlang.term_to_binary(run)
-                  ],
-                  {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params) do
-               {:ok, :ok}
-             else
-               {:error, reason} -> Repo.rollback(reason)
-             end
-           end) do
+      updated_seq_sql = """
+      INSERT INTO favn_counters (name, value)
+      VALUES (?1, 1)
+      ON CONFLICT(name) DO UPDATE SET value = value + 1
+      RETURNING value
+      """
+
+      case Repo.transact(
+             fn ->
+               with {:ok, %{rows: [[updated_seq]]}} <-
+                      Ecto.Adapters.SQL.query(Repo, updated_seq_sql, ["run_write_order"]),
+                    params <- [
+                      run.id,
+                      Atom.to_string(run.status),
+                      datetime_to_iso(run.started_at),
+                      datetime_to_iso(run.finished_at),
+                      now_us,
+                      updated_seq,
+                      :erlang.term_to_binary(run)
+                    ],
+                    {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params) do
+                 {:ok, :ok}
+               else
+                 {:error, reason} -> Repo.rollback(reason)
+               end
+             end,
+             mode: :immediate
+           ) do
         {:ok, :ok} -> :ok
         {:error, reason} -> {:error, reason}
       end
