@@ -10,6 +10,18 @@ defmodule Favn.Runtime.Engine do
     Favn.Runtime.Manager.submit_run(target_ref, opts)
   end
 
+  @spec cancel_run(Favn.run_id()) ::
+          {:ok, :cancelling | :cancelled | :already_terminal}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | :coordinator_unavailable
+             | :timeout_in_progress
+             | term()}
+  def cancel_run(run_id) do
+    Favn.Runtime.Manager.cancel_run(run_id)
+  end
+
   @spec await_run(Favn.run_id(), keyword()) :: {:ok, Favn.Run.t()} | {:error, term()}
   def await_run(run_id, opts \\ []) when is_list(opts) do
     timeout = Keyword.get(opts, :timeout, :infinity)

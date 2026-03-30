@@ -30,6 +30,7 @@ defmodule Favn.Runtime.Coordinator do
   @impl true
   def handle_cast(:start_run, %{state: state} = data) do
     with {:ok, state} <- apply_run_transition(state, :start),
+         {:ok, state} <- maybe_schedule_timeout(state),
          {:ok, state} <- emit_step_ready_for_sources(state),
          {:ok, state} <- dispatch_ready_work(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
@@ -37,6 +38,16 @@ defmodule Favn.Runtime.Coordinator do
     else
       {:error, reason} ->
         {:stop, reason, data}
+    end
+  end
+
+  @impl true
+  def handle_cast({:cancel_run, reason}, %{state: state} = data) when is_map(reason) do
+    with {:ok, state} <- request_cancellation(state, reason),
+         {:ok, state} <- maybe_finalize_terminal(state) do
+      {:noreply, %{data | state: state}}
+    else
+      {:error, reason} -> {:stop, reason, data}
     end
   end
 
@@ -49,6 +60,16 @@ defmodule Favn.Runtime.Coordinator do
     else
       {:error, reason} ->
         {:stop, reason, data}
+    end
+  end
+
+  @impl true
+  def handle_info(:run_deadline_reached, %{state: state} = data) do
+    with {:ok, state} <- request_timeout(state),
+         {:ok, state} <- maybe_finalize_terminal(state) do
+      {:noreply, %{data | state: state}}
+    else
+      {:error, reason} -> {:stop, reason, data}
     end
   end
 
@@ -152,14 +173,32 @@ defmodule Favn.Runtime.Coordinator do
        when is_map(error) do
     case take_execution(state, exec_ref, maybe_ref) do
       {:ok, ref, state} ->
-        with {:ok, state} <-
-               apply_step_transition(state, &StepTransitions.complete_failure(&1, ref, error)),
-             {:ok, state} <- close_admission_with_failure(state, ref, error[:reason]) do
-          {:ok, state}
-        end
+        handle_terminal_step_error(state, ref, error)
 
       {:ignore, state} ->
         {:ok, state}
+    end
+  end
+
+  defp handle_terminal_step_error(%State{run_status: :cancelling} = state, ref, _error) do
+    apply_step_transition(
+      state,
+      &StepTransitions.complete_cancelled(&1, ref, %{kind: :run_cancelled})
+    )
+  end
+
+  defp handle_terminal_step_error(%State{run_status: :timing_out} = state, ref, _error) do
+    apply_step_transition(
+      state,
+      &StepTransitions.complete_timed_out(&1, ref, %{kind: :run_timed_out})
+    )
+  end
+
+  defp handle_terminal_step_error(%State{} = state, ref, error) do
+    with {:ok, state} <-
+           apply_step_transition(state, &StepTransitions.complete_failure(&1, ref, error)),
+         {:ok, state} <- close_admission_with_failure(state, ref, error[:reason]) do
+      {:ok, state}
     end
   end
 
@@ -190,11 +229,33 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
+  defp maybe_finalize_terminal(%State{run_status: :cancelling} = state) do
+    if map_size(state.inflight_execs) == 0 do
+      with {:ok, state} <- maybe_finalize_unresolved(state, :cancelled),
+           {:ok, state} <- apply_run_transition(state, :mark_cancelled) do
+        {:ok, state}
+      end
+    else
+      {:ok, state}
+    end
+  end
+
+  defp maybe_finalize_terminal(%State{run_status: :timing_out} = state) do
+    if map_size(state.inflight_execs) == 0 do
+      with {:ok, state} <- maybe_finalize_unresolved(state, :timed_out),
+           {:ok, state} <- apply_run_transition(state, :mark_timed_out) do
+        {:ok, state}
+      end
+    else
+      {:ok, state}
+    end
+  end
+
   defp maybe_finalize_terminal(%State{} = state), do: {:ok, state}
 
-  defp maybe_finalize_unresolved(%State{} = state) do
+  defp maybe_finalize_unresolved(%State{} = state, replacement_status \\ :skipped) do
     if unresolved_steps?(state) do
-      apply_finalize_unresolved(state, :skipped)
+      apply_finalize_unresolved(state, replacement_status)
     else
       {:ok, state}
     end
@@ -214,6 +275,51 @@ defmodule Favn.Runtime.Coordinator do
   defp maybe_mark_run_failed(%State{} = state, _reason), do: {:ok, state}
 
   defp close_admission(%State{} = state), do: {:ok, %{state | admission_open?: false}}
+
+  defp request_cancellation(%State{run_status: :pending} = state, reason) do
+    with {:ok, state} <- apply_run_transition(state, :start),
+         {:ok, state} <- request_cancellation(state, reason) do
+      {:ok, state}
+    end
+  end
+
+  defp request_cancellation(%State{run_status: :running} = state, reason) do
+    with {:ok, state} <- apply_run_transition(state, :request_cancel),
+         {:ok, state} <- close_admission(state),
+         {:ok, state} <- interrupt_inflight(state, Map.put(reason, :kind, :run_cancelled)) do
+      {:ok, state}
+    end
+  end
+
+  defp request_cancellation(%State{run_status: :cancelling} = state, _reason), do: {:ok, state}
+  defp request_cancellation(%State{} = state, _reason), do: {:ok, state}
+
+  defp request_timeout(%State{run_status: :running} = state) do
+    with {:ok, state} <- apply_run_transition(state, :request_timeout),
+         {:ok, state} <- close_admission(state),
+         {:ok, state} <- interrupt_inflight(state, %{kind: :run_timed_out}) do
+      {:ok, state}
+    end
+  end
+
+  defp request_timeout(%State{} = state), do: {:ok, state}
+
+  defp interrupt_inflight(%State{} = state, reason) do
+    result =
+      Enum.reduce_while(state.inflight_execs, :ok, fn {exec_ref, exec_info}, :ok ->
+        handle = %{exec_ref: exec_ref, monitor_ref: exec_info.monitor_ref, pid: exec_info.pid}
+
+        case executor_module().cancel_step(handle, reason) do
+          :ok -> {:cont, :ok}
+          {:error, err} -> {:halt, {:error, err}}
+        end
+      end)
+
+    case result do
+      :ok -> {:ok, state}
+      {:error, reason} -> {:error, {:executor_cancel_failed, reason}}
+    end
+  end
 
   defp take_execution(%State{} = state, exec_ref, maybe_ref) do
     case Map.pop(state.inflight_execs, exec_ref) do
@@ -315,13 +421,31 @@ defmodule Favn.Runtime.Coordinator do
     {:ok, state}
   end
 
+  defp maybe_schedule_timeout(%State{timeout_ms: nil} = state), do: {:ok, state}
+
+  defp maybe_schedule_timeout(%State{timeout_ms: timeout_ms} = state)
+       when is_integer(timeout_ms) and timeout_ms > 0 do
+    timer_ref = Process.send_after(self(), :run_deadline_reached, timeout_ms)
+    deadline_at = DateTime.add(state.started_at || DateTime.utc_now(), timeout_ms, :millisecond)
+    {:ok, %{state | timeout_timer_ref: timer_ref, deadline_at: deadline_at}}
+  end
+
   defp event_attrs(%State{} = state, {event_name, ref}) do
     stage = stage_for(state, ref)
     {event_name, %{ref: ref, stage: stage}}
   end
 
   defp event_attrs(%State{} = state, event_name) when is_atom(event_name) do
-    payload = if event_name == :run_failed, do: %{error: state.run_error}, else: %{}
+    payload =
+      case event_name do
+        :run_failed -> %{error: state.run_error, terminal_reason: state.run_terminal_reason}
+        :run_cancel_requested -> %{terminal_reason: state.run_terminal_reason}
+        :run_cancelled -> %{terminal_reason: state.run_terminal_reason}
+        :run_timeout_triggered -> %{terminal_reason: state.run_terminal_reason}
+        :run_timed_out -> %{terminal_reason: state.run_terminal_reason}
+        _ -> %{}
+      end
+
     {event_name, %{payload: payload}}
   end
 

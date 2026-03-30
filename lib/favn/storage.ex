@@ -63,7 +63,7 @@ defmodule Favn.Storage do
 
   Supported filters:
 
-    * `:status` - one of `:running | :ok | :error`
+    * `:status` - one of `:running | :ok | :error | :cancelled | :timed_out`
     * `:limit` - positive integer max result count
   """
   @spec list_runs(Favn.list_runs_opts()) :: {:ok, [Run.t()]} | {:error, error()}
@@ -122,7 +122,7 @@ defmodule Favn.Storage do
     limit = Keyword.get(opts, :limit)
 
     cond do
-      not is_nil(status) and status not in [:running, :ok, :error] ->
+      not is_nil(status) and status not in [:running, :ok, :error, :cancelled, :timed_out] ->
         {:error, :invalid_opts}
 
       not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->

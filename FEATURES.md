@@ -61,8 +61,8 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [x] Parallel execution with bounded concurrency
 - [x] Run + step state machine (pending → running → success/failure)
 - [ ] Retry mechanism (configurable)
-- [ ] Cancellation support
-- [ ] Timeout handling
+- [x] Cancellation support
+- [x] Timeout handling
 - [ ] SQLite storage adapter
 - [ ] Stable event schema (runs + steps)
 - [ ] Telemetry integration

@@ -23,6 +23,14 @@ defmodule Favn.Runtime.Executor.Local do
     {:ok, %{exec_ref: exec_ref, monitor_ref: monitor_ref, pid: pid}}
   end
 
+  @impl true
+  def cancel_step(%{pid: pid}, _reason) when is_pid(pid) do
+    Process.exit(pid, :kill)
+    :ok
+  rescue
+    error -> {:error, error}
+  end
+
   defp invoke(asset, %Context{} = ctx, deps) do
     try do
       case apply(asset.module, asset.name, [ctx, deps]) do

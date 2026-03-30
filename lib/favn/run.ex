@@ -9,7 +9,7 @@ defmodule Favn.Run do
   alias Favn.Ref
   alias Favn.Run.AssetResult
 
-  @type status :: :running | :ok | :error
+  @type status :: :running | :ok | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -23,7 +23,8 @@ defmodule Favn.Run do
           outputs: %{Ref.t() => term()},
           target_outputs: %{Ref.t() => term()},
           asset_results: %{Ref.t() => AssetResult.t()},
-          error: term() | nil
+          error: term() | nil,
+          terminal_reason: map() | nil
         }
 
   defstruct [
@@ -38,6 +39,7 @@ defmodule Favn.Run do
     outputs: %{},
     target_outputs: %{},
     asset_results: %{},
-    error: nil
+    error: nil,
+    terminal_reason: nil
   ]
 end

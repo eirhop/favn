@@ -12,6 +12,7 @@ defmodule Favn.Runtime.Events do
           | :run_started
           | :run_cancel_requested
           | :run_cancelled
+          | :run_timeout_triggered
           | :run_failed
           | :run_finished
           | :run_timed_out

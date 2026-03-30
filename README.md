@@ -117,7 +117,7 @@ Key settings:
 ## Runtime behavior in this release
 
 - **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator with bounded parallel step dispatch per run.
-- **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; the public `%Favn.Run{}` projection remains compatible with `:running | :ok | :error`.
+- **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; public run status includes `:running | :ok | :error | :cancelled | :timed_out`.
 - **Execution boundary**: one-step asset invocation is isolated behind an asynchronous runtime executor boundary.
 - **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
   - `:not_found`
@@ -131,7 +131,8 @@ Key settings:
 - **Run lifecycle semantics**
   - `Favn.run/2` returns `{:ok, run_id}` when a run is submitted.
   - Step admission order is deterministic for equally-ready refs; completion order is naturally non-deterministic under parallel execution.
-  - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error}}` on execution failure.
+  - `Favn.cancel_run/1` requests cancellation and returns a cancellation acknowledgement tuple.
+  - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error | :cancelled | :timed_out}}` on non-success terminal outcomes.
   - Failed runs preserve structured failure context in both `run.error` and `run.asset_results[ref].error`.
   - `Favn.get_run/1` returns the latest stored run state for an ID.
 - **Storage error contract**
@@ -146,7 +147,7 @@ Key settings:
 - Durable distributed execution guarantees across nodes.
 - Exactly-once event delivery, replay, or durable event logs.
 - Persistent storage guarantees beyond the configured adapter behavior (default adapter is in-memory and node-local).
-- Global concurrency fairness across runs, retries, cancellation of already-running work, and timeout enforcement.
+- Global concurrency fairness across runs and retries.
 
 ## Roadmap and release focus
 

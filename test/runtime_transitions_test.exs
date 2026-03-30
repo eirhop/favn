@@ -19,6 +19,15 @@ defmodule Favn.RuntimeTransitionsTest do
              RunTransitions.apply(terminal, :start)
   end
 
+  test "run timeout transitions validate lifecycle" do
+    state = %State{run_status: :pending}
+    assert {:ok, state, [:run_started]} = RunTransitions.apply(state, :start)
+    assert {:ok, state, [:run_timeout_triggered]} = RunTransitions.apply(state, :request_timeout)
+    assert state.run_status == :timing_out
+    assert {:ok, state, [:run_timed_out]} = RunTransitions.apply(state, :mark_timed_out)
+    assert state.run_status == :timed_out
+  end
+
   test "step transitions unlock downstream only after upstream success" do
     ref_a = {__MODULE__, :a}
     ref_b = {__MODULE__, :b}
@@ -64,5 +73,19 @@ defmodule Favn.RuntimeTransitionsTest do
     assert state.steps[ref_done].status == :success
     assert state.ready_queue == []
     assert Enum.count(events, &(elem(&1, 0) == :step_skipped)) == 2
+  end
+
+  test "finalize unresolved can mark timed_out deterministically" do
+    ref_pending = {__MODULE__, :pending_step}
+
+    state = %State{
+      steps: %{
+        ref_pending => %StepState{ref: ref_pending, status: :pending}
+      }
+    }
+
+    {state, events} = StepTransitions.finalize_unresolved(state, :timed_out)
+    assert state.steps[ref_pending].status == :timed_out
+    assert events == [{:step_timed_out, ref_pending}]
   end
 end
