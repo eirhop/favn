@@ -66,6 +66,12 @@ defmodule Favn.RunnerTest do
       {:ok, %{exec_ref: exec_ref, monitor_ref: monitor_ref, pid: pid}}
     end
 
+    @impl true
+    def cancel_step(%{pid: pid}, _reason) do
+      Process.exit(pid, :kill)
+      :ok
+    end
+
     defp invoke(asset, %Context{} = ctx, deps) do
       try do
         case apply(asset.module, asset.name, [ctx, deps]) do
@@ -498,5 +504,45 @@ defmodule Favn.RunnerTest do
 
     assert {:ok, done} = Favn.await_run(run_id)
     assert done.status == :ok
+  end
+
+  test "cancel_run/1 cancels a running run and await_run returns cancelled as ok" do
+    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, :cancelling} = Favn.cancel_run(run_id)
+    assert {:ok, run} = Favn.await_run(run_id)
+    assert run.status == :cancelled
+    assert run.terminal_reason[:kind] == :cancelled
+  end
+
+  test "cancel_run/1 returns already_terminal for completed run" do
+    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, _run} = Favn.await_run(run_id)
+    assert {:ok, :already_terminal} = Favn.cancel_run(run_id)
+  end
+
+  test "cancel_run/1 returns not_found for unknown run id" do
+    assert {:error, :not_found} = Favn.cancel_run("missing-run-id")
+  end
+
+  test "run timeout marks run as timed_out" do
+    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 10)
+    assert {:error, run} = Favn.await_run(run_id)
+    assert run.status == :timed_out
+    assert run.terminal_reason[:kind] == :timed_out
+  end
+
+  test "list_runs supports cancelled and timed_out status filters" do
+    assert {:ok, cancelled_run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, :cancelling} = Favn.cancel_run(cancelled_run_id)
+    assert {:ok, cancelled_run} = Favn.await_run(cancelled_run_id)
+
+    assert {:ok, timed_out_run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 10)
+    assert {:error, timed_out_run} = Favn.await_run(timed_out_run_id)
+
+    assert {:ok, cancelled_runs} = Favn.list_runs(status: :cancelled)
+    assert Enum.map(cancelled_runs, & &1.id) == [cancelled_run.id]
+
+    assert {:ok, timed_out_runs} = Favn.list_runs(status: :timed_out)
+    assert Enum.map(timed_out_runs, & &1.id) == [timed_out_run.id]
   end
 end

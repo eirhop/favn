@@ -102,19 +102,77 @@ defmodule Favn.Runtime.Transitions.Step do
     end
   end
 
+  @spec complete_cancelled(State.t(), Favn.asset_ref(), map()) ::
+          {:ok, State.t(), [event()]} | {:error, transition_error()}
+  def complete_cancelled(%State{} = state, ref, reason) when is_map(reason) do
+    with {:ok, step} <- fetch_step(state, ref),
+         :ok <- require_status(step, :running, :complete_cancelled) do
+      now = DateTime.utc_now()
+      duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
+
+      next_step = %{
+        step
+        | status: :cancelled,
+          finished_at: now,
+          duration_ms: max(duration_ms, 0),
+          output: nil,
+          error: nil,
+          terminal_reason: reason
+      }
+
+      next_state =
+        state
+        |> put_step(next_step)
+        |> clear_running(ref)
+        |> put_completed(ref)
+
+      {:ok, next_state, [{:step_cancelled, ref}]}
+    end
+  end
+
+  @spec complete_timed_out(State.t(), Favn.asset_ref(), map()) ::
+          {:ok, State.t(), [event()]} | {:error, transition_error()}
+  def complete_timed_out(%State{} = state, ref, reason) when is_map(reason) do
+    with {:ok, step} <- fetch_step(state, ref),
+         :ok <- require_status(step, :running, :complete_timed_out) do
+      now = DateTime.utc_now()
+      duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
+
+      next_step = %{
+        step
+        | status: :timed_out,
+          finished_at: now,
+          duration_ms: max(duration_ms, 0),
+          output: nil,
+          error: nil,
+          terminal_reason: reason
+      }
+
+      next_state =
+        state
+        |> put_step(next_step)
+        |> clear_running(ref)
+        |> put_completed(ref)
+
+      {:ok, next_state, [{:step_timed_out, ref}]}
+    end
+  end
+
   @doc """
   Finalize unresolved steps deterministically after run failure/cancellation.
   """
-  @spec finalize_unresolved(State.t(), :skipped | :cancelled) :: {State.t(), [event()]}
+  @spec finalize_unresolved(State.t(), :skipped | :cancelled | :timed_out) ::
+          {State.t(), [event()]}
   def finalize_unresolved(%State{} = state, replacement_status)
-      when replacement_status in [:skipped, :cancelled] do
+      when replacement_status in [:skipped, :cancelled, :timed_out] do
     {next_steps, events} =
       Enum.reduce(state.steps, {%{}, []}, fn {ref, step}, {acc_steps, acc_events} ->
         case step.status do
           status when status in [:pending, :ready] ->
             event = event_for(replacement_status)
+            reason = terminal_reason_for(replacement_status)
 
-            {Map.put(acc_steps, ref, %{step | status: replacement_status}),
+            {Map.put(acc_steps, ref, %{step | status: replacement_status, terminal_reason: reason}),
              [{event, ref} | acc_events]}
 
           _ ->
@@ -127,6 +185,10 @@ defmodule Favn.Runtime.Transitions.Step do
 
   defp event_for(:skipped), do: :step_skipped
   defp event_for(:cancelled), do: :step_cancelled
+  defp event_for(:timed_out), do: :step_timed_out
+  defp terminal_reason_for(:skipped), do: %{kind: :skipped}
+  defp terminal_reason_for(:cancelled), do: %{kind: :cancelled}
+  defp terminal_reason_for(:timed_out), do: %{kind: :timed_out}
 
   defp fetch_step(%State{steps: steps}, ref) do
     case Map.fetch(steps, ref) do

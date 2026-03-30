@@ -23,13 +23,16 @@ defmodule Favn.Runtime.Projector do
       outputs: state.outputs,
       target_outputs: target_outputs,
       asset_results: build_asset_results(state),
-      error: state.run_error
+      error: state.run_error,
+      terminal_reason: state.run_terminal_reason
     }
   end
 
   defp public_status(:pending), do: :running
-  defp public_status(status) when status in [:running, :cancelling], do: :running
+  defp public_status(status) when status in [:running, :cancelling, :timing_out], do: :running
   defp public_status(:success), do: :ok
+  defp public_status(:cancelled), do: :cancelled
+  defp public_status(:timed_out), do: :timed_out
   defp public_status(_status), do: :error
 
   defp build_asset_results(%State{} = state) do

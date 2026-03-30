@@ -19,7 +19,8 @@ defmodule Favn.Runtime.StepState do
           duration_ms: non_neg_integer() | nil,
           output: term() | nil,
           meta: map(),
-          error: map() | nil
+          error: map() | nil,
+          terminal_reason: term() | nil
         }
 
   defstruct [
@@ -33,6 +34,7 @@ defmodule Favn.Runtime.StepState do
     duration_ms: nil,
     output: nil,
     meta: %{},
-    error: nil
+    error: nil,
+    terminal_reason: nil
   ]
 end

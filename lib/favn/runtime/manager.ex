@@ -21,25 +21,41 @@ defmodule Favn.Runtime.Manager do
     GenServer.call(__MODULE__, {:submit_run, target_ref, opts}, :infinity)
   end
 
+  @spec cancel_run(Favn.run_id()) ::
+          {:ok, :cancelling | :cancelled | :already_terminal}
+          | {:error, :not_found | :invalid_run_id | term()}
+  def cancel_run(run_id) when is_binary(run_id) do
+    GenServer.call(__MODULE__, {:cancel_run, run_id}, :infinity)
+  end
+
+  def cancel_run(_run_id), do: {:error, :invalid_run_id}
+
   @impl true
-  def init(_opts), do: {:ok, %{run_monitors: %{}}}
+  def init(_opts), do: {:ok, %{run_monitors: %{}, run_pids: %{}}}
 
   @impl true
   def handle_call({:submit_run, target_ref, opts}, _from, state) do
     dependencies = Keyword.get(opts, :dependencies, :all)
     params = Keyword.get(opts, :params, %{})
     max_concurrency = resolve_max_concurrency(opts)
+    timeout_ms = Keyword.get(opts, :timeout_ms)
 
     with :ok <- validate_params(params),
          :ok <- validate_max_concurrency(max_concurrency),
+         :ok <- validate_timeout_ms(timeout_ms),
          {:ok, plan} <- Favn.plan_run(target_ref, dependencies: dependencies),
-         runtime_state <- build_runtime_state(plan, params, max_concurrency),
+         runtime_state <- build_runtime_state(plan, params, max_concurrency, timeout_ms),
          {:ok, pid} <- start_run_coordinator(runtime_state),
          :ok <- persist_initial_snapshot(runtime_state),
          :ok <- emit_run_created(runtime_state),
          :ok <- kickoff_run(pid) do
       ref = Process.monitor(pid)
-      next_state = put_in(state, [:run_monitors, ref], runtime_state.run_id)
+
+      next_state =
+        state
+        |> put_in([:run_monitors, ref], runtime_state.run_id)
+        |> put_in([:run_pids, runtime_state.run_id], pid)
+
       {:reply, {:ok, runtime_state.run_id}, next_state}
     else
       {:start_failed_after_spawn, pid, reason} ->
@@ -52,23 +68,55 @@ defmodule Favn.Runtime.Manager do
   end
 
   @impl true
+  def handle_call({:cancel_run, run_id}, _from, state) do
+    reply =
+      case Favn.Storage.get_run(run_id) do
+        {:ok, %{status: :cancelled}} ->
+          {:ok, :cancelled}
+
+        {:ok, %{status: :running}} ->
+          case Map.fetch(state.run_pids, run_id) do
+            {:ok, pid} ->
+              GenServer.cast(pid, {:cancel_run, %{requested_by: :api}})
+              {:ok, :cancelling}
+
+            :error ->
+              {:ok, :cancelling}
+          end
+
+        {:ok, _run} ->
+          {:ok, :already_terminal}
+
+        {:error, :not_found} ->
+          {:error, :not_found}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     {run_id, remaining} = Map.pop(state.run_monitors, ref)
+    run_pids = if run_id, do: Map.delete(state.run_pids, run_id), else: state.run_pids
 
     if run_id do
       maybe_finalize_crashed_run(run_id, reason)
     end
 
-    {:noreply, %{state | run_monitors: remaining}}
+    {:noreply, %{state | run_monitors: remaining, run_pids: run_pids}}
   end
 
-  defp build_runtime_state(plan, params, max_concurrency) do
+  defp build_runtime_state(plan, params, max_concurrency, timeout_ms) do
     %State{
       run_id: new_run_id(),
       target_refs: plan.target_refs,
       plan: plan,
       params: params,
       max_concurrency: max_concurrency,
+      timeout_ms: timeout_ms,
       event_seq: 1,
       steps: build_steps(plan)
     }
@@ -127,7 +175,7 @@ defmodule Favn.Runtime.Manager do
 
   defp maybe_finalize_crashed_run(run_id, reason) do
     with {:ok, run} <- Favn.Storage.get_run(run_id),
-         true <- run.status == :running do
+         true <- run.status in [:running] do
       failed =
         %{
           run
@@ -162,6 +210,10 @@ defmodule Favn.Runtime.Manager do
 
   defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
   defp validate_max_concurrency(_), do: {:error, :invalid_max_concurrency}
+
+  defp validate_timeout_ms(nil), do: :ok
+  defp validate_timeout_ms(value) when is_integer(value) and value > 0, do: :ok
+  defp validate_timeout_ms(_), do: {:error, :invalid_timeout_ms}
 
   defp resolve_max_concurrency(opts) do
     Keyword.get(opts, :max_concurrency, Application.get_env(:favn, :runtime_max_concurrency, 1))

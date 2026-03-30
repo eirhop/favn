@@ -323,7 +323,7 @@ defmodule Favn do
   Filter options for `list_runs/1`.
   """
   @type list_runs_opts :: [
-          status: :running | :ok | :error,
+          status: :running | :ok | :error | :cancelled | :timed_out,
           limit: pos_integer()
         ]
 
@@ -338,7 +338,8 @@ defmodule Favn do
   @type run_opts :: [
           dependencies: dependencies_mode(),
           params: map(),
-          max_concurrency: pos_integer()
+          max_concurrency: pos_integer(),
+          timeout_ms: pos_integer()
         ]
 
   @typedoc """
@@ -659,6 +660,7 @@ defmodule Favn do
       * `dependencies: :all | :none` (default `:all`)
       * `params: map()` (default `%{}`)
       * `max_concurrency: pos_integer()` (default from runtime config, fallback `1`)
+      * `timeout_ms: pos_integer()` timeout counted from run start
 
   Deterministic behavior:
 
@@ -696,6 +698,23 @@ defmodule Favn do
   end
 
   @doc """
+  Request cancellation of a submitted run.
+
+  Returns:
+
+    * `{:ok, :cancelling}` when cancellation request is accepted
+    * `{:ok, :cancelled}` when run is already cancelled
+    * `{:ok, :already_terminal}` when run already reached a non-cancel terminal status
+    * `{:error, :not_found}` when run ID does not exist
+  """
+  @spec cancel_run(run_id()) ::
+          {:ok, :cancelling | :cancelled | :already_terminal}
+          | {:error, :not_found | :invalid_run_id | term()}
+  def cancel_run(run_id) do
+    Favn.Runtime.Engine.cancel_run(run_id)
+  end
+
+  @doc """
   Block until one submitted run reaches a terminal state.
 
   Accepted options:
@@ -706,7 +725,9 @@ defmodule Favn do
   Returns:
 
     * `{:ok, %Favn.Run{status: :ok}}` on successful completion
+    * `{:ok, %Favn.Run{status: :cancelled}}` when cancellation completes
     * `{:error, %Favn.Run{status: :error}}` when the run fails
+    * `{:error, %Favn.Run{status: :timed_out}}` when the run times out
     * `{:error, :not_found}` when the run ID does not exist
     * `{:error, :timeout}` when timeout elapses before terminal state
     * `{:error, reason}` for storage retrieval failures
@@ -746,7 +767,7 @@ defmodule Favn do
 
   Accepted options:
 
-    * `status: :running | :ok | :error`
+    * `status: :running | :ok | :error | :cancelled | :timed_out`
     * `limit: positive_integer()`
 
   Deterministic behavior:
