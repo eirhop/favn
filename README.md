@@ -121,6 +121,13 @@ config :favn,
   ]
 ```
 
+SQLite ordering notes:
+
+- `runs.updated_seq` is allocated from a dedicated `favn_counters` row (`run_write_order`)
+  inside the same transaction that persists the run snapshot.
+- `list_runs` remains ordered by latest persisted write:
+  `updated_seq DESC, updated_at_us DESC, id DESC`.
+
 ## Current limitations
 
 - The default run store is node-local in-memory storage.

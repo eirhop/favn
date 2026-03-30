@@ -248,9 +248,9 @@ defmodule Favn.RunnerTest do
 
   test "lists runs with status filter and limit in newest-first order" do
     assert {:ok, ok_run_id} = Favn.run({RunnerAssets, :final})
-    assert {:ok, error_run_id} = Favn.run({RunnerAssets, :crashes})
-
     assert {:ok, ok_run} = Favn.await_run(ok_run_id)
+
+    assert {:ok, error_run_id} = Favn.run({RunnerAssets, :crashes})
     assert {:error, error_run} = Favn.await_run(error_run_id)
 
     assert {:ok, all_runs} = Favn.list_runs()
