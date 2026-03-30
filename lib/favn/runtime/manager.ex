@@ -246,8 +246,12 @@ defmodule Favn.Runtime.Manager do
   end
 
   defp normalize_retry_policy(policy) when is_list(policy) do
-    policy = Enum.into(policy, %{})
-    normalize_retry_policy(policy)
+    if Keyword.keyword?(policy) do
+      policy = Enum.into(policy, %{})
+      normalize_retry_policy(policy)
+    else
+      :invalid_retry_policy
+    end
   end
 
   defp normalize_retry_policy(policy) when is_map(policy) do

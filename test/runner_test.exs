@@ -624,8 +624,51 @@ defmodule Favn.RunnerTest do
     assert run.asset_results[ref].attempt_count == 2
   end
 
+  test "explicit {:error, :timeout} stays classified as error_return by default" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_timeout_error},
+               retry: [max_attempts: 3]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_timeout_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 1
+  end
+
+  test "explicit {:error, :timeout} retries when retry_on includes :error_return" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_timeout_error},
+               retry: [max_attempts: 2, retry_on: [:error_return]]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_timeout_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 2
+  end
+
+  test "runtime timeout path remains timed_out terminal" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :slow_asset},
+               timeout_ms: 10,
+               retry: [max_attempts: 3, retry_on: [:timeout]]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    assert run.status == :timed_out
+    assert run.terminal_reason[:kind] == :timed_out
+  end
+
   test "run validates retry options" do
     assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: :bad)
+    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: [:bad])
+    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: [123])
+
+    assert {:error, :invalid_retry_policy} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [123, max_attempts: 2])
 
     assert {:error, :invalid_retry_max_attempts} =
              Favn.run({RunnerAssets, :slow_asset}, retry: [max_attempts: 0])
@@ -635,5 +678,9 @@ defmodule Favn.RunnerTest do
 
     assert {:error, :invalid_retry_retry_on} =
              Favn.run({RunnerAssets, :slow_asset}, retry: [retry_on: [:not_valid]])
+
+    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, run} = Favn.await_run(run_id)
+    assert run.status == :ok
   end
 end

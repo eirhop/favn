@@ -618,8 +618,6 @@ defmodule Favn.Runtime.Coordinator do
   defp classify_error(%{class: class}) when is_atom(class), do: class
   defp classify_error(%{kind: :throw}), do: :throw
   defp classify_error(%{kind: :exit}), do: :exit
-  defp classify_error(%{kind: :error, reason: :timeout}), do: :timeout
-  defp classify_error(%{kind: :error, reason: {:timeout, _}}), do: :timeout
   defp classify_error(%{kind: :error, reason: reason}) when is_struct(reason), do: :exception
   defp classify_error(%{kind: :error}), do: :error_return
   defp classify_error(_), do: :error_return

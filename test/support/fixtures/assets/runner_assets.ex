@@ -36,6 +36,11 @@ defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
     {:error, :domain_failure}
   end
 
+  @asset depends_on: [:base]
+  def returns_timeout_error(_ctx, _deps) do
+    {:error, :timeout}
+  end
+
   @asset true
   def transient_then_ok(ctx, _deps) do
     if ctx.attempt == 1 do
