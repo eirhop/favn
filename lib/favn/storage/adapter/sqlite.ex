@@ -83,12 +83,10 @@ defmodule Favn.Storage.Adapter.SQLite do
                   {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params) do
                {:ok, :ok}
              else
-               {:error, reason} -> {:error, reason}
+               {:error, reason} -> Repo.rollback(reason)
              end
            end) do
         {:ok, :ok} -> :ok
-        {:ok, {:ok, :ok}} -> :ok
-        {:ok, {:error, reason}} -> {:error, reason}
         {:error, reason} -> {:error, reason}
       end
     end
