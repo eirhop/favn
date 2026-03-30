@@ -5,5 +5,6 @@ defmodule Favn.Storage.SQLite.Repo do
 
   use Ecto.Repo,
     otp_app: :favn,
+    priv: "priv/favn/storage/sqlite",
     adapter: Ecto.Adapters.SQLite3
 end

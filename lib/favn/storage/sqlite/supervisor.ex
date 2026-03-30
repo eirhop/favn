@@ -1,10 +1,9 @@
 defmodule Favn.Storage.SQLite.Supervisor do
   @moduledoc """
-  Supervises the SQLite repo after running adapter migrations once at startup.
+  Supervises the SQLite repo after running migrations once at startup.
 
-  NOTE: this bootstrap path currently uses a small custom migration step.
-  Follow-up: evaluate replacing with an `Ecto.Migrator.start_link/1` child-based
-  startup flow if it stays equally small and explicit for Favn.
+  Migrations are run against the runtime-configured SQLite path before the
+  long-lived repo child starts.
   """
 
   use Supervisor
