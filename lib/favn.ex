@@ -333,13 +333,32 @@ defmodule Favn do
   @type run_error :: :not_found | :invalid_opts | {:store_error, term()}
 
   @typedoc """
+  Retry failure classes accepted by run retry policy.
+  """
+  @type retry_class :: :exception | :exit | :throw | :timeout | :executor_error | :error_return
+
+  @typedoc """
+  Retry policy for `run/2`.
+
+    * `max_attempts` includes the first attempt
+    * `delay_ms` is a fixed delay between attempts
+    * `retry_on` controls which failure classes are retried
+  """
+  @type retry_policy :: [
+          max_attempts: pos_integer(),
+          delay_ms: non_neg_integer(),
+          retry_on: [retry_class()]
+        ]
+
+  @typedoc """
   Options for `run/2`.
   """
   @type run_opts :: [
           dependencies: dependencies_mode(),
           params: map(),
           max_concurrency: pos_integer(),
-          timeout_ms: pos_integer()
+          timeout_ms: pos_integer(),
+          retry: boolean() | retry_policy() | map()
         ]
 
   @typedoc """
@@ -661,6 +680,10 @@ defmodule Favn do
       * `params: map()` (default `%{}`)
       * `max_concurrency: pos_integer()` (default from runtime config, fallback `1`)
       * `timeout_ms: pos_integer()` timeout counted from run start
+      * `retry: false | true | keyword() | map()` (default from app config, fallback disabled)
+        * `max_attempts: pos_integer()` (includes first attempt)
+        * `delay_ms: non_neg_integer()` (fixed delay between attempts)
+        * `retry_on: [:exception | :exit | :throw | :timeout | :executor_error | :error_return]`
 
   Deterministic behavior:
 
@@ -672,6 +695,7 @@ defmodule Favn do
     * returns immediately with a generated `run_id`
     * orchestration is owned by supervised runtime processes
     * independent ready steps may execute in parallel up to `max_concurrency`
+    * retries are evaluated per-step and re-admitted under the same bounded concurrency
     * callers can observe progress through `get_run/1`, `list_runs/1`,
       `await_run/2`, and run events
 

@@ -118,6 +118,7 @@ Key settings:
 
 - **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator with bounded parallel step dispatch per run.
 - **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; public run status includes `:running | :ok | :error | :cancelled | :timed_out`.
+- **Step retries**: failed steps can be retried with deterministic step-level policy (`retry` option on `Favn.run/2`) without restarting the run.
 - **Execution boundary**: one-step asset invocation is isolated behind an asynchronous runtime executor boundary.
 - **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
   - `:not_found`

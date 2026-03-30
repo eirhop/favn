@@ -58,6 +58,16 @@ defmodule Favn.RunnerTest do
               Process.unlink(sender)
               exit(:executor_down_before_result)
 
+            :down_normal_before_result ->
+              sender =
+                spawn(fn ->
+                  Process.sleep(10)
+                  send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
+                end)
+
+              Process.unlink(sender)
+              :ok
+
             _ ->
               send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
           end
@@ -209,11 +219,8 @@ defmodule Favn.RunnerTest do
     assert run.error == %{ref: ref, stage: 1, reason: :domain_failure}
     assert run.target_outputs == %{}
 
-    assert run.asset_results[ref].error == %{
-             kind: :error,
-             reason: :domain_failure,
-             stacktrace: []
-           }
+    assert %{kind: :error, reason: :domain_failure, stacktrace: []} =
+             run.asset_results[ref].error
   end
 
   test "preserves asset metadata in asset_results while keeping outputs as business values" do
@@ -383,26 +390,10 @@ defmodule Favn.RunnerTest do
                params: %{notify_pid: parent}
              )
 
-    :ok = Favn.subscribe_run(run_id)
     assert {:ok, _run} = Favn.await_run(run_id)
 
-    events =
-      Stream.repeatedly(fn ->
-        receive do
-          {:favn_run_event, event} -> event
-        after
-          250 -> :done
-        end
-      end)
-      |> Enum.take_while(&(&1 != :done))
-
     started_order =
-      events
-      |> Enum.filter(&(&1.event == :step_started))
-      |> Enum.map(& &1.ref)
-      |> Enum.filter(fn {mod, name} ->
-        mod == RunnerAssets and name in [:parallel_a, :parallel_b, :parallel_c]
-      end)
+      collect_parallel_started_order([])
 
     assert started_order == [
              {RunnerAssets, :parallel_a},
@@ -495,6 +486,20 @@ defmodule Favn.RunnerTest do
            }
   end
 
+  test "DOWN :normal before delayed success result does not synthesize step failure" do
+    Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :slow_asset},
+               max_concurrency: 1,
+               params: %{executor_mode: :down_normal_before_result}
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    assert run.status == :ok
+    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
+  end
+
   test "run/2 returns immediately with a run id while execution continues" do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
     assert is_binary(run_id)
@@ -571,5 +576,138 @@ defmodule Favn.RunnerTest do
 
     assert {:ok, timed_out_runs} = Favn.list_runs(status: :timed_out)
     assert Enum.map(timed_out_runs, & &1.id) == [timed_out_run.id]
+  end
+
+  test "retries raised exception and succeeds on a later attempt" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :transient_then_ok},
+               retry: [max_attempts: 2]
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :transient_then_ok}
+
+    assert run.status == :ok
+    assert run.outputs[ref] == :recovered
+    assert run.asset_results[ref].attempt_count == 2
+    assert length(run.asset_results[ref].attempts) == 2
+  end
+
+  test "retries exits and succeeds on a later attempt" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :exits_then_ok},
+               retry: [max_attempts: 2]
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :exits_then_ok}
+
+    assert run.status == :ok
+    assert run.asset_results[ref].attempt_count == 2
+  end
+
+  test "explicit error returns are not retried by default" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_error},
+               retry: [max_attempts: 3]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 1
+  end
+
+  test "explicit error returns can be retried when configured" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_error},
+               retry: [max_attempts: 2, retry_on: [:error_return]]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 2
+  end
+
+  test "explicit {:error, :timeout} stays classified as error_return by default" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_timeout_error},
+               retry: [max_attempts: 3]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_timeout_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 1
+  end
+
+  test "explicit {:error, :timeout} retries when retry_on includes :error_return" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :returns_timeout_error},
+               retry: [max_attempts: 2, retry_on: [:error_return]]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    ref = {RunnerAssets, :returns_timeout_error}
+
+    assert run.status == :error
+    assert run.asset_results[ref].attempt_count == 2
+  end
+
+  test "runtime timeout path remains timed_out terminal" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :slow_asset},
+               timeout_ms: 10,
+               retry: [max_attempts: 3, retry_on: [:timeout]]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    assert run.status == :timed_out
+    assert run.terminal_reason[:kind] == :timed_out
+  end
+
+  test "run validates retry options" do
+    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: :bad)
+    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: [:bad])
+    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: [123])
+
+    assert {:error, :invalid_retry_policy} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [123, max_attempts: 2])
+
+    assert {:error, :invalid_retry_max_attempts} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [max_attempts: 0])
+
+    assert {:error, :invalid_retry_delay_ms} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [delay_ms: -1])
+
+    assert {:error, :invalid_retry_retry_on} =
+             Favn.run({RunnerAssets, :slow_asset}, retry: [retry_on: [:not_valid]])
+
+    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, run} = Favn.await_run(run_id)
+    assert run.status == :ok
+  end
+
+  defp collect_parallel_started_order(acc) do
+    receive do
+      {:asset_started, name, _at} when name in [:parallel_a, :parallel_b, :parallel_c] ->
+        started = acc ++ [{RunnerAssets, name}]
+
+        if length(started) == 3 do
+          started
+        else
+          collect_parallel_started_order(started)
+        end
+
+      {:asset_started, _name, _at} ->
+        collect_parallel_started_order(acc)
+    after
+      2_000 ->
+        flunk("did not receive all parallel asset start notifications")
+    end
   end
 end

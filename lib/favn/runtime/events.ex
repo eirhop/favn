@@ -20,6 +20,8 @@ defmodule Favn.Runtime.Events do
           | :step_started
           | :step_finished
           | :step_failed
+          | :step_retry_scheduled
+          | :step_retry_exhausted
           | :step_skipped
           | :step_cancelled
           | :step_timed_out
