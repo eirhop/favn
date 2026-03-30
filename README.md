@@ -132,7 +132,7 @@ Key settings:
   - `Favn.run/2` returns `{:ok, run_id}` when a run is submitted.
   - Step admission order is deterministic for equally-ready refs; completion order is naturally non-deterministic under parallel execution.
   - `Favn.cancel_run/1` requests cancellation and returns a cancellation acknowledgement tuple.
-  - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success, `{:ok, %Favn.Run{status: :cancelled}}` on cancellation, or `{:error, %Favn.Run{status: :error | :timed_out}}` on failure/timeout.
+  - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error | :cancelled | :timed_out}}` on non-success terminal outcomes.
   - Failed runs preserve structured failure context in both `run.error` and `run.asset_results[ref].error`.
   - `Favn.get_run/1` returns the latest stored run state for an ID.
 - **Storage error contract**

@@ -706,10 +706,17 @@ defmodule Favn do
     * `{:ok, :cancelled}` when run is already cancelled
     * `{:ok, :already_terminal}` when run already reached a non-cancel terminal status
     * `{:error, :not_found}` when run ID does not exist
+    * `{:error, :coordinator_unavailable}` when run appears running but no live coordinator is available
+    * `{:error, :timeout_in_progress}` when timeout terminalization is already in progress
   """
   @spec cancel_run(run_id()) ::
           {:ok, :cancelling | :cancelled | :already_terminal}
-          | {:error, :not_found | :invalid_run_id | term()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | :coordinator_unavailable
+             | :timeout_in_progress
+             | term()}
   def cancel_run(run_id) do
     Favn.Runtime.Engine.cancel_run(run_id)
   end
@@ -725,7 +732,7 @@ defmodule Favn do
   Returns:
 
     * `{:ok, %Favn.Run{status: :ok}}` on successful completion
-    * `{:ok, %Favn.Run{status: :cancelled}}` when cancellation completes
+    * `{:error, %Favn.Run{status: :cancelled}}` when cancellation completes
     * `{:error, %Favn.Run{status: :error}}` when the run fails
     * `{:error, %Favn.Run{status: :timed_out}}` when the run times out
     * `{:error, :not_found}` when the run ID does not exist

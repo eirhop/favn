@@ -12,7 +12,12 @@ defmodule Favn.Runtime.Engine do
 
   @spec cancel_run(Favn.run_id()) ::
           {:ok, :cancelling | :cancelled | :already_terminal}
-          | {:error, :not_found | :invalid_run_id | term()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | :coordinator_unavailable
+             | :timeout_in_progress
+             | term()}
   def cancel_run(run_id) do
     Favn.Runtime.Manager.cancel_run(run_id)
   end
@@ -37,7 +42,7 @@ defmodule Favn.Runtime.Engine do
         end
 
       {:ok, %Favn.Run{} = run} ->
-        if run.status in [:ok, :cancelled], do: {:ok, run}, else: {:error, run}
+        if run.status == :ok, do: {:ok, run}, else: {:error, run}
 
       {:error, :not_found} ->
         {:error, :not_found}

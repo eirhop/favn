@@ -23,7 +23,12 @@ defmodule Favn.Runtime.Manager do
 
   @spec cancel_run(Favn.run_id()) ::
           {:ok, :cancelling | :cancelled | :already_terminal}
-          | {:error, :not_found | :invalid_run_id | term()}
+          | {:error,
+             :not_found
+             | :invalid_run_id
+             | :coordinator_unavailable
+             | :timeout_in_progress
+             | term()}
   def cancel_run(run_id) when is_binary(run_id) do
     GenServer.call(__MODULE__, {:cancel_run, run_id}, :infinity)
   end
@@ -74,14 +79,15 @@ defmodule Favn.Runtime.Manager do
         {:ok, %{status: :cancelled}} ->
           {:ok, :cancelled}
 
-        {:ok, %{status: :running}} ->
-          case Map.fetch(state.run_pids, run_id) do
-            {:ok, pid} ->
-              GenServer.cast(pid, {:cancel_run, %{requested_by: :api}})
-              {:ok, :cancelling}
+        {:ok, %{status: :running, terminal_reason: %{kind: :timed_out}}} ->
+          {:error, :timeout_in_progress}
 
-            :error ->
-              {:ok, :cancelling}
+        {:ok, %{status: :running}} ->
+          with {:ok, pid} <- Map.fetch(state.run_pids, run_id) do
+            GenServer.cast(pid, {:cancel_run, %{requested_by: :api}})
+            {:ok, :cancelling}
+          else
+            :error -> {:error, :coordinator_unavailable}
           end
 
         {:ok, _run} ->

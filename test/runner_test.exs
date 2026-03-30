@@ -506,10 +506,10 @@ defmodule Favn.RunnerTest do
     assert done.status == :ok
   end
 
-  test "cancel_run/1 cancels a running run and await_run returns cancelled as ok" do
+  test "cancel_run/1 cancels a running run and await_run returns cancelled as error terminal" do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
     assert {:ok, :cancelling} = Favn.cancel_run(run_id)
-    assert {:ok, run} = Favn.await_run(run_id)
+    assert {:error, run} = Favn.await_run(run_id)
     assert run.status == :cancelled
     assert run.terminal_reason[:kind] == :cancelled
   end
@@ -524,6 +524,33 @@ defmodule Favn.RunnerTest do
     assert {:error, :not_found} = Favn.cancel_run("missing-run-id")
   end
 
+  test "cancel_run/1 returns coordinator_unavailable when run is persisted as running but manager has no pid" do
+    run = %Favn.Run{
+      id: "orphan-running-run",
+      status: :running,
+      started_at: DateTime.utc_now(),
+      target_refs: [],
+      plan: %Favn.Plan{}
+    }
+
+    assert :ok = Favn.Storage.put_run(run)
+    assert {:error, :coordinator_unavailable} = Favn.cancel_run(run.id)
+  end
+
+  test "cancel_run/1 returns timeout_in_progress when timeout handling has already started" do
+    run = %Favn.Run{
+      id: "timing-out-run",
+      status: :running,
+      started_at: DateTime.utc_now(),
+      target_refs: [],
+      plan: %Favn.Plan{},
+      terminal_reason: %{kind: :timed_out, triggered_at: DateTime.utc_now()}
+    }
+
+    assert :ok = Favn.Storage.put_run(run)
+    assert {:error, :timeout_in_progress} = Favn.cancel_run(run.id)
+  end
+
   test "run timeout marks run as timed_out" do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 10)
     assert {:error, run} = Favn.await_run(run_id)
@@ -534,7 +561,7 @@ defmodule Favn.RunnerTest do
   test "list_runs supports cancelled and timed_out status filters" do
     assert {:ok, cancelled_run_id} = Favn.run({RunnerAssets, :slow_asset})
     assert {:ok, :cancelling} = Favn.cancel_run(cancelled_run_id)
-    assert {:ok, cancelled_run} = Favn.await_run(cancelled_run_id)
+    assert {:error, cancelled_run} = Favn.await_run(cancelled_run_id)
 
     assert {:ok, timed_out_run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 10)
     assert {:error, timed_out_run} = Favn.await_run(timed_out_run_id)
