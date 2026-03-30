@@ -92,18 +92,22 @@ defmodule Favn.Runtime.Coordinator do
         if MapSet.member?(state.completed_exec_refs, exec_ref) do
           {:noreply, %{data | state: clear_monitor(state, exec_ref, monitor_ref)}}
         else
-          with {:ok, state} <-
-                 handle_step_result(
-                   state,
-                   exec_ref,
-                   nil,
-                   {:error, %{kind: :exit, reason: reason, stacktrace: []}}
-                 ),
-               {:ok, state} <- dispatch_ready_work(state),
-               {:ok, state} <- maybe_finalize_terminal(state) do
-            {:noreply, %{data | state: state}}
+          if abnormal_executor_exit_reason?(reason) do
+            with {:ok, state} <-
+                   handle_step_result(
+                     state,
+                     exec_ref,
+                     nil,
+                     {:error, %{kind: :exit, reason: reason, stacktrace: []}}
+                   ),
+                 {:ok, state} <- dispatch_ready_work(state),
+                 {:ok, state} <- maybe_finalize_terminal(state) do
+              {:noreply, %{data | state: state}}
+            else
+              {:error, reason} -> {:stop, reason, data}
+            end
           else
-            {:error, reason} -> {:stop, reason, data}
+            {:noreply, %{data | state: clear_monitor(state, exec_ref, monitor_ref)}}
           end
         end
 
@@ -114,6 +118,10 @@ defmodule Favn.Runtime.Coordinator do
 
   @impl true
   def handle_info(_msg, data), do: {:noreply, data}
+
+  defp abnormal_executor_exit_reason?(reason) do
+    reason not in [:normal, :shutdown, {:shutdown, :normal}]
+  end
 
   defp dispatch_ready_work(%State{} = state) do
     if dispatch_allowed?(state) and capacity(state) > 0 do

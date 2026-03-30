@@ -58,6 +58,16 @@ defmodule Favn.RunnerTest do
               Process.unlink(sender)
               exit(:executor_down_before_result)
 
+            :down_normal_before_result ->
+              sender =
+                spawn(fn ->
+                  Process.sleep(10)
+                  send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
+                end)
+
+              Process.unlink(sender)
+              :ok
+
             _ ->
               send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
           end
@@ -380,26 +390,10 @@ defmodule Favn.RunnerTest do
                params: %{notify_pid: parent}
              )
 
-    :ok = Favn.subscribe_run(run_id)
     assert {:ok, _run} = Favn.await_run(run_id)
 
-    events =
-      Stream.repeatedly(fn ->
-        receive do
-          {:favn_run_event, event} -> event
-        after
-          250 -> :done
-        end
-      end)
-      |> Enum.take_while(&(&1 != :done))
-
     started_order =
-      events
-      |> Enum.filter(&(&1.event == :step_started))
-      |> Enum.map(& &1.ref)
-      |> Enum.filter(fn {mod, name} ->
-        mod == RunnerAssets and name in [:parallel_a, :parallel_b, :parallel_c]
-      end)
+      collect_parallel_started_order([])
 
     assert started_order == [
              {RunnerAssets, :parallel_a},
@@ -490,6 +484,20 @@ defmodule Favn.RunnerTest do
              stage: 0,
              reason: :executor_down_before_result
            }
+  end
+
+  test "DOWN :normal before delayed success result does not synthesize step failure" do
+    Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
+
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :slow_asset},
+               max_concurrency: 1,
+               params: %{executor_mode: :down_normal_before_result}
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id)
+    assert run.status == :ok
+    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
   end
 
   test "run/2 returns immediately with a run id while execution continues" do
@@ -682,5 +690,24 @@ defmodule Favn.RunnerTest do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
     assert {:ok, run} = Favn.await_run(run_id)
     assert run.status == :ok
+  end
+
+  defp collect_parallel_started_order(acc) do
+    receive do
+      {:asset_started, name, _at} when name in [:parallel_a, :parallel_b, :parallel_c] ->
+        started = acc ++ [{RunnerAssets, name}]
+
+        if length(started) == 3 do
+          started
+        else
+          collect_parallel_started_order(started)
+        end
+
+      {:asset_started, _name, _at} ->
+        collect_parallel_started_order(acc)
+    after
+      2_000 ->
+        flunk("did not receive all parallel asset start notifications")
+    end
   end
 end
