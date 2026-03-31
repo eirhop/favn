@@ -108,16 +108,13 @@ defmodule Favn.Runtime.Events do
         Phoenix.PubSub.broadcast(pubsub_name(), run_topic(run_id), {:favn_run_event, event})
       rescue
         error ->
-          emit_pubsub_telemetry(started, run_id, event_type, attrs, {:error, {:raised, error}})
-          reraise(error, __STACKTRACE__)
+          {:error, {:raised, error}}
       catch
         :throw, reason ->
-          emit_pubsub_telemetry(started, run_id, event_type, attrs, {:error, {:thrown, reason}})
-          throw(reason)
+          {:error, {:thrown, reason}}
 
         :exit, reason ->
-          emit_pubsub_telemetry(started, run_id, event_type, attrs, {:error, {:exited, reason}})
-          exit(reason)
+          {:error, {:exited, reason}}
       end
 
     emit_pubsub_telemetry(started, run_id, event_type, attrs, result)

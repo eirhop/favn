@@ -212,14 +212,13 @@ defmodule Favn.RuntimeTelemetryTest do
   test "emits pubsub telemetry for failure paths" do
     Application.put_env(:favn, :pubsub_name, MissingPubSub)
 
-    assert_raise ArgumentError, fn ->
-      Favn.Runtime.Events.publish_run_event("r1", :run_started, %{
-        seq: 1,
-        entity: :run,
-        status: :running,
-        data: %{}
-      })
-    end
+    assert {:error, {:raised, %ArgumentError{}}} =
+             Favn.Runtime.Events.publish_run_event("r1", :run_started, %{
+               seq: 1,
+               entity: :run,
+               status: :running,
+               data: %{}
+             })
 
     events = drain_telemetry()
 
