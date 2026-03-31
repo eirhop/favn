@@ -157,7 +157,13 @@ defmodule Favn.Runtime.Manager do
   end
 
   defp emit_run_created(%State{} = runtime_state) do
-    Favn.Runtime.Events.publish_run_event(runtime_state.run_id, :run_created, %{seq: 1})
+    Favn.Runtime.Events.publish_run_event(runtime_state.run_id, :run_created, %{
+      seq: 1,
+      entity: :run,
+      status: runtime_state.run_status,
+      data: %{}
+    })
+
     :ok
   end
 
@@ -201,7 +207,9 @@ defmodule Favn.Runtime.Manager do
           _ =
             Favn.Runtime.Events.publish_run_event(run_id, :run_failed, %{
               seq: failed.event_seq,
-              payload: %{error: failed.error}
+              entity: :run,
+              status: failed.status,
+              data: %{error: failed.error}
             })
 
           :ok

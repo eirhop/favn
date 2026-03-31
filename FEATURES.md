@@ -65,7 +65,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [x] Timeout handling
 - [x] SQLite storage adapter
 - [x] SQLite monotonic `updated_seq` allocation via `favn_counters` (replaces `run_write_orders` growth path)
-- [ ] Stable event schema (runs + steps)
+- [x] Stable event schema (runs + steps)
 - [ ] Telemetry integration
 - [ ] Initial materialization/artifact model (replace in-memory-only outputs)
 - [x] Separation of coordinator vs executor internally
@@ -249,3 +249,4 @@ Production-ready orchestrator.
 - This roadmap defines **direction**, not exact implementation order.
 - Features may evolve, but architectural principles should remain stable.
 - Priority is always: **correct architecture > fast feature delivery**.
+- Run/step event schema is versioned with `schema_version` (current `1`); changes are currently allowed to be breaking while Favn remains pre-production.

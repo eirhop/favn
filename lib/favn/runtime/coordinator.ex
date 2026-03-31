@@ -214,12 +214,12 @@ defmodule Favn.Runtime.Coordinator do
     payload = enrich_error(error, classification)
 
     if retryable? and not exhausted? do
-      with {:ok, state} <- emit_retryable_step_failed(state, ref, step, payload),
-           {:ok, state} <-
+      with {:ok, state} <-
              apply_step_transition(
                state,
                &StepTransitions.schedule_retry(&1, ref, payload, state.retry_policy.delay_ms)
              ),
+           {:ok, state} <- emit_retryable_step_failed(state, ref, payload),
            {:ok, state} <- schedule_retry_timer(state, ref) do
         {:ok, state}
       end
@@ -419,7 +419,9 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp emit_retryable_step_failed(%State{} = state, ref, step, error) do
+  defp emit_retryable_step_failed(%State{} = state, ref, error) do
+    step = Map.fetch!(state.steps, ref)
+
     payload = %{
       attempt: step.attempt,
       max_attempts: step.max_attempts,
@@ -541,16 +543,41 @@ defmodule Favn.Runtime.Coordinator do
 
   defp event_attrs(%State{} = state, {event_name, ref}) do
     stage = stage_for(state, ref)
-    {event_name, %{ref: ref, stage: stage}}
+    step = Map.fetch!(state.steps, ref)
+
+    {event_name,
+     %{
+       entity: :step,
+       status: step.status,
+       ref: ref,
+       stage: stage,
+       data: %{
+         attempt: step.attempt,
+         max_attempts: step.max_attempts
+       }
+     }}
   end
 
   defp event_attrs(%State{} = state, {event_name, ref, payload}) when is_map(payload) do
     stage = stage_for(state, ref)
-    {event_name, %{ref: ref, stage: stage, payload: payload}}
+    step = Map.fetch!(state.steps, ref)
+
+    {event_name,
+     %{
+       entity: :step,
+       status: step.status,
+       ref: ref,
+       stage: stage,
+       data:
+         Map.merge(payload, %{
+           attempt: step.attempt,
+           max_attempts: step.max_attempts
+         })
+     }}
   end
 
   defp event_attrs(%State{} = state, event_name) when is_atom(event_name) do
-    payload =
+    data =
       case event_name do
         :run_failed -> %{error: state.run_error, terminal_reason: state.run_terminal_reason}
         :run_cancel_requested -> %{terminal_reason: state.run_terminal_reason}
@@ -560,7 +587,7 @@ defmodule Favn.Runtime.Coordinator do
         _ -> %{}
       end
 
-    {event_name, %{payload: payload}}
+    {event_name, %{entity: :run, status: state.run_status, data: data}}
   end
 
   defp persist_snapshot(%State{} = state) do

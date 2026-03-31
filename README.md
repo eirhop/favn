@@ -163,6 +163,8 @@ SQLite ordering notes:
 - **Event delivery scope**
   - `Favn.subscribe_run/1` and `Favn.unsubscribe_run/1` manage PubSub subscriptions for run topics.
   - Event delivery is best-effort; missing subscribers or publish failures do not change run success/failure outcomes.
+  - Events use a stable envelope schema (`schema_version`, `event_type`, `entity`, `run_id`, `sequence`, `emitted_at`, `status`, `data`, optional `ref`/`stage`).
+  - `status` is the **internal runtime** run/step status at emission time (not `%Favn.Run{}` public status).
 
 ## Not guaranteed yet / non-goals
 
