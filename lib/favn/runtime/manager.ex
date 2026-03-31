@@ -208,7 +208,7 @@ defmodule Favn.Runtime.Manager do
             Favn.Runtime.Events.publish_run_event(run_id, :run_failed, %{
               seq: failed.event_seq,
               entity: :run,
-              status: :failed,
+              status: failed.status,
               data: %{error: failed.error}
             })
 
