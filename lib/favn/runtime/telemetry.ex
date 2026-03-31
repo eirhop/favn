@@ -5,6 +5,11 @@ defmodule Favn.Runtime.Telemetry do
   This module is the single emission boundary for machine-oriented runtime
   telemetry signals. It keeps event naming and metadata conventions stable for
   runtime internals while remaining backend-agnostic.
+
+  Contract rule:
+
+    * measurements contain numeric, aggregatable values only
+    * metadata contains identifiers, dimensions, and classifications only
   """
 
   @type event_name :: [atom()]
@@ -90,7 +95,6 @@ defmodule Favn.Runtime.Telemetry do
     |> maybe_put(:run_status, if(entity == :run, do: status, else: nil))
     |> maybe_put(:step_status, if(entity == :step, do: status, else: nil))
     |> maybe_put(:ref, Map.get(attrs, :ref))
-    |> maybe_put(:stage, Map.get(attrs, :stage))
     |> maybe_put(:sequence, Map.get(attrs, :seq))
     |> maybe_put(:error_kind, data[:error_kind])
     |> maybe_put(:error_class, data[:error_class])

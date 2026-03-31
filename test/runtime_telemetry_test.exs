@@ -91,6 +91,13 @@ defmodule Favn.RuntimeTelemetryTest do
              is_number(m.attempt) and is_number(m.max_attempts) and is_tuple(md.ref)
            end)
 
+    {_, step_start_measurements, step_start_metadata} =
+      fetch_event!(events, [:favn, :runtime, :step, :start])
+
+    assert is_number(step_start_measurements.stage)
+    assert is_nil(Map.get(step_start_metadata, :stage))
+    assert is_atom(step_start_metadata.step_status)
+
     assert has_event?(events, [:favn, :runtime, :step, :stop], fn m, md ->
              is_number(m.duration_ms) and is_tuple(md.ref)
            end)
@@ -106,6 +113,12 @@ defmodule Favn.RuntimeTelemetryTest do
     assert has_event?(events, [:favn, :runtime, :run, :stop], fn m, md ->
              is_number(m.duration_ms) and md.run_id == run_id
            end)
+
+    {_, run_stop_measurements, run_stop_metadata} =
+      fetch_event!(events, [:favn, :runtime, :run, :stop])
+
+    assert is_number(run_stop_measurements.duration_ms)
+    assert is_atom(run_stop_metadata.run_status)
   end
 
   test "emits exception and retry telemetry for failing and retried flows" do
@@ -254,5 +267,10 @@ defmodule Favn.RuntimeTelemetryTest do
   defp assert_count(events, event_name, expected_count) do
     count = Enum.count(events, fn {event, _measurements, _metadata} -> event == event_name end)
     assert count == expected_count
+  end
+
+  defp fetch_event!(events, event_name) do
+    Enum.find(events, fn {event, _measurements, _metadata} -> event == event_name end) ||
+      flunk("expected event #{inspect(event_name)} to be present")
   end
 end
