@@ -223,13 +223,13 @@ defmodule Favn do
 
       import Config
 
-    config :favn,
-      storage_adapter: Favn.Storage.Adapter.SQLite,
-      storage_adapter_opts: [
-        database: "/var/lib/my_app/favn.db",
-        busy_timeout: 5_000,
-        pool_size: 1
-      ]
+      config :favn,
+        storage_adapter: Favn.Storage.Adapter.SQLite,
+        storage_adapter_opts: [
+          database: "/var/lib/my_app/favn.db",
+          busy_timeout: 5_000,
+          pool_size: 1
+        ]
 
   In SQLite mode, run ordering uses a dedicated `favn_counters` row
   (`run_write_order`) to allocate `runs.updated_seq` transactionally.
