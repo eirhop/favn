@@ -70,6 +70,7 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [x] Runtime telemetry taxonomy + naming contract (`[:favn, :runtime, ...]`)
 - [x] Runtime instrumentation at coordinator/executor/storage/pubsub boundaries
 - [x] Telemetry contract tests for core run/step flows
+- [x] Test/CI hygiene improvements (compiled SQLite migrations, quieter test logs, `mix test --no-compile` in CI)
 - [ ] Initial materialization/artifact model (replace in-memory-only outputs)
 - [x] Separation of coordinator vs executor internally
 

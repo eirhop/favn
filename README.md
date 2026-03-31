@@ -117,7 +117,7 @@ config :favn,
   storage_adapter_opts: [
     database: "/var/lib/my_app/favn.db",
     busy_timeout: 5_000,
-    pool_size: 5
+    pool_size: 1
   ]
 ```
 

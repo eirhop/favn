@@ -5,7 +5,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   ## Options
 
     * `:database` - SQLite database path (required)
-    * `:pool_size` - Ecto pool size (default: `5`)
+    * `:pool_size` - Ecto pool size (default: `1`)
     * `:busy_timeout` - sqlite busy timeout in milliseconds (default: `5_000`)
 
   The adapter stores full `%Favn.Run{}` snapshots as Erlang binaries while also
@@ -189,7 +189,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:ok,
          [
            database: database,
-           pool_size: Keyword.get(opts, :pool_size, 5),
+           pool_size: Keyword.get(opts, :pool_size, 1),
            busy_timeout: Keyword.get(opts, :busy_timeout, 5_000)
          ]}
     end

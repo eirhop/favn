@@ -1,5 +1,6 @@
 defmodule Favn.RunnerTest do
   use ExUnit.Case
+  import ExUnit.CaptureLog
 
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
   alias Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore
@@ -440,15 +441,20 @@ defmodule Favn.RunnerTest do
   test "coordinator ignores mismatched ref in executor result and uses tracked ref" do
     Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
 
-    assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :slow_asset},
-               max_concurrency: 1,
-               params: %{executor_mode: :mismatch_ref}
-             )
+    log =
+      capture_log(fn ->
+        assert {:ok, run_id} =
+                 Favn.run({RunnerAssets, :slow_asset},
+                   max_concurrency: 1,
+                   params: %{executor_mode: :mismatch_ref}
+                 )
 
-    assert {:ok, run} = Favn.await_run(run_id)
-    assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
+        assert {:ok, run} = Favn.await_run(run_id)
+        assert run.status == :ok
+        assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
+      end)
+
+    assert log =~ "Executor returned mismatched step ref; using tracked ref."
   end
 
   test "duplicate executor result for same exec_ref is ignored and does not crash coordinator" do
