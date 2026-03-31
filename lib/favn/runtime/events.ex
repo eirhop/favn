@@ -103,17 +103,24 @@ defmodule Favn.Runtime.Events do
       |> maybe_put(:ref, Map.get(attrs, :ref))
       |> maybe_put(:stage, Map.get(attrs, :stage))
 
-    result = Phoenix.PubSub.broadcast(pubsub_name(), run_topic(run_id), {:favn_run_event, event})
-    duration_ms = System.monotonic_time(:millisecond) - started
+    result =
+      try do
+        Phoenix.PubSub.broadcast(pubsub_name(), run_topic(run_id), {:favn_run_event, event})
+      rescue
+        error ->
+          emit_pubsub_telemetry(started, run_id, event_type, attrs, {:error, {:raised, error}})
+          reraise(error, __STACKTRACE__)
+      catch
+        :throw, reason ->
+          emit_pubsub_telemetry(started, run_id, event_type, attrs, {:error, {:thrown, reason}})
+          throw(reason)
 
-    _ =
-      Favn.Runtime.Telemetry.emit_operation(:pubsub, :publish, duration_ms, %{
-        run_id: run_id,
-        event_type: event_type,
-        entity: Map.fetch!(attrs, :entity),
-        result: pubsub_result_status(result)
-      })
+        :exit, reason ->
+          emit_pubsub_telemetry(started, run_id, event_type, attrs, {:error, {:exited, reason}})
+          exit(reason)
+      end
 
+    emit_pubsub_telemetry(started, run_id, event_type, attrs, result)
     result
   end
 
@@ -136,4 +143,30 @@ defmodule Favn.Runtime.Events do
 
   defp pubsub_result_status(:ok), do: :ok
   defp pubsub_result_status({:error, _}), do: :error
+  defp pubsub_result_status(_), do: :error
+
+  defp pubsub_error_kind({:error, _}), do: :error
+  defp pubsub_error_kind(_), do: nil
+
+  defp pubsub_error_class({:error, {:raised, _}}), do: :publish_raise
+  defp pubsub_error_class({:error, {:thrown, _}}), do: :publish_throw
+  defp pubsub_error_class({:error, {:exited, _}}), do: :publish_exit
+  defp pubsub_error_class({:error, _}), do: :publish_error
+  defp pubsub_error_class(_), do: nil
+
+  defp emit_pubsub_telemetry(started, run_id, event_type, attrs, result) do
+    duration_ms = System.monotonic_time(:millisecond) - started
+
+    _ =
+      Favn.Runtime.Telemetry.emit_operation(:pubsub, :publish, duration_ms, %{
+        run_id: run_id,
+        event_type: event_type,
+        entity: Map.fetch!(attrs, :entity),
+        result: pubsub_result_status(result),
+        error_kind: pubsub_error_kind(result),
+        error_class: pubsub_error_class(result)
+      })
+
+    :ok
+  end
 end

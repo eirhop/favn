@@ -21,6 +21,8 @@ defmodule Favn.Runtime.Telemetry do
   @spec emit_runtime_event(atom(), map(), map()) :: :ok
   def emit_runtime_event(event_type, attrs, extra_metadata \\ %{})
       when is_atom(event_type) and is_map(attrs) and is_map(extra_metadata) do
+    attrs = Map.put_new(attrs, :run_id, :unknown)
+
     metadata =
       attrs
       |> base_metadata()
@@ -64,25 +66,29 @@ defmodule Favn.Runtime.Telemetry do
   defp event_name_for(other, _attrs), do: [:favn, :runtime, :event, other]
 
   defp measurement_for(_event_type, attrs) do
-    attrs
-    |> Map.get(:data, %{})
-    |> Map.take([
-      :duration_ms,
-      :queue_wait_ms,
-      :delay_ms,
-      :attempt,
-      :max_attempts,
-      :remaining_attempts
-    ])
+    data = Map.get(attrs, :data, %{})
+
+    %{}
+    |> maybe_put_measurement(:duration_ms, data[:duration_ms])
+    |> maybe_put_measurement(:queue_wait_ms, data[:queue_wait_ms])
+    |> maybe_put_measurement(:delay_ms, data[:delay_ms])
+    |> maybe_put_measurement(:attempt, data[:attempt])
+    |> maybe_put_measurement(:max_attempts, data[:max_attempts])
+    |> maybe_put_measurement(:remaining_attempts, data[:remaining_attempts])
+    |> maybe_put_measurement(:stage, Map.get(attrs, :stage))
+    |> maybe_put_measurement(:event_seq_delta, data[:event_seq_delta])
   end
 
   defp base_metadata(attrs) do
     data = Map.get(attrs, :data, %{})
+    status = Map.get(attrs, :status)
+    entity = Map.get(attrs, :entity)
 
     %{}
     |> maybe_put(:run_id, Map.get(attrs, :run_id))
-    |> maybe_put(:entity, Map.get(attrs, :entity))
-    |> maybe_put(:status, Map.get(attrs, :status))
+    |> maybe_put(:entity, entity)
+    |> maybe_put(:run_status, if(entity == :run, do: status, else: nil))
+    |> maybe_put(:step_status, if(entity == :step, do: status, else: nil))
     |> maybe_put(:ref, Map.get(attrs, :ref))
     |> maybe_put(:stage, Map.get(attrs, :stage))
     |> maybe_put(:sequence, Map.get(attrs, :seq))
@@ -93,4 +99,7 @@ defmodule Favn.Runtime.Telemetry do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp maybe_put_measurement(map, _key, value) when not is_number(value), do: map
+  defp maybe_put_measurement(map, key, value), do: Map.put(map, key, value)
 end
