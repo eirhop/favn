@@ -147,6 +147,7 @@ SQLite ordering notes:
   - `{:store_error, reason}`
 - **Checkpoint persistence policy**: runtime checkpoints are required; if snapshot persistence fails, `Favn.run/2` returns `{:error, {:storage_persist_failed, reason}}`.
 - **Event delivery**: run events are published as best-effort observability signals and do not affect run correctness.
+- **Internal telemetry**: runtime boundaries emit machine-oriented `:telemetry` events under `[:favn, :runtime, ...]` for operators and future external exporters.
 
 ## Guarantees in this release
 

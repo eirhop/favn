@@ -518,12 +518,15 @@ defmodule Favn.Runtime.Coordinator do
       Enum.reduce(events, state, fn event, acc ->
         {event_name, attrs} = event_attrs(acc, event)
         seq = acc.event_seq + 1
+        attrs = Map.merge(attrs, %{run_id: acc.run_id, seq: seq})
+
+        _ = Favn.Runtime.Telemetry.emit_runtime_event(event_name, attrs)
 
         _ =
           Favn.Runtime.Events.publish_run_event(
             acc.run_id,
             event_name,
-            Map.merge(attrs, %{seq: seq})
+            attrs
           )
 
         %{acc | event_seq: seq}
@@ -552,6 +555,7 @@ defmodule Favn.Runtime.Coordinator do
        ref: ref,
        stage: stage,
        data: %{
+         duration_ms: step.duration_ms,
          attempt: step.attempt,
          max_attempts: step.max_attempts
        }
@@ -561,6 +565,8 @@ defmodule Favn.Runtime.Coordinator do
   defp event_attrs(%State{} = state, {event_name, ref, payload}) when is_map(payload) do
     stage = stage_for(state, ref)
     step = Map.fetch!(state.steps, ref)
+    error = step.error || %{}
+    payload = payload_with_error_metadata(payload, error)
 
     {event_name,
      %{
@@ -570,6 +576,7 @@ defmodule Favn.Runtime.Coordinator do
        stage: stage,
        data:
          Map.merge(payload, %{
+           duration_ms: step.duration_ms,
            attempt: step.attempt,
            max_attempts: step.max_attempts
          })
@@ -579,16 +586,41 @@ defmodule Favn.Runtime.Coordinator do
   defp event_attrs(%State{} = state, event_name) when is_atom(event_name) do
     data =
       case event_name do
-        :run_failed -> %{error: state.run_error, terminal_reason: state.run_terminal_reason}
-        :run_cancel_requested -> %{terminal_reason: state.run_terminal_reason}
-        :run_cancelled -> %{terminal_reason: state.run_terminal_reason}
-        :run_timeout_triggered -> %{terminal_reason: state.run_terminal_reason}
-        :run_timed_out -> %{terminal_reason: state.run_terminal_reason}
-        _ -> %{}
+        :run_failed ->
+          %{
+            error: state.run_error,
+            terminal_reason: state.run_terminal_reason,
+            error_class: :run_failed,
+            error_kind: :error
+          }
+
+        :run_cancel_requested ->
+          %{terminal_reason: state.run_terminal_reason}
+
+        :run_cancelled ->
+          %{terminal_reason: state.run_terminal_reason}
+
+        :run_timeout_triggered ->
+          %{terminal_reason: state.run_terminal_reason}
+
+        :run_timed_out ->
+          %{terminal_reason: state.run_terminal_reason}
+
+        _ ->
+          %{}
       end
 
     {event_name, %{entity: :run, status: state.run_status, data: data}}
   end
+
+  defp payload_with_error_metadata(payload, error) do
+    payload
+    |> maybe_put_error_field(:error_kind, Map.get(error, :kind))
+    |> maybe_put_error_field(:error_class, Map.get(error, :class))
+  end
+
+  defp maybe_put_error_field(payload, _key, nil), do: payload
+  defp maybe_put_error_field(payload, key, value), do: Map.put_new(payload, key, value)
 
   defp persist_snapshot(%State{} = state) do
     case state |> Projector.to_public_run() |> Favn.Storage.put_run() do

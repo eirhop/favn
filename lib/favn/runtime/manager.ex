@@ -157,6 +157,15 @@ defmodule Favn.Runtime.Manager do
   end
 
   defp emit_run_created(%State{} = runtime_state) do
+    _ =
+      Favn.Runtime.Telemetry.emit_runtime_event(:run_created, %{
+        run_id: runtime_state.run_id,
+        seq: 1,
+        entity: :run,
+        status: runtime_state.run_status,
+        data: %{}
+      })
+
     Favn.Runtime.Events.publish_run_event(runtime_state.run_id, :run_created, %{
       seq: 1,
       entity: :run,
@@ -204,6 +213,15 @@ defmodule Favn.Runtime.Manager do
 
       case Favn.Storage.put_run(failed) do
         :ok ->
+          _ =
+            Favn.Runtime.Telemetry.emit_runtime_event(:run_failed, %{
+              run_id: run_id,
+              seq: failed.event_seq,
+              entity: :run,
+              status: failed.status,
+              data: %{error: failed.error, error_class: :run_process_crash, error_kind: :exit}
+            })
+
           _ =
             Favn.Runtime.Events.publish_run_event(run_id, :run_failed, %{
               seq: failed.event_seq,

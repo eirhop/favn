@@ -45,7 +45,7 @@ defmodule Favn.Storage do
   """
   @spec put_run(Run.t()) :: :ok | {:error, error()}
   def put_run(%Run{} = run) do
-    adapter_call(fn adapter, opts -> adapter.put_run(run, opts) end)
+    adapter_call(:put_run, fn adapter, opts -> adapter.put_run(run, opts) end)
   end
 
   @doc """
@@ -55,7 +55,7 @@ defmodule Favn.Storage do
   """
   @spec get_run(Favn.run_id()) :: {:ok, Run.t()} | {:error, error()}
   def get_run(run_id) do
-    adapter_call(fn adapter, opts -> adapter.get_run(run_id, opts) end)
+    adapter_call(:get_run, fn adapter, opts -> adapter.get_run(run_id, opts) end)
   end
 
   @doc """
@@ -69,7 +69,9 @@ defmodule Favn.Storage do
   @spec list_runs(Favn.list_runs_opts()) :: {:ok, [Run.t()]} | {:error, error()}
   def list_runs(opts \\ []) when is_list(opts) do
     with :ok <- validate_list_opts(opts) do
-      adapter_call(fn adapter, adapter_opts -> adapter.list_runs(opts, adapter_opts) end)
+      adapter_call(:list_runs, fn adapter, adapter_opts ->
+        adapter.list_runs(opts, adapter_opts)
+      end)
     end
   end
 
@@ -133,15 +135,32 @@ defmodule Favn.Storage do
     end
   end
 
-  defp adapter_call(fun) do
+  defp adapter_call(operation, fun) do
     adapter = adapter_module()
+    started = System.monotonic_time(:millisecond)
 
     with :ok <- validate_adapter(adapter) do
-      adapter
-      |> fun.(adapter_opts())
-      |> normalize_result()
+      result =
+        adapter
+        |> fun.(adapter_opts())
+        |> normalize_result()
+
+      duration_ms = System.monotonic_time(:millisecond) - started
+
+      _ =
+        Favn.Runtime.Telemetry.emit_operation(:storage, operation, duration_ms, %{
+          operation: operation,
+          adapter: adapter,
+          result: storage_result_status(result)
+        })
+
+      result
     end
   end
+
+  defp storage_result_status(:ok), do: :ok
+  defp storage_result_status({:ok, _}), do: :ok
+  defp storage_result_status({:error, _}), do: :error
 
   defp normalize_result(:ok), do: :ok
   defp normalize_result({:ok, _value} = ok), do: ok
