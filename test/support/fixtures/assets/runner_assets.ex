@@ -44,6 +44,7 @@ defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
   @asset true
   def transient_then_ok(ctx, _deps) do
     if ctx.attempt == 1 do
+      Process.sleep(50)
       raise "transient"
     else
       {:ok, %Favn.Asset.Output{output: :recovered}}
