@@ -157,6 +157,15 @@ defmodule Favn.Runtime.Manager do
   end
 
   defp emit_run_created(%State{} = runtime_state) do
+    _ =
+      Favn.Runtime.Telemetry.emit_runtime_event(:run_created, %{
+        run_id: runtime_state.run_id,
+        seq: 1,
+        entity: :run,
+        status: runtime_state.run_status,
+        data: %{}
+      })
+
     Favn.Runtime.Events.publish_run_event(runtime_state.run_id, :run_created, %{
       seq: 1,
       entity: :run,
@@ -205,6 +214,20 @@ defmodule Favn.Runtime.Manager do
       case Favn.Storage.put_run(failed) do
         :ok ->
           _ =
+            Favn.Runtime.Telemetry.emit_runtime_event(:run_failed, %{
+              run_id: run_id,
+              seq: failed.event_seq,
+              entity: :run,
+              status: failed.status,
+              data: %{
+                duration_ms: run_duration_ms(failed),
+                error: failed.error,
+                error_class: :run_process_crash,
+                error_kind: :exit
+              }
+            })
+
+          _ =
             Favn.Runtime.Events.publish_run_event(run_id, :run_failed, %{
               seq: failed.event_seq,
               entity: :run,
@@ -226,6 +249,16 @@ defmodule Favn.Runtime.Manager do
 
   defp validate_params(params) when is_map(params), do: :ok
   defp validate_params(_), do: {:error, :invalid_run_params}
+
+  defp run_duration_ms(run) do
+    case {run.started_at, run.finished_at} do
+      {%DateTime{} = started_at, %DateTime{} = finished_at} ->
+        max(DateTime.diff(finished_at, started_at, :millisecond), 0)
+
+      _ ->
+        nil
+    end
+  end
 
   defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
   defp validate_max_concurrency(_), do: {:error, :invalid_max_concurrency}

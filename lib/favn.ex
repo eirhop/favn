@@ -79,6 +79,10 @@ defmodule Favn do
     * audit trails
     * hooks into telemetry or other observability systems
 
+  Runtime PubSub events are a UI/live-subscription contract. Internal runtime
+  machine telemetry is emitted separately via `:telemetry` event names under
+  `[:favn, :runtime, ...]`.
+
   ## Authoring assets
 
   Assets are defined in normal modules using `Favn.Assets`.

@@ -24,7 +24,9 @@ defmodule Favn.Runtime.Coordinator do
 
   @impl true
   def init(opts) do
-    {:ok, %{state: Keyword.fetch!(opts, :state)}}
+    state = Keyword.fetch!(opts, :state)
+    Logger.metadata(run_id: state.run_id)
+    {:ok, %{state: state}}
   end
 
   @impl true
@@ -124,10 +126,43 @@ defmodule Favn.Runtime.Coordinator do
   end
 
   defp dispatch_ready_work(%State{} = state) do
-    if dispatch_allowed?(state) and capacity(state) > 0 do
-      do_dispatch(state)
-    else
-      {:ok, state}
+    started_ms = System.monotonic_time(:millisecond)
+    ready_before = length(state.ready_queue)
+    inflight_before = map_size(state.inflight_execs)
+
+    result =
+      if dispatch_allowed?(state) and capacity(state) > 0 do
+        do_dispatch(state)
+      else
+        {:ok, state}
+      end
+
+    case result do
+      {:ok, next_state} ->
+        dispatched = max(map_size(next_state.inflight_execs) - inflight_before, 0)
+        duration_ms = System.monotonic_time(:millisecond) - started_ms
+
+        _ =
+          Favn.Runtime.Telemetry.emit_operation(:coordinator, :dispatch, duration_ms, %{
+            run_id: state.run_id,
+            result: :ok,
+            ready_before: ready_before,
+            inflight_before: inflight_before,
+            dispatched_count: dispatched
+          })
+
+        {:ok, next_state}
+
+      {:error, _reason} = error ->
+        duration_ms = System.monotonic_time(:millisecond) - started_ms
+
+        _ =
+          Favn.Runtime.Telemetry.emit_operation(:coordinator, :dispatch, duration_ms, %{
+            run_id: state.run_id,
+            result: :error
+          })
+
+        error
     end
   end
 
@@ -156,8 +191,7 @@ defmodule Favn.Runtime.Coordinator do
     with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, ref)),
          {:ok, asset} <- Favn.Registry.get_asset(ref),
          {:ok, deps} <- dependency_outputs(state, ref),
-         {:ok, handle} <-
-           executor_module().start_step(asset, build_context(state, ref), deps, self(), ref) do
+         {:ok, handle} <- start_executor_step(state, ref, asset, deps) do
       {:ok, put_execution_handle(state, ref, handle)}
     else
       {:error, reason} ->
@@ -314,7 +348,23 @@ defmodule Favn.Runtime.Coordinator do
 
   defp maybe_mark_run_failed(%State{} = state, _reason), do: {:ok, state}
 
-  defp close_admission(%State{} = state), do: {:ok, %{state | admission_open?: false}}
+  defp close_admission(%State{admission_open?: false} = state), do: {:ok, state}
+
+  defp close_admission(%State{} = state) do
+    started_ms = System.monotonic_time(:millisecond)
+    next_state = %{state | admission_open?: false}
+    duration_ms = System.monotonic_time(:millisecond) - started_ms
+
+    _ =
+      Favn.Runtime.Telemetry.emit_operation(:coordinator, :admission, duration_ms, %{
+        run_id: state.run_id,
+        result: :closed,
+        inflight_count: map_size(state.inflight_execs),
+        ready_count: length(state.ready_queue)
+      })
+
+    {:ok, next_state}
+  end
 
   defp request_cancellation(%State{run_status: :pending} = state, reason) do
     with {:ok, state} <- apply_run_transition(state, :start),
@@ -348,10 +398,41 @@ defmodule Favn.Runtime.Coordinator do
     result =
       Enum.reduce_while(state.inflight_execs, :ok, fn {exec_ref, exec_info}, :ok ->
         handle = %{exec_ref: exec_ref, monitor_ref: exec_info.monitor_ref, pid: exec_info.pid}
+        ref = exec_info.ref
+        step = Map.fetch!(state.steps, ref)
+        started_ms = System.monotonic_time(:millisecond)
+        Logger.metadata(ref: inspect(ref), stage: step.stage, attempt: step.attempt)
 
-        case executor_module().cancel_step(handle, reason) do
-          :ok -> {:cont, :ok}
-          {:error, err} -> {:halt, {:error, err}}
+        case safe_cancel_executor_step(handle, reason) do
+          :ok ->
+            duration_ms = System.monotonic_time(:millisecond) - started_ms
+
+            _ =
+              Favn.Runtime.Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
+                run_id: state.run_id,
+                ref: ref,
+                stage: step.stage,
+                attempt: step.attempt,
+                result: :ok
+              })
+
+            {:cont, :ok}
+
+          {:error, err, class, kind} ->
+            duration_ms = System.monotonic_time(:millisecond) - started_ms
+
+            _ =
+              Favn.Runtime.Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
+                run_id: state.run_id,
+                ref: ref,
+                stage: step.stage,
+                attempt: step.attempt,
+                result: :error,
+                error_class: class,
+                error_kind: kind
+              })
+
+            {:halt, {:error, err}}
         end
       end)
 
@@ -518,12 +599,15 @@ defmodule Favn.Runtime.Coordinator do
       Enum.reduce(events, state, fn event, acc ->
         {event_name, attrs} = event_attrs(acc, event)
         seq = acc.event_seq + 1
+        attrs = Map.merge(attrs, %{run_id: acc.run_id, seq: seq})
+
+        _ = Favn.Runtime.Telemetry.emit_runtime_event(event_name, attrs)
 
         _ =
           Favn.Runtime.Events.publish_run_event(
             acc.run_id,
             event_name,
-            Map.merge(attrs, %{seq: seq})
+            attrs
           )
 
         %{acc | event_seq: seq}
@@ -552,6 +636,7 @@ defmodule Favn.Runtime.Coordinator do
        ref: ref,
        stage: stage,
        data: %{
+         duration_ms: step.duration_ms,
          attempt: step.attempt,
          max_attempts: step.max_attempts
        }
@@ -561,6 +646,8 @@ defmodule Favn.Runtime.Coordinator do
   defp event_attrs(%State{} = state, {event_name, ref, payload}) when is_map(payload) do
     stage = stage_for(state, ref)
     step = Map.fetch!(state.steps, ref)
+    error = step.error || %{}
+    payload = payload_with_error_metadata(payload, error)
 
     {event_name,
      %{
@@ -570,6 +657,7 @@ defmodule Favn.Runtime.Coordinator do
        stage: stage,
        data:
          Map.merge(payload, %{
+           duration_ms: step.duration_ms,
            attempt: step.attempt,
            max_attempts: step.max_attempts
          })
@@ -577,18 +665,49 @@ defmodule Favn.Runtime.Coordinator do
   end
 
   defp event_attrs(%State{} = state, event_name) when is_atom(event_name) do
+    run_duration_ms = run_duration_ms(state)
+
     data =
       case event_name do
-        :run_failed -> %{error: state.run_error, terminal_reason: state.run_terminal_reason}
-        :run_cancel_requested -> %{terminal_reason: state.run_terminal_reason}
-        :run_cancelled -> %{terminal_reason: state.run_terminal_reason}
-        :run_timeout_triggered -> %{terminal_reason: state.run_terminal_reason}
-        :run_timed_out -> %{terminal_reason: state.run_terminal_reason}
-        _ -> %{}
+        :run_finished ->
+          %{duration_ms: run_duration_ms}
+
+        :run_failed ->
+          %{
+            duration_ms: run_duration_ms,
+            error: state.run_error,
+            terminal_reason: state.run_terminal_reason,
+            error_class: :run_failed,
+            error_kind: :error
+          }
+
+        :run_cancel_requested ->
+          %{terminal_reason: state.run_terminal_reason}
+
+        :run_cancelled ->
+          %{terminal_reason: state.run_terminal_reason, duration_ms: run_duration_ms}
+
+        :run_timeout_triggered ->
+          %{terminal_reason: state.run_terminal_reason, duration_ms: run_duration_ms}
+
+        :run_timed_out ->
+          %{terminal_reason: state.run_terminal_reason, duration_ms: run_duration_ms}
+
+        _ ->
+          %{}
       end
 
     {event_name, %{entity: :run, status: state.run_status, data: data}}
   end
+
+  defp payload_with_error_metadata(payload, error) do
+    payload
+    |> maybe_put_error_field(:error_kind, Map.get(error, :kind))
+    |> maybe_put_error_field(:error_class, Map.get(error, :class))
+  end
+
+  defp maybe_put_error_field(payload, _key, nil), do: payload
+  defp maybe_put_error_field(payload, key, value), do: Map.put_new(payload, key, value)
 
   defp persist_snapshot(%State{} = state) do
     case state |> Projector.to_public_run() |> Favn.Storage.put_run() do
@@ -660,4 +779,83 @@ defmodule Favn.Runtime.Coordinator do
   defp retryable?(policy, class), do: class in policy.retry_on
 
   defp enrich_error(error, class), do: Map.put(error, :class, class)
+
+  defp start_executor_step(%State{} = state, ref, asset, deps) do
+    step = Map.fetch!(state.steps, ref)
+    ctx = build_context(state, ref)
+    Logger.metadata(ref: inspect(ref), stage: step.stage, attempt: step.attempt)
+    started_ms = System.monotonic_time(:millisecond)
+
+    case safe_start_executor_step(asset, ctx, deps, ref) do
+      {:ok, handle} ->
+        duration_ms = System.monotonic_time(:millisecond) - started_ms
+
+        _ =
+          Favn.Runtime.Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
+            run_id: state.run_id,
+            ref: ref,
+            stage: step.stage,
+            attempt: step.attempt,
+            result: :ok
+          })
+
+        {:ok, handle}
+
+      {:error, reason, class, kind} ->
+        duration_ms = System.monotonic_time(:millisecond) - started_ms
+
+        _ =
+          Favn.Runtime.Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
+            run_id: state.run_id,
+            ref: ref,
+            stage: step.stage,
+            attempt: step.attempt,
+            result: :error,
+            error_class: class,
+            error_kind: kind
+          })
+
+        {:error, reason}
+    end
+  end
+
+  defp safe_start_executor_step(asset, ctx, deps, ref) do
+    executor_module().start_step(asset, ctx, deps, self(), ref)
+    |> unwrap_executor_result()
+  rescue
+    error -> {:error, error, :executor_start_raise, :error}
+  catch
+    :exit, reason -> {:error, reason, :executor_start_exit, :exit}
+    :throw, reason -> {:error, reason, :executor_start_throw, :throw}
+  end
+
+  defp safe_cancel_executor_step(handle, reason) do
+    case executor_module().cancel_step(handle, reason) do
+      :ok -> :ok
+      {:error, err} -> {:error, err, :executor_cancel_error, :error}
+    end
+  rescue
+    error -> {:error, error, :executor_cancel_raise, :error}
+  catch
+    :exit, reason -> {:error, reason, :executor_cancel_exit, :exit}
+    :throw, reason -> {:error, reason, :executor_cancel_throw, :throw}
+  end
+
+  defp unwrap_executor_result({:ok, handle}), do: {:ok, handle}
+
+  defp unwrap_executor_result({:error, reason}),
+    do: {:error, reason, :executor_start_error, :error}
+
+  defp unwrap_executor_result(other), do: {:error, other, :executor_start_invalid_return, :error}
+
+  defp run_duration_ms(%State{} = state) do
+    case state.started_at do
+      %DateTime{} = started_at ->
+        ended_at = state.finished_at || DateTime.utc_now()
+        max(DateTime.diff(ended_at, started_at, :millisecond), 0)
+
+      _ ->
+        nil
+    end
+  end
 end

@@ -45,7 +45,7 @@ defmodule Favn.Storage do
   """
   @spec put_run(Run.t()) :: :ok | {:error, error()}
   def put_run(%Run{} = run) do
-    adapter_call(fn adapter, opts -> adapter.put_run(run, opts) end)
+    adapter_call(:put_run, %{run_id: run.id}, fn adapter, opts -> adapter.put_run(run, opts) end)
   end
 
   @doc """
@@ -55,7 +55,9 @@ defmodule Favn.Storage do
   """
   @spec get_run(Favn.run_id()) :: {:ok, Run.t()} | {:error, error()}
   def get_run(run_id) do
-    adapter_call(fn adapter, opts -> adapter.get_run(run_id, opts) end)
+    adapter_call(:get_run, %{run_id: run_id}, fn adapter, opts ->
+      adapter.get_run(run_id, opts)
+    end)
   end
 
   @doc """
@@ -69,7 +71,9 @@ defmodule Favn.Storage do
   @spec list_runs(Favn.list_runs_opts()) :: {:ok, [Run.t()]} | {:error, error()}
   def list_runs(opts \\ []) when is_list(opts) do
     with :ok <- validate_list_opts(opts) do
-      adapter_call(fn adapter, adapter_opts -> adapter.list_runs(opts, adapter_opts) end)
+      adapter_call(:list_runs, %{run_id: :all}, fn adapter, adapter_opts ->
+        adapter.list_runs(opts, adapter_opts)
+      end)
     end
   end
 
@@ -133,14 +137,62 @@ defmodule Favn.Storage do
     end
   end
 
-  defp adapter_call(fun) do
+  defp adapter_call(operation, metadata, fun) do
     adapter = adapter_module()
+    started = System.monotonic_time(:millisecond)
 
-    with :ok <- validate_adapter(adapter) do
-      adapter
-      |> fun.(adapter_opts())
-      |> normalize_result()
-    end
+    result =
+      case validate_adapter(adapter) do
+        :ok ->
+          safe_adapter_call(adapter, operation, fun)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    duration_ms = System.monotonic_time(:millisecond) - started
+
+    _ =
+      Favn.Runtime.Telemetry.emit_operation(:storage, operation, duration_ms, %{
+        run_id: Map.get(metadata, :run_id, :unknown),
+        operation: operation,
+        adapter: adapter,
+        result: storage_result_status(result),
+        error_kind: storage_error_kind(result),
+        error_class: storage_error_class(result)
+      })
+
+    result
+  end
+
+  defp storage_result_status(:ok), do: :ok
+  defp storage_result_status({:ok, _}), do: :ok
+  defp storage_result_status({:error, _}), do: :error
+  defp storage_result_status(_), do: :error
+
+  defp storage_error_kind({:error, _}), do: :error
+  defp storage_error_kind(_), do: nil
+
+  defp storage_error_class({:error, {:store_error, {:invalid_storage_adapter, _}}}),
+    do: :invalid_adapter
+
+  defp storage_error_class({:error, {:store_error, {:raised, _}}}), do: :adapter_raise
+  defp storage_error_class({:error, {:store_error, {:thrown, _}}}), do: :adapter_throw
+  defp storage_error_class({:error, {:store_error, {:exited, _}}}), do: :adapter_exit
+  defp storage_error_class({:error, {:store_error, _}}), do: :adapter_error
+  defp storage_error_class({:error, :not_found}), do: :not_found
+  defp storage_error_class({:error, :invalid_opts}), do: :invalid_opts
+  defp storage_error_class(_), do: nil
+
+  defp safe_adapter_call(adapter, _operation, fun) do
+    adapter
+    |> fun.(adapter_opts())
+    |> normalize_result()
+  rescue
+    error -> {:error, {:store_error, {:raised, error}}}
+  catch
+    :throw, reason -> {:error, {:store_error, {:thrown, reason}}}
+    :exit, reason -> {:error, {:store_error, {:exited, reason}}}
   end
 
   defp normalize_result(:ok), do: :ok

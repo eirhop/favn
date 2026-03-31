@@ -66,7 +66,10 @@ Turns Favn into a real execution engine with durable state and concurrency.
 - [x] SQLite storage adapter
 - [x] SQLite monotonic `updated_seq` allocation via `favn_counters` (replaces `run_write_orders` growth path)
 - [x] Stable event schema (runs + steps)
-- [ ] Telemetry integration
+- [x] Internal runtime telemetry foundation (`:telemetry` events via `Favn.Runtime.Telemetry`)
+- [x] Runtime telemetry taxonomy + naming contract (`[:favn, :runtime, ...]`)
+- [x] Runtime instrumentation at coordinator/executor/storage/pubsub boundaries
+- [x] Telemetry contract tests for core run/step flows
 - [ ] Initial materialization/artifact model (replace in-memory-only outputs)
 - [x] Separation of coordinator vs executor internally
 
@@ -90,6 +93,8 @@ First production-usable version (single node).
 - [ ] Retry policy extensions (backoff + jitter + richer retry classifiers)
 - [ ] Run deduplication (run keys)
 - [ ] Stable operator APIs (run, cancel, rerun)
+- [ ] User-facing observation/check API design (separate from runtime telemetry)
+- [ ] Business/data-quality signal model (initial schema)
 - [ ] `favn_view` alpha (graph + runs + schedules)
 
 ---
@@ -127,6 +132,7 @@ Makes Favn extensible and ecosystem-ready.
 - [ ] Storage plugin interface (stable)
 - [ ] Trigger plugin interface
 - [ ] Runtime/executor plugin interface
+- [ ] Telemetry exporter plugin interface (OpenTelemetry and other backends)
 - [ ] Connector plugin system
 - [ ] Connector registry (schema + docs + config)
 - [ ] Secret/config reference model

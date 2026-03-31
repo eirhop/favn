@@ -8,6 +8,7 @@ defmodule Favn.Runtime.Executor.Local do
   alias Favn.Asset
   alias Favn.Asset.Output
   alias Favn.Run.Context
+  require Logger
 
   @impl true
   def start_step(%Asset{} = asset, %Context{} = ctx, deps, reply_to, step_ref)
@@ -16,6 +17,13 @@ defmodule Favn.Runtime.Executor.Local do
 
     {pid, monitor_ref} =
       spawn_monitor(fn ->
+        Logger.metadata(
+          run_id: ctx.run_id,
+          ref: inspect(step_ref),
+          stage: ctx.stage,
+          attempt: ctx.attempt
+        )
+
         result = invoke(asset, ctx, deps)
         send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
       end)

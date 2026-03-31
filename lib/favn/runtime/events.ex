@@ -84,6 +84,7 @@ defmodule Favn.Runtime.Events do
   @spec publish_run_event(Favn.run_id(), event_type(), map()) :: :ok | {:error, term()}
   def publish_run_event(run_id, event_type, attrs \\ %{})
       when is_map(attrs) and is_atom(event_type) do
+    started = System.monotonic_time(:millisecond)
     sequence = Map.fetch!(attrs, :seq)
     emitted_at = DateTime.utc_now()
     data = Map.get(attrs, :data, %{})
@@ -102,7 +103,22 @@ defmodule Favn.Runtime.Events do
       |> maybe_put(:ref, Map.get(attrs, :ref))
       |> maybe_put(:stage, Map.get(attrs, :stage))
 
-    Phoenix.PubSub.broadcast(pubsub_name(), run_topic(run_id), {:favn_run_event, event})
+    result =
+      try do
+        Phoenix.PubSub.broadcast(pubsub_name(), run_topic(run_id), {:favn_run_event, event})
+      rescue
+        error ->
+          {:error, {:raised, error}}
+      catch
+        :throw, reason ->
+          {:error, {:thrown, reason}}
+
+        :exit, reason ->
+          {:error, {:exited, reason}}
+      end
+
+    emit_pubsub_telemetry(started, run_id, event_type, attrs, result)
+    result
   end
 
   @doc """
@@ -121,4 +137,33 @@ defmodule Favn.Runtime.Events do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp pubsub_result_status(:ok), do: :ok
+  defp pubsub_result_status({:error, _}), do: :error
+  defp pubsub_result_status(_), do: :error
+
+  defp pubsub_error_kind({:error, _}), do: :error
+  defp pubsub_error_kind(_), do: nil
+
+  defp pubsub_error_class({:error, {:raised, _}}), do: :publish_raise
+  defp pubsub_error_class({:error, {:thrown, _}}), do: :publish_throw
+  defp pubsub_error_class({:error, {:exited, _}}), do: :publish_exit
+  defp pubsub_error_class({:error, _}), do: :publish_error
+  defp pubsub_error_class(_), do: nil
+
+  defp emit_pubsub_telemetry(started, run_id, event_type, attrs, result) do
+    duration_ms = System.monotonic_time(:millisecond) - started
+
+    _ =
+      Favn.Runtime.Telemetry.emit_operation(:pubsub, :publish, duration_ms, %{
+        run_id: run_id,
+        event_type: event_type,
+        entity: Map.fetch!(attrs, :entity),
+        result: pubsub_result_status(result),
+        error_kind: pubsub_error_kind(result),
+        error_class: pubsub_error_class(result)
+      })
+
+    :ok
+  end
 end
