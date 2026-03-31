@@ -343,6 +343,58 @@ defmodule Favn.RunnerTest do
     assert Enum.all?(step_events, &Map.has_key?(&1, :stage))
   end
 
+  test "emits stable event schema envelope for run and step events" do
+    parent = self()
+
+    spawn(fn ->
+      assert {:ok, run_id} =
+               Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: parent})
+
+      assert {:ok, _run} = Favn.await_run(run_id)
+      send(parent, {:run_id, run_id})
+    end)
+
+    run_id =
+      receive do
+        {:announced_run_id, run_id} -> run_id
+      after
+        1_000 -> flunk("did not receive announced run_id from asset context")
+      end
+
+    :ok = Favn.subscribe_run(run_id)
+
+    receive do
+      {:run_id, run_id} -> run_id
+    after
+      2_000 -> flunk("run did not complete")
+    end
+
+    events =
+      Stream.repeatedly(fn ->
+        receive do
+          {:favn_run_event, event} -> event
+        after
+          250 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+
+    assert events != []
+
+    assert Enum.all?(events, fn event ->
+             is_integer(event.schema_version) and event.schema_version >= 1 and
+               is_atom(event.event_type) and
+               event.run_id == run_id and
+               is_integer(event.sequence) and
+               match?(%DateTime{}, event.emitted_at) and
+               is_atom(event.status) and
+               is_map(event.data)
+           end)
+
+    assert Enum.any?(events, &(&1.entity == :run))
+    assert Enum.any?(events, &(&1.entity == :step))
+  end
+
   test "projected asset_results omit skipped steps that never executed" do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :after_error})
     assert {:error, run} = Favn.await_run(run_id)

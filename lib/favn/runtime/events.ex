@@ -4,6 +4,8 @@ defmodule Favn.Runtime.Events do
 
   Favn emits structured lifecycle events over Phoenix PubSub topics keyed by
   run ID so UIs and operators can observe in-flight and completed runs.
+
+  Event payloads follow a stable envelope with `schema_version`.
   """
 
   @typedoc "Run lifecycle event type."
@@ -26,15 +28,32 @@ defmodule Favn.Runtime.Events do
           | :step_cancelled
           | :step_timed_out
 
+  @schema_version 1
+
+  @typedoc "Stable event schema version."
+  @type schema_version :: pos_integer()
+
+  @typedoc "Event entity scope."
+  @type entity :: :run | :step
+
+  @typedoc "Event timestamp."
+  @type emitted_at :: DateTime.t()
+
   @typedoc "Structured event payload broadcast to subscribers."
   @type event :: %{
-          required(:event) => event_type(),
+          required(:schema_version) => schema_version(),
+          required(:event_type) => event_type(),
+          required(:entity) => entity(),
           required(:run_id) => Favn.run_id(),
+          required(:sequence) => non_neg_integer(),
+          required(:emitted_at) => emitted_at(),
+          required(:status) => atom(),
+          required(:data) => map(),
+          required(:event) => event_type(),
           required(:seq) => non_neg_integer(),
           required(:at) => DateTime.t(),
           optional(:ref) => Favn.asset_ref(),
-          optional(:stage) => non_neg_integer(),
-          optional(:payload) => map()
+          optional(:stage) => non_neg_integer()
         }
 
   @doc """
@@ -59,16 +78,27 @@ defmodule Favn.Runtime.Events do
   @spec publish_run_event(Favn.run_id(), event_type(), map()) :: :ok | {:error, term()}
   def publish_run_event(run_id, event_type, attrs \\ %{})
       when is_map(attrs) and is_atom(event_type) do
+    sequence = Map.fetch!(attrs, :seq)
+    emitted_at = DateTime.utc_now()
+    data = Map.get(attrs, :data, %{})
+
     event =
       %{
-        event: event_type,
+        schema_version: @schema_version,
+        event_type: event_type,
+        entity: Map.fetch!(attrs, :entity),
         run_id: run_id,
-        seq: Map.fetch!(attrs, :seq),
-        at: DateTime.utc_now()
+        sequence: sequence,
+        emitted_at: emitted_at,
+        status: Map.fetch!(attrs, :status),
+        data: data,
+        # Backward-compatible aliases retained for current subscribers.
+        event: event_type,
+        seq: sequence,
+        at: emitted_at
       }
       |> maybe_put(:ref, Map.get(attrs, :ref))
       |> maybe_put(:stage, Map.get(attrs, :stage))
-      |> maybe_put(:payload, Map.get(attrs, :payload))
 
     Phoenix.PubSub.broadcast(pubsub_name(), run_topic(run_id), {:favn_run_event, event})
   end
@@ -88,6 +118,5 @@ defmodule Favn.Runtime.Events do
   def run_topic(run_id), do: "favn:run:#{run_id}"
 
   defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, :payload, payload) when payload == %{}, do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

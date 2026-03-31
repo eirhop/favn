@@ -10,26 +10,38 @@ defmodule Favn.EventsTest do
     assert :ok =
              Favn.Runtime.Events.publish_run_event(run_id, :step_finished, %{
                seq: 1,
+               entity: :step,
+               status: :success,
                ref: ref,
                stage: 2,
-               payload: %{duration_ms: 12}
+               data: %{duration_ms: 12}
              })
 
     assert_receive {:favn_run_event,
                     %{
+                      schema_version: 1,
+                      event_type: :step_finished,
+                      entity: :step,
+                      sequence: 1,
+                      status: :success,
+                      data: %{duration_ms: 12},
                       event: :step_finished,
                       run_id: ^run_id,
                       seq: 1,
                       ref: ^ref,
-                      stage: 2,
-                      payload: %{duration_ms: 12}
+                      stage: 2
                     }}
 
     assert :ok = Favn.unsubscribe_run(run_id)
 
     assert :ok =
-             Favn.Runtime.Events.publish_run_event(run_id, :run_finished, %{seq: 2, payload: %{}})
+             Favn.Runtime.Events.publish_run_event(run_id, :run_finished, %{
+               seq: 2,
+               entity: :run,
+               status: :success,
+               data: %{}
+             })
 
-    refute_receive {:favn_run_event, %{event: :run_finished, run_id: ^run_id, seq: 2}}
+    refute_receive {:favn_run_event, %{event_type: :run_finished, run_id: ^run_id, sequence: 2}}
   end
 end

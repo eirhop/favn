@@ -353,6 +353,25 @@ defmodule Favn do
   @type run_error :: :not_found | :invalid_opts | {:store_error, term()}
 
   @typedoc """
+  Stable run event payload delivered to subscribers.
+
+  Event envelope fields:
+
+    * `schema_version` - event schema version (currently `1`)
+    * `event_type` - lifecycle event atom
+    * `entity` - `:run` or `:step`
+    * `run_id` - run identifier
+    * `sequence` - monotonic per-run event sequence
+    * `emitted_at` - event timestamp
+    * `status` - run/step status at emission time
+    * `data` - event-specific details
+    * optional `ref`/`stage` for step events
+
+  Backward-compatible aliases (`event`, `seq`, `at`) are currently retained.
+  """
+  @type run_event :: Favn.Runtime.Events.event()
+
+  @typedoc """
   Retry failure classes accepted by run retry policy.
   """
   @type retry_class :: :exception | :exit | :throw | :timeout | :executor_error | :error_return
@@ -858,6 +877,7 @@ defmodule Favn do
     * events are broadcast on `"favn:run:<run_id>"`
     * delivery is best-effort and observability-only
     * subscription state does not affect execution/persistence semantics
+    * each event follows `t:run_event/0` stable schema envelope
 
   Returns:
 
