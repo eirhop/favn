@@ -363,11 +363,9 @@ defmodule Favn do
     * `run_id` - run identifier
     * `sequence` - monotonic per-run event sequence
     * `emitted_at` - event timestamp
-    * `status` - run/step status at emission time
+    * `status` - internal runtime run/step status at emission time
     * `data` - event-specific details
     * optional `ref`/`stage` for step events
-
-  Backward-compatible aliases (`event`, `seq`, `at`) are currently retained.
   """
   @type run_event :: Favn.Runtime.Events.event()
 

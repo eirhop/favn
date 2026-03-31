@@ -25,9 +25,7 @@ defmodule Favn.EventsTest do
                       sequence: 1,
                       status: :success,
                       data: %{duration_ms: 12},
-                      event: :step_finished,
                       run_id: ^run_id,
-                      seq: 1,
                       ref: ^ref,
                       stage: 2
                     }}

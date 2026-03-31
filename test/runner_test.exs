@@ -301,42 +301,15 @@ defmodule Favn.RunnerTest do
   end
 
   test "emits step_ready and step_started/step_finished events with ref + stage" do
-    parent = self()
-
-    spawn(fn ->
-      assert {:ok, run_id} =
-               Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: parent})
-
-      assert {:ok, _run} = Favn.await_run(run_id)
-      send(parent, {:run_id, run_id})
-    end)
-
-    run_id =
-      receive do
-        {:announced_run_id, run_id} -> run_id
-      after
-        1_000 -> flunk("did not receive announced run_id from asset context")
-      end
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: self()})
 
     :ok = Favn.subscribe_run(run_id)
+    assert {:ok, _run} = Favn.await_run(run_id)
+    events = collect_run_events_until_terminal([])
 
-    receive do
-      {:run_id, run_id} -> run_id
-    after
-      2_000 -> flunk("run did not complete")
-    end
-
-    events =
-      Stream.repeatedly(fn ->
-        receive do
-          {:favn_run_event, event} -> event
-        after
-          250 -> :done
-        end
-      end)
-      |> Enum.take_while(&(&1 != :done))
-
-    step_events = Enum.filter(events, &(&1.event in [:step_ready, :step_started, :step_finished]))
+    step_events =
+      Enum.filter(events, &(&1.event_type in [:step_ready, :step_started, :step_finished]))
 
     assert step_events != []
     assert Enum.all?(step_events, &Map.has_key?(&1, :ref))
@@ -344,40 +317,12 @@ defmodule Favn.RunnerTest do
   end
 
   test "emits stable event schema envelope for run and step events" do
-    parent = self()
-
-    spawn(fn ->
-      assert {:ok, run_id} =
-               Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: parent})
-
-      assert {:ok, _run} = Favn.await_run(run_id)
-      send(parent, {:run_id, run_id})
-    end)
-
-    run_id =
-      receive do
-        {:announced_run_id, run_id} -> run_id
-      after
-        1_000 -> flunk("did not receive announced run_id from asset context")
-      end
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: self()})
 
     :ok = Favn.subscribe_run(run_id)
-
-    receive do
-      {:run_id, run_id} -> run_id
-    after
-      2_000 -> flunk("run did not complete")
-    end
-
-    events =
-      Stream.repeatedly(fn ->
-        receive do
-          {:favn_run_event, event} -> event
-        after
-          250 -> :done
-        end
-      end)
-      |> Enum.take_while(&(&1 != :done))
+    assert {:ok, _run} = Favn.await_run(run_id)
+    events = collect_run_events_until_terminal([])
 
     assert events != []
 
@@ -780,6 +725,22 @@ defmodule Favn.RunnerTest do
     after
       2_000 ->
         flunk("did not receive all parallel asset start notifications")
+    end
+  end
+
+  defp collect_run_events_until_terminal(acc) do
+    receive do
+      {:favn_run_event, event} ->
+        next = acc ++ [event]
+
+        if event.event_type in [:run_finished, :run_failed, :run_cancelled, :run_timed_out] do
+          next
+        else
+          collect_run_events_until_terminal(next)
+        end
+    after
+      2_000 ->
+        flunk("did not receive terminal run event")
     end
   end
 end

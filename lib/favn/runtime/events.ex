@@ -36,6 +36,15 @@ defmodule Favn.Runtime.Events do
   @typedoc "Event entity scope."
   @type entity :: :run | :step
 
+  @typedoc "Internal runtime run status at emission time."
+  @type run_internal_status :: Favn.Runtime.State.run_status()
+
+  @typedoc "Internal runtime step status at emission time."
+  @type step_internal_status :: Favn.Runtime.StepState.status()
+
+  @typedoc "Internal runtime status carried by an event."
+  @type event_status :: run_internal_status() | step_internal_status()
+
   @typedoc "Event timestamp."
   @type emitted_at :: DateTime.t()
 
@@ -47,11 +56,8 @@ defmodule Favn.Runtime.Events do
           required(:run_id) => Favn.run_id(),
           required(:sequence) => non_neg_integer(),
           required(:emitted_at) => emitted_at(),
-          required(:status) => atom(),
+          required(:status) => event_status(),
           required(:data) => map(),
-          required(:event) => event_type(),
-          required(:seq) => non_neg_integer(),
-          required(:at) => DateTime.t(),
           optional(:ref) => Favn.asset_ref(),
           optional(:stage) => non_neg_integer()
         }
@@ -91,11 +97,7 @@ defmodule Favn.Runtime.Events do
         sequence: sequence,
         emitted_at: emitted_at,
         status: Map.fetch!(attrs, :status),
-        data: data,
-        # Backward-compatible aliases retained for current subscribers.
-        event: event_type,
-        seq: sequence,
-        at: emitted_at
+        data: data
       }
       |> maybe_put(:ref, Map.get(attrs, :ref))
       |> maybe_put(:stage, Map.get(attrs, :stage))

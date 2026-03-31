@@ -249,4 +249,4 @@ Production-ready orchestrator.
 - This roadmap defines **direction**, not exact implementation order.
 - Features may evolve, but architectural principles should remain stable.
 - Priority is always: **correct architecture > fast feature delivery**.
-- Run/step event schema is versioned with `schema_version` (current `1`); additive changes should preserve existing fields and alias compatibility.
+- Run/step event schema is versioned with `schema_version` (current `1`); changes are currently allowed to be breaking while Favn remains pre-production.
