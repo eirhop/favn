@@ -214,12 +214,12 @@ defmodule Favn.Runtime.Coordinator do
     payload = enrich_error(error, classification)
 
     if retryable? and not exhausted? do
-      with {:ok, state} <- emit_retryable_step_failed(state, ref, step, payload),
-           {:ok, state} <-
+      with {:ok, state} <-
              apply_step_transition(
                state,
                &StepTransitions.schedule_retry(&1, ref, payload, state.retry_policy.delay_ms)
              ),
+           {:ok, state} <- emit_retryable_step_failed(state, ref, payload),
            {:ok, state} <- schedule_retry_timer(state, ref) do
         {:ok, state}
       end
@@ -419,7 +419,9 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp emit_retryable_step_failed(%State{} = state, ref, step, error) do
+  defp emit_retryable_step_failed(%State{} = state, ref, error) do
+    step = Map.fetch!(state.steps, ref)
+
     payload = %{
       attempt: step.attempt,
       max_attempts: step.max_attempts,

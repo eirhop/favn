@@ -645,6 +645,26 @@ defmodule Favn.RunnerTest do
     assert length(run.asset_results[ref].attempts) == 2
   end
 
+  test "retryable step_failed event reflects retrying status in stable envelope" do
+    assert {:ok, run_id} =
+             Favn.run({RunnerAssets, :transient_then_ok},
+               retry: [max_attempts: 2]
+             )
+
+    :ok = Favn.subscribe_run(run_id)
+
+    assert {:ok, _run} = Favn.await_run(run_id)
+
+    assert_receive {:favn_run_event,
+                    %{
+                      event_type: :step_failed,
+                      status: :retrying,
+                      entity: :step,
+                      data: %{retryable: true, final: false, exhausted: false}
+                    }},
+                   1_000
+  end
+
   test "retries exits and succeeds on a later attempt" do
     assert {:ok, run_id} =
              Favn.run({RunnerAssets, :exits_then_ok},
