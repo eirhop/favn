@@ -8,7 +8,7 @@ The main api interface for library is found in `/lib/favn.ex`. This file contain
 The most important file is `FEATURES.md`. We will use this file to document our progress and roadmap.
 
 **Important rules**
-- Flix is cuttentluyi private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
+- Favn is currently in private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
 - Always start by reading `/lib/favn.ex` and `readme.md` to get overview of project, code interface and progress
 - Keep status of roadmap features and task list always up to date in `FEATURES.md`. 
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
@@ -16,6 +16,13 @@ The most important file is `FEATURES.md`. We will use this file to document our 
 - We are using git dependencies and not hex. Therefore following commands must be run before compile and testing:
     - mix archive.install github hexpm/hex branch latest --force
     - mix deps.get
+
+### Breaking changes and legacy code
+- Breaking changes are allowed until we have a real production release and external users depending on the API >v1.0.
+- Do not keep compatibility layers, aliases, or transitional code unless explicitly requested.
+- Prefer a clean and consistent design over preserving outdated behavior.
+- Remove legacy code instead of carrying it forward.
+- When changing contracts, update docs, tests, and types to match the new source of truth immediately.
 
 ## What the agent should optimize for
 
