@@ -43,11 +43,11 @@ Favn is built to be:
 - reliable — execution you can trust in production  
 - observable — clear insight into runs, state, and flow  
 - ergonomic — simple APIs with strong documentation at the center  
-- agent-friendly — easy for both humans and AI to understand, use, and extend  
+- developer-friendly — simple Elixir-first authoring with explicit orchestration behavior  
 
-Whether you're building ETL pipelines, system integrations, workflows, or AI-driven processes, Favn acts as the layer that holds everything together and ensures it runs as expected.
+Whether you're building ETL/ELT asset pipelines, Favn acts as the layer that keeps asset dependencies, execution, and runtime state predictable.
 
-Favn doesn’t just run your workflows. It takes care of them.
+Favn doesn’t just run your assets. It takes care of them.
 
 ## Quickstart
 
@@ -177,10 +177,10 @@ SQLite ordering notes:
 
 ## Roadmap and release focus
 
-- Add durable production-ready storage adapters with stronger operational guarantees.
-- Expand run query capabilities for richer operator UIs.
-- Improve event observability integrations (telemetry/export pipelines).
-- Add release packaging/versioning via Hex.
+- Keep v1 strictly asset-first for ETL/ELT orchestration.
+- Move orchestration concerns (triggers/pipelines/config) outside the function-level DSL.
+- Add freshness/materialization-aware runtime behavior and operator visibility.
+- Deliver strong single-node production support before broader platform expansion.
 
 ## Installation
 
