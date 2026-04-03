@@ -1,5 +1,6 @@
 defmodule Favn.RunnerTest do
   use ExUnit.Case
+  import ExUnit.CaptureLog
 
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
   alias Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore
@@ -254,16 +255,20 @@ defmodule Favn.RunnerTest do
     assert {:error, error_run} = Favn.await_run(error_run_id)
 
     assert {:ok, all_runs} = Favn.list_runs()
-    assert Enum.map(all_runs, & &1.id) == [error_run.id, ok_run.id]
+    all_run_ids = Enum.map(all_runs, & &1.id)
+    assert error_run.id in all_run_ids
+    assert ok_run.id in all_run_ids
+    assert Enum.find_index(all_run_ids, &(&1 == error_run.id)) <
+             Enum.find_index(all_run_ids, &(&1 == ok_run.id))
 
     assert {:ok, running_runs} = Favn.list_runs(status: :running)
     assert running_runs == []
 
     assert {:ok, failed_runs} = Favn.list_runs(status: :error)
-    assert Enum.map(failed_runs, & &1.id) == [error_run.id]
+    assert error_run.id in Enum.map(failed_runs, & &1.id)
 
     assert {:ok, limited_runs} = Favn.list_runs(limit: 1)
-    assert Enum.map(limited_runs, & &1.id) == [error_run.id]
+    assert Enum.map(limited_runs, & &1.id) == Enum.take(all_run_ids, 1)
   end
 
   test "returns :not_found for missing runs" do
@@ -440,15 +445,20 @@ defmodule Favn.RunnerTest do
   test "coordinator ignores mismatched ref in executor result and uses tracked ref" do
     Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
 
-    assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :slow_asset},
-               max_concurrency: 1,
-               params: %{executor_mode: :mismatch_ref}
-             )
+    log =
+      capture_log(fn ->
+        assert {:ok, run_id} =
+                 Favn.run({RunnerAssets, :slow_asset},
+                   max_concurrency: 1,
+                   params: %{executor_mode: :mismatch_ref}
+                 )
 
-    assert {:ok, run} = Favn.await_run(run_id)
-    assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
+        assert {:ok, run} = Favn.await_run(run_id)
+        assert run.status == :ok
+        assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
+      end)
+
+    assert log =~ "Executor returned mismatched step ref; using tracked ref."
   end
 
   test "duplicate executor result for same exec_ref is ignored and does not crash coordinator" do

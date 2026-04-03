@@ -20,13 +20,21 @@ jobs:
           otp-version: '27.2'
 
       - name: Install Hex
+        env:
+          MIX_ENV: test
         run: mix archive.install github hexpm/hex branch latest --force
 
       - name: Fetch dependencies
+        env:
+          MIX_ENV: test
         run: mix deps.get
 
       - name: Compile
+        env:
+          MIX_ENV: test
         run: mix compile --warnings-as-errors
 
       - name: Test
-        run: mix test
+        env:
+          MIX_ENV: test
+        run: mix test --no-compile

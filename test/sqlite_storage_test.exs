@@ -15,7 +15,11 @@ defmodule Favn.SQLiteStorageTest do
         "favn_sqlite_#{System.unique_integer([:positive, :monotonic])}.db"
       )
 
-    :ok = Favn.TestSetup.configure_storage_adapter(Favn.Storage.Adapter.SQLite, database: db_path)
+    :ok =
+      Favn.TestSetup.configure_storage_adapter(Favn.Storage.Adapter.SQLite,
+        database: db_path,
+        pool_size: 1
+      )
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
     :ok = Migrations.migrate!(Repo)
 

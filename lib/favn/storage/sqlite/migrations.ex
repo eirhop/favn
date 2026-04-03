@@ -3,13 +3,15 @@ defmodule Favn.Storage.SQLite.Migrations do
   Runs SQLite migrations for the durable storage adapter.
   """
 
+  alias Favn.Storage.SQLite.Migrations.CreateRuns
+
+  @migrations [{20260330000000, CreateRuns}]
+
   @spec migrate!(module()) :: :ok
   def migrate!(repo) do
-    path = Application.app_dir(:favn, "priv/favn/storage/sqlite/migrations")
-
     {:ok, _migrated, _apps} =
       Ecto.Migrator.with_repo(repo, fn migrator_repo ->
-        Ecto.Migrator.run(migrator_repo, path, :up, all: true)
+        Ecto.Migrator.run(migrator_repo, @migrations, :up, all: true)
       end)
 
     :ok

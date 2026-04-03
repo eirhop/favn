@@ -228,7 +228,7 @@ defmodule Favn do
         storage_adapter_opts: [
           database: "/var/lib/my_app/favn.db",
           busy_timeout: 5_000,
-          pool_size: 5
+          pool_size: 1
         ]
 
   In SQLite mode, run ordering uses a dedicated `favn_counters` row

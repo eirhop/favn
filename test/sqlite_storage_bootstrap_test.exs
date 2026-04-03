@@ -24,8 +24,8 @@ defmodule Favn.SQLiteStorageBootstrapTest do
 
     on_exit(fn -> File.rm(db_path) end)
 
-    :ok = Favn.TestSetup.configure_storage_adapter(SQLite, database: db_path)
-    {:ok, child_spec} = SQLite.child_spec(database: db_path)
+    :ok = Favn.TestSetup.configure_storage_adapter(SQLite, database: db_path, pool_size: 1)
+    {:ok, child_spec} = SQLite.child_spec(database: db_path, pool_size: 1)
     start_supervised!(child_spec)
 
     run = sample_run("bootstrap-run", :running)
