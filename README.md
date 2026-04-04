@@ -180,6 +180,7 @@ SQLite ordering notes:
 - Add durable production-ready storage adapters with stronger operational guarantees.
 - Expand run query capabilities for richer operator UIs.
 - Improve event observability integrations (telemetry/export pipelines).
+- Land orchestration-layer fundamentals for v1 (manual/API triggers, schedule, polling, freshness-aware skips, and pipeline-installed runtime config via `ctx`).
 - Add release packaging/versioning via Hex.
 
 ## Installation
