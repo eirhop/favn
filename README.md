@@ -1,76 +1,84 @@
 <div align="center">
   <img src="docs/images/favn-logo-transparent.png" alt="Favn logo" width="300" />
-  <p><strong>Asset-first orchestration for Elixir</strong></p>
-  <p>Define business logic as assets. Let Favn discover dependencies, plan runs, and execute deterministic workflows.</p>
+  <p><strong>Asset-first ETL/ELT orchestration for Elixir</strong></p>
+  <p>Define assets, declare lineage, and run deterministic graphs with orchestration config passed via <code>ctx</code>.</p>
 </div>
 
 <p align="center">
-  <strong>Status:</strong> Not recommended for production. API and DSL may change.
+  <strong>Status:</strong> Pre-v1 and under active refactor. API and DSL may change.
 </p>
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> •
+  <a href="#in-scope-for-v1">In scope for v1</a> •
+  <a href="#out-of-scope-for-v1">Out of scope for v1</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#current-limitations">Current limitations</a> •
-  <a href="#roadmap-and-release-focus">Roadmap</a> •
+  <a href="#roadmap">Roadmap</a> •
   <a href="#installation">Installation</a> • 
   <a href="/FEATURES.md">Features</a> • 
   <a href="/lib/favn.ex">Docs</a>
-
 </p>
 
 ## Favn at a glance
 
-- Plain Elixir functions become assets with metadata and dependencies.
-- Dependency graphs are discovered automatically from asset definitions.
-- Runs are planned deterministically and executed in dependency order.
-- Runtime state, outputs, and run events are exposed through a small public API.
+- Asset-first execution model for ETL/ELT workloads.
+- Canonical authoring DSL: `@asset`, `@depends`, `@uses`, `@freshness`, `@meta`.
+- Canonical runtime contract: `def asset(ctx)`.
+- Dependencies represent ordering/lineage; assets materialize externally.
+- Orchestration config stays outside function attributes and is accessed through `ctx`.
 
-## Introduction
+## In scope for v1
 
-Favn is an asset-first orchestration library for Elixir.
+- Stable asset DSL and single-argument asset contract.
+- Deterministic dependency-based planning and execution.
+- Retry/timeout/cancellation/rerun lifecycle support.
+- Freshness-aware rerun/skip decisions.
+- Graph/run/lineage visibility for operators.
+- v1 orchestration triggers for `schedule`, `polling`, and `polling cursor/state`.
 
-It helps you define business logic as simple, well-documented functions, automatically discover their relationships, and reliably execute them as deterministic workflows.
+## Out of scope for v1
 
-Favn means to hold or embrace—reflecting its role in keeping your workflows connected and reliable.
-
-Instead of building pipelines manually, you describe your system through assets and their dependencies. Favn takes care of planning, execution, and coordination—ensuring that everything runs in the correct order, at the right time, and on the right machine.
-
-Designed for the BEAM, Favn scales from a single node to distributed systems where work is executed in parallel across available resources.
-
-Favn is built to be:
-- predictable — deterministic runs based on explicit dependencies  
-- reliable — execution you can trust in production  
-- observable — clear insight into runs, state, and flow  
-- ergonomic — simple APIs with strong documentation at the center  
-- agent-friendly — easy for both humans and AI to understand, use, and extend  
-
-Whether you're building ETL pipelines, system integrations, workflows, or AI-driven processes, Favn acts as the layer that holds everything together and ensures it runs as expected.
-
-Favn doesn’t just run your workflows. It takes care of them.
+- Broad non-asset automation platforms beyond ETL/ELT asset orchestration.
+- Multi-domain orchestration messaging outside the asset-first product scope.
+- Function-attribute trigger DSL (`schedule`/`polling` in asset attributes).
+- In-memory data passing contract between assets.
 
 ## Quickstart
 
-Define an asset module:
+Define an asset module with the canonical DSL and `def asset(ctx)` contract:
 
 ```elixir
 defmodule MyApp.SalesAssets do
   use Favn.Assets
 
-  @asset true
-  def extract_orders(_ctx, _deps) do
-    {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}]}}
+  @asset :extract_orders
+  @uses [:warehouse_api]
+  @freshness [max_age: :timer.hours(1)]
+  @meta [owner: "data-platform", domain: :sales]
+  def extract_orders(ctx) do
+    source = ctx.config[:source] || :warehouse_api
+    _ = source
+
+    # Materialize externally (for example to object storage or warehouse table)
+    :ok
   end
 
-  @asset depends_on: [:extract_orders]
-  def build_daily_report(_ctx, deps) do
-    orders = Map.fetch!(deps, {__MODULE__, :extract_orders})
-    {:ok, %Favn.Asset.Output{output: %{count: length(orders)}}}
+  @asset :daily_sales_report
+  @depends [:extract_orders]
+  @uses [:warehouse]
+  @freshness [max_age: :timer.hours(2)]
+  @meta [owner: "finance-analytics", tier: :gold]
+  def daily_sales_report(ctx) do
+    report_date = ctx.runtime[:date]
+    _ = report_date
+
+    # Read upstream materializations, compute report, write externally
+    :ok
   end
 end
 ```
 
-Register the module and run a target asset:
+Register modules and run a target asset:
 
 ```elixir
 # config/config.exs
@@ -82,7 +90,7 @@ config :favn,
 
 ```elixir
 # from your app runtime / iex
-{:ok, run_id} = Favn.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
+{:ok, run_id} = Favn.run({MyApp.SalesAssets, :daily_sales_report})
 {:ok, run} = Favn.await_run(run_id)
 ```
 
@@ -107,103 +115,20 @@ Key settings:
 - `:storage_adapter`: run storage adapter module.
 - `:storage_adapter_opts`: options passed to the configured storage adapter.
 
-SQLite durable storage (single-node) can be configured with:
+## Roadmap
 
-```elixir
-import Config
-
-config :favn,
-  storage_adapter: Favn.Storage.Adapter.SQLite,
-  storage_adapter_opts: [
-    database: "/var/lib/my_app/favn.db",
-    busy_timeout: 5_000,
-    pool_size: 1
-  ]
-```
-
-SQLite ordering notes:
-
-- `runs.updated_seq` is allocated from a dedicated `favn_counters` row (`run_write_order`)
-  inside the same transaction that persists the run snapshot.
-- `list_runs` remains ordered by latest persisted write:
-  `updated_seq DESC, updated_at_us DESC, id DESC`.
-
-## Current limitations
-
-- The default run store is node-local in-memory storage.
-- Public run execution is asynchronous by default (`Favn.run/2` returns a run id).
-- Independent ready steps execute in parallel within a run, bounded by `max_concurrency`.
-- Run events are best-effort pubsub notifications.
-
-## Runtime behavior in this release
-
-- **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator with bounded parallel step dispatch per run.
-- **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; public run status includes `:running | :ok | :error | :cancelled | :timed_out`.
-- **Step retries**: failed steps can be retried with deterministic step-level policy (`retry` option on `Favn.run/2`) without restarting the run.
-- **Execution boundary**: one-step asset invocation is isolated behind an asynchronous runtime executor boundary.
-- **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
-  - `:not_found`
-  - `:invalid_opts`
-  - `{:store_error, reason}`
-- **Checkpoint persistence policy**: runtime checkpoints are required; if snapshot persistence fails, `Favn.run/2` returns `{:error, {:storage_persist_failed, reason}}`.
-- **Event delivery**: run events are published as best-effort observability signals and do not affect run correctness.
-- **Internal telemetry**: runtime boundaries emit machine-oriented `:telemetry` events under `[:favn, :runtime, ...]` for operators and future external exporters.
-- **Logger correlation metadata**: runtime coordinator/executor processes attach lightweight metadata (`run_id`, `ref`, `stage`, `attempt`) for human diagnostics without treating logs as telemetry.
-
-## Guarantees in this release
-
-- **Run lifecycle semantics**
-  - `Favn.run/2` returns `{:ok, run_id}` when a run is submitted.
-  - Step admission order is deterministic for equally-ready refs; completion order is naturally non-deterministic under parallel execution.
-  - `Favn.cancel_run/1` requests cancellation and returns a cancellation acknowledgement tuple.
-  - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error | :cancelled | :timed_out}}` on non-success terminal outcomes.
-  - Failed runs preserve structured failure context in both `run.error` and `run.asset_results[ref].error`.
-  - `Favn.get_run/1` returns the latest stored run state for an ID.
-- **Storage error contract**
-  - `Favn.get_run/1` and `Favn.list_runs/1` return storage errors only as `:not_found`, `:invalid_opts`, or `{:store_error, reason}`.
-  - Adapter-specific raw errors are wrapped as `{:store_error, reason}`.
-- **Event delivery scope**
-  - `Favn.subscribe_run/1` and `Favn.unsubscribe_run/1` manage PubSub subscriptions for run topics.
-  - Event delivery is best-effort; missing subscribers or publish failures do not change run success/failure outcomes.
-  - Events use a stable envelope schema (`schema_version`, `event_type`, `entity`, `run_id`, `sequence`, `emitted_at`, `status`, `data`, optional `ref`/`stage`).
-  - `status` is the **internal runtime** run/step status at emission time (not `%Favn.Run{}` public status).
-
-## Not guaranteed yet / non-goals
-
-- Durable distributed execution guarantees across nodes.
-- Exactly-once event delivery, replay, or durable event logs.
-- Persistent storage guarantees beyond the configured adapter behavior (default adapter is in-memory and node-local).
-- Global concurrency fairness across runs and retries.
-
-## Roadmap and release focus
-
-- Add durable production-ready storage adapters with stronger operational guarantees.
-- Expand run query capabilities for richer operator UIs.
-- Improve event observability integrations (telemetry/export pipelines).
-- Add release packaging/versioning via Hex.
+`FEATURES.md` is the canonical roadmap and milestone source of truth: [FEATURES.md](/FEATURES.md).
 
 ## Installation
 
 Favn is not published on Hex yet.
 
-Install it from the GitHub repository by adding `favn` to your list of
-dependencies in `mix.exs`:
+Install from GitHub in `mix.exs`:
 
 ```elixir
 def deps do
   [
     {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.1.1"}
-  ]
-end
-```
-
-Once Favn is published on Hex, the dependency can move to a normal versioned
-package declaration:
-
-```elixir
-def deps do
-  [
-    {:favn, "~> 0.1.1"}
   ]
 end
 ```

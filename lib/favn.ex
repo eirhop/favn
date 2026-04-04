@@ -1,313 +1,65 @@
 defmodule Favn do
   @moduledoc """
-  Favn is a library for defining, inspecting, and orchestrating asset-based workflows in Elixir.
+  Favn is an asset-first ETL/ELT orchestration library for Elixir.
 
-  It is built around the idea that each step in a workflow should be expressed as a normal,
-  business-oriented Elixir function, while Favn adds the metadata and orchestration needed to
-  discover assets, understand their dependencies, and execute them as part of a run.
+  The public authoring model is centered on assets with explicit lineage metadata,
+  deterministic dependency-based execution, and orchestration config provided through runtime context.
 
-  Favn is intended to be the core library behind orchestrator applications, operator dashboards,
-  scheduling systems, and other tools that need a stable API for working with assets and runs.
+  ## Canonical authoring model
+
+  Favn authoring is defined by two canonical contracts:
+
+    * DSL attributes: `@asset`, `@depends`, `@uses`, `@freshness`, `@meta`
+    * Asset function shape: `def asset(ctx)`
+
+  Dependencies are used for **ordering and lineage**. Assets materialize externally as part of
+  business logic and are not modeled as direct in-memory value passing between asset functions.
+
+  Orchestration configuration remains outside function attributes and is accessible from `ctx`.
+
+  ## Example
+
+      defmodule MyApp.SalesAssets do
+        use Favn.Assets
+
+        @asset :extract_orders
+        @uses [:warehouse_api]
+        @freshness [max_age: :timer.hours(1)]
+        @meta [owner: "data-platform", domain: :sales]
+        def extract_orders(ctx) do
+          source = ctx.config[:source] || :warehouse_api
+          _ = source
+
+          # Read source system and materialize externally.
+          :ok
+        end
+
+        @asset :daily_sales_report
+        @depends [:extract_orders]
+        @uses [:warehouse]
+        @freshness [max_age: :timer.hours(2)]
+        @meta [owner: "finance-analytics", tier: :gold]
+        def daily_sales_report(ctx) do
+          report_date = ctx.runtime[:date]
+          _ = report_date
+
+          # Read upstream materializations and write final report externally.
+          :ok
+        end
+      end
 
   ## What Favn provides
 
-  Favn is designed for applications that need to:
-
-    * define assets as plain Elixir functions
-    * attach documentation and metadata directly to those assets through @asset annotations
-    * declare dependencies between assets
-    * inspect assets and their relationships at runtime
-    * execute one asset or a dependency-derived workflow
-    * inspect active and completed runs
-    * subscribe to live events from a run
-
-  ## Core concepts
-
-  ### Assets
-
-  An asset is a function that represents a meaningful unit of work in a workflow, such as
-  extracting data, transforming a dataset, or producing a modeled output.
-
-  Assets are intended to be authored in modules that `use Favn.Assets`. At compile time,
-  Favn will collect metadata such as:
-
-    * asset name
-    * documentation
-    * dependency references
-    * source file and line
-    * kind
-    * tags
-
-  This keeps the workflow definition close to the business logic while still allowing Favn to
-  introspect and orchestrate the workflow later.
-
-  ### Dependencies
-
-  Assets can depend on other assets. Favn uses those dependency declarations to derive the
-  execution graph automatically.
-
-  Favn models those relationships as a directed acyclic graph (DAG), not as a strict tree.
-  Shared upstream assets are therefore allowed, cycles are rejected, and a later runtime
-  planner can ensure an asset runs at most once in a single run even when multiple downstream
-  assets depend on it.
-
-  In practice, this means users generally do not need to manually define pipelines. When an
-  asset is run, Favn can compute the dependency graph for the requested target and form the
-  execution pipeline from that graph.
-
-  ### Runs
-
-  A run is a single execution of a target asset.
-
-  Depending on the runtime options, a run may include:
-
-    * only the requested asset
-    * the requested asset and its upstream dependencies
-
-  Runs are intended to be observable and inspectable so that orchestrator applications can show
-  progress, history, and live operational state.
-
-  ### Live events
-
-  Favn is intended to expose structured run events so that consumers can subscribe to the
-  progress of an active run.
-
-  This is designed for use cases such as:
-
-    * live operator dashboards
-    * streaming logs and status in a web UI
-    * audit trails
-    * hooks into telemetry or other observability systems
-
-  Runtime PubSub events are a UI/live-subscription contract. Internal runtime
-  machine telemetry is emitted separately via `:telemetry` event names under
-  `[:favn, :runtime, ...]`.
-
-  ## Authoring assets
-
-  Assets are defined in normal modules using `Favn.Assets`.
-
-  A simplified example:
-
-      defmodule MyApp.SalesETL do
-        use Favn.Assets
-
-        @doc "Extract raw orders from the sales source"
-        @asset true
-        def extract_orders(_ctx, _deps) do
-          {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}], meta: %{source: :sales}}}
-        end
-
-        @doc "Normalize extracted orders"
-        @asset depends_on: [:extract_orders]
-        def normalize_orders(_ctx, deps) do
-          orders = Map.fetch!(deps, {__MODULE__, :extract_orders})
-
-          normalized =
-            Enum.map(orders, fn order ->
-              Map.put(order, :normalized, true)
-            end)
-
-          {:ok, %Favn.Asset.Output{output: normalized, meta: %{normalized_count: length(normalized)}}}
-        end
-      end
-
-  Cross-module dependencies are also expected to be supported:
-
-      defmodule MyApp.GoldETL do
-        use Favn.Assets
-
-        alias MyApp.SalesETL
-
-        @doc "Build the fact table for sales"
-        @asset depends_on: [{SalesETL, :normalize_orders}]
-        def fact_sales(_ctx, deps) do
-          normalized_orders = Map.fetch!(deps, {SalesETL, :normalize_orders})
-          {:ok, %Favn.Asset.Output{output: %{rows: normalized_orders}}}
-        end
-      end
-
-  In this model, workflow structure is derived from the dependencies rather than from a
-  separately maintained pipeline definition.
-
-  ## Using the library
-
-  `Favn` is the main public entrypoint for the library.
-
-  Typical usage from an orchestrator app or operator tool:
-
-      Favn.list_assets()
-
-      Favn.list_assets(MyApp.SalesETL)
-
-      Favn.get_asset({MyApp.SalesETL, :normalize_orders})
-
-      Favn.upstream_assets({MyApp.GoldETL, :fact_sales})
-
-      Favn.dependency_graph({MyApp.GoldETL, :fact_sales}, tags: [:warehouse])
-
-      Favn.run({MyApp.GoldETL, :fact_sales})
-
-      Favn.run({MyApp.GoldETL, :fact_sales}, dependencies: :none)
-
-      Favn.get_run(run_id)
-
-      Favn.list_runs()
-
-      Favn.list_runs(status: :running)
-
-      Favn.subscribe_run(run_id)
-
-  ## Setup in a host application
-
-  Favn is an OTP application, not a standalone server you start with a
-  dedicated `favn` command.
-
-  A consumer application typically sets Favn up in four steps:
-
-    1. add `:favn` as a dependency in `mix.exs`
-    2. define one or more asset modules with `use Favn.Assets`
-    3. register those modules under `config :favn, asset_modules: [...]`
-    4. start the host application normally
-
-  Favn is not published on Hex yet, so it should be installed directly
-  from the repository. A minimal dependency declaration looks like this:
-
-      defp deps do
-        [
-          {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.1.1"}
-        ]
-      end
-
-  Once Hex publishing exists, the dependency can move to a normal versioned
-  package declaration:
-
-      defp deps do
-        [
-          {:favn, "~> 0.1.1"}
-        ]
-      end
-
-  Asset modules usually live in the host application's normal source tree,
-  for example under `lib/my_app/`.
-
-  Once those modules exist, register them in the host application's config.
-  For most projects that means `config/config.exs`, optionally overridden from
-  environment-specific files such as `config/dev.exs`, `config/test.exs`, or
-  `config/runtime.exs` if the application needs environment-dependent module
-  lists.
-
-      import Config
-
-      config :favn,
-        asset_modules: [
-          MyApp.SalesETL,
-          MyApp.GoldETL
-        ]
-
-  The configured module list is the global discovery scope used by
-  `Favn.list_assets/0` and `Favn.get_asset/1`.
-
-  Run event subscriptions use Phoenix PubSub and default to `Favn.PubSub`.
-  Host applications can override the pubsub server name:
-
-      import Config
-
-      config :favn,
-        pubsub_name: MyApp.PubSub
-
-  Run persistence is configured with `:storage_adapter` and
-  `:storage_adapter_opts`.
-
-  For durable single-node SQLite storage:
-
-      import Config
-
-      config :favn,
-        storage_adapter: Favn.Storage.Adapter.SQLite,
-        storage_adapter_opts: [
-          database: "/var/lib/my_app/favn.db",
-          busy_timeout: 5_000,
-          pool_size: 1
-        ]
-
-  In SQLite mode, run ordering uses a dedicated `favn_counters` row
-  (`run_write_order`) to allocate `runs.updated_seq` transactionally.
-  `Favn.list_runs/1` ordering remains newest-first by
-  `updated_seq DESC, updated_at_us DESC, id DESC`.
-
-  ## Starting Favn
-
-  There is no separate Favn server process that operators start manually.
-
-  When the host application boots, Mix starts the `:favn` application as a
-  dependency, and `Favn.Application` loads the configured asset registry during
-  application startup.
-
-  In practice, that means the right startup command is the normal startup
-  command for the host application:
-
-    * `iex -S mix` for interactive local development
-    * `mix run --no-halt` for a long-running non-interactive OTP process
-    * framework-specific commands such as `mix phx.server` when Favn is used
-      inside a Phoenix application
-
-  If the host application is already running under releases, supervision, or a
-  framework entrypoint, Favn starts automatically as part of that boot process.
-
-  ## Configuration lifecycle
-
-  The global asset registry is loaded from application config during startup and
-  then kept in memory for fast lookups. Favn also builds a global dependency
-  graph index during startup from that same canonical asset catalog.
-
-  The graph index is intended to stay read-only for the lifetime of the booted
-  node and supports DAG validation, upstream and downstream inspection,
-  transitive dependency queries, and deterministic topological ordering for
-  later execution planning.
-
-  That means changes to `config :favn, asset_modules: [...]` are not picked up
-  automatically by an already-running node. In normal usage, update the config
-  and restart the host application so Favn reloads the configured registry and
-  dependency graph during boot.
-
-  ## Public API responsibilities
-
-  The intended user-facing responsibilities of this module are:
-
-    * asset discovery
-    * asset inspection
-    * dependency graph inspection
-    * run execution
-    * run inspection
-    * listing historical runs
-    * subscribing to live run events
-
-  This module should stay a thin public facade. Core implementation details should live in
-  dedicated modules underneath.
-
-  ## Design goals
-
-  Favn aims to keep workflow code close to the business domain while still providing the
-  operational features needed by orchestration and observability tooling.
-
-  In practice, that means:
-
-    * business logic remains plain Elixir
-    * documentation lives close to the asset definition
-    * dependencies are simple and explicit
-    * orchestration is derived from asset metadata
-    * the public API stays small and stable
-    * implementation details are pushed into focused modules
-
-  ## Documentation policy
-
-  Documentation ownership is split intentionally:
-
-    * `README.md` is canonical for release status, roadmap planning, and the
-      feature/limitation matrix.
-    * `Favn` moduledoc is canonical for API behavior, contracts, and examples.
-
+    * asset discovery and registry inspection
+    * dependency and upstream graph inspection
+    * deterministic run planning and execution
+    * run lifecycle APIs (`run`, `await_run`, `cancel_run`, run lookup/listing)
+    * live run-event subscriptions for operator tooling
+
+  ## Scope notes
+
+  Favn targets asset-first orchestration. Scheduling and polling concerns are v1 orchestration
+  features, not function-level authoring attributes.
   """
 
   @typedoc """
@@ -742,9 +494,9 @@ defmodule Favn do
 
   Asset invocation contract:
 
-    * assets are invoked as `def asset(ctx, deps)`
-    * success must be `{:ok, %Favn.Asset.Output{}}`
-    * failure must be `{:error, reason}`
+    * canonical authoring contract is `def asset(ctx)`
+    * dependencies provide ordering/lineage and assets materialize externally
+    * return values are interpreted by runtime/executor boundaries; failures are surfaced as run/step errors
 
   ## Examples
 
