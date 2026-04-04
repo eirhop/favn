@@ -1,33 +1,185 @@
-# Favn Roadmap & Feature Status
+Favn Roadmap & Feature Status
 
 ## Current Version
 
-**Current release: v0.1**
+**Current release: v0.1.0**
 
-Favn is in an early development stage. The core foundation is implemented, but the system is not yet production-ready.
+Favn is in early development.
 
-This document tracks both **direction (roadmap)** and **progress (feature completion)**.
+The product direction is now explicitly locked:
 
----
+- Favn is **asset-first**
+- v1 and v2 focus on excellent **ETL/ELT orchestration**
+- assets are the only public executable node type in v1
+- orchestration concerns (pipelines, schedules, polling, triggers) stay **outside** the function-level DSL
+- assets are expected to **materialize externally**
+- Favn tracks orchestration state, lineage, freshness, runs, and materialization history
+- Favn does **not** pass data directly between assets as a public model
 
-## Vision
-
-Favn is a BEAM-native, asset-first orchestrator for business code.
-
-It should make it easy to:
-
-- define business-oriented assets in plain Elixir
-- discover and reason about dependencies through code and documentation
-- run deterministic workflows from those dependency relationships
-- trigger work manually, via API, on schedules, by polling, or from events
-- scale from one node to multiple BEAM nodes
-- inspect everything through a UI
-- extend via plugins
-- support ETL/ELT, integrations, workflows, and AI agents
+This document tracks both **direction** and **progress**.
 
 ---
 
-## v0.1.0 — Foundation (Current)
+## Product Focus
+
+Favn v1 should be great at:
+
+- defining ETL/ELT assets in plain Elixir
+- connecting assets through dependency declarations
+- executing asset graphs deterministically
+- scheduling and polling asset/pipeline execution
+- skipping unnecessary work through freshness rules
+- tracking runs and materializations
+- giving a clear graph and documentation view of the codebase
+
+Favn v1 is **not** trying to solve:
+
+- AI agent orchestration
+- generic workflow automation
+- human-task orchestration
+- broad connector marketplace
+- reusable external pipeline marketplace
+
+Those may come later, but they are not the product goal of v1.
+
+---
+
+## Core Design Principles
+
+### 1) Assets first
+
+There is only one public executable node type in v1:
+
+- `@asset`
+
+### 2) Small business-focused function DSL
+
+Function attributes should only describe the asset itself.
+
+### 3) Orchestration config stays outside function attributes
+
+Pipelines, schedules, polling, and other triggers belong to orchestration/configuration, not to the business function DSL.
+
+### 4) Built-in Elixir docs are first-class
+
+Favn should use:
+
+- `@moduledoc`
+- `@doc`
+- `@spec`
+
+as the main documentation source for catalog and UI.
+
+### 5) No direct data passing between assets
+
+Dependencies express graph relationships and execution ordering.
+
+Assets are expected to read from and write to external systems/storage as part of their own business logic.
+
+### 6) Assets use runtime context
+
+Assets use a single function shape:
+
+```elixir
+def my_asset(ctx)
+```
+
+Runtime information (trigger context, pipeline config, execution metadata, etc.) is provided through `ctx`.
+
+---
+
+## Function-Level DSL (v1)
+
+These are the function attributes we focus on in v1:
+
+- `@asset`
+- `@depends`
+- `@uses`
+- `@freshness`
+- `@meta`
+
+### `@asset`
+
+Marks a public function as a Favn asset with a name.
+
+### `@depends`
+
+Declares upstream asset dependencies.
+
+Purpose:
+
+- execution ordering
+- lineage
+- documentation
+- freshness reasoning
+
+This does not imply direct value passing between assets.
+
+### `@uses`
+
+Declares which external integrations or Elixir functions an asset uses.
+
+Used for:
+
+- lineage
+- UI mapping
+- documentation
+- impact analysis
+
+### `@freshness`
+
+Declares how fresh the latest successful materialization must be for Favn to skip rerun.
+
+### `@meta`
+
+Holds non-execution metadata for catalog, filtering, ownership, and UI.
+
+---
+
+## Explicitly Out of Scope for v1 DSL
+
+The following are intentionally not function attributes in v1:
+
+- jobs
+- schedules
+- polling definitions
+- webhook definitions
+- API trigger definitions
+- event trigger definitions
+- checks
+- observers
+- metrics
+- pipeline installation/config
+- source DSL
+- artifact/ref dependency modes
+- data passing configuration between assets
+
+---
+
+## Runtime Contract Direction
+
+The v1 asset function contract should be:
+
+```elixir
+@asset "My Asset"
+def my_asset(ctx) do
+  ...
+end
+```
+
+`ctx` should eventually carry runtime information such as:
+
+- run information
+- trigger information
+- freshness/attempt context
+- pipeline-installed configuration
+- partition/runtime-window context (when applicable)
+
+---
+
+## Roadmap
+
+## v0.1.0 — Foundation
 
 **Status: Released**
 
@@ -43,217 +195,213 @@ This release proves the core architecture and programming model.
 - [x] Run model with outputs
 - [x] Storage abstraction (in-memory)
 - [x] Run event emission (PubSub)
-- [x] Public API (`Flux` module)
+- [x] Public API (`Favn` module)
 - [x] Host application integration (supervision tree)
 - [x] Basic tests across core modules
 
 ---
 
-## v0.2.0 — Stateful Execution Foundation
+## v0.2.0 — Runtime Foundation
 
-**Status: Planned**
+**Status: In Progress**
 
-Turns Favn into a real execution engine with durable state and concurrency.
+Turns Favn into a real execution engine with durable runtime state and concurrency.
 
 ### Features
 
 - [x] Asynchronous run execution
 - [x] Parallel execution with bounded concurrency
-- [x] Run + step state machine (pending → running → success/failure)
-- [x] Retry mechanism (configurable, step-level fixed delay + max attempts + retry classes)
+- [x] Run + step state machine
+- [x] Retry mechanism
 - [x] Cancellation support
 - [x] Timeout handling
 - [x] SQLite storage adapter
-- [x] SQLite monotonic `updated_seq` allocation via `favn_counters` (replaces `run_write_orders` growth path)
 - [x] Stable event schema (runs + steps)
-- [x] Internal runtime telemetry foundation (`:telemetry` events via `Favn.Runtime.Telemetry`)
-- [x] Runtime telemetry taxonomy + naming contract (`[:favn, :runtime, ...]`)
-- [x] Runtime instrumentation at coordinator/executor/storage/pubsub boundaries
-- [x] Telemetry contract tests for core run/step flows
-- [x] Test/CI hygiene improvements (compiled SQLite migrations, quieter test logs, `mix test --no-compile` in CI)
-- [ ] Initial materialization/artifact model (replace in-memory-only outputs)
-- [x] Separation of coordinator vs executor internally
+- [x] Internal runtime telemetry foundation
+- [x] Coordinator / executor separation
+- [ ] Remove current in-memory-output assumptions from the execution model
+- [ ] Align runtime model with asset-first external materialization direction
+- [ ] Simplify asset execution contract toward `def asset(ctx)`
 
 ---
 
-## v0.3.0 — Jobs, Triggers, Single-Node Production
+## v0.3.0 — Asset DSL Refactor
 
 **Status: Planned**
 
-First production-usable version (single node).
+Refines authoring around the locked v1 asset model.
 
 ### Features
 
-- [ ] Job / launch definition abstraction
-- [ ] Asset selection → job execution mapping
+- [ ] Support single asset function shape: `def asset(ctx)`
+- [ ] Remove requirement for arity-2 assets
+- [ ] Remove requirement for `%Favn.Asset.Output{}`
+- [ ] Replace `depends_on` option with repeatable `@depends`
+- [ ] Add `@uses`
+- [ ] Add `@freshness`
+- [ ] Add `@meta`
+- [ ] Remove `kind` from the public authoring DSL
+- [ ] Keep built-in Elixir docs as the primary documentation source
+- [ ] Update graph/catalog extraction from the new DSL
+
+---
+
+## v0.4.0 — Triggers and Orchestration Layer
+
+**Status: Planned**
+
+Introduces orchestration config outside the business DSL.
+
+### Features
+
 - [ ] Manual run trigger
-- [ ] API-based trigger
-- [ ] Cron/schedule trigger
+- [ ] API-triggered execution
+- [ ] Cron / schedule trigger
+- [ ] Polling trigger
+- [ ] Polling state / cursor tracking
+- [ ] Freshness-aware skip behavior
+- [ ] Initial orchestration layer outside function attributes
+- [ ] Initial pipeline/configuration definition model
+- [ ] Make pipeline/config available through `ctx`
+- [ ] Stable operator actions: run, cancel, rerun
+
+---
+
+## v0.5.0 — Single-Node Asset Production Readiness
+
+**Status: Planned**
+
+Makes Favn production-usable for asset-based orchestration on a single node.
+
+### Features
+
 - [ ] Postgres storage adapter
 - [ ] Queueing and admission control
-- [ ] Retry policy extensions (backoff + jitter + richer retry classifiers)
-- [ ] Run deduplication (run keys)
-- [ ] Stable operator APIs (run, cancel, rerun)
-- [ ] User-facing observation/check API design (separate from runtime telemetry)
-- [ ] Business/data-quality signal model (initial schema)
-- [ ] `favn_view` alpha (graph + runs + schedules)
+- [ ] Concurrency controls
+- [ ] Run deduplication / run keys
+- [ ] Materialization metadata/history tracking
+- [ ] Asset freshness state tracking
+- [ ] Improved failure recovery
+- [ ] Asset catalog foundation
+- [ ] Graph and run inspection foundation
+- [ ] Stronger testing around retries, reruns, and recovery
 
 ---
 
-## v0.4.0 — Distributed Execution (BEAM)
+## v0.6.0 — Pipeline Composition Foundation
 
 **Status: Planned**
 
-Introduces multi-node execution and placement.
+Makes larger asset projects easier to install and configure.
 
 ### Features
 
-- [ ] Worker registration
-- [ ] Worker heartbeats
-- [ ] Remote step execution (multi-node)
-- [ ] Resource requirements (memory, CPU, labels)
-- [ ] Placement strategy (resource-aware scheduling)
-- [ ] Distributed coordination (leases)
-- [ ] Worker failure detection
-- [ ] Retry/requeue on node failure
-- [ ] Cross-node retry attempt handoff and recovery semantics
-- [ ] Node drain support
-- [ ] Supervision strategy for distributed execution
+- [ ] Graph composition across modules
+- [ ] Pipeline-level asset selection
+- [ ] Pipeline-level configuration/bindings
+- [ ] Reusable asset graph installation inside an app
+- [ ] Support accessing pipeline-installed configuration through `ctx`
+- [ ] Keep pipeline model outside the function attribute DSL
+- [ ] Preserve asset graph clarity in UI and docs
 
 ---
 
-## v0.5.0 — Plugin & Connector Platform
+## v1.0.0 — Stable Asset-Oriented Orchestrator
 
 **Status: Planned**
 
-Makes Favn extensible and ecosystem-ready.
+First stable release focused on asset-based ETL/ELT orchestration.
 
 ### Features
 
-- [ ] Storage plugin interface (stable)
-- [ ] Trigger plugin interface
-- [ ] Runtime/executor plugin interface
-- [ ] Telemetry exporter plugin interface (OpenTelemetry and other backends)
-- [ ] Connector plugin system
-- [ ] Connector registry (schema + docs + config)
-- [ ] Secret/config reference model
-- [ ] Metadata extensions for assets/jobs
-- [ ] Artifact handling plugin interface
-- [ ] Machine-readable catalog export (API)
+#### Authoring
+
+- [ ] Stable asset DSL: `@asset`, `@depends`, `@uses`, `@freshness`, `@meta`
+- [ ] Stable single asset function contract: `def asset(ctx)`
+
+#### Execution
+
+- [ ] Deterministic dependency-based execution
+- [ ] Manual/API run initiation
+- [ ] Schedule trigger
+- [ ] Polling trigger
+- [ ] Retry, timeout, cancellation, and rerun support
+- [ ] Freshness-aware skip logic
+- [ ] Stable run and step lifecycle
+
+#### Data / materialization model
+
+- [ ] Asset-first external materialization model
+- [ ] Materialization metadata/history tracking
+- [ ] No direct data passing between assets
+- [ ] Runtime context support for orchestration-installed config
+
+#### Orchestration layer
+
+- [ ] Pipeline/configuration layer outside function DSL
+- [ ] Pipeline/config accessible through `ctx`
+- [ ] Graph composition support for larger applications
+
+#### Operator experience
+
+- [ ] Asset graph/catalog view
+- [ ] Run history
+- [ ] Materialization history
+- [ ] Freshness visibility
+- [ ] Failure/retry visibility
+- [ ] Generated documentation from code + metadata
+
+#### Storage/runtime
+
+- [ ] Built-in storage: memory, SQLite, Postgres
+- [ ] Strong single-node production story
 
 ---
 
-## v0.6.0 — Heterogeneous Runtimes & dbt
+## v2.0.0 — Asset Platform Expansion
 
 **Status: Planned**
 
-Supports non-Elixir execution.
+Deepens the asset-first model without changing the product focus.
 
 ### Features
 
-- [ ] Runtime-agnostic asset identity
-- [ ] Mixed-runtime planning
-- [ ] External runtime execution bridge
-- [ ] dbt manifest ingestion
-- [ ] dbt asset mapping into catalog
-- [ ] dbt run execution via Favn
-- [ ] dbt test execution
-- [ ] Normalized dbt metadata (runs/tests/artifacts)
-- [ ] `favn_dbt` plugin (alpha)
-
----
-
-## v0.7.0 — Favn View & UX
-
-**Status: Planned**
-
-Turns Favn into a usable product for operators.
-
-### Features
-
-- [ ] Asset catalog UI
-- [ ] Graph explorer (dependencies)
-- [ ] Run list view
-- [ ] Run timeline view
-- [ ] Step-level inspection
-- [ ] Schedule/trigger UI
-- [ ] Connector UI
-- [ ] Source/doc linking
-- [ ] Operator actions (cancel, rerun)
-- [ ] `favn_demo` project
-
----
-
-## v0.8.0 — Hardening & Release Candidate
-
-**Status: Planned**
-
-Stabilization and production readiness.
-
-### Features
-
-- [ ] Upgrade/migration strategy
-- [ ] Compatibility guarantees (core + plugins)
-- [ ] Failure recovery testing
-- [ ] Performance benchmarks
-- [ ] Deployment reference architecture
-- [ ] Production documentation
-- [ ] Packaging strategy (core + UI + plugins)
-- [ ] Single-image deployment option
-
----
-
-## v1.0.0 — Stable Release
-
-**Status: Planned**
-
-Production-ready orchestrator.
-
-### Features
-
-- [ ] Stable asset model
-- [ ] Stable job model
-- [ ] Stable trigger model
-- [ ] Durable orchestration state
-- [ ] Built-in storage (memory, SQLite, Postgres)
-- [ ] Local + distributed execution
-- [ ] Manual + API + scheduled triggers
-- [ ] Event/polling trigger framework
-- [ ] Observability (runs, steps, artifacts)
-- [ ] `favn_view` stable release
-- [ ] Official plugin interfaces
-- [ ] At least one external runtime (dbt)
-- [ ] Complete documentation
-- [ ] Demo project ready for onboarding
+- [ ] Multi-asset support
+- [ ] Richer graph composition
+- [ ] Better pipeline installation/reuse model
+- [ ] More advanced orchestration config through pipelines
+- [ ] Webhook trigger
+- [ ] Event trigger
+- [ ] Richer API trigger model
+- [ ] Source/external asset observation model
+- [ ] Asset checks
+- [ ] Better partition/runtime-window support through orchestration context
+- [ ] Distributed multi-node execution
+- [ ] Resource-aware placement and scheduling
+- [ ] Stronger plugin seams for storage, triggers, and execution
+- [ ] `favn_view` more mature operator product
+- [ ] `favn_demo` onboarding project
 
 ---
 
 ## Companion Projects
 
-### favn_view
+### `favn_view`
 
-- [ ] Alpha (v0.3)
-- [ ] Usable (v0.7)
-- [ ] Stable (v1.0)
+- [ ] Alpha after v1 execution + graph foundations are stable
+- [ ] Usable asset catalog/operator UI during v1.x
+- [ ] More complete operator experience in v2
 
-### favn_demo
+### `favn_demo`
 
-- [ ] Initial example (v0.7)
-- [ ] Polished onboarding project (v1.0)
-
-### Official Plugins
-
-- [ ] Storage adapters
-- [ ] Trigger adapters
-- [ ] Connector integrations
-- [ ] Artifact handling
-- [ ] dbt plugin
+- [ ] Initial demo project after core v1 direction is stable
+- [ ] Better onboarding/demo project in v2
 
 ---
 
 ## Notes
 
-- This roadmap defines **direction**, not exact implementation order.
-- Features may evolve, but architectural principles should remain stable.
-- Priority is always: **correct architecture > fast feature delivery**.
-- Run/step event schema is versioned with `schema_version` (current `1`); changes are currently allowed to be breaking while Favn remains pre-production.
+- This roadmap is intentionally narrower than earlier versions.
+- v1 and v2 are focused on making Favn excellent at asset-based ETL/ELT orchestration.
+- General workflow automation and AI-agent orchestration are not part of the current product goal.
+- Priority remains: correct architecture > fast feature delivery.
