@@ -250,7 +250,7 @@ Refines authoring around the locked v1 asset model.
 
 **Status: Planned**
 
-Introduces orchestration config outside the business DSL.
+Introduces orchestration config outside the business DSL and includes initial pipeline composition/install concerns.
 
 ### Features
 
@@ -264,6 +264,13 @@ Introduces orchestration config outside the business DSL.
 - [ ] Initial pipeline/configuration definition model
 - [ ] Make pipeline/config available through `ctx`
 - [ ] Stable operator actions: run, cancel, rerun
+- [ ] Graph composition across modules
+- [ ] Pipeline-level asset selection
+- [ ] Pipeline-level configuration/bindings
+- [ ] Reusable asset graph installation inside an app
+- [ ] Support accessing pipeline-installed configuration through `ctx`
+- [ ] Keep pipeline model outside the function attribute DSL
+- [ ] Preserve asset graph clarity in UI and docs
 
 ---
 
@@ -285,24 +292,6 @@ Makes Favn production-usable for asset-based orchestration on a single node.
 - [ ] Asset catalog foundation
 - [ ] Graph and run inspection foundation
 - [ ] Stronger testing around retries, reruns, and recovery
-
----
-
-## v0.6.0 — Pipeline Composition Foundation
-
-**Status: Planned**
-
-Makes larger asset projects easier to install and configure.
-
-### Features
-
-- [ ] Graph composition across modules
-- [ ] Pipeline-level asset selection
-- [ ] Pipeline-level configuration/bindings
-- [ ] Reusable asset graph installation inside an app
-- [ ] Support accessing pipeline-installed configuration through `ctx`
-- [ ] Keep pipeline model outside the function attribute DSL
-- [ ] Preserve asset graph clarity in UI and docs
 
 ---
 
