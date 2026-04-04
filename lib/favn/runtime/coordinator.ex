@@ -190,8 +190,7 @@ defmodule Favn.Runtime.Coordinator do
   defp start_step_execution(%State{} = state, ref) do
     with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, ref)),
          {:ok, asset} <- Favn.Registry.get_asset(ref),
-         {:ok, deps} <- dependency_outputs(state, ref),
-         {:ok, handle} <- start_executor_step(state, ref, asset, deps) do
+         {:ok, handle} <- start_executor_step(state, ref, asset) do
       {:ok, put_execution_handle(state, ref, handle)}
     else
       {:error, reason} ->
@@ -716,17 +715,6 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp dependency_outputs(%State{} = state, ref) do
-    upstream = state.steps |> Map.fetch!(ref) |> Map.get(:upstream)
-
-    Enum.reduce_while(upstream, {:ok, %{}}, fn dep_ref, {:ok, acc} ->
-      case Map.fetch(state.outputs, dep_ref) do
-        {:ok, value} -> {:cont, {:ok, Map.put(acc, dep_ref, value)}}
-        :error -> {:halt, {:error, {:missing_dependency_output, dep_ref}}}
-      end
-    end)
-  end
-
   defp build_context(%State{} = state, ref) do
     step = Map.fetch!(state.steps, ref)
 
@@ -780,13 +768,13 @@ defmodule Favn.Runtime.Coordinator do
 
   defp enrich_error(error, class), do: Map.put(error, :class, class)
 
-  defp start_executor_step(%State{} = state, ref, asset, deps) do
+  defp start_executor_step(%State{} = state, ref, asset) do
     step = Map.fetch!(state.steps, ref)
     ctx = build_context(state, ref)
     Logger.metadata(ref: inspect(ref), stage: step.stage, attempt: step.attempt)
     started_ms = System.monotonic_time(:millisecond)
 
-    case safe_start_executor_step(asset, ctx, deps, ref) do
+    case safe_start_executor_step(asset, ctx, ref) do
       {:ok, handle} ->
         duration_ms = System.monotonic_time(:millisecond) - started_ms
 
@@ -819,8 +807,8 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp safe_start_executor_step(asset, ctx, deps, ref) do
-    executor_module().start_step(asset, ctx, deps, self(), ref)
+  defp safe_start_executor_step(asset, ctx, ref) do
+    executor_module().start_step(asset, ctx, self(), ref)
     |> unwrap_executor_result()
   rescue
     error -> {:error, error, :executor_start_raise, :error}

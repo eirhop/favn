@@ -6,13 +6,12 @@ defmodule Favn.Runtime.Executor.Local do
   @behaviour Favn.Runtime.Executor
 
   alias Favn.Asset
-  alias Favn.Asset.Output
   alias Favn.Run.Context
   require Logger
 
   @impl true
-  def start_step(%Asset{} = asset, %Context{} = ctx, deps, reply_to, step_ref)
-      when is_map(deps) and is_pid(reply_to) do
+  def start_step(%Asset{} = asset, %Context{} = ctx, reply_to, step_ref)
+      when is_pid(reply_to) do
     exec_ref = make_ref()
 
     {pid, monitor_ref} =
@@ -24,7 +23,7 @@ defmodule Favn.Runtime.Executor.Local do
           attempt: ctx.attempt
         )
 
-        result = invoke(asset, ctx, deps)
+        result = invoke(asset, ctx)
         send(reply_to, {:executor_step_result, exec_ref, step_ref, result})
       end)
 
@@ -39,11 +38,17 @@ defmodule Favn.Runtime.Executor.Local do
     error -> {:error, error}
   end
 
-  defp invoke(asset, %Context{} = ctx, deps) do
+  defp invoke(asset, %Context{} = ctx) do
     try do
-      case apply(asset.module, asset.name, [ctx, deps]) do
-        {:ok, %Output{} = asset_output} ->
-          {:ok, %{output: asset_output.output, meta: asset_output.meta}}
+      case apply(asset.module, asset.name, [ctx]) do
+        :ok ->
+          {:ok, %{output: nil, meta: %{}}}
+
+        {:ok, meta} when is_map(meta) ->
+          {:ok, %{output: nil, meta: meta}}
+
+        {:ok, meta} when is_list(meta) ->
+          {:ok, %{output: nil, meta: Map.new(meta)}}
 
         {:error, reason} ->
           {:error, %{kind: :error, reason: reason, stacktrace: []}}
@@ -54,7 +59,7 @@ defmodule Favn.Runtime.Executor.Local do
              kind: :error,
              reason:
                {:invalid_return_shape, other,
-                expected: "{:ok, %Favn.Asset.Output{}} | {:error, reason}"},
+                expected: ":ok | {:ok, meta_map_or_keyword} | {:error, reason}"},
              stacktrace: []
            }}
       end

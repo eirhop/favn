@@ -14,8 +14,9 @@ defmodule Favn.Assets do
 
   Asset authoring contract:
 
-    * asset functions must have arity 2 and use `def asset(ctx, deps)`
-    * assets should return `{:ok, %Favn.Asset.Output{}}` or `{:error, reason}`
+    * asset functions must have arity 1 and use `def asset(ctx)`
+    * use repeatable `@depends` attributes for dependencies
+    * use `@meta` for non-execution metadata
   """
 
   alias Favn.Asset
@@ -25,6 +26,8 @@ defmodule Favn.Assets do
   defmacro __using__(_opts) do
     quote do
       Module.register_attribute(__MODULE__, :asset, persist: false)
+      Module.register_attribute(__MODULE__, :depends, accumulate: true)
+      Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :favn_assets_raw, accumulate: true)
 
       @on_definition Favn.Assets
@@ -45,7 +48,17 @@ defmodule Favn.Assets do
           :def ->
             arity = length(args || [])
 
-            if arity == 2 do
+            if arity == 1 do
+              depends =
+                env.module
+                |> Module.get_attribute(:depends)
+                |> Enum.reverse()
+
+              meta = Module.get_attribute(env.module, :meta)
+
+              Module.delete_attribute(env.module, :depends)
+              Module.delete_attribute(env.module, :meta)
+
               Module.put_attribute(env.module, :favn_assets_raw, %{
                 module: env.module,
                 name: name,
@@ -53,13 +66,15 @@ defmodule Favn.Assets do
                 doc: normalize_doc(Module.get_attribute(env.module, :doc)),
                 file: normalize_file(env.file),
                 line: env.line,
-                opts: asset_opts
+                asset_decl: asset_opts,
+                depends: depends,
+                meta: meta
               })
             else
               compile_error!(
                 env.file,
                 env.line,
-                "@asset functions must have arity 2 and use signature def asset(ctx, deps)"
+                "@asset functions must have arity 1 and use signature def asset(ctx)"
               )
             end
 
@@ -122,7 +137,9 @@ defmodule Favn.Assets do
   end
 
   defp build_asset!(raw_asset) do
-    opts = normalize_asset_opts!(raw_asset.opts, raw_asset)
+    title = normalize_asset_decl!(raw_asset.asset_decl, raw_asset)
+    meta = normalize_meta!(raw_asset.meta, raw_asset)
+    depends_on = normalize_depends!(raw_asset.depends, raw_asset)
 
     asset = %Asset{
       module: raw_asset.module,
@@ -132,9 +149,9 @@ defmodule Favn.Assets do
       doc: raw_asset.doc,
       file: raw_asset.file,
       line: raw_asset.line,
-      kind: Keyword.get(opts, :kind, :materialized),
-      tags: Keyword.get(opts, :tags, []),
-      depends_on: normalize_depends_on!(Keyword.get(opts, :depends_on, []), raw_asset)
+      title: title,
+      meta: meta,
+      depends_on: depends_on
     }
 
     try do
@@ -145,8 +162,8 @@ defmodule Favn.Assets do
     end
   end
 
-  defp normalize_depends_on!(depends_on, raw_asset) when is_list(depends_on) do
-    Enum.map(depends_on, fn
+  defp normalize_depends!(depends, raw_asset) do
+    Enum.map(depends, fn
       name when is_atom(name) ->
         Ref.new(raw_asset.module, name)
 
@@ -157,18 +174,27 @@ defmodule Favn.Assets do
         compile_error!(
           raw_asset.file,
           raw_asset.line,
-          "invalid depends_on entry #{inspect(dependency)}; expected an asset name or {module, name}"
+          "invalid @depends entry #{inspect(dependency)}; expected :asset_name or {Module, :asset_name}"
         )
     end)
   end
 
-  defp normalize_depends_on!(depends_on, raw_asset) do
-    compile_error!(
-      raw_asset.file,
-      raw_asset.line,
-      "asset depends_on must be a list, got: #{inspect(depends_on)}"
-    )
+  defp normalize_meta!(nil, _raw_asset), do: %{}
+
+  defp normalize_meta!(meta, raw_asset) when is_list(meta) do
+    if Keyword.keyword?(meta) do
+      Map.new(meta)
+    else
+      compile_error!(
+        raw_asset.file,
+        raw_asset.line,
+        "@meta must be a keyword list with atom keys"
+      )
+    end
   end
+
+  defp normalize_meta!(_meta, raw_asset),
+    do: compile_error!(raw_asset.file, raw_asset.line, "@meta must be a keyword list")
 
   defp normalize_doc({_line, false}), do: nil
   defp normalize_doc({_line, doc}) when is_binary(doc), do: doc
@@ -176,28 +202,16 @@ defmodule Favn.Assets do
   defp normalize_doc(doc) when is_binary(doc), do: doc
   defp normalize_doc(_), do: nil
 
-  defp normalize_asset_opts!(nil, _raw_asset), do: []
-  defp normalize_asset_opts!(true, _raw_asset), do: []
+  defp normalize_asset_decl!(true, _raw_asset), do: nil
+  defp normalize_asset_decl!(name, _raw_asset) when is_binary(name), do: name
 
-  defp normalize_asset_opts!(opts, raw_asset) when is_list(opts) do
-    if Keyword.keyword?(opts) do
-      opts
-    else
+  defp normalize_asset_decl!(other, raw_asset),
+    do:
       compile_error!(
         raw_asset.file,
         raw_asset.line,
-        "@asset options must be a keyword list, got: #{inspect(opts)}"
+        "@asset must be true or a display-name string, got: #{inspect(other)}"
       )
-    end
-  end
-
-  defp normalize_asset_opts!(opts, raw_asset) do
-    compile_error!(
-      raw_asset.file,
-      raw_asset.line,
-      "@asset options must be a keyword list, got: #{inspect(opts)}"
-    )
-  end
 
   defp normalize_file(file) do
     file

@@ -62,8 +62,8 @@ defmodule Favn.GraphIndex do
           direction: direction(),
           include_target: boolean(),
           transitive: boolean(),
-          tags: [Asset.tag()],
-          kinds: [Asset.kind()],
+          tags: [atom() | String.t()],
+          kinds: [atom()],
           modules: [module()],
           names: [atom()]
         ]
@@ -309,7 +309,7 @@ defmodule Favn.GraphIndex do
 
     Enum.filter(assets, fn asset ->
       matches_tags?(asset, tags) and
-        matches_membership?(asset.kind, kinds) and
+        matches_membership?(Map.get(asset.meta, :kind), kinds) and
         matches_membership?(asset.module, modules) and
         matches_membership?(asset.name, names)
     end)
@@ -319,10 +319,17 @@ defmodule Favn.GraphIndex do
   defp matches_tags?(_asset, []), do: true
 
   defp matches_tags?(asset, tags) when is_list(tags) do
-    asset.tags
+    tags_from_meta(asset)
     |> MapSet.new()
     |> MapSet.disjoint?(MapSet.new(tags))
     |> Kernel.not()
+  end
+
+  defp tags_from_meta(asset) do
+    case Map.get(asset.meta, :tags, []) do
+      values when is_list(values) -> values
+      _ -> []
+    end
   end
 
   defp matches_membership?(_value, nil), do: true

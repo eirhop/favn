@@ -58,15 +58,11 @@ defmodule MyApp.SalesAssets do
   use Favn.Assets
 
   @asset true
-  def extract_orders(_ctx, _deps) do
-    {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}]}}
-  end
+  def extract_orders(_ctx), do: :ok
 
-  @asset depends_on: [:extract_orders]
-  def build_daily_report(_ctx, deps) do
-    orders = Map.fetch!(deps, {__MODULE__, :extract_orders})
-    {:ok, %Favn.Asset.Output{output: %{count: length(orders)}}}
-  end
+  @asset true
+  @depends :extract_orders
+  def build_daily_report(_ctx), do: :ok
 end
 ```
 
@@ -85,6 +81,28 @@ config :favn,
 {:ok, run_id} = Favn.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
 {:ok, run} = Favn.await_run(run_id)
 ```
+
+
+## Approved v0.2 DSL refactor shape (in progress)
+
+The current v0.2 refactor work is locked to the following authoring contract and attribute order:
+
+```elixir
+@asset "Asset Name"
+@meta owner: "data-platform", domain: :sales
+@doc "What this asset does"
+@depends {:MyApp.UpstreamAssets, :upstream_asset}
+@freshness max_age: {:hours, 24}
+@spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
+def asset_name(ctx) do
+  :ok
+end
+```
+
+Notes:
+- Use one `@depends` entry per declaration; repeat `@depends` for multiple dependencies.
+- `@uses` is deferred and intentionally out of scope for this refactor.
+- Missing `@doc`/`@spec` is allowed (UI will simply have less metadata).
 
 ## Configuration
 

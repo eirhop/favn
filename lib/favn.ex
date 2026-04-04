@@ -83,6 +83,28 @@ defmodule Favn do
   machine telemetry is emitted separately via `:telemetry` event names under
   `[:favn, :runtime, ...]`.
 
+
+  ## Approved v0.2 DSL refactor contract (in progress)
+
+  The currently approved v0.2 DSL refactor target is:
+
+      @asset "Asset Name"
+      @meta owner: "data-platform", domain: :sales
+      @doc "What this asset does"
+      @depends {:MyApp.UpstreamAssets, :upstream_asset}
+      @freshness max_age: {:hours, 24}
+      @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
+      def asset_name(ctx) do
+        :ok
+      end
+
+  Important decisions for this refactor:
+
+    * `@depends` is single-entry per attribute (repeat for multiple dependencies)
+    * `@uses` is deferred to a later pipeline-focused iteration
+    * missing `@doc`/`@spec` does not produce warnings or errors
+    * direct inter-asset value passing is removed from the public model
+
   ## Authoring assets
 
   Assets are defined in normal modules using `Favn.Assets`.
@@ -94,22 +116,12 @@ defmodule Favn do
 
         @doc "Extract raw orders from the sales source"
         @asset true
-        def extract_orders(_ctx, _deps) do
-          {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}], meta: %{source: :sales}}}
-        end
+        def extract_orders(_ctx), do: :ok
 
         @doc "Normalize extracted orders"
-        @asset depends_on: [:extract_orders]
-        def normalize_orders(_ctx, deps) do
-          orders = Map.fetch!(deps, {__MODULE__, :extract_orders})
-
-          normalized =
-            Enum.map(orders, fn order ->
-              Map.put(order, :normalized, true)
-            end)
-
-          {:ok, %Favn.Asset.Output{output: normalized, meta: %{normalized_count: length(normalized)}}}
-        end
+        @asset true
+        @depends :extract_orders
+        def normalize_orders(_ctx), do: :ok
       end
 
   Cross-module dependencies are also expected to be supported:
@@ -120,11 +132,9 @@ defmodule Favn do
         alias MyApp.SalesETL
 
         @doc "Build the fact table for sales"
-        @asset depends_on: [{SalesETL, :normalize_orders}]
-        def fact_sales(_ctx, deps) do
-          normalized_orders = Map.fetch!(deps, {SalesETL, :normalize_orders})
-          {:ok, %Favn.Asset.Output{output: %{rows: normalized_orders}}}
-        end
+        @asset true
+        @depends {SalesETL, :normalize_orders}
+        def fact_sales(_ctx), do: :ok
       end
 
   In this model, workflow structure is derived from the dependencies rather than from a
@@ -742,8 +752,8 @@ defmodule Favn do
 
   Asset invocation contract:
 
-    * assets are invoked as `def asset(ctx, deps)`
-    * success must be `{:ok, %Favn.Asset.Output{}}`
+    * assets are invoked as `def asset(ctx)`
+    * success may return `:ok` or `{:ok, meta}`
     * failure must be `{:error, reason}`
 
   ## Examples

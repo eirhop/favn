@@ -3,11 +3,11 @@ defmodule Favn.Test.Fixtures.Assets.Graph.SourceAssets do
 
   @doc "Raw orders"
   @asset true
-  def raw_orders(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: [%{id: 1}]}}
+  def raw_orders(_ctx), do: :ok
 
   @doc "Raw customers"
   @asset true
-  def raw_customers(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: [%{id: 1}]}}
+  def raw_customers(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.WarehouseAssets do
@@ -16,25 +16,23 @@ defmodule Favn.Test.Fixtures.Assets.Graph.WarehouseAssets do
   alias Favn.Test.Fixtures.Assets.Graph.SourceAssets
 
   @doc "Normalize orders"
-  @asset depends_on: [{SourceAssets, :raw_orders}], tags: [:warehouse]
-  def normalize_orders(_ctx, deps),
-    do: {:ok, %Favn.Asset.Output{output: Map.fetch!(deps, {SourceAssets, :raw_orders})}}
+  @asset true
+  @depends {SourceAssets, :raw_orders}
+  @meta tags: [:warehouse]
+  def normalize_orders(_ctx), do: :ok
 
   @doc "Normalize customers"
-  @asset depends_on: [{SourceAssets, :raw_customers}], tags: [:warehouse]
-  def normalize_customers(_ctx, deps),
-    do: {:ok, %Favn.Asset.Output{output: Map.fetch!(deps, {SourceAssets, :raw_customers})}}
+  @asset true
+  @depends {SourceAssets, :raw_customers}
+  @meta tags: [:warehouse]
+  def normalize_customers(_ctx), do: :ok
 
   @doc "Build sales fact"
-  @asset depends_on: [:normalize_orders, :normalize_customers], tags: [:finance]
-  def fact_sales(_ctx, deps) do
-    {:ok,
-     %Favn.Asset.Output{
-       output:
-         {Map.fetch!(deps, {__MODULE__, :normalize_orders}),
-          Map.fetch!(deps, {__MODULE__, :normalize_customers})}
-     }}
-  end
+  @asset true
+  @depends :normalize_orders
+  @depends :normalize_customers
+  @meta tags: [:finance]
+  def fact_sales(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.ReportingAssets do
@@ -43,25 +41,20 @@ defmodule Favn.Test.Fixtures.Assets.Graph.ReportingAssets do
   alias Favn.Test.Fixtures.Assets.Graph.WarehouseAssets
 
   @doc "Build dashboard"
-  @asset depends_on: [{WarehouseAssets, :fact_sales}, {WarehouseAssets, :normalize_orders}]
-  def dashboard(_ctx, deps) do
-    {:ok,
-     %Favn.Asset.Output{
-       output:
-         {Map.fetch!(deps, {WarehouseAssets, :fact_sales}),
-          Map.fetch!(deps, {WarehouseAssets, :normalize_orders})}
-     }}
-  end
+  @asset true
+  @depends {WarehouseAssets, :fact_sales}
+  @depends {WarehouseAssets, :normalize_orders}
+  def dashboard(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.BronzeAssets do
   use Favn.Assets
 
   @asset true
-  def raw_orders(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+  def raw_orders(_ctx), do: :ok
 
   @asset true
-  def raw_customers(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+  def raw_customers(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.SilverAssets do
@@ -69,11 +62,13 @@ defmodule Favn.Test.Fixtures.Assets.Graph.SilverAssets do
 
   alias Favn.Test.Fixtures.Assets.Graph.BronzeAssets
 
-  @asset depends_on: [{BronzeAssets, :raw_orders}]
-  def nightly_orders(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+  @asset true
+  @depends {BronzeAssets, :raw_orders}
+  def nightly_orders(_ctx), do: :ok
 
-  @asset depends_on: [{BronzeAssets, :raw_customers}]
-  def monthly_customers(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+  @asset true
+  @depends {BronzeAssets, :raw_customers}
+  def monthly_customers(_ctx), do: :ok
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.GoldAssets do
@@ -81,9 +76,12 @@ defmodule Favn.Test.Fixtures.Assets.Graph.GoldAssets do
 
   alias Favn.Test.Fixtures.Assets.Graph.SilverAssets
 
-  @asset depends_on: [{SilverAssets, :nightly_orders}, {SilverAssets, :monthly_customers}]
-  def gold_sales(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+  @asset true
+  @depends {SilverAssets, :nightly_orders}
+  @depends {SilverAssets, :monthly_customers}
+  def gold_sales(_ctx), do: :ok
 
-  @asset depends_on: [{SilverAssets, :nightly_orders}]
-  def gold_finance(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+  @asset true
+  @depends {SilverAssets, :nightly_orders}
+  def gold_finance(_ctx), do: :ok
 end

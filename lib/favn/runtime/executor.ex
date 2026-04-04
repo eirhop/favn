@@ -23,8 +23,7 @@ defmodule Favn.Runtime.Executor do
           required(:pid) => pid()
         }
 
-  @callback start_step(Asset.t(), Context.t(), map(), pid(), Favn.asset_ref()) ::
+  @callback start_step(Asset.t(), Context.t(), pid(), Favn.asset_ref()) ::
               {:ok, execution_handle()} | {:error, term()}
-
   @callback cancel_step(execution_handle(), map()) :: :ok | {:error, term()}
 end
