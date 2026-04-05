@@ -27,7 +27,7 @@ defmodule Favn.Asset do
   @typedoc """
   Canonical return shape expected from asset function execution.
   """
-  @type return_value :: :ok | {:ok, map() | keyword()} | {:error, term()}
+  @type return_value :: :ok | {:ok, map()} | {:error, term()}
 
   defstruct [
     :module,
@@ -55,13 +55,24 @@ defmodule Favn.Asset do
   """
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = asset) do
-    validate_meta!(asset.meta)
+    meta = normalize_meta!(asset.meta)
     validate_depends_on!(asset.depends_on)
 
-    asset
+    %{asset | meta: meta}
   end
 
-  defp validate_meta!(meta) when is_map(meta) do
+  @spec normalize_meta!(map() | keyword() | nil) :: map()
+  def normalize_meta!(nil), do: %{}
+
+  def normalize_meta!(meta) when is_list(meta) do
+    if Keyword.keyword?(meta) do
+      normalize_meta!(Map.new(meta))
+    else
+      raise ArgumentError, "asset meta must be a keyword list or map, got: #{inspect(meta)}"
+    end
+  end
+
+  def normalize_meta!(meta) when is_map(meta) do
     supported = MapSet.new([:owner, :category, :tags])
 
     Enum.each(meta, fn
@@ -98,10 +109,12 @@ defmodule Favn.Asset do
                 "asset meta contains unsupported key #{inspect(key)}; allowed keys: [:owner, :category, :tags]"
         end
     end)
+
+    meta
   end
 
-  defp validate_meta!(meta),
-    do: raise(ArgumentError, "asset meta must be a map, got: #{inspect(meta)}")
+  def normalize_meta!(meta),
+    do: raise(ArgumentError, "asset meta must be a keyword list or map, got: #{inspect(meta)}")
 
   defp validate_depends_on!(depends_on) when is_list(depends_on) do
     Enum.each(depends_on, fn

@@ -64,7 +64,7 @@ defmodule Favn.AssetTest do
   end
 
   test "validate!/1 rejects invalid meta" do
-    assert_raise ArgumentError, ~r/asset meta must be a map/, fn ->
+    assert_raise ArgumentError, ~r/asset meta must be a keyword list or map/, fn ->
       Asset.validate!(%Asset{
         module: Example.Assets,
         name: :bad_meta,

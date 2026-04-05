@@ -119,10 +119,6 @@ defmodule Favn.Assets do
 
     quote do
       @doc false
-      @spec __favn_asset_module__() :: true
-      def __favn_asset_module__, do: true
-
-      @doc false
       @spec __favn_assets__() :: [Favn.Asset.t()]
       def __favn_assets__, do: unquote(Macro.escape(assets))
     end
@@ -191,73 +187,14 @@ defmodule Favn.Assets do
     end)
   end
 
-  defp normalize_meta!(nil, _raw_asset), do: %{}
-
-  defp normalize_meta!(meta, raw_asset) when is_list(meta) do
-    if Keyword.keyword?(meta) do
-      supported_keys = [:owner, :category, :tags]
-
-      Enum.each(meta, fn
-        {:owner, owner} when is_binary(owner) ->
-          :ok
-
-        {:owner, value} ->
-          compile_error!(
-            raw_asset.file,
-            raw_asset.line,
-            "@meta owner must be a string, got: #{inspect(value)}"
-          )
-
-        {:category, category} when is_atom(category) ->
-          :ok
-
-        {:category, value} ->
-          compile_error!(
-            raw_asset.file,
-            raw_asset.line,
-            "@meta category must be an atom, got: #{inspect(value)}"
-          )
-
-        {:tags, tags} when is_list(tags) ->
-          Enum.each(tags, fn
-            tag when is_atom(tag) or is_binary(tag) ->
-              :ok
-
-            tag ->
-              compile_error!(
-                raw_asset.file,
-                raw_asset.line,
-                "@meta tags entries must be atoms or strings, got: #{inspect(tag)}"
-              )
-          end)
-
-        {:tags, value} ->
-          compile_error!(
-            raw_asset.file,
-            raw_asset.line,
-            "@meta tags must be a list, got: #{inspect(value)}"
-          )
-
-        {key, _value} ->
-          compile_error!(
-            raw_asset.file,
-            raw_asset.line,
-            "unsupported @meta key #{inspect(key)}; allowed keys are #{inspect(supported_keys)}"
-          )
-      end)
-
-      Map.new(meta)
-    else
-      compile_error!(
-        raw_asset.file,
-        raw_asset.line,
-        "@meta must be a keyword list with atom keys"
-      )
+  defp normalize_meta!(meta, raw_asset) do
+    try do
+      Asset.normalize_meta!(meta)
+    rescue
+      error in ArgumentError ->
+        compile_error!(raw_asset.file, raw_asset.line, error.message)
     end
   end
-
-  defp normalize_meta!(_meta, raw_asset),
-    do: compile_error!(raw_asset.file, raw_asset.line, "@meta must be a keyword list")
 
   defp normalize_doc({_line, false}), do: nil
   defp normalize_doc({_line, doc}) when is_binary(doc), do: doc

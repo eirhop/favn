@@ -86,13 +86,10 @@ defmodule Favn.RunnerTest do
       try do
         case apply(asset.module, asset.name, [ctx]) do
           :ok ->
-            {:ok, %{meta: %{}}}
+            {:ok, %{}}
 
           {:ok, meta} when is_map(meta) ->
-            {:ok, %{meta: meta}}
-
-          {:ok, meta} when is_list(meta) ->
-            {:ok, %{meta: Map.new(meta)}}
+            {:ok, meta}
 
           {:error, reason} ->
             {:error, %{kind: :error, reason: reason, stacktrace: []}}
@@ -102,8 +99,7 @@ defmodule Favn.RunnerTest do
              %{
                kind: :error,
                reason:
-                 {:invalid_return_shape, other,
-                  expected: ":ok | {:ok, meta_map_or_keyword} | {:error, reason}"},
+                 {:invalid_return_shape, other, expected: ":ok | {:ok, map()} | {:error, reason}"},
                stacktrace: []
              }}
         end
@@ -189,7 +185,7 @@ defmodule Favn.RunnerTest do
 
     assert run.asset_results[{RunnerAssets, :invalid_return}].error.reason ==
              {:invalid_return_shape, {:ok, :bad_shape},
-              expected: ":ok | {:ok, meta_map_or_keyword} | {:error, reason}"}
+              expected: ":ok | {:ok, map()} | {:error, reason}"}
 
     assert run.event_seq == 9
   end

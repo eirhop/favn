@@ -70,7 +70,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
 
       {:ok, next_state, [{:step_retry_scheduled, ref, payload}]}
     end
@@ -106,7 +105,6 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
         |> remove_ready(ref)
-        |> put_running(ref)
 
       {:ok, next_state,
        [
@@ -153,8 +151,7 @@ defmodule Favn.Runtime.Transitions.Step do
       state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
+        |> mark_terminal_step(ref)
 
       {state, ready_events} = unlock_downstream(state, ref)
 
@@ -206,8 +203,7 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
+        |> mark_terminal_step(ref)
 
       {:ok, next_state, [{:step_failed, ref, payload}]}
     end
@@ -245,8 +241,7 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
+        |> mark_terminal_step(ref)
 
       {:ok, next_state, [{:step_cancelled, ref, %{attempt: step.attempt}}]}
     end
@@ -284,8 +279,7 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
+        |> mark_terminal_step(ref)
 
       {:ok, next_state, [{:step_timed_out, ref, %{attempt: step.attempt}}]}
     end
@@ -344,14 +338,7 @@ defmodule Favn.Runtime.Transitions.Step do
   defp remove_ready(%State{} = state, ref),
     do: %{state | ready_queue: Enum.reject(state.ready_queue, &(&1 == ref))}
 
-  defp put_running(%State{} = state, ref),
-    do: %{state | running_steps: MapSet.put(state.running_steps, ref)}
-
-  defp clear_running(%State{} = state, ref),
-    do: %{state | running_steps: MapSet.delete(state.running_steps, ref)}
-
-  defp put_completed(%State{} = state, ref),
-    do: %{state | completed_steps: MapSet.put(state.completed_steps, ref)}
+  defp mark_terminal_step(%State{} = state, _ref), do: state
 
   defp unlock_downstream(%State{} = state, ref) do
     step = Map.fetch!(state.steps, ref)

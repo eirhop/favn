@@ -203,7 +203,7 @@ defmodule Favn.Runtime.Coordinator do
          %State{} = state,
          exec_ref,
          maybe_ref,
-         {:ok, %{meta: meta}}
+         {:ok, meta}
        ) do
     case take_execution(state, exec_ref, maybe_ref) do
       {:ok, ref, state} ->

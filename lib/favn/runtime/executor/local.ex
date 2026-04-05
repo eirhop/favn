@@ -42,13 +42,10 @@ defmodule Favn.Runtime.Executor.Local do
     try do
       case apply(asset.module, asset.name, [ctx]) do
         :ok ->
-          {:ok, %{meta: %{}}}
+          {:ok, %{}}
 
         {:ok, meta} when is_map(meta) ->
-          {:ok, %{meta: meta}}
-
-        {:ok, meta} when is_list(meta) ->
-          {:ok, %{meta: Map.new(meta)}}
+          {:ok, meta}
 
         {:error, reason} ->
           {:error, %{kind: :error, reason: reason, stacktrace: []}}
@@ -58,8 +55,7 @@ defmodule Favn.Runtime.Executor.Local do
            %{
              kind: :error,
              reason:
-               {:invalid_return_shape, other,
-                expected: ":ok | {:ok, meta_map_or_keyword} | {:error, reason}"},
+               {:invalid_return_shape, other, expected: ":ok | {:ok, map()} | {:error, reason}"},
              stacktrace: []
            }}
       end

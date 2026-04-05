@@ -648,9 +648,18 @@ defmodule Favn do
   @doc false
   @spec asset_module?(module()) :: boolean()
   def asset_module?(module) when is_atom(module) do
-    function_exported?(module, :__favn_asset_module__, 0) and
-      function_exported?(module, :__favn_assets__, 0) and
-      module.__favn_asset_module__() == true
+    if function_exported?(module, :__favn_assets__, 0) do
+      try do
+        case module.__favn_assets__() do
+          assets when is_list(assets) -> Enum.all?(assets, &match?(%Favn.Asset{}, &1))
+          _ -> false
+        end
+      rescue
+        _ -> false
+      end
+    else
+      false
+    end
   end
 
   @doc """
@@ -751,7 +760,7 @@ defmodule Favn do
   Asset invocation contract:
 
     * assets are invoked as `def asset(ctx)`
-    * success may return `:ok` or `{:ok, meta}`
+    * success may return `:ok` or `{:ok, map()}`
     * failure must be `{:error, reason}`
 
   ## Examples

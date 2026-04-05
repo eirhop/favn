@@ -229,7 +229,7 @@ The following DSL decisions are approved and should be treated as source-of-trut
 - `@depends` supports only single-entry declarations; repeat the attribute for additional dependencies.
 - `@uses` is out of scope for this PR and deferred to later pipeline design work.
 - Missing `@doc` or `@spec` should not emit warnings/errors.
-- Asset returns may be `:ok`, `{:ok, meta}`, or `{:error, reason}`.
+- Asset returns may be `:ok`, `{:ok, map()}`, or `{:error, reason}`.
 
 ### Remaining v0.2 refactor PR slice (current PR scope)
 

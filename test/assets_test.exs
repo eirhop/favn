@@ -74,7 +74,7 @@ defmodule Favn.AssetsTest do
       """)
     end
 
-    assert_raise CompileError, ~r/@meta must be a keyword list/, fn ->
+    assert_raise CompileError, ~r/asset meta must be a keyword list or map/, fn ->
       compile_test_module("""
       use Favn.Assets
 
@@ -84,7 +84,7 @@ defmodule Favn.AssetsTest do
       """)
     end
 
-    assert_raise CompileError, ~r/unsupported @meta key/, fn ->
+    assert_raise CompileError, ~r/asset meta contains unsupported key/, fn ->
       compile_test_module("""
       use Favn.Assets
 
@@ -94,7 +94,7 @@ defmodule Favn.AssetsTest do
       """)
     end
 
-    assert_raise CompileError, ~r/@meta owner must be a string/, fn ->
+    assert_raise CompileError, ~r/asset meta owner must be a string/, fn ->
       compile_test_module("""
       use Favn.Assets
 
@@ -104,7 +104,7 @@ defmodule Favn.AssetsTest do
       """)
     end
 
-    assert_raise CompileError, ~r/@meta category must be an atom/, fn ->
+    assert_raise CompileError, ~r/asset meta category must be an atom/, fn ->
       compile_test_module("""
       use Favn.Assets
 
@@ -114,7 +114,7 @@ defmodule Favn.AssetsTest do
       """)
     end
 
-    assert_raise CompileError, ~r/@meta tags entries must be atoms or strings/, fn ->
+    assert_raise CompileError, ~r/asset meta tags entries must be atoms or strings/, fn ->
       compile_test_module("""
       use Favn.Assets
 
