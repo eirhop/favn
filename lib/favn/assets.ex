@@ -39,7 +39,7 @@ defmodule Favn.Assets do
   def __on_definition__(env, kind, name, args, _guards, _body) do
     case Module.get_attribute(env.module, :asset) do
       nil ->
-        :ok
+        validate_no_stray_asset_attributes!(env, kind, name, args)
 
       asset_opts ->
         Module.delete_attribute(env.module, :asset)
@@ -95,6 +95,18 @@ defmodule Favn.Assets do
           env.file,
           env.line,
           "@asset must be followed by a public function definition"
+        )
+    end
+
+    case {Module.get_attribute(env.module, :depends), Module.get_attribute(env.module, :meta)} do
+      {[], nil} ->
+        :ok
+
+      _ ->
+        compile_error!(
+          env.file,
+          env.line,
+          "@depends/@meta must be attached to an immediately following @asset function"
         )
     end
 
@@ -183,6 +195,57 @@ defmodule Favn.Assets do
 
   defp normalize_meta!(meta, raw_asset) when is_list(meta) do
     if Keyword.keyword?(meta) do
+      supported_keys = [:owner, :category, :tags]
+
+      Enum.each(meta, fn
+        {:owner, owner} when is_binary(owner) ->
+          :ok
+
+        {:owner, value} ->
+          compile_error!(
+            raw_asset.file,
+            raw_asset.line,
+            "@meta owner must be a string, got: #{inspect(value)}"
+          )
+
+        {:category, category} when is_atom(category) ->
+          :ok
+
+        {:category, value} ->
+          compile_error!(
+            raw_asset.file,
+            raw_asset.line,
+            "@meta category must be an atom, got: #{inspect(value)}"
+          )
+
+        {:tags, tags} when is_list(tags) ->
+          Enum.each(tags, fn
+            tag when is_atom(tag) or is_binary(tag) ->
+              :ok
+
+            tag ->
+              compile_error!(
+                raw_asset.file,
+                raw_asset.line,
+                "@meta tags entries must be atoms or strings, got: #{inspect(tag)}"
+              )
+          end)
+
+        {:tags, value} ->
+          compile_error!(
+            raw_asset.file,
+            raw_asset.line,
+            "@meta tags must be a list, got: #{inspect(value)}"
+          )
+
+        {key, _value} ->
+          compile_error!(
+            raw_asset.file,
+            raw_asset.line,
+            "unsupported @meta key #{inspect(key)}; allowed keys are #{inspect(supported_keys)}"
+          )
+      end)
+
       Map.new(meta)
     else
       compile_error!(
@@ -222,4 +285,27 @@ defmodule Favn.Assets do
   defp compile_error!(file, line, description) do
     raise CompileError, file: file, line: line, description: description
   end
+
+  defp validate_no_stray_asset_attributes!(env, kind, name, args)
+       when kind in [:def, :defp] do
+    depends = Module.get_attribute(env.module, :depends)
+    meta = Module.get_attribute(env.module, :meta)
+
+    if depends != [] or not is_nil(meta) do
+      Module.delete_attribute(env.module, :depends)
+      Module.delete_attribute(env.module, :meta)
+
+      arity = length(args || [])
+
+      compile_error!(
+        env.file,
+        env.line,
+        "@depends/@meta on #{kind} #{name}/#{arity} requires @asset immediately above that function"
+      )
+    else
+      :ok
+    end
+  end
+
+  defp validate_no_stray_asset_attributes!(_env, _kind, _name, _args), do: :ok
 end

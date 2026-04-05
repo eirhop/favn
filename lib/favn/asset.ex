@@ -61,7 +61,44 @@ defmodule Favn.Asset do
     asset
   end
 
-  defp validate_meta!(meta) when is_map(meta), do: :ok
+  defp validate_meta!(meta) when is_map(meta) do
+    supported = MapSet.new([:owner, :category, :tags])
+
+    Enum.each(meta, fn
+      {:owner, owner} when is_binary(owner) ->
+        :ok
+
+      {:owner, value} ->
+        raise ArgumentError, "asset meta owner must be a string, got: #{inspect(value)}"
+
+      {:category, category} when is_atom(category) ->
+        :ok
+
+      {:category, value} ->
+        raise ArgumentError, "asset meta category must be an atom, got: #{inspect(value)}"
+
+      {:tags, tags} when is_list(tags) ->
+        Enum.each(tags, fn
+          tag when is_atom(tag) or is_binary(tag) ->
+            :ok
+
+          tag ->
+            raise ArgumentError,
+                  "asset meta tags entries must be atoms or strings, got: #{inspect(tag)}"
+        end)
+
+      {:tags, value} ->
+        raise ArgumentError, "asset meta tags must be a list, got: #{inspect(value)}"
+
+      {key, _value} ->
+        if MapSet.member?(supported, key) do
+          :ok
+        else
+          raise ArgumentError,
+                "asset meta contains unsupported key #{inspect(key)}; allowed keys: [:owner, :category, :tags]"
+        end
+    end)
+  end
 
   defp validate_meta!(meta),
     do: raise(ArgumentError, "asset meta must be a map, got: #{inspect(meta)}")

@@ -52,7 +52,6 @@ defmodule Favn.Runtime.State do
           inflight_execs: %{reference() => exec_info()},
           exec_refs_by_monitor: %{reference() => reference()},
           completed_exec_refs: MapSet.t(reference()),
-          outputs: %{Ref.t() => term()},
           run_error: term() | nil,
           run_terminal_reason: map() | nil
         }
@@ -81,7 +80,6 @@ defmodule Favn.Runtime.State do
     inflight_execs: %{},
     exec_refs_by_monitor: %{},
     completed_exec_refs: MapSet.new(),
-    outputs: %{},
     run_error: nil,
     run_terminal_reason: nil
   ]

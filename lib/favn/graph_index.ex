@@ -63,7 +63,6 @@ defmodule Favn.GraphIndex do
           include_target: boolean(),
           transitive: boolean(),
           tags: [atom() | String.t()],
-          kinds: [atom()],
           modules: [module()],
           names: [atom()]
         ]
@@ -266,7 +265,6 @@ defmodule Favn.GraphIndex do
          :ok <- validate_boolean_opt(opts, :transitive),
          :ok <- validate_boolean_opt(opts, :include_target),
          :ok <- validate_list_opt(opts, :tags),
-         :ok <- validate_list_opt(opts, :kinds),
          :ok <- validate_list_opt(opts, :modules),
          :ok <- validate_list_opt(opts, :names) do
       :ok
@@ -303,13 +301,11 @@ defmodule Favn.GraphIndex do
 
   defp filter_assets(assets, opts) do
     tags = Keyword.get(opts, :tags)
-    kinds = Keyword.get(opts, :kinds)
     modules = Keyword.get(opts, :modules)
     names = Keyword.get(opts, :names)
 
     Enum.filter(assets, fn asset ->
       matches_tags?(asset, tags) and
-        matches_membership?(Map.get(asset.meta, :kind), kinds) and
         matches_membership?(asset.module, modules) and
         matches_membership?(asset.name, names)
     end)

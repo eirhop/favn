@@ -24,7 +24,7 @@
 - Plain Elixir functions become assets with metadata and dependencies.
 - Dependency graphs are discovered automatically from asset definitions.
 - Runs are planned deterministically and executed in dependency order.
-- Runtime state, outputs, and run events are exposed through a small public API.
+- Runtime state and run events are exposed through a small public API.
 
 ## Introduction
 
@@ -89,10 +89,9 @@ The current v0.2 refactor work is locked to the following authoring contract and
 
 ```elixir
 @asset "Asset Name"
-@meta owner: "data-platform", domain: :sales
+@meta owner: "data-platform", category: :sales, tags: [:daily]
 @doc "What this asset does"
 @depends {:MyApp.UpstreamAssets, :upstream_asset}
-@freshness max_age: {:hours, 24}
 @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
 def asset_name(ctx) do
   :ok

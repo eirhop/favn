@@ -95,9 +95,7 @@ These are the function attributes we focus on in v1:
 - `@asset`
 - `@meta`
 - `@depends`
-- `@freshness`
-
-`@uses` is intentionally deferred for a later pipeline-focused iteration.
+`@uses` and `@freshness` are intentionally deferred for later iterations.
 
 ### `@asset`
 
@@ -112,15 +110,11 @@ Purpose:
 - execution ordering
 - lineage
 - documentation
-- freshness reasoning
+- lineage reasoning
 
-Shape in v0.3: one dependency per attribute declaration. For multiple dependencies, repeat `@depends`.
+Shape in v0.2: one dependency per attribute declaration. For multiple dependencies, repeat `@depends`.
 
 This does not imply direct value passing between assets.
-
-### `@freshness`
-
-Declares how fresh the latest successful materialization must be for Favn to skip rerun.
 
 ### `@meta`
 
@@ -230,9 +224,8 @@ The following DSL decisions are approved and should be treated as source-of-trut
   2. `@meta ...`
   3. `@doc ...`
   4. `@depends ...` (repeatable, single entry each)
-  5. `@freshness ...`
-  6. `@spec ...`
-  7. `def asset(ctx) do ... end`
+  5. `@spec ...`
+  6. `def asset(ctx) do ... end`
 - `@depends` supports only single-entry declarations; repeat the attribute for additional dependencies.
 - `@uses` is out of scope for this PR and deferred to later pipeline design work.
 - Missing `@doc` or `@spec` should not emit warnings/errors.

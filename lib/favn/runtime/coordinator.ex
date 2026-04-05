@@ -203,11 +203,11 @@ defmodule Favn.Runtime.Coordinator do
          %State{} = state,
          exec_ref,
          maybe_ref,
-         {:ok, %{output: output, meta: meta}}
+         {:ok, %{meta: meta}}
        ) do
     case take_execution(state, exec_ref, maybe_ref) do
       {:ok, ref, state} ->
-        apply_step_transition(state, &StepTransitions.complete_success(&1, ref, output, meta))
+        apply_step_transition(state, &StepTransitions.complete_success(&1, ref, meta))
 
       {:ignore, state} ->
         {:ok, state}

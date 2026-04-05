@@ -30,7 +30,7 @@ defmodule Favn.AssetTest do
       file: "lib/example/assets.ex",
       line: 27,
       title: "Fact Sales",
-      meta: %{kind: :view, tags: [:warehouse, "finance"]},
+      meta: %{owner: "analytics", category: :finance, tags: [:warehouse, "finance"]},
       depends_on: [Ref.new(Example.Assets, :normalize_orders)]
     }
 
@@ -42,7 +42,7 @@ defmodule Favn.AssetTest do
     assert asset.file == "lib/example/assets.ex"
     assert asset.line == 27
     assert asset.title == "Fact Sales"
-    assert asset.meta == %{kind: :view, tags: [:warehouse, "finance"]}
+    assert asset.meta == %{owner: "analytics", category: :finance, tags: [:warehouse, "finance"]}
     assert asset.depends_on == [{Example.Assets, :normalize_orders}]
   end
 
@@ -56,7 +56,7 @@ defmodule Favn.AssetTest do
       file: "lib/example/assets.ex",
       line: 27,
       title: "Fact Sales",
-      meta: %{kind: :view, tags: [:warehouse, "finance"]},
+      meta: %{owner: "analytics", category: :finance, tags: [:warehouse, "finance"]},
       depends_on: [Ref.new(Example.Assets, :normalize_orders)]
     }
 
@@ -87,6 +87,20 @@ defmodule Favn.AssetTest do
         file: "lib/example/assets.ex",
         line: 10,
         depends_on: [:not_a_ref]
+      })
+    end
+  end
+
+  test "validate!/1 rejects unsupported metadata keys" do
+    assert_raise ArgumentError, ~r/unsupported key/, fn ->
+      Asset.validate!(%Asset{
+        module: Example.Assets,
+        name: :bad_meta_key,
+        ref: Ref.new(Example.Assets, :bad_meta_key),
+        arity: 0,
+        file: "lib/example/assets.ex",
+        line: 10,
+        meta: %{kind: :legacy}
       })
     end
   end

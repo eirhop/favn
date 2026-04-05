@@ -21,8 +21,6 @@ defmodule Favn.Run do
           finished_at: DateTime.t() | nil,
           params: map(),
           retry_policy: map(),
-          outputs: %{Ref.t() => term()},
-          target_outputs: %{Ref.t() => term()},
           asset_results: %{Ref.t() => AssetResult.t()},
           error: term() | nil,
           terminal_reason: map() | nil
@@ -38,8 +36,6 @@ defmodule Favn.Run do
     finished_at: nil,
     params: %{},
     retry_policy: %{},
-    outputs: %{},
-    target_outputs: %{},
     asset_results: %{},
     error: nil,
     terminal_reason: nil

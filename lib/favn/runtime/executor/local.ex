@@ -42,13 +42,13 @@ defmodule Favn.Runtime.Executor.Local do
     try do
       case apply(asset.module, asset.name, [ctx]) do
         :ok ->
-          {:ok, %{output: nil, meta: %{}}}
+          {:ok, %{meta: %{}}}
 
         {:ok, meta} when is_map(meta) ->
-          {:ok, %{output: nil, meta: meta}}
+          {:ok, %{meta: meta}}
 
         {:ok, meta} when is_list(meta) ->
-          {:ok, %{output: nil, meta: Map.new(meta)}}
+          {:ok, %{meta: Map.new(meta)}}
 
         {:error, reason} ->
           {:error, %{kind: :error, reason: reason, stacktrace: []}}

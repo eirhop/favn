@@ -9,8 +9,6 @@ defmodule Favn.Runtime.Projector do
 
   @spec to_public_run(State.t()) :: Run.t()
   def to_public_run(%State{} = state) do
-    target_outputs = Map.take(state.outputs, state.target_refs)
-
     %Run{
       id: state.run_id,
       target_refs: state.target_refs,
@@ -21,8 +19,6 @@ defmodule Favn.Runtime.Projector do
       finished_at: state.finished_at,
       params: state.params,
       retry_policy: state.retry_policy,
-      outputs: state.outputs,
-      target_outputs: target_outputs,
       asset_results: build_asset_results(state),
       error: state.run_error,
       terminal_reason: state.run_terminal_reason
@@ -46,7 +42,6 @@ defmodule Favn.Runtime.Projector do
           started_at: step.started_at,
           finished_at: step.finished_at,
           duration_ms: step.duration_ms || 0,
-          output: step.output,
           meta: step.meta,
           error: step.error,
           attempt_count: step.attempt,

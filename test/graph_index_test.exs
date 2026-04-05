@@ -139,9 +139,6 @@ defmodule Favn.GraphIndexTest do
              Favn.GraphIndex.related_assets({ReportingAssets, :dashboard}, tags: :warehouse)
 
     assert {:error, :invalid_opts} =
-             Favn.GraphIndex.related_assets({ReportingAssets, :dashboard}, kinds: :table)
-
-    assert {:error, :invalid_opts} =
              Favn.GraphIndex.related_assets({ReportingAssets, :dashboard},
                modules: ReportingAssets
              )

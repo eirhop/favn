@@ -32,11 +32,11 @@ defmodule Favn do
   Favn will collect metadata such as:
 
     * asset name
+    * optional asset title
     * documentation
+    * metadata (`owner`, `category`, `tags`)
     * dependency references
     * source file and line
-    * kind
-    * tags
 
   This keeps the workflow definition close to the business logic while still allowing Favn to
   introspect and orchestrate the workflow later.
@@ -89,11 +89,10 @@ defmodule Favn do
   The currently approved v0.2 DSL refactor target is:
 
       @asset "Asset Name"
-      @meta owner: "data-platform", domain: :sales
+      @meta owner: "data-platform", category: :sales, tags: [:daily]
       @doc "What this asset does"
       @depends {:MyApp.UpstreamAssets, :upstream_asset}
-      @freshness max_age: {:hours, 24}
-      @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
+            @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
       def asset_name(ctx) do
         :ok
       end
@@ -526,8 +525,7 @@ defmodule Favn do
           direction: dependency_direction(),
           include_target: boolean(),
           transitive: boolean(),
-          tags: [Favn.Asset.tag()],
-          kinds: [Favn.Asset.kind()],
+          tags: [atom() | String.t()],
           modules: [module()],
           names: [atom()]
         ]
@@ -539,7 +537,7 @@ defmodule Favn do
 
     * `{module, name}` target ref
     * optional `opts`:
-      `:include_target`, `:transitive`, `:tags`, `:kinds`, `:modules`, `:names`
+      `:include_target`, `:transitive`, `:tags`, `:modules`, `:names`
 
   Deterministic behavior:
 
@@ -579,7 +577,7 @@ defmodule Favn do
 
     * `{module, name}` target ref
     * optional `opts`:
-      `:include_target`, `:transitive`, `:tags`, `:kinds`, `:modules`, `:names`
+      `:include_target`, `:transitive`, `:tags`, `:modules`, `:names`
 
   Deterministic behavior:
 
@@ -618,7 +616,7 @@ defmodule Favn do
 
     * `{module, name}` target ref
     * optional `opts`:
-      `:direction`, `:include_target`, `:transitive`, `:tags`, `:kinds`,
+      `:direction`, `:include_target`, `:transitive`, `:tags`,
       `:modules`, `:names`
 
   Deterministic behavior:

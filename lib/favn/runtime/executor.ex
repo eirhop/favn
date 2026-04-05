@@ -14,7 +14,7 @@ defmodule Favn.Runtime.Executor do
         }
 
   @type execution_result ::
-          {:ok, %{output: term(), meta: map()}}
+          {:ok, %{meta: map()}}
           | {:error, error_details()}
 
   @type execution_handle :: %{

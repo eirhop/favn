@@ -86,13 +86,13 @@ defmodule Favn.RunnerTest do
       try do
         case apply(asset.module, asset.name, [ctx]) do
           :ok ->
-            {:ok, %{output: nil, meta: %{}}}
+            {:ok, %{meta: %{}}}
 
           {:ok, meta} when is_map(meta) ->
-            {:ok, %{output: nil, meta: meta}}
+            {:ok, %{meta: meta}}
 
           {:ok, meta} when is_list(meta) ->
-            {:ok, %{output: nil, meta: Map.new(meta)}}
+            {:ok, %{meta: Map.new(meta)}}
 
           {:error, reason} ->
             {:error, %{kind: :error, reason: reason, stacktrace: []}}
@@ -158,11 +158,6 @@ defmodule Favn.RunnerTest do
     assert %DateTime{} = run.started_at
     assert %DateTime{} = run.finished_at
 
-    assert run.outputs[{RunnerAssets, :base}] == nil
-    assert run.outputs[{RunnerAssets, :transform}] == nil
-
-    assert run.target_outputs == %{{RunnerAssets, :final} => nil}
-
     assert run.asset_results[{RunnerAssets, :base}].duration_ms >= 0
     assert run.asset_results[{RunnerAssets, :final}].status == :ok
     assert run.asset_results[{RunnerAssets, :base}].stage == 0
@@ -183,8 +178,6 @@ defmodule Favn.RunnerTest do
     assert {:ok, run} = Favn.await_run(run_id)
 
     assert run.status == :ok
-    assert Map.keys(run.outputs) == [{RunnerAssets, :target_only}]
-    assert run.target_outputs == %{{RunnerAssets, :target_only} => nil}
   end
 
   test "captures invalid return shape as a structured run failure" do
@@ -221,21 +214,18 @@ defmodule Favn.RunnerTest do
 
     assert run.status == :error
     assert run.error == %{ref: ref, stage: 1, reason: :domain_failure}
-    assert run.target_outputs == %{}
 
     assert %{kind: :error, reason: :domain_failure, stacktrace: []} =
              run.asset_results[ref].error
   end
 
-  test "preserves asset metadata in asset_results while keeping outputs as business values" do
+  test "preserves asset metadata in asset_results" do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :with_meta})
     assert {:ok, run} = Favn.await_run(run_id)
 
     ref = {RunnerAssets, :with_meta}
     meta = %{row_count: 123, source: :test}
 
-    assert run.outputs[ref] == nil
-    assert run.asset_results[ref].output == nil
     assert run.asset_results[ref].meta == meta
   end
 
@@ -305,7 +295,6 @@ defmodule Favn.RunnerTest do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
     assert {:ok, run} = Favn.await_run(run_id)
     assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :slow_asset}] == nil
   end
 
   test "emits step_ready and step_started/step_finished events with ref + stage" do
@@ -373,7 +362,6 @@ defmodule Favn.RunnerTest do
     assert {:ok, run} = Favn.await_run(run_id)
 
     assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :parallel_join}] == nil
     assert :atomics.get(counter, 2) <= 2
 
     join_started = run.asset_results[{RunnerAssets, :parallel_join}].started_at
@@ -459,7 +447,6 @@ defmodule Favn.RunnerTest do
 
         assert {:ok, run} = Favn.await_run(run_id)
         assert run.status == :ok
-        assert run.outputs[{RunnerAssets, :slow_asset}] == nil
       end)
 
     assert log =~ "Executor returned mismatched step ref; using tracked ref."
@@ -508,7 +495,6 @@ defmodule Favn.RunnerTest do
 
     assert {:ok, run} = Favn.await_run(run_id)
     assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :slow_asset}] == nil
   end
 
   test "run/2 returns immediately with a run id while execution continues" do
@@ -599,7 +585,6 @@ defmodule Favn.RunnerTest do
     ref = {RunnerAssets, :transient_then_ok}
 
     assert run.status == :ok
-    assert run.outputs[ref] == nil
     assert run.asset_results[ref].attempt_count == 2
     assert length(run.asset_results[ref].attempts) == 2
   end
