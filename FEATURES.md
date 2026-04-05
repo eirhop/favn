@@ -261,6 +261,8 @@ Builds the first orchestration layer on top of the finalized v0.2 asset/runtime 
 - [ ] Initial pipeline/configuration definition model
 - [ ] Make pipeline/config available through `ctx`
 - [ ] Stable operator actions: run, cancel, rerun
+- [ ] Basic partition/runtime-window context support through `ctx`
+- [ ] Pass schedule/polling-derived runtime window into run context
 
 ---
 
