@@ -242,29 +242,13 @@ This refactor PR should focus on contract cleanup only (no new orchestration fea
 - [x] Update docs (`lib/favn.ex`, `README.md`, and examples) to the approved DSL and ordering.
 - [x] Keep roadmap and feature status aligned with these decisions.
 
-### Deferred to later PRs (post-v0.2)
-
-- [ ] Introduce `@uses` only after pipeline/runtime integration design is finalized.
-- [ ] Add richer freshness behavior once orchestration trigger layer work starts in v0.4.
-
 ---
 
-## v0.3.0 — Orchestration Layer Expansion
+## v0.3.0 — Initial Orchestration Layer
 
 **Status: Planned**
 
-This release starts after the remaining v0.2 DSL/runtime refactor scope is completed.
-
-### Features
-
-- [ ] Introduce orchestration-level features that build on the finalized v0.2 asset contract
-- [ ] Continue trigger and pipeline capabilities outside the function-level DSL
-
-## v0.4.0 — Triggers and Orchestration Layer
-
-**Status: Planned**
-
-Introduces orchestration config outside the business DSL and includes initial pipeline composition/install concerns.
+Builds the first orchestration layer on top of the finalized v0.2 asset/runtime contract.
 
 ### Features
 
@@ -273,11 +257,24 @@ Introduces orchestration config outside the business DSL and includes initial pi
 - [ ] Cron / schedule trigger
 - [ ] Polling trigger
 - [ ] Polling state / cursor tracking
-- [ ] Freshness-aware skip behavior
 - [ ] Initial orchestration layer outside function attributes
 - [ ] Initial pipeline/configuration definition model
 - [ ] Make pipeline/config available through `ctx`
 - [ ] Stable operator actions: run, cancel, rerun
+
+---
+
+## v0.4.0 — Freshness, Pipeline Composition, and Installed Context
+
+**Status: Planned**
+
+Expands the orchestration layer with freshness, pipeline composition, and installed runtime configuration.
+
+### Features
+
+- [ ] Freshness-aware skip behavior
+- [ ] Richer freshness behavior
+- [ ] Introduce `@uses` after pipeline/runtime integration design is finalized
 - [ ] Graph composition across modules
 - [ ] Pipeline-level asset selection
 - [ ] Pipeline-level configuration/bindings
