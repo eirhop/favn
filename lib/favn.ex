@@ -92,7 +92,7 @@ defmodule Favn do
       @meta owner: "data-platform", category: :sales, tags: [:daily]
       @doc "What this asset does"
       @depends {:MyApp.UpstreamAssets, :upstream_asset}
-            @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
+      @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
       def asset_name(ctx) do
         :ok
       end

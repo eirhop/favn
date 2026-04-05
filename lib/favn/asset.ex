@@ -61,6 +61,12 @@ defmodule Favn.Asset do
     %{asset | meta: meta}
   end
 
+  @doc """
+  Normalize and validate authored asset metadata (`@meta`).
+
+  This is for DSL/catalog metadata only and is separate from runtime success
+  return metadata, which must be a map.
+  """
   @spec normalize_meta!(map() | keyword() | nil) :: map()
   def normalize_meta!(nil), do: %{}
 

@@ -151,7 +151,6 @@ defmodule Favn.Runtime.Transitions.Step do
       state =
         state
         |> put_step(next_step)
-        |> mark_terminal_step(ref)
 
       {state, ready_events} = unlock_downstream(state, ref)
 
@@ -203,7 +202,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> mark_terminal_step(ref)
 
       {:ok, next_state, [{:step_failed, ref, payload}]}
     end
@@ -241,7 +239,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> mark_terminal_step(ref)
 
       {:ok, next_state, [{:step_cancelled, ref, %{attempt: step.attempt}}]}
     end
@@ -279,7 +276,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> mark_terminal_step(ref)
 
       {:ok, next_state, [{:step_timed_out, ref, %{attempt: step.attempt}}]}
     end
@@ -337,8 +333,6 @@ defmodule Favn.Runtime.Transitions.Step do
 
   defp remove_ready(%State{} = state, ref),
     do: %{state | ready_queue: Enum.reject(state.ready_queue, &(&1 == ref))}
-
-  defp mark_terminal_step(%State{} = state, _ref), do: state
 
   defp unlock_downstream(%State{} = state, ref) do
     step = Map.fetch!(state.steps, ref)
