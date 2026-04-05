@@ -178,7 +178,7 @@ This release proves the core architecture and programming model.
 - [x] Dependency graph construction (DAG)
 - [x] Deterministic planning from dependencies
 - [x] Local synchronous execution
-- [x] Run model with outputs
+- [x] Initial run model
 - [x] Storage abstraction (in-memory)
 - [x] Run event emission (PubSub)
 - [x] Public API (`Favn` module)
@@ -205,9 +205,9 @@ Turns Favn into a real execution engine with durable runtime state and concurren
 - [x] Stable event schema (runs + steps)
 - [x] Internal runtime telemetry foundation
 - [x] Coordinator / executor separation
-- [ ] Remove current in-memory-output assumptions from the execution model
-- [ ] Align runtime model with asset-first external materialization direction
-- [ ] Simplify asset execution contract toward `def asset(ctx)`
+- [x] Remove current in-memory-output assumptions from the execution model
+- [x] Align runtime model with asset-first external materialization direction
+- [x] Simplify asset execution contract toward `def asset(ctx)`
 
 ---
 
@@ -235,12 +235,12 @@ The following DSL decisions are approved and should be treated as source-of-trut
 
 This refactor PR should focus on contract cleanup only (no new orchestration features):
 
-- [ ] Refactor `@asset` option usage by moving dependency declarations to repeatable `@depends` and non-execution metadata to `@meta`.
-- [ ] Remove direct value-passing assumptions from asset execution and runtime expectations.
-- [ ] Require/normalize single-arity asset functions (`def asset(ctx)`).
-- [ ] Remove `%Favn.Asset.Output{}` as a required public return wrapper.
-- [ ] Update docs (`lib/favn.ex`, `README.md`, and examples) to the approved DSL and ordering.
-- [ ] Keep roadmap and feature status aligned with these decisions.
+- [x] Refactor `@asset` option usage by moving dependency declarations to repeatable `@depends` and non-execution metadata to `@meta`.
+- [x] Remove direct value-passing assumptions from asset execution and runtime expectations.
+- [x] Require/normalize single-arity asset functions (`def asset(ctx)`).
+- [x] Remove `%Favn.Asset.Output{}` as a required public return wrapper.
+- [x] Update docs (`lib/favn.ex`, `README.md`, and examples) to the approved DSL and ordering.
+- [x] Keep roadmap and feature status aligned with these decisions.
 
 ### Deferred to later PRs (post-v0.2)
 
