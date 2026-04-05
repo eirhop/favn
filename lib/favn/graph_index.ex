@@ -62,8 +62,7 @@ defmodule Favn.GraphIndex do
           direction: direction(),
           include_target: boolean(),
           transitive: boolean(),
-          tags: [Asset.tag()],
-          kinds: [Asset.kind()],
+          tags: [atom() | String.t()],
           modules: [module()],
           names: [atom()]
         ]
@@ -266,7 +265,6 @@ defmodule Favn.GraphIndex do
          :ok <- validate_boolean_opt(opts, :transitive),
          :ok <- validate_boolean_opt(opts, :include_target),
          :ok <- validate_list_opt(opts, :tags),
-         :ok <- validate_list_opt(opts, :kinds),
          :ok <- validate_list_opt(opts, :modules),
          :ok <- validate_list_opt(opts, :names) do
       :ok
@@ -303,13 +301,11 @@ defmodule Favn.GraphIndex do
 
   defp filter_assets(assets, opts) do
     tags = Keyword.get(opts, :tags)
-    kinds = Keyword.get(opts, :kinds)
     modules = Keyword.get(opts, :modules)
     names = Keyword.get(opts, :names)
 
     Enum.filter(assets, fn asset ->
       matches_tags?(asset, tags) and
-        matches_membership?(asset.kind, kinds) and
         matches_membership?(asset.module, modules) and
         matches_membership?(asset.name, names)
     end)
@@ -319,10 +315,17 @@ defmodule Favn.GraphIndex do
   defp matches_tags?(_asset, []), do: true
 
   defp matches_tags?(asset, tags) when is_list(tags) do
-    asset.tags
+    tags_from_meta(asset)
     |> MapSet.new()
     |> MapSet.disjoint?(MapSet.new(tags))
     |> Kernel.not()
+  end
+
+  defp tags_from_meta(asset) do
+    case Map.get(asset.meta, :tags, []) do
+      values when is_list(values) -> values
+      _ -> []
+    end
   end
 
   defp matches_membership?(_value, nil), do: true

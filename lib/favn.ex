@@ -32,11 +32,11 @@ defmodule Favn do
   Favn will collect metadata such as:
 
     * asset name
+    * optional asset title
     * documentation
+    * metadata (`owner`, `category`, `tags`)
     * dependency references
     * source file and line
-    * kind
-    * tags
 
   This keeps the workflow definition close to the business logic while still allowing Favn to
   introspect and orchestrate the workflow later.
@@ -83,6 +83,27 @@ defmodule Favn do
   machine telemetry is emitted separately via `:telemetry` event names under
   `[:favn, :runtime, ...]`.
 
+
+  ## Approved v0.2 DSL refactor contract (in progress)
+
+  The currently approved v0.2 DSL refactor target is:
+
+      @asset "Asset Name"
+      @meta owner: "data-platform", category: :sales, tags: [:daily]
+      @doc "What this asset does"
+      @depends {:MyApp.UpstreamAssets, :upstream_asset}
+      @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
+      def asset_name(ctx) do
+        :ok
+      end
+
+  Important decisions for this refactor:
+
+    * `@depends` is single-entry per attribute (repeat for multiple dependencies)
+    * `@uses` is deferred to a later pipeline-focused iteration
+    * missing `@doc`/`@spec` does not produce warnings or errors
+    * direct inter-asset value passing is removed from the public model
+
   ## Authoring assets
 
   Assets are defined in normal modules using `Favn.Assets`.
@@ -94,22 +115,12 @@ defmodule Favn do
 
         @doc "Extract raw orders from the sales source"
         @asset true
-        def extract_orders(_ctx, _deps) do
-          {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}], meta: %{source: :sales}}}
-        end
+        def extract_orders(_ctx), do: :ok
 
         @doc "Normalize extracted orders"
-        @asset depends_on: [:extract_orders]
-        def normalize_orders(_ctx, deps) do
-          orders = Map.fetch!(deps, {__MODULE__, :extract_orders})
-
-          normalized =
-            Enum.map(orders, fn order ->
-              Map.put(order, :normalized, true)
-            end)
-
-          {:ok, %Favn.Asset.Output{output: normalized, meta: %{normalized_count: length(normalized)}}}
-        end
+        @asset true
+        @depends :extract_orders
+        def normalize_orders(_ctx), do: :ok
       end
 
   Cross-module dependencies are also expected to be supported:
@@ -120,11 +131,9 @@ defmodule Favn do
         alias MyApp.SalesETL
 
         @doc "Build the fact table for sales"
-        @asset depends_on: [{SalesETL, :normalize_orders}]
-        def fact_sales(_ctx, deps) do
-          normalized_orders = Map.fetch!(deps, {SalesETL, :normalize_orders})
-          {:ok, %Favn.Asset.Output{output: %{rows: normalized_orders}}}
-        end
+        @asset true
+        @depends {SalesETL, :normalize_orders}
+        def fact_sales(_ctx), do: :ok
       end
 
   In this model, workflow structure is derived from the dependencies rather than from a
@@ -516,8 +525,7 @@ defmodule Favn do
           direction: dependency_direction(),
           include_target: boolean(),
           transitive: boolean(),
-          tags: [Favn.Asset.tag()],
-          kinds: [Favn.Asset.kind()],
+          tags: [atom() | String.t()],
           modules: [module()],
           names: [atom()]
         ]
@@ -529,7 +537,7 @@ defmodule Favn do
 
     * `{module, name}` target ref
     * optional `opts`:
-      `:include_target`, `:transitive`, `:tags`, `:kinds`, `:modules`, `:names`
+      `:include_target`, `:transitive`, `:tags`, `:modules`, `:names`
 
   Deterministic behavior:
 
@@ -569,7 +577,7 @@ defmodule Favn do
 
     * `{module, name}` target ref
     * optional `opts`:
-      `:include_target`, `:transitive`, `:tags`, `:kinds`, `:modules`, `:names`
+      `:include_target`, `:transitive`, `:tags`, `:modules`, `:names`
 
   Deterministic behavior:
 
@@ -608,7 +616,7 @@ defmodule Favn do
 
     * `{module, name}` target ref
     * optional `opts`:
-      `:direction`, `:include_target`, `:transitive`, `:tags`, `:kinds`,
+      `:direction`, `:include_target`, `:transitive`, `:tags`,
       `:modules`, `:names`
 
   Deterministic behavior:
@@ -640,9 +648,18 @@ defmodule Favn do
   @doc false
   @spec asset_module?(module()) :: boolean()
   def asset_module?(module) when is_atom(module) do
-    function_exported?(module, :__favn_asset_module__, 0) and
-      function_exported?(module, :__favn_assets__, 0) and
-      module.__favn_asset_module__() == true
+    if function_exported?(module, :__favn_assets__, 0) do
+      try do
+        case module.__favn_assets__() do
+          assets when is_list(assets) -> Enum.all?(assets, &match?(%Favn.Asset{}, &1))
+          _ -> false
+        end
+      rescue
+        _ -> false
+      end
+    else
+      false
+    end
   end
 
   @doc """
@@ -742,8 +759,8 @@ defmodule Favn do
 
   Asset invocation contract:
 
-    * assets are invoked as `def asset(ctx, deps)`
-    * success must be `{:ok, %Favn.Asset.Output{}}`
+    * assets are invoked as `def asset(ctx)`
+    * success may return `:ok` or `{:ok, map()}`
     * failure must be `{:error, reason}`
 
   ## Examples

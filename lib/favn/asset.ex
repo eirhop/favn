@@ -10,50 +10,35 @@ defmodule Favn.Asset do
   """
 
   alias Favn.Ref
-  alias Favn.Asset.Output
-
-  @typedoc """
-  Supported asset kinds.
-
-  These kinds describe how an asset should be treated by the runtime.
-  """
-  @type kind :: :materialized | :view | :ephemeral
-
-  @typedoc """
-  Tag attached to an asset.
-  """
-  @type tag :: atom() | String.t()
 
   @type t :: %__MODULE__{
           module: module(),
           name: atom(),
           ref: Ref.t(),
           arity: non_neg_integer(),
+          title: String.t() | nil,
           doc: String.t() | nil,
           file: String.t(),
           line: pos_integer(),
-          kind: kind(),
-          tags: [tag()],
+          meta: map(),
           depends_on: [Ref.t()]
         }
 
   @typedoc """
   Canonical return shape expected from asset function execution.
   """
-  @type return_value :: {:ok, Output.t()} | {:error, term()}
-
-  @valid_kinds [:materialized, :view, :ephemeral]
+  @type return_value :: :ok | {:ok, map()} | {:error, term()}
 
   defstruct [
     :module,
     :name,
     :ref,
     :arity,
+    :title,
     :doc,
     :file,
     :line,
-    kind: :materialized,
-    tags: [],
+    meta: %{},
     depends_on: []
   ]
 
@@ -65,45 +50,77 @@ defmodule Favn.Asset do
 
   ## Raises
 
-    * `ArgumentError` when `kind` is not supported
-    * `ArgumentError` when `tags` is not a list of atoms or strings
+    * `ArgumentError` when `meta` is not a map
     * `ArgumentError` when `depends_on` is not a list of canonical refs
   """
   @spec validate!(t()) :: t()
   def validate!(%__MODULE__{} = asset) do
-    validate_kind!(asset.kind)
-    validate_tags!(asset.tags)
+    meta = normalize_meta!(asset.meta)
     validate_depends_on!(asset.depends_on)
 
-    asset
+    %{asset | meta: meta}
   end
 
-  @spec valid_kinds() :: [kind()]
-  def valid_kinds, do: @valid_kinds
+  @doc """
+  Normalize and validate authored asset metadata (`@meta`).
 
-  defp validate_kind!(kind) do
-    if kind in @valid_kinds do
-      :ok
+  This is for DSL/catalog metadata only and is separate from runtime success
+  return metadata, which must be a map.
+  """
+  @spec normalize_meta!(map() | keyword() | nil) :: map()
+  def normalize_meta!(nil), do: %{}
+
+  def normalize_meta!(meta) when is_list(meta) do
+    if Keyword.keyword?(meta) do
+      normalize_meta!(Map.new(meta))
     else
-      raise ArgumentError,
-            "invalid asset kind #{inspect(kind)}; expected one of #{inspect(@valid_kinds)}"
+      raise ArgumentError, "asset meta must be a keyword list or map, got: #{inspect(meta)}"
     end
   end
 
-  defp validate_tags!(tags) when is_list(tags) do
-    Enum.each(tags, fn
-      tag when is_atom(tag) or is_binary(tag) ->
+  def normalize_meta!(meta) when is_map(meta) do
+    supported = MapSet.new([:owner, :category, :tags])
+
+    Enum.each(meta, fn
+      {:owner, owner} when is_binary(owner) ->
         :ok
 
-      tag ->
-        raise ArgumentError,
-              "asset tags must be atoms or strings, got: #{inspect(tag)}"
+      {:owner, value} ->
+        raise ArgumentError, "asset meta owner must be a string, got: #{inspect(value)}"
+
+      {:category, category} when is_atom(category) ->
+        :ok
+
+      {:category, value} ->
+        raise ArgumentError, "asset meta category must be an atom, got: #{inspect(value)}"
+
+      {:tags, tags} when is_list(tags) ->
+        Enum.each(tags, fn
+          tag when is_atom(tag) or is_binary(tag) ->
+            :ok
+
+          tag ->
+            raise ArgumentError,
+                  "asset meta tags entries must be atoms or strings, got: #{inspect(tag)}"
+        end)
+
+      {:tags, value} ->
+        raise ArgumentError, "asset meta tags must be a list, got: #{inspect(value)}"
+
+      {key, _value} ->
+        if MapSet.member?(supported, key) do
+          :ok
+        else
+          raise ArgumentError,
+                "asset meta contains unsupported key #{inspect(key)}; allowed keys: [:owner, :category, :tags]"
+        end
     end)
+
+    meta
   end
 
-  defp validate_tags!(tags) do
-    raise ArgumentError, "asset tags must be a list of atoms or strings, got: #{inspect(tags)}"
-  end
+  def normalize_meta!(meta),
+    do: raise(ArgumentError, "asset meta must be a keyword list or map, got: #{inspect(meta)}")
 
   defp validate_depends_on!(depends_on) when is_list(depends_on) do
     Enum.each(depends_on, fn

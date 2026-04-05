@@ -8,12 +8,13 @@ defmodule FavnTest do
 
     @doc "Extract raw orders"
     @asset true
-    def extract_orders(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: [%{id: 1}]}}
+    def extract_orders(_ctx), do: :ok
 
     @doc "Normalize extracted orders"
-    @asset depends_on: [:extract_orders], tags: [:sales]
-    def normalize_orders(_ctx, deps),
-      do: {:ok, %Favn.Asset.Output{output: Map.fetch!(deps, {__MODULE__, :extract_orders})}}
+    @asset true
+    @depends :extract_orders
+    @meta tags: [:sales]
+    def normalize_orders(_ctx), do: :ok
   end
 
   defmodule CrossModuleAssets do
@@ -22,9 +23,10 @@ defmodule FavnTest do
     alias FavnTest.SampleAssets
 
     @doc "Publish normalized orders"
-    @asset depends_on: [{SampleAssets, :normalize_orders}], tags: [:reporting]
-    def publish_orders(_ctx, deps),
-      do: {:ok, %Favn.Asset.Output{output: Map.fetch!(deps, {SampleAssets, :normalize_orders})}}
+    @asset true
+    @depends {SampleAssets, :normalize_orders}
+    @meta tags: [:reporting]
+    def publish_orders(_ctx), do: :ok
   end
 
   defmodule SpoofedAssets do
@@ -35,10 +37,9 @@ defmodule FavnTest do
     use Favn.Assets
 
     @doc "Archive published orders"
-    @asset depends_on: [{CrossModuleAssets, :publish_orders}]
-    def archive_orders(_ctx, deps),
-      do:
-        {:ok, %Favn.Asset.Output{output: Map.fetch!(deps, {CrossModuleAssets, :publish_orders})}}
+    @asset true
+    @depends {CrossModuleAssets, :publish_orders}
+    def archive_orders(_ctx), do: :ok
   end
 
   defmodule FacadeRawErrorStore do

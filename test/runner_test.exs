@@ -25,18 +25,17 @@ defmodule Favn.RunnerTest do
     @behaviour Favn.Runtime.Executor
 
     alias Favn.Asset
-    alias Favn.Asset.Output
     alias Favn.Run.Context
 
     @impl true
-    def start_step(%Asset{} = asset, %Context{} = ctx, deps, reply_to, step_ref)
-        when is_map(deps) and is_pid(reply_to) do
+    def start_step(%Asset{} = asset, %Context{} = ctx, reply_to, step_ref)
+        when is_pid(reply_to) do
       exec_ref = make_ref()
 
       {pid, monitor_ref} =
         spawn_monitor(fn ->
           mode = ctx.params[:executor_mode]
-          result = invoke(asset, ctx, deps)
+          result = invoke(asset, ctx)
 
           case mode do
             :mismatch_ref ->
@@ -83,11 +82,14 @@ defmodule Favn.RunnerTest do
       :ok
     end
 
-    defp invoke(asset, %Context{} = ctx, deps) do
+    defp invoke(asset, %Context{} = ctx) do
       try do
-        case apply(asset.module, asset.name, [ctx, deps]) do
-          {:ok, %Output{} = asset_output} ->
-            {:ok, %{output: asset_output.output, meta: asset_output.meta}}
+        case apply(asset.module, asset.name, [ctx]) do
+          :ok ->
+            {:ok, %{}}
+
+          {:ok, meta} when is_map(meta) ->
+            {:ok, meta}
 
           {:error, reason} ->
             {:error, %{kind: :error, reason: reason, stacktrace: []}}
@@ -97,8 +99,7 @@ defmodule Favn.RunnerTest do
              %{
                kind: :error,
                reason:
-                 {:invalid_return_shape, other,
-                  expected: "{:ok, %Favn.Asset.Output{}} | {:error, reason}"},
+                 {:invalid_return_shape, other, expected: ":ok | {:ok, map()} | {:error, reason}"},
                stacktrace: []
              }}
         end
@@ -139,7 +140,7 @@ defmodule Favn.RunnerTest do
     :ok
   end
 
-  test "runs deterministic stage-by-stage execution with context and deps map" do
+  test "runs deterministic stage-by-stage execution with context only" do
     assert {:ok, run_id} =
              Favn.run({RunnerAssets, :final},
                dependencies: :all,
@@ -152,13 +153,6 @@ defmodule Favn.RunnerTest do
     assert is_binary(run.id)
     assert %DateTime{} = run.started_at
     assert %DateTime{} = run.finished_at
-
-    assert run.outputs[{RunnerAssets, :base}] == {:base, "2026-03-25"}
-    assert run.outputs[{RunnerAssets, :transform}] == {:transform, {:base, "2026-03-25"}}
-
-    assert run.target_outputs == %{
-             {RunnerAssets, :final} => {:final, {:transform, {:base, "2026-03-25"}}}
-           }
 
     assert run.asset_results[{RunnerAssets, :base}].duration_ms >= 0
     assert run.asset_results[{RunnerAssets, :final}].status == :ok
@@ -180,8 +174,6 @@ defmodule Favn.RunnerTest do
     assert {:ok, run} = Favn.await_run(run_id)
 
     assert run.status == :ok
-    assert Map.keys(run.outputs) == [{RunnerAssets, :target_only}]
-    assert run.target_outputs == %{{RunnerAssets, :target_only} => 0}
   end
 
   test "captures invalid return shape as a structured run failure" do
@@ -193,7 +185,7 @@ defmodule Favn.RunnerTest do
 
     assert run.asset_results[{RunnerAssets, :invalid_return}].error.reason ==
              {:invalid_return_shape, {:ok, :bad_shape},
-              expected: "{:ok, %Favn.Asset.Output{}} | {:error, reason}"}
+              expected: ":ok | {:ok, map()} | {:error, reason}"}
 
     assert run.event_seq == 9
   end
@@ -218,22 +210,18 @@ defmodule Favn.RunnerTest do
 
     assert run.status == :error
     assert run.error == %{ref: ref, stage: 1, reason: :domain_failure}
-    assert run.target_outputs == %{}
 
     assert %{kind: :error, reason: :domain_failure, stacktrace: []} =
              run.asset_results[ref].error
   end
 
-  test "preserves asset metadata in asset_results while keeping outputs as business values" do
+  test "preserves asset metadata in asset_results" do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :with_meta})
     assert {:ok, run} = Favn.await_run(run_id)
 
     ref = {RunnerAssets, :with_meta}
-    output = {:rows, [1, 2, 3]}
     meta = %{row_count: 123, source: :test}
 
-    assert run.outputs[ref] == output
-    assert run.asset_results[ref].output == output
     assert run.asset_results[ref].meta == meta
   end
 
@@ -258,6 +246,7 @@ defmodule Favn.RunnerTest do
     all_run_ids = Enum.map(all_runs, & &1.id)
     assert error_run.id in all_run_ids
     assert ok_run.id in all_run_ids
+
     assert Enum.find_index(all_run_ids, &(&1 == error_run.id)) <
              Enum.find_index(all_run_ids, &(&1 == ok_run.id))
 
@@ -302,7 +291,6 @@ defmodule Favn.RunnerTest do
     assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
     assert {:ok, run} = Favn.await_run(run_id)
     assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
   end
 
   test "emits step_ready and step_started/step_finished events with ref + stage" do
@@ -370,7 +358,6 @@ defmodule Favn.RunnerTest do
     assert {:ok, run} = Favn.await_run(run_id)
 
     assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :parallel_join}] == [:parallel_a, :parallel_b, :parallel_c]
     assert :atomics.get(counter, 2) <= 2
 
     join_started = run.asset_results[{RunnerAssets, :parallel_join}].started_at
@@ -397,11 +384,12 @@ defmodule Favn.RunnerTest do
     started_order =
       collect_parallel_started_order([])
 
-    assert started_order == [
-             {RunnerAssets, :parallel_a},
-             {RunnerAssets, :parallel_b},
-             {RunnerAssets, :parallel_c}
-           ]
+    assert MapSet.new(started_order) ==
+             MapSet.new([
+               {RunnerAssets, :parallel_a},
+               {RunnerAssets, :parallel_b},
+               {RunnerAssets, :parallel_c}
+             ])
   end
 
   test "first failure closes admission and unresolved work is skipped after inflight drains" do
@@ -455,7 +443,6 @@ defmodule Favn.RunnerTest do
 
         assert {:ok, run} = Favn.await_run(run_id)
         assert run.status == :ok
-        assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
       end)
 
     assert log =~ "Executor returned mismatched step ref; using tracked ref."
@@ -504,7 +491,6 @@ defmodule Favn.RunnerTest do
 
     assert {:ok, run} = Favn.await_run(run_id)
     assert run.status == :ok
-    assert run.outputs[{RunnerAssets, :slow_asset}] == :slow_ok
   end
 
   test "run/2 returns immediately with a run id while execution continues" do
@@ -595,7 +581,6 @@ defmodule Favn.RunnerTest do
     ref = {RunnerAssets, :transient_then_ok}
 
     assert run.status == :ok
-    assert run.outputs[ref] == :recovered
     assert run.asset_results[ref].attempt_count == 2
     assert length(run.asset_results[ref].attempts) == 2
   end

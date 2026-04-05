@@ -44,7 +44,7 @@ defmodule Favn.RuntimeTransitionsTest do
              StepTransitions.start_step(state, ref_a)
 
     assert {:ok, state, events} =
-             StepTransitions.complete_success(state, ref_a, :ok, %{})
+             StepTransitions.complete_success(state, ref_a, %{})
 
     assert {:step_finished, ^ref_a, _payload} = hd(events)
     assert {:step_ready, ref_b} in events

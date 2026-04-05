@@ -47,12 +47,9 @@ defmodule Favn.Runtime.State do
           retry_timers: %{Ref.t() => reference()},
           steps: %{Ref.t() => StepState.t()},
           ready_queue: [Ref.t()],
-          running_steps: MapSet.t(Ref.t()),
-          completed_steps: MapSet.t(Ref.t()),
           inflight_execs: %{reference() => exec_info()},
           exec_refs_by_monitor: %{reference() => reference()},
           completed_exec_refs: MapSet.t(reference()),
-          outputs: %{Ref.t() => term()},
           run_error: term() | nil,
           run_terminal_reason: map() | nil
         }
@@ -76,12 +73,9 @@ defmodule Favn.Runtime.State do
     retry_timers: %{},
     steps: %{},
     ready_queue: [],
-    running_steps: MapSet.new(),
-    completed_steps: MapSet.new(),
     inflight_execs: %{},
     exec_refs_by_monitor: %{},
     completed_exec_refs: MapSet.new(),
-    outputs: %{},
     run_error: nil,
     run_terminal_reason: nil
   ]

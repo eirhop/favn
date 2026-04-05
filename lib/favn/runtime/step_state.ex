@@ -25,7 +25,6 @@ defmodule Favn.Runtime.StepState do
           finished_at: DateTime.t(),
           duration_ms: non_neg_integer(),
           status: attempt_result_status(),
-          output: term() | nil,
           meta: map(),
           error: map() | nil
         }
@@ -42,7 +41,6 @@ defmodule Favn.Runtime.StepState do
           started_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
           duration_ms: non_neg_integer() | nil,
-          output: term() | nil,
           meta: map(),
           error: map() | nil,
           attempts: [attempt_result()],
@@ -61,7 +59,6 @@ defmodule Favn.Runtime.StepState do
     started_at: nil,
     finished_at: nil,
     duration_ms: nil,
-    output: nil,
     meta: %{},
     error: nil,
     attempts: [],

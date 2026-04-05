@@ -3,7 +3,7 @@ defmodule Favn.AssetsTest.Upstream do
 
   @doc "Load source rows"
   @asset true
-  def source_rows(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}]}}
+  def source_rows(_ctx), do: :ok
 end
 
 defmodule Favn.AssetsTest.Sample do
@@ -12,20 +12,20 @@ defmodule Favn.AssetsTest.Sample do
   alias Favn.AssetsTest.Upstream
 
   @doc "Extract raw orders"
-  @asset true
-  def extract_orders(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: [%{id: 1, total: 100}]}}
+  @asset "Extract Orders"
+  def extract_orders(_ctx), do: :ok
 
   @doc "Normalize extracted orders"
-  @asset depends_on: [:extract_orders], tags: [:sales, "warehouse"]
-  def normalize_orders(_ctx, deps) do
-    orders = Map.fetch!(deps, {__MODULE__, :extract_orders})
-    {:ok, %Favn.Asset.Output{output: Enum.map(orders, &Map.put(&1, :normalized, true))}}
-  end
+  @asset true
+  @depends :extract_orders
+  @meta tags: [:sales, "warehouse"], owner: "data"
+  def normalize_orders(_ctx), do: :ok
 
   @doc false
-  @asset depends_on: [{Upstream, :source_rows}], kind: :view
-  def fact_sales(_ctx, deps),
-    do: {:ok, %Favn.Asset.Output{output: %{rows: Map.fetch!(deps, {Upstream, :source_rows})}}}
+  @asset true
+  @depends {Upstream, :source_rows}
+  @meta owner: "analytics", category: :sales, tags: [:view]
+  def fact_sales(_ctx), do: :ok
 end
 
 defmodule Favn.AssetsTest do
@@ -37,71 +37,90 @@ defmodule Favn.AssetsTest do
     assets = Favn.AssetsTest.Sample.__favn_assets__()
 
     assert Enum.map(assets, & &1.name) == [:extract_orders, :normalize_orders, :fact_sales]
-
     assert [%Asset{} = extract, %Asset{} = normalize, %Asset{} = fact] = assets
 
     assert extract.ref == {Favn.AssetsTest.Sample, :extract_orders}
-    assert extract.arity == 2
+    assert extract.arity == 1
+    assert extract.title == "Extract Orders"
     assert extract.doc == "Extract raw orders"
-    assert extract.file == "test/assets_test.exs"
-    assert is_integer(extract.line)
-    assert extract.kind == :materialized
-    assert extract.tags == []
+    assert extract.meta == %{}
     assert extract.depends_on == []
 
-    assert normalize.ref == {Favn.AssetsTest.Sample, :normalize_orders}
-    assert normalize.doc == "Normalize extracted orders"
-    assert normalize.tags == [:sales, "warehouse"]
     assert normalize.depends_on == [{Favn.AssetsTest.Sample, :extract_orders}]
+    assert normalize.meta == %{owner: "data", tags: [:sales, "warehouse"]}
 
-    assert fact.kind == :view
     assert fact.doc == nil
+    assert fact.meta == %{owner: "analytics", category: :sales, tags: [:view]}
     assert fact.depends_on == [{Favn.AssetsTest.Upstream, :source_rows}]
   end
 
   test "rejects invalid asset declarations at compile time" do
-    assert_raise CompileError, ~r/invalid asset kind/, fn ->
+    assert_raise CompileError, ~r/@asset must be true or a display-name string/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @asset kind: :invalid
-      def bad_kind(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      @asset depends_on: [:legacy]
+      def bad_asset(_ctx), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/asset tags must be a list/, fn ->
+    assert_raise CompileError, ~r/invalid @depends entry/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @asset tags: :sales
-      def bad_tags(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      @asset true
+      @depends [:bad]
+      def bad_depends(_ctx), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/asset tags must be atoms or strings/, fn ->
+    assert_raise CompileError, ~r/asset meta must be a keyword list or map/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @asset tags: [:sales, 1]
-      def bad_tag_entry(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      @asset true
+      @meta :bad
+      def bad_meta(_ctx), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/asset depends_on must be a list/, fn ->
+    assert_raise CompileError, ~r/asset meta contains unsupported key/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @asset depends_on: :extract_orders
-      def bad_depends_on_shape(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      @asset true
+      @meta kind: :legacy
+      def bad_meta_key(_ctx), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/invalid depends_on entry/, fn ->
+    assert_raise CompileError, ~r/asset meta owner must be a string/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @asset depends_on: [:ok, "bad"]
-      def bad_depends_on(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      @asset true
+      @meta owner: :team
+      def bad_owner(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/asset meta category must be an atom/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @meta category: \"sales\"
+      def bad_category(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/asset meta tags entries must be atoms or strings/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @meta tags: [:ok, 123]
+      def bad_tag_entry(_ctx), do: :ok
       """)
     end
 
@@ -110,38 +129,81 @@ defmodule Favn.AssetsTest do
       use Favn.Assets
 
       @asset true
-      def duplicate(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      def duplicate(_ctx), do: :ok
 
       @asset true
-      def duplicate(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      def duplicate(_ctx), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/@asset can only be used on public functions/, fn ->
+    assert_raise CompileError, ~r/@asset functions must have arity 1/, fn ->
       compile_test_module("""
       use Favn.Assets
 
       @asset true
-      defp private_asset(_ctx, _deps), do: {:ok, %Favn.Asset.Output{output: :ok}}
+      def wrong_arity(_ctx, _deps), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/@asset must be followed by a public function definition/, fn ->
+    assert_raise CompileError, ~r/requires @asset immediately above/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @asset true
+      @depends :upstream
+      def helper(_ctx), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/@asset functions must have arity 2/, fn ->
+    assert_raise CompileError, ~r/requires @asset immediately above/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @asset true
-      def wrong_arity, do: {:ok, %Favn.Asset.Output{output: :ok}}
+      @meta owner: \"data\"
+      def helper(_ctx), do: :ok
       """)
     end
+
+    assert_raise CompileError,
+                 ~r/must be attached to an immediately following @asset function/,
+                 fn ->
+                   compile_test_module("""
+                   use Favn.Assets
+
+                   @depends :upstream
+                   @meta owner: \"data\"
+                   """)
+                 end
+  end
+
+  test "consumes @depends and @meta only for the intended asset" do
+    module_name = Module.concat(__MODULE__, "Consume#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+      use Favn.Assets
+
+      @asset true
+      @depends :a
+      @meta owner: "one", category: :core, tags: [:a]
+      def first(_ctx), do: :ok
+
+      @asset true
+      def a(_ctx), do: :ok
+
+      @asset true
+      def second(_ctx), do: :ok
+    end
+    """
+
+    [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
+    [first, a, second] = module_name.__favn_assets__()
+
+    assert first.depends_on == [{module_name, :a}]
+    assert first.meta == %{owner: "one", category: :core, tags: [:a]}
+    assert a.depends_on == []
+    assert a.meta == %{}
+    assert second.depends_on == []
+    assert second.meta == %{}
   end
 
   defp compile_test_module(body) do

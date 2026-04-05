@@ -43,7 +43,6 @@ defmodule Favn.Runtime.Transitions.Step do
         finished_at: now,
         duration_ms: max(duration_ms, 0),
         status: :error,
-        output: nil,
         meta: %{},
         error: error
       }
@@ -54,7 +53,6 @@ defmodule Favn.Runtime.Transitions.Step do
           started_at: nil,
           finished_at: nil,
           duration_ms: nil,
-          output: nil,
           meta: %{},
           error: error,
           next_retry_at: next_attempt_at,
@@ -72,7 +70,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
 
       {:ok, next_state, [{:step_retry_scheduled, ref, payload}]}
     end
@@ -108,7 +105,6 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
         |> remove_ready(ref)
-        |> put_running(ref)
 
       {:ok, next_state,
        [
@@ -122,9 +118,9 @@ defmodule Favn.Runtime.Transitions.Step do
     end
   end
 
-  @spec complete_success(State.t(), Favn.asset_ref(), term(), map()) ::
+  @spec complete_success(State.t(), Favn.asset_ref(), map()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def complete_success(%State{} = state, ref, output, meta) when is_map(meta) do
+  def complete_success(%State{} = state, ref, meta) when is_map(meta) do
     with {:ok, step} <- fetch_step(state, ref),
          :ok <- require_status(step, :running, :complete_success) do
       now = DateTime.utc_now()
@@ -137,7 +133,6 @@ defmodule Favn.Runtime.Transitions.Step do
         finished_at: now,
         duration_ms: max(duration_ms, 0),
         status: :ok,
-        output: output,
         meta: meta,
         error: nil
       }
@@ -147,7 +142,6 @@ defmodule Favn.Runtime.Transitions.Step do
         | status: :success,
           finished_at: now,
           duration_ms: max(duration_ms, 0),
-          output: output,
           meta: meta,
           error: nil,
           next_retry_at: nil,
@@ -157,9 +151,6 @@ defmodule Favn.Runtime.Transitions.Step do
       state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
-        |> put_output(ref, output)
 
       {state, ready_events} = unlock_downstream(state, ref)
 
@@ -185,7 +176,6 @@ defmodule Favn.Runtime.Transitions.Step do
         finished_at: now,
         duration_ms: max(duration_ms, 0),
         status: :error,
-        output: nil,
         meta: %{},
         error: error
       }
@@ -195,7 +185,6 @@ defmodule Favn.Runtime.Transitions.Step do
         | status: :failed,
           finished_at: now,
           duration_ms: max(duration_ms, 0),
-          output: nil,
           error: error,
           next_retry_at: nil,
           attempts: step.attempts ++ [attempt_result]
@@ -213,8 +202,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
 
       {:ok, next_state, [{:step_failed, ref, payload}]}
     end
@@ -235,7 +222,6 @@ defmodule Favn.Runtime.Transitions.Step do
         finished_at: now,
         duration_ms: max(duration_ms, 0),
         status: :cancelled,
-        output: nil,
         meta: %{},
         error: nil
       }
@@ -245,7 +231,6 @@ defmodule Favn.Runtime.Transitions.Step do
         | status: :cancelled,
           finished_at: now,
           duration_ms: max(duration_ms, 0),
-          output: nil,
           error: nil,
           terminal_reason: reason,
           attempts: step.attempts ++ [attempt_result]
@@ -254,8 +239,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
 
       {:ok, next_state, [{:step_cancelled, ref, %{attempt: step.attempt}}]}
     end
@@ -276,7 +259,6 @@ defmodule Favn.Runtime.Transitions.Step do
         finished_at: now,
         duration_ms: max(duration_ms, 0),
         status: :timed_out,
-        output: nil,
         meta: %{},
         error: nil
       }
@@ -286,7 +268,6 @@ defmodule Favn.Runtime.Transitions.Step do
         | status: :timed_out,
           finished_at: now,
           duration_ms: max(duration_ms, 0),
-          output: nil,
           error: nil,
           terminal_reason: reason,
           attempts: step.attempts ++ [attempt_result]
@@ -295,8 +276,6 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> clear_running(ref)
-        |> put_completed(ref)
 
       {:ok, next_state, [{:step_timed_out, ref, %{attempt: step.attempt}}]}
     end
@@ -354,18 +333,6 @@ defmodule Favn.Runtime.Transitions.Step do
 
   defp remove_ready(%State{} = state, ref),
     do: %{state | ready_queue: Enum.reject(state.ready_queue, &(&1 == ref))}
-
-  defp put_running(%State{} = state, ref),
-    do: %{state | running_steps: MapSet.put(state.running_steps, ref)}
-
-  defp clear_running(%State{} = state, ref),
-    do: %{state | running_steps: MapSet.delete(state.running_steps, ref)}
-
-  defp put_completed(%State{} = state, ref),
-    do: %{state | completed_steps: MapSet.put(state.completed_steps, ref)}
-
-  defp put_output(%State{} = state, ref, output),
-    do: %{state | outputs: Map.put(state.outputs, ref, output)}
 
   defp unlock_downstream(%State{} = state, ref) do
     step = Map.fetch!(state.steps, ref)

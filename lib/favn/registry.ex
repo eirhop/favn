@@ -91,9 +91,15 @@ defmodule Favn.Registry do
     modules
     |> Enum.reduce_while({:ok, %{assets: [], assets_by_ref: %{}}}, fn module, {:ok, catalog} ->
       if Favn.asset_module?(module) do
-        case merge_assets(catalog, module.__favn_assets__()) do
-          {:ok, updated_catalog} -> {:cont, {:ok, updated_catalog}}
-          {:error, _reason} = error -> {:halt, error}
+        case module.__favn_assets__() do
+          assets when is_list(assets) ->
+            case merge_assets(catalog, assets) do
+              {:ok, updated_catalog} -> {:cont, {:ok, updated_catalog}}
+              {:error, _reason} = error -> {:halt, error}
+            end
+
+          _invalid ->
+            {:halt, {:error, {:invalid_asset_module, module}}}
         end
       else
         {:halt, {:error, {:invalid_asset_module, module}}}

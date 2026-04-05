@@ -93,10 +93,9 @@ Runtime information (trigger context, pipeline config, execution metadata, etc.)
 These are the function attributes we focus on in v1:
 
 - `@asset`
-- `@depends`
-- `@uses`
-- `@freshness`
 - `@meta`
+- `@depends`
+`@uses` and `@freshness` are intentionally deferred for later iterations.
 
 ### `@asset`
 
@@ -111,24 +110,11 @@ Purpose:
 - execution ordering
 - lineage
 - documentation
-- freshness reasoning
+- lineage reasoning
+
+Shape in v0.2: one dependency per attribute declaration. For multiple dependencies, repeat `@depends`.
 
 This does not imply direct value passing between assets.
-
-### `@uses`
-
-Declares which external integrations or Elixir functions an asset uses.
-
-Used for:
-
-- lineage
-- UI mapping
-- documentation
-- impact analysis
-
-### `@freshness`
-
-Declares how fresh the latest successful materialization must be for Favn to skip rerun.
 
 ### `@meta`
 
@@ -201,7 +187,7 @@ This release proves the core architecture and programming model.
 
 ---
 
-## v0.2.0 — Runtime Foundation
+## v0.2.0 — Runtime Foundation + DSL Contract Refactor
 
 **Status: In Progress**
 
@@ -225,26 +211,54 @@ Turns Favn into a real execution engine with durable runtime state and concurren
 
 ---
 
-## v0.3.0 — Asset DSL Refactor
+## v0.2 DSL decisions (approved April 4, 2026)
+
+These decisions are part of the remaining v0.2 scope and should be treated as source-of-truth:
+
+### Approved DSL decisions (April 4, 2026)
+
+The following DSL decisions are approved and should be treated as source-of-truth for the remaining v0.2 refactor:
+
+- Canonical attribute order in examples and docs:
+  1. `@asset "name"`
+  2. `@meta ...`
+  3. `@doc ...`
+  4. `@depends ...` (repeatable, single entry each)
+  5. `@spec ...`
+  6. `def asset(ctx) do ... end`
+- `@depends` supports only single-entry declarations; repeat the attribute for additional dependencies.
+- `@uses` is out of scope for this PR and deferred to later pipeline design work.
+- Missing `@doc` or `@spec` should not emit warnings/errors.
+- Asset returns may be `:ok`, `{:ok, map()}`, or `{:error, reason}`.
+
+### Remaining v0.2 refactor PR slice (current PR scope)
+
+This refactor PR should focus on contract cleanup only (no new orchestration features):
+
+- [ ] Refactor `@asset` option usage by moving dependency declarations to repeatable `@depends` and non-execution metadata to `@meta`.
+- [ ] Remove direct value-passing assumptions from asset execution and runtime expectations.
+- [ ] Require/normalize single-arity asset functions (`def asset(ctx)`).
+- [ ] Remove `%Favn.Asset.Output{}` as a required public return wrapper.
+- [ ] Update docs (`lib/favn.ex`, `README.md`, and examples) to the approved DSL and ordering.
+- [ ] Keep roadmap and feature status aligned with these decisions.
+
+### Deferred to later PRs (post-v0.2)
+
+- [ ] Introduce `@uses` only after pipeline/runtime integration design is finalized.
+- [ ] Add richer freshness behavior once orchestration trigger layer work starts in v0.4.
+
+---
+
+## v0.3.0 — Orchestration Layer Expansion
 
 **Status: Planned**
 
-Refines authoring around the locked v1 asset model.
+This release starts after the remaining v0.2 DSL/runtime refactor scope is completed.
 
 ### Features
 
-- [ ] Support single asset function shape: `def asset(ctx)`
-- [ ] Remove requirement for arity-2 assets
-- [ ] Remove requirement for `%Favn.Asset.Output{}`
-- [ ] Replace `depends_on` option with repeatable `@depends`
-- [ ] Add `@uses`
-- [ ] Add `@freshness`
-- [ ] Add `@meta`
-- [ ] Remove `kind` from the public authoring DSL
-- [ ] Keep built-in Elixir docs as the primary documentation source
-- [ ] Update graph/catalog extraction from the new DSL
-
----
+- [ ] Introduce orchestration-level features that build on the finalized v0.2 asset contract
+- [ ] Continue trigger and pipeline capabilities outside the function-level DSL
 
 ## v0.4.0 — Triggers and Orchestration Layer
 
