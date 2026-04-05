@@ -2,7 +2,7 @@ Favn Roadmap & Feature Status
 
 ## Current Version
 
-**Current release: v0.1.0**
+**Current release: v0.2.0**
 
 Favn is in early development.
 
@@ -189,7 +189,7 @@ This release proves the core architecture and programming model.
 
 ## v0.2.0 — Runtime Foundation + DSL Contract Refactor
 
-**Status: In Progress**
+**Status: Released**
 
 Turns Favn into a real execution engine with durable runtime state and concurrency.
 
@@ -246,7 +246,7 @@ This refactor PR should focus on contract cleanup only (no new orchestration fea
 
 ## v0.3.0 — Initial Orchestration Layer
 
-**Status: Planned**
+**Status: In Progress**
 
 Builds the first orchestration layer on top of the finalized v0.2 asset/runtime contract.
 

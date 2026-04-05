@@ -83,9 +83,9 @@ config :favn,
 ```
 
 
-## Approved v0.2 DSL refactor shape (in progress)
+## New in v0.2 DSL shape
 
-The current v0.2 refactor work is locked to the following authoring contract and attribute order:
+v0.2 has been refactored to the following authoring contract and attribute order:
 
 ```elixir
 @asset "Asset Name"
@@ -210,7 +210,7 @@ dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.1.1"}
+    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.2.0"}
   ]
 end
 ```
@@ -221,7 +221,7 @@ package declaration:
 ```elixir
 def deps do
   [
-    {:favn, "~> 0.1.1"}
+    {:favn, "~> 0.2.0"}
   ]
 end
 ```

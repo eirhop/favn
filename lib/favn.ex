@@ -84,9 +84,9 @@ defmodule Favn do
   `[:favn, :runtime, ...]`.
 
 
-  ## Approved v0.2 DSL refactor contract (in progress)
+  ## New v0.2 DSL contract
 
-  The currently approved v0.2 DSL refactor target is:
+  v0.2 DSL has been refactored to:
 
       @asset "Asset Name"
       @meta owner: "data-platform", category: :sales, tags: [:daily]
@@ -113,12 +113,12 @@ defmodule Favn do
       defmodule MyApp.SalesETL do
         use Favn.Assets
 
-        @doc "Extract raw orders from the sales source"
         @asset true
+        @doc "Extract raw orders from the sales source"
         def extract_orders(_ctx), do: :ok
 
-        @doc "Normalize extracted orders"
         @asset true
+        @doc "Normalize extracted orders"
         @depends :extract_orders
         def normalize_orders(_ctx), do: :ok
       end
@@ -130,8 +130,8 @@ defmodule Favn do
 
         alias MyApp.SalesETL
 
-        @doc "Build the fact table for sales"
         @asset true
+        @doc "Build the fact table for sales"
         @depends {SalesETL, :normalize_orders}
         def fact_sales(_ctx), do: :ok
       end
@@ -184,7 +184,7 @@ defmodule Favn do
 
       defp deps do
         [
-          {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.1.1"}
+          {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.2.0"}
         ]
       end
 
@@ -193,7 +193,7 @@ defmodule Favn do
 
       defp deps do
         [
-          {:favn, "~> 0.1.1"}
+          {:favn, "~> 0.2.0"}
         ]
       end
 
