@@ -58,6 +58,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SimplePipeline do
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
+  alias Favn.Test.Fixtures.Triggers.Schedules
 
   pipeline :daily_sales do
     asset({SalesAssets, :sales_daily})
@@ -66,11 +67,22 @@ defmodule Favn.Test.Fixtures.Pipelines.SimplePipeline do
     config(timezone: "UTC", notify: false)
     meta(owner: "data-platform", domain: :sales)
 
-    schedule(:daily_default)
+    schedule({Schedules, :daily_default})
     partition(:calendar_day)
     source(:snowflake_primary)
     outputs([:warehouse_gold])
   end
+end
+
+defmodule Favn.Test.Fixtures.Triggers.Schedules do
+  use Favn.Triggers.Schedules
+
+  schedule(:daily_default,
+    cron: "0 2 * * *",
+    timezone: "UTC",
+    missed: :skip,
+    overlap: :forbid
+  )
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SelectPipeline do

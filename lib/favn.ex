@@ -229,7 +229,8 @@ defmodule Favn do
         asset_modules: [
           MyApp.SalesETL,
           MyApp.GoldETL
-        ]
+        ],
+        scheduler: [default_timezone: "Etc/UTC"]
 
   The configured module list is the global discovery scope used by
   `Favn.list_assets/0` and `Favn.get_asset/1`.

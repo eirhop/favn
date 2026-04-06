@@ -8,6 +8,8 @@ defmodule Favn.Pipeline.Resolver do
 
   alias Favn.Pipeline.Definition
   alias Favn.Pipeline.Resolution
+  alias Favn.Triggers.Schedule
+  alias Favn.Triggers.Schedules
 
   @type resolve_opts :: [params: map(), trigger: map()]
 
@@ -15,10 +17,12 @@ defmodule Favn.Pipeline.Resolver do
   def resolve(%Definition{} = definition, opts \\ []) when is_list(opts) do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
+    default_timezone = Schedule.default_timezone()
 
     with :ok <- validate_definition(definition),
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
+         {:ok, schedule} <- resolve_schedule(definition.schedule, default_timezone),
          {:ok, assets} <- Favn.list_assets(),
          {:ok, target_refs} <- resolve_selectors(definition, assets) do
       pipeline_ctx = %{
@@ -29,7 +33,7 @@ defmodule Favn.Pipeline.Resolver do
         trigger: trigger,
         params: params,
         runtime_window: nil,
-        schedule: definition.schedule,
+        schedule: schedule,
         partition: definition.partition,
         source: definition.source,
         outputs: definition.outputs
@@ -49,7 +53,6 @@ defmodule Favn.Pipeline.Resolver do
     with :ok <- validate_name(definition.name),
          :ok <- validate_deps(definition.deps),
          :ok <- validate_selectors(definition.selectors),
-         :ok <- validate_schedule(definition.schedule),
          :ok <- validate_partition(definition.partition),
          :ok <- validate_source(definition.source),
          :ok <- validate_outputs(definition.outputs) do
@@ -78,10 +81,6 @@ defmodule Favn.Pipeline.Resolver do
   defp valid_selector?({:category, value}) when is_atom(value) or is_binary(value), do: true
   defp valid_selector?(_), do: false
 
-  defp validate_schedule(nil), do: :ok
-  defp validate_schedule(value) when is_atom(value), do: :ok
-  defp validate_schedule(value), do: {:error, {:invalid_schedule, value}}
-
   defp validate_partition(nil), do: :ok
   defp validate_partition(value) when is_atom(value), do: :ok
   defp validate_partition(value), do: {:error, {:invalid_partition, value}}
@@ -101,6 +100,25 @@ defmodule Favn.Pipeline.Resolver do
 
   defp validate_trigger(trigger) when is_map(trigger), do: :ok
   defp validate_trigger(_invalid), do: {:error, :invalid_pipeline_trigger}
+
+  defp resolve_schedule(nil, _default_timezone), do: {:ok, nil}
+
+  defp resolve_schedule({:inline, opts}, default_timezone) when is_list(opts) do
+    with {:ok, schedule} <- Schedule.new_inline(opts),
+         {:ok, resolved} <- Schedule.apply_default_timezone(schedule, default_timezone) do
+      {:ok, resolved}
+    end
+  end
+
+  defp resolve_schedule({:ref, {module, name}}, default_timezone)
+       when is_atom(module) and is_atom(name) do
+    with {:ok, schedule} <- Schedules.fetch(module, name),
+         {:ok, resolved} <- Schedule.apply_default_timezone(schedule, default_timezone) do
+      {:ok, resolved}
+    end
+  end
+
+  defp resolve_schedule(value, _default_timezone), do: {:error, {:invalid_schedule, value}}
 
   defp resolve_selectors(%Definition{selectors: selectors}, assets) do
     assets_by_ref = Map.new(assets, &{&1.ref, &1})

@@ -281,6 +281,11 @@ The following decisions are source-of-truth for the first v0.3 pipeline foundati
 - [x] Deterministic pipeline selector resolution (ref/module/tag/category)
 - [x] Initial orchestration layer outside function attributes
 - [x] Initial pipeline configuration definition model
+- [x] Reusable schedule trigger DSL (`Favn.Triggers.Schedules`) with repeated top-level `schedule` declarations
+- [x] Pipeline schedule clause supports explicit schedule refs (`{Module, :name}`) and inline schedule keywords
+- [x] Remove temporary atom-only schedule references from pipeline DSL
+- [x] Resolve pipeline schedules into normalized trigger schedule structs in `ctx.pipeline.schedule`
+- [x] Configurable scheduler default timezone (`config :favn, scheduler: [default_timezone: ...]`)
 - [x] Make pipeline/config/trigger context available through `ctx`
 - [x] Internal module namespacing for asset internals (`Favn.Assets.Registry`, `Favn.Assets.GraphIndex`, `Favn.Assets.Planner`)
 - [x] Stable operator actions: run, cancel, rerun
@@ -290,6 +295,10 @@ The following decisions are source-of-truth for the first v0.3 pipeline foundati
 
 - [ ] API-triggered execution
 - [ ] Cron/schedule runtime engine
+- [ ] Cron parser/runtime validation hardening (strict expression + timezone validation)
+- [ ] Schedule missed-run runtime semantics (`missed: :one | :all`)
+- [ ] Schedule overlap runtime semantics (`overlap: :allow | :queue_one`)
+- [ ] Schedule `catchup_limit` option
 - [ ] Polling trigger runtime
 - [ ] Polling state/cursor tracking
 - [ ] Backfills

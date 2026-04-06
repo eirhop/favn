@@ -113,6 +113,7 @@ import Config
 config :favn,
   asset_modules: [MyApp.SalesAssets],
   pubsub_name: MyApp.PubSub,
+  scheduler: [default_timezone: "Etc/UTC"],
   storage_adapter: Favn.Storage.Adapter.Memory,
   storage_adapter_opts: []
 ```
@@ -121,6 +122,7 @@ Key settings:
 
 - `asset_modules`: modules that define assets with `use Favn.Assets`.
 - `:pubsub_name`: PubSub server name used for run event broadcasting.
+- `:scheduler`: trigger scheduler configuration (`default_timezone` for schedule trigger resolution).
 - `:storage_adapter`: run storage adapter module.
 - `:storage_adapter_opts`: options passed to the configured storage adapter.
 
@@ -217,6 +219,16 @@ Inside `select do ... end`, selectors are additive (union-based), not intersecti
 That means each selector contributes refs to one combined target set before dedupe/sort.
 
 A pipeline definition should use either shorthand selection or `select`, but not both in the same definition.
+
+Schedule authoring now supports both:
+
+- reusable named schedules in modules that `use Favn.Triggers.Schedules`
+- inline schedule definitions directly inside `pipeline ... do`
+
+Pipeline schedule references use explicit refs:
+
+- `schedule {MyApp.Schedules, :daily_oslo}`
+- `schedule cron: "0 2 * * *", timezone: "Europe/Oslo", missed: :skip, overlap: :forbid`
 
 Deferred from the first v0.3 pipeline foundation PR:
 
