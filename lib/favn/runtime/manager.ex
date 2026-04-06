@@ -43,7 +43,7 @@ defmodule Favn.Runtime.Manager do
   def handle_call({:submit_run, target_refs, opts}, _from, state) do
     dependencies = Keyword.get(opts, :dependencies, :all)
     params = Keyword.get(opts, :params, %{})
-    pipeline_context = Keyword.get(opts, :pipeline)
+    pipeline_context = Keyword.get(opts, :_pipeline_context)
     max_concurrency = resolve_max_concurrency(opts)
     timeout_ms = Keyword.get(opts, :timeout_ms)
     retry_policy = resolve_retry_policy(opts)

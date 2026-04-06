@@ -187,6 +187,24 @@ defmodule Favn.PipelineTest do
     assert stored_run.pipeline.outputs == [:warehouse_gold]
   end
 
+  test "plain run/2 cannot inject pipeline provenance via public :pipeline option" do
+    assert {:ok, run_id} =
+             Favn.run({SalesAssets, :sales_daily},
+               dependencies: :none,
+               pipeline: %{id: :spoofed, trigger: %{kind: :spoofed}}
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+    assert run.status == :ok
+    assert run.pipeline == nil
+
+    [ctx | _] =
+      CtxRecorder.all()
+      |> Enum.filter(&(&1.current_ref == {SalesAssets, :sales_daily}))
+
+    assert ctx.pipeline == nil
+  end
+
   test "run_pipeline/2 injects pipeline context into asset ctx" do
     assert {:ok, run_id} =
              Favn.run_pipeline(SimplePipeline,
@@ -337,6 +355,16 @@ defmodule Favn.PipelineTest do
         pipeline :second do
           asset {#{inspect(SalesAssets)}, :inventory_daily}
         end
+      end
+      """)
+    end
+  end
+
+  test "pipeline DSL rejects modules with no pipeline block" do
+    assert_raise ArgumentError, ~r/must define one `pipeline ... do` block/, fn ->
+      Code.compile_string("""
+      defmodule MissingPipelineBlock do
+        use Favn.Pipeline
       end
       """)
     end

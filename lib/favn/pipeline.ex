@@ -168,6 +168,12 @@ defmodule Favn.Pipeline do
 
   defmacro __before_compile__(env) do
     name = Module.get_attribute(env.module, :favn_pipeline_name)
+
+    if is_nil(name) do
+      raise ArgumentError,
+            "pipeline module #{inspect(env.module)} must define one `pipeline ... do` block"
+    end
+
     selectors = Module.get_attribute(env.module, :favn_pipeline_selectors) |> Enum.reverse()
     mode = Module.get_attribute(env.module, :favn_pipeline_selection_mode)
 

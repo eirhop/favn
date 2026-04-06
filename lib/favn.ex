@@ -843,7 +843,7 @@ defmodule Favn do
       run_opts =
         opts
         |> Keyword.put(:dependencies, resolution.dependencies)
-        |> Keyword.put(:pipeline, resolution.pipeline_ctx)
+        |> Keyword.put(:_pipeline_context, resolution.pipeline_ctx)
 
       Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
     end
