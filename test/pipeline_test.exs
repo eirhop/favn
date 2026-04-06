@@ -395,6 +395,21 @@ defmodule Favn.PipelineTest do
                  end
 
     assert_raise ArgumentError,
+                 ~r/pipeline clause `schedule` is invalid: {:invalid_schedule_cron/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule InvalidScheduleCronCommaListPipeline do
+                     use Favn.Pipeline
+
+                     pipeline :invalid_schedule_cron_comma_list do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       schedule cron: "1,,2 2 * * *"
+                     end
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError,
                  ~r/pipeline clause `schedule` is invalid: {:invalid_schedule_missed/,
                  fn ->
                    Code.compile_string("""

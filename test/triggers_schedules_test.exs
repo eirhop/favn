@@ -49,6 +49,36 @@ defmodule Favn.TriggersSchedulesTest do
       """)
     end
 
+    assert_raise ArgumentError, ~r/invalid_schedule_cron/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleCronCommaListDoubleComma do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: "1,,2 2 * * *"
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/invalid_schedule_cron/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleCronCommaListLeadingComma do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: ",5 2 * * *"
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/invalid_schedule_cron/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleCronCommaListTrailingComma do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: "5, 2 * * *"
+      end
+      """)
+    end
+
     assert_raise ArgumentError, ~r/invalid_schedule_missed/, fn ->
       Code.compile_string("""
       defmodule InvalidScheduleMissed do

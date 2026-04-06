@@ -188,9 +188,12 @@ defmodule Favn.Triggers.Schedule do
   end
 
   defp cron_field_valid?(field, min, max) when is_binary(field) do
-    field
-    |> String.split(",", trim: true)
-    |> Enum.all?(fn token -> cron_token_valid?(token, min, max) end)
+    tokens = String.split(field, ",", trim: false)
+
+    Enum.all?(tokens, fn token ->
+      token = String.trim(token)
+      token != "" and cron_token_valid?(token, min, max)
+    end)
   end
 
   defp cron_token_valid?("*", _min, _max), do: true
