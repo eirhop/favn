@@ -23,6 +23,11 @@ defmodule Favn.Runtime.Engine do
     Favn.Runtime.Manager.cancel_run(run_id)
   end
 
+  @spec rerun_run(Favn.run_id(), keyword()) :: {:ok, Favn.run_id()} | {:error, term()}
+  def rerun_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    Favn.Runtime.Manager.rerun_run(run_id, opts)
+  end
+
   @spec await_run(Favn.run_id(), keyword()) :: {:ok, Favn.Run.t()} | {:error, term()}
   def await_run(run_id, opts \\ []) when is_list(opts) do
     timeout = Keyword.get(opts, :timeout, :infinity)

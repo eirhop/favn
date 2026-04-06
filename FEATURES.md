@@ -283,7 +283,7 @@ The following decisions are source-of-truth for the first v0.3 pipeline foundati
 - [x] Initial pipeline configuration definition model
 - [x] Make pipeline/config/trigger context available through `ctx`
 - [x] Internal module namespacing for asset internals (`Favn.Assets.Registry`, `Favn.Assets.GraphIndex`, `Favn.Assets.Planner`)
-- [ ] Stable operator actions: run, cancel, rerun
+- [x] Stable operator actions: run, cancel, rerun
 - [x] Basic partition/runtime-window slot in `ctx` (initially `nil` for manual runs)
 
 ### Deferred after first v0.3 pipeline foundation PR

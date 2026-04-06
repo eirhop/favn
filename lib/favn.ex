@@ -60,6 +60,9 @@ defmodule Favn do
   planning rules. Pipeline selection still resolves to asset refs and then delegates dependency
   planning to the existing planner.
 
+  v0.3 includes stable operator actions for `run`, `cancel`, and run-id-based `rerun`.
+  Rerun defaults to exact replay of persisted run intent and records lineage in `%Favn.Run{}`.
+
   ### Runs
 
   A run is a single execution of a target asset.
@@ -167,6 +170,10 @@ defmodule Favn do
       Favn.plan_pipeline(MyApp.Pipelines.DailySales)
 
       Favn.run_pipeline(MyApp.Pipelines.DailySales, params: %{requested_by: "operator"})
+
+      Favn.cancel_run(run_id)
+
+      Favn.rerun_run(run_id)
 
       Favn.get_run(run_id)
 
@@ -824,7 +831,13 @@ defmodule Favn do
   @spec run_asset(asset_ref(), run_opts()) :: {:ok, run_id()} | {:error, term()}
   def run_asset({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    Favn.Runtime.Engine.submit_run({module, name}, normalize_pipeline_context_opt(opts))
+    opts =
+      opts
+      |> Keyword.put_new(:_submit_kind, :asset)
+      |> Keyword.put_new(:_submit_ref, {module, name})
+      |> normalize_pipeline_context_opt()
+
+    Favn.Runtime.Engine.submit_run({module, name}, opts)
   end
 
   @doc """
@@ -854,6 +867,8 @@ defmodule Favn do
         opts
         |> Keyword.put(:dependencies, resolution.dependencies)
         |> Keyword.put(:pipeline_context, resolution.pipeline_ctx)
+        |> Keyword.put(:_submit_kind, :pipeline)
+        |> Keyword.put(:_submit_ref, pipeline_module)
         |> normalize_pipeline_context_opt()
 
       Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
@@ -892,6 +907,21 @@ defmodule Favn do
              | term()}
   def cancel_run(run_id) do
     Favn.Runtime.Engine.cancel_run(run_id)
+  end
+
+  @doc """
+  Submit a rerun for a terminal run id.
+
+  Rerun is exact replay by default:
+
+    * reuses persisted execution intent from the source run
+    * supports source statuses `:ok | :error | :cancelled | :timed_out`
+    * returns `{:error, :run_not_terminal}` for still-running source runs
+    * persists lineage links in the new run (`rerun_of_run_id`, `parent_run_id`, `root_run_id`)
+  """
+  @spec rerun_run(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
+  def rerun_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    Favn.Runtime.Engine.rerun_run(run_id, opts)
   end
 
   @doc """

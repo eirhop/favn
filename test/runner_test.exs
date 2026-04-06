@@ -572,6 +572,59 @@ defmodule Favn.RunnerTest do
     assert Enum.map(timed_out_runs, & &1.id) == [timed_out_run.id]
   end
 
+  test "rerun_run/2 replays a successful run with lineage" do
+    assert {:ok, run_id} =
+             Favn.run_asset({RunnerAssets, :announce_target},
+               params: %{notify_pid: self()},
+               retry: [max_attempts: 2],
+               max_concurrency: 1
+             )
+
+    assert {:ok, source_run} = Favn.await_run(run_id)
+    assert_receive {:announced_run_id, ^run_id}
+
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id, reason: :operator_request)
+    assert rerun_id != run_id
+
+    assert {:ok, rerun} = Favn.await_run(rerun_id)
+    assert_receive {:announced_run_id, ^rerun_id}
+
+    assert rerun.status == :ok
+    assert rerun.replay_mode == :exact
+    assert rerun.rerun_of_run_id == run_id
+    assert rerun.parent_run_id == run_id
+    assert rerun.root_run_id == run_id
+    assert rerun.lineage_depth == 1
+    assert rerun.operator_reason == :operator_request
+    assert rerun.params == source_run.params
+    assert rerun.max_concurrency == source_run.max_concurrency
+    assert rerun.retry_policy == source_run.retry_policy
+  end
+
+  test "rerun_run/2 rejects non-terminal source runs" do
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
+    assert {:error, :run_not_terminal} = Favn.rerun_run(run_id)
+  end
+
+  test "rerun_run/2 supports cancelled and timed_out source runs" do
+    assert {:ok, cancelled_run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
+    assert {:ok, :cancelling} = Favn.cancel_run(cancelled_run_id)
+    assert {:error, %Favn.Run{status: :cancelled}} = Favn.await_run(cancelled_run_id)
+
+    assert {:ok, cancelled_rerun_id} = Favn.rerun_run(cancelled_run_id)
+    assert {:ok, rerun_from_cancelled} = Favn.await_run(cancelled_rerun_id)
+    assert rerun_from_cancelled.status == :ok
+    assert rerun_from_cancelled.rerun_of_run_id == cancelled_run_id
+
+    assert {:ok, timed_out_run_id} = Favn.run_asset({RunnerAssets, :slow_asset}, timeout_ms: 10)
+    assert {:error, %Favn.Run{status: :timed_out}} = Favn.await_run(timed_out_run_id)
+
+    assert {:ok, timed_out_rerun_id} = Favn.rerun_run(timed_out_run_id)
+    assert {:error, rerun_from_timeout} = Favn.await_run(timed_out_rerun_id)
+    assert rerun_from_timeout.status == :timed_out
+    assert rerun_from_timeout.rerun_of_run_id == timed_out_run_id
+  end
+
   test "retries raised exception and succeeds on a later attempt" do
     assert {:ok, run_id} =
              Favn.run_asset({RunnerAssets, :transient_then_ok},
