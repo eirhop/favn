@@ -279,7 +279,6 @@ The following decisions are source-of-truth for the first v0.3 pipeline foundati
 - [x] `Favn.plan_pipeline/2` pipeline planning API
 - [x] Initial code-defined tiny pipeline DSL (`asset`, `assets`, `select`, `deps`)
 - [x] Deterministic pipeline selector resolution (ref/module/tag/category)
-- [ ] Include/exclude filtering in pipeline resolution
 - [x] Initial orchestration layer outside function attributes
 - [x] Initial pipeline configuration definition model
 - [x] Make pipeline/config/trigger context available through `ctx`
