@@ -103,9 +103,8 @@ defmodule Favn.Pipeline.Resolver do
 
   defp resolve_schedule(nil, _default_timezone), do: {:ok, nil}
 
-  defp resolve_schedule({:inline, opts}, default_timezone) when is_list(opts) do
-    with {:ok, schedule} <- Schedule.new_inline(opts),
-         {:ok, resolved} <- Schedule.apply_default_timezone(schedule, default_timezone) do
+  defp resolve_schedule({:inline, %Schedule{} = schedule}, default_timezone) do
+    with {:ok, resolved} <- Schedule.apply_default_timezone(schedule, default_timezone) do
       {:ok, resolved}
     end
   end

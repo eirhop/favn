@@ -31,20 +31,20 @@ defmodule Favn.Triggers.Schedules do
   end
 
   defmacro schedule(name, opts) do
-    schedule =
-      case Schedule.named(name, opts) do
-        {:ok, value} ->
-          value
-
-        {:error, reason} ->
-          raise ArgumentError,
-                "invalid schedule declaration #{inspect(name)}: #{inspect(reason)}"
-      end
-
-    quote bind_quoted: [name: name, schedule: Macro.escape(schedule)] do
+    quote bind_quoted: [name: name, opts: opts] do
       unless is_atom(name) do
         raise ArgumentError, "schedule name must be an atom"
       end
+
+      schedule =
+        case Favn.Triggers.Schedule.named(name, opts) do
+          {:ok, value} ->
+            value
+
+          {:error, reason} ->
+            raise ArgumentError,
+                  "invalid schedule declaration #{inspect(name)}: #{inspect(reason)}"
+        end
 
       existing = Module.get_attribute(__MODULE__, :favn_named_schedules) || []
 
@@ -66,12 +66,12 @@ defmodule Favn.Triggers.Schedules do
 
     quote do
       @doc false
-      @spec __favn_schedules__() :: %{optional(atom()) => Favn.Triggers.Schedule.compile_t()}
+      @spec __favn_schedules__() :: %{optional(atom()) => Favn.Triggers.Schedule.unresolved_t()}
       def __favn_schedules__, do: unquote(Macro.escape(schedules))
 
       @doc false
       @spec __favn_schedule__(atom()) ::
-              {:ok, Favn.Triggers.Schedule.compile_t()} | {:error, :not_found}
+              {:ok, Favn.Triggers.Schedule.unresolved_t()} | {:error, :not_found}
       def __favn_schedule__(name) when is_atom(name) do
         case Map.fetch(unquote(Macro.escape(schedules)), name) do
           {:ok, schedule} -> {:ok, schedule}
@@ -81,7 +81,7 @@ defmodule Favn.Triggers.Schedules do
     end
   end
 
-  @spec fetch(module(), atom()) :: {:ok, Schedule.t()} | {:error, fetch_error()}
+  @spec fetch(module(), atom()) :: {:ok, Schedule.unresolved_t()} | {:error, fetch_error()}
   def fetch(module, name) when is_atom(module) and is_atom(name) do
     if function_exported?(module, :__favn_schedule__, 1) do
       case module.__favn_schedule__(name) do

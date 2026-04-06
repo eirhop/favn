@@ -793,6 +793,8 @@ defmodule Favn do
       * `params: map()` (default `%{}`)
       * `pipeline_context: map()` optional manual pipeline provenance/context payload
         projected to `ctx.pipeline` and persisted `%Favn.Run{}.pipeline`
+        (passed through as provided; unlike `run_pipeline/2`, no schedule normalization
+        is applied to manually injected `pipeline_context`)
       * `max_concurrency: pos_integer()` (default from runtime config, fallback `1`)
       * `timeout_ms: pos_integer()` timeout counted from run start
       * `retry: false | true | keyword() | map()` (default from app config, fallback disabled)

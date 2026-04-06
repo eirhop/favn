@@ -279,16 +279,16 @@ defmodule Favn.Pipeline do
 
   @doc false
   @spec normalize_schedule_clause!(term()) ::
-          {:ref, Schedule.ref()} | {:inline, keyword()}
+          {:ref, Schedule.ref()} | {:inline, Schedule.unresolved_t()}
   def normalize_schedule_clause!({module, name})
       when is_atom(module) and is_atom(name) do
     {:ref, {module, name}}
   end
 
   def normalize_schedule_clause!(opts) when is_list(opts) do
-    case Schedule.validate_supported_opts(opts) do
-      :ok ->
-        {:inline, opts}
+    case Schedule.new_inline(opts) do
+      {:ok, schedule} ->
+        {:inline, schedule}
 
       {:error, reason} ->
         raise ArgumentError, "pipeline clause `schedule` is invalid: #{inspect(reason)}"

@@ -145,6 +145,22 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.trigger == %{kind: :manual, requested_by: :api}
   end
 
+  test "run_asset/2 manual pipeline_context schedule is passed through without normalization" do
+    assert {:ok, run_id} =
+             Favn.run_asset({SalesAssets, :sales_daily},
+               dependencies: :none,
+               pipeline_context: %{
+                 id: :manual_passthrough,
+                 name: :manual_passthrough,
+                 trigger: %{kind: :manual},
+                 schedule: :legacy_schedule_atom
+               }
+             )
+
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+    assert run.pipeline.schedule == :legacy_schedule_atom
+  end
+
   test "run_pipeline/2 injects pipeline context into asset ctx" do
     assert {:ok, run_id} =
              Favn.run_pipeline(SimplePipeline,
@@ -363,6 +379,81 @@ defmodule Favn.PipelineTest do
       """)
     end
 
+    assert_raise ArgumentError,
+                 ~r/pipeline clause `schedule` is invalid: {:invalid_schedule_cron/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule InvalidScheduleCronPipeline do
+                     use Favn.Pipeline
+
+                     pipeline :invalid_schedule_cron do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       schedule cron: ""
+                     end
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/pipeline clause `schedule` is invalid: {:invalid_schedule_missed/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule InvalidScheduleMissedPipeline do
+                     use Favn.Pipeline
+
+                     pipeline :invalid_schedule_missed do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       schedule cron: "0 2 * * *", missed: :later
+                     end
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/pipeline clause `schedule` is invalid: {:invalid_schedule_overlap/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule InvalidScheduleOverlapPipeline do
+                     use Favn.Pipeline
+
+                     pipeline :invalid_schedule_overlap do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       schedule cron: "0 2 * * *", overlap: :maybe
+                     end
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/pipeline clause `schedule` is invalid: {:invalid_schedule_timezone/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule InvalidScheduleTimezonePipeline do
+                     use Favn.Pipeline
+
+                     pipeline :invalid_schedule_timezone do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       schedule cron: "0 2 * * *", timezone: ""
+                     end
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/pipeline clause `schedule` is invalid: \{:duplicate_schedule_opts, \[:cron\]\}/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule DuplicateScheduleOptsPipeline do
+                     use Favn.Pipeline
+
+                     pipeline :duplicate_schedule_opts do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       schedule cron: "0 2 * * *", cron: "0 3 * * *"
+                     end
+                   end
+                   """)
+                 end
+
     assert_raise ArgumentError, ~r/`partition` must be an atom/, fn ->
       Code.compile_string("""
       defmodule InvalidPartitionPipeline do
@@ -437,5 +528,73 @@ defmodule Favn.PipelineTest do
     assert run.pipeline.schedule.timezone_source == :app_default
     assert run.pipeline.schedule.missed == :one
     assert run.pipeline.schedule.overlap == :queue_one
+  end
+
+  test "pipeline schedule keeps explicit timezone over app default timezone" do
+    previous_scheduler = Application.get_env(:favn, :scheduler)
+    Application.put_env(:favn, :scheduler, default_timezone: "Europe/Oslo")
+
+    on_exit(fn ->
+      if previous_scheduler == nil do
+        Application.delete_env(:favn, :scheduler)
+      else
+        Application.put_env(:favn, :scheduler, previous_scheduler)
+      end
+    end)
+
+    defmodule ExplicitTimezonePipeline do
+      use Favn.Pipeline
+
+      pipeline :explicit_timezone do
+        asset({SalesAssets, :sales_daily})
+        schedule(cron: "0 2 * * *", timezone: "UTC")
+      end
+    end
+
+    assert {:ok, run_id} = Favn.run_pipeline(ExplicitTimezonePipeline)
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+    assert %Schedule{} = run.pipeline.schedule
+    assert run.pipeline.schedule.timezone == "UTC"
+    assert run.pipeline.schedule.timezone_source == :schedule
+  end
+
+  test "plan_pipeline/2 returns error for missing schedule ref" do
+    defmodule MissingScheduleRefPipeline do
+      use Favn.Pipeline
+
+      pipeline :missing_schedule_ref do
+        asset({SalesAssets, :sales_daily})
+        schedule({Schedules, :missing_name})
+      end
+    end
+
+    assert {:error, {:schedule_not_found, :missing_name}} =
+             Favn.plan_pipeline(MissingScheduleRefPipeline)
+  end
+
+  test "plan_pipeline/2 returns error for invalid schedule module ref" do
+    defmodule InvalidScheduleModulePipeline do
+      use Favn.Pipeline
+
+      pipeline :invalid_schedule_module do
+        asset({SalesAssets, :sales_daily})
+        schedule({Enum, :daily})
+      end
+    end
+
+    assert {:error, :not_schedule_module} = Favn.plan_pipeline(InvalidScheduleModulePipeline)
+  end
+
+  test "resolver returns error for malformed stored schedule clause" do
+    definition = %Favn.Pipeline.Definition{
+      module: __MODULE__,
+      name: :malformed_schedule,
+      selectors: [{:asset, {SalesAssets, :sales_daily}}],
+      deps: :none,
+      schedule: {:bogus, :value}
+    }
+
+    assert {:error, {:invalid_schedule, {:bogus, :value}}} =
+             Favn.Pipeline.Resolver.resolve(definition)
   end
 end

@@ -7,8 +7,10 @@ defmodule Favn.TriggersSchedulesTest do
   defmodule ExampleSchedules do
     use Favn.Triggers.Schedules
 
+    @daily_cron "0 2 * * *"
+
     schedule(:daily_oslo,
-      cron: "0 2 * * *",
+      cron: @daily_cron,
       timezone: "Europe/Oslo",
       missed: :skip,
       overlap: :forbid
@@ -31,6 +33,60 @@ defmodule Favn.TriggersSchedulesTest do
         schedule :daily,
           cron: \"0 2 * * *\",
           unknown: true
+      end
+      """)
+    end
+  end
+
+  test "schedule DSL rejects invalid cron, missed, overlap, timezone, and duplicate options" do
+    assert_raise ArgumentError, ~r/invalid_schedule_cron/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleCron do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: ""
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/invalid_schedule_missed/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleMissed do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: "0 2 * * *", missed: :later
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/invalid_schedule_overlap/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleOverlap do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: "0 2 * * *", overlap: :maybe
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/invalid_schedule_timezone/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleTimezone do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: "0 2 * * *", timezone: ""
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/duplicate_schedule_opts/, fn ->
+      Code.compile_string("""
+      defmodule DuplicateScheduleOpts do
+        use Favn.Triggers.Schedules
+
+        schedule :daily,
+          cron: "0 2 * * *",
+          cron: "0 3 * * *"
       end
       """)
     end

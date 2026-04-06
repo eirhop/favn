@@ -14,7 +14,7 @@ defmodule Favn.Pipeline.Definition do
   @type selection_mode :: :shorthand | :select | nil
   @type schedule_clause ::
           {:ref, Favn.Triggers.Schedule.ref()}
-          | {:inline, keyword()}
+          | {:inline, Favn.Triggers.Schedule.unresolved_t()}
           | nil
 
   @type t :: %__MODULE__{

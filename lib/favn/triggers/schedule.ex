@@ -21,6 +21,18 @@ defmodule Favn.Triggers.Schedule do
             overlap: :forbid,
             origin: :inline
 
+  @type unresolved_t :: %__MODULE__{
+          id: atom() | nil,
+          ref: ref() | nil,
+          kind: kind(),
+          cron: String.t(),
+          timezone: String.t() | nil,
+          timezone_source: :schedule | :app_default,
+          missed: missed_policy(),
+          overlap: overlap_policy(),
+          origin: :inline | :named
+        }
+
   @type t :: %__MODULE__{
           id: atom() | nil,
           ref: ref() | nil,
@@ -33,11 +45,11 @@ defmodule Favn.Triggers.Schedule do
           origin: :inline | :named
         }
 
-  @type compile_t :: %__MODULE__{timezone: String.t() | nil}
-
-  @spec new_inline(keyword()) :: {:ok, compile_t()} | {:error, term()}
+  @spec new_inline(keyword()) :: {:ok, unresolved_t()} | {:error, term()}
   def new_inline(opts) when is_list(opts) do
-    with :ok <- validate_supported_opts(opts),
+    with :ok <- validate_keyword_opts(opts),
+         :ok <- validate_duplicate_opts(opts),
+         :ok <- validate_supported_opts(opts),
          {:ok, cron} <- fetch_cron(opts),
          {:ok, timezone} <- validate_timezone(Keyword.get(opts, :timezone)),
          {:ok, missed} <- validate_missed(Keyword.get(opts, :missed, :skip)),
@@ -57,7 +69,7 @@ defmodule Favn.Triggers.Schedule do
 
   def new_inline(_invalid), do: {:error, :invalid_schedule}
 
-  @spec named(atom(), keyword()) :: {:ok, compile_t()} | {:error, term()}
+  @spec named(atom(), keyword()) :: {:ok, unresolved_t()} | {:error, term()}
   def named(name, opts) when is_atom(name) and is_list(opts) do
     with {:ok, schedule} <- new_inline(opts) do
       {:ok, %{schedule | id: name, origin: :named}}
@@ -66,12 +78,12 @@ defmodule Favn.Triggers.Schedule do
 
   def named(_name, _opts), do: {:error, :invalid_schedule}
 
-  @spec apply_ref(compile_t(), ref()) :: t()
+  @spec apply_ref(unresolved_t(), ref()) :: unresolved_t()
   def apply_ref(%__MODULE__{} = schedule, {module, name}) do
     %{schedule | id: schedule.id || name, ref: {module, name}, origin: :named}
   end
 
-  @spec apply_default_timezone(compile_t(), String.t() | nil) :: {:ok, t()} | {:error, term()}
+  @spec apply_default_timezone(unresolved_t(), String.t() | nil) :: {:ok, t()} | {:error, term()}
   def apply_default_timezone(%__MODULE__{} = schedule, default_timezone) do
     case schedule.timezone do
       timezone when is_binary(timezone) ->
@@ -81,6 +93,28 @@ defmodule Favn.Triggers.Schedule do
         with {:ok, effective} <- validate_timezone(default_timezone || "Etc/UTC") do
           {:ok, %{schedule | timezone: effective, timezone_source: :app_default}}
         end
+    end
+  end
+
+  @spec validate_keyword_opts(term()) :: :ok | {:error, :invalid_schedule}
+  def validate_keyword_opts(opts) when is_list(opts) do
+    if Keyword.keyword?(opts), do: :ok, else: {:error, :invalid_schedule}
+  end
+
+  def validate_keyword_opts(_invalid), do: {:error, :invalid_schedule}
+
+  @spec validate_duplicate_opts(keyword()) :: :ok | {:error, term()}
+  def validate_duplicate_opts(opts) when is_list(opts) do
+    duplicates =
+      opts
+      |> Keyword.keys()
+      |> Enum.frequencies()
+      |> Enum.filter(fn {_key, count} -> count > 1 end)
+      |> Enum.map(&elem(&1, 0))
+
+    case duplicates do
+      [] -> :ok
+      values -> {:error, {:duplicate_schedule_opts, values}}
     end
   end
 
