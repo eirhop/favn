@@ -10,6 +10,7 @@ defmodule Favn.Pipeline do
   """
 
   alias Favn.Pipeline.Definition
+  alias Favn.Triggers.Schedule
 
   @type fetch_error :: :not_pipeline_module | :pipeline_not_defined
 
@@ -76,12 +77,11 @@ defmodule Favn.Pipeline do
     end
   end
 
-  defmacro schedule(name) do
-    quote bind_quoted: [name: name] do
+  defmacro schedule(value) do
+    quote bind_quoted: [value: value] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "schedule")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_schedule, "schedule")
-      Favn.Pipeline.validate_atom_clause!(name, "schedule")
-      @favn_pipeline_schedule name
+      @favn_pipeline_schedule Favn.Pipeline.normalize_schedule_clause!(value)
     end
   end
 
@@ -275,5 +275,28 @@ defmodule Favn.Pipeline do
     else
       raise ArgumentError, "pipeline clause `outputs` must be a list of atoms"
     end
+  end
+
+  @doc false
+  @spec normalize_schedule_clause!(term()) ::
+          {:ref, Schedule.ref()} | {:inline, Schedule.unresolved_t()}
+  def normalize_schedule_clause!({module, name})
+      when is_atom(module) and is_atom(name) do
+    {:ref, {module, name}}
+  end
+
+  def normalize_schedule_clause!(opts) when is_list(opts) do
+    case Schedule.new_inline(opts) do
+      {:ok, schedule} ->
+        {:inline, schedule}
+
+      {:error, reason} ->
+        raise ArgumentError, "pipeline clause `schedule` is invalid: #{inspect(reason)}"
+    end
+  end
+
+  def normalize_schedule_clause!(value) do
+    raise ArgumentError,
+          "pipeline clause `schedule` must be `{Module, :name}` or keyword options, got: #{inspect(value)}"
   end
 end

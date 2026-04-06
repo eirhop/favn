@@ -12,6 +12,10 @@ defmodule Favn.Pipeline.Definition do
           | {:category, atom() | String.t()}
 
   @type selection_mode :: :shorthand | :select | nil
+  @type schedule_clause ::
+          {:ref, Favn.Triggers.Schedule.ref()}
+          | {:inline, Favn.Triggers.Schedule.unresolved_t()}
+          | nil
 
   @type t :: %__MODULE__{
           module: module(),
@@ -21,7 +25,7 @@ defmodule Favn.Pipeline.Definition do
           deps: Favn.dependencies_mode(),
           config: map(),
           meta: map(),
-          schedule: atom() | nil,
+          schedule: schedule_clause(),
           partition: atom() | nil,
           source: atom() | nil,
           outputs: [atom()]
