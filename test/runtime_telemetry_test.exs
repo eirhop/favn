@@ -77,7 +77,7 @@ defmodule Favn.RuntimeTelemetryTest do
   end
 
   test "emits run_created/start/stop, step lifecycle, executor start, and dispatch telemetry" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :final})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :final})
     assert {:ok, %Favn.Run{}} = Favn.await_run(run_id)
 
     events = telemetry_events_for(run_id)
@@ -122,7 +122,7 @@ defmodule Favn.RuntimeTelemetryTest do
   end
 
   test "emits exception and retry telemetry for failing and retried flows" do
-    assert {:ok, fail_run_id} = Favn.run({RunnerAssets, :crashes})
+    assert {:ok, fail_run_id} = Favn.run_asset({RunnerAssets, :crashes})
     assert {:error, %Favn.Run{status: :error}} = Favn.await_run(fail_run_id)
 
     fail_events = telemetry_events_for(fail_run_id)
@@ -137,7 +137,9 @@ defmodule Favn.RuntimeTelemetryTest do
            end)
 
     assert {:ok, retry_run_id} =
-             Favn.run({RunnerAssets, :transient_then_ok}, retry: [max_attempts: 2, delay_ms: 0])
+             Favn.run_asset({RunnerAssets, :transient_then_ok},
+               retry: [max_attempts: 2, delay_ms: 0]
+             )
 
     assert {:ok, %Favn.Run{status: :ok}} = Favn.await_run(retry_run_id)
 
@@ -149,7 +151,7 @@ defmodule Favn.RuntimeTelemetryTest do
   end
 
   test "emits cancellation and timeout telemetry including executor cancel and admission" do
-    assert {:ok, cancel_run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 1_000)
+    assert {:ok, cancel_run_id} = Favn.run_asset({RunnerAssets, :slow_asset}, timeout_ms: 1_000)
     assert {:ok, :cancelling} = Favn.cancel_run(cancel_run_id)
     assert {:error, %Favn.Run{status: :cancelled}} = Favn.await_run(cancel_run_id)
 
@@ -171,7 +173,7 @@ defmodule Favn.RuntimeTelemetryTest do
              is_number(m.duration_ms) and md.result == :closed
            end)
 
-    assert {:ok, timeout_run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 10)
+    assert {:ok, timeout_run_id} = Favn.run_asset({RunnerAssets, :slow_asset}, timeout_ms: 10)
     assert {:error, %Favn.Run{status: :timed_out}} = Favn.await_run(timeout_run_id)
 
     timeout_events = telemetry_events_for(timeout_run_id)
@@ -190,7 +192,7 @@ defmodule Favn.RuntimeTelemetryTest do
   end
 
   test "emits storage telemetry for success and failure paths" do
-    assert {:ok, _run_id} = Favn.run({RunnerAssets, :final})
+    assert {:ok, _run_id} = Favn.run_asset({RunnerAssets, :final})
 
     events = drain_telemetry()
 

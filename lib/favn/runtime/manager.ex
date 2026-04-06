@@ -16,9 +16,10 @@ defmodule Favn.Runtime.Manager do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @spec submit_run(Favn.asset_ref(), keyword()) :: {:ok, Favn.run_id()} | {:error, term()}
-  def submit_run(target_ref, opts \\ []) when is_list(opts) do
-    GenServer.call(__MODULE__, {:submit_run, target_ref, opts}, :infinity)
+  @spec submit_run(Favn.asset_ref() | [Favn.asset_ref()], keyword()) ::
+          {:ok, Favn.run_id()} | {:error, term()}
+  def submit_run(target_refs, opts \\ []) when is_list(opts) do
+    GenServer.call(__MODULE__, {:submit_run, target_refs, opts}, :infinity)
   end
 
   @spec cancel_run(Favn.run_id()) ::
@@ -39,20 +40,29 @@ defmodule Favn.Runtime.Manager do
   def init(_opts), do: {:ok, %{run_monitors: %{}, run_pids: %{}}}
 
   @impl true
-  def handle_call({:submit_run, target_ref, opts}, _from, state) do
+  def handle_call({:submit_run, target_refs, opts}, _from, state) do
     dependencies = Keyword.get(opts, :dependencies, :all)
     params = Keyword.get(opts, :params, %{})
+    pipeline_context = Keyword.get(opts, :_pipeline_context)
     max_concurrency = resolve_max_concurrency(opts)
     timeout_ms = Keyword.get(opts, :timeout_ms)
     retry_policy = resolve_retry_policy(opts)
 
     with :ok <- validate_params(params),
+         :ok <- validate_pipeline_context(pipeline_context),
          :ok <- validate_max_concurrency(max_concurrency),
          :ok <- validate_timeout_ms(timeout_ms),
          {:ok, retry_policy} <- validate_retry_policy(retry_policy),
-         {:ok, plan} <- Favn.plan_run(target_ref, dependencies: dependencies),
+         {:ok, plan} <- Favn.plan_asset_run(target_refs, dependencies: dependencies),
          runtime_state <-
-           build_runtime_state(plan, params, max_concurrency, timeout_ms, retry_policy),
+           build_runtime_state(
+             plan,
+             params,
+             pipeline_context,
+             max_concurrency,
+             timeout_ms,
+             retry_policy
+           ),
          {:ok, pid} <- start_run_coordinator(runtime_state),
          :ok <- persist_initial_snapshot(runtime_state),
          :ok <- emit_run_created(runtime_state),
@@ -118,12 +128,20 @@ defmodule Favn.Runtime.Manager do
     {:noreply, %{state | run_monitors: remaining, run_pids: run_pids}}
   end
 
-  defp build_runtime_state(plan, params, max_concurrency, timeout_ms, retry_policy) do
+  defp build_runtime_state(
+         plan,
+         params,
+         pipeline_context,
+         max_concurrency,
+         timeout_ms,
+         retry_policy
+       ) do
     %State{
       run_id: new_run_id(),
       target_refs: plan.target_refs,
       plan: plan,
       params: params,
+      pipeline_context: pipeline_context,
       max_concurrency: max_concurrency,
       timeout_ms: timeout_ms,
       retry_policy: retry_policy,
@@ -249,6 +267,10 @@ defmodule Favn.Runtime.Manager do
 
   defp validate_params(params) when is_map(params), do: :ok
   defp validate_params(_), do: {:error, :invalid_run_params}
+
+  defp validate_pipeline_context(nil), do: :ok
+  defp validate_pipeline_context(value) when is_map(value), do: :ok
+  defp validate_pipeline_context(_), do: {:error, :invalid_pipeline_context}
 
   defp run_duration_ms(run) do
     case {run.started_at, run.finished_at} do

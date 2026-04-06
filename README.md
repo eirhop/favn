@@ -78,7 +78,7 @@ config :favn,
 
 ```elixir
 # from your app runtime / iex
-{:ok, run_id} = Favn.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
+{:ok, run_id} = Favn.run_asset({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
 {:ok, run} = Favn.await_run(run_id)
 ```
 
@@ -148,7 +148,7 @@ SQLite ordering notes:
 ## Current limitations
 
 - The default run store is node-local in-memory storage.
-- Public run execution is asynchronous by default (`Favn.run/2` returns a run id).
+- Public run execution is asynchronous by default (`Favn.run_asset/2` returns a run id).
 - Independent ready steps execute in parallel within a run, bounded by `max_concurrency`.
 - Run events are best-effort pubsub notifications.
 
@@ -156,13 +156,13 @@ SQLite ordering notes:
 
 - **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator with bounded parallel step dispatch per run.
 - **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; public run status includes `:running | :ok | :error | :cancelled | :timed_out`.
-- **Step retries**: failed steps can be retried with deterministic step-level policy (`retry` option on `Favn.run/2`) without restarting the run.
+- **Step retries**: failed steps can be retried with deterministic step-level policy (`retry` option on `Favn.run_asset/2`) without restarting the run.
 - **Execution boundary**: one-step asset invocation is isolated behind an asynchronous runtime executor boundary.
 - **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
   - `:not_found`
   - `:invalid_opts`
   - `{:store_error, reason}`
-- **Checkpoint persistence policy**: runtime checkpoints are required; if snapshot persistence fails, `Favn.run/2` returns `{:error, {:storage_persist_failed, reason}}`.
+- **Checkpoint persistence policy**: runtime checkpoints are required; if snapshot persistence fails, `Favn.run_asset/2` returns `{:error, {:storage_persist_failed, reason}}`.
 - **Event delivery**: run events are published as best-effort observability signals and do not affect run correctness.
 - **Internal telemetry**: runtime boundaries emit machine-oriented `:telemetry` events under `[:favn, :runtime, ...]` for operators and future external exporters.
 - **Logger correlation metadata**: runtime coordinator/executor processes attach lightweight metadata (`run_id`, `ref`, `stage`, `attempt`) for human diagnostics without treating logs as telemetry.
@@ -170,7 +170,7 @@ SQLite ordering notes:
 ## Guarantees in this release
 
 - **Run lifecycle semantics**
-  - `Favn.run/2` returns `{:ok, run_id}` when a run is submitted.
+  - `Favn.run_asset/2` returns `{:ok, run_id}` when a run is submitted.
   - Step admission order is deterministic for equally-ready refs; completion order is naturally non-deterministic under parallel execution.
   - `Favn.cancel_run/1` requests cancellation and returns a cancellation acknowledgement tuple.
   - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error | :cancelled | :timed_out}}` on non-success terminal outcomes.
@@ -192,12 +192,66 @@ SQLite ordering notes:
 - Persistent storage guarantees beyond the configured adapter behavior (default adapter is in-memory and node-local).
 - Global concurrency fairness across runs and retries.
 
+## v0.3 pipeline DSL direction (foundation PR)
+
+The first v0.3 pipeline foundation slice keeps pipelines as a composition layer on top of the existing asset graph planner.
+
+- Pipelines are **not** a second graph/planning DSL.
+- Pipeline selection resolves to asset refs and then uses dependency-based planning.
+- Initial DSL is intentionally small and user-friendly:
+  - `asset`
+  - `assets`
+  - `select`
+  - `deps`
+  - `schedule`
+  - `partition`
+  - `source`
+  - `outputs`
+
+Selection authoring supports both:
+
+- shorthand (`asset` / `assets`) for common cases
+- `select do ... end` for flexible selection (module/tag/category/ref style criteria)
+
+Inside `select do ... end`, selectors are additive (union-based), not intersection-based.
+That means each selector contributes refs to one combined target set before dedupe/sort.
+
+A pipeline definition should use either shorthand selection or `select`, but not both in the same definition.
+
+Deferred from the first v0.3 pipeline foundation PR:
+
+- schedule/polling runtime engines
+- API-triggered execution surface
+- DB-managed pipeline installations/runtime overrides
+- source/output runtime binding behaviors
+- multi-output runtime fan-out behavior
+
+Planned later: a `where` clause for richer asset filtering/querying. `where` is intended as a filtering layer only and must not replace dependency-based graph planning.
+
+### Pipeline foundation API (v0.3)
+
+The first v0.3 implementation adds manual pipeline planning/runs:
+
+- `Favn.plan_pipeline(MyApp.Pipelines.DailySales)`
+- `Favn.run_pipeline(MyApp.Pipelines.DailySales, params: %{requested_by: "operator"})`
+
+Execution model guidance:
+
+- `run_pipeline/2` is the primary operator-facing execution entrypoint.
+- `run_asset/2` is a lower-level primitive for simple assets, tests, debugging, and development flows.
+- In operator workflows, prefer selecting/running a pipeline (and narrow to a single asset with `deps: :none` when needed).
+- `run_asset/2` can also take explicit manual pipeline provenance/context when needed:
+  `Favn.run_asset(ref, pipeline_context: %{...})`.
+
+Assets can read pipeline-aware fields from `ctx.pipeline` during pipeline-triggered runs (for example pipeline identity, config, trigger metadata, and runtime params).
+`ctx.params` remains the generic run params map, while `ctx.pipeline.params` exposes the pipeline-trigger params/provenance payload.
+
 ## Roadmap and release focus
 
 - Add durable production-ready storage adapters with stronger operational guarantees.
 - Expand run query capabilities for richer operator UIs.
 - Improve event observability integrations (telemetry/export pipelines).
-- Land orchestration-layer fundamentals for v1 (manual/API triggers, schedule, polling, freshness-aware skips, and pipeline-installed runtime config via `ctx`).
+- Land orchestration-layer fundamentals for v1 (pipeline composition + manual execution first, then API/schedule/polling/freshness and installed runtime config via `ctx`).
 - Add release packaging/versioning via Hex.
 
 ## Installation

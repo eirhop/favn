@@ -142,7 +142,7 @@ defmodule Favn.RunnerTest do
 
   test "runs deterministic stage-by-stage execution with context only" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :final},
+             Favn.run_asset({RunnerAssets, :final},
                dependencies: :all,
                params: %{partition: "2026-03-25"}
              )
@@ -170,14 +170,14 @@ defmodule Favn.RunnerTest do
   end
 
   test "supports dependencies: :none target-only runs" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :target_only}, dependencies: :none)
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :target_only}, dependencies: :none)
     assert {:ok, run} = Favn.await_run(run_id)
 
     assert run.status == :ok
   end
 
   test "captures invalid return shape as a structured run failure" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :invalid_return})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :invalid_return})
     assert {:error, run} = Favn.await_run(run_id)
 
     assert run.status == :error
@@ -191,7 +191,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "captures raised exceptions with stacktrace details" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :crashes})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :crashes})
     assert {:error, run} = Favn.await_run(run_id)
 
     assert run.status == :error
@@ -203,7 +203,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "normalizes explicit asset error tuples into canonical run error payloads" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :returns_error})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :returns_error})
     assert {:error, run} = Favn.await_run(run_id)
 
     ref = {RunnerAssets, :returns_error}
@@ -216,7 +216,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "preserves asset metadata in asset_results" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :with_meta})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :with_meta})
     assert {:ok, run} = Favn.await_run(run_id)
 
     ref = {RunnerAssets, :with_meta}
@@ -226,7 +226,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "persists run records for get_run/1" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :final})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :final})
     assert {:ok, run} = Favn.await_run(run_id)
 
     assert {:ok, fetched} = Favn.get_run(run.id)
@@ -236,10 +236,10 @@ defmodule Favn.RunnerTest do
   end
 
   test "lists runs with status filter and limit in newest-first order" do
-    assert {:ok, ok_run_id} = Favn.run({RunnerAssets, :final})
+    assert {:ok, ok_run_id} = Favn.run_asset({RunnerAssets, :final})
     assert {:ok, ok_run} = Favn.await_run(ok_run_id)
 
-    assert {:ok, error_run_id} = Favn.run({RunnerAssets, :crashes})
+    assert {:ok, error_run_id} = Favn.run_asset({RunnerAssets, :crashes})
     assert {:error, error_run} = Favn.await_run(error_run_id)
 
     assert {:ok, all_runs} = Favn.list_runs()
@@ -264,19 +264,20 @@ defmodule Favn.RunnerTest do
     assert {:error, :not_found} = Favn.get_run("missing-run-id")
   end
 
-  test "await_run/2 returns :not_found immediately for unknown run ids" do
+  test "await_run_asset/2 returns :not_found immediately for unknown run ids" do
     assert {:error, :not_found} = Favn.await_run("missing-run-id")
   end
 
-  test "returns invalid run params as canonical error payload from run/2" do
-    assert {:error, :invalid_run_params} = Favn.run({RunnerAssets, :final}, params: :not_a_map)
+  test "returns invalid run params as canonical error payload from run_asset/2" do
+    assert {:error, :invalid_run_params} =
+             Favn.run_asset({RunnerAssets, :final}, params: :not_a_map)
   end
 
   test "accepts submission when failure happens at a later terminal persistence point" do
     :ok = Favn.TestSetup.configure_storage_adapter(TerminalFailingStore, [])
     TerminalFailingStore.reset!()
 
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :final})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :final})
     assert is_binary(run_id)
   end
 
@@ -284,18 +285,18 @@ defmodule Favn.RunnerTest do
     :ok = Favn.TestSetup.configure_storage_adapter(InitialFailingStore, [])
 
     assert {:error, {:storage_persist_failed, {:store_error, :initial_write_failed}}} =
-             Favn.run({RunnerAssets, :final})
+             Favn.run_asset({RunnerAssets, :final})
   end
 
   test "long-running assets are not capped by a hardcoded sync timeout" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
     assert {:ok, run} = Favn.await_run(run_id)
     assert run.status == :ok
   end
 
   test "emits step_ready and step_started/step_finished events with ref + stage" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: self()})
+             Favn.run_asset({RunnerAssets, :announce_target}, params: %{notify_pid: self()})
 
     :ok = Favn.subscribe_run(run_id)
     assert {:ok, _run} = Favn.await_run(run_id)
@@ -311,7 +312,7 @@ defmodule Favn.RunnerTest do
 
   test "emits stable event schema envelope for run and step events" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :announce_target}, params: %{notify_pid: self()})
+             Favn.run_asset({RunnerAssets, :announce_target}, params: %{notify_pid: self()})
 
     :ok = Favn.subscribe_run(run_id)
     assert {:ok, _run} = Favn.await_run(run_id)
@@ -334,7 +335,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "projected asset_results omit skipped steps that never executed" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :after_error})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :after_error})
     assert {:error, run} = Favn.await_run(run_id)
 
     assert run.status == :error
@@ -350,7 +351,7 @@ defmodule Favn.RunnerTest do
     counter = :atomics.new(2, signed: false)
 
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :parallel_join},
+             Favn.run_asset({RunnerAssets, :parallel_join},
                max_concurrency: 2,
                params: %{counter: counter}
              )
@@ -374,7 +375,7 @@ defmodule Favn.RunnerTest do
     parent = self()
 
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :parallel_join},
+             Favn.run_asset({RunnerAssets, :parallel_join},
                max_concurrency: 2,
                params: %{notify_pid: parent}
              )
@@ -396,7 +397,7 @@ defmodule Favn.RunnerTest do
     counter = :atomics.new(2, signed: false)
 
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :parallel_terminal},
+             Favn.run_asset({RunnerAssets, :parallel_terminal},
                max_concurrency: 2,
                params: %{counter: counter}
              )
@@ -422,7 +423,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "normalizes hard executor crashes into failed step results" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :hard_crash}, max_concurrency: 1)
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :hard_crash}, max_concurrency: 1)
     assert {:error, run} = Favn.await_run(run_id)
 
     assert run.status == :error
@@ -436,7 +437,7 @@ defmodule Favn.RunnerTest do
     log =
       capture_log(fn ->
         assert {:ok, run_id} =
-                 Favn.run({RunnerAssets, :slow_asset},
+                 Favn.run_asset({RunnerAssets, :slow_asset},
                    max_concurrency: 1,
                    params: %{executor_mode: :mismatch_ref}
                  )
@@ -452,7 +453,7 @@ defmodule Favn.RunnerTest do
     Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
 
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :slow_asset},
+             Favn.run_asset({RunnerAssets, :slow_asset},
                max_concurrency: 1,
                params: %{executor_mode: :duplicate_result}
              )
@@ -465,7 +466,7 @@ defmodule Favn.RunnerTest do
     Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
 
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :slow_asset},
+             Favn.run_asset({RunnerAssets, :slow_asset},
                max_concurrency: 1,
                params: %{executor_mode: :late_after_down}
              )
@@ -484,7 +485,7 @@ defmodule Favn.RunnerTest do
     Application.put_env(:favn, :runtime_executor, ProtocolTestExecutor)
 
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :slow_asset},
+             Favn.run_asset({RunnerAssets, :slow_asset},
                max_concurrency: 1,
                params: %{executor_mode: :down_normal_before_result}
              )
@@ -493,8 +494,8 @@ defmodule Favn.RunnerTest do
     assert run.status == :ok
   end
 
-  test "run/2 returns immediately with a run id while execution continues" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+  test "run_asset/2 returns immediately with a run id while execution continues" do
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
     assert is_binary(run_id)
 
     assert {:ok, running} = Favn.get_run(run_id)
@@ -505,7 +506,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "cancel_run/1 cancels a running run and await_run returns cancelled as error terminal" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
     assert {:ok, :cancelling} = Favn.cancel_run(run_id)
     assert {:error, run} = Favn.await_run(run_id)
     assert run.status == :cancelled
@@ -513,7 +514,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "cancel_run/1 returns already_terminal for completed run" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
     assert {:ok, _run} = Favn.await_run(run_id)
     assert {:ok, :already_terminal} = Favn.cancel_run(run_id)
   end
@@ -550,18 +551,18 @@ defmodule Favn.RunnerTest do
   end
 
   test "run timeout marks run as timed_out" do
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 10)
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset}, timeout_ms: 10)
     assert {:error, run} = Favn.await_run(run_id)
     assert run.status == :timed_out
     assert run.terminal_reason[:kind] == :timed_out
   end
 
   test "list_runs supports cancelled and timed_out status filters" do
-    assert {:ok, cancelled_run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, cancelled_run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
     assert {:ok, :cancelling} = Favn.cancel_run(cancelled_run_id)
     assert {:error, cancelled_run} = Favn.await_run(cancelled_run_id)
 
-    assert {:ok, timed_out_run_id} = Favn.run({RunnerAssets, :slow_asset}, timeout_ms: 10)
+    assert {:ok, timed_out_run_id} = Favn.run_asset({RunnerAssets, :slow_asset}, timeout_ms: 10)
     assert {:error, timed_out_run} = Favn.await_run(timed_out_run_id)
 
     assert {:ok, cancelled_runs} = Favn.list_runs(status: :cancelled)
@@ -573,7 +574,7 @@ defmodule Favn.RunnerTest do
 
   test "retries raised exception and succeeds on a later attempt" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :transient_then_ok},
+             Favn.run_asset({RunnerAssets, :transient_then_ok},
                retry: [max_attempts: 2]
              )
 
@@ -587,7 +588,7 @@ defmodule Favn.RunnerTest do
 
   test "retryable step_failed event reflects retrying status in stable envelope" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :transient_then_ok},
+             Favn.run_asset({RunnerAssets, :transient_then_ok},
                retry: [max_attempts: 2]
              )
 
@@ -607,7 +608,7 @@ defmodule Favn.RunnerTest do
 
   test "retries exits and succeeds on a later attempt" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :exits_then_ok},
+             Favn.run_asset({RunnerAssets, :exits_then_ok},
                retry: [max_attempts: 2]
              )
 
@@ -620,7 +621,7 @@ defmodule Favn.RunnerTest do
 
   test "explicit error returns are not retried by default" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :returns_error},
+             Favn.run_asset({RunnerAssets, :returns_error},
                retry: [max_attempts: 3]
              )
 
@@ -633,7 +634,7 @@ defmodule Favn.RunnerTest do
 
   test "explicit error returns can be retried when configured" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :returns_error},
+             Favn.run_asset({RunnerAssets, :returns_error},
                retry: [max_attempts: 2, retry_on: [:error_return]]
              )
 
@@ -646,7 +647,7 @@ defmodule Favn.RunnerTest do
 
   test "explicit {:error, :timeout} stays classified as error_return by default" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :returns_timeout_error},
+             Favn.run_asset({RunnerAssets, :returns_timeout_error},
                retry: [max_attempts: 3]
              )
 
@@ -659,7 +660,7 @@ defmodule Favn.RunnerTest do
 
   test "explicit {:error, :timeout} retries when retry_on includes :error_return" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :returns_timeout_error},
+             Favn.run_asset({RunnerAssets, :returns_timeout_error},
                retry: [max_attempts: 2, retry_on: [:error_return]]
              )
 
@@ -672,7 +673,7 @@ defmodule Favn.RunnerTest do
 
   test "runtime timeout path remains timed_out terminal" do
     assert {:ok, run_id} =
-             Favn.run({RunnerAssets, :slow_asset},
+             Favn.run_asset({RunnerAssets, :slow_asset},
                timeout_ms: 10,
                retry: [max_attempts: 3, retry_on: [:timeout]]
              )
@@ -683,23 +684,28 @@ defmodule Favn.RunnerTest do
   end
 
   test "run validates retry options" do
-    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: :bad)
-    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: [:bad])
-    assert {:error, :invalid_retry_policy} = Favn.run({RunnerAssets, :slow_asset}, retry: [123])
+    assert {:error, :invalid_retry_policy} =
+             Favn.run_asset({RunnerAssets, :slow_asset}, retry: :bad)
 
     assert {:error, :invalid_retry_policy} =
-             Favn.run({RunnerAssets, :slow_asset}, retry: [123, max_attempts: 2])
+             Favn.run_asset({RunnerAssets, :slow_asset}, retry: [:bad])
+
+    assert {:error, :invalid_retry_policy} =
+             Favn.run_asset({RunnerAssets, :slow_asset}, retry: [123])
+
+    assert {:error, :invalid_retry_policy} =
+             Favn.run_asset({RunnerAssets, :slow_asset}, retry: [123, max_attempts: 2])
 
     assert {:error, :invalid_retry_max_attempts} =
-             Favn.run({RunnerAssets, :slow_asset}, retry: [max_attempts: 0])
+             Favn.run_asset({RunnerAssets, :slow_asset}, retry: [max_attempts: 0])
 
     assert {:error, :invalid_retry_delay_ms} =
-             Favn.run({RunnerAssets, :slow_asset}, retry: [delay_ms: -1])
+             Favn.run_asset({RunnerAssets, :slow_asset}, retry: [delay_ms: -1])
 
     assert {:error, :invalid_retry_retry_on} =
-             Favn.run({RunnerAssets, :slow_asset}, retry: [retry_on: [:not_valid]])
+             Favn.run_asset({RunnerAssets, :slow_asset}, retry: [retry_on: [:not_valid]])
 
-    assert {:ok, run_id} = Favn.run({RunnerAssets, :slow_asset})
+    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
     assert {:ok, run} = Favn.await_run(run_id)
     assert run.status == :ok
   end
