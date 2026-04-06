@@ -912,12 +912,23 @@ defmodule Favn do
   @doc """
   Submit a rerun for a terminal run id.
 
-  Rerun is exact replay by default:
+  Rerun supports two modes:
 
-    * reuses persisted execution intent from the source run
+    * `:resume_from_failure` (default) resumes from incomplete/failed/cancelled/timed-out
+      parts while reusing successful completed steps from the source run.
+    * `:exact_replay` replays the whole persisted run plan regardless of prior success.
+
+  Common semantics:
+
+    * both modes reuse persisted execution intent from the source run
     * supports source statuses `:ok | :error | :cancelled | :timed_out`
     * returns `{:error, :run_not_terminal}` for still-running source runs
     * persists lineage links in the new run (`rerun_of_run_id`, `parent_run_id`, `root_run_id`)
+
+  Options:
+
+    * `mode: :resume_from_failure | :exact_replay` (default `:resume_from_failure`)
+    * `reason: term()` optional operator reason persisted on the rerun
   """
   @spec rerun_run(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def rerun_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do

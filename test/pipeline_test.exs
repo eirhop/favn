@@ -165,6 +165,7 @@ defmodule Favn.PipelineTest do
     assert {:ok, rerun_run} = Favn.await_run(rerun_id, timeout: 5_000)
 
     assert rerun_run.submit_kind == :rerun
+    assert rerun_run.replay_mode == :resume_from_failure
     assert rerun_run.rerun_of_run_id == run_id
     assert rerun_run.root_run_id == run_id
     assert rerun_run.pipeline == source_run.pipeline

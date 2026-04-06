@@ -256,9 +256,12 @@ v0.3 includes stable operator actions for:
 
 Rerun behavior:
 
-- rerun is run-id based and defaults to exact replay of persisted execution intent
+- rerun is run-id based and supports two modes:
+  - `:resume_from_failure` (default)
+  - `:exact_replay` (explicit)
+- both modes use persisted execution intent from the source run
 - rerun is allowed for terminal runs (`:ok | :error | :cancelled | :timed_out`)
-- reruns persist lineage metadata (`rerun_of_run_id`, `parent_run_id`, `root_run_id`, `lineage_depth`)
+- reruns persist lineage metadata (`replay_mode`, `rerun_of_run_id`, `parent_run_id`, `root_run_id`, `lineage_depth`)
 
 ## Roadmap and release focus
 

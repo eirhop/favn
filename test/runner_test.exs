@@ -572,7 +572,7 @@ defmodule Favn.RunnerTest do
     assert Enum.map(timed_out_runs, & &1.id) == [timed_out_run.id]
   end
 
-  test "rerun_run/2 replays a successful run with lineage" do
+  test "rerun_run/2 defaults to resume_from_failure and does not rerun successful steps" do
     assert {:ok, run_id} =
              Favn.run_asset({RunnerAssets, :announce_target},
                params: %{notify_pid: self()},
@@ -587,10 +587,10 @@ defmodule Favn.RunnerTest do
     assert rerun_id != run_id
 
     assert {:ok, rerun} = Favn.await_run(rerun_id)
-    assert_receive {:announced_run_id, ^rerun_id}
+    refute_receive {:announced_run_id, ^rerun_id}, 200
 
     assert rerun.status == :ok
-    assert rerun.replay_mode == :exact
+    assert rerun.replay_mode == :resume_from_failure
     assert rerun.rerun_of_run_id == run_id
     assert rerun.parent_run_id == run_id
     assert rerun.root_run_id == run_id
@@ -601,9 +601,55 @@ defmodule Favn.RunnerTest do
     assert rerun.retry_policy == source_run.retry_policy
   end
 
+  test "rerun_run/2 supports explicit exact_replay mode" do
+    assert {:ok, run_id} =
+             Favn.run_asset({RunnerAssets, :announce_target},
+               params: %{notify_pid: self()},
+               retry: [max_attempts: 2],
+               max_concurrency: 1
+             )
+
+    assert {:ok, _run} = Favn.await_run(run_id)
+    assert_receive {:announced_run_id, ^run_id}
+
+    assert {:ok, rerun_id} =
+             Favn.rerun_run(run_id, mode: :exact_replay, reason: :force_full_replay)
+
+    assert {:ok, rerun} = Favn.await_run(rerun_id)
+    assert_receive {:announced_run_id, ^rerun_id}
+    assert rerun.replay_mode == :exact_replay
+    assert rerun.operator_reason == :force_full_replay
+  end
+
   test "rerun_run/2 rejects non-terminal source runs" do
     assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
     assert {:error, :run_not_terminal} = Favn.rerun_run(run_id)
+  end
+
+  test "rerun_run/2 returns error for invalid mode and missing run id" do
+    assert {:error, :not_found} = Favn.rerun_run("missing-run-id")
+    assert {:error, {:invalid_rerun_mode, :bad}} = Favn.rerun_run("missing-run-id", mode: :bad)
+  end
+
+  test "rerun_run/2 resumes from failed run and preserves lineage across rerun chain" do
+    assert {:ok, failed_run_id} = Favn.run_asset({RunnerAssets, :crashes})
+    assert {:error, failed_run} = Favn.await_run(failed_run_id)
+    assert failed_run.status == :error
+
+    assert {:ok, rerun_1_id} = Favn.rerun_run(failed_run_id)
+    assert {:error, rerun_1} = Favn.await_run(rerun_1_id)
+    assert rerun_1.status == :error
+    assert rerun_1.replay_mode == :resume_from_failure
+    assert rerun_1.parent_run_id == failed_run_id
+    assert rerun_1.root_run_id == failed_run_id
+    assert rerun_1.lineage_depth == 1
+
+    assert {:ok, rerun_2_id} = Favn.rerun_run(rerun_1_id)
+    assert {:error, rerun_2} = Favn.await_run(rerun_2_id)
+    assert rerun_2.status == :error
+    assert rerun_2.parent_run_id == rerun_1_id
+    assert rerun_2.root_run_id == failed_run_id
+    assert rerun_2.lineage_depth == 2
   end
 
   test "rerun_run/2 supports cancelled and timed_out source runs" do
@@ -623,6 +669,42 @@ defmodule Favn.RunnerTest do
     assert {:error, rerun_from_timeout} = Favn.await_run(timed_out_rerun_id)
     assert rerun_from_timeout.status == :timed_out
     assert rerun_from_timeout.rerun_of_run_id == timed_out_run_id
+  end
+
+  test "rerun_run/2 returns replay_unavailable for corrupt persisted provenance" do
+    run = %Favn.Run{
+      id: "corrupt-run-no-plan",
+      status: :error,
+      started_at: DateTime.utc_now(),
+      finished_at: DateTime.utc_now(),
+      target_refs: [{RunnerAssets, :crashes}],
+      plan: nil
+    }
+
+    assert :ok = Favn.Storage.put_run(run)
+    assert {:error, :replay_unavailable} = Favn.rerun_run(run.id)
+  end
+
+  test "rerun modes differ when code/graph changed after source run" do
+    assert {:ok, run_id} =
+             Favn.run_asset({RunnerAssets, :announce_target},
+               params: %{notify_pid: self()}
+             )
+
+    assert {:ok, _run} = Favn.await_run(run_id)
+    assert_receive {:announced_run_id, ^run_id}
+
+    :ok = Favn.TestSetup.setup_asset_modules([], reload_graph?: true)
+
+    assert {:ok, resume_rerun_id} = Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:ok, resume_rerun} = Favn.await_run(resume_rerun_id)
+    assert resume_rerun.status == :ok
+    assert resume_rerun.replay_mode == :resume_from_failure
+
+    assert {:ok, exact_rerun_id} = Favn.rerun_run(run_id, mode: :exact_replay)
+    assert {:error, exact_rerun} = Favn.await_run(exact_rerun_id)
+    assert exact_rerun.status == :error
+    assert exact_rerun.replay_mode == :exact_replay
   end
 
   test "retries raised exception and succeeds on a later attempt" do
