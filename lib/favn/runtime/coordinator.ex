@@ -189,7 +189,7 @@ defmodule Favn.Runtime.Coordinator do
 
   defp start_step_execution(%State{} = state, ref) do
     with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, ref)),
-         {:ok, asset} <- Favn.Registry.get_asset(ref),
+         {:ok, asset} <- Favn.Assets.Registry.get_asset(ref),
          {:ok, handle} <- start_executor_step(state, ref, asset) do
       {:ok, put_execution_handle(state, ref, handle)}
     else

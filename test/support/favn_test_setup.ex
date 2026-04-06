@@ -3,7 +3,7 @@ defmodule Favn.TestSetup do
 
   @type state :: %{
           previous_modules: list(module()) | nil,
-          previous_catalog: {:ok, Favn.Registry.catalog()} | {:error, term()},
+          previous_catalog: {:ok, Favn.Assets.Registry.catalog()} | {:error, term()},
           previous_storage_adapter: module() | nil,
           previous_storage_adapter_opts: keyword() | nil
         }
@@ -14,7 +14,7 @@ defmodule Favn.TestSetup do
 
     %{
       previous_modules: previous_modules,
-      previous_catalog: Favn.Registry.build_catalog(previous_modules || []),
+      previous_catalog: Favn.Assets.Registry.build_catalog(previous_modules || []),
       previous_storage_adapter: Application.get_env(:favn, :storage_adapter),
       previous_storage_adapter_opts: Application.get_env(:favn, :storage_adapter_opts)
     }
@@ -23,10 +23,10 @@ defmodule Favn.TestSetup do
   @spec setup_asset_modules([module()], keyword()) :: :ok
   def setup_asset_modules(modules, opts \\ []) do
     Application.put_env(:favn, :asset_modules, modules)
-    :ok = Favn.Registry.reload()
+    :ok = Favn.Assets.Registry.reload()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = Favn.GraphIndex.reload()
+      :ok = Favn.Assets.GraphIndex.reload()
     end
 
     :ok
@@ -68,10 +68,10 @@ defmodule Favn.TestSetup do
   defp restore_asset_modules(modules), do: Application.put_env(:favn, :asset_modules, modules)
 
   defp restore_registry({:ok, _catalog}, opts) do
-    :ok = Favn.Registry.reload()
+    :ok = Favn.Assets.Registry.reload()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = Favn.GraphIndex.reload()
+      :ok = Favn.Assets.GraphIndex.reload()
     end
 
     :ok

@@ -23,8 +23,8 @@ defmodule Favn.Application do
     # host-managed mode can reuse the same configurable pubsub_name boundary.
     pubsub_child = {Phoenix.PubSub, name: pubsub_name}
 
-    with :ok <- Favn.Registry.load(),
-         :ok <- Favn.GraphIndex.load(),
+    with :ok <- Favn.Assets.Registry.load(),
+         :ok <- Favn.Assets.GraphIndex.load(),
          :ok <- Favn.Storage.validate_adapter(adapter),
          {:ok, child_specs} <- Favn.Storage.child_specs() do
       runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]

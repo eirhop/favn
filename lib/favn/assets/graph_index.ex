@@ -1,9 +1,9 @@
-defmodule Favn.GraphIndex do
+defmodule Favn.Assets.GraphIndex do
   @moduledoc """
   Global dependency graph index for configured Favn assets.
 
-  `Favn.GraphIndex` builds a read-only directed acyclic graph (DAG) from the
-  canonical asset catalog loaded by `Favn.Registry`. The index is computed
+  `Favn.Assets.GraphIndex` builds a read-only directed acyclic graph (DAG) from the
+  canonical asset catalog loaded by `Favn.Assets.Registry`. The index is computed
   during application startup and cached in `:persistent_term` for fast,
   repeated read access.
 
@@ -45,7 +45,7 @@ defmodule Favn.GraphIndex do
           {:missing_dependency, Ref.t(), Ref.t()}
           | {:cycle, [Ref.t()]}
           | :invalid_opts
-          | Favn.Registry.error()
+          | Favn.Assets.Registry.error()
 
   @typedoc """
   Direction used when selecting related assets or subgraphs.
@@ -91,7 +91,7 @@ defmodule Favn.GraphIndex do
   """
   @spec load() :: :ok | {:error, error()}
   def load do
-    with {:ok, assets} <- Favn.Registry.list_assets(),
+    with {:ok, assets} <- Favn.Assets.Registry.list_assets(),
          {:ok, %__MODULE__{} = index} <- build_index(assets) do
       :persistent_term.put(@index_key, index)
       :ok
@@ -172,7 +172,7 @@ defmodule Favn.GraphIndex do
   @doc """
   Return a filtered subgraph rooted at a specific asset reference.
 
-  The returned value is another `%Favn.GraphIndex{}` limited to the selected
+  The returned value is another `%Favn.Assets.GraphIndex{}` limited to the selected
   refs so callers can reuse the same traversal and lookup helpers against a
   target-specific graph view.
   """

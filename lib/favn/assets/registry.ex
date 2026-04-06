@@ -1,4 +1,4 @@
-defmodule Favn.Registry do
+defmodule Favn.Assets.Registry do
   @moduledoc """
   Global asset discovery and lookup for configured Favn asset modules.
 
