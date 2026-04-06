@@ -107,6 +107,35 @@ defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
   def announce_branch_join(_ctx), do: :ok
 
   @asset true
+  def announce_chain_a(ctx) do
+    if is_pid(ctx.params[:notify_pid]) do
+      send(ctx.params[:notify_pid], {:announce_chain_a_run_id, ctx.run_id})
+    end
+
+    :ok
+  end
+
+  @asset true
+  @depends :announce_chain_a
+  def announce_chain_b(ctx) do
+    if is_pid(ctx.params[:notify_pid]) do
+      send(ctx.params[:notify_pid], {:announce_chain_b_run_id, ctx.run_id})
+    end
+
+    :ok
+  end
+
+  @asset true
+  @depends :announce_chain_b
+  def announce_chain_c(ctx) do
+    if is_pid(ctx.params[:notify_pid]) do
+      send(ctx.params[:notify_pid], {:announce_chain_c_run_id, ctx.run_id})
+    end
+
+    {:error, :announce_chain_failed}
+  end
+
+  @asset true
   def with_meta(_ctx), do: {:ok, %{row_count: 123, source: :test}}
 
   @asset true

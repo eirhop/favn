@@ -738,6 +738,35 @@ defmodule Favn.RunnerTest do
     assert_receive {:announce_branch_fail_run_id, ^rerun_id}
   end
 
+  test "resume_from_failure handles transitive restored-success chain A -> B -> C deterministically" do
+    ref = {RunnerAssets, :announce_chain_c}
+
+    assert {:ok, run_id} =
+             Favn.run_asset(ref,
+               params: %{notify_pid: self()},
+               retry: [max_attempts: 1]
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    assert run.asset_results[{RunnerAssets, :announce_chain_a}].status == :ok
+    assert run.asset_results[{RunnerAssets, :announce_chain_b}].status == :ok
+    assert run.asset_results[{RunnerAssets, :announce_chain_c}].status == :error
+
+    assert_receive {:announce_chain_a_run_id, ^run_id}
+    assert_receive {:announce_chain_b_run_id, ^run_id}
+    assert_receive {:announce_chain_c_run_id, ^run_id}
+
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:error, rerun} = Favn.await_run(rerun_id)
+    assert rerun.asset_results[{RunnerAssets, :announce_chain_a}].status == :ok
+    assert rerun.asset_results[{RunnerAssets, :announce_chain_b}].status == :ok
+    assert rerun.asset_results[{RunnerAssets, :announce_chain_c}].status == :error
+
+    refute_receive {:announce_chain_a_run_id, ^rerun_id}, 200
+    refute_receive {:announce_chain_b_run_id, ^rerun_id}, 200
+    assert_receive {:announce_chain_c_run_id, ^rerun_id}
+  end
+
   test "rerun modes differ when code/graph changed after source run" do
     assert {:ok, run_id} =
              Favn.run_asset({RunnerAssets, :announce_target},

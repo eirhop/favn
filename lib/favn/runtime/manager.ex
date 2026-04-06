@@ -234,23 +234,27 @@ defmodule Favn.Runtime.Manager do
 
       Map.put(acc, ref, step)
     end)
-    |> promote_ready_steps_from_restored_success()
+    |> promote_ready_steps_from_restored_success(plan)
   end
 
-  defp promote_ready_steps_from_restored_success(steps) do
-    Enum.reduce(steps, steps, fn {ref, step}, acc ->
-      cond do
-        step.status != :pending ->
-          acc
+  defp promote_ready_steps_from_restored_success(steps, %Favn.Plan{} = plan) do
+    Enum.reduce(plan.stages, steps, fn stage_refs, acc ->
+      Enum.reduce(stage_refs, acc, fn ref, stage_acc ->
+        step = Map.fetch!(stage_acc, ref)
 
-        Enum.all?(step.upstream, fn upstream_ref ->
-          Map.fetch!(acc, upstream_ref).status == :success
-        end) ->
-          Map.update!(acc, ref, &%{&1 | status: :ready})
+        cond do
+          step.status != :pending ->
+            stage_acc
 
-        true ->
-          acc
-      end
+          Enum.all?(step.upstream, fn upstream_ref ->
+            Map.fetch!(stage_acc, upstream_ref).status == :success
+          end) ->
+            Map.update!(stage_acc, ref, &%{&1 | status: :ready})
+
+          true ->
+            stage_acc
+        end
+      end)
     end)
   end
 
