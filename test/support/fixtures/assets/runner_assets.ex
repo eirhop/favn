@@ -76,6 +76,37 @@ defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
   def announce_target(_ctx), do: :ok
 
   @asset true
+  @depends :announce_source
+  def announce_downstream_fail(_ctx), do: {:error, :announce_downstream_failed}
+
+  @asset true
+  @depends :announce_source
+  def announce_branch_ok(ctx) do
+    if is_pid(ctx.params[:notify_pid]) do
+      send(ctx.params[:notify_pid], {:announce_branch_ok_run_id, ctx.run_id})
+    end
+
+    :ok
+  end
+
+  @asset true
+  @depends :announce_source
+  def announce_branch_fail(ctx) do
+    Process.sleep(40)
+
+    if is_pid(ctx.params[:notify_pid]) do
+      send(ctx.params[:notify_pid], {:announce_branch_fail_run_id, ctx.run_id})
+    end
+
+    {:error, :announce_branch_failed}
+  end
+
+  @asset true
+  @depends :announce_branch_ok
+  @depends :announce_branch_fail
+  def announce_branch_join(_ctx), do: :ok
+
+  @asset true
   def with_meta(_ctx), do: {:ok, %{row_count: 123, source: :test}}
 
   @asset true

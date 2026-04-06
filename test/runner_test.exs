@@ -627,6 +627,7 @@ defmodule Favn.RunnerTest do
   end
 
   test "rerun_run/2 returns error for invalid mode and missing run id" do
+    assert {:error, :invalid_run_id} = Favn.rerun_run(123)
     assert {:error, :not_found} = Favn.rerun_run("missing-run-id")
     assert {:error, {:invalid_rerun_mode, :bad}} = Favn.rerun_run("missing-run-id", mode: :bad)
   end
@@ -683,6 +684,58 @@ defmodule Favn.RunnerTest do
 
     assert :ok = Favn.Storage.put_run(run)
     assert {:error, :replay_unavailable} = Favn.rerun_run(run.id)
+  end
+
+  test "resume_from_failure unblocks downstream pending step when upstream was restored successful" do
+    ref = {RunnerAssets, :announce_downstream_fail}
+
+    assert {:ok, run_id} =
+             Favn.run_asset(ref,
+               params: %{notify_pid: self()},
+               retry: [max_attempts: 1],
+               max_concurrency: 2
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    assert run.asset_results[{RunnerAssets, :announce_source}].status == :ok
+    assert run.asset_results[ref].status == :error
+    assert_receive {:announced_run_id, ^run_id}
+
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:error, rerun} = Favn.await_run(rerun_id)
+
+    assert rerun.asset_results[ref].status == :error
+    assert rerun.asset_results[{RunnerAssets, :announce_source}].status == :ok
+    refute_receive {:announced_run_id, ^rerun_id}, 200
+  end
+
+  test "resume_from_failure unblocks wider graph with restored successful upstream branches" do
+    ref = {RunnerAssets, :announce_branch_join}
+
+    assert {:ok, run_id} =
+             Favn.run_asset(ref,
+               params: %{notify_pid: self()},
+               retry: [max_attempts: 1],
+               max_concurrency: 2
+             )
+
+    assert {:error, run} = Favn.await_run(run_id)
+    assert run.asset_results[{RunnerAssets, :announce_source}].status == :ok
+    assert run.asset_results[{RunnerAssets, :announce_branch_ok}].status == :ok
+    assert run.asset_results[{RunnerAssets, :announce_branch_fail}].status == :error
+
+    assert_receive {:announced_run_id, ^run_id}
+    assert_receive {:announce_branch_ok_run_id, ^run_id}
+    assert_receive {:announce_branch_fail_run_id, ^run_id}
+
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:error, rerun} = Favn.await_run(rerun_id)
+
+    assert rerun.asset_results[{RunnerAssets, :announce_branch_ok}].status == :ok
+    assert rerun.asset_results[{RunnerAssets, :announce_branch_fail}].status == :error
+    refute_receive {:announced_run_id, ^rerun_id}, 200
+    refute_receive {:announce_branch_ok_run_id, ^rerun_id}, 200
+    assert_receive {:announce_branch_fail_run_id, ^rerun_id}
   end
 
   test "rerun modes differ when code/graph changed after source run" do

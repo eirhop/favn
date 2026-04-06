@@ -37,9 +37,13 @@ defmodule Favn.Runtime.Manager do
   def cancel_run(_run_id), do: {:error, :invalid_run_id}
 
   @spec rerun_run(Favn.run_id(), keyword()) :: {:ok, Favn.run_id()} | {:error, term()}
-  def rerun_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+  def rerun_run(run_id, opts \\ [])
+
+  def rerun_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     GenServer.call(__MODULE__, {:rerun_run, run_id, opts}, :infinity)
   end
+
+  def rerun_run(_run_id, _opts), do: {:error, :invalid_run_id}
 
   @impl true
   def init(_opts), do: {:ok, %{run_monitors: %{}, run_pids: %{}}}
@@ -195,7 +199,8 @@ defmodule Favn.Runtime.Manager do
   end
 
   defp build_steps(plan, retry_policy, resume_successful_steps) do
-    Enum.reduce(plan.nodes, %{}, fn {ref, node}, acc ->
+    plan.nodes
+    |> Enum.reduce(%{}, fn {ref, node}, acc ->
       step =
         case Map.fetch(resume_successful_steps, ref) do
           {:ok, result} ->
@@ -228,6 +233,24 @@ defmodule Favn.Runtime.Manager do
         end
 
       Map.put(acc, ref, step)
+    end)
+    |> promote_ready_steps_from_restored_success()
+  end
+
+  defp promote_ready_steps_from_restored_success(steps) do
+    Enum.reduce(steps, steps, fn {ref, step}, acc ->
+      cond do
+        step.status != :pending ->
+          acc
+
+        Enum.all?(step.upstream, fn upstream_ref ->
+          Map.fetch!(acc, upstream_ref).status == :success
+        end) ->
+          Map.update!(acc, ref, &%{&1 | status: :ready})
+
+        true ->
+          acc
+      end
     end)
   end
 

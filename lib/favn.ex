@@ -61,7 +61,8 @@ defmodule Favn do
   planning to the existing planner.
 
   v0.3 includes stable operator actions for `run`, `cancel`, and run-id-based `rerun`.
-  Rerun defaults to exact replay of persisted run intent and records lineage in `%Favn.Run{}`.
+  Rerun defaults to `:resume_from_failure`, with explicit `:exact_replay` also supported.
+  Both modes preserve lineage in `%Favn.Run{}`.
 
   ### Runs
 
@@ -931,9 +932,13 @@ defmodule Favn do
     * `reason: term()` optional operator reason persisted on the rerun
   """
   @spec rerun_run(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
-  def rerun_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+  def rerun_run(run_id, opts \\ [])
+
+  def rerun_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     Favn.Runtime.Engine.rerun_run(run_id, opts)
   end
+
+  def rerun_run(_run_id, _opts), do: {:error, :invalid_run_id}
 
   @doc """
   Block until one submitted run reaches a terminal state.
