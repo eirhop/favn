@@ -246,6 +246,23 @@ Execution model guidance:
 Assets can read pipeline-aware fields from `ctx.pipeline` during pipeline-triggered runs (for example pipeline identity, config, trigger metadata, and runtime params).
 `ctx.params` remains the generic run params map, while `ctx.pipeline.params` exposes the pipeline-trigger params/provenance payload.
 
+### Stable operator actions (v0.3)
+
+v0.3 includes stable operator actions for:
+
+- `run` (`run_asset/2`, `run_pipeline/2`)
+- `cancel` (`cancel_run/1`)
+- `rerun` (`rerun_run/2`)
+
+Rerun behavior:
+
+- rerun is run-id based and supports two modes:
+  - `:resume_from_failure` (default)
+  - `:exact_replay` (explicit)
+- both modes use persisted execution intent from the source run
+- rerun is allowed for terminal runs (`:ok | :error | :cancelled | :timed_out`)
+- reruns persist lineage metadata (`replay_mode`, `rerun_of_run_id`, `parent_run_id`, `root_run_id`, `lineage_depth`)
+
 ## Roadmap and release focus
 
 - Add durable production-ready storage adapters with stronger operational guarantees.

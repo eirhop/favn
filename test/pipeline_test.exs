@@ -153,6 +153,28 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.outputs == [:warehouse_gold]
   end
 
+  test "rerun_run/2 preserves pipeline context for pipeline-origin runs" do
+    assert {:ok, run_id} =
+             Favn.run_pipeline(SimplePipeline,
+               params: %{requested_by: "operator"},
+               trigger: %{kind: :manual, requested_by: :user}
+             )
+
+    assert {:ok, source_run} = Favn.await_run(run_id, timeout: 5_000)
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id)
+    assert {:ok, rerun_run} = Favn.await_run(rerun_id, timeout: 5_000)
+
+    assert rerun_run.submit_kind == :rerun
+    assert rerun_run.replay_mode == :resume_from_failure
+    assert rerun_run.rerun_of_run_id == run_id
+    assert rerun_run.root_run_id == run_id
+    assert rerun_run.pipeline == source_run.pipeline
+    assert rerun_run.pipeline_context.trigger == %{kind: :manual, requested_by: :user}
+    assert rerun_run.pipeline_context.params == %{requested_by: "operator"}
+    assert rerun_run.pipeline_context.config == %{timezone: "UTC", notify: false}
+    assert rerun_run.pipeline_context.meta == %{owner: "data-platform", domain: :sales}
+  end
+
   test "pipeline DSL rejects mixing shorthand and select modes" do
     assert_raise ArgumentError, ~r/cannot mix shorthand selection/, fn ->
       Code.compile_string("""

@@ -36,53 +36,37 @@ defmodule Favn.Runtime.Manager do
 
   def cancel_run(_run_id), do: {:error, :invalid_run_id}
 
+  @spec rerun_run(Favn.run_id(), keyword()) :: {:ok, Favn.run_id()} | {:error, term()}
+  def rerun_run(run_id, opts \\ [])
+
+  def rerun_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
+    GenServer.call(__MODULE__, {:rerun_run, run_id, opts}, :infinity)
+  end
+
+  def rerun_run(_run_id, _opts), do: {:error, :invalid_run_id}
+
   @impl true
   def init(_opts), do: {:ok, %{run_monitors: %{}, run_pids: %{}}}
 
   @impl true
   def handle_call({:submit_run, target_refs, opts}, _from, state) do
-    dependencies = Keyword.get(opts, :dependencies, :all)
-    params = Keyword.get(opts, :params, %{})
-    pipeline_context = Keyword.get(opts, :_pipeline_context)
-    max_concurrency = resolve_max_concurrency(opts)
-    timeout_ms = Keyword.get(opts, :timeout_ms)
-    retry_policy = resolve_retry_policy(opts)
+    {reply, next_state} = do_submit_run(target_refs, opts, state)
+    {:reply, reply, next_state}
+  end
 
-    with :ok <- validate_params(params),
-         :ok <- validate_pipeline_context(pipeline_context),
-         :ok <- validate_max_concurrency(max_concurrency),
-         :ok <- validate_timeout_ms(timeout_ms),
-         {:ok, retry_policy} <- validate_retry_policy(retry_policy),
-         {:ok, plan} <- Favn.plan_asset_run(target_refs, dependencies: dependencies),
-         runtime_state <-
-           build_runtime_state(
-             plan,
-             params,
-             pipeline_context,
-             max_concurrency,
-             timeout_ms,
-             retry_policy
-           ),
-         {:ok, pid} <- start_run_coordinator(runtime_state),
-         :ok <- persist_initial_snapshot(runtime_state),
-         :ok <- emit_run_created(runtime_state),
-         :ok <- kickoff_run(pid) do
-      ref = Process.monitor(pid)
+  @impl true
+  def handle_call({:rerun_run, run_id, opts}, _from, state) do
+    {reply, next_state} =
+      with {:ok, mode} <- normalize_rerun_mode(opts),
+           {:ok, source_run} <- Favn.Storage.get_run(run_id),
+           :ok <- ensure_terminal(source_run),
+           {:ok, submit_opts} <- build_rerun_submit_opts(source_run, opts, mode) do
+        do_submit_run(source_run.target_refs, submit_opts, state)
+      else
+        {:error, reason} -> {{:error, reason}, state}
+      end
 
-      next_state =
-        state
-        |> put_in([:run_monitors, ref], runtime_state.run_id)
-        |> put_in([:run_pids, runtime_state.run_id], pid)
-
-      {:reply, {:ok, runtime_state.run_id}, next_state}
-    else
-      {:start_failed_after_spawn, pid, reason} ->
-        _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
-        {:reply, {:error, reason}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+    {:reply, reply, next_state}
   end
 
   @impl true
@@ -116,6 +100,52 @@ defmodule Favn.Runtime.Manager do
     {:reply, reply, state}
   end
 
+  defp do_submit_run(target_refs, opts, state) do
+    dependencies = Keyword.get(opts, :dependencies, :all)
+    params = Keyword.get(opts, :params, %{})
+    pipeline_context = Keyword.get(opts, :_pipeline_context)
+    max_concurrency = resolve_max_concurrency(opts)
+    timeout_ms = Keyword.get(opts, :timeout_ms)
+    retry_policy = resolve_retry_policy(opts)
+
+    with :ok <- validate_params(params),
+         :ok <- validate_pipeline_context(pipeline_context),
+         :ok <- validate_max_concurrency(max_concurrency),
+         :ok <- validate_timeout_ms(timeout_ms),
+         {:ok, retry_policy} <- validate_retry_policy(retry_policy),
+         {:ok, plan} <- resolve_plan(target_refs, dependencies, opts),
+         runtime_state <-
+           build_runtime_state(
+             plan,
+             params,
+             pipeline_context,
+             max_concurrency,
+             timeout_ms,
+             retry_policy,
+             opts
+           ),
+         {:ok, pid} <- start_run_coordinator(runtime_state),
+         :ok <- persist_initial_snapshot(runtime_state),
+         :ok <- emit_run_created(runtime_state),
+         :ok <- kickoff_run(pid) do
+      ref = Process.monitor(pid)
+
+      next_state =
+        state
+        |> put_in([:run_monitors, ref], runtime_state.run_id)
+        |> put_in([:run_pids, runtime_state.run_id], pid)
+
+      {{:ok, runtime_state.run_id}, next_state}
+    else
+      {:start_failed_after_spawn, pid, reason} ->
+        _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
+        {{:error, reason}, state}
+
+      {:error, reason} ->
+        {{:error, reason}, state}
+    end
+  end
+
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     {run_id, remaining} = Map.pop(state.run_monitors, ref)
@@ -134,8 +164,18 @@ defmodule Favn.Runtime.Manager do
          pipeline_context,
          max_concurrency,
          timeout_ms,
-         retry_policy
+         retry_policy,
+         opts
        ) do
+    submit_kind = Keyword.get(opts, :_submit_kind, :asset)
+    submit_ref = Keyword.get(opts, :_submit_ref)
+    replay_mode = Keyword.get(opts, :_replay_mode, :none)
+    rerun_of_run_id = Keyword.get(opts, :_rerun_of_run_id)
+    parent_run_id = Keyword.get(opts, :_parent_run_id)
+    root_run_id = Keyword.get(opts, :_root_run_id)
+    lineage_depth = Keyword.get(opts, :_lineage_depth, 0)
+    operator_reason = Keyword.get(opts, :_operator_reason)
+
     %State{
       run_id: new_run_id(),
       target_refs: plan.target_refs,
@@ -145,25 +185,76 @@ defmodule Favn.Runtime.Manager do
       max_concurrency: max_concurrency,
       timeout_ms: timeout_ms,
       retry_policy: retry_policy,
+      submit_kind: submit_kind,
+      submit_ref: submit_ref,
+      replay_mode: replay_mode,
+      rerun_of_run_id: rerun_of_run_id,
+      parent_run_id: parent_run_id,
+      root_run_id: root_run_id,
+      lineage_depth: lineage_depth,
+      operator_reason: operator_reason,
       event_seq: 1,
-      steps: build_steps(plan, retry_policy)
+      steps: build_steps(plan, retry_policy, Keyword.get(opts, :_resume_successful_steps, %{}))
     }
   end
 
-  defp build_steps(plan, retry_policy) do
-    Enum.reduce(plan.nodes, %{}, fn {ref, node}, acc ->
-      status = if node.upstream == [], do: :ready, else: :pending
+  defp build_steps(plan, retry_policy, resume_successful_steps) do
+    plan.nodes
+    |> Enum.reduce(%{}, fn {ref, node}, acc ->
+      step =
+        case Map.fetch(resume_successful_steps, ref) do
+          {:ok, result} ->
+            %Favn.Runtime.StepState{
+              ref: ref,
+              stage: node.stage,
+              upstream: node.upstream,
+              downstream: node.downstream,
+              status: :success,
+              attempt: result.attempt_count,
+              max_attempts: result.max_attempts,
+              started_at: result.started_at,
+              finished_at: result.finished_at,
+              duration_ms: result.duration_ms,
+              meta: result.meta || %{},
+              attempts: result.attempts || []
+            }
 
-      step = %Favn.Runtime.StepState{
-        ref: ref,
-        stage: node.stage,
-        upstream: node.upstream,
-        downstream: node.downstream,
-        status: status,
-        max_attempts: retry_policy.max_attempts
-      }
+          :error ->
+            status = if node.upstream == [], do: :ready, else: :pending
+
+            %Favn.Runtime.StepState{
+              ref: ref,
+              stage: node.stage,
+              upstream: node.upstream,
+              downstream: node.downstream,
+              status: status,
+              max_attempts: retry_policy.max_attempts
+            }
+        end
 
       Map.put(acc, ref, step)
+    end)
+    |> promote_ready_steps_from_restored_success(plan)
+  end
+
+  defp promote_ready_steps_from_restored_success(steps, %Favn.Plan{} = plan) do
+    Enum.reduce(plan.stages, steps, fn stage_refs, acc ->
+      Enum.reduce(stage_refs, acc, fn ref, stage_acc ->
+        step = Map.fetch!(stage_acc, ref)
+
+        cond do
+          step.status != :pending ->
+            stage_acc
+
+          Enum.all?(step.upstream, fn upstream_ref ->
+            Map.fetch!(stage_acc, upstream_ref).status == :success
+          end) ->
+            Map.update!(stage_acc, ref, &%{&1 | status: :ready})
+
+          true ->
+            stage_acc
+        end
+      end)
     end)
   end
 
@@ -188,7 +279,13 @@ defmodule Favn.Runtime.Manager do
       seq: 1,
       entity: :run,
       status: runtime_state.run_status,
-      data: %{}
+      data: %{
+        submit_kind: runtime_state.submit_kind,
+        replay_mode: runtime_state.replay_mode,
+        rerun_of_run_id: runtime_state.rerun_of_run_id,
+        parent_run_id: runtime_state.parent_run_id,
+        root_run_id: runtime_state.root_run_id
+      }
     })
 
     :ok
@@ -263,6 +360,73 @@ defmodule Favn.Runtime.Manager do
     else
       _ -> :ok
     end
+  end
+
+  defp ensure_terminal(%Favn.Run{status: status})
+       when status in [:ok, :error, :cancelled, :timed_out],
+       do: :ok
+
+  defp ensure_terminal(%Favn.Run{status: :running}), do: {:error, :run_not_terminal}
+
+  defp normalize_rerun_mode(opts) do
+    case Keyword.get(opts, :mode, :resume_from_failure) do
+      :resume_from_failure -> {:ok, :resume_from_failure}
+      :exact_replay -> {:ok, :exact_replay}
+      invalid -> {:error, {:invalid_rerun_mode, invalid}}
+    end
+  end
+
+  defp build_rerun_submit_opts(%Favn.Run{} = source_run, opts, mode) do
+    with {:ok, plan} <- ensure_replay_plan(source_run) do
+      resume_successful_steps = build_resume_successful_steps(source_run, plan, mode)
+      parent_depth = source_run.lineage_depth || 0
+      root_run_id = source_run.root_run_id || source_run.id
+
+      {:ok,
+       [
+         dependencies: plan.dependencies,
+         params: source_run.params || %{},
+         _pipeline_context: source_run.pipeline_context || source_run.pipeline,
+         max_concurrency: source_run.max_concurrency || 1,
+         timeout_ms: source_run.timeout_ms,
+         retry: source_run.retry_policy || %{},
+         _plan_override: plan,
+         _resume_successful_steps: resume_successful_steps,
+         _submit_kind: :rerun,
+         _submit_ref: source_run.submit_ref || source_run.target_refs,
+         _replay_mode: mode,
+         _rerun_of_run_id: source_run.id,
+         _parent_run_id: source_run.id,
+         _root_run_id: root_run_id,
+         _lineage_depth: parent_depth + 1,
+         _operator_reason: Keyword.get(opts, :reason)
+       ]}
+    end
+  end
+
+  defp ensure_replay_plan(%Favn.Run{plan: %Favn.Plan{} = plan}), do: {:ok, plan}
+  defp ensure_replay_plan(_), do: {:error, :replay_unavailable}
+
+  defp resolve_plan(target_refs, dependencies, opts) when is_list(opts) do
+    case Keyword.fetch(opts, :_plan_override) do
+      {:ok, %Favn.Plan{} = plan} -> {:ok, plan}
+      {:ok, _} -> {:error, :invalid_plan_override}
+      :error -> Favn.plan_asset_run(target_refs, dependencies: dependencies)
+    end
+  end
+
+  defp build_resume_successful_steps(_source_run, _plan, :exact_replay), do: %{}
+
+  defp build_resume_successful_steps(source_run, %Favn.Plan{} = plan, :resume_from_failure) do
+    planned_refs = Map.keys(plan.nodes) |> MapSet.new()
+
+    Enum.reduce(source_run.asset_results || %{}, %{}, fn {ref, result}, acc ->
+      if result.status == :ok and MapSet.member?(planned_refs, ref) do
+        Map.put(acc, ref, result)
+      else
+        acc
+      end
+    end)
   end
 
   defp validate_params(params) when is_map(params), do: :ok
