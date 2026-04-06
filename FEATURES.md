@@ -286,6 +286,7 @@ The following decisions are source-of-truth for the first v0.3 pipeline foundati
 - [x] Remove temporary atom-only schedule references from pipeline DSL
 - [x] Resolve pipeline schedules into normalized trigger schedule structs in `ctx.pipeline.schedule`
 - [x] Configurable scheduler default timezone (`config :favn, scheduler: [default_timezone: ...]`)
+- [x] Validate cron expressions and timezone identifiers during schedule authoring
 - [x] Make pipeline/config/trigger context available through `ctx`
 - [x] Internal module namespacing for asset internals (`Favn.Assets.Registry`, `Favn.Assets.GraphIndex`, `Favn.Assets.Planner`)
 - [x] Stable operator actions: run, cancel, rerun
@@ -295,7 +296,6 @@ The following decisions are source-of-truth for the first v0.3 pipeline foundati
 
 - [ ] API-triggered execution
 - [ ] Cron/schedule runtime engine
-- [ ] Cron parser/runtime validation hardening (strict expression + timezone validation)
 - [ ] Schedule missed-run runtime semantics (`missed: :one | :all`)
 - [ ] Schedule overlap runtime semantics (`overlap: :allow | :queue_one`)
 - [ ] Schedule `catchup_limit` option

@@ -433,7 +433,22 @@ defmodule Favn.PipelineTest do
 
                      pipeline :invalid_schedule_timezone do
                        asset {#{inspect(SalesAssets)}, :sales_daily}
-                       schedule cron: "0 2 * * *", timezone: ""
+                       schedule cron: "0 2 * * *", timezone: "Mars/Phobos"
+                     end
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError,
+                 ~r/pipeline clause `schedule` is invalid: {:invalid_schedule_cron/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule InvalidScheduleCronShapePipeline do
+                     use Favn.Pipeline
+
+                     pipeline :invalid_schedule_cron_shape do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       schedule cron: "0 2 * *"
                      end
                    end
                    """)

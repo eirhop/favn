@@ -139,7 +139,9 @@ defmodule Favn.Triggers.Schedule do
   defp fetch_cron(opts) do
     case Keyword.fetch(opts, :cron) do
       {:ok, cron} when is_binary(cron) ->
-        if byte_size(String.trim(cron)) > 0 do
+        cron = String.trim(cron)
+
+        if byte_size(cron) > 0 and valid_cron_expression?(cron) do
           {:ok, cron}
         else
           {:error, {:invalid_schedule_cron, cron}}
@@ -156,14 +158,113 @@ defmodule Favn.Triggers.Schedule do
   defp validate_timezone(nil), do: {:ok, nil}
 
   defp validate_timezone(timezone) when is_binary(timezone) do
-    if String.trim(timezone) == "" do
+    timezone = String.trim(timezone)
+
+    if timezone == "" do
       {:error, {:invalid_schedule_timezone, timezone}}
     else
-      {:ok, timezone}
+      if valid_timezone_identifier?(timezone) do
+        {:ok, timezone}
+      else
+        {:error, {:invalid_schedule_timezone, timezone}}
+      end
     end
   end
 
   defp validate_timezone(other), do: {:error, {:invalid_schedule_timezone, other}}
+
+  defp valid_cron_expression?(value) when is_binary(value) do
+    case String.split(value, ~r/\s+/, trim: true) do
+      [minute, hour, day, month, weekday] ->
+        cron_field_valid?(minute, 0, 59) and
+          cron_field_valid?(hour, 0, 23) and
+          cron_field_valid?(day, 1, 31) and
+          cron_field_valid?(month, 1, 12) and
+          cron_field_valid?(weekday, 0, 7)
+
+      _other ->
+        false
+    end
+  end
+
+  defp cron_field_valid?(field, min, max) when is_binary(field) do
+    field
+    |> String.split(",", trim: true)
+    |> Enum.all?(fn token -> cron_token_valid?(token, min, max) end)
+  end
+
+  defp cron_token_valid?("*", _min, _max), do: true
+
+  defp cron_token_valid?(token, min, max) do
+    case String.split(token, "/", parts: 2) do
+      [base] ->
+        cron_base_valid?(base, min, max)
+
+      [base, step] ->
+        cron_base_valid?(base, min, max) and positive_int?(step)
+
+      _ ->
+        false
+    end
+  end
+
+  defp cron_base_valid?("*", _min, _max), do: true
+
+  defp cron_base_valid?(base, min, max) do
+    case String.split(base, "-", parts: 2) do
+      [single] ->
+        cron_number_in_range?(single, min, max)
+
+      [from, to] ->
+        case {parse_int(from), parse_int(to)} do
+          {{:ok, left}, {:ok, right}} when left <= right and left >= min and right <= max ->
+            true
+
+          _ ->
+            false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp cron_number_in_range?(value, min, max) do
+    case parse_int(value) do
+      {:ok, int} -> int >= min and int <= max
+      :error -> false
+    end
+  end
+
+  defp positive_int?(value) do
+    case parse_int(value) do
+      {:ok, int} -> int > 0
+      :error -> false
+    end
+  end
+
+  defp parse_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> {:ok, int}
+      _ -> :error
+    end
+  end
+
+  defp valid_timezone_identifier?(timezone) when is_binary(timezone) do
+    not String.contains?(timezone, "..") and
+      not String.starts_with?(timezone, "/") and
+      Enum.any?(zoneinfo_roots(), fn root ->
+        root
+        |> Path.join(timezone)
+        |> File.regular?()
+      end)
+  end
+
+  defp zoneinfo_roots do
+    ["/usr/share/zoneinfo", "/usr/share/lib/zoneinfo", "/etc/zoneinfo"]
+    |> Enum.uniq()
+    |> Enum.filter(&File.dir?/1)
+  end
 
   defp validate_missed(value) when value in [:skip, :one, :all], do: {:ok, value}
   defp validate_missed(other), do: {:error, {:invalid_schedule_missed, other}}

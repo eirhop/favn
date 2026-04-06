@@ -230,6 +230,11 @@ Pipeline schedule references use explicit refs:
 - `schedule {MyApp.Schedules, :daily_oslo}`
 - `schedule cron: "0 2 * * *", timezone: "Europe/Oslo", missed: :skip, overlap: :forbid`
 
+Schedule DSL validation is strict at authoring time:
+
+- cron must be a valid 5-field cron expression
+- timezone must be a known zoneinfo identifier
+
 Deferred from the first v0.3 pipeline foundation PR:
 
 - schedule/polling runtime engines

@@ -74,7 +74,7 @@ defmodule Favn.TriggersSchedulesTest do
       defmodule InvalidScheduleTimezone do
         use Favn.Triggers.Schedules
 
-        schedule :daily, cron: "0 2 * * *", timezone: ""
+        schedule :daily, cron: "0 2 * * *", timezone: "Mars/Phobos"
       end
       """)
     end
