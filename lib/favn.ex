@@ -829,7 +829,8 @@ defmodule Favn do
 
   Accepted options:
 
-    * `params: map()` runtime params exposed through `ctx.pipeline.params`
+    * `params: map()` runtime params (available on both `ctx.params` and
+      `ctx.pipeline.params` for pipeline-triggered runs)
     * `trigger: map()` trigger metadata exposed through `ctx.pipeline.trigger`
     * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run/2`)
   """

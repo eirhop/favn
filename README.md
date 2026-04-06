@@ -213,6 +213,9 @@ Selection authoring supports both:
 - shorthand (`asset` / `assets`) for common cases
 - `select do ... end` for flexible selection (module/tag/category/ref style criteria)
 
+Inside `select do ... end`, selectors are additive (union-based), not intersection-based.
+That means each selector contributes refs to one combined target set before dedupe/sort.
+
 A pipeline definition should use either shorthand selection or `select`, but not both in the same definition.
 
 Deferred from the first v0.3 pipeline foundation PR:
@@ -233,6 +236,7 @@ The first v0.3 implementation adds manual pipeline planning/runs:
 - `Favn.run_pipeline(MyApp.Pipelines.DailySales, params: %{requested_by: "operator"})`
 
 Assets can read pipeline-aware fields from `ctx.pipeline` during pipeline-triggered runs (for example pipeline identity, config, trigger metadata, and runtime params).
+`ctx.params` remains the generic run params map, while `ctx.pipeline.params` exposes the pipeline-trigger params/provenance payload.
 
 ## Roadmap and release focus
 

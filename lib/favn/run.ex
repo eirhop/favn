@@ -15,6 +15,7 @@ defmodule Favn.Run do
           id: String.t(),
           target_refs: [Ref.t()],
           plan: Favn.Plan.t(),
+          pipeline: map() | nil,
           status: status(),
           event_seq: non_neg_integer(),
           started_at: DateTime.t(),
@@ -38,6 +39,7 @@ defmodule Favn.Run do
     retry_policy: %{},
     asset_results: %{},
     error: nil,
-    terminal_reason: nil
+    terminal_reason: nil,
+    pipeline: nil
   ]
 end

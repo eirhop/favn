@@ -13,6 +13,7 @@ defmodule Favn.Runtime.Projector do
       id: state.run_id,
       target_refs: state.target_refs,
       plan: state.plan,
+      pipeline: public_pipeline(state.pipeline_context),
       status: public_status(state.run_status),
       event_seq: state.event_seq,
       started_at: state.started_at,
@@ -22,6 +23,20 @@ defmodule Favn.Runtime.Projector do
       asset_results: build_asset_results(state),
       error: state.run_error,
       terminal_reason: state.run_terminal_reason
+    }
+  end
+
+  defp public_pipeline(nil), do: nil
+
+  defp public_pipeline(pipeline_context) when is_map(pipeline_context) do
+    %{
+      id: Map.get(pipeline_context, :id),
+      name: Map.get(pipeline_context, :name),
+      trigger: Map.get(pipeline_context, :trigger),
+      schedule: Map.get(pipeline_context, :schedule),
+      partition: Map.get(pipeline_context, :partition),
+      source: Map.get(pipeline_context, :source),
+      outputs: Map.get(pipeline_context, :outputs, [])
     }
   end
 

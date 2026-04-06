@@ -4,6 +4,9 @@ defmodule Favn.Pipeline do
 
   This DSL defines orchestration composition only. Dependency planning is still
   delegated to the existing asset dependency planner.
+
+  Selector semantics in `select do ... end` are additive (union-based): each
+  selector contributes refs, then refs are deduplicated and sorted.
   """
 
   alias Favn.Pipeline.Definition
@@ -15,6 +18,7 @@ defmodule Favn.Pipeline do
       import Favn.Pipeline
 
       Module.register_attribute(__MODULE__, :favn_pipeline_name, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_declared, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_selectors, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_pipeline_selection_mode, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_deps, persist: false)
@@ -30,6 +34,12 @@ defmodule Favn.Pipeline do
   end
 
   defmacro pipeline(name, do: block) when is_atom(name) do
+    if Module.get_attribute(__CALLER__.module, :favn_pipeline_declared) do
+      raise ArgumentError, "pipeline can only be declared once per module"
+    end
+
+    Module.put_attribute(__CALLER__.module, :favn_pipeline_declared, true)
+
     quote do
       @favn_pipeline_name unquote(name)
       unquote(block)
@@ -37,44 +47,58 @@ defmodule Favn.Pipeline do
   end
 
   defmacro deps(mode) do
-    quote do
-      @favn_pipeline_deps unquote(mode)
+    quote bind_quoted: [mode: mode] do
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_deps, "deps")
+      Favn.Pipeline.validate_deps!(mode)
+      @favn_pipeline_deps mode
     end
   end
 
   defmacro config(opts) do
-    quote do
-      @favn_pipeline_config Map.new(unquote(opts))
+    quote bind_quoted: [opts: opts] do
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_config, "config")
+      Favn.Pipeline.validate_map_like_clause!(opts, "config")
+      @favn_pipeline_config Map.new(opts)
     end
   end
 
   defmacro meta(opts) do
-    quote do
-      @favn_pipeline_meta Map.new(unquote(opts))
+    quote bind_quoted: [opts: opts] do
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_meta, "meta")
+      Favn.Pipeline.validate_map_like_clause!(opts, "meta")
+      @favn_pipeline_meta Map.new(opts)
     end
   end
 
   defmacro schedule(name) do
-    quote do
-      @favn_pipeline_schedule unquote(name)
+    quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_schedule, "schedule")
+      Favn.Pipeline.validate_atom_clause!(name, "schedule")
+      @favn_pipeline_schedule name
     end
   end
 
   defmacro partition(name) do
-    quote do
-      @favn_pipeline_partition unquote(name)
+    quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_partition, "partition")
+      Favn.Pipeline.validate_atom_clause!(name, "partition")
+      @favn_pipeline_partition name
     end
   end
 
   defmacro source(name) do
-    quote do
-      @favn_pipeline_source unquote(name)
+    quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_source, "source")
+      Favn.Pipeline.validate_atom_clause!(name, "source")
+      @favn_pipeline_source name
     end
   end
 
   defmacro outputs(value) do
-    quote do
-      @favn_pipeline_outputs unquote(value)
+    quote bind_quoted: [value: value] do
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_outputs, "outputs")
+      Favn.Pipeline.validate_outputs!(value)
+      @favn_pipeline_outputs value
     end
   end
 
@@ -185,4 +209,43 @@ defmodule Favn.Pipeline do
   end
 
   def fetch(_invalid), do: {:error, :not_pipeline_module}
+
+  @doc false
+  def ensure_singleton_clause!(module, attribute, label) do
+    if Module.get_attribute(module, attribute) != nil do
+      raise ArgumentError, "pipeline clause `#{label}` can only be declared once"
+    end
+  end
+
+  @doc false
+  def validate_deps!(mode) do
+    if mode in [:all, :none], do: :ok, else: raise(ArgumentError, "deps must be :all or :none")
+  end
+
+  @doc false
+  def validate_atom_clause!(value, label) do
+    if is_atom(value) do
+      :ok
+    else
+      raise ArgumentError, "pipeline clause `#{label}` must be an atom"
+    end
+  end
+
+  @doc false
+  def validate_map_like_clause!(value, label) do
+    if is_map(value) or Keyword.keyword?(value) do
+      :ok
+    else
+      raise ArgumentError, "pipeline clause `#{label}` must be a map or keyword list"
+    end
+  end
+
+  @doc false
+  def validate_outputs!(value) do
+    if is_list(value) and Enum.all?(value, &is_atom/1) do
+      :ok
+    else
+      raise ArgumentError, "pipeline clause `outputs` must be a list of atoms"
+    end
+  end
 end

@@ -1,6 +1,9 @@
 defmodule Favn.Pipeline.Resolver do
   @moduledoc """
   Resolve a code-defined pipeline to deterministic planner/runtime inputs.
+
+  Selector entries are additive (union-based). Each selector contributes refs,
+  then refs are deduplicated and sorted.
   """
 
   alias Favn.Pipeline.Definition
