@@ -1,4 +1,4 @@
-defmodule Favn.Planner do
+defmodule Favn.Assets.Planner do
   @moduledoc """
   Build deterministic execution plans from the global graph index.
 
@@ -12,7 +12,7 @@ defmodule Favn.Planner do
     * stage number equals topological depth (`0` for source assets)
   """
 
-  alias Favn.GraphIndex
+  alias Favn.Assets.GraphIndex
   alias Favn.Plan
   alias Favn.Ref
 

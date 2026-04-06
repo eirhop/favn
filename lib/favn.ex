@@ -474,7 +474,7 @@ defmodule Favn do
   """
   @spec list_assets() :: {:ok, [asset()]} | {:error, term()}
   def list_assets do
-    with {:ok, assets} <- Favn.Registry.list_assets() do
+    with {:ok, assets} <- Favn.Assets.Registry.list_assets() do
       {:ok, Enum.sort_by(assets, & &1.ref)}
     end
   end
@@ -528,7 +528,7 @@ defmodule Favn do
   @spec get_asset(asset_ref()) :: {:ok, asset()} | {:error, asset_error()}
   def get_asset({module, name}) when is_atom(module) and is_atom(name) do
     if asset_module?(module) do
-      with {:ok, asset} <- Favn.Registry.get_asset({module, name}) do
+      with {:ok, asset} <- Favn.Assets.Registry.get_asset({module, name}) do
         {:ok, asset}
       else
         {:error, {:duplicate_asset, _ref}} -> {:error, :asset_not_found}
@@ -542,7 +542,7 @@ defmodule Favn do
   @typedoc """
   Direction used by dependency graph inspection APIs.
   """
-  @type dependency_direction :: Favn.GraphIndex.direction()
+  @type dependency_direction :: Favn.Assets.GraphIndex.direction()
 
   @typedoc """
   Options for dependency graph inspection APIs.
@@ -575,7 +575,7 @@ defmodule Favn do
 
     * `{:ok, assets}` where each entry is `%Favn.Asset{}`
     * `{:error, :not_asset_module}` for invalid target modules
-    * graph/filter validation errors forwarded from `Favn.GraphIndex`
+    * graph/filter validation errors forwarded from `Favn.Assets.GraphIndex`
 
   ## Examples
 
@@ -587,7 +587,7 @@ defmodule Favn do
   def upstream_assets({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     if asset_module?(module) do
-      Favn.GraphIndex.related_assets(
+      Favn.Assets.GraphIndex.related_assets(
         {module, name},
         opts |> Keyword.put_new(:direction, :upstream) |> Keyword.put_new(:include_target, false)
       )
@@ -614,7 +614,7 @@ defmodule Favn do
 
     * `{:ok, assets}` where each entry is `%Favn.Asset{}`
     * `{:error, :not_asset_module}` for invalid target modules
-    * graph/filter validation errors forwarded from `Favn.GraphIndex`
+    * graph/filter validation errors forwarded from `Favn.Assets.GraphIndex`
 
   ## Examples
 
@@ -626,7 +626,7 @@ defmodule Favn do
   def downstream_assets({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     if asset_module?(module) do
-      Favn.GraphIndex.related_assets(
+      Favn.Assets.GraphIndex.related_assets(
         {module, name},
         Keyword.put_new(opts, :direction, :downstream)
       )
@@ -651,9 +651,9 @@ defmodule Favn do
 
   Returns:
 
-    * `{:ok, %Favn.GraphIndex{}}`
+    * `{:ok, %Favn.Assets.GraphIndex{}}`
     * `{:error, :not_asset_module}` for invalid target modules
-    * graph/filter validation errors forwarded from `Favn.GraphIndex`
+    * graph/filter validation errors forwarded from `Favn.Assets.GraphIndex`
 
   ## Examples
 
@@ -661,11 +661,11 @@ defmodule Favn do
       {:error, :not_asset_module}
   """
   @spec dependency_graph(asset_ref(), graph_opts()) ::
-          {:ok, Favn.GraphIndex.t()} | {:error, asset_error() | term()}
+          {:ok, Favn.Assets.GraphIndex.t()} | {:error, asset_error() | term()}
   def dependency_graph({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     if asset_module?(module) do
-      Favn.GraphIndex.subgraph({module, name}, opts)
+      Favn.Assets.GraphIndex.subgraph({module, name}, opts)
     else
       {:error, :not_asset_module}
     end
@@ -750,7 +750,7 @@ defmodule Favn do
   @spec plan_asset_run(asset_ref() | [asset_ref()], plan_asset_run_opts()) ::
           {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_asset_run(targets, opts \\ []) when is_list(opts) do
-    Favn.Planner.plan(targets, opts)
+    Favn.Assets.Planner.plan(targets, opts)
   end
 
   @doc """

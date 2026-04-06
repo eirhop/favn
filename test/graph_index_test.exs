@@ -1,4 +1,4 @@
-defmodule Favn.GraphIndexTest do
+defmodule Favn.Assets.GraphIndexTest do
   use ExUnit.Case
 
   alias Favn.Test.Fixtures.Assets.Graph.ReportingAssets
@@ -21,14 +21,15 @@ defmodule Favn.GraphIndexTest do
         reload_graph?: true
       )
 
-    assert {:ok, upstream} = Favn.GraphIndex.upstream_of({WarehouseAssets, :fact_sales})
+    assert {:ok, upstream} = Favn.Assets.GraphIndex.upstream_of({WarehouseAssets, :fact_sales})
 
     assert upstream == [
              {WarehouseAssets, :normalize_customers},
              {WarehouseAssets, :normalize_orders}
            ]
 
-    assert {:ok, downstream} = Favn.GraphIndex.downstream_of({WarehouseAssets, :normalize_orders})
+    assert {:ok, downstream} =
+             Favn.Assets.GraphIndex.downstream_of({WarehouseAssets, :normalize_orders})
 
     assert downstream == [
              {WarehouseAssets, :fact_sales},
@@ -36,7 +37,7 @@ defmodule Favn.GraphIndexTest do
            ]
 
     assert {:ok, transitive_upstream} =
-             Favn.GraphIndex.transitive_upstream_of({ReportingAssets, :dashboard})
+             Favn.Assets.GraphIndex.transitive_upstream_of({ReportingAssets, :dashboard})
 
     assert transitive_upstream == [
              {SourceAssets, :raw_customers},
@@ -47,7 +48,7 @@ defmodule Favn.GraphIndexTest do
            ]
 
     assert {:ok, transitive_downstream} =
-             Favn.GraphIndex.transitive_downstream_of({SourceAssets, :raw_orders})
+             Favn.Assets.GraphIndex.transitive_downstream_of({SourceAssets, :raw_orders})
 
     assert transitive_downstream == [
              {WarehouseAssets, :normalize_orders},
@@ -55,7 +56,7 @@ defmodule Favn.GraphIndexTest do
              {ReportingAssets, :dashboard}
            ]
 
-    assert {:ok, topo_order} = Favn.GraphIndex.topological_order()
+    assert {:ok, topo_order} = Favn.Assets.GraphIndex.topological_order()
 
     assert Enum.find_index(topo_order, &(&1 == {SourceAssets, :raw_orders})) <
              Enum.find_index(topo_order, &(&1 == {WarehouseAssets, :normalize_orders}))
@@ -71,7 +72,7 @@ defmodule Favn.GraphIndexTest do
       )
 
     assert {:ok, assets} =
-             Favn.GraphIndex.related_assets({ReportingAssets, :dashboard},
+             Favn.Assets.GraphIndex.related_assets({ReportingAssets, :dashboard},
                direction: :upstream,
                tags: [:warehouse]
              )
@@ -82,7 +83,7 @@ defmodule Favn.GraphIndexTest do
            ]
 
     assert {:ok, both_neighbors} =
-             Favn.GraphIndex.related_assets({WarehouseAssets, :normalize_orders},
+             Favn.Assets.GraphIndex.related_assets({WarehouseAssets, :normalize_orders},
                direction: :both,
                transitive: false,
                include_target: false
@@ -102,7 +103,7 @@ defmodule Favn.GraphIndexTest do
       )
 
     assert {:ok, subgraph} =
-             Favn.GraphIndex.subgraph({ReportingAssets, :dashboard},
+             Favn.Assets.GraphIndex.subgraph({ReportingAssets, :dashboard},
                direction: :upstream,
                tags: [:warehouse]
              )
@@ -127,24 +128,32 @@ defmodule Favn.GraphIndexTest do
       )
 
     assert {:error, :invalid_opts} =
-             Favn.GraphIndex.related_assets({ReportingAssets, :dashboard}, direction: :sideways)
+             Favn.Assets.GraphIndex.related_assets({ReportingAssets, :dashboard},
+               direction: :sideways
+             )
 
     assert {:error, :invalid_opts} =
-             Favn.GraphIndex.related_assets({ReportingAssets, :dashboard}, transitive: :yes)
+             Favn.Assets.GraphIndex.related_assets({ReportingAssets, :dashboard},
+               transitive: :yes
+             )
 
     assert {:error, :invalid_opts} =
-             Favn.GraphIndex.related_assets({ReportingAssets, :dashboard}, include_target: 1)
+             Favn.Assets.GraphIndex.related_assets({ReportingAssets, :dashboard},
+               include_target: 1
+             )
 
     assert {:error, :invalid_opts} =
-             Favn.GraphIndex.related_assets({ReportingAssets, :dashboard}, tags: :warehouse)
+             Favn.Assets.GraphIndex.related_assets({ReportingAssets, :dashboard},
+               tags: :warehouse
+             )
 
     assert {:error, :invalid_opts} =
-             Favn.GraphIndex.related_assets({ReportingAssets, :dashboard},
+             Favn.Assets.GraphIndex.related_assets({ReportingAssets, :dashboard},
                modules: ReportingAssets
              )
 
     assert {:error, :invalid_opts} =
-             Favn.GraphIndex.subgraph({ReportingAssets, :dashboard}, names: :dashboard)
+             Favn.Assets.GraphIndex.subgraph({ReportingAssets, :dashboard}, names: :dashboard)
   end
 
   test "reports missing dependencies during graph construction" do
@@ -161,7 +170,7 @@ defmodule Favn.GraphIndexTest do
     assert {:error,
             {:missing_dependency, {__MODULE__, :missing_dependency},
              {__MODULE__, :does_not_exist}}} =
-             Favn.GraphIndex.build_index([missing])
+             Favn.Assets.GraphIndex.build_index([missing])
   end
 
   test "rejects cycles during graph construction" do
@@ -185,7 +194,7 @@ defmodule Favn.GraphIndexTest do
       depends_on: [{__MODULE__, :a}]
     }
 
-    assert {:error, {:cycle, cycle}} = Favn.GraphIndex.build_index([a, b])
+    assert {:error, {:cycle, cycle}} = Favn.Assets.GraphIndex.build_index([a, b])
     assert cycle == [{__MODULE__, :a}, {__MODULE__, :b}, {__MODULE__, :a}]
   end
 end

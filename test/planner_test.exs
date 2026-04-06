@@ -1,4 +1,4 @@
-defmodule Favn.PlannerTest do
+defmodule Favn.Assets.PlannerTest do
   use ExUnit.Case
 
   alias Favn.Test.Fixtures.Assets.Graph.BronzeAssets

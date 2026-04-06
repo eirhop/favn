@@ -102,7 +102,11 @@ defmodule FavnTest do
 
   test "build_catalog preserves deterministic asset order across module merges" do
     assert {:ok, catalog} =
-             Favn.Registry.build_catalog([SampleAssets, CrossModuleAssets, AdditionalAssets])
+             Favn.Assets.Registry.build_catalog([
+               SampleAssets,
+               CrossModuleAssets,
+               AdditionalAssets
+             ])
 
     assert Enum.map(catalog.assets, & &1.ref) == [
              {SampleAssets, :extract_orders},
@@ -177,14 +181,14 @@ defmodule FavnTest do
     assert {:error, :not_asset_module} = Favn.list_assets(SpoofedAssets)
     Application.put_env(:favn, :asset_modules, [SpoofedAssets])
 
-    assert {:error, {:invalid_asset_module, SpoofedAssets}} = Favn.Registry.reload()
+    assert {:error, {:invalid_asset_module, SpoofedAssets}} = Favn.Assets.Registry.reload()
     assert {:error, :not_asset_module} = Favn.get_asset({SpoofedAssets, :normalize_orders})
   end
 
   test "reports invalid globally configured modules" do
     Application.put_env(:favn, :asset_modules, [SampleAssets, Enum])
 
-    assert {:error, {:invalid_asset_module, Enum}} = Favn.Registry.reload()
+    assert {:error, {:invalid_asset_module, Enum}} = Favn.Assets.Registry.reload()
   end
 
   test "reads from the startup-loaded cache until the registry is reloaded" do
@@ -205,7 +209,7 @@ defmodule FavnTest do
              {SampleAssets, :normalize_orders}
            ]
 
-    assert :ok = Favn.Registry.reload()
+    assert :ok = Favn.Assets.Registry.reload()
     assert {:ok, reloaded_assets} = Favn.list_assets()
 
     assert Enum.map(reloaded_assets, & &1.ref) == [
