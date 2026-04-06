@@ -19,6 +19,7 @@ defmodule Favn.Pipeline do
 
       Module.register_attribute(__MODULE__, :favn_pipeline_name, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_declared, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_block_open, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_selectors, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_pipeline_selection_mode, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_deps, persist: false)
@@ -42,12 +43,15 @@ defmodule Favn.Pipeline do
 
     quote do
       @favn_pipeline_name unquote(name)
+      Module.put_attribute(__MODULE__, :favn_pipeline_block_open, true)
       unquote(block)
+      Module.put_attribute(__MODULE__, :favn_pipeline_block_open, false)
     end
   end
 
   defmacro deps(mode) do
     quote bind_quoted: [mode: mode] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "deps")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_deps, "deps")
       Favn.Pipeline.validate_deps!(mode)
       @favn_pipeline_deps mode
@@ -56,6 +60,7 @@ defmodule Favn.Pipeline do
 
   defmacro config(opts) do
     quote bind_quoted: [opts: opts] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "config")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_config, "config")
       Favn.Pipeline.validate_map_like_clause!(opts, "config")
       @favn_pipeline_config Map.new(opts)
@@ -64,6 +69,7 @@ defmodule Favn.Pipeline do
 
   defmacro meta(opts) do
     quote bind_quoted: [opts: opts] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "meta")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_meta, "meta")
       Favn.Pipeline.validate_map_like_clause!(opts, "meta")
       @favn_pipeline_meta Map.new(opts)
@@ -72,6 +78,7 @@ defmodule Favn.Pipeline do
 
   defmacro schedule(name) do
     quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "schedule")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_schedule, "schedule")
       Favn.Pipeline.validate_atom_clause!(name, "schedule")
       @favn_pipeline_schedule name
@@ -80,6 +87,7 @@ defmodule Favn.Pipeline do
 
   defmacro partition(name) do
     quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "partition")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_partition, "partition")
       Favn.Pipeline.validate_atom_clause!(name, "partition")
       @favn_pipeline_partition name
@@ -88,6 +96,7 @@ defmodule Favn.Pipeline do
 
   defmacro source(name) do
     quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "source")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_source, "source")
       Favn.Pipeline.validate_atom_clause!(name, "source")
       @favn_pipeline_source name
@@ -96,6 +105,7 @@ defmodule Favn.Pipeline do
 
   defmacro outputs(value) do
     quote bind_quoted: [value: value] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "outputs")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_outputs, "outputs")
       Favn.Pipeline.validate_outputs!(value)
       @favn_pipeline_outputs value
@@ -104,6 +114,7 @@ defmodule Favn.Pipeline do
 
   defmacro asset(ref) do
     quote bind_quoted: [ref: ref] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "asset")
       current_mode = Module.get_attribute(__MODULE__, :favn_pipeline_selection_mode)
 
       if current_mode in [nil, :shorthand] do
@@ -117,6 +128,7 @@ defmodule Favn.Pipeline do
 
   defmacro assets(refs) do
     quote bind_quoted: [refs: refs] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "assets")
       current_mode = Module.get_attribute(__MODULE__, :favn_pipeline_selection_mode)
 
       if current_mode in [nil, :shorthand] do
@@ -135,6 +147,7 @@ defmodule Favn.Pipeline do
     selectors = __extract_selectors__(block)
 
     quote bind_quoted: [selectors: selectors] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "select")
       current_mode = Module.get_attribute(__MODULE__, :favn_pipeline_selection_mode)
 
       if current_mode in [nil, :select] do
@@ -220,6 +233,15 @@ defmodule Favn.Pipeline do
   def ensure_singleton_clause!(module, attribute, label) do
     if Module.get_attribute(module, attribute) != nil do
       raise ArgumentError, "pipeline clause `#{label}` can only be declared once"
+    end
+  end
+
+  @doc false
+  def ensure_in_pipeline_block!(module, label) do
+    if Module.get_attribute(module, :favn_pipeline_block_open) do
+      :ok
+    else
+      raise ArgumentError, "pipeline clause `#{label}` must be declared inside `pipeline ... do`"
     end
   end
 

@@ -53,7 +53,7 @@ defmodule Favn.Runtime.Manager do
          :ok <- validate_max_concurrency(max_concurrency),
          :ok <- validate_timeout_ms(timeout_ms),
          {:ok, retry_policy} <- validate_retry_policy(retry_policy),
-         {:ok, plan} <- Favn.plan_run(target_refs, dependencies: dependencies),
+         {:ok, plan} <- Favn.plan_asset_run(target_refs, dependencies: dependencies),
          runtime_state <-
            build_runtime_state(
              plan,

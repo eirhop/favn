@@ -187,9 +187,9 @@ defmodule Favn.PipelineTest do
     assert stored_run.pipeline.outputs == [:warehouse_gold]
   end
 
-  test "plain run/2 cannot inject pipeline provenance via public :pipeline option" do
+  test "plain run_asset/2 cannot inject pipeline provenance via public :pipeline option" do
     assert {:ok, run_id} =
-             Favn.run({SalesAssets, :sales_daily},
+             Favn.run_asset({SalesAssets, :sales_daily},
                dependencies: :none,
                pipeline: %{id: :spoofed, trigger: %{kind: :spoofed}}
              )
@@ -365,6 +365,22 @@ defmodule Favn.PipelineTest do
       Code.compile_string("""
       defmodule MissingPipelineBlock do
         use Favn.Pipeline
+      end
+      """)
+    end
+  end
+
+  test "pipeline clauses must be declared inside pipeline block" do
+    assert_raise ArgumentError, ~r/must be declared inside `pipeline ... do`/, fn ->
+      Code.compile_string("""
+      defmodule ClauseOutsidePipeline do
+        use Favn.Pipeline
+
+        asset {#{inspect(SalesAssets)}, :sales_daily}
+
+        pipeline :ok do
+          deps :none
+        end
       end
       """)
     end

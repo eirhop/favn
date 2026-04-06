@@ -160,9 +160,9 @@ defmodule Favn do
 
       Favn.dependency_graph({MyApp.GoldETL, :fact_sales}, tags: [:warehouse])
 
-      Favn.run({MyApp.GoldETL, :fact_sales})
+      Favn.run_asset({MyApp.GoldETL, :fact_sales})
 
-      Favn.run({MyApp.GoldETL, :fact_sales}, dependencies: :none)
+      Favn.run_asset({MyApp.GoldETL, :fact_sales}, dependencies: :none)
 
       Favn.plan_pipeline(MyApp.Pipelines.DailySales)
 
@@ -354,7 +354,7 @@ defmodule Favn do
   @type run_id :: term()
 
   @typedoc """
-  Dependency execution mode for `run/2`.
+  Dependency execution mode for `run_asset/2`.
 
     * `:all` - run the target asset and all of its upstream dependencies
     * `:none` - run only the requested target asset
@@ -397,7 +397,7 @@ defmodule Favn do
   @type retry_class :: :exception | :exit | :throw | :timeout | :executor_error | :error_return
 
   @typedoc """
-  Retry policy for `run/2`.
+  Retry policy for `run_asset/2`.
 
     * `max_attempts` includes the first attempt
     * `delay_ms` is a fixed delay between attempts
@@ -410,7 +410,7 @@ defmodule Favn do
         ]
 
   @typedoc """
-  Options for `run/2`.
+  Options for `run_asset/2`.
   """
   @type run_opts :: [
           dependencies: dependencies_mode(),
@@ -440,9 +440,9 @@ defmodule Favn do
         ]
 
   @typedoc """
-  Options for `plan_run/2`.
+  Options for `plan_asset_run/2`.
   """
-  @type plan_run_opts :: [
+  @type plan_asset_run_opts :: [
           dependencies: dependencies_mode()
         ]
 
@@ -714,10 +714,10 @@ defmodule Favn do
 
   ## Examples
 
-      iex> Favn.plan_run({Unknown.Module, :fact_sales})
+      iex> Favn.plan_asset_run({Unknown.Module, :fact_sales})
       {:error, :asset_not_found}
 
-      iex> Favn.plan_run([])
+      iex> Favn.plan_asset_run([])
       {:error, :empty_targets}
 
   ## Output shape
@@ -746,9 +746,9 @@ defmodule Favn do
         }
       }
   """
-  @spec plan_run(asset_ref() | [asset_ref()], plan_run_opts()) ::
+  @spec plan_asset_run(asset_ref() | [asset_ref()], plan_asset_run_opts()) ::
           {:ok, Favn.Plan.t()} | {:error, term()}
-  def plan_run(targets, opts \\ []) when is_list(opts) do
+  def plan_asset_run(targets, opts \\ []) when is_list(opts) do
     Favn.Planner.plan(targets, opts)
   end
 
@@ -756,7 +756,7 @@ defmodule Favn do
   Resolve and plan a code-defined pipeline.
 
   Pipelines are a composition layer. This API resolves pipeline selectors to
-  deterministic target refs and then delegates graph planning to `plan_run/2`.
+  deterministic target refs and then delegates graph planning to `plan_asset_run/2`.
   """
   @spec plan_pipeline(pipeline_module(), keyword()) :: {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_pipeline(pipeline_module, opts \\ [])
@@ -764,13 +764,16 @@ defmodule Favn do
     with {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
          {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts),
          {:ok, plan} <-
-           Favn.plan_run(resolution.target_refs, dependencies: resolution.dependencies) do
+           Favn.plan_asset_run(resolution.target_refs, dependencies: resolution.dependencies) do
       {:ok, plan}
     end
   end
 
   @doc """
   Submit an asynchronous run for the given asset.
+
+  This is the low-level asset execution primitive.
+  For operator-facing execution, prefer `run_pipeline/2`.
 
   Accepted input:
 
@@ -807,7 +810,7 @@ defmodule Favn do
 
   ## Examples
 
-      iex> Favn.run({Unknown.Module, :fact_sales})
+      iex> Favn.run_asset({Unknown.Module, :fact_sales})
       {:error, :asset_not_found}
 
   Returns:
@@ -815,8 +818,8 @@ defmodule Favn do
     * `{:ok, run_id}` when submission succeeds
     * `{:error, reason}` for validation/planning/storage submission failures
   """
-  @spec run(asset_ref(), run_opts()) :: {:ok, run_id()} | {:error, term()}
-  def run({module, name}, opts \\ [])
+  @spec run_asset(asset_ref(), run_opts()) :: {:ok, run_id()} | {:error, term()}
+  def run_asset({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     Favn.Runtime.Engine.submit_run({module, name}, opts)
   end
@@ -827,12 +830,16 @@ defmodule Favn do
   Pipeline selection resolves target refs and then delegates dependency planning
   to the existing planner/runtime execution flow.
 
+  This is the primary operator-facing execution entrypoint.
+  In production flows where source/output/schedule/partition context matters,
+  prefer `run_pipeline/2` over direct `run_asset/2`.
+
   Accepted options:
 
     * `params: map()` runtime params (available on both `ctx.params` and
       `ctx.pipeline.params` for pipeline-triggered runs)
     * `trigger: map()` trigger metadata exposed through `ctx.pipeline.trigger`
-    * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run/2`)
+    * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run_asset/2`)
   """
   @spec run_pipeline(pipeline_module(), run_pipeline_opts()) ::
           {:ok, run_id()} | {:error, term()}

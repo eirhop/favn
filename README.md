@@ -78,7 +78,7 @@ config :favn,
 
 ```elixir
 # from your app runtime / iex
-{:ok, run_id} = Favn.run({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
+{:ok, run_id} = Favn.run_asset({MyApp.SalesAssets, :build_daily_report}, dependencies: :all)
 {:ok, run} = Favn.await_run(run_id)
 ```
 
@@ -148,7 +148,7 @@ SQLite ordering notes:
 ## Current limitations
 
 - The default run store is node-local in-memory storage.
-- Public run execution is asynchronous by default (`Favn.run/2` returns a run id).
+- Public run execution is asynchronous by default (`Favn.run_asset/2` returns a run id).
 - Independent ready steps execute in parallel within a run, bounded by `max_concurrency`.
 - Run events are best-effort pubsub notifications.
 
@@ -156,13 +156,13 @@ SQLite ordering notes:
 
 - **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator with bounded parallel step dispatch per run.
 - **Run lifecycle**: runtime orchestration now uses explicit internal run and step state machines; public run status includes `:running | :ok | :error | :cancelled | :timed_out`.
-- **Step retries**: failed steps can be retried with deterministic step-level policy (`retry` option on `Favn.run/2`) without restarting the run.
+- **Step retries**: failed steps can be retried with deterministic step-level policy (`retry` option on `Favn.run_asset/2`) without restarting the run.
 - **Execution boundary**: one-step asset invocation is isolated behind an asynchronous runtime executor boundary.
 - **Storage facade contract**: run retrieval/listing APIs normalize storage failures to one of:
   - `:not_found`
   - `:invalid_opts`
   - `{:store_error, reason}`
-- **Checkpoint persistence policy**: runtime checkpoints are required; if snapshot persistence fails, `Favn.run/2` returns `{:error, {:storage_persist_failed, reason}}`.
+- **Checkpoint persistence policy**: runtime checkpoints are required; if snapshot persistence fails, `Favn.run_asset/2` returns `{:error, {:storage_persist_failed, reason}}`.
 - **Event delivery**: run events are published as best-effort observability signals and do not affect run correctness.
 - **Internal telemetry**: runtime boundaries emit machine-oriented `:telemetry` events under `[:favn, :runtime, ...]` for operators and future external exporters.
 - **Logger correlation metadata**: runtime coordinator/executor processes attach lightweight metadata (`run_id`, `ref`, `stage`, `attempt`) for human diagnostics without treating logs as telemetry.
@@ -170,7 +170,7 @@ SQLite ordering notes:
 ## Guarantees in this release
 
 - **Run lifecycle semantics**
-  - `Favn.run/2` returns `{:ok, run_id}` when a run is submitted.
+  - `Favn.run_asset/2` returns `{:ok, run_id}` when a run is submitted.
   - Step admission order is deterministic for equally-ready refs; completion order is naturally non-deterministic under parallel execution.
   - `Favn.cancel_run/1` requests cancellation and returns a cancellation acknowledgement tuple.
   - `Favn.await_run/2` returns `{:ok, %Favn.Run{status: :ok}}` on success or `{:error, %Favn.Run{status: :error | :cancelled | :timed_out}}` on non-success terminal outcomes.
@@ -234,6 +234,12 @@ The first v0.3 implementation adds manual pipeline planning/runs:
 
 - `Favn.plan_pipeline(MyApp.Pipelines.DailySales)`
 - `Favn.run_pipeline(MyApp.Pipelines.DailySales, params: %{requested_by: "operator"})`
+
+Execution model guidance:
+
+- `run_pipeline/2` is the primary operator-facing execution entrypoint.
+- `run_asset/2` is a lower-level primitive for simple assets, tests, debugging, and development flows.
+- In operator workflows, prefer selecting/running a pipeline (and narrow to a single asset with `deps: :none` when needed).
 
 Assets can read pipeline-aware fields from `ctx.pipeline` during pipeline-triggered runs (for example pipeline identity, config, trigger metadata, and runtime params).
 `ctx.params` remains the generic run params map, while `ctx.pipeline.params` exposes the pipeline-trigger params/provenance payload.

@@ -22,7 +22,7 @@ defmodule Favn.PlannerTest do
 
   test "builds multi-target plans with shared dependency dedup and stage grouping" do
     assert {:ok, plan} =
-             Favn.plan_run([
+             Favn.plan_asset_run([
                {GoldAssets, :gold_sales},
                {GoldAssets, :gold_finance}
              ])
@@ -50,7 +50,7 @@ defmodule Favn.PlannerTest do
   end
 
   test "supports dependencies: :none for target-only planning" do
-    assert {:ok, plan} = Favn.plan_run({GoldAssets, :gold_sales}, dependencies: :none)
+    assert {:ok, plan} = Favn.plan_asset_run({GoldAssets, :gold_sales}, dependencies: :none)
 
     assert plan.topo_order == [{GoldAssets, :gold_sales}]
     assert plan.stages == [[{GoldAssets, :gold_sales}]]
@@ -58,17 +58,17 @@ defmodule Favn.PlannerTest do
   end
 
   test "returns errors for invalid planner input" do
-    assert {:error, :empty_targets} = Favn.plan_run([])
+    assert {:error, :empty_targets} = Favn.plan_asset_run([])
 
     assert {:error, {:invalid_dependencies_mode, :invalid}} =
-             Favn.plan_run({GoldAssets, :gold_sales}, dependencies: :invalid)
+             Favn.plan_asset_run({GoldAssets, :gold_sales}, dependencies: :invalid)
 
-    assert {:error, :asset_not_found} = Favn.plan_run({GoldAssets, :missing})
+    assert {:error, :asset_not_found} = Favn.plan_asset_run({GoldAssets, :missing})
   end
 
   test "normalizes duplicate targets into deterministic sorted order" do
     assert {:ok, plan} =
-             Favn.plan_run([
+             Favn.plan_asset_run([
                {GoldAssets, :gold_sales},
                {GoldAssets, :gold_finance},
                {GoldAssets, :gold_sales}
