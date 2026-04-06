@@ -250,19 +250,53 @@ This refactor PR should focus on contract cleanup only (no new orchestration fea
 
 Builds the first orchestration layer on top of the finalized v0.2 asset/runtime contract.
 
+### v0.3 decisions (approved April 6, 2026)
+
+The following decisions are source-of-truth for the first v0.3 pipeline foundation PR:
+
+- Pipeline is a composition/orchestration layer, not a second planning system.
+- Pipeline selection/resolution must hand final target refs to the existing dependency planner/runtime.
+- Initial public pipeline DSL is intentionally tiny and user-friendly:
+  - `asset`
+  - `assets`
+  - `select`
+  - `deps`
+  - `schedule`
+  - `partition`
+  - `source`
+  - `outputs`
+- Selection authoring supports shorthand (`asset` / `assets`) and flexible selection (`select do ... end`).
+- A pipeline definition must use either shorthand selection or `select`, but not both.
+- First v0.3 foundation PR scope is code-defined pipelines + manual pipeline execution + pipeline-aware `ctx`.
+- Scheduler/polling/API triggers and DB-managed installations are deferred from this first PR.
+- Initial v0.3 pipeline DSL starts with `asset`, `assets`, and `select` for selection.
+- A later version may introduce `where` for richer asset filtering/querying.
+- `where` is a filtering layer only and does not replace dependency-based graph planning.
+
 ### Features
 
-- [ ] Manual run trigger
-- [ ] API-triggered execution
-- [ ] Cron / schedule trigger
-- [ ] Polling trigger
-- [ ] Polling state / cursor tracking
-- [ ] Initial orchestration layer outside function attributes
-- [ ] Initial pipeline/configuration definition model
-- [ ] Make pipeline/config available through `ctx`
+- [x] `Favn.run_pipeline/2` manual pipeline trigger
+- [x] `Favn.plan_pipeline/2` pipeline planning API
+- [x] Initial code-defined tiny pipeline DSL (`asset`, `assets`, `select`, `deps`)
+- [x] Deterministic pipeline selector resolution (ref/module/tag/category)
+- [ ] Include/exclude filtering in pipeline resolution
+- [x] Initial orchestration layer outside function attributes
+- [x] Initial pipeline configuration definition model
+- [x] Make pipeline/config/trigger context available through `ctx`
 - [ ] Stable operator actions: run, cancel, rerun
-- [ ] Basic partition/runtime-window context support through `ctx`
-- [ ] Pass schedule/polling-derived runtime window into run context
+- [x] Basic partition/runtime-window slot in `ctx` (initially `nil` for manual runs)
+
+### Deferred after first v0.3 pipeline foundation PR
+
+- [ ] API-triggered execution
+- [ ] Cron/schedule runtime engine
+- [ ] Polling trigger runtime
+- [ ] Polling state/cursor tracking
+- [ ] Backfills
+- [ ] DB-managed pipeline installations/runtime overrides
+- [ ] Rich `where` clause filtering/query DSL
+- [ ] Source/output runtime binding behaviors
+- [ ] Multi-output runtime fan-out behavior
 
 ---
 
@@ -280,7 +314,11 @@ Expands the orchestration layer with freshness, pipeline composition, and instal
 - [ ] Graph composition across modules
 - [ ] Pipeline-level asset selection
 - [ ] Pipeline-level configuration/bindings
+- [ ] Reusable named orchestration components (`schedule`, `partition`, `source`, `output`) declared inline or by reference
+- [ ] Pipeline references to reusable orchestration component definitions
+- [ ] Future `where` clause for richer asset filtering/querying (filtering layer only; planner remains dependency-graph based)
 - [ ] Reusable asset graph installation inside an app
+- [ ] Code-defined pipeline templates + DB-managed mutable installations/runtime config
 - [ ] Support accessing pipeline-installed configuration through `ctx`
 - [ ] Keep pipeline model outside the function attribute DSL
 - [ ] Preserve asset graph clarity in UI and docs

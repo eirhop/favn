@@ -192,12 +192,54 @@ SQLite ordering notes:
 - Persistent storage guarantees beyond the configured adapter behavior (default adapter is in-memory and node-local).
 - Global concurrency fairness across runs and retries.
 
+## v0.3 pipeline DSL direction (foundation PR)
+
+The first v0.3 pipeline foundation slice keeps pipelines as a composition layer on top of the existing asset graph planner.
+
+- Pipelines are **not** a second graph/planning DSL.
+- Pipeline selection resolves to asset refs and then uses dependency-based planning.
+- Initial DSL is intentionally small and user-friendly:
+  - `asset`
+  - `assets`
+  - `select`
+  - `deps`
+  - `schedule`
+  - `partition`
+  - `source`
+  - `outputs`
+
+Selection authoring supports both:
+
+- shorthand (`asset` / `assets`) for common cases
+- `select do ... end` for flexible selection (module/tag/category/ref style criteria)
+
+A pipeline definition should use either shorthand selection or `select`, but not both in the same definition.
+
+Deferred from the first v0.3 pipeline foundation PR:
+
+- schedule/polling runtime engines
+- API-triggered execution surface
+- DB-managed pipeline installations/runtime overrides
+- source/output runtime binding behaviors
+- multi-output runtime fan-out behavior
+
+Planned later: a `where` clause for richer asset filtering/querying. `where` is intended as a filtering layer only and must not replace dependency-based graph planning.
+
+### Pipeline foundation API (v0.3)
+
+The first v0.3 implementation adds manual pipeline planning/runs:
+
+- `Favn.plan_pipeline(MyApp.Pipelines.DailySales)`
+- `Favn.run_pipeline(MyApp.Pipelines.DailySales, params: %{requested_by: "operator"})`
+
+Assets can read pipeline-aware fields from `ctx.pipeline` during pipeline-triggered runs (for example pipeline identity, config, trigger metadata, and runtime params).
+
 ## Roadmap and release focus
 
 - Add durable production-ready storage adapters with stronger operational guarantees.
 - Expand run query capabilities for richer operator UIs.
 - Improve event observability integrations (telemetry/export pipelines).
-- Land orchestration-layer fundamentals for v1 (manual/API triggers, schedule, polling, freshness-aware skips, and pipeline-installed runtime config via `ctx`).
+- Land orchestration-layer fundamentals for v1 (pipeline composition + manual execution first, then API/schedule/polling/freshness and installed runtime config via `ctx`).
 - Add release packaging/versioning via Hex.
 
 ## Installation

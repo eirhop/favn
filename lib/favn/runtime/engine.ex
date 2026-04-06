@@ -5,9 +5,10 @@ defmodule Favn.Runtime.Engine do
 
   @default_poll_interval_ms 50
 
-  @spec submit_run(Favn.asset_ref(), keyword()) :: {:ok, Favn.run_id()} | {:error, term()}
-  def submit_run(target_ref, opts \\ []) when is_list(opts) do
-    Favn.Runtime.Manager.submit_run(target_ref, opts)
+  @spec submit_run(Favn.asset_ref() | [Favn.asset_ref()], keyword()) ::
+          {:ok, Favn.run_id()} | {:error, term()}
+  def submit_run(target_refs, opts \\ []) when is_list(opts) do
+    Favn.Runtime.Manager.submit_run(target_refs, opts)
   end
 
   @spec cancel_run(Favn.run_id()) ::

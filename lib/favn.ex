@@ -55,6 +55,11 @@ defmodule Favn do
   asset is run, Favn can compute the dependency graph for the requested target and form the
   execution pipeline from that graph.
 
+  v0.3 introduces a small pipeline composition layer on top of this model for cases where users
+  want to select asset sets and attach orchestration configuration without redefining graph
+  planning rules. Pipeline selection still resolves to asset refs and then delegates dependency
+  planning to the existing planner.
+
   ### Runs
 
   A run is a single execution of a target asset.
@@ -158,6 +163,10 @@ defmodule Favn do
       Favn.run({MyApp.GoldETL, :fact_sales})
 
       Favn.run({MyApp.GoldETL, :fact_sales}, dependencies: :none)
+
+      Favn.plan_pipeline(MyApp.Pipelines.DailySales)
+
+      Favn.run_pipeline(MyApp.Pipelines.DailySales, params: %{requested_by: "operator"})
 
       Favn.get_run(run_id)
 
@@ -412,6 +421,17 @@ defmodule Favn do
         ]
 
   @typedoc """
+  Options for `run_pipeline/2`.
+  """
+  @type run_pipeline_opts :: [
+          params: map(),
+          trigger: map(),
+          max_concurrency: pos_integer(),
+          timeout_ms: pos_integer(),
+          retry: boolean() | retry_policy() | map()
+        ]
+
+  @typedoc """
   Options for `await_run/2`.
   """
   @type await_run_opts :: [
@@ -425,6 +445,11 @@ defmodule Favn do
   @type plan_run_opts :: [
           dependencies: dependencies_mode()
         ]
+
+  @typedoc """
+  Pipeline module that exposes `__favn_pipeline__/0`.
+  """
+  @type pipeline_module :: module()
 
   @doc """
   List all registered assets.
@@ -728,6 +753,23 @@ defmodule Favn do
   end
 
   @doc """
+  Resolve and plan a code-defined pipeline.
+
+  Pipelines are a composition layer. This API resolves pipeline selectors to
+  deterministic target refs and then delegates graph planning to `plan_run/2`.
+  """
+  @spec plan_pipeline(pipeline_module(), keyword()) :: {:ok, Favn.Plan.t()} | {:error, term()}
+  def plan_pipeline(pipeline_module, opts \\ [])
+      when is_atom(pipeline_module) and is_list(opts) do
+    with {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
+         {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts),
+         {:ok, plan} <-
+           Favn.plan_run(resolution.target_refs, dependencies: resolution.dependencies) do
+      {:ok, plan}
+    end
+  end
+
+  @doc """
   Submit an asynchronous run for the given asset.
 
   Accepted input:
@@ -777,6 +819,33 @@ defmodule Favn do
   def run({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     Favn.Runtime.Engine.submit_run({module, name}, opts)
+  end
+
+  @doc """
+  Submit an asynchronous manual run for a pipeline module.
+
+  Pipeline selection resolves target refs and then delegates dependency planning
+  to the existing planner/runtime execution flow.
+
+  Accepted options:
+
+    * `params: map()` runtime params exposed through `ctx.pipeline.params`
+    * `trigger: map()` trigger metadata exposed through `ctx.pipeline.trigger`
+    * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run/2`)
+  """
+  @spec run_pipeline(pipeline_module(), run_pipeline_opts()) ::
+          {:ok, run_id()} | {:error, term()}
+  def run_pipeline(pipeline_module, opts \\ [])
+      when is_atom(pipeline_module) and is_list(opts) do
+    with {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
+         {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts) do
+      run_opts =
+        opts
+        |> Keyword.put(:dependencies, resolution.dependencies)
+        |> Keyword.put(:pipeline, resolution.pipeline_ctx)
+
+      Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
+    end
   end
 
   @doc """

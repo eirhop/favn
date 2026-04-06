@@ -723,6 +723,7 @@ defmodule Favn.Runtime.Coordinator do
       target_refs: state.target_refs,
       current_ref: ref,
       params: state.params,
+      pipeline: state.pipeline_context,
       run_started_at: state.started_at,
       stage: step.stage,
       attempt: step.attempt,
