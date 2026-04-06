@@ -415,6 +415,7 @@ defmodule Favn do
   @type run_opts :: [
           dependencies: dependencies_mode(),
           params: map(),
+          pipeline_context: map(),
           max_concurrency: pos_integer(),
           timeout_ms: pos_integer(),
           retry: boolean() | retry_policy() | map()
@@ -781,6 +782,8 @@ defmodule Favn do
     * `opts`:
       * `dependencies: :all | :none` (default `:all`)
       * `params: map()` (default `%{}`)
+      * `pipeline_context: map()` optional manual pipeline provenance/context payload
+        projected to `ctx.pipeline` and persisted `%Favn.Run{}.pipeline`
       * `max_concurrency: pos_integer()` (default from runtime config, fallback `1`)
       * `timeout_ms: pos_integer()` timeout counted from run start
       * `retry: false | true | keyword() | map()` (default from app config, fallback disabled)
@@ -821,7 +824,7 @@ defmodule Favn do
   @spec run_asset(asset_ref(), run_opts()) :: {:ok, run_id()} | {:error, term()}
   def run_asset({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    Favn.Runtime.Engine.submit_run({module, name}, opts)
+    Favn.Runtime.Engine.submit_run({module, name}, normalize_pipeline_context_opt(opts))
   end
 
   @doc """
@@ -850,9 +853,20 @@ defmodule Favn do
       run_opts =
         opts
         |> Keyword.put(:dependencies, resolution.dependencies)
-        |> Keyword.put(:_pipeline_context, resolution.pipeline_ctx)
+        |> Keyword.put(:pipeline_context, resolution.pipeline_ctx)
+        |> normalize_pipeline_context_opt()
 
       Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
+    end
+  end
+
+  defp normalize_pipeline_context_opt(opts) when is_list(opts) do
+    case Keyword.fetch(opts, :pipeline_context) do
+      :error ->
+        opts
+
+      {:ok, context} ->
+        opts |> Keyword.delete(:pipeline_context) |> Keyword.put(:_pipeline_context, context)
     end
   end
 

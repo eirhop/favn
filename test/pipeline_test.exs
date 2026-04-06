@@ -187,22 +187,36 @@ defmodule Favn.PipelineTest do
     assert stored_run.pipeline.outputs == [:warehouse_gold]
   end
 
-  test "plain run_asset/2 cannot inject pipeline provenance via public :pipeline option" do
+  test "plain run_asset/2 supports explicit public pipeline_context injection" do
     assert {:ok, run_id} =
              Favn.run_asset({SalesAssets, :sales_daily},
                dependencies: :none,
-               pipeline: %{id: :spoofed, trigger: %{kind: :spoofed}}
+               pipeline_context: %{
+                 id: :manual_context,
+                 name: :manual_context,
+                 trigger: %{kind: :manual, requested_by: :api},
+                 schedule: :manual_schedule,
+                 partition: :manual_partition,
+                 source: :manual_source,
+                 outputs: [:manual_output]
+               }
              )
 
     assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
     assert run.status == :ok
-    assert run.pipeline == nil
+    assert run.pipeline.id == :manual_context
+    assert run.pipeline.trigger == %{kind: :manual, requested_by: :api}
+    assert run.pipeline.schedule == :manual_schedule
+    assert run.pipeline.partition == :manual_partition
+    assert run.pipeline.source == :manual_source
+    assert run.pipeline.outputs == [:manual_output]
 
     [ctx | _] =
       CtxRecorder.all()
       |> Enum.filter(&(&1.current_ref == {SalesAssets, :sales_daily}))
 
-    assert ctx.pipeline == nil
+    assert ctx.pipeline.id == :manual_context
+    assert ctx.pipeline.trigger == %{kind: :manual, requested_by: :api}
   end
 
   test "run_pipeline/2 injects pipeline context into asset ctx" do

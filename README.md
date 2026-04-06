@@ -240,6 +240,8 @@ Execution model guidance:
 - `run_pipeline/2` is the primary operator-facing execution entrypoint.
 - `run_asset/2` is a lower-level primitive for simple assets, tests, debugging, and development flows.
 - In operator workflows, prefer selecting/running a pipeline (and narrow to a single asset with `deps: :none` when needed).
+- `run_asset/2` can also take explicit manual pipeline provenance/context when needed:
+  `Favn.run_asset(ref, pipeline_context: %{...})`.
 
 Assets can read pipeline-aware fields from `ctx.pipeline` during pipeline-triggered runs (for example pipeline identity, config, trigger metadata, and runtime params).
 `ctx.params` remains the generic run params map, while `ctx.pipeline.params` exposes the pipeline-trigger params/provenance payload.
