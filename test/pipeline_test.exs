@@ -4,7 +4,11 @@ defmodule Favn.PipelineTest do
   alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
   alias Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
+  alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
   alias Favn.Test.Fixtures.Pipelines.AssetsShorthandPipeline
+  alias Favn.Test.Fixtures.Pipelines.RunnerFailingPipeline
+  alias Favn.Test.Fixtures.Pipelines.RunnerRetryPipeline
+  alias Favn.Test.Fixtures.Pipelines.RunnerSlowPipeline
   alias Favn.Test.Fixtures.Pipelines.SelectPipeline
   alias Favn.Test.Fixtures.Pipelines.SimplePipeline
   alias Favn.Test.Fixtures.Triggers.Schedules
@@ -19,7 +23,7 @@ defmodule Favn.PipelineTest do
     state = Favn.TestSetup.capture_state()
 
     :ok =
-      Favn.TestSetup.setup_asset_modules([SalesAssets, ReportingAssets],
+      Favn.TestSetup.setup_asset_modules([SalesAssets, ReportingAssets, RunnerAssets],
         reload_graph?: true
       )
 
@@ -99,8 +103,85 @@ defmodule Favn.PipelineTest do
     assert stored_run.pipeline.schedule.overlap == :forbid
     assert stored_run.pipeline.window == :calendar_day
     assert stored_run.pipeline.anchor_window == nil
+    assert stored_run.pipeline.resolved_refs == [{SalesAssets, :sales_daily}]
+    assert stored_run.pipeline.deps == :all
+    assert stored_run.pipeline.run_kind == :pipeline
     assert stored_run.pipeline.source == :snowflake_primary
     assert stored_run.pipeline.outputs == [:warehouse_gold]
+  end
+
+  test "run_pipeline/2 supports explicit anchor_window and projects it to ctx.pipeline" do
+    anchor =
+      Favn.Window.Anchor.new!(
+        :day,
+        DateTime.from_naive!(~N[2025-01-15 00:00:00], "Etc/UTC"),
+        DateTime.from_naive!(~N[2025-01-16 00:00:00], "Etc/UTC"),
+        timezone: "Etc/UTC"
+      )
+
+    assert {:ok, run_id} = Favn.run_pipeline(SimplePipeline, anchor_window: anchor)
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+    assert run.pipeline.anchor_window == anchor
+
+    [ctx | _] =
+      CtxRecorder.all()
+      |> Enum.filter(&(&1.current_ref == {SalesAssets, :sales_daily}))
+
+    assert ctx.pipeline.anchor_window == anchor
+  end
+
+  test "run_pipeline/2 with anchor_window drives windowed planning and execution" do
+    Code.compile_string("""
+    defmodule WindowedAnchorAssets do
+      use Favn.Assets
+
+      alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
+
+      @asset true
+      @window Favn.Window.daily()
+      def windowed_source(_ctx), do: :ok
+
+      @asset true
+      @window Favn.Window.daily()
+      @depends :windowed_source
+      def windowed_target(ctx) do
+        CtxRecorder.record(ctx)
+        :ok
+      end
+    end
+
+    defmodule WindowedAnchorPipeline do
+      use Favn.Pipeline
+
+      pipeline :windowed_anchor do
+        asset {WindowedAnchorAssets, :windowed_target}
+      end
+    end
+    """)
+
+    :ok = Favn.TestSetup.setup_asset_modules([WindowedAnchorAssets], reload_graph?: true)
+
+    anchor =
+      Favn.Window.Anchor.new!(
+        :day,
+        DateTime.from_naive!(~N[2025-01-20 00:00:00], "Etc/UTC"),
+        DateTime.from_naive!(~N[2025-01-21 00:00:00], "Etc/UTC"),
+        timezone: "Etc/UTC"
+      )
+
+    assert {:ok, run_id} = Favn.run_pipeline(WindowedAnchorPipeline, anchor_window: anchor)
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+
+    assert Enum.all?(run.plan.target_node_keys, fn {_ref, window_key} ->
+             not is_nil(window_key)
+           end)
+
+    [ctx | _] =
+      CtxRecorder.all()
+      |> Enum.filter(&(&1.current_ref == {WindowedAnchorAssets, :windowed_target}))
+
+    assert %Favn.Window.Runtime{} = ctx.window
+    assert ctx.pipeline.anchor_window == anchor
   end
 
   test "backfill_pipeline/2 submits one run over range-expanded deduplicated plan" do
@@ -256,6 +337,36 @@ defmodule Favn.PipelineTest do
     assert rerun_run.pipeline_context.params == %{requested_by: "operator"}
     assert rerun_run.pipeline_context.config == %{timezone: "UTC", notify: false}
     assert rerun_run.pipeline_context.meta == %{owner: "data-platform", domain: :sales}
+  end
+
+  test "run controls apply to pipeline runs: timeout, cancel, retry, and rerun" do
+    assert {:ok, timeout_run_id} = Favn.run_pipeline(RunnerSlowPipeline, timeout_ms: 10)
+    assert {:error, timeout_run} = Favn.await_run(timeout_run_id, timeout: 5_000)
+    assert timeout_run.status == :timed_out
+
+    assert {:ok, cancel_run_id} = Favn.run_pipeline(RunnerSlowPipeline)
+    assert {:ok, :cancelling} = Favn.cancel_run(cancel_run_id)
+    assert {:error, cancelled_run} = Favn.await_run(cancel_run_id, timeout: 5_000)
+    assert cancelled_run.status == :cancelled
+
+    assert {:ok, retry_run_id} =
+             Favn.run_pipeline(RunnerRetryPipeline,
+               retry: [max_attempts: 2, delay_ms: 0]
+             )
+
+    assert {:ok, retry_run} = Favn.await_run(retry_run_id, timeout: 5_000)
+    transient_ref = {RunnerAssets, :transient_then_ok}
+    assert length(retry_run.asset_results[transient_ref].attempts) == 2
+
+    assert {:ok, failing_run_id} = Favn.run_pipeline(RunnerFailingPipeline)
+    assert {:error, failing_run} = Favn.await_run(failing_run_id, timeout: 5_000)
+    assert failing_run.status == :error
+
+    assert {:ok, rerun_id} = Favn.rerun_run(failing_run_id, mode: :exact_replay)
+    assert {:error, rerun} = Favn.await_run(rerun_id, timeout: 5_000)
+    assert rerun.submit_kind == :rerun
+    assert rerun.replay_mode == :exact_replay
+    assert rerun.pipeline.resolved_refs == failing_run.pipeline.resolved_refs
   end
 
   test "pipeline DSL rejects mixing shorthand and select modes" do

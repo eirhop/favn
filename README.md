@@ -239,6 +239,9 @@ Runtime context now includes:
 
 - `ctx.window` (concrete execution window for the current node)
 - `ctx.pipeline.anchor_window` (run-level requested window intent)
+- `ctx.pipeline.run_kind` (`:pipeline` or `:pipeline_backfill`)
+- `ctx.pipeline.resolved_refs` (deterministic resolved target refs snapshot)
+- `ctx.pipeline.deps` (resolved dependency mode used for planning)
 
 ## Guarantees in this release
 

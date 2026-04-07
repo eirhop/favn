@@ -45,6 +45,9 @@ defmodule Favn.Runtime.Projector do
     %{
       id: Map.get(pipeline_context, :id),
       name: Map.get(pipeline_context, :name),
+      run_kind: Map.get(pipeline_context, :run_kind),
+      resolved_refs: Map.get(pipeline_context, :resolved_refs, []),
+      deps: Map.get(pipeline_context, :deps),
       trigger: Map.get(pipeline_context, :trigger),
       schedule: Map.get(pipeline_context, :schedule),
       window: Map.get(pipeline_context, :window),
