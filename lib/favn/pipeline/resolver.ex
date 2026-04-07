@@ -11,17 +11,23 @@ defmodule Favn.Pipeline.Resolver do
   alias Favn.Triggers.Schedule
   alias Favn.Triggers.Schedules
 
-  @type resolve_opts :: [params: map(), trigger: map()]
+  @type resolve_opts :: [
+          params: map(),
+          trigger: map(),
+          anchor_window: Favn.Window.Anchor.t() | nil
+        ]
 
   @spec resolve(Definition.t(), resolve_opts()) :: {:ok, Resolution.t()} | {:error, term()}
   def resolve(%Definition{} = definition, opts \\ []) when is_list(opts) do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
+    anchor_window = Keyword.get(opts, :anchor_window)
     default_timezone = Schedule.default_timezone()
 
     with :ok <- validate_definition(definition),
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
+         :ok <- validate_anchor_window(anchor_window),
          {:ok, schedule} <- resolve_schedule(definition.schedule, default_timezone),
          {:ok, assets} <- Favn.list_assets(),
          {:ok, target_refs} <- resolve_selectors(definition, assets) do
@@ -33,7 +39,7 @@ defmodule Favn.Pipeline.Resolver do
         trigger: trigger,
         params: params,
         runtime_window: nil,
-        anchor_window: nil,
+        anchor_window: anchor_window,
         window: definition.window,
         schedule: schedule,
         partition: definition.partition,
@@ -107,6 +113,13 @@ defmodule Favn.Pipeline.Resolver do
 
   defp validate_trigger(trigger) when is_map(trigger), do: :ok
   defp validate_trigger(_invalid), do: {:error, :invalid_pipeline_trigger}
+
+  defp validate_anchor_window(nil), do: :ok
+
+  defp validate_anchor_window(%Favn.Window.Anchor{} = anchor_window),
+    do: Favn.Window.Anchor.validate(anchor_window)
+
+  defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
 
   defp resolve_schedule(nil, _default_timezone), do: {:ok, nil}
 

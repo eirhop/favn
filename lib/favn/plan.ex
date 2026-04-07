@@ -27,6 +27,7 @@ defmodule Favn.Plan do
   @type plan_node :: %{
           ref: Ref.t(),
           node_key: node_key(),
+          window: Favn.Window.Runtime.t() | nil,
           upstream: [node_key()],
           downstream: [node_key()],
           stage: non_neg_integer(),

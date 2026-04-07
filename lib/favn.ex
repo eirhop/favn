@@ -436,6 +436,7 @@ defmodule Favn do
           dependencies: dependencies_mode(),
           params: map(),
           pipeline_context: map(),
+          anchor_window: Favn.Window.Anchor.t(),
           max_concurrency: pos_integer(),
           timeout_ms: pos_integer(),
           retry: boolean() | retry_policy() | map()
@@ -447,6 +448,7 @@ defmodule Favn do
   @type run_pipeline_opts :: [
           params: map(),
           trigger: map(),
+          anchor_window: Favn.Window.Anchor.t(),
           max_concurrency: pos_integer(),
           timeout_ms: pos_integer(),
           retry: boolean() | retry_policy() | map()
@@ -464,7 +466,8 @@ defmodule Favn do
   Options for `plan_asset_run/2`.
   """
   @type plan_asset_run_opts :: [
-          dependencies: dependencies_mode()
+          dependencies: dependencies_mode(),
+          anchor_window: Favn.Window.Anchor.t()
         ]
 
   @typedoc """
@@ -722,7 +725,9 @@ defmodule Favn do
   Accepted input:
 
     * one target ref `{module, name}` or a non-empty list of refs
-    * `opts` with `dependencies: :all | :none` (default `:all`)
+    * `opts`:
+      * `dependencies: :all | :none` (default `:all`)
+      * `anchor_window: %Favn.Window.Anchor{}` optional anchor for windowed node expansion
 
   Returns:
 
@@ -785,7 +790,10 @@ defmodule Favn do
     with {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
          {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts),
          {:ok, plan} <-
-           Favn.plan_asset_run(resolution.target_refs, dependencies: resolution.dependencies) do
+           Favn.plan_asset_run(resolution.target_refs,
+             dependencies: resolution.dependencies,
+             anchor_window: resolution.pipeline_ctx.anchor_window
+           ) do
       {:ok, plan}
     end
   end
@@ -802,6 +810,7 @@ defmodule Favn do
     * `opts`:
       * `dependencies: :all | :none` (default `:all`)
       * `params: map()` (default `%{}`)
+      * `anchor_window: %Favn.Window.Anchor{}` optional run anchor for window-aware planning
       * `pipeline_context: map()` optional manual pipeline provenance/context payload
         projected to `ctx.pipeline` and persisted `%Favn.Run{}.pipeline`
         (passed through as provided; unlike `run_pipeline/2`, no schedule normalization
@@ -870,6 +879,7 @@ defmodule Favn do
     * `params: map()` runtime params (available on both `ctx.params` and
       `ctx.pipeline.params` for pipeline-triggered runs)
     * `trigger: map()` trigger metadata exposed through `ctx.pipeline.trigger`
+    * `anchor_window: %Favn.Window.Anchor{}` explicit anchor for window-aware planning
     * runtime context exposes `ctx.window` and `ctx.pipeline.anchor_window`
       (currently transitional placeholders until window-aware planner/runtime land)
     * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run_asset/2`)

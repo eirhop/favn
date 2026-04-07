@@ -734,7 +734,11 @@ defmodule Favn.Runtime.Coordinator do
     runtime_window = Map.get(pipeline_context, :runtime_window)
 
     runtime_window =
-      if match?(%Favn.Window.Runtime{}, runtime_window), do: runtime_window, else: nil
+      cond do
+        match?(%Favn.Window.Runtime{}, step.runtime_window) -> step.runtime_window
+        match?(%Favn.Window.Runtime{}, runtime_window) -> runtime_window
+        true -> nil
+      end
 
     %Context{
       run_id: state.run_id,

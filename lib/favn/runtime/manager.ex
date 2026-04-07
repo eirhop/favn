@@ -210,6 +210,7 @@ defmodule Favn.Runtime.Manager do
             %Favn.Runtime.StepState{
               ref: ref,
               node_key: node_key,
+              runtime_window: node.window,
               stage: node.stage,
               upstream: node.upstream,
               downstream: node.downstream,
@@ -229,6 +230,7 @@ defmodule Favn.Runtime.Manager do
             %Favn.Runtime.StepState{
               ref: ref,
               node_key: node_key,
+              runtime_window: node.window,
               stage: node.stage,
               upstream: node.upstream,
               downstream: node.downstream,
@@ -422,9 +424,26 @@ defmodule Favn.Runtime.Manager do
 
   defp resolve_plan(target_refs, dependencies, opts) when is_list(opts) do
     case Keyword.fetch(opts, :_plan_override) do
-      {:ok, %Favn.Plan{} = plan} -> {:ok, plan}
-      {:ok, _} -> {:error, :invalid_plan_override}
-      :error -> Favn.plan_asset_run(target_refs, dependencies: dependencies)
+      {:ok, %Favn.Plan{} = plan} ->
+        {:ok, plan}
+
+      {:ok, _} ->
+        {:error, :invalid_plan_override}
+
+      :error ->
+        planner_opts = [
+          dependencies: dependencies,
+          anchor_window: resolve_anchor_window(opts)
+        ]
+
+        Favn.plan_asset_run(target_refs, planner_opts)
+    end
+  end
+
+  defp resolve_anchor_window(opts) do
+    case Keyword.get(opts, :_pipeline_context) do
+      %{anchor_window: %Favn.Window.Anchor{} = anchor_window} -> anchor_window
+      _ -> Keyword.get(opts, :anchor_window)
     end
   end
 
