@@ -65,4 +65,60 @@ defmodule Favn.Window.Anchor do
       _ -> {:error, :invalid_window_bounds}
     end
   end
+
+  @doc """
+  Expand a time range into contiguous anchor windows of the given kind.
+
+  `end_at` is treated as exclusive.
+  """
+  @spec expand_range(kind(), DateTime.t(), DateTime.t(), keyword()) ::
+          {:ok, [t()]} | {:error, term()}
+  def expand_range(kind, %DateTime{} = start_at, %DateTime{} = end_at, opts \\ []) when is_list(opts) do
+    with :ok <- Validate.strict_keyword_opts(opts, [:timezone]),
+         :ok <- Validate.kind(kind),
+         timezone <- Keyword.get(opts, :timezone, "Etc/UTC"),
+         :ok <- Validate.timezone(timezone),
+         :ok <- validate_order(start_at, end_at) do
+      current = floor_to_kind(start_at, kind, timezone)
+      boundary = floor_to_kind(end_at, kind, timezone)
+
+      anchors =
+        Stream.unfold(current, fn cursor ->
+          if DateTime.compare(cursor, boundary) == :lt do
+            next = shift_kind(cursor, kind, 1)
+            {__MODULE__.new!(kind, cursor, next, timezone: timezone), next}
+          else
+            nil
+          end
+        end)
+        |> Enum.to_list()
+
+      {:ok, anchors}
+    end
+  end
+
+  defp floor_to_kind(datetime, :hour, timezone),
+    do: datetime |> DateTime.shift_zone!(timezone) |> Map.merge(%{minute: 0, second: 0, microsecond: {0, 0}})
+
+  defp floor_to_kind(datetime, :day, timezone),
+    do: datetime |> DateTime.shift_zone!(timezone) |> Map.merge(%{hour: 0, minute: 0, second: 0, microsecond: {0, 0}})
+
+  defp floor_to_kind(datetime, :month, timezone),
+    do:
+      datetime
+      |> DateTime.shift_zone!(timezone)
+      |> Map.merge(%{day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}})
+
+  defp shift_kind(datetime, :hour, count), do: DateTime.add(datetime, count * 3600, :second)
+  defp shift_kind(datetime, :day, count), do: DateTime.add(datetime, count, :day)
+
+  defp shift_kind(%DateTime{} = datetime, :month, count) do
+    date = DateTime.to_date(datetime)
+    total = date.year * 12 + (date.month - 1) + count
+    year = div(total, 12)
+    month = rem(total, 12) + 1
+    {:ok, new_date} = Date.new(year, month, 1)
+    {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
+    DateTime.from_naive!(naive, datetime.time_zone)
+  end
 end

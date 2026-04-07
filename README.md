@@ -90,6 +90,7 @@ v0.2 has been refactored to the following authoring contract and attribute order
 ```elixir
 @asset "Asset Name"
 @meta owner: "data-platform", category: :sales, tags: [:daily]
+@window Favn.Window.daily(lookback: 1)
 @doc "What this asset does"
 @depends {:MyApp.UpstreamAssets, :upstream_asset}
 @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
@@ -100,6 +101,7 @@ end
 
 Notes:
 - Use one `@depends` entry per declaration; repeat `@depends` for multiple dependencies.
+- Use `@window` when an asset should execute against a runtime-resolved window.
 - `@uses` is deferred and intentionally out of scope for this refactor.
 - Missing `@doc`/`@spec` is allowed (UI will simply have less metadata).
 

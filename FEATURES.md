@@ -69,6 +69,7 @@ Near-term priority is a practical path to real usage:
 
 Goal: make Favn usable for scheduled and windowed asset execution.
 
+- [x] Documentation sync for window-aware DSL examples across README and `Favn` moduledoc
 - [ ] Working pipeline execution
 - [ ] Working scheduler trigger runtime
 - [x] Pipeline `window` clause

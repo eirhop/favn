@@ -120,6 +120,7 @@ defmodule Favn do
   Important decisions for this refactor:
 
     * `@depends` is single-entry per attribute (repeat for multiple dependencies)
+    * `@window` is optional and declares runtime window intent for an asset
     * `@uses` is deferred to a later pipeline-focused iteration
     * missing `@doc`/`@spec` does not produce warnings or errors
     * direct inter-asset value passing is removed from the public model
