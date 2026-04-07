@@ -231,9 +231,11 @@ The first v0.3 pipeline foundation slice keeps pipelines as a composition layer 
   - `select`
   - `deps`
   - `schedule`
-  - `partition`
+  - `window`
   - `source`
   - `outputs`
+
+`partition` remains as a temporary deprecated alias for `window` during the transition.
 
 Selection authoring supports both:
 

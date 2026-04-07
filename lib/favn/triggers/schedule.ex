@@ -163,7 +163,7 @@ defmodule Favn.Triggers.Schedule do
     if timezone == "" do
       {:error, {:invalid_schedule_timezone, timezone}}
     else
-      if valid_timezone_identifier?(timezone) do
+      if Favn.Timezone.valid_identifier?(timezone) do
         {:ok, timezone}
       else
         {:error, {:invalid_schedule_timezone, timezone}}
@@ -251,22 +251,6 @@ defmodule Favn.Triggers.Schedule do
       {int, ""} -> {:ok, int}
       _ -> :error
     end
-  end
-
-  defp valid_timezone_identifier?(timezone) when is_binary(timezone) do
-    not String.contains?(timezone, "..") and
-      not String.starts_with?(timezone, "/") and
-      Enum.any?(zoneinfo_roots(), fn root ->
-        root
-        |> Path.join(timezone)
-        |> File.regular?()
-      end)
-  end
-
-  defp zoneinfo_roots do
-    ["/usr/share/zoneinfo", "/usr/share/lib/zoneinfo", "/etc/zoneinfo"]
-    |> Enum.uniq()
-    |> Enum.filter(&File.dir?/1)
   end
 
   defp validate_missed(value) when value in [:skip, :one, :all], do: {:ok, value}

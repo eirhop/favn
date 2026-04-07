@@ -9,10 +9,9 @@ defmodule Favn.Window.Validate do
 
   @spec timezone(String.t()) :: :ok | {:error, term()}
   def timezone(timezone) when is_binary(timezone) and byte_size(timezone) > 0 do
-    case DateTime.now(timezone) do
-      {:ok, _dt} -> :ok
-      {:error, _reason} -> {:error, {:invalid_timezone, timezone}}
-    end
+    if Favn.Timezone.valid_identifier?(timezone),
+      do: :ok,
+      else: {:error, {:invalid_timezone, timezone}}
   end
 
   def timezone(timezone), do: {:error, {:invalid_timezone, timezone}}

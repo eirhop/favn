@@ -235,7 +235,7 @@ This avoids a large separate DSL concept before foundation state exists.
   - Add `@window` capture/validation in `Favn.Assets`.
   - Add `window_spec` to `Favn.Asset`.
 
-- [ ] 3. **Pipeline DSL migration**
+- [x] 3. **Pipeline DSL migration**
   - Add `window` clause.
   - Keep `partition` temporarily as deprecated alias for a short transition.
 

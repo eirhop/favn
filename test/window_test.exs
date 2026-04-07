@@ -34,6 +34,7 @@ defmodule Favn.WindowTest do
 
     assert {:ok, decoded} = Key.decode(encoded)
     assert decoded == key
+    assert :ok = Key.validate(key)
   end
 
   test "returns validation errors for invalid inputs" do

@@ -857,7 +857,7 @@ defmodule Favn do
   to the existing planner/runtime execution flow.
 
   This is the primary operator-facing execution entrypoint.
-  In production flows where source/output/schedule/partition context matters,
+  In production flows where source/output/schedule/window context matters,
   prefer `run_pipeline/2` over direct `run_asset/2`.
 
   Accepted options:

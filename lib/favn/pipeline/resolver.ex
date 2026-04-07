@@ -33,6 +33,8 @@ defmodule Favn.Pipeline.Resolver do
         trigger: trigger,
         params: params,
         runtime_window: nil,
+        anchor_window: nil,
+        window: definition.window,
         schedule: schedule,
         partition: definition.partition,
         source: definition.source,
@@ -53,6 +55,7 @@ defmodule Favn.Pipeline.Resolver do
     with :ok <- validate_name(definition.name),
          :ok <- validate_deps(definition.deps),
          :ok <- validate_selectors(definition.selectors),
+         :ok <- validate_window(definition.window),
          :ok <- validate_partition(definition.partition),
          :ok <- validate_source(definition.source),
          :ok <- validate_outputs(definition.outputs) do
@@ -84,6 +87,10 @@ defmodule Favn.Pipeline.Resolver do
   defp validate_partition(nil), do: :ok
   defp validate_partition(value) when is_atom(value), do: :ok
   defp validate_partition(value), do: {:error, {:invalid_partition, value}}
+
+  defp validate_window(nil), do: :ok
+  defp validate_window(value) when is_atom(value), do: :ok
+  defp validate_window(value), do: {:error, {:invalid_window, value}}
 
   defp validate_source(nil), do: :ok
   defp validate_source(value) when is_atom(value), do: :ok

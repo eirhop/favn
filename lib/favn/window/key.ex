@@ -77,6 +77,20 @@ defmodule Favn.Window.Key do
 
   def decode(value), do: {:error, {:invalid_encoded_key, value}}
 
+  @spec validate(term()) :: :ok | {:error, term()}
+  def validate(%{kind: kind, start_at_us: start_at_us, timezone: timezone}) do
+    with :ok <- Validate.kind(kind),
+         true <- is_integer(start_at_us),
+         :ok <- Validate.timezone(timezone) do
+      :ok
+    else
+      false -> {:error, :invalid_key}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def validate(_value), do: {:error, :invalid_key}
+
   defp decode_kind("hour"), do: {:ok, :hour}
   defp decode_kind("day"), do: {:ok, :day}
   defp decode_kind("month"), do: {:ok, :month}

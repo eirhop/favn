@@ -53,7 +53,10 @@ defmodule Favn.Window.Anchor do
 
   defp validate_key(%__MODULE__{} = anchor) do
     expected = Key.new!(anchor.kind, anchor.start_at, anchor.timezone)
-    if anchor.key == expected, do: :ok, else: {:error, :invalid_key}
+
+    with :ok <- Key.validate(anchor.key) do
+      if anchor.key == expected, do: :ok, else: {:error, :invalid_key}
+    end
   end
 
   defp validate_order(%DateTime{} = start_at, %DateTime{} = end_at) do

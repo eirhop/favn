@@ -70,8 +70,9 @@ defmodule Favn.Window.Runtime do
   end
 
   defp validate_key(%{kind: kind, start_at_us: start_at_us, timezone: timezone})
-       when kind in [:hour, :day, :month] and is_integer(start_at_us) and is_binary(timezone),
-       do: :ok
+       when kind in [:hour, :day, :month] and is_integer(start_at_us) and is_binary(timezone) do
+    Key.validate(%{kind: kind, start_at_us: start_at_us, timezone: timezone})
+  end
 
-  defp validate_key(_value), do: {:error, :invalid_key}
+  defp validate_key(value), do: Key.validate(value)
 end
