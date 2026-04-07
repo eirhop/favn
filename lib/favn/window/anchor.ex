@@ -73,7 +73,8 @@ defmodule Favn.Window.Anchor do
   """
   @spec expand_range(kind(), DateTime.t(), DateTime.t(), keyword()) ::
           {:ok, [t()]} | {:error, term()}
-  def expand_range(kind, %DateTime{} = start_at, %DateTime{} = end_at, opts \\ []) when is_list(opts) do
+  def expand_range(kind, %DateTime{} = start_at, %DateTime{} = end_at, opts \\ [])
+      when is_list(opts) do
     with :ok <- Validate.strict_keyword_opts(opts, [:timezone]),
          :ok <- Validate.kind(kind),
          timezone <- Keyword.get(opts, :timezone, "Etc/UTC"),
@@ -98,10 +99,16 @@ defmodule Favn.Window.Anchor do
   end
 
   defp floor_to_kind(datetime, :hour, timezone),
-    do: datetime |> DateTime.shift_zone!(timezone) |> Map.merge(%{minute: 0, second: 0, microsecond: {0, 0}})
+    do:
+      datetime
+      |> DateTime.shift_zone!(timezone)
+      |> Map.merge(%{minute: 0, second: 0, microsecond: {0, 0}})
 
   defp floor_to_kind(datetime, :day, timezone),
-    do: datetime |> DateTime.shift_zone!(timezone) |> Map.merge(%{hour: 0, minute: 0, second: 0, microsecond: {0, 0}})
+    do:
+      datetime
+      |> DateTime.shift_zone!(timezone)
+      |> Map.merge(%{hour: 0, minute: 0, second: 0, microsecond: {0, 0}})
 
   defp floor_to_kind(datetime, :month, timezone),
     do:

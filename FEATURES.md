@@ -84,7 +84,9 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [x] Window-aware execution and retry semantics (node-key runtime state/coordinator)
 - [x] Node-key keyed persisted rerun resume state for window-expanded runs
 - [x] SQLite persisted window state foundation (`run_node_results` + `window_latest_results`)
-- [ ] Backfill API and range expansion
+- [x] Backfill API and range expansion
+- [x] Public backfill APIs (`Favn.backfill_asset/2`, `Favn.backfill_pipeline/2`)
+- [x] Planner anchor-range expansion via `Anchor.expand_range/4` with cross-anchor node-key dedupe
 - [ ] Manual run support with explicit anchor windows
 - [x] Replace `partition` direction with runtime windowing
 

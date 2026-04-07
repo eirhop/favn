@@ -103,6 +103,47 @@ defmodule Favn.PipelineTest do
     assert stored_run.pipeline.outputs == [:warehouse_gold]
   end
 
+  test "backfill_pipeline/2 submits one run over range-expanded deduplicated plan" do
+    Code.compile_string("""
+    defmodule BackfillPipelineAssets do
+      use Favn.Assets
+
+      @asset true
+      @window Favn.Window.daily()
+      def source(_ctx), do: :ok
+
+      @asset true
+      @window Favn.Window.daily()
+      @depends :source
+      def target(_ctx), do: :ok
+    end
+
+    defmodule BackfillPipeline do
+      use Favn.Pipeline
+
+      pipeline :backfill_pipeline do
+        asset {BackfillPipelineAssets, :target}
+      end
+    end
+    """)
+
+    :ok = Favn.TestSetup.setup_asset_modules([BackfillPipelineAssets], reload_graph?: true)
+
+    range = %{
+      kind: :day,
+      start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+      end_at: DateTime.from_naive!(~N[2025-01-13 00:00:00], "Etc/UTC"),
+      timezone: "Etc/UTC"
+    }
+
+    assert {:ok, run_id} = Favn.backfill_pipeline(BackfillPipeline, range: range)
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+
+    assert run.submit_kind == :backfill_pipeline
+    assert length(run.plan.target_node_keys) == 3
+    assert map_size(run.node_results) == 6
+  end
+
   test "plain run_asset/2 supports explicit public pipeline_context injection" do
     assert {:ok, run_id} =
              Favn.run_asset({SalesAssets, :sales_daily},

@@ -17,7 +17,7 @@ defmodule Favn.Run do
           plan: Favn.Plan.t(),
           pipeline: map() | nil,
           pipeline_context: map() | nil,
-          submit_kind: :asset | :pipeline | :rerun,
+          submit_kind: :asset | :pipeline | :backfill_asset | :backfill_pipeline | :rerun,
           submit_ref: term() | nil,
           max_concurrency: pos_integer(),
           timeout_ms: pos_integer() | nil,

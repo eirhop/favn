@@ -82,6 +82,20 @@ config :favn,
 {:ok, run} = Favn.await_run(run_id)
 ```
 
+Backfill a windowed asset or pipeline over a range (single submitted run):
+
+```elixir
+range = %{
+  kind: :day,
+  start_at: DateTime.from_naive!(~N[2025-01-01 00:00:00], "Etc/UTC"),
+  end_at: DateTime.from_naive!(~N[2025-01-04 00:00:00], "Etc/UTC"),
+  timezone: "Etc/UTC"
+}
+
+{:ok, run_id} = Favn.backfill_asset({MyApp.SalesAssets, :build_daily_report}, range: range)
+{:ok, run} = Favn.await_run(run_id)
+```
+
 
 ## New in v0.2 DSL shape
 

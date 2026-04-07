@@ -25,23 +25,27 @@ defmodule Favn.Assets.Planner do
   """
   @type plan_opts :: [
           dependencies: Favn.dependencies_mode(),
-          anchor_window: Anchor.t() | nil
+          anchor_window: Anchor.t() | nil,
+          anchor_windows: [Anchor.t()],
+          anchor_ranges: [Favn.backfill_anchor_range()]
         ]
 
   @spec plan(Ref.t() | [Ref.t()], plan_opts()) :: {:ok, Plan.t()} | {:error, term()}
   def plan(targets, opts \\ []) when is_list(opts) do
     dependencies = Keyword.get(opts, :dependencies, :all)
     anchor_window = Keyword.get(opts, :anchor_window)
+    anchor_windows = Keyword.get(opts, :anchor_windows, [])
+    anchor_ranges = Keyword.get(opts, :anchor_ranges, [])
 
     with {:ok, target_refs} <- normalize_targets(targets),
          :ok <- validate_opts(opts),
          :ok <- validate_dependencies_mode(dependencies),
-         :ok <- validate_anchor_window(anchor_window),
+         {:ok, anchors} <- normalize_anchors(anchor_window, anchor_windows, anchor_ranges),
          {:ok, index} <- GraphIndex.get(),
          :ok <- validate_target_refs(index, target_refs),
          {:ok, refs} <- selected_refs(index, target_refs, dependencies),
          {:ok, projected_index} <- projected_index(index, refs),
-         {:ok, graph} <- build_windowed_graph(projected_index, anchor_window) do
+         {:ok, graph} <- build_windowed_graph(projected_index, anchors) do
       stage_map = build_node_stage_map(graph.nodes, projected_index.topo_rank)
       ref_stage_map = build_ref_stage_map(graph.nodes, stage_map)
 
@@ -78,7 +82,13 @@ defmodule Favn.Assets.Planner do
   defp normalize_target_list([_invalid | _rest], _refs), do: {:error, :invalid_target_ref}
 
   defp validate_opts(opts),
-    do: Validate.strict_keyword_opts(opts, [:dependencies, :anchor_window])
+    do:
+      Validate.strict_keyword_opts(opts, [
+        :dependencies,
+        :anchor_window,
+        :anchor_windows,
+        :anchor_ranges
+      ])
 
   defp validate_dependencies_mode(:all), do: :ok
   defp validate_dependencies_mode(:none), do: :ok
@@ -86,6 +96,54 @@ defmodule Favn.Assets.Planner do
   defp validate_anchor_window(nil), do: :ok
   defp validate_anchor_window(%Anchor{} = anchor), do: Anchor.validate(anchor)
   defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
+
+  defp validate_anchor_windows(anchor_windows) when is_list(anchor_windows) do
+    Enum.reduce_while(anchor_windows, :ok, fn anchor_window, _acc ->
+      case validate_anchor_window(anchor_window) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_anchor_windows(other), do: {:error, {:invalid_anchor_windows, other}}
+
+  defp normalize_anchors(anchor_window, anchor_windows, anchor_ranges) do
+    with :ok <- validate_anchor_window(anchor_window),
+         :ok <- validate_anchor_windows(anchor_windows),
+         {:ok, expanded} <- expand_anchor_ranges(anchor_ranges) do
+      anchors =
+        [anchor_window | anchor_windows]
+        |> Enum.reject(&is_nil/1)
+        |> Kernel.++(expanded)
+        |> Enum.uniq_by(& &1.key)
+        |> Enum.sort_by(&anchor_sort_key/1)
+
+      {:ok, anchors}
+    end
+  end
+
+  defp expand_anchor_ranges(anchor_ranges) when is_list(anchor_ranges) do
+    Enum.reduce_while(anchor_ranges, {:ok, []}, fn range, {:ok, acc} ->
+      case expand_anchor_range(range) do
+        {:ok, anchors} -> {:cont, {:ok, acc ++ anchors}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp expand_anchor_ranges(other), do: {:error, {:invalid_anchor_ranges, other}}
+
+  defp expand_anchor_range(
+         %{kind: kind, start_at: %DateTime{} = start_at, end_at: %DateTime{} = end_at} = range
+       ) do
+    timezone = Map.get(range, :timezone, "Etc/UTC")
+    Anchor.expand_range(kind, start_at, end_at, timezone: timezone)
+  end
+
+  defp expand_anchor_range(other), do: {:error, {:invalid_anchor_range, other}}
+
+  defp anchor_sort_key(%Anchor{key: key}), do: Key.encode(key)
 
   defp validate_target_refs(index, refs) do
     case Enum.find(refs, &(not Map.has_key?(index.assets_by_ref, &1))) do
@@ -122,11 +180,11 @@ defmodule Favn.Assets.Planner do
     end)
   end
 
-  defp build_windowed_graph(index, anchor_window) do
+  defp build_windowed_graph(index, anchors) do
     ref_nodes =
       Enum.reduce(index.topo_order, %{}, fn ref, acc ->
         asset = Map.fetch!(index.assets_by_ref, ref)
-        Map.put(acc, ref, build_ref_nodes(ref, asset, anchor_window))
+        Map.put(acc, ref, build_ref_nodes(ref, asset, anchors))
       end)
 
     nodes =
@@ -142,14 +200,16 @@ defmodule Favn.Assets.Planner do
     {:ok, %{nodes: nodes, ref_nodes: ref_nodes}}
   end
 
-  defp build_ref_nodes(ref, _asset, nil), do: [%{ref: ref, node_key: {ref, nil}, window: nil}]
+  defp build_ref_nodes(ref, _asset, []), do: [%{ref: ref, node_key: {ref, nil}, window: nil}]
 
-  defp build_ref_nodes(ref, %{window_spec: nil}, _anchor_window),
+  defp build_ref_nodes(ref, %{window_spec: nil}, _anchors),
     do: [%{ref: ref, node_key: {ref, nil}, window: nil}]
 
-  defp build_ref_nodes(ref, %{window_spec: %Spec{} = spec}, %Anchor{} = anchor_window) do
-    anchor_window
-    |> expand_windows(spec)
+  defp build_ref_nodes(ref, %{window_spec: %Spec{} = spec}, anchors) when is_list(anchors) do
+    anchors
+    |> Enum.flat_map(&expand_windows(&1, spec))
+    |> Enum.uniq_by(& &1.key)
+    |> Enum.sort_by(&window_sort_key/1)
     |> Enum.map(fn runtime_window ->
       %{ref: ref, node_key: {ref, runtime_window.key}, window: runtime_window}
     end)

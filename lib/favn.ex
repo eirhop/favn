@@ -184,6 +184,15 @@ defmodule Favn do
 
       Favn.run_pipeline(MyApp.Pipelines.DailySales, params: %{requested_by: "operator"})
 
+      Favn.backfill_asset({MyApp.GoldETL, :fact_sales},
+        range: %{
+          kind: :day,
+          start_at: DateTime.from_naive!(~N[2025-01-01 00:00:00], "Etc/UTC"),
+          end_at: DateTime.from_naive!(~N[2025-01-08 00:00:00], "Etc/UTC"),
+          timezone: "Etc/UTC"
+        }
+      )
+
       Favn.cancel_run(run_id)
 
       Favn.rerun_run(run_id)
@@ -450,6 +459,42 @@ defmodule Favn do
           params: map(),
           trigger: map(),
           anchor_window: Favn.Window.Anchor.t(),
+          max_concurrency: pos_integer(),
+          timeout_ms: pos_integer(),
+          retry: boolean() | retry_policy() | map()
+        ]
+
+  @typedoc """
+  Backfill anchor range definition.
+
+  `end_at` is exclusive and will be expanded into contiguous anchors.
+  """
+  @type backfill_anchor_range :: %{
+          required(:kind) => Favn.Window.Anchor.kind(),
+          required(:start_at) => DateTime.t(),
+          required(:end_at) => DateTime.t(),
+          optional(:timezone) => String.t()
+        }
+
+  @typedoc """
+  Options for `backfill_asset/2`.
+  """
+  @type backfill_asset_opts :: [
+          dependencies: dependencies_mode(),
+          params: map(),
+          range: backfill_anchor_range(),
+          max_concurrency: pos_integer(),
+          timeout_ms: pos_integer(),
+          retry: boolean() | retry_policy() | map()
+        ]
+
+  @typedoc """
+  Options for `backfill_pipeline/2`.
+  """
+  @type backfill_pipeline_opts :: [
+          params: map(),
+          trigger: map(),
+          range: backfill_anchor_range(),
           max_concurrency: pos_integer(),
           timeout_ms: pos_integer(),
           retry: boolean() | retry_policy() | map()
@@ -903,6 +948,70 @@ defmodule Favn do
     end
   end
 
+  @doc """
+  Submit one asynchronous backfill run for an asset over a time range.
+
+  Backfill expands the supplied `range` into contiguous anchors, plans once
+  across all anchors, unions/deduplicates resulting node keys, and submits one
+  run over that deduplicated plan.
+  """
+  @spec backfill_asset(asset_ref(), backfill_asset_opts()) ::
+          {:ok, run_id()} | {:error, term()}
+  def backfill_asset({module, name}, opts \\ [])
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    dependencies = Keyword.get(opts, :dependencies, :all)
+
+    with {:ok, range} <- fetch_backfill_range(opts),
+         {:ok, plan} <-
+           Favn.plan_asset_run({module, name},
+             dependencies: dependencies,
+             anchor_ranges: [range]
+           ) do
+      run_opts =
+        opts
+        |> drop_backfill_range_opt()
+        |> Keyword.put(:dependencies, dependencies)
+        |> Keyword.put(:_plan_override, plan)
+        |> Keyword.put(:_submit_kind, :backfill_asset)
+        |> Keyword.put(:_submit_ref, {module, name})
+        |> normalize_pipeline_context_opt()
+
+      Favn.Runtime.Engine.submit_run({module, name}, run_opts)
+    end
+  end
+
+  @doc """
+  Submit one asynchronous backfill run for a pipeline over a time range.
+
+  Pipeline selection resolves first, then planner backfill expansion builds one
+  deduplicated node-key plan across all anchors from the provided range.
+  """
+  @spec backfill_pipeline(pipeline_module(), backfill_pipeline_opts()) ::
+          {:ok, run_id()} | {:error, term()}
+  def backfill_pipeline(pipeline_module, opts \\ [])
+      when is_atom(pipeline_module) and is_list(opts) do
+    with {:ok, range} <- fetch_backfill_range(opts),
+         {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
+         {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts),
+         {:ok, plan} <-
+           Favn.plan_asset_run(resolution.target_refs,
+             dependencies: resolution.dependencies,
+             anchor_ranges: [range]
+           ) do
+      run_opts =
+        opts
+        |> drop_backfill_range_opt()
+        |> Keyword.put(:dependencies, resolution.dependencies)
+        |> Keyword.put(:pipeline_context, resolution.pipeline_ctx)
+        |> Keyword.put(:_plan_override, plan)
+        |> Keyword.put(:_submit_kind, :backfill_pipeline)
+        |> Keyword.put(:_submit_ref, pipeline_module)
+        |> normalize_pipeline_context_opt()
+
+      Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
+    end
+  end
+
   defp normalize_pipeline_context_opt(opts) when is_list(opts) do
     case Keyword.fetch(opts, :pipeline_context) do
       :error ->
@@ -912,6 +1021,28 @@ defmodule Favn do
         opts |> Keyword.delete(:pipeline_context) |> Keyword.put(:_pipeline_context, context)
     end
   end
+
+  defp fetch_backfill_range(opts) when is_list(opts) do
+    case Keyword.fetch(opts, :range) do
+      {:ok, %{kind: kind, start_at: %DateTime{} = start_at, end_at: %DateTime{} = end_at} = range} ->
+        timezone = Map.get(range, :timezone, "Etc/UTC")
+        normalized = %{kind: kind, start_at: start_at, end_at: end_at, timezone: timezone}
+
+        case Favn.Window.Anchor.expand_range(kind, start_at, end_at, timezone: timezone) do
+          {:ok, [_ | _]} -> {:ok, normalized}
+          {:ok, []} -> {:error, :empty_backfill_range}
+          {:error, _} = error -> error
+        end
+
+      {:ok, _invalid} ->
+        {:error, :invalid_backfill_range}
+
+      :error ->
+        {:error, :backfill_range_required}
+    end
+  end
+
+  defp drop_backfill_range_opt(opts) when is_list(opts), do: Keyword.delete(opts, :range)
 
   @doc """
   Request cancellation of a submitted run.

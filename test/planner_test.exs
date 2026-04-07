@@ -150,4 +150,33 @@ defmodule Favn.Assets.PlannerTest do
     assert map_size(plan.nodes) == 26
     assert length(plan.nodes[target_key].upstream) == 24
   end
+
+  test "expands anchor_ranges into multiple anchors and deduplicates node keys" do
+    state = Favn.TestSetup.capture_state()
+
+    :ok =
+      Favn.TestSetup.setup_asset_modules(
+        [WindowPlannerFixtures.Bronze, WindowPlannerFixtures.Gold],
+        reload_graph?: true
+      )
+
+    on_exit(fn ->
+      Favn.TestSetup.restore_state(state, reload_graph?: true)
+    end)
+
+    assert {:ok, plan} =
+             Favn.plan_asset_run({WindowPlannerFixtures.Gold, :daily_orders},
+               anchor_ranges: [
+                 %{
+                   kind: :day,
+                   start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+                   end_at: DateTime.from_naive!(~N[2025-01-13 00:00:00], "Etc/UTC"),
+                   timezone: "Etc/UTC"
+                 }
+               ]
+             )
+
+    assert length(plan.target_node_keys) == 3
+    assert map_size(plan.nodes) == 76
+  end
 end
