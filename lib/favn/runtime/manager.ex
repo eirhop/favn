@@ -170,6 +170,7 @@ defmodule Favn.Runtime.Manager do
     submit_kind = Keyword.get(opts, :_submit_kind, :asset)
     submit_ref = Keyword.get(opts, :_submit_ref)
     replay_mode = Keyword.get(opts, :_replay_mode, :none)
+    backfill = Keyword.get(opts, :_backfill)
     rerun_of_run_id = Keyword.get(opts, :_rerun_of_run_id)
     parent_run_id = Keyword.get(opts, :_parent_run_id)
     root_run_id = Keyword.get(opts, :_root_run_id)
@@ -189,6 +190,7 @@ defmodule Favn.Runtime.Manager do
       submit_kind: submit_kind,
       submit_ref: submit_ref,
       replay_mode: replay_mode,
+      backfill: backfill,
       rerun_of_run_id: rerun_of_run_id,
       parent_run_id: parent_run_id,
       root_run_id: root_run_id,

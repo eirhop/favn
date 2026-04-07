@@ -94,6 +94,21 @@ range = %{
 
 {:ok, run_id} = Favn.backfill_asset({MyApp.SalesAssets, :build_daily_report}, range: range)
 {:ok, run} = Favn.await_run(run_id)
+
+# provenance persisted on run snapshots
+run.backfill.range
+run.backfill.anchor_ranges
+run.pipeline.backfill_range
+```
+
+Freshness policy helpers over persisted window/node results:
+
+```elixir
+{:ok, freshness} =
+  Favn.check_asset_freshness({MyApp.SalesAssets, :build_daily_report},
+    window_key: hd(run.plan.target_node_keys) |> elem(1),
+    max_age_seconds: 3_600
+  )
 ```
 
 

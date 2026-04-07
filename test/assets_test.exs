@@ -35,6 +35,30 @@ defmodule Favn.AssetsTest do
 
   alias Favn.Asset
 
+  defmodule SQLLikeCompiler do
+    @behaviour Favn.Assets.Compiler
+
+    @impl true
+    def compile_assets(module) do
+      {:ok,
+       [
+         %Favn.Asset{
+           module: module,
+           name: :compiled_sql_asset,
+           ref: {module, :compiled_sql_asset},
+           arity: 1,
+           doc: "compiled sql asset",
+           file: "lib/sql_assets.ex",
+           line: 1,
+           title: "Compiled SQL Asset",
+           meta: %{category: :sql},
+           depends_on: [],
+           window_spec: Favn.Window.daily()
+         }
+       ]}
+    end
+  end
+
   test "captures canonical asset metadata in source order" do
     assets = Favn.AssetsTest.Sample.__favn_assets__()
 
@@ -237,6 +261,22 @@ defmodule Favn.AssetsTest do
     assert a.meta == %{}
     assert second.depends_on == []
     assert second.meta == %{}
+  end
+
+  test "asset compiler seam supports non-Elixir frontends compiling into canonical assets" do
+    module_name = Module.concat(__MODULE__, "SQLLike#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+      def __favn_asset_compiler__, do: #{inspect(SQLLikeCompiler)}
+    end
+    """
+
+    [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
+
+    assert Favn.asset_module?(module_name)
+    assert {:ok, catalog} = Favn.Assets.Registry.build_catalog([module_name])
+    assert [%Favn.Asset{name: :compiled_sql_asset, module: ^module_name}] = catalog.assets
   end
 
   defp compile_test_module(body) do

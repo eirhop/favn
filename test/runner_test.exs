@@ -870,6 +870,8 @@ defmodule Favn.RunnerTest do
     assert {:ok, run} = Favn.await_run(run_id)
 
     assert run.submit_kind == :backfill_asset
+    assert run.backfill.range == range
+    assert length(run.backfill.anchor_ranges) == 3
     assert length(run.plan.target_node_keys) == 3
     assert map_size(run.node_results) == 12
   end

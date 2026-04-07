@@ -258,13 +258,13 @@ This avoids a large separate DSL concept before foundation state exists.
 - [x] 8. **Public API window options**
   - Add `anchor_window` options to plan/run APIs.
 
-- [ ] 9. **Backfill scaffold**
+- [x] 9. **Backfill scaffold**
   - Add API and internal range expansion over same planner.
 
-- [ ] 10. **Freshness policy layer**
+- [x] 10. **Freshness policy layer**
   - Implement freshness checks against persisted window/materialization state.
 
-- [ ] 11. **SQL-readiness seam**
+- [x] 11. **SQL-readiness seam**
   - Ensure future SQL assets compile into same asset/window/planner model.
 
 ## Non-goals for first implementation waves

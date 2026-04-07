@@ -87,6 +87,9 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [x] Backfill API and range expansion
 - [x] Public backfill APIs (`Favn.backfill_asset/2`, `Favn.backfill_pipeline/2`)
 - [x] Planner anchor-range expansion via `Anchor.expand_range/4` with cross-anchor node-key dedupe
+- [x] Backfill provenance persisted on runs (`run.backfill`, `pipeline.backfill_range`, `pipeline.anchor_ranges`)
+- [x] Freshness policy checks over persisted node/window run state
+- [x] SQL-readiness asset compiler seam for future SQL frontend integration
 - [ ] Manual run support with explicit anchor windows
 - [x] Replace `partition` direction with runtime windowing
 

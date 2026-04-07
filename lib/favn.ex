@@ -195,6 +195,8 @@ defmodule Favn do
 
       Favn.cancel_run(run_id)
 
+      Favn.check_asset_freshness({MyApp.GoldETL, :fact_sales}, max_age_seconds: 3_600)
+
       Favn.rerun_run(run_id)
 
       Favn.get_run(run_id)
@@ -509,11 +511,23 @@ defmodule Favn do
         ]
 
   @typedoc """
+  Options for `check_asset_freshness/2`.
+  """
+  @type check_asset_freshness_opts :: [
+          window_key: Favn.Window.Key.t(),
+          max_age_seconds: non_neg_integer(),
+          now: DateTime.t(),
+          limit: pos_integer()
+        ]
+
+  @typedoc """
   Options for `plan_asset_run/2`.
   """
   @type plan_asset_run_opts :: [
           dependencies: dependencies_mode(),
-          anchor_window: Favn.Window.Anchor.t()
+          anchor_window: Favn.Window.Anchor.t(),
+          anchor_windows: [Favn.Window.Anchor.t()],
+          anchor_ranges: [backfill_anchor_range()]
         ]
 
   @typedoc """
@@ -743,18 +757,7 @@ defmodule Favn do
   @doc false
   @spec asset_module?(module()) :: boolean()
   def asset_module?(module) when is_atom(module) do
-    if function_exported?(module, :__favn_assets__, 0) do
-      try do
-        case module.__favn_assets__() do
-          assets when is_list(assets) -> Enum.all?(assets, &match?(%Favn.Asset{}, &1))
-          _ -> false
-        end
-      rescue
-        _ -> false
-      end
-    else
-      false
-    end
+    match?({:ok, _}, Favn.Assets.Compiler.compile_module_assets(module))
   end
 
   @doc """
@@ -961,7 +964,7 @@ defmodule Favn do
       when is_atom(module) and is_atom(name) and is_list(opts) do
     dependencies = Keyword.get(opts, :dependencies, :all)
 
-    with {:ok, range} <- fetch_backfill_range(opts),
+    with {:ok, range, anchor_ranges} <- fetch_backfill_range(opts),
          {:ok, plan} <-
            Favn.plan_asset_run({module, name},
              dependencies: dependencies,
@@ -974,6 +977,7 @@ defmodule Favn do
         |> Keyword.put(:_plan_override, plan)
         |> Keyword.put(:_submit_kind, :backfill_asset)
         |> Keyword.put(:_submit_ref, {module, name})
+        |> Keyword.put(:_backfill, %{range: range, anchor_ranges: anchor_ranges})
         |> normalize_pipeline_context_opt()
 
       Favn.Runtime.Engine.submit_run({module, name}, run_opts)
@@ -990,7 +994,7 @@ defmodule Favn do
           {:ok, run_id()} | {:error, term()}
   def backfill_pipeline(pipeline_module, opts \\ [])
       when is_atom(pipeline_module) and is_list(opts) do
-    with {:ok, range} <- fetch_backfill_range(opts),
+    with {:ok, range, anchor_ranges} <- fetch_backfill_range(opts),
          {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
          {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts),
          {:ok, plan} <-
@@ -998,14 +1002,20 @@ defmodule Favn do
              dependencies: resolution.dependencies,
              anchor_ranges: [range]
            ) do
+      pipeline_context =
+        resolution.pipeline_ctx
+        |> Map.put(:backfill_range, range)
+        |> Map.put(:anchor_ranges, anchor_ranges)
+
       run_opts =
         opts
         |> drop_backfill_range_opt()
         |> Keyword.put(:dependencies, resolution.dependencies)
-        |> Keyword.put(:pipeline_context, resolution.pipeline_ctx)
+        |> Keyword.put(:pipeline_context, pipeline_context)
         |> Keyword.put(:_plan_override, plan)
         |> Keyword.put(:_submit_kind, :backfill_pipeline)
         |> Keyword.put(:_submit_ref, pipeline_module)
+        |> Keyword.put(:_backfill, %{range: range, anchor_ranges: anchor_ranges})
         |> normalize_pipeline_context_opt()
 
       Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
@@ -1029,7 +1039,7 @@ defmodule Favn do
         normalized = %{kind: kind, start_at: start_at, end_at: end_at, timezone: timezone}
 
         case Favn.Window.Anchor.expand_range(kind, start_at, end_at, timezone: timezone) do
-          {:ok, [_ | _]} -> {:ok, normalized}
+          {:ok, [_ | _] = anchor_ranges} -> {:ok, normalized, anchor_ranges}
           {:ok, []} -> {:error, :empty_backfill_range}
           {:error, _} = error -> error
         end
@@ -1043,6 +1053,28 @@ defmodule Favn do
   end
 
   defp drop_backfill_range_opt(opts) when is_list(opts), do: Keyword.delete(opts, :range)
+
+  @doc """
+  Evaluate freshness policy for one asset/window against persisted node results.
+
+  Freshness is intentionally a thin policy layer over persisted run state.
+  """
+  @spec check_asset_freshness(asset_ref(), check_asset_freshness_opts()) ::
+          {:ok, map()} | {:error, term()}
+  def check_asset_freshness({module, name}, opts \\ [])
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    Favn.Freshness.check({module, name}, opts)
+  end
+
+  @doc """
+  Return missing target windows for an asset over a requested backfill range.
+  """
+  @spec missing_asset_windows(asset_ref(), backfill_anchor_range(), keyword()) ::
+          {:ok, [Favn.Plan.node_key()]} | {:error, term()}
+  def missing_asset_windows({module, name}, range, opts \\ [])
+      when is_atom(module) and is_atom(name) and is_map(range) and is_list(opts) do
+    Favn.Freshness.missing_windows({module, name}, range, opts)
+  end
 
   @doc """
   Request cancellation of a submitted run.

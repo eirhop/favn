@@ -17,6 +17,7 @@ defmodule Favn.Runtime.Projector do
       pipeline_context: state.pipeline_context,
       submit_kind: state.submit_kind,
       submit_ref: state.submit_ref,
+      backfill: state.backfill,
       max_concurrency: state.max_concurrency,
       timeout_ms: state.timeout_ms,
       status: public_status(state.run_status),
@@ -48,6 +49,8 @@ defmodule Favn.Runtime.Projector do
       schedule: Map.get(pipeline_context, :schedule),
       window: Map.get(pipeline_context, :window),
       anchor_window: Map.get(pipeline_context, :anchor_window),
+      backfill_range: Map.get(pipeline_context, :backfill_range),
+      anchor_ranges: Map.get(pipeline_context, :anchor_ranges, []),
       source: Map.get(pipeline_context, :source),
       outputs: Map.get(pipeline_context, :outputs, [])
     }

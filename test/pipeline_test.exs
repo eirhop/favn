@@ -140,6 +140,9 @@ defmodule Favn.PipelineTest do
     assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
 
     assert run.submit_kind == :backfill_pipeline
+    assert run.backfill.range == range
+    assert run.pipeline.backfill_range == range
+    assert length(run.pipeline.anchor_ranges) == 3
     assert length(run.plan.target_node_keys) == 3
     assert map_size(run.node_results) == 6
   end
