@@ -393,29 +393,30 @@ defmodule Favn.Runtime.Manager do
 
   defp build_rerun_submit_opts(%Favn.Run{} = source_run, opts, mode) do
     with {:ok, plan} <- ensure_replay_plan(source_run) do
-      resume_successful_steps = build_resume_successful_steps(source_run, plan, mode)
-      parent_depth = source_run.lineage_depth || 0
-      root_run_id = source_run.root_run_id || source_run.id
+      with {:ok, resume_successful_steps} <- build_resume_successful_steps(source_run, plan, mode) do
+        parent_depth = source_run.lineage_depth || 0
+        root_run_id = source_run.root_run_id || source_run.id
 
-      {:ok,
-       [
-         dependencies: plan.dependencies,
-         params: source_run.params || %{},
-         _pipeline_context: source_run.pipeline_context || source_run.pipeline,
-         max_concurrency: source_run.max_concurrency || 1,
-         timeout_ms: source_run.timeout_ms,
-         retry: source_run.retry_policy || %{},
-         _plan_override: plan,
-         _resume_successful_steps: resume_successful_steps,
-         _submit_kind: :rerun,
-         _submit_ref: source_run.submit_ref || source_run.target_refs,
-         _replay_mode: mode,
-         _rerun_of_run_id: source_run.id,
-         _parent_run_id: source_run.id,
-         _root_run_id: root_run_id,
-         _lineage_depth: parent_depth + 1,
-         _operator_reason: Keyword.get(opts, :reason)
-       ]}
+        {:ok,
+         [
+           dependencies: plan.dependencies,
+           params: source_run.params || %{},
+           _pipeline_context: source_run.pipeline_context || source_run.pipeline,
+           max_concurrency: source_run.max_concurrency || 1,
+           timeout_ms: source_run.timeout_ms,
+           retry: source_run.retry_policy || %{},
+           _plan_override: plan,
+           _resume_successful_steps: resume_successful_steps,
+           _submit_kind: :rerun,
+           _submit_ref: source_run.submit_ref || source_run.target_refs,
+           _replay_mode: mode,
+           _rerun_of_run_id: source_run.id,
+           _parent_run_id: source_run.id,
+           _root_run_id: root_run_id,
+           _lineage_depth: parent_depth + 1,
+           _operator_reason: Keyword.get(opts, :reason)
+         ]}
+      end
     end
   end
 
@@ -447,18 +448,32 @@ defmodule Favn.Runtime.Manager do
     end
   end
 
-  defp build_resume_successful_steps(_source_run, _plan, :exact_replay), do: %{}
+  defp build_resume_successful_steps(_source_run, _plan, :exact_replay), do: {:ok, %{}}
 
   defp build_resume_successful_steps(source_run, %Favn.Plan{} = plan, :resume_from_failure) do
-    planned_refs = plan.nodes |> Map.values() |> Enum.map(& &1.ref) |> MapSet.new()
+    if duplicate_ref_node_keys?(plan) do
+      {:error, :resume_from_failure_requires_node_key_results}
+    else
+      planned_refs = plan.nodes |> Map.values() |> Enum.map(& &1.ref) |> MapSet.new()
 
-    Enum.reduce(source_run.asset_results || %{}, %{}, fn {ref, result}, acc ->
-      if result.status == :ok and MapSet.member?(planned_refs, ref) do
-        Map.put(acc, ref, result)
-      else
-        acc
-      end
-    end)
+      resume =
+        Enum.reduce(source_run.asset_results || %{}, %{}, fn {ref, result}, acc ->
+          if result.status == :ok and MapSet.member?(planned_refs, ref) do
+            Map.put(acc, ref, result)
+          else
+            acc
+          end
+        end)
+
+      {:ok, resume}
+    end
+  end
+
+  defp duplicate_ref_node_keys?(%Favn.Plan{} = plan) do
+    plan.nodes
+    |> Map.values()
+    |> Enum.group_by(& &1.ref)
+    |> Enum.any?(fn {_ref, nodes} -> length(nodes) > 1 end)
   end
 
   defp validate_params(params) when is_map(params), do: :ok

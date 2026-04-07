@@ -5,7 +5,7 @@ defmodule Favn.Runtime.ProjectorTest do
   alias Favn.Runtime.State
   alias Favn.Runtime.StepState
 
-  test "asset_results use deterministic canonical step when multiple node_keys share one ref" do
+  test "asset_results select worst status when multiple node_keys share one ref" do
     ref = {__MODULE__, :windowed_asset}
     started_at = DateTime.utc_now()
     finished_at = DateTime.add(started_at, 5, :millisecond)
@@ -47,8 +47,8 @@ defmodule Favn.Runtime.ProjectorTest do
     run = Projector.to_public_run(state)
     result = run.asset_results[ref]
 
-    assert result.status == :ok
-    assert result.attempt_count == 2
-    assert result.duration_ms == 5
+    assert result.status == :retrying
+    assert result.attempt_count == 1
+    assert result.duration_ms == 0
   end
 end

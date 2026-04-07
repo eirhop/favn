@@ -109,11 +109,11 @@ defmodule Favn.Runtime.Projector do
     }
   end
 
-  defp status_rank(:success), do: 5
-  defp status_rank(:failed), do: 4
-  defp status_rank(:timed_out), do: 3
-  defp status_rank(:cancelled), do: 2
-  defp status_rank(:retrying), do: 1
+  defp status_rank(:failed), do: 5
+  defp status_rank(:timed_out), do: 4
+  defp status_rank(:cancelled), do: 3
+  defp status_rank(:retrying), do: 2
+  defp status_rank(:success), do: 1
   defp status_rank(_), do: 0
 
   defp datetime_to_micros(nil), do: -1

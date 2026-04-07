@@ -156,7 +156,9 @@ defmodule Favn.Assets.Planner do
   end
 
   defp expand_windows(%Anchor{} = anchor_window, %Spec{} = spec) do
-    count = window_units_between(spec.kind, anchor_window.start_at, anchor_window.end_at)
+    count =
+      window_units_between(spec.kind, anchor_window.start_at, anchor_window.end_at, spec.timezone)
+
     total = max(count + spec.lookback, 1)
     anchor_start = floor_to_kind(anchor_window.start_at, spec.kind, spec.timezone)
     first_start = shift_kind(anchor_start, spec.kind, -spec.lookback)
@@ -169,9 +171,9 @@ defmodule Favn.Assets.Planner do
     |> Enum.sort_by(&window_sort_key/1)
   end
 
-  defp window_units_between(kind, %DateTime{} = start_at, %DateTime{} = end_at) do
-    start_floor = floor_to_kind(start_at, kind, "Etc/UTC")
-    end_floor = floor_to_kind(end_at, kind, "Etc/UTC")
+  defp window_units_between(kind, %DateTime{} = start_at, %DateTime{} = end_at, timezone) do
+    start_floor = floor_to_kind(start_at, kind, timezone)
+    end_floor = floor_to_kind(end_at, kind, timezone)
 
     case kind do
       :hour -> max(div(DateTime.diff(end_floor, start_floor, :second), 3600), 1)

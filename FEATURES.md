@@ -81,6 +81,7 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [x] Plan-level `node_stages` scaffold for node-key stage iteration in runtime restore paths
 - [x] Window-aware planner identity `{asset_ref, window_key}` (v1 anchor-window expansion)
 - [x] Window-aware execution and retry semantics (node-key runtime state/coordinator)
+- [ ] Node-key keyed persisted rerun resume state (temporary guard blocks resume on duplicate-ref window plans)
 - [ ] SQLite persisted window state
 - [ ] Backfill API and range expansion
 - [ ] Manual run support with explicit anchor windows

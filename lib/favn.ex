@@ -950,6 +950,9 @@ defmodule Favn do
     * both modes reuse persisted execution intent from the source run
     * supports source statuses `:ok | :error | :cancelled | :timed_out`
     * returns `{:error, :run_not_terminal}` for still-running source runs
+    * returns `{:error, :resume_from_failure_requires_node_key_results}` when
+      `:resume_from_failure` is requested for plans containing duplicate refs
+      across multiple node keys (window-expanded plans)
     * persists lineage links in the new run (`rerun_of_run_id`, `parent_run_id`, `root_run_id`)
 
   Options:

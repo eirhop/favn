@@ -5,6 +5,14 @@ defmodule Favn.RunnerTest do
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
   alias Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore
 
+  defmodule WindowRerunAssets do
+    use Favn.Assets
+
+    @asset true
+    @window Favn.Window.hourly(lookback: 1)
+    def hourly_ok(_ctx), do: :ok
+  end
+
   defmodule InitialFailingStore do
     @behaviour Favn.Storage.Adapter
 
@@ -787,6 +795,27 @@ defmodule Favn.RunnerTest do
     assert {:error, exact_rerun} = Favn.await_run(exact_rerun_id)
     assert exact_rerun.status == :error
     assert exact_rerun.replay_mode == :exact_replay
+  end
+
+  test "resume_from_failure is rejected for plans with duplicate refs across windowed node keys" do
+    :ok = Favn.TestSetup.setup_asset_modules([WindowRerunAssets], reload_graph?: true)
+
+    anchor =
+      Favn.Window.anchor(
+        :day,
+        DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+        DateTime.from_naive!(~N[2025-01-11 00:00:00], "Etc/UTC")
+      )
+
+    assert {:ok, run_id} =
+             Favn.run_asset({WindowRerunAssets, :hourly_ok},
+               anchor_window: anchor
+             )
+
+    assert {:ok, _run} = Favn.await_run(run_id)
+
+    assert {:error, :resume_from_failure_requires_node_key_results} =
+             Favn.rerun_run(run_id, mode: :resume_from_failure)
   end
 
   test "retries raised exception and succeeds on a later attempt" do

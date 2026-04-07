@@ -195,6 +195,8 @@ It also includes `node_stages` so runtime recovery/promotion logic can iterate
 stages by node key without reconstructing `{ref, nil}` keys.
 Planner v1 now expands windowed assets into concrete `{asset_ref, window_key}`
 nodes from an optional `anchor_window` (hour/day/month with lookback).
+`resume_from_failure` reruns are currently restricted to non-duplicated refs
+until node-key keyed persisted resume state is introduced.
 
 Asset modules can now attach window specs directly on assets:
 
