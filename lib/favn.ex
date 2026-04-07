@@ -583,10 +583,9 @@ defmodule Favn do
   """
   @spec list_assets(module()) :: {:ok, [asset()]} | {:error, asset_error()}
   def list_assets(module) when is_atom(module) do
-    if asset_module?(module) do
-      {:ok, module.__favn_assets__()}
-    else
-      {:error, :not_asset_module}
+    case Favn.Assets.Compiler.compile_module_assets(module) do
+      {:ok, assets} -> {:ok, Enum.sort_by(assets, & &1.ref)}
+      {:error, _reason} -> {:error, :not_asset_module}
     end
   end
 

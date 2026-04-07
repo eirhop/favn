@@ -275,6 +275,10 @@ defmodule Favn.AssetsTest do
     [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
 
     assert Favn.asset_module?(module_name)
+
+    assert {:ok, [%Favn.Asset{name: :compiled_sql_asset, module: ^module_name}]} =
+             Favn.list_assets(module_name)
+
     assert {:ok, catalog} = Favn.Assets.Registry.build_catalog([module_name])
     assert [%Favn.Asset{name: :compiled_sql_asset, module: ^module_name}] = catalog.assets
   end
