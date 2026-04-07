@@ -130,6 +130,60 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.anchor_window == anchor
   end
 
+  test "run_pipeline/2 with anchor_window drives windowed planning and execution" do
+    Code.compile_string("""
+    defmodule WindowedAnchorAssets do
+      use Favn.Assets
+
+      alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
+
+      @asset true
+      @window Favn.Window.daily()
+      def windowed_source(_ctx), do: :ok
+
+      @asset true
+      @window Favn.Window.daily()
+      @depends :windowed_source
+      def windowed_target(ctx) do
+        CtxRecorder.record(ctx)
+        :ok
+      end
+    end
+
+    defmodule WindowedAnchorPipeline do
+      use Favn.Pipeline
+
+      pipeline :windowed_anchor do
+        asset {WindowedAnchorAssets, :windowed_target}
+      end
+    end
+    """)
+
+    :ok = Favn.TestSetup.setup_asset_modules([WindowedAnchorAssets], reload_graph?: true)
+
+    anchor =
+      Favn.Window.Anchor.new!(
+        :day,
+        DateTime.from_naive!(~N[2025-01-20 00:00:00], "Etc/UTC"),
+        DateTime.from_naive!(~N[2025-01-21 00:00:00], "Etc/UTC"),
+        timezone: "Etc/UTC"
+      )
+
+    assert {:ok, run_id} = Favn.run_pipeline(WindowedAnchorPipeline, anchor_window: anchor)
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+
+    assert Enum.all?(run.plan.target_node_keys, fn {_ref, window_key} ->
+             not is_nil(window_key)
+           end)
+
+    [ctx | _] =
+      CtxRecorder.all()
+      |> Enum.filter(&(&1.current_ref == {WindowedAnchorAssets, :windowed_target}))
+
+    assert %Favn.Window.Runtime{} = ctx.window
+    assert ctx.pipeline.anchor_window == anchor
+  end
+
   test "backfill_pipeline/2 submits one run over range-expanded deduplicated plan" do
     Code.compile_string("""
     defmodule BackfillPipelineAssets do
