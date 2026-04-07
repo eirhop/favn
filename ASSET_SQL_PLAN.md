@@ -96,6 +96,7 @@ defmodule MyApp.SalesAssets do
     """
   end
 end
+```
 
 This gives users:
 	•	one module per domain or bounded context
@@ -128,11 +129,11 @@ Marks a module as a container for SQL assets.
 The module becomes a compile-time authoring surface that can emit many canonical Favn assets.
 
 Example:
-
+```elixir
 defmodule MyApp.SalesAssets do
   use Favn.SQLAssets
 end
-
+```
 
 ⸻
 
@@ -141,11 +142,11 @@ asset :name do ... end
 Defines one SQL asset inside the module.
 
 Example:
-
+```elixir
 asset :fact_orders do
   ...
 end
-
+```
 The asset name should be unique within the module.
 
 ⸻
@@ -155,12 +156,12 @@ The asset name should be unique within the module.
 Used inside an asset block for human-facing documentation.
 
 Example:
-
+```elixir
 asset :fact_orders do
   @doc "Gold fact table for sales analytics"
   ...
 end
-
+```
 This should be reused for catalog/docs generation just like other Favn assets.
 
 ⸻
@@ -170,12 +171,12 @@ This should be reused for catalog/docs generation just like other Favn assets.
 Used inside an asset block for non-execution metadata.
 
 Example:
-
+```elixir
 asset :fact_orders do
   @meta owner: "analytics", category: :sales, tags: [:gold]
   ...
 end
-
+```
 This stays aligned with the current Favn asset DSL.
 
 ⸻
@@ -226,12 +227,12 @@ sql
 Defines inline SQL.
 
 Example:
-
+```elixir
 sql ~sql"""
 select *
 from #{Raw.Orders}
 """
-
+```
 Inline SQL is best for smaller models and examples.
 
 ⸻
@@ -288,11 +289,11 @@ Sources
 A source is an external relation that Favn reads from but does not build itself.
 
 Example direction:
-
+```elixir
 defmodule Raw.Orders do
   use Favn.Source, relation: "raw.orders"
 end
-
+```
 Then SQL can reference:
 
 #{Raw.Orders}
@@ -415,7 +416,7 @@ This is one reason the window model should be implemented before full SQL assets
 ⸻
 
 Example asset pack
-
+```elixir
 defmodule MyApp.SalesAssets do
   use Favn.SQLAssets
 
@@ -452,12 +453,12 @@ defmodule MyApp.SalesAssets do
     """
   end
 end
-
+```
 
 ⸻
 
 Example with SQL files
-
+```elixir
 defmodule MyApp.SalesAssets do
   use Favn.SQLAssets
 
@@ -476,9 +477,9 @@ defmodule MyApp.SalesAssets do
     sql_file "sales/fact_orders.sql"
   end
 end
-
+```
 Possible SQL file content:
-
+```sql
 select
   o.order_id,
   o.customer_id,
@@ -486,7 +487,7 @@ select
 from #{:stg_orders} o
 join #{Raw.Customers} c
   on o.customer_id = c.customer_id
-
+```
 
 ⸻
 
