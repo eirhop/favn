@@ -41,11 +41,15 @@ Suggested canonical struct:
 ```elixir
 %Favn.Window.Spec{
   kind: :hour | :day | :month,
-  refresh_from: :hour | :day | :month | nil,
+  anchor_rule: term() | nil,
   lookback: non_neg_integer(),
   timezone: String.t() | nil
 }
 ```
+
+`anchor_rule` is intentionally generic at this stage. It represents anchor-to-runtime
+mapping behavior (for example, “monthly asset expanded from daily anchors”) without
+locking semantics too early to one field meaning.
 
 ### 2) Anchor window (run-level request)
 
@@ -56,7 +60,7 @@ Represents window intent from scheduler/operator/pipeline.
   kind: :hour | :day | :month,
   start_at: DateTime.t(),
   end_at: DateTime.t(),
-  key: String.t()
+  key: Favn.Window.Key.t()
 }
 ```
 
@@ -69,8 +73,8 @@ Represents the concrete window used for one asset execution.
   kind: :hour | :day | :month,
   start_at: DateTime.t(),
   end_at: DateTime.t(),
-  key: String.t(),
-  anchor_key: String.t()
+  key: Favn.Window.Key.t(),
+  anchor_key: Favn.Window.Key.t()
 }
 ```
 
@@ -83,6 +87,9 @@ Replace planner identity from `asset_ref` to:
 ```
 
 This key is the dedupe identity for execution and reruns.
+
+`window_key` should be canonical and structured internally. String keys should be
+derived only for storage/indexing/display as needed.
 
 ### 5) Persisted window/materialization state
 
@@ -113,7 +120,7 @@ Validation (compile-time):
 - `@window` must attach immediately above an `@asset` function.
 - Max one `@window` per asset function.
 - `lookback >= 0`.
-- `refresh_from` must be compatible with declared granularity.
+- `anchor_rule` (when present) must be valid for declared granularity.
 
 ## Pipeline DSL (`use Favn.Pipeline`)
 
@@ -170,11 +177,11 @@ Use the same model:
 
 Keep run snapshots, add normalized window state.
 
-Suggested new tables:
+Persisted concepts to add (exact table names deferred until planner/runtime identity settles):
 
-1. `asset_window_runs` (append-only run history by asset/window)
-2. `asset_window_state` (latest projection by asset/window)
-3. (optional) `run_window_nodes` (run-to-node relation for fast querying)
+1. append-only run history by asset/window
+2. latest projection/state by asset/window
+3. (optional) run-to-windowed-node relation for fast querying
 
 ## API direction
 
@@ -253,6 +260,20 @@ This avoids a large separate DSL concept before foundation state exists.
 - Full schedule engine semantics.
 - Full physical storage partition/layout DSL.
 - Rich freshness DSL design before state model is in place.
+
+## Favn SQL alignment (forward-looking constraints)
+
+This runtime-windowing foundation must support later `Favn.SQLAssets` goals:
+
+- asset-first semantics
+- multi-asset authoring in one module
+- plain SQL-first authoring with compiler-driven inference/validation
+- typed by asset/source identity
+- same window semantics/planner identity/persisted state as Elixir assets
+- simpler than dbt while staying Elixir-native in structure
+
+Design requirement: SQL asset compilation should emit the same internal asset/window
+model used by Elixir assets, so planner/runtime/storage behavior is shared.
 
 ## Implementation notes for AI agents
 
