@@ -291,6 +291,7 @@ The following decisions are source-of-truth for the first v0.3 pipeline foundati
 - [x] Internal module namespacing for asset internals (`Favn.Assets.Registry`, `Favn.Assets.GraphIndex`, `Favn.Assets.Planner`)
 - [x] Stable operator actions: run, cancel, rerun
 - [x] Basic partition/runtime-window slot in `ctx` (initially `nil` for manual runs)
+- [x] Temporary architecture planning artifact for foundational runtime windowing (`RUNTIME_WINDOWING_PLAN.md`)
 
 ### Deferred after first v0.3 pipeline foundation PR
 
