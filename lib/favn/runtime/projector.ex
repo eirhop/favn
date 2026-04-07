@@ -32,6 +32,7 @@ defmodule Favn.Runtime.Projector do
       lineage_depth: state.lineage_depth,
       operator_reason: state.operator_reason,
       asset_results: build_asset_results(state),
+      node_results: build_node_results(state),
       error: state.run_error,
       terminal_reason: state.run_terminal_reason
     }
@@ -47,7 +48,6 @@ defmodule Favn.Runtime.Projector do
       schedule: Map.get(pipeline_context, :schedule),
       window: Map.get(pipeline_context, :window),
       anchor_window: Map.get(pipeline_context, :anchor_window),
-      partition: Map.get(pipeline_context, :partition),
       source: Map.get(pipeline_context, :source),
       outputs: Map.get(pipeline_context, :outputs, [])
     }
@@ -68,6 +68,17 @@ defmodule Favn.Runtime.Projector do
     |> Enum.reduce(%{}, fn {ref, steps}, acc ->
       canonical = Enum.max_by(steps, &step_sort_key/1)
       Map.put(acc, ref, step_to_asset_result(canonical))
+    end)
+  end
+
+  defp build_node_results(%State{} = state) do
+    state.steps
+    |> Enum.reduce(%{}, fn {node_key, step}, acc ->
+      if include_asset_result?(step) do
+        Map.put(acc, node_key, step_to_asset_result(step))
+      else
+        acc
+      end
     end)
   end
 

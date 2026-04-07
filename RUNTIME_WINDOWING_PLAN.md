@@ -237,25 +237,25 @@ This avoids a large separate DSL concept before foundation state exists.
 
 - [x] 3. **Pipeline DSL migration**
   - Add `window` clause.
-  - Keep `partition` temporarily as deprecated alias for a short transition.
+  - Remove legacy `partition` clause and keep window-only semantics.
 
 - [x] 4. **Runtime context split**
   - Add `ctx.window`.
   - Add `ctx.pipeline.anchor_window`.
-  - Keep compatibility alias for old `runtime_window` for one slice.
+  - Keep runtime context deterministic per node key.
 
-- [ ] 5. **Window-aware planner v1**
+- [x] 5. **Window-aware planner v1**
   - Introduce windowed node keys `{asset_ref, window_key}`.
   - Implement hourly/daily/monthly expansion + lookback.
 
-- [ ] 6. **Runtime execution adaptation**
+- [x] 6. **Runtime execution adaptation**
   - Switch step state/coordinator identity from `ref` to `node_key`.
   - Preserve retry/rerun semantics per node key.
 
-- [ ] 7. **Storage window state foundation**
+- [x] 7. **Storage window state foundation**
   - Add SQLite migrations + adapter writes for window run/state records.
 
-- [ ] 8. **Public API window options**
+- [x] 8. **Public API window options**
   - Add `anchor_window` options to plan/run APIs.
 
 - [ ] 9. **Backfill scaffold**

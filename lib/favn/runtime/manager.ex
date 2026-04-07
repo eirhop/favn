@@ -202,13 +202,11 @@ defmodule Favn.Runtime.Manager do
   defp build_steps(plan, retry_policy, resume_successful_steps) do
     plan.nodes
     |> Enum.reduce(%{}, fn {node_key, node}, acc ->
-      ref = node.ref
-
       step =
-        case Map.fetch(resume_successful_steps, ref) do
+        case Map.fetch(resume_successful_steps, node_key) do
           {:ok, result} ->
             %Favn.Runtime.StepState{
-              ref: ref,
+              ref: node.ref,
               node_key: node_key,
               runtime_window: node.window,
               stage: node.stage,
@@ -228,7 +226,7 @@ defmodule Favn.Runtime.Manager do
             status = if node.upstream == [], do: :ready, else: :pending
 
             %Favn.Runtime.StepState{
-              ref: ref,
+              ref: node.ref,
               node_key: node_key,
               runtime_window: node.window,
               stage: node.stage,
@@ -451,15 +449,16 @@ defmodule Favn.Runtime.Manager do
   defp build_resume_successful_steps(_source_run, _plan, :exact_replay), do: {:ok, %{}}
 
   defp build_resume_successful_steps(source_run, %Favn.Plan{} = plan, :resume_from_failure) do
-    if duplicate_ref_node_keys?(plan) do
+    planned_node_keys = Map.keys(plan.nodes) |> MapSet.new()
+    source_node_results = source_run.node_results || %{}
+
+    if map_size(source_node_results) == 0 and duplicate_ref_node_keys?(plan) do
       {:error, :resume_from_failure_requires_node_key_results}
     else
-      planned_refs = plan.nodes |> Map.values() |> Enum.map(& &1.ref) |> MapSet.new()
-
       resume =
-        Enum.reduce(source_run.asset_results || %{}, %{}, fn {ref, result}, acc ->
-          if result.status == :ok and MapSet.member?(planned_refs, ref) do
-            Map.put(acc, ref, result)
+        Enum.reduce(source_node_results, %{}, fn {node_key, result}, acc ->
+          if result.status == :ok and MapSet.member?(planned_node_keys, node_key) do
+            Map.put(acc, node_key, result)
           else
             acc
           end
@@ -469,12 +468,12 @@ defmodule Favn.Runtime.Manager do
     end
   end
 
-  defp duplicate_ref_node_keys?(%Favn.Plan{} = plan) do
-    plan.nodes
-    |> Map.values()
-    |> Enum.group_by(& &1.ref)
-    |> Enum.any?(fn {_ref, nodes} -> length(nodes) > 1 end)
-  end
+  defp duplicate_ref_node_keys?(%Favn.Plan{} = plan),
+    do:
+      plan.nodes
+      |> Map.values()
+      |> Enum.group_by(& &1.ref)
+      |> Enum.any?(fn {_r, n} -> length(n) > 1 end)
 
   defp validate_params(params) when is_map(params), do: :ok
   defp validate_params(_), do: {:error, :invalid_run_params}

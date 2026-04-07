@@ -27,7 +27,6 @@ defmodule Favn.Pipeline.Definition do
           meta: map(),
           schedule: schedule_clause(),
           window: atom() | nil,
-          partition: atom() | nil,
           source: atom() | nil,
           outputs: [atom()]
         }
@@ -41,7 +40,6 @@ defmodule Favn.Pipeline.Definition do
             meta: %{},
             schedule: nil,
             window: nil,
-            partition: nil,
             source: nil,
             outputs: []
 end

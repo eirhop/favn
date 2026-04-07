@@ -99,7 +99,6 @@ defmodule Favn.PipelineTest do
     assert stored_run.pipeline.schedule.overlap == :forbid
     assert stored_run.pipeline.window == :calendar_day
     assert stored_run.pipeline.anchor_window == nil
-    assert stored_run.pipeline.partition == :calendar_day
     assert stored_run.pipeline.source == :snowflake_primary
     assert stored_run.pipeline.outputs == [:warehouse_gold]
   end
@@ -123,7 +122,7 @@ defmodule Favn.PipelineTest do
                    overlap: :forbid,
                    origin: :inline
                  },
-                 partition: :manual_partition,
+                 window: :manual_window,
                  source: :manual_source,
                  outputs: [:manual_output]
                }
@@ -135,9 +134,9 @@ defmodule Favn.PipelineTest do
     assert run.pipeline.trigger == %{kind: :manual, requested_by: :api}
     assert %Schedule{} = run.pipeline.schedule
     assert run.pipeline.schedule.id == :manual_schedule
-    assert run.pipeline.window == nil
+    assert run.pipeline.window == :manual_window
     assert run.pipeline.anchor_window == nil
-    assert run.pipeline.partition == :manual_partition
+    assert run.pipeline.window == :manual_window
     assert run.pipeline.source == :manual_source
     assert run.pipeline.outputs == [:manual_output]
 
@@ -190,7 +189,6 @@ defmodule Favn.PipelineTest do
     assert ctx.window == nil
     assert %Schedule{} = ctx.pipeline.schedule
     assert ctx.pipeline.schedule.ref == {Schedules, :daily_default}
-    assert ctx.pipeline.partition == :calendar_day
     assert ctx.pipeline.source == :snowflake_primary
     assert ctx.pipeline.outputs == [:warehouse_gold]
   end
@@ -244,7 +242,7 @@ defmodule Favn.PipelineTest do
         asset {#{inspect(SalesAssets)}, :sales_daily}
         deps :none
         schedule {#{inspect(Schedules)}, :daily_default}
-        partition :calendar_day
+        window :calendar_day
         source :snowflake_primary
         outputs [:warehouse_gold]
       end
@@ -389,7 +387,7 @@ defmodule Favn.PipelineTest do
     end
   end
 
-  test "pipeline DSL rejects invalid schedule, partition, source, and outputs" do
+  test "pipeline DSL rejects invalid schedule, window, source, and outputs" do
     assert_raise ArgumentError, ~r/`schedule` must be `{Module, :name}` or keyword options/, fn ->
       Code.compile_string("""
       defmodule InvalidSchedulePipeline do
@@ -508,19 +506,6 @@ defmodule Favn.PipelineTest do
                    """)
                  end
 
-    assert_raise ArgumentError, ~r/`partition` must be an atom/, fn ->
-      Code.compile_string("""
-      defmodule InvalidPartitionPipeline do
-        use Favn.Pipeline
-
-        pipeline :invalid_partition do
-          asset {#{inspect(SalesAssets)}, :sales_daily}
-          partition "calendar_day"
-        end
-      end
-      """)
-    end
-
     assert_raise ArgumentError, ~r/`window` must be an atom/, fn ->
       Code.compile_string("""
       defmodule InvalidWindowPipeline do
@@ -529,20 +514,6 @@ defmodule Favn.PipelineTest do
         pipeline :invalid_window do
           asset {#{inspect(SalesAssets)}, :sales_daily}
           window "day"
-        end
-      end
-      """)
-    end
-
-    assert_raise ArgumentError, ~r/cannot diverge/, fn ->
-      Code.compile_string("""
-      defmodule DivergingWindowPartitionPipeline do
-        use Favn.Pipeline
-
-        pipeline :diverging_window_partition do
-          asset {#{inspect(SalesAssets)}, :sales_daily}
-          window :day
-          partition :calendar_day
         end
       end
       """)

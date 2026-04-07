@@ -797,7 +797,7 @@ defmodule Favn.RunnerTest do
     assert exact_rerun.replay_mode == :exact_replay
   end
 
-  test "resume_from_failure is rejected for plans with duplicate refs across windowed node keys" do
+  test "resume_from_failure supports duplicate refs across windowed node keys when node results exist" do
     :ok = Favn.TestSetup.setup_asset_modules([WindowRerunAssets], reload_graph?: true)
 
     anchor =
@@ -814,8 +814,9 @@ defmodule Favn.RunnerTest do
 
     assert {:ok, _run} = Favn.await_run(run_id)
 
-    assert {:error, :resume_from_failure_requires_node_key_results} =
-             Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:ok, rerun_run} = Favn.await_run(rerun_id)
+    assert rerun_run.replay_mode == :resume_from_failure
   end
 
   test "retries raised exception and succeeds on a later attempt" do

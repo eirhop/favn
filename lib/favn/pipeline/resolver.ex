@@ -42,7 +42,6 @@ defmodule Favn.Pipeline.Resolver do
         anchor_window: anchor_window,
         window: definition.window,
         schedule: schedule,
-        partition: definition.partition,
         source: definition.source,
         outputs: definition.outputs
       }
@@ -62,7 +61,6 @@ defmodule Favn.Pipeline.Resolver do
          :ok <- validate_deps(definition.deps),
          :ok <- validate_selectors(definition.selectors),
          :ok <- validate_window(definition.window),
-         :ok <- validate_partition(definition.partition),
          :ok <- validate_source(definition.source),
          :ok <- validate_outputs(definition.outputs) do
       :ok
@@ -89,10 +87,6 @@ defmodule Favn.Pipeline.Resolver do
   defp valid_selector?({:tag, value}) when is_atom(value) or is_binary(value), do: true
   defp valid_selector?({:category, value}) when is_atom(value) or is_binary(value), do: true
   defp valid_selector?(_), do: false
-
-  defp validate_partition(nil), do: :ok
-  defp validate_partition(value) when is_atom(value), do: :ok
-  defp validate_partition(value), do: {:error, {:invalid_partition, value}}
 
   defp validate_window(nil), do: :ok
   defp validate_window(value) when is_atom(value), do: :ok

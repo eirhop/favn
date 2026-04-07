@@ -28,7 +28,6 @@ defmodule Favn.Pipeline do
       Module.register_attribute(__MODULE__, :favn_pipeline_meta, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_schedule, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_window, persist: false)
-      Module.register_attribute(__MODULE__, :favn_pipeline_partition, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_source, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_outputs, persist: false)
 
@@ -91,24 +90,7 @@ defmodule Favn.Pipeline do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "window")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_window, "window")
       Favn.Pipeline.validate_atom_clause!(name, "window")
-      Favn.Pipeline.ensure_window_partition_compat!(__MODULE__, :window, name)
       @favn_pipeline_window name
-    end
-  end
-
-  defmacro partition(name) do
-    quote bind_quoted: [name: name] do
-      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "partition")
-      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_partition, "partition")
-      Favn.Pipeline.validate_atom_clause!(name, "partition")
-      Favn.Pipeline.ensure_window_partition_compat!(__MODULE__, :partition, name)
-      @favn_pipeline_partition name
-
-      if Module.get_attribute(__MODULE__, :favn_pipeline_window) == nil do
-        @favn_pipeline_window name
-      end
-
-      IO.warn("pipeline clause `partition` is deprecated; use `window` instead")
     end
   end
 
@@ -219,7 +201,6 @@ defmodule Favn.Pipeline do
         meta: Module.get_attribute(env.module, :favn_pipeline_meta) || %{},
         schedule: Module.get_attribute(env.module, :favn_pipeline_schedule),
         window: Module.get_attribute(env.module, :favn_pipeline_window),
-        partition: Module.get_attribute(env.module, :favn_pipeline_partition),
         source: Module.get_attribute(env.module, :favn_pipeline_source),
         outputs: Module.get_attribute(env.module, :favn_pipeline_outputs) || []
       }
@@ -293,26 +274,6 @@ defmodule Favn.Pipeline do
       :ok
     else
       raise ArgumentError, "pipeline clause `outputs` must be a list of atoms"
-    end
-  end
-
-  @doc false
-  def ensure_window_partition_compat!(module, clause, value)
-      when clause in [:window, :partition] do
-    window = Module.get_attribute(module, :favn_pipeline_window)
-    partition = Module.get_attribute(module, :favn_pipeline_partition)
-
-    cond do
-      clause == :window and not is_nil(partition) and is_atom(partition) and partition != value ->
-        raise ArgumentError,
-              "pipeline clauses `window` and `partition` cannot diverge (got window: #{inspect(value)}, partition: #{inspect(partition)})"
-
-      clause == :partition and not is_nil(window) and is_atom(window) and window != value ->
-        raise ArgumentError,
-              "pipeline clauses `window` and `partition` cannot diverge (got window: #{inspect(window)}, partition: #{inspect(value)})"
-
-      true ->
-        :ok
     end
   end
 

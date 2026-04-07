@@ -34,6 +34,7 @@ defmodule Favn.Run do
           lineage_depth: non_neg_integer(),
           operator_reason: term() | nil,
           asset_results: %{Ref.t() => AssetResult.t()},
+          node_results: %{Favn.Plan.node_key() => AssetResult.t()},
           error: term() | nil,
           terminal_reason: map() | nil
         }
@@ -51,6 +52,7 @@ defmodule Favn.Run do
     max_concurrency: 1,
     timeout_ms: nil,
     asset_results: %{},
+    node_results: %{},
     error: nil,
     terminal_reason: nil,
     pipeline: nil,
