@@ -6,7 +6,7 @@ defmodule Favn.Runtime.Transitions.Step do
   alias Favn.Runtime.State
   alias Favn.Runtime.StepState
 
-  @type event :: {atom(), Favn.asset_ref()} | {atom(), Favn.asset_ref(), map()}
+  @type event :: {atom(), Favn.Plan.node_key()} | {atom(), Favn.Plan.node_key(), map()}
   @type transition_error :: {:invalid_step_transition, StepState.status(), atom()}
 
   @spec mark_ready(State.t(), Favn.Plan.node_key()) ::
@@ -21,7 +21,7 @@ defmodule Favn.Runtime.Transitions.Step do
         |> put_step(next_step)
         |> enqueue_ready(node_key)
 
-      {:ok, next_state, [{:step_ready, step.ref}]}
+      {:ok, next_state, [{:step_ready, step.node_key}]}
     end
   end
 
@@ -71,7 +71,7 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_retry_scheduled, step.ref, payload}]}
+      {:ok, next_state, [{:step_retry_scheduled, step.node_key, payload}]}
     end
   end
 
@@ -87,7 +87,7 @@ defmodule Favn.Runtime.Transitions.Step do
         |> put_step(next_step)
         |> enqueue_ready(node_key)
 
-      {:ok, next_state, [{:step_ready, step.ref}]}
+      {:ok, next_state, [{:step_ready, step.node_key}]}
     end
   end
 
@@ -108,7 +108,7 @@ defmodule Favn.Runtime.Transitions.Step do
 
       {:ok, next_state,
        [
-         {:step_started, step.ref,
+         {:step_started, step.node_key,
           %{
             attempt: attempt,
             max_attempts: step.max_attempts,
@@ -154,7 +154,7 @@ defmodule Favn.Runtime.Transitions.Step do
 
       {state, ready_events} = unlock_downstream(state, node_key)
 
-      {:ok, state, [{:step_finished, step.ref, %{attempt: step.attempt}} | ready_events]}
+      {:ok, state, [{:step_finished, step.node_key, %{attempt: step.attempt}} | ready_events]}
     end
   end
 
@@ -203,7 +203,7 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_failed, step.ref, payload}]}
+      {:ok, next_state, [{:step_failed, step.node_key, payload}]}
     end
   end
 
@@ -240,7 +240,7 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_cancelled, step.ref, %{attempt: step.attempt}}]}
+      {:ok, next_state, [{:step_cancelled, step.node_key, %{attempt: step.attempt}}]}
     end
   end
 
@@ -277,7 +277,7 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_timed_out, step.ref, %{attempt: step.attempt}}]}
+      {:ok, next_state, [{:step_timed_out, step.node_key, %{attempt: step.attempt}}]}
     end
   end
 
@@ -299,7 +299,7 @@ defmodule Favn.Runtime.Transitions.Step do
                step
                | status: replacement_status,
                  terminal_reason: reason
-             }), [{event, step.ref} | acc_events]}
+             }), [{event, step.node_key} | acc_events]}
 
           _ ->
             {Map.put(acc_steps, node_key, step), acc_events}

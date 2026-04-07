@@ -42,14 +42,14 @@ defmodule Favn.RuntimeTransitionsTest do
       ready_queue: [key_a]
     }
 
-    assert {:ok, state, [{:step_started, ^ref_a, _payload}]} =
+    assert {:ok, state, [{:step_started, ^key_a, _payload}]} =
              StepTransitions.start_step(state, key_a)
 
     assert {:ok, state, events} =
              StepTransitions.complete_success(state, key_a, %{})
 
-    assert {:step_finished, ^ref_a, _payload} = hd(events)
-    assert {:step_ready, ref_b} in events
+    assert {:step_finished, ^key_a, _payload} = hd(events)
+    assert {:step_ready, key_b} in events
 
     assert state.steps[key_b].status == :ready
     assert key_b in state.ready_queue
@@ -93,7 +93,7 @@ defmodule Favn.RuntimeTransitionsTest do
 
     {state, events} = StepTransitions.finalize_unresolved(state, :timed_out)
     assert state.steps[key_pending].status == :timed_out
-    assert events == [{:step_timed_out, ref_pending}]
+    assert events == [{:step_timed_out, key_pending}]
   end
 
   test "retry scheduling moves running step to retrying and back to ready" do
@@ -110,11 +110,11 @@ defmodule Favn.RuntimeTransitionsTest do
     assert {:ok, state, _} = StepTransitions.start_step(state, key)
     assert state.steps[key].attempt == 1
 
-    assert {:ok, state, [{:step_retry_scheduled, ^ref, _payload}]} =
+    assert {:ok, state, [{:step_retry_scheduled, ^key, _payload}]} =
              StepTransitions.schedule_retry(state, key, %{kind: :error, reason: :boom}, 0)
 
     assert state.steps[key].status == :retrying
-    assert {:ok, state, [{:step_ready, ^ref}]} = StepTransitions.requeue_retry(state, key)
+    assert {:ok, state, [{:step_ready, ^key}]} = StepTransitions.requeue_retry(state, key)
     assert state.steps[key].status == :ready
   end
 end

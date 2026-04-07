@@ -69,7 +69,9 @@ defmodule Favn do
   window semantics can be reused consistently across current Elixir assets and
   future SQL assets. Runtime internals also now carry step identity as
   `{asset_ref, window_key}` with `window_key` currently scaffolded as `nil`
-  until full planner/runtime window identity is enabled end-to-end.
+  until full planner/runtime window identity is enabled end-to-end. Planned
+  target identity is now carried as `plan.target_node_keys` to keep runtime
+  completion checks node-key based.
 
   ### Runs
 

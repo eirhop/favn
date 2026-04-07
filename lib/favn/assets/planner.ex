@@ -39,6 +39,7 @@ defmodule Favn.Assets.Planner do
       {:ok,
        %Plan{
          target_refs: target_refs,
+         target_node_keys: Enum.map(target_refs, &{&1, nil}),
          dependencies: dependencies,
          nodes: build_nodes(projected_index, stage_map),
          topo_order: projected_index.topo_order,

@@ -179,6 +179,7 @@ defmodule Favn.Runtime.Manager do
     %State{
       run_id: new_run_id(),
       target_refs: plan.target_refs,
+      target_node_keys: plan.target_node_keys,
       plan: plan,
       params: params,
       pipeline_context: pipeline_context,

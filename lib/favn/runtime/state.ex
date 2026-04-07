@@ -32,6 +32,7 @@ defmodule Favn.Runtime.State do
           run_id: Favn.run_id(),
           run_status: run_status(),
           target_refs: [Ref.t()],
+          target_node_keys: [Plan.node_key()],
           plan: Plan.t(),
           params: map(),
           pipeline_context: map() | nil,
@@ -66,6 +67,7 @@ defmodule Favn.Runtime.State do
   defstruct [
     :run_id,
     :target_refs,
+    :target_node_keys,
     :plan,
     run_status: :pending,
     params: %{},

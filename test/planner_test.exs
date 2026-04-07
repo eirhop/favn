@@ -43,6 +43,11 @@ defmodule Favn.Assets.PlannerTest do
              [{GoldAssets, :gold_finance}, {GoldAssets, :gold_sales}]
            ]
 
+    assert plan.target_node_keys == [
+             {{GoldAssets, :gold_finance}, nil},
+             {{GoldAssets, :gold_sales}, nil}
+           ]
+
     assert plan.nodes[{{SilverAssets, :nightly_orders}, nil}].downstream == [
              {{GoldAssets, :gold_finance}, nil},
              {{GoldAssets, :gold_sales}, nil}

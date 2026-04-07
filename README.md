@@ -189,6 +189,8 @@ subsequent v0.3 slices.
 Current runtime internals now key step state by `{asset_ref, window_key}`
 with `window_key` currently scaffolded as `nil` until full window-aware
 planning and persistence are completed.
+The plan model also includes `target_node_keys` so runtime target completion
+checks are node-key-based rather than ref scans.
 
 Asset modules can now attach window specs directly on assets:
 

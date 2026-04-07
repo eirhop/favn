@@ -520,17 +520,17 @@ defmodule Favn.Runtime.Coordinator do
       reason: error[:reason]
     }
 
-    emit_events(state, [{:step_failed, step.ref, payload}])
+    emit_events(state, [{:step_failed, node_key, payload}])
   end
 
-  defp emit_retry_exhausted(%State{} = state, _node_key, step) do
+  defp emit_retry_exhausted(%State{} = state, node_key, step) do
     payload = %{
       attempt: step.attempt,
       max_attempts: step.max_attempts,
       exhausted: true
     }
 
-    emit_events(state, [{:step_retry_exhausted, step.ref, payload}])
+    emit_events(state, [{:step_retry_exhausted, node_key, payload}])
   end
 
   defp maybe_emit_retry_exhausted(%State{} = state, _node_key, _step, false), do: {:ok, state}
@@ -598,7 +598,7 @@ defmodule Favn.Runtime.Coordinator do
 
     events =
       Enum.map(source_keys, fn node_key ->
-        {:step_ready, Map.fetch!(state.steps, node_key).ref}
+        {:step_ready, node_key}
       end)
 
     emit_events(%{state | ready_queue: source_keys}, events)
@@ -635,26 +635,27 @@ defmodule Favn.Runtime.Coordinator do
     {:ok, %{state | timeout_timer_ref: timer_ref, deadline_at: deadline_at}}
   end
 
-  defp event_attrs(%State{} = state, {event_name, ref}) do
-    step = step_for_ref(state, ref)
+  defp event_attrs(%State{} = state, {event_name, node_key}) do
+    step = Map.fetch!(state.steps, node_key)
     stage = step.stage
 
     {event_name,
      %{
        entity: :step,
        status: step.status,
-       ref: ref,
+       ref: step.ref,
        stage: stage,
        data: %{
          duration_ms: step.duration_ms,
          attempt: step.attempt,
-         max_attempts: step.max_attempts
+         max_attempts: step.max_attempts,
+         node_key: node_key
        }
      }}
   end
 
-  defp event_attrs(%State{} = state, {event_name, ref, payload}) when is_map(payload) do
-    step = step_for_ref(state, ref)
+  defp event_attrs(%State{} = state, {event_name, node_key, payload}) when is_map(payload) do
+    step = Map.fetch!(state.steps, node_key)
     stage = step.stage
     error = step.error || %{}
     payload = payload_with_error_metadata(payload, error)
@@ -663,13 +664,14 @@ defmodule Favn.Runtime.Coordinator do
      %{
        entity: :step,
        status: step.status,
-       ref: ref,
+       ref: step.ref,
        stage: stage,
        data:
          Map.merge(payload, %{
            duration_ms: step.duration_ms,
            attempt: step.attempt,
-           max_attempts: step.max_attempts
+           max_attempts: step.max_attempts,
+           node_key: node_key
          })
      }}
   end
@@ -751,24 +753,28 @@ defmodule Favn.Runtime.Coordinator do
   defp stage_for_key(%State{} = state, node_key),
     do: state.steps |> Map.fetch!(node_key) |> Map.get(:stage)
 
-  defp step_for_ref(%State{} = state, ref) do
-    case Enum.find_value(state.steps, fn {_node_key, step} -> if step.ref == ref, do: step end) do
-      nil -> raise KeyError, "missing step for ref #{inspect(ref)}"
-      step -> step
-    end
-  end
-
   defp pop_next_ready(%State{ready_queue: []}), do: :none
 
   defp pop_next_ready(%State{ready_queue: [node_key | rest]} = state),
     do: {:ok, node_key, %{state | ready_queue: rest}}
 
   defp all_targets_success?(%State{} = state) do
-    Enum.all?(state.target_refs, fn ref ->
-      Enum.any?(state.steps, fn {_node_key, step} ->
-        step.ref == ref and step.status == :success
-      end)
+    Enum.all?(target_node_keys(state), fn node_key ->
+      Map.fetch!(state.steps, node_key).status == :success
     end)
+  end
+
+  defp target_node_keys(%State{} = state) do
+    if is_list(state.target_node_keys) and state.target_node_keys != [] do
+      state.target_node_keys
+    else
+      target_ref_set = MapSet.new(state.target_refs)
+
+      state.plan.nodes
+      |> Enum.filter(fn {_node_key, node} -> MapSet.member?(target_ref_set, node.ref) end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+    end
   end
 
   defp unresolved_steps?(%State{} = state) do
