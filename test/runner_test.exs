@@ -5,6 +5,51 @@ defmodule Favn.RunnerTest do
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
   alias Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore
 
+  defmodule WindowRerunAssets do
+    use Favn.Assets
+
+    @asset true
+    @window Favn.Window.hourly(lookback: 1)
+    def hourly_ok(_ctx), do: :ok
+  end
+
+  defmodule BackfillAssets do
+    use Favn.Assets
+
+    @asset true
+    @window Favn.Window.daily()
+    def daily_source(ctx), do: {:ok, %{window_key: ctx.window.key}}
+
+    @asset true
+    @window Favn.Window.daily()
+    @depends :daily_source
+    def daily_left(_ctx), do: :ok
+
+    @asset true
+    @window Favn.Window.daily()
+    @depends :daily_source
+    def daily_right(_ctx), do: :ok
+
+    @asset true
+    @window Favn.Window.daily()
+    @depends :daily_left
+    @depends :daily_right
+    def daily_target(_ctx), do: :ok
+  end
+
+  defmodule MixedGranularityBackfillAssets do
+    use Favn.Assets
+
+    @asset true
+    @window Favn.Window.hourly()
+    def hourly_source(_ctx), do: :ok
+
+    @asset true
+    @window Favn.Window.daily()
+    @depends :hourly_source
+    def daily_target(_ctx), do: :ok
+  end
+
   defmodule InitialFailingStore do
     @behaviour Favn.Storage.Adapter
 
@@ -446,7 +491,7 @@ defmodule Favn.RunnerTest do
         assert run.status == :ok
       end)
 
-    assert log =~ "Executor returned mismatched step ref; using tracked ref."
+    assert log =~ "Executor returned mismatched step key; using tracked key."
   end
 
   test "duplicate executor result for same exec_ref is ignored and does not crash coordinator" do
@@ -787,6 +832,108 @@ defmodule Favn.RunnerTest do
     assert {:error, exact_rerun} = Favn.await_run(exact_rerun_id)
     assert exact_rerun.status == :error
     assert exact_rerun.replay_mode == :exact_replay
+  end
+
+  test "resume_from_failure supports duplicate refs across windowed node keys when node results exist" do
+    :ok = Favn.TestSetup.setup_asset_modules([WindowRerunAssets], reload_graph?: true)
+
+    anchor =
+      Favn.Window.anchor(
+        :day,
+        DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+        DateTime.from_naive!(~N[2025-01-11 00:00:00], "Etc/UTC")
+      )
+
+    assert {:ok, run_id} =
+             Favn.run_asset({WindowRerunAssets, :hourly_ok},
+               anchor_window: anchor
+             )
+
+    assert {:ok, _run} = Favn.await_run(run_id)
+
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:ok, rerun_run} = Favn.await_run(rerun_id)
+    assert rerun_run.replay_mode == :resume_from_failure
+  end
+
+  test "backfill_asset/2 runs one deduplicated daily backfill over N days" do
+    :ok = Favn.TestSetup.setup_asset_modules([BackfillAssets], reload_graph?: true)
+
+    range = %{
+      kind: :day,
+      start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+      end_at: DateTime.from_naive!(~N[2025-01-13 00:00:00], "Etc/UTC"),
+      timezone: "Etc/UTC"
+    }
+
+    assert {:ok, run_id} = Favn.backfill_asset({BackfillAssets, :daily_target}, range: range)
+    assert {:ok, run} = Favn.await_run(run_id)
+
+    assert run.submit_kind == :backfill_asset
+    assert run.backfill.range == range
+    assert length(run.backfill.anchor_ranges) == 3
+    assert length(run.plan.target_node_keys) == 3
+    assert map_size(run.node_results) == 12
+  end
+
+  test "backfill planning dedupes shared upstream windows for branched graph" do
+    :ok = Favn.TestSetup.setup_asset_modules([BackfillAssets], reload_graph?: true)
+
+    range = %{
+      kind: :day,
+      start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+      end_at: DateTime.from_naive!(~N[2025-01-12 00:00:00], "Etc/UTC"),
+      timezone: "Etc/UTC"
+    }
+
+    assert {:ok, run_id} = Favn.backfill_asset({BackfillAssets, :daily_target}, range: range)
+    assert {:ok, run} = Favn.await_run(run_id)
+
+    source_results =
+      run.node_results
+      |> Enum.filter(fn {{{mod, name}, _window_key}, _} ->
+        mod == BackfillAssets and name == :daily_source
+      end)
+
+    assert length(source_results) == 2
+  end
+
+  test "backfill expands mixed granularity dependencies in one run plan" do
+    :ok =
+      Favn.TestSetup.setup_asset_modules([MixedGranularityBackfillAssets], reload_graph?: true)
+
+    range = %{
+      kind: :day,
+      start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+      end_at: DateTime.from_naive!(~N[2025-01-11 00:00:00], "Etc/UTC"),
+      timezone: "Etc/UTC"
+    }
+
+    assert {:ok, run_id} =
+             Favn.backfill_asset({MixedGranularityBackfillAssets, :daily_target}, range: range)
+
+    assert {:ok, run} = Favn.await_run(run_id)
+
+    assert length(run.plan.target_node_keys) == 1
+    assert map_size(run.node_results) == 25
+  end
+
+  test "rerun works for backfill-generated plans" do
+    :ok = Favn.TestSetup.setup_asset_modules([BackfillAssets], reload_graph?: true)
+
+    range = %{
+      kind: :day,
+      start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+      end_at: DateTime.from_naive!(~N[2025-01-12 00:00:00], "Etc/UTC"),
+      timezone: "Etc/UTC"
+    }
+
+    assert {:ok, run_id} = Favn.backfill_asset({BackfillAssets, :daily_target}, range: range)
+    assert {:ok, _run} = Favn.await_run(run_id)
+
+    assert {:ok, rerun_id} = Favn.rerun_run(run_id, mode: :resume_from_failure)
+    assert {:ok, rerun} = Favn.await_run(rerun_id)
+    assert rerun.replay_mode == :resume_from_failure
   end
 
   test "retries raised exception and succeeds on a later attempt" do

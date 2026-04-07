@@ -17,6 +17,7 @@ defmodule Favn.Assets do
     * asset functions must have arity 1 and use `def asset(ctx)`
     * use repeatable `@depends` attributes for dependencies
     * use `@meta` for non-execution metadata
+    * use optional `@window Favn.Window.daily()` to define asset windowing
   """
 
   alias Favn.Asset
@@ -28,6 +29,7 @@ defmodule Favn.Assets do
       Module.register_attribute(__MODULE__, :asset, persist: false)
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
+      Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_assets_raw, accumulate: true)
 
       @on_definition Favn.Assets
@@ -56,8 +58,14 @@ defmodule Favn.Assets do
 
               meta = Module.get_attribute(env.module, :meta)
 
+              window =
+                env.module
+                |> Module.get_attribute(:window)
+                |> Enum.reverse()
+
               Module.delete_attribute(env.module, :depends)
               Module.delete_attribute(env.module, :meta)
+              Module.delete_attribute(env.module, :window)
 
               Module.put_attribute(env.module, :favn_assets_raw, %{
                 module: env.module,
@@ -68,7 +76,8 @@ defmodule Favn.Assets do
                 line: env.line,
                 asset_decl: asset_opts,
                 depends: depends,
-                meta: meta
+                meta: meta,
+                window: window
               })
             else
               compile_error!(
@@ -98,15 +107,19 @@ defmodule Favn.Assets do
         )
     end
 
-    case {Module.get_attribute(env.module, :depends), Module.get_attribute(env.module, :meta)} do
-      {[], nil} ->
+    case {
+      Module.get_attribute(env.module, :depends),
+      Module.get_attribute(env.module, :meta),
+      Module.get_attribute(env.module, :window)
+    } do
+      {[], nil, []} ->
         :ok
 
       _ ->
         compile_error!(
           env.file,
           env.line,
-          "@depends/@meta must be attached to an immediately following @asset function"
+          "@depends/@meta/@window must be attached to an immediately following @asset function"
         )
     end
 
@@ -148,6 +161,7 @@ defmodule Favn.Assets do
     title = normalize_asset_decl!(raw_asset.asset_decl, raw_asset)
     meta = normalize_meta!(raw_asset.meta, raw_asset)
     depends_on = normalize_depends!(raw_asset.depends, raw_asset)
+    window_spec = normalize_window!(raw_asset.window, raw_asset)
 
     asset = %Asset{
       module: raw_asset.module,
@@ -159,7 +173,8 @@ defmodule Favn.Assets do
       line: raw_asset.line,
       title: title,
       meta: meta,
-      depends_on: depends_on
+      depends_on: depends_on,
+      window_spec: window_spec
     }
 
     try do
@@ -196,6 +211,26 @@ defmodule Favn.Assets do
     end
   end
 
+  defp normalize_window!([], _raw_asset), do: nil
+
+  defp normalize_window!([%Favn.Window.Spec{} = spec], _raw_asset), do: spec
+
+  defp normalize_window!([_a, _b | _rest], raw_asset) do
+    compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "multiple @window attributes are not allowed; use at most one @window per @asset function"
+    )
+  end
+
+  defp normalize_window!(value, raw_asset) do
+    compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
+    )
+  end
+
   defp normalize_doc({_line, false}), do: nil
   defp normalize_doc({_line, doc}) when is_binary(doc), do: doc
   defp normalize_doc(false), do: nil
@@ -227,17 +262,19 @@ defmodule Favn.Assets do
        when kind in [:def, :defp] do
     depends = Module.get_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
+    window = Module.get_attribute(env.module, :window)
 
-    if depends != [] or not is_nil(meta) do
+    if depends != [] or not is_nil(meta) or window != [] do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :meta)
+      Module.delete_attribute(env.module, :window)
 
       arity = length(args || [])
 
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta on #{kind} #{name}/#{arity} requires @asset immediately above that function"
+        "@depends/@meta/@window on #{kind} #{name}/#{arity} requires @asset immediately above that function"
       )
     else
       :ok

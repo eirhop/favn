@@ -17,6 +17,7 @@ defmodule Favn.Runtime.Projector do
       pipeline_context: state.pipeline_context,
       submit_kind: state.submit_kind,
       submit_ref: state.submit_ref,
+      backfill: state.backfill,
       max_concurrency: state.max_concurrency,
       timeout_ms: state.timeout_ms,
       status: public_status(state.run_status),
@@ -32,6 +33,7 @@ defmodule Favn.Runtime.Projector do
       lineage_depth: state.lineage_depth,
       operator_reason: state.operator_reason,
       asset_results: build_asset_results(state),
+      node_results: build_node_results(state),
       error: state.run_error,
       terminal_reason: state.run_terminal_reason
     }
@@ -45,7 +47,10 @@ defmodule Favn.Runtime.Projector do
       name: Map.get(pipeline_context, :name),
       trigger: Map.get(pipeline_context, :trigger),
       schedule: Map.get(pipeline_context, :schedule),
-      partition: Map.get(pipeline_context, :partition),
+      window: Map.get(pipeline_context, :window),
+      anchor_window: Map.get(pipeline_context, :anchor_window),
+      backfill_range: Map.get(pipeline_context, :backfill_range),
+      anchor_ranges: Map.get(pipeline_context, :anchor_ranges, []),
       source: Map.get(pipeline_context, :source),
       outputs: Map.get(pipeline_context, :outputs, [])
     }
@@ -59,28 +64,42 @@ defmodule Favn.Runtime.Projector do
   defp public_status(_status), do: :error
 
   defp build_asset_results(%State{} = state) do
-    Enum.reduce(state.steps, %{}, fn {ref, step}, acc ->
-      if include_asset_result?(step) do
-        result = %AssetResult{
-          ref: ref,
-          stage: step.stage,
-          status: public_step_status(step.status),
-          started_at: step.started_at,
-          finished_at: step.finished_at,
-          duration_ms: step.duration_ms || 0,
-          meta: step.meta,
-          error: step.error,
-          attempt_count: step.attempt,
-          max_attempts: step.max_attempts,
-          attempts: step.attempts,
-          next_retry_at: step.next_retry_at
-        }
+    state.steps
+    |> Map.values()
+    |> Enum.filter(&include_asset_result?/1)
+    |> Enum.group_by(& &1.ref)
+    |> Enum.reduce(%{}, fn {ref, steps}, acc ->
+      canonical = Enum.max_by(steps, &step_sort_key/1)
+      Map.put(acc, ref, step_to_asset_result(canonical))
+    end)
+  end
 
-        Map.put(acc, ref, result)
+  defp build_node_results(%State{} = state) do
+    state.steps
+    |> Enum.reduce(%{}, fn {node_key, step}, acc ->
+      if include_asset_result?(step) do
+        Map.put(acc, node_key, step_to_asset_result(step))
       else
         acc
       end
     end)
+  end
+
+  defp step_to_asset_result(step) do
+    %AssetResult{
+      ref: step.ref,
+      stage: step.stage,
+      status: public_step_status(step.status),
+      started_at: step.started_at,
+      finished_at: step.finished_at,
+      duration_ms: step.duration_ms || 0,
+      meta: step.meta,
+      error: step.error,
+      attempt_count: step.attempt,
+      max_attempts: step.max_attempts,
+      attempts: step.attempts,
+      next_retry_at: step.next_retry_at
+    }
   end
 
   defp public_step_status(:success), do: :ok
@@ -93,4 +112,24 @@ defmodule Favn.Runtime.Projector do
     step.status in [:retrying, :success, :failed, :cancelled, :timed_out] and
       (step.started_at != nil or step.status == :retrying or step.attempt > 0)
   end
+
+  defp step_sort_key(step) do
+    {
+      status_rank(step.status),
+      datetime_to_micros(step.finished_at),
+      datetime_to_micros(step.started_at),
+      step.attempt,
+      inspect(step.node_key)
+    }
+  end
+
+  defp status_rank(:failed), do: 5
+  defp status_rank(:timed_out), do: 4
+  defp status_rank(:cancelled), do: 3
+  defp status_rank(:retrying), do: 2
+  defp status_rank(:success), do: 1
+  defp status_rank(_), do: 0
+
+  defp datetime_to_micros(nil), do: -1
+  defp datetime_to_micros(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
 end

@@ -11,17 +11,23 @@ defmodule Favn.Pipeline.Resolver do
   alias Favn.Triggers.Schedule
   alias Favn.Triggers.Schedules
 
-  @type resolve_opts :: [params: map(), trigger: map()]
+  @type resolve_opts :: [
+          params: map(),
+          trigger: map(),
+          anchor_window: Favn.Window.Anchor.t() | nil
+        ]
 
   @spec resolve(Definition.t(), resolve_opts()) :: {:ok, Resolution.t()} | {:error, term()}
   def resolve(%Definition{} = definition, opts \\ []) when is_list(opts) do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
+    anchor_window = Keyword.get(opts, :anchor_window)
     default_timezone = Schedule.default_timezone()
 
     with :ok <- validate_definition(definition),
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
+         :ok <- validate_anchor_window(anchor_window),
          {:ok, schedule} <- resolve_schedule(definition.schedule, default_timezone),
          {:ok, assets} <- Favn.list_assets(),
          {:ok, target_refs} <- resolve_selectors(definition, assets) do
@@ -32,9 +38,9 @@ defmodule Favn.Pipeline.Resolver do
         meta: definition.meta,
         trigger: trigger,
         params: params,
-        runtime_window: nil,
+        anchor_window: anchor_window,
+        window: definition.window,
         schedule: schedule,
-        partition: definition.partition,
         source: definition.source,
         outputs: definition.outputs
       }
@@ -53,7 +59,7 @@ defmodule Favn.Pipeline.Resolver do
     with :ok <- validate_name(definition.name),
          :ok <- validate_deps(definition.deps),
          :ok <- validate_selectors(definition.selectors),
-         :ok <- validate_partition(definition.partition),
+         :ok <- validate_window(definition.window),
          :ok <- validate_source(definition.source),
          :ok <- validate_outputs(definition.outputs) do
       :ok
@@ -81,9 +87,9 @@ defmodule Favn.Pipeline.Resolver do
   defp valid_selector?({:category, value}) when is_atom(value) or is_binary(value), do: true
   defp valid_selector?(_), do: false
 
-  defp validate_partition(nil), do: :ok
-  defp validate_partition(value) when is_atom(value), do: :ok
-  defp validate_partition(value), do: {:error, {:invalid_partition, value}}
+  defp validate_window(nil), do: :ok
+  defp validate_window(value) when is_atom(value), do: :ok
+  defp validate_window(value), do: {:error, {:invalid_window, value}}
 
   defp validate_source(nil), do: :ok
   defp validate_source(value) when is_atom(value), do: :ok
@@ -100,6 +106,13 @@ defmodule Favn.Pipeline.Resolver do
 
   defp validate_trigger(trigger) when is_map(trigger), do: :ok
   defp validate_trigger(_invalid), do: {:error, :invalid_pipeline_trigger}
+
+  defp validate_anchor_window(nil), do: :ok
+
+  defp validate_anchor_window(%Favn.Window.Anchor{} = anchor_window),
+    do: Favn.Window.Anchor.validate(anchor_window)
+
+  defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
 
   defp resolve_schedule(nil, _default_timezone), do: {:ok, nil}
 

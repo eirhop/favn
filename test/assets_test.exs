@@ -10,6 +10,7 @@ defmodule Favn.AssetsTest.Sample do
   use Favn.Assets
 
   alias Favn.AssetsTest.Upstream
+  alias Favn.Window
 
   @doc "Extract raw orders"
   @asset "Extract Orders"
@@ -19,6 +20,7 @@ defmodule Favn.AssetsTest.Sample do
   @asset true
   @depends :extract_orders
   @meta tags: [:sales, "warehouse"], owner: "data"
+  @window Window.daily(lookback: 1)
   def normalize_orders(_ctx), do: :ok
 
   @doc false
@@ -32,6 +34,30 @@ defmodule Favn.AssetsTest do
   use ExUnit.Case, async: true
 
   alias Favn.Asset
+
+  defmodule SQLLikeCompiler do
+    @behaviour Favn.Assets.Compiler
+
+    @impl true
+    def compile_assets(module) do
+      {:ok,
+       [
+         %Favn.Asset{
+           module: module,
+           name: :compiled_sql_asset,
+           ref: {module, :compiled_sql_asset},
+           arity: 1,
+           doc: "compiled sql asset",
+           file: "lib/sql_assets.ex",
+           line: 1,
+           title: "Compiled SQL Asset",
+           meta: %{category: :sql},
+           depends_on: [],
+           window_spec: Favn.Window.daily()
+         }
+       ]}
+    end
+  end
 
   test "captures canonical asset metadata in source order" do
     assets = Favn.AssetsTest.Sample.__favn_assets__()
@@ -49,9 +75,16 @@ defmodule Favn.AssetsTest do
     assert normalize.depends_on == [{Favn.AssetsTest.Sample, :extract_orders}]
     assert normalize.meta == %{owner: "data", tags: [:sales, "warehouse"]}
 
+    assert normalize.window_spec == %Favn.Window.Spec{
+             kind: :day,
+             lookback: 1,
+             timezone: "Etc/UTC"
+           }
+
     assert fact.doc == nil
     assert fact.meta == %{owner: "analytics", category: :sales, tags: [:view]}
     assert fact.depends_on == [{Favn.AssetsTest.Upstream, :source_rows}]
+    assert fact.window_spec == nil
   end
 
   test "rejects invalid asset declarations at compile time" do
@@ -149,6 +182,7 @@ defmodule Favn.AssetsTest do
       compile_test_module("""
       use Favn.Assets
 
+      @window Favn.Window.daily()
       @depends :upstream
       def helper(_ctx), do: :ok
       """)
@@ -158,6 +192,7 @@ defmodule Favn.AssetsTest do
       compile_test_module("""
       use Favn.Assets
 
+      @window Favn.Window.daily()
       @meta owner: \"data\"
       def helper(_ctx), do: :ok
       """)
@@ -171,8 +206,30 @@ defmodule Favn.AssetsTest do
 
                    @depends :upstream
                    @meta owner: \"data\"
+                   @window Favn.Window.daily()
                    """)
                  end
+
+    assert_raise CompileError, ~r/invalid @window value/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @window :day
+      def bad_window(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/multiple @window attributes are not allowed/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @window Favn.Window.daily()
+      @window Favn.Window.hourly()
+      def too_many_windows(_ctx), do: :ok
+      """)
+    end
   end
 
   test "consumes @depends and @meta only for the intended asset" do
@@ -204,6 +261,26 @@ defmodule Favn.AssetsTest do
     assert a.meta == %{}
     assert second.depends_on == []
     assert second.meta == %{}
+  end
+
+  test "asset compiler seam supports non-Elixir frontends compiling into canonical assets" do
+    module_name = Module.concat(__MODULE__, "SQLLike#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+      def __favn_asset_compiler__, do: #{inspect(SQLLikeCompiler)}
+    end
+    """
+
+    [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
+
+    assert Favn.asset_module?(module_name)
+
+    assert {:ok, [%Favn.Asset{name: :compiled_sql_asset, module: ^module_name}]} =
+             Favn.list_assets(module_name)
+
+    assert {:ok, catalog} = Favn.Assets.Registry.build_catalog([module_name])
+    assert [%Favn.Asset{name: :compiled_sql_asset, module: ^module_name}] = catalog.assets
   end
 
   defp compile_test_module(body) do

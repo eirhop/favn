@@ -69,18 +69,29 @@ Near-term priority is a practical path to real usage:
 
 Goal: make Favn usable for scheduled and windowed asset execution.
 
+- [x] Documentation sync for window-aware DSL examples across README and `Favn` moduledoc
 - [ ] Working pipeline execution
 - [ ] Working scheduler trigger runtime
-- [ ] Pipeline `window` clause
-- [ ] Asset-level `@window`
-- [ ] `ctx.window`
-- [ ] `ctx.pipeline.anchor_window`
-- [ ] Window-aware planner identity `{asset_ref, window_key}`
-- [ ] Window-aware execution and retry semantics
-- [ ] SQLite persisted window state
-- [ ] Backfill API and range expansion
+- [x] Pipeline `window` clause
+- [x] Asset-level `@window`
+- [x] Runtime window domain primitives (`Favn.Window.*`)
+- [x] `ctx.window`
+- [x] `ctx.pipeline.anchor_window`
+- [x] Runtime/coordinator step identity keyed as `{asset_ref, window_key}` (current scaffold uses `nil` window keys)
+- [x] Plan-level `target_node_keys` scaffold for node-key target completion semantics
+- [x] Plan-level `node_stages` scaffold for node-key stage iteration in runtime restore paths
+- [x] Window-aware planner identity `{asset_ref, window_key}` (v1 anchor-window expansion)
+- [x] Window-aware execution and retry semantics (node-key runtime state/coordinator)
+- [x] Node-key keyed persisted rerun resume state for window-expanded runs
+- [x] SQLite persisted window state foundation (`run_node_results` + `window_latest_results`)
+- [x] Backfill API and range expansion
+- [x] Public backfill APIs (`Favn.backfill_asset/2`, `Favn.backfill_pipeline/2`)
+- [x] Planner anchor-range expansion via `Anchor.expand_range/4` with cross-anchor node-key dedupe
+- [x] Backfill provenance persisted on runs (`run.backfill`, `pipeline.backfill_range`, `pipeline.anchor_ranges`)
+- [x] Freshness policy checks over persisted node/window run state
+- [x] SQL-readiness asset compiler seam for future SQL frontend integration
 - [ ] Manual run support with explicit anchor windows
-- [ ] Replace `partition` direction with runtime windowing
+- [x] Replace `partition` direction with runtime windowing
 
 ---
 

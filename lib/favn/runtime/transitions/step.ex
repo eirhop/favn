@@ -6,30 +6,30 @@ defmodule Favn.Runtime.Transitions.Step do
   alias Favn.Runtime.State
   alias Favn.Runtime.StepState
 
-  @type event :: {atom(), Favn.asset_ref()} | {atom(), Favn.asset_ref(), map()}
+  @type event :: {atom(), Favn.Plan.node_key()} | {atom(), Favn.Plan.node_key(), map()}
   @type transition_error :: {:invalid_step_transition, StepState.status(), atom()}
 
-  @spec mark_ready(State.t(), Favn.asset_ref()) ::
+  @spec mark_ready(State.t(), Favn.Plan.node_key()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def mark_ready(%State{} = state, ref) do
-    with {:ok, step} <- fetch_step(state, ref),
+  def mark_ready(%State{} = state, node_key) do
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :pending, :mark_ready) do
       next_step = %{step | status: :ready}
 
       next_state =
         state
         |> put_step(next_step)
-        |> enqueue_ready(ref)
+        |> enqueue_ready(node_key)
 
-      {:ok, next_state, [{:step_ready, ref}]}
+      {:ok, next_state, [{:step_ready, step.node_key}]}
     end
   end
 
-  @spec schedule_retry(State.t(), Favn.asset_ref(), map(), non_neg_integer()) ::
+  @spec schedule_retry(State.t(), Favn.Plan.node_key(), map(), non_neg_integer()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def schedule_retry(%State{} = state, ref, error, delay_ms)
+  def schedule_retry(%State{} = state, node_key, error, delay_ms)
       when is_map(error) and is_integer(delay_ms) and delay_ms >= 0 do
-    with {:ok, step} <- fetch_step(state, ref),
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :running, :schedule_retry) do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
@@ -71,30 +71,30 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_retry_scheduled, ref, payload}]}
+      {:ok, next_state, [{:step_retry_scheduled, step.node_key, payload}]}
     end
   end
 
-  @spec requeue_retry(State.t(), Favn.asset_ref()) ::
+  @spec requeue_retry(State.t(), Favn.Plan.node_key()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def requeue_retry(%State{} = state, ref) do
-    with {:ok, step} <- fetch_step(state, ref),
+  def requeue_retry(%State{} = state, node_key) do
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :retrying, :requeue_retry) do
       next_step = %{step | status: :ready, next_retry_at: nil}
 
       next_state =
         state
         |> put_step(next_step)
-        |> enqueue_ready(ref)
+        |> enqueue_ready(node_key)
 
-      {:ok, next_state, [{:step_ready, ref}]}
+      {:ok, next_state, [{:step_ready, step.node_key}]}
     end
   end
 
-  @spec start_step(State.t(), Favn.asset_ref()) ::
+  @spec start_step(State.t(), Favn.Plan.node_key()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def start_step(%State{} = state, ref) do
-    with {:ok, step} <- fetch_step(state, ref),
+  def start_step(%State{} = state, node_key) do
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :ready, :start_step) do
       now = DateTime.utc_now()
       attempt = step.attempt + 1
@@ -104,11 +104,11 @@ defmodule Favn.Runtime.Transitions.Step do
       next_state =
         state
         |> put_step(next_step)
-        |> remove_ready(ref)
+        |> remove_ready(node_key)
 
       {:ok, next_state,
        [
-         {:step_started, ref,
+         {:step_started, step.node_key,
           %{
             attempt: attempt,
             max_attempts: step.max_attempts,
@@ -118,10 +118,10 @@ defmodule Favn.Runtime.Transitions.Step do
     end
   end
 
-  @spec complete_success(State.t(), Favn.asset_ref(), map()) ::
+  @spec complete_success(State.t(), Favn.Plan.node_key(), map()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def complete_success(%State{} = state, ref, meta) when is_map(meta) do
-    with {:ok, step} <- fetch_step(state, ref),
+  def complete_success(%State{} = state, node_key, meta) when is_map(meta) do
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :running, :complete_success) do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
@@ -152,17 +152,17 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {state, ready_events} = unlock_downstream(state, ref)
+      {state, ready_events} = unlock_downstream(state, node_key)
 
-      {:ok, state, [{:step_finished, ref, %{attempt: step.attempt}} | ready_events]}
+      {:ok, state, [{:step_finished, step.node_key, %{attempt: step.attempt}} | ready_events]}
     end
   end
 
-  @spec complete_failure(State.t(), Favn.asset_ref(), map(), keyword()) ::
+  @spec complete_failure(State.t(), Favn.Plan.node_key(), map(), keyword()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def complete_failure(%State{} = state, ref, error, opts \\ [])
+  def complete_failure(%State{} = state, node_key, error, opts \\ [])
       when is_map(error) and is_list(opts) do
-    with {:ok, step} <- fetch_step(state, ref),
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :running, :complete_failure) do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
@@ -203,14 +203,14 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_failed, ref, payload}]}
+      {:ok, next_state, [{:step_failed, step.node_key, payload}]}
     end
   end
 
-  @spec complete_cancelled(State.t(), Favn.asset_ref(), map()) ::
+  @spec complete_cancelled(State.t(), Favn.Plan.node_key(), map()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def complete_cancelled(%State{} = state, ref, reason) when is_map(reason) do
-    with {:ok, step} <- fetch_step(state, ref),
+  def complete_cancelled(%State{} = state, node_key, reason) when is_map(reason) do
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :running, :complete_cancelled) do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
@@ -240,14 +240,14 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_cancelled, ref, %{attempt: step.attempt}}]}
+      {:ok, next_state, [{:step_cancelled, step.node_key, %{attempt: step.attempt}}]}
     end
   end
 
-  @spec complete_timed_out(State.t(), Favn.asset_ref(), map()) ::
+  @spec complete_timed_out(State.t(), Favn.Plan.node_key(), map()) ::
           {:ok, State.t(), [event()]} | {:error, transition_error()}
-  def complete_timed_out(%State{} = state, ref, reason) when is_map(reason) do
-    with {:ok, step} <- fetch_step(state, ref),
+  def complete_timed_out(%State{} = state, node_key, reason) when is_map(reason) do
+    with {:ok, step} <- fetch_step(state, node_key),
          :ok <- require_status(step, :running, :complete_timed_out) do
       now = DateTime.utc_now()
       duration_ms = DateTime.diff(now, step.started_at || now, :millisecond)
@@ -277,7 +277,7 @@ defmodule Favn.Runtime.Transitions.Step do
         state
         |> put_step(next_step)
 
-      {:ok, next_state, [{:step_timed_out, ref, %{attempt: step.attempt}}]}
+      {:ok, next_state, [{:step_timed_out, step.node_key, %{attempt: step.attempt}}]}
     end
   end
 
@@ -289,17 +289,20 @@ defmodule Favn.Runtime.Transitions.Step do
   def finalize_unresolved(%State{} = state, replacement_status)
       when replacement_status in [:skipped, :cancelled, :timed_out] do
     {next_steps, events} =
-      Enum.reduce(state.steps, {%{}, []}, fn {ref, step}, {acc_steps, acc_events} ->
+      Enum.reduce(state.steps, {%{}, []}, fn {node_key, step}, {acc_steps, acc_events} ->
         case step.status do
           status when status in [:pending, :ready, :retrying] ->
             event = event_for(replacement_status)
             reason = terminal_reason_for(replacement_status)
 
-            {Map.put(acc_steps, ref, %{step | status: replacement_status, terminal_reason: reason}),
-             [{event, ref} | acc_events]}
+            {Map.put(acc_steps, node_key, %{
+               step
+               | status: replacement_status,
+                 terminal_reason: reason
+             }), [{event, step.node_key} | acc_events]}
 
           _ ->
-            {Map.put(acc_steps, ref, step), acc_events}
+            {Map.put(acc_steps, node_key, step), acc_events}
         end
       end)
 
@@ -313,8 +316,8 @@ defmodule Favn.Runtime.Transitions.Step do
   defp terminal_reason_for(:cancelled), do: %{kind: :cancelled}
   defp terminal_reason_for(:timed_out), do: %{kind: :timed_out}
 
-  defp fetch_step(%State{steps: steps}, ref) do
-    case Map.fetch(steps, ref) do
+  defp fetch_step(%State{steps: steps}, node_key) do
+    case Map.fetch(steps, node_key) do
       {:ok, step} -> {:ok, step}
       :error -> {:error, {:invalid_step_transition, :missing, :unknown_step}}
     end
@@ -326,7 +329,7 @@ defmodule Favn.Runtime.Transitions.Step do
     do: {:error, {:invalid_step_transition, status, action}}
 
   defp put_step(%State{} = state, %StepState{} = step),
-    do: %{state | steps: Map.put(state.steps, step.ref, step)}
+    do: %{state | steps: Map.put(state.steps, step.node_key, step)}
 
   defp enqueue_ready(%State{} = state, ref),
     do: %{state | ready_queue: state.ready_queue ++ [ref]}
@@ -334,27 +337,27 @@ defmodule Favn.Runtime.Transitions.Step do
   defp remove_ready(%State{} = state, ref),
     do: %{state | ready_queue: Enum.reject(state.ready_queue, &(&1 == ref))}
 
-  defp unlock_downstream(%State{} = state, ref) do
-    step = Map.fetch!(state.steps, ref)
+  defp unlock_downstream(%State{} = state, node_key) do
+    step = Map.fetch!(state.steps, node_key)
 
     ready_refs =
       step.downstream
       |> Enum.uniq()
-      |> Enum.filter(fn downstream_ref ->
-        downstream = Map.fetch!(state.steps, downstream_ref)
+      |> Enum.filter(fn downstream_key ->
+        downstream = Map.fetch!(state.steps, downstream_key)
         downstream.status == :pending and all_upstream_success?(state, downstream.upstream)
       end)
       |> Enum.sort()
 
-    Enum.reduce(ready_refs, {state, []}, fn downstream_ref, {acc, events} ->
-      {:ok, next_acc, next_events} = mark_ready(acc, downstream_ref)
+    Enum.reduce(ready_refs, {state, []}, fn downstream_key, {acc, events} ->
+      {:ok, next_acc, next_events} = mark_ready(acc, downstream_key)
       {next_acc, events ++ next_events}
     end)
   end
 
   defp all_upstream_success?(%State{} = state, upstream_refs) do
-    Enum.all?(upstream_refs, fn upstream_ref ->
-      state.steps |> Map.fetch!(upstream_ref) |> Map.get(:status) == :success
+    Enum.all?(upstream_refs, fn upstream_key ->
+      state.steps |> Map.fetch!(upstream_key) |> Map.get(:status) == :success
     end)
   end
 end

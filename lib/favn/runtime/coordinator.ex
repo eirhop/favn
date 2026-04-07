@@ -176,8 +176,8 @@ defmodule Favn.Runtime.Coordinator do
 
       true ->
         case pop_next_ready(state) do
-          {:ok, ref, next_state} ->
-            with {:ok, next_state} <- start_step_execution(next_state, ref) do
+          {:ok, node_key, next_state} ->
+            with {:ok, next_state} <- start_step_execution(next_state, node_key) do
               do_dispatch(next_state)
             end
 
@@ -187,15 +187,16 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp start_step_execution(%State{} = state, ref) do
-    with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, ref)),
-         {:ok, asset} <- Favn.Assets.Registry.get_asset(ref),
-         {:ok, handle} <- start_executor_step(state, ref, asset) do
-      {:ok, put_execution_handle(state, ref, handle)}
+  defp start_step_execution(%State{} = state, node_key) do
+    with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, node_key)),
+         step <- Map.fetch!(state.steps, node_key),
+         {:ok, asset} <- Favn.Assets.Registry.get_asset(step.ref),
+         {:ok, handle} <- start_executor_step(state, node_key, asset) do
+      {:ok, put_execution_handle(state, node_key, handle)}
     else
       {:error, reason} ->
         normalized = %{kind: :error, reason: reason, stacktrace: [], class: :executor_error}
-        handle_step_error(state, ref, normalized)
+        handle_step_error(state, node_key, normalized)
     end
   end
 
@@ -206,8 +207,8 @@ defmodule Favn.Runtime.Coordinator do
          {:ok, meta}
        ) do
     case take_execution(state, exec_ref, maybe_ref) do
-      {:ok, ref, state} ->
-        apply_step_transition(state, &StepTransitions.complete_success(&1, ref, meta))
+      {:ok, node_key, state} ->
+        apply_step_transition(state, &StepTransitions.complete_success(&1, node_key, meta))
 
       {:ignore, state} ->
         {:ok, state}
@@ -217,30 +218,30 @@ defmodule Favn.Runtime.Coordinator do
   defp handle_step_result(%State{} = state, exec_ref, maybe_ref, {:error, error})
        when is_map(error) do
     case take_execution(state, exec_ref, maybe_ref) do
-      {:ok, ref, state} ->
-        handle_step_error(state, ref, error)
+      {:ok, node_key, state} ->
+        handle_step_error(state, node_key, error)
 
       {:ignore, state} ->
         {:ok, state}
     end
   end
 
-  defp handle_step_error(%State{run_status: :cancelling} = state, ref, _error) do
+  defp handle_step_error(%State{run_status: :cancelling} = state, node_key, _error) do
     apply_step_transition(
       state,
-      &StepTransitions.complete_cancelled(&1, ref, %{kind: :run_cancelled})
+      &StepTransitions.complete_cancelled(&1, node_key, %{kind: :run_cancelled})
     )
   end
 
-  defp handle_step_error(%State{run_status: :timing_out} = state, ref, _error) do
+  defp handle_step_error(%State{run_status: :timing_out} = state, node_key, _error) do
     apply_step_transition(
       state,
-      &StepTransitions.complete_timed_out(&1, ref, %{kind: :run_timed_out})
+      &StepTransitions.complete_timed_out(&1, node_key, %{kind: :run_timed_out})
     )
   end
 
-  defp handle_step_error(%State{} = state, ref, error) do
-    step = Map.fetch!(state.steps, ref)
+  defp handle_step_error(%State{} = state, node_key, error) do
+    step = Map.fetch!(state.steps, node_key)
     classification = classify_error(error)
     retryable? = retryable?(state.retry_policy, classification)
     exhausted? = step.attempt >= step.max_attempts
@@ -250,23 +251,23 @@ defmodule Favn.Runtime.Coordinator do
       with {:ok, state} <-
              apply_step_transition(
                state,
-               &StepTransitions.schedule_retry(&1, ref, payload, state.retry_policy.delay_ms)
+               &StepTransitions.schedule_retry(&1, node_key, payload, state.retry_policy.delay_ms)
              ),
-           {:ok, state} <- emit_retryable_step_failed(state, ref, payload),
-           {:ok, state} <- schedule_retry_timer(state, ref) do
+           {:ok, state} <- emit_retryable_step_failed(state, node_key, payload),
+           {:ok, state} <- schedule_retry_timer(state, node_key) do
         {:ok, state}
       end
     else
       with {:ok, state} <-
              apply_step_transition(
                state,
-               &StepTransitions.complete_failure(&1, ref, payload,
+               &StepTransitions.complete_failure(&1, node_key, payload,
                  retryable?: retryable?,
                  exhausted?: true
                )
              ),
-           {:ok, state} <- maybe_emit_retry_exhausted(state, ref, step, retryable?),
-           {:ok, state} <- close_admission_with_failure(state, ref, payload[:reason]) do
+           {:ok, state} <- maybe_emit_retry_exhausted(state, node_key, step, retryable?),
+           {:ok, state} <- close_admission_with_failure(state, node_key, payload[:reason]) do
         {:ok, state}
       end
     end
@@ -334,10 +335,16 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp close_admission_with_failure(%State{} = state, ref, reason) do
+  defp close_admission_with_failure(%State{} = state, node_key, reason) do
+    step = Map.fetch!(state.steps, node_key)
+
     with {:ok, state} <- close_admission(state),
          {:ok, state} <-
-           maybe_mark_run_failed(state, %{ref: ref, stage: stage_for(state, ref), reason: reason}) do
+           maybe_mark_run_failed(state, %{
+             ref: step.ref,
+             stage: stage_for_key(state, node_key),
+             reason: reason
+           }) do
       {:ok, state}
     end
   end
@@ -397,10 +404,10 @@ defmodule Favn.Runtime.Coordinator do
     result =
       Enum.reduce_while(state.inflight_execs, :ok, fn {exec_ref, exec_info}, :ok ->
         handle = %{exec_ref: exec_ref, monitor_ref: exec_info.monitor_ref, pid: exec_info.pid}
-        ref = exec_info.ref
-        step = Map.fetch!(state.steps, ref)
+        node_key = exec_info.node_key
+        step = Map.fetch!(state.steps, node_key)
         started_ms = System.monotonic_time(:millisecond)
-        Logger.metadata(ref: inspect(ref), stage: step.stage, attempt: step.attempt)
+        Logger.metadata(ref: inspect(step.ref), stage: step.stage, attempt: step.attempt)
 
         case safe_cancel_executor_step(handle, reason) do
           :ok ->
@@ -409,7 +416,7 @@ defmodule Favn.Runtime.Coordinator do
             _ =
               Favn.Runtime.Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
                 run_id: state.run_id,
-                ref: ref,
+                ref: step.ref,
                 stage: step.stage,
                 attempt: step.attempt,
                 result: :ok
@@ -423,7 +430,7 @@ defmodule Favn.Runtime.Coordinator do
             _ =
               Favn.Runtime.Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
                 run_id: state.run_id,
-                ref: ref,
+                ref: step.ref,
                 stage: step.stage,
                 attempt: step.attempt,
                 result: :error,
@@ -441,16 +448,16 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp take_execution(%State{} = state, exec_ref, maybe_ref) do
+  defp take_execution(%State{} = state, exec_ref, maybe_node_key) do
     case Map.pop(state.inflight_execs, exec_ref) do
       {nil, _} ->
         Logger.debug("Ignoring stale executor result for unknown exec_ref=#{inspect(exec_ref)}")
         {:ignore, state}
 
-      {%{ref: tracked_ref, monitor_ref: monitor_ref}, inflight} ->
-        if maybe_ref != nil and maybe_ref != tracked_ref do
+      {%{node_key: tracked_node_key, monitor_ref: monitor_ref}, inflight} ->
+        if maybe_node_key != nil and maybe_node_key != tracked_node_key do
           Logger.warning(
-            "Executor returned mismatched step ref; using tracked ref. exec_ref=#{inspect(exec_ref)} tracked_ref=#{inspect(tracked_ref)} received_ref=#{inspect(maybe_ref)}"
+            "Executor returned mismatched step key; using tracked key. exec_ref=#{inspect(exec_ref)} tracked_key=#{inspect(tracked_node_key)} received_key=#{inspect(maybe_node_key)}"
           )
         end
 
@@ -460,16 +467,16 @@ defmodule Favn.Runtime.Coordinator do
           |> Map.put(:exec_refs_by_monitor, Map.delete(state.exec_refs_by_monitor, monitor_ref))
           |> Map.put(:completed_exec_refs, MapSet.put(state.completed_exec_refs, exec_ref))
 
-        {:ok, tracked_ref, next_state}
+        {:ok, tracked_node_key, next_state}
     end
   end
 
-  defp clear_retry_timer(%State{} = state, ref) do
-    {:ok, %{state | retry_timers: Map.delete(state.retry_timers, ref)}}
+  defp clear_retry_timer(%State{} = state, node_key) do
+    {:ok, %{state | retry_timers: Map.delete(state.retry_timers, node_key)}}
   end
 
-  defp maybe_make_retry_ready(%State{} = state, ref, attempt) do
-    step = Map.fetch!(state.steps, ref)
+  defp maybe_make_retry_ready(%State{} = state, node_key, attempt) do
+    step = Map.fetch!(state.steps, node_key)
 
     cond do
       state.run_status != :running ->
@@ -482,25 +489,25 @@ defmodule Favn.Runtime.Coordinator do
         {:ok, state}
 
       true ->
-        apply_step_transition(state, &StepTransitions.requeue_retry(&1, ref))
+        apply_step_transition(state, &StepTransitions.requeue_retry(&1, node_key))
     end
   end
 
-  defp schedule_retry_timer(%State{} = state, ref) do
-    step = Map.fetch!(state.steps, ref)
+  defp schedule_retry_timer(%State{} = state, node_key) do
+    step = Map.fetch!(state.steps, node_key)
     delay_ms = state.retry_policy.delay_ms
 
     if delay_ms == 0 do
-      apply_step_transition(state, &StepTransitions.requeue_retry(&1, ref))
+      apply_step_transition(state, &StepTransitions.requeue_retry(&1, node_key))
     else
-      timer_ref = Process.send_after(self(), {:retry_due, ref, step.attempt}, delay_ms)
-      next_state = %{state | retry_timers: Map.put(state.retry_timers, ref, timer_ref)}
+      timer_ref = Process.send_after(self(), {:retry_due, node_key, step.attempt}, delay_ms)
+      next_state = %{state | retry_timers: Map.put(state.retry_timers, node_key, timer_ref)}
       persist_snapshot(next_state)
     end
   end
 
-  defp emit_retryable_step_failed(%State{} = state, ref, error) do
-    step = Map.fetch!(state.steps, ref)
+  defp emit_retryable_step_failed(%State{} = state, node_key, error) do
+    step = Map.fetch!(state.steps, node_key)
 
     payload = %{
       attempt: step.attempt,
@@ -513,23 +520,23 @@ defmodule Favn.Runtime.Coordinator do
       reason: error[:reason]
     }
 
-    emit_events(state, [{:step_failed, ref, payload}])
+    emit_events(state, [{:step_failed, node_key, payload}])
   end
 
-  defp emit_retry_exhausted(%State{} = state, ref, step) do
+  defp emit_retry_exhausted(%State{} = state, node_key, step) do
     payload = %{
       attempt: step.attempt,
       max_attempts: step.max_attempts,
       exhausted: true
     }
 
-    emit_events(state, [{:step_retry_exhausted, ref, payload}])
+    emit_events(state, [{:step_retry_exhausted, node_key, payload}])
   end
 
-  defp maybe_emit_retry_exhausted(%State{} = state, _ref, _step, false), do: {:ok, state}
+  defp maybe_emit_retry_exhausted(%State{} = state, _node_key, _step, false), do: {:ok, state}
 
-  defp maybe_emit_retry_exhausted(%State{} = state, ref, step, true),
-    do: emit_retry_exhausted(state, ref, step)
+  defp maybe_emit_retry_exhausted(%State{} = state, node_key, step, true),
+    do: emit_retry_exhausted(state, node_key, step)
 
   defp retries_pending?(%State{} = state) do
     Enum.any?(state.steps, fn {_ref, step} -> step.status == :retrying end)
@@ -543,12 +550,12 @@ defmodule Favn.Runtime.Coordinator do
     }
   end
 
-  defp put_execution_handle(%State{} = state, ref, %{
+  defp put_execution_handle(%State{} = state, node_key, %{
          exec_ref: exec_ref,
          monitor_ref: monitor_ref,
          pid: pid
        }) do
-    info = %{ref: ref, monitor_ref: monitor_ref, pid: pid}
+    info = %{node_key: node_key, monitor_ref: monitor_ref, pid: pid}
 
     %{
       state
@@ -583,14 +590,18 @@ defmodule Favn.Runtime.Coordinator do
   end
 
   defp emit_step_ready_for_sources(%State{} = state) do
-    source_refs =
+    source_keys =
       state.steps
-      |> Enum.filter(fn {_ref, step} -> step.status == :ready end)
+      |> Enum.filter(fn {_node_key, step} -> step.status == :ready end)
       |> Enum.map(&elem(&1, 0))
       |> Enum.sort()
 
-    events = Enum.map(source_refs, &{:step_ready, &1})
-    emit_events(%{state | ready_queue: source_refs}, events)
+    events =
+      Enum.map(source_keys, fn node_key ->
+        {:step_ready, node_key}
+      end)
+
+    emit_events(%{state | ready_queue: source_keys}, events)
   end
 
   defp emit_events(%State{} = state, events) when is_list(events) do
@@ -624,27 +635,28 @@ defmodule Favn.Runtime.Coordinator do
     {:ok, %{state | timeout_timer_ref: timer_ref, deadline_at: deadline_at}}
   end
 
-  defp event_attrs(%State{} = state, {event_name, ref}) do
-    stage = stage_for(state, ref)
-    step = Map.fetch!(state.steps, ref)
+  defp event_attrs(%State{} = state, {event_name, node_key}) do
+    step = Map.fetch!(state.steps, node_key)
+    stage = step.stage
 
     {event_name,
      %{
        entity: :step,
        status: step.status,
-       ref: ref,
+       ref: step.ref,
        stage: stage,
        data: %{
          duration_ms: step.duration_ms,
          attempt: step.attempt,
-         max_attempts: step.max_attempts
+         max_attempts: step.max_attempts,
+         node_key: node_key
        }
      }}
   end
 
-  defp event_attrs(%State{} = state, {event_name, ref, payload}) when is_map(payload) do
-    stage = stage_for(state, ref)
-    step = Map.fetch!(state.steps, ref)
+  defp event_attrs(%State{} = state, {event_name, node_key, payload}) when is_map(payload) do
+    step = Map.fetch!(state.steps, node_key)
+    stage = step.stage
     error = step.error || %{}
     payload = payload_with_error_metadata(payload, error)
 
@@ -652,13 +664,14 @@ defmodule Favn.Runtime.Coordinator do
      %{
        entity: :step,
        status: step.status,
-       ref: ref,
+       ref: step.ref,
        stage: stage,
        data:
          Map.merge(payload, %{
            duration_ms: step.duration_ms,
            attempt: step.attempt,
-           max_attempts: step.max_attempts
+           max_attempts: step.max_attempts,
+           node_key: node_key
          })
      }}
   end
@@ -715,14 +728,15 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp build_context(%State{} = state, ref) do
-    step = Map.fetch!(state.steps, ref)
+  defp build_context(%State{} = state, node_key) do
+    step = Map.fetch!(state.steps, node_key)
 
     %Context{
       run_id: state.run_id,
       target_refs: state.target_refs,
-      current_ref: ref,
+      current_ref: step.ref,
       params: state.params,
+      window: step.runtime_window,
       pipeline: state.pipeline_context,
       run_started_at: state.started_at,
       stage: step.stage,
@@ -731,17 +745,31 @@ defmodule Favn.Runtime.Coordinator do
     }
   end
 
-  defp stage_for(%State{} = state, ref), do: state.steps |> Map.fetch!(ref) |> Map.get(:stage)
+  defp stage_for_key(%State{} = state, node_key),
+    do: state.steps |> Map.fetch!(node_key) |> Map.get(:stage)
 
   defp pop_next_ready(%State{ready_queue: []}), do: :none
 
-  defp pop_next_ready(%State{ready_queue: [ref | rest]} = state),
-    do: {:ok, ref, %{state | ready_queue: rest}}
+  defp pop_next_ready(%State{ready_queue: [node_key | rest]} = state),
+    do: {:ok, node_key, %{state | ready_queue: rest}}
 
   defp all_targets_success?(%State{} = state) do
-    Enum.all?(state.target_refs, fn ref ->
-      state.steps |> Map.fetch!(ref) |> Map.get(:status) == :success
+    Enum.all?(target_node_keys(state), fn node_key ->
+      Map.fetch!(state.steps, node_key).status == :success
     end)
+  end
+
+  defp target_node_keys(%State{} = state) do
+    if is_list(state.target_node_keys) and state.target_node_keys != [] do
+      state.target_node_keys
+    else
+      target_ref_set = MapSet.new(state.target_refs)
+
+      state.plan.nodes
+      |> Enum.filter(fn {_node_key, node} -> MapSet.member?(target_ref_set, node.ref) end)
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.sort()
+    end
   end
 
   defp unresolved_steps?(%State{} = state) do
@@ -769,20 +797,20 @@ defmodule Favn.Runtime.Coordinator do
 
   defp enrich_error(error, class), do: Map.put(error, :class, class)
 
-  defp start_executor_step(%State{} = state, ref, asset) do
-    step = Map.fetch!(state.steps, ref)
-    ctx = build_context(state, ref)
-    Logger.metadata(ref: inspect(ref), stage: step.stage, attempt: step.attempt)
+  defp start_executor_step(%State{} = state, node_key, asset) do
+    step = Map.fetch!(state.steps, node_key)
+    ctx = build_context(state, node_key)
+    Logger.metadata(ref: inspect(step.ref), stage: step.stage, attempt: step.attempt)
     started_ms = System.monotonic_time(:millisecond)
 
-    case safe_start_executor_step(asset, ctx, ref) do
+    case safe_start_executor_step(asset, ctx, node_key) do
       {:ok, handle} ->
         duration_ms = System.monotonic_time(:millisecond) - started_ms
 
         _ =
           Favn.Runtime.Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
             run_id: state.run_id,
-            ref: ref,
+            ref: step.ref,
             stage: step.stage,
             attempt: step.attempt,
             result: :ok
@@ -796,7 +824,7 @@ defmodule Favn.Runtime.Coordinator do
         _ =
           Favn.Runtime.Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
             run_id: state.run_id,
-            ref: ref,
+            ref: step.ref,
             stage: step.stage,
             attempt: step.attempt,
             result: :error,
@@ -808,8 +836,8 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp safe_start_executor_step(asset, ctx, ref) do
-    executor_module().start_step(asset, ctx, self(), ref)
+  defp safe_start_executor_step(asset, ctx, node_key) do
+    executor_module().start_step(asset, ctx, self(), node_key)
     |> unwrap_executor_result()
   rescue
     error -> {:error, error, :executor_start_raise, :error}

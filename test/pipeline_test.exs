@@ -97,9 +97,54 @@ defmodule Favn.PipelineTest do
     assert stored_run.pipeline.schedule.timezone == "UTC"
     assert stored_run.pipeline.schedule.missed == :skip
     assert stored_run.pipeline.schedule.overlap == :forbid
-    assert stored_run.pipeline.partition == :calendar_day
+    assert stored_run.pipeline.window == :calendar_day
+    assert stored_run.pipeline.anchor_window == nil
     assert stored_run.pipeline.source == :snowflake_primary
     assert stored_run.pipeline.outputs == [:warehouse_gold]
+  end
+
+  test "backfill_pipeline/2 submits one run over range-expanded deduplicated plan" do
+    Code.compile_string("""
+    defmodule BackfillPipelineAssets do
+      use Favn.Assets
+
+      @asset true
+      @window Favn.Window.daily()
+      def source(_ctx), do: :ok
+
+      @asset true
+      @window Favn.Window.daily()
+      @depends :source
+      def target(_ctx), do: :ok
+    end
+
+    defmodule BackfillPipeline do
+      use Favn.Pipeline
+
+      pipeline :backfill_pipeline do
+        asset {BackfillPipelineAssets, :target}
+      end
+    end
+    """)
+
+    :ok = Favn.TestSetup.setup_asset_modules([BackfillPipelineAssets], reload_graph?: true)
+
+    range = %{
+      kind: :day,
+      start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+      end_at: DateTime.from_naive!(~N[2025-01-13 00:00:00], "Etc/UTC"),
+      timezone: "Etc/UTC"
+    }
+
+    assert {:ok, run_id} = Favn.backfill_pipeline(BackfillPipeline, range: range)
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+
+    assert run.submit_kind == :backfill_pipeline
+    assert run.backfill.range == range
+    assert run.pipeline.backfill_range == range
+    assert length(run.pipeline.anchor_ranges) == 3
+    assert length(run.plan.target_node_keys) == 3
+    assert map_size(run.node_results) == 6
   end
 
   test "plain run_asset/2 supports explicit public pipeline_context injection" do
@@ -121,7 +166,7 @@ defmodule Favn.PipelineTest do
                    overlap: :forbid,
                    origin: :inline
                  },
-                 partition: :manual_partition,
+                 window: :manual_window,
                  source: :manual_source,
                  outputs: [:manual_output]
                }
@@ -133,7 +178,9 @@ defmodule Favn.PipelineTest do
     assert run.pipeline.trigger == %{kind: :manual, requested_by: :api}
     assert %Schedule{} = run.pipeline.schedule
     assert run.pipeline.schedule.id == :manual_schedule
-    assert run.pipeline.partition == :manual_partition
+    assert run.pipeline.window == :manual_window
+    assert run.pipeline.anchor_window == nil
+    assert run.pipeline.window == :manual_window
     assert run.pipeline.source == :manual_source
     assert run.pipeline.outputs == [:manual_output]
 
@@ -180,10 +227,11 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.meta == %{owner: "data-platform", domain: :sales}
     assert ctx.pipeline.trigger == %{kind: :manual, requested_by: :user}
     assert ctx.pipeline.params == %{requested_by: "operator"}
-    assert ctx.pipeline.runtime_window == nil
+    assert ctx.pipeline.anchor_window == nil
+    assert ctx.pipeline.window == :calendar_day
+    assert ctx.window == nil
     assert %Schedule{} = ctx.pipeline.schedule
     assert ctx.pipeline.schedule.ref == {Schedules, :daily_default}
-    assert ctx.pipeline.partition == :calendar_day
     assert ctx.pipeline.source == :snowflake_primary
     assert ctx.pipeline.outputs == [:warehouse_gold]
   end
@@ -237,7 +285,7 @@ defmodule Favn.PipelineTest do
         asset {#{inspect(SalesAssets)}, :sales_daily}
         deps :none
         schedule {#{inspect(Schedules)}, :daily_default}
-        partition :calendar_day
+        window :calendar_day
         source :snowflake_primary
         outputs [:warehouse_gold]
       end
@@ -246,6 +294,23 @@ defmodule Favn.PipelineTest do
 
     assert {:ok, plan} = Favn.plan_pipeline(NoParensPipeline)
     assert plan.target_refs == [{SalesAssets, :sales_daily}]
+  end
+
+  test "pipeline DSL supports window clause" do
+    Code.compile_string("""
+    defmodule WindowClausePipeline do
+      use Favn.Pipeline
+
+      pipeline :window_clause do
+        asset {#{inspect(SalesAssets)}, :sales_daily}
+        window :day
+      end
+    end
+    """)
+
+    assert {:ok, run_id} = Favn.run_pipeline(WindowClausePipeline)
+    assert {:ok, run} = Favn.await_run(run_id, timeout: 5_000)
+    assert run.pipeline.window == :day
   end
 
   test "plan_pipeline/2 errors for invalid module selector" do
@@ -365,7 +430,7 @@ defmodule Favn.PipelineTest do
     end
   end
 
-  test "pipeline DSL rejects invalid schedule, partition, source, and outputs" do
+  test "pipeline DSL rejects invalid schedule, window, source, and outputs" do
     assert_raise ArgumentError, ~r/`schedule` must be `{Module, :name}` or keyword options/, fn ->
       Code.compile_string("""
       defmodule InvalidSchedulePipeline do
@@ -484,14 +549,14 @@ defmodule Favn.PipelineTest do
                    """)
                  end
 
-    assert_raise ArgumentError, ~r/`partition` must be an atom/, fn ->
+    assert_raise ArgumentError, ~r/`window` must be an atom/, fn ->
       Code.compile_string("""
-      defmodule InvalidPartitionPipeline do
+      defmodule InvalidWindowPipeline do
         use Favn.Pipeline
 
-        pipeline :invalid_partition do
+        pipeline :invalid_window do
           asset {#{inspect(SalesAssets)}, :sales_daily}
-          partition "calendar_day"
+          window "day"
         end
       end
       """)

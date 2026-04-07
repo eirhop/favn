@@ -16,6 +16,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   @behaviour Favn.Storage.Adapter
 
   alias Favn.Run
+  alias Favn.Window.Key
   alias Favn.Storage.SQLite.Repo
   alias Favn.Storage.SQLite.Supervisor, as: SQLiteSupervisor
 
@@ -69,6 +70,40 @@ defmodule Favn.Storage.Adapter.SQLite do
       RETURNING value
       """
 
+      delete_node_results_sql = "DELETE FROM run_node_results WHERE run_id = ?1"
+
+      insert_node_result_sql = """
+      INSERT INTO run_node_results (
+        run_id,
+        ref_module,
+        ref_name,
+        window_key,
+        status,
+        started_at,
+        finished_at,
+        attempt_count,
+        max_attempts,
+        result_blob
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+      """
+
+      upsert_latest_window_sql = """
+      INSERT INTO window_latest_results (
+        ref_module,
+        ref_name,
+        window_key,
+        status,
+        last_run_id,
+        finished_at,
+        updated_at_us
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      ON CONFLICT(ref_module, ref_name, window_key) DO UPDATE SET
+        status = excluded.status,
+        last_run_id = excluded.last_run_id,
+        finished_at = excluded.finished_at,
+        updated_at_us = excluded.updated_at_us
+      """
+
       case Repo.transact(
              fn ->
                with {:ok, %{rows: [[updated_seq]]}} <-
@@ -82,7 +117,15 @@ defmodule Favn.Storage.Adapter.SQLite do
                       updated_seq,
                       :erlang.term_to_binary(run)
                     ],
-                    {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params) do
+                    {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params),
+                    {:ok, _} <- Ecto.Adapters.SQL.query(Repo, delete_node_results_sql, [run.id]),
+                    :ok <-
+                      persist_node_results(
+                        run,
+                        updated_seq,
+                        insert_node_result_sql,
+                        upsert_latest_window_sql
+                      ) do
                  {:ok, :ok}
                else
                  {:error, reason} -> Repo.rollback(reason)
@@ -206,4 +249,55 @@ defmodule Favn.Storage.Adapter.SQLite do
       error -> {:error, {:invalid_run_blob, error}}
     end
   end
+
+  defp persist_node_results(%Run{} = run, updated_at_us, insert_sql, upsert_latest_sql) do
+    run
+    |> node_result_rows()
+    |> Enum.reduce_while(:ok, fn row, :ok ->
+      with {:ok, _} <- Ecto.Adapters.SQL.query(Repo, insert_sql, row.insert_params),
+           {:ok, _} <-
+             Ecto.Adapters.SQL.query(Repo, upsert_latest_sql, row.latest_params.(updated_at_us)) do
+        {:cont, :ok}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp node_result_rows(%Run{} = run) do
+    Enum.map(run.node_results || %{}, fn
+      {{{ref_module, ref_name}, window_key} = node_key, result} ->
+        encoded_window_key = encode_window_key(window_key)
+        status = result.status |> to_string()
+
+        %{
+          insert_params: [
+            run.id,
+            Atom.to_string(ref_module),
+            Atom.to_string(ref_name),
+            encoded_window_key,
+            status,
+            datetime_to_iso(result.started_at),
+            datetime_to_iso(result.finished_at),
+            result.attempt_count || 0,
+            result.max_attempts || 1,
+            :erlang.term_to_binary(%{node_key: node_key, result: result})
+          ],
+          latest_params: fn updated_at_us ->
+            [
+              Atom.to_string(ref_module),
+              Atom.to_string(ref_name),
+              encoded_window_key,
+              status,
+              run.id,
+              datetime_to_iso(result.finished_at),
+              updated_at_us
+            ]
+          end
+        }
+    end)
+  end
+
+  defp encode_window_key(nil), do: "__nil__"
+  defp encode_window_key(key) when is_map(key), do: Key.encode(key)
 end

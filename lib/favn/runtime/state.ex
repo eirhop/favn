@@ -17,7 +17,7 @@ defmodule Favn.Runtime.State do
           | :failed
           | :timed_out
 
-  @type exec_info :: %{ref: Ref.t(), monitor_ref: reference(), pid: pid()}
+  @type exec_info :: %{node_key: Plan.node_key(), monitor_ref: reference(), pid: pid()}
 
   @type retry_class ::
           :exception | :exit | :throw | :timeout | :executor_error | :error_return
@@ -32,6 +32,7 @@ defmodule Favn.Runtime.State do
           run_id: Favn.run_id(),
           run_status: run_status(),
           target_refs: [Ref.t()],
+          target_node_keys: [Plan.node_key()],
           plan: Plan.t(),
           params: map(),
           pipeline_context: map() | nil,
@@ -42,9 +43,10 @@ defmodule Favn.Runtime.State do
           finished_at: DateTime.t() | nil,
           cancel_requested_at: DateTime.t() | nil,
           timeout_ms: pos_integer() | nil,
-          submit_kind: :asset | :pipeline | :rerun,
+          submit_kind: :asset | :pipeline | :backfill_asset | :backfill_pipeline | :rerun,
           submit_ref: term() | nil,
           replay_mode: :none | :resume_from_failure | :exact_replay,
+          backfill: map() | nil,
           rerun_of_run_id: Favn.run_id() | nil,
           parent_run_id: Favn.run_id() | nil,
           root_run_id: Favn.run_id() | nil,
@@ -53,9 +55,9 @@ defmodule Favn.Runtime.State do
           deadline_at: DateTime.t() | nil,
           timeout_timer_ref: reference() | nil,
           retry_policy: retry_policy(),
-          retry_timers: %{Ref.t() => reference()},
-          steps: %{Ref.t() => StepState.t()},
-          ready_queue: [Ref.t()],
+          retry_timers: %{Plan.node_key() => reference()},
+          steps: %{Plan.node_key() => StepState.t()},
+          ready_queue: [Plan.node_key()],
           inflight_execs: %{reference() => exec_info()},
           exec_refs_by_monitor: %{reference() => reference()},
           completed_exec_refs: MapSet.t(reference()),
@@ -66,6 +68,7 @@ defmodule Favn.Runtime.State do
   defstruct [
     :run_id,
     :target_refs,
+    :target_node_keys,
     :plan,
     run_status: :pending,
     params: %{},
@@ -80,6 +83,7 @@ defmodule Favn.Runtime.State do
     submit_kind: :asset,
     submit_ref: nil,
     replay_mode: :none,
+    backfill: nil,
     rerun_of_run_id: nil,
     parent_run_id: nil,
     root_run_id: nil,

@@ -13,6 +13,7 @@ defmodule Favn.Assets.Registry do
   """
 
   alias Favn.Asset
+  alias Favn.Assets.Compiler
   alias Favn.Ref
 
   @catalog_key {__MODULE__, :catalog}
@@ -90,19 +91,15 @@ defmodule Favn.Assets.Registry do
   def build_catalog(modules) when is_list(modules) do
     modules
     |> Enum.reduce_while({:ok, %{assets: [], assets_by_ref: %{}}}, fn module, {:ok, catalog} ->
-      if Favn.asset_module?(module) do
-        case module.__favn_assets__() do
-          assets when is_list(assets) ->
-            case merge_assets(catalog, assets) do
-              {:ok, updated_catalog} -> {:cont, {:ok, updated_catalog}}
-              {:error, _reason} = error -> {:halt, error}
-            end
+      case Compiler.compile_module_assets(module) do
+        {:ok, assets} ->
+          case merge_assets(catalog, assets) do
+            {:ok, updated_catalog} -> {:cont, {:ok, updated_catalog}}
+            {:error, _reason} = error -> {:halt, error}
+          end
 
-          _invalid ->
-            {:halt, {:error, {:invalid_asset_module, module}}}
-        end
-      else
-        {:halt, {:error, {:invalid_asset_module, module}}}
+        {:error, _reason} ->
+          {:halt, {:error, {:invalid_asset_module, module}}}
       end
     end)
     |> case do

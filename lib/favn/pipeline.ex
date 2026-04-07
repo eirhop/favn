@@ -27,7 +27,7 @@ defmodule Favn.Pipeline do
       Module.register_attribute(__MODULE__, :favn_pipeline_config, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_meta, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_schedule, persist: false)
-      Module.register_attribute(__MODULE__, :favn_pipeline_partition, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_window, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_source, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_outputs, persist: false)
 
@@ -85,12 +85,12 @@ defmodule Favn.Pipeline do
     end
   end
 
-  defmacro partition(name) do
+  defmacro window(name) do
     quote bind_quoted: [name: name] do
-      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "partition")
-      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_partition, "partition")
-      Favn.Pipeline.validate_atom_clause!(name, "partition")
-      @favn_pipeline_partition name
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "window")
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_window, "window")
+      Favn.Pipeline.validate_atom_clause!(name, "window")
+      @favn_pipeline_window name
     end
   end
 
@@ -200,7 +200,7 @@ defmodule Favn.Pipeline do
         config: Module.get_attribute(env.module, :favn_pipeline_config) || %{},
         meta: Module.get_attribute(env.module, :favn_pipeline_meta) || %{},
         schedule: Module.get_attribute(env.module, :favn_pipeline_schedule),
-        partition: Module.get_attribute(env.module, :favn_pipeline_partition),
+        window: Module.get_attribute(env.module, :favn_pipeline_window),
         source: Module.get_attribute(env.module, :favn_pipeline_source),
         outputs: Module.get_attribute(env.module, :favn_pipeline_outputs) || []
       }

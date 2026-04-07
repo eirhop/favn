@@ -82,6 +82,35 @@ config :favn,
 {:ok, run} = Favn.await_run(run_id)
 ```
 
+Backfill a windowed asset or pipeline over a range (single submitted run):
+
+```elixir
+range = %{
+  kind: :day,
+  start_at: DateTime.from_naive!(~N[2025-01-01 00:00:00], "Etc/UTC"),
+  end_at: DateTime.from_naive!(~N[2025-01-04 00:00:00], "Etc/UTC"),
+  timezone: "Etc/UTC"
+}
+
+{:ok, run_id} = Favn.backfill_asset({MyApp.SalesAssets, :build_daily_report}, range: range)
+{:ok, run} = Favn.await_run(run_id)
+
+# provenance persisted on run snapshots
+run.backfill.range
+run.backfill.anchor_ranges
+run.pipeline.backfill_range
+```
+
+Freshness policy helpers over persisted window/node results:
+
+```elixir
+{:ok, freshness} =
+  Favn.check_asset_freshness({MyApp.SalesAssets, :build_daily_report},
+    window_key: hd(run.plan.target_node_keys) |> elem(1),
+    max_age_seconds: 3_600
+  )
+```
+
 
 ## New in v0.2 DSL shape
 
@@ -90,6 +119,7 @@ v0.2 has been refactored to the following authoring contract and attribute order
 ```elixir
 @asset "Asset Name"
 @meta owner: "data-platform", category: :sales, tags: [:daily]
+@window Favn.Window.daily(lookback: 1)
 @doc "What this asset does"
 @depends {:MyApp.UpstreamAssets, :upstream_asset}
 @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}
@@ -100,6 +130,7 @@ end
 
 Notes:
 - Use one `@depends` entry per declaration; repeat `@depends` for multiple dependencies.
+- Use `@window` when an asset should execute against a runtime-resolved window.
 - `@uses` is deferred and intentionally out of scope for this refactor.
 - Missing `@doc`/`@spec` is allowed (UI will simply have less metadata).
 
@@ -169,6 +200,46 @@ SQLite ordering notes:
 - **Internal telemetry**: runtime boundaries emit machine-oriented `:telemetry` events under `[:favn, :runtime, ...]` for operators and future external exporters.
 - **Logger correlation metadata**: runtime coordinator/executor processes attach lightweight metadata (`run_id`, `ref`, `stage`, `attempt`) for human diagnostics without treating logs as telemetry.
 
+## Runtime windowing foundation (in progress)
+
+v0.3 introduces shared runtime windowing primitives intended for both Elixir
+assets now and SQL assets later.
+
+Current foundation modules:
+
+- `Favn.Window`
+- `Favn.Window.Spec`
+- `Favn.Window.Anchor`
+- `Favn.Window.Runtime`
+- `Favn.Window.Key`
+
+These modules establish canonical window data types and deterministic
+window-key encoding/decoding. Planner/runtime/storage integration lands in
+subsequent v0.3 slices.
+
+Current runtime internals now key step state by `{asset_ref, window_key}`
+The plan model also includes `target_node_keys` so runtime target completion
+checks are node-key-based rather than ref scans.
+It also includes `node_stages` so runtime recovery/promotion logic can iterate
+stages by node key.
+Planner v1 now expands windowed assets into concrete `{asset_ref, window_key}`
+nodes from an optional `anchor_window` (hour/day/month with lookback).
+`resume_from_failure` reruns now support duplicate refs when node-keyed
+persisted run results are available.
+
+Asset modules can now attach window specs directly on assets:
+
+```elixir
+@asset true
+@window Favn.Window.daily(lookback: 1)
+def daily_sales(ctx), do: :ok
+```
+
+Runtime context now includes:
+
+- `ctx.window` (concrete execution window for the current node)
+- `ctx.pipeline.anchor_window` (run-level requested window intent)
+
 ## Guarantees in this release
 
 - **Run lifecycle semantics**
@@ -206,9 +277,11 @@ The first v0.3 pipeline foundation slice keeps pipelines as a composition layer 
   - `select`
   - `deps`
   - `schedule`
-  - `partition`
+  - `window`
   - `source`
   - `outputs`
+
+Pipeline `partition` has been removed; use `window` for runtime window intent.
 
 Selection authoring supports both:
 
