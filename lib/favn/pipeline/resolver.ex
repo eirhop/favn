@@ -34,6 +34,9 @@ defmodule Favn.Pipeline.Resolver do
       pipeline_ctx = %{
         id: definition.name,
         name: definition.name,
+        run_kind: :pipeline,
+        resolved_refs: target_refs,
+        deps: definition.deps,
         config: definition.config,
         meta: definition.meta,
         trigger: trigger,

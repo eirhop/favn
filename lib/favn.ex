@@ -928,6 +928,8 @@ defmodule Favn do
     * `trigger: map()` trigger metadata exposed through `ctx.pipeline.trigger`
     * `anchor_window: %Favn.Window.Anchor{}` explicit anchor for window-aware planning
     * runtime context exposes `ctx.window` and `ctx.pipeline.anchor_window`
+    * runtime context/persisted run pipeline metadata also includes:
+      `run_kind`, `resolved_refs`, and `deps`
     * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run_asset/2`)
   """
   @spec run_pipeline(pipeline_module(), run_pipeline_opts()) ::
@@ -1001,6 +1003,7 @@ defmodule Favn do
            ) do
       pipeline_context =
         resolution.pipeline_ctx
+        |> Map.put(:run_kind, :pipeline_backfill)
         |> Map.put(:backfill_range, range)
         |> Map.put(:anchor_ranges, anchor_ranges)
 

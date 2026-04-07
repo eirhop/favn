@@ -70,7 +70,9 @@ Near-term priority is a practical path to real usage:
 Goal: make Favn usable for scheduled and windowed asset execution.
 
 - [x] Documentation sync for window-aware DSL examples across README and `Favn` moduledoc
-- [ ] Working pipeline execution
+- [x] Working pipeline execution
+  - Plan: `WORKING_PIPELINE_EXECUTION_PLAN.md`
+  - Scope: manual `run_pipeline/2`, deterministic `plan_pipeline/2`, anchor-window runs, `backfill_pipeline/2`, and pipeline rerun/cancel/timeout/retry/resume semantics
 - [ ] Working scheduler trigger runtime
 - [x] Pipeline `window` clause
 - [x] Asset-level `@window`
@@ -90,7 +92,7 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [x] Backfill provenance persisted on runs (`run.backfill`, `pipeline.backfill_range`, `pipeline.anchor_ranges`)
 - [x] Freshness policy checks over persisted node/window run state
 - [x] SQL-readiness asset compiler seam for future SQL frontend integration
-- [ ] Manual run support with explicit anchor windows
+- [x] Manual run support with explicit anchor windows
 - [x] Replace `partition` direction with runtime windowing
 
 ---

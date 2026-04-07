@@ -116,3 +116,36 @@ defmodule Favn.Test.Fixtures.Pipelines.AssetsShorthandPipeline do
     deps(:none)
   end
 end
+
+defmodule Favn.Test.Fixtures.Pipelines.RunnerFailingPipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
+
+  pipeline :runner_failing do
+    asset({RunnerAssets, :after_error})
+    deps(:all)
+  end
+end
+
+defmodule Favn.Test.Fixtures.Pipelines.RunnerRetryPipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
+
+  pipeline :runner_retry do
+    asset({RunnerAssets, :transient_then_ok})
+    deps(:none)
+  end
+end
+
+defmodule Favn.Test.Fixtures.Pipelines.RunnerSlowPipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
+
+  pipeline :runner_slow do
+    asset({RunnerAssets, :slow_asset})
+    deps(:none)
+  end
+end
