@@ -7,6 +7,7 @@ defmodule Favn.Window.Key do
   """
 
   alias Favn.Window.{Anchor, Runtime}
+  alias Favn.Window.Validate
 
   @type kind :: :hour | :day | :month
 
@@ -18,8 +19,8 @@ defmodule Favn.Window.Key do
 
   @spec new(kind(), DateTime.t(), String.t()) :: {:ok, t()} | {:error, term()}
   def new(kind, %DateTime{} = start_at, timezone) do
-    with :ok <- validate_kind(kind),
-         :ok <- validate_timezone(timezone) do
+    with :ok <- Validate.kind(kind),
+         :ok <- Validate.timezone(timezone) do
       {:ok,
        %{
          kind: kind,
@@ -62,7 +63,7 @@ defmodule Favn.Window.Key do
       [kind_raw, timezone, datetime_raw] ->
         with {:ok, kind} <- decode_kind(kind_raw),
              {:ok, dt, _offset} <- DateTime.from_iso8601(datetime_raw),
-             :ok <- validate_timezone(timezone) do
+             :ok <- Validate.timezone(timezone) do
           new(kind, dt, timezone)
         else
           {:error, reason} -> {:error, reason}
@@ -80,10 +81,4 @@ defmodule Favn.Window.Key do
   defp decode_kind("day"), do: {:ok, :day}
   defp decode_kind("month"), do: {:ok, :month}
   defp decode_kind(other), do: {:error, {:invalid_kind, other}}
-
-  defp validate_kind(kind) when kind in [:hour, :day, :month], do: :ok
-  defp validate_kind(kind), do: {:error, {:invalid_kind, kind}}
-
-  defp validate_timezone(timezone) when is_binary(timezone) and byte_size(timezone) > 0, do: :ok
-  defp validate_timezone(timezone), do: {:error, {:invalid_timezone, timezone}}
 end

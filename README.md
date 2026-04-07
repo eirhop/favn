@@ -186,6 +186,14 @@ These modules establish canonical window data types and deterministic
 window-key encoding/decoding. Planner/runtime/storage integration lands in
 subsequent v0.3 slices.
 
+Asset modules can now attach window specs directly on assets:
+
+```elixir
+@asset true
+@window Favn.Window.daily(lookback: 1)
+def daily_sales(ctx), do: :ok
+```
+
 ## Guarantees in this release
 
 - **Run lifecycle semantics**

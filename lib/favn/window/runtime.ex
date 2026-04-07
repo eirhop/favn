@@ -4,6 +4,7 @@ defmodule Favn.Window.Runtime do
   """
 
   alias Favn.Window.Key
+  alias Favn.Window.Validate
 
   @type kind :: :hour | :day | :month
 
@@ -22,11 +23,11 @@ defmodule Favn.Window.Runtime do
           {:ok, t()} | {:error, term()}
   def new(kind, %DateTime{} = start_at, %DateTime{} = end_at, anchor_key, opts \\ [])
       when is_map(anchor_key) and is_list(opts) do
-    timezone = Keyword.get(opts, :timezone, "Etc/UTC")
-
-    with :ok <- validate_kind(kind),
+    with :ok <- Validate.strict_keyword_opts(opts, [:timezone]),
+         :ok <- Validate.kind(kind),
+         timezone <- Keyword.get(opts, :timezone, "Etc/UTC"),
          :ok <- validate_order(start_at, end_at),
-         :ok <- validate_timezone(timezone),
+         :ok <- Validate.timezone(timezone),
          :ok <- validate_key(anchor_key),
          {:ok, key} <- Key.new(kind, start_at, timezone) do
       {:ok,
@@ -51,18 +52,15 @@ defmodule Favn.Window.Runtime do
 
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = runtime) do
-    with :ok <- validate_kind(runtime.kind),
+    with :ok <- Validate.kind(runtime.kind),
          :ok <- validate_order(runtime.start_at, runtime.end_at),
-         :ok <- validate_timezone(runtime.timezone),
+         :ok <- Validate.timezone(runtime.timezone),
          :ok <- validate_key(runtime.key),
          :ok <- validate_key(runtime.anchor_key) do
       expected = Key.new!(runtime.kind, runtime.start_at, runtime.timezone)
       if runtime.key == expected, do: :ok, else: {:error, :invalid_key}
     end
   end
-
-  defp validate_kind(kind) when kind in [:hour, :day, :month], do: :ok
-  defp validate_kind(kind), do: {:error, {:invalid_kind, kind}}
 
   defp validate_order(%DateTime{} = start_at, %DateTime{} = end_at) do
     case DateTime.compare(start_at, end_at) do
@@ -76,7 +74,4 @@ defmodule Favn.Window.Runtime do
        do: :ok
 
   defp validate_key(_value), do: {:error, :invalid_key}
-
-  defp validate_timezone(timezone) when is_binary(timezone) and byte_size(timezone) > 0, do: :ok
-  defp validate_timezone(timezone), do: {:error, {:invalid_timezone, timezone}}
 end

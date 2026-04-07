@@ -72,7 +72,7 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [ ] Working pipeline execution
 - [ ] Working scheduler trigger runtime
 - [ ] Pipeline `window` clause
-- [ ] Asset-level `@window`
+- [x] Asset-level `@window`
 - [x] Runtime window domain primitives (`Favn.Window.*`)
 - [ ] `ctx.window`
 - [ ] `ctx.pipeline.anchor_window`

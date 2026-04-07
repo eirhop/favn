@@ -10,6 +10,7 @@ defmodule Favn.AssetsTest.Sample do
   use Favn.Assets
 
   alias Favn.AssetsTest.Upstream
+  alias Favn.Window
 
   @doc "Extract raw orders"
   @asset "Extract Orders"
@@ -19,6 +20,7 @@ defmodule Favn.AssetsTest.Sample do
   @asset true
   @depends :extract_orders
   @meta tags: [:sales, "warehouse"], owner: "data"
+  @window Window.daily(lookback: 1)
   def normalize_orders(_ctx), do: :ok
 
   @doc false
@@ -49,9 +51,16 @@ defmodule Favn.AssetsTest do
     assert normalize.depends_on == [{Favn.AssetsTest.Sample, :extract_orders}]
     assert normalize.meta == %{owner: "data", tags: [:sales, "warehouse"]}
 
+    assert normalize.window_spec == %Favn.Window.Spec{
+             kind: :day,
+             lookback: 1,
+             timezone: "Etc/UTC"
+           }
+
     assert fact.doc == nil
     assert fact.meta == %{owner: "analytics", category: :sales, tags: [:view]}
     assert fact.depends_on == [{Favn.AssetsTest.Upstream, :source_rows}]
+    assert fact.window_spec == nil
   end
 
   test "rejects invalid asset declarations at compile time" do
@@ -149,6 +158,7 @@ defmodule Favn.AssetsTest do
       compile_test_module("""
       use Favn.Assets
 
+      @window Favn.Window.daily()
       @depends :upstream
       def helper(_ctx), do: :ok
       """)
@@ -158,6 +168,7 @@ defmodule Favn.AssetsTest do
       compile_test_module("""
       use Favn.Assets
 
+      @window Favn.Window.daily()
       @meta owner: \"data\"
       def helper(_ctx), do: :ok
       """)
@@ -171,8 +182,30 @@ defmodule Favn.AssetsTest do
 
                    @depends :upstream
                    @meta owner: \"data\"
+                   @window Favn.Window.daily()
                    """)
                  end
+
+    assert_raise CompileError, ~r/invalid @window value/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @window :day
+      def bad_window(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/multiple @window attributes are not allowed/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @window Favn.Window.daily()
+      @window Favn.Window.hourly()
+      def too_many_windows(_ctx), do: :ok
+      """)
+    end
   end
 
   test "consumes @depends and @meta only for the intended asset" do

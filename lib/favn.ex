@@ -104,6 +104,7 @@ defmodule Favn do
 
       @asset "Asset Name"
       @meta owner: "data-platform", category: :sales, tags: [:daily]
+      @window Favn.Window.daily(lookback: 1)
       @doc "What this asset does"
       @depends {:MyApp.UpstreamAssets, :upstream_asset}
       @spec asset_name(map()) :: :ok | {:ok, map()} | {:error, term()}

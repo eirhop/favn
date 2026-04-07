@@ -231,7 +231,7 @@ This avoids a large separate DSL concept before foundation state exists.
   - Add `Favn.Window.*` structs + validators + key helpers.
   - Include deterministic key encode/decode helpers for storage/indexing.
 
-- [ ] 2. **Asset DSL window annotation**
+- [x] 2. **Asset DSL window annotation**
   - Add `@window` capture/validation in `Favn.Assets`.
   - Add `window_spec` to `Favn.Asset`.
 

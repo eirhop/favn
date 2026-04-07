@@ -10,6 +10,7 @@ defmodule Favn.Asset do
   """
 
   alias Favn.Ref
+  alias Favn.Window.Spec
 
   @type t :: %__MODULE__{
           module: module(),
@@ -21,7 +22,8 @@ defmodule Favn.Asset do
           file: String.t(),
           line: pos_integer(),
           meta: map(),
-          depends_on: [Ref.t()]
+          depends_on: [Ref.t()],
+          window_spec: Spec.t() | nil
         }
 
   @typedoc """
@@ -39,7 +41,8 @@ defmodule Favn.Asset do
     :file,
     :line,
     meta: %{},
-    depends_on: []
+    depends_on: [],
+    window_spec: nil
   ]
 
   @doc """
@@ -57,6 +60,7 @@ defmodule Favn.Asset do
   def validate!(%__MODULE__{} = asset) do
     meta = normalize_meta!(asset.meta)
     validate_depends_on!(asset.depends_on)
+    validate_window_spec!(asset.window_spec)
 
     %{asset | meta: meta}
   end
@@ -136,5 +140,19 @@ defmodule Favn.Asset do
   defp validate_depends_on!(depends_on) do
     raise ArgumentError,
           "asset depends_on must be a list of Favn.Ref values, got: #{inspect(depends_on)}"
+  end
+
+  defp validate_window_spec!(nil), do: :ok
+
+  defp validate_window_spec!(%Spec{} = spec) do
+    case Spec.validate(spec) do
+      :ok -> :ok
+      {:error, reason} -> raise ArgumentError, "invalid asset window_spec: #{inspect(reason)}"
+    end
+  end
+
+  defp validate_window_spec!(value) do
+    raise ArgumentError,
+          "asset window_spec must be a Favn.Window.Spec or nil, got: #{inspect(value)}"
   end
 end

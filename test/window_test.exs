@@ -40,9 +40,31 @@ defmodule Favn.WindowTest do
     assert {:error, {:invalid_kind, :week}} = Spec.new(:week)
 
     assert {:error, {:invalid_lookback, -1}} = Spec.new(:day, lookback: -1)
+    assert {:error, {:invalid_refresh_from, :day, :month}} = Spec.new(:day, refresh_from: :month)
+    assert {:error, {:unknown_opt, :lookbak}} = Spec.new(:day, lookbak: 1)
+
+    assert {:error, {:duplicate_opt, :timezone}} =
+             Spec.new(:day, timezone: "Etc/UTC", timezone: "UTC")
+
+    assert {:error, {:invalid_timezone, "Definitely/NotAZone"}} =
+             Spec.new(:day, timezone: "Definitely/NotAZone")
 
     assert {:error, :invalid_window_bounds} =
              Anchor.new(:day, ~U[2026-04-02 00:00:00Z], ~U[2026-04-01 00:00:00Z])
+
+    assert {:error, {:unknown_opt, :timezome}} =
+             Anchor.new(:day, ~U[2026-04-01 00:00:00Z], ~U[2026-04-02 00:00:00Z],
+               timezome: "Etc/UTC"
+             )
+
+    assert {:error, {:unknown_opt, :timezome}} =
+             Runtime.new(
+               :day,
+               ~U[2026-04-01 00:00:00Z],
+               ~U[2026-04-02 00:00:00Z],
+               %{kind: :day, start_at_us: 1, timezone: "Etc/UTC"},
+               timezome: "Etc/UTC"
+             )
 
     assert {:error, {:invalid_encoded_key, "not-a-key"}} = Key.decode("not-a-key")
   end

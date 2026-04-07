@@ -6,6 +6,8 @@ defmodule Favn.Window.Spec do
   particular run request.
   """
 
+  alias Favn.Window.Validate
+
   @type kind :: :hour | :day | :month
   @type refresh_from :: :hour | :day | :month
 
@@ -31,14 +33,14 @@ defmodule Favn.Window.Spec do
   """
   @spec new(kind(), keyword()) :: {:ok, t()} | {:error, term()}
   def new(kind, opts \\ []) when is_list(opts) do
-    lookback = Keyword.get(opts, :lookback, 0)
-    refresh_from = Keyword.get(opts, :refresh_from)
-    timezone = Keyword.get(opts, :timezone, "Etc/UTC")
-
-    with :ok <- validate_kind(kind),
+    with :ok <- Validate.strict_keyword_opts(opts, [:lookback, :refresh_from, :timezone]),
+         :ok <- Validate.kind(kind),
+         lookback <- Keyword.get(opts, :lookback, 0),
+         refresh_from <- Keyword.get(opts, :refresh_from),
+         timezone <- Keyword.get(opts, :timezone, "Etc/UTC"),
          :ok <- validate_lookback(lookback),
-         :ok <- validate_refresh_from(refresh_from),
-         :ok <- validate_timezone(timezone) do
+         :ok <- validate_refresh_from(kind, refresh_from),
+         :ok <- Validate.timezone(timezone) do
       {:ok,
        %__MODULE__{
          kind: kind,
@@ -67,24 +69,28 @@ defmodule Favn.Window.Spec do
   """
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = spec) do
-    with :ok <- validate_kind(spec.kind),
+    with :ok <- Validate.kind(spec.kind),
          :ok <- validate_lookback(spec.lookback),
-         :ok <- validate_refresh_from(spec.refresh_from),
-         :ok <- validate_timezone(spec.timezone) do
+         :ok <- validate_refresh_from(spec.kind, spec.refresh_from),
+         :ok <- Validate.timezone(spec.timezone) do
       :ok
     end
   end
 
-  defp validate_kind(kind) when kind in [:hour, :day, :month], do: :ok
-  defp validate_kind(kind), do: {:error, {:invalid_kind, kind}}
-
   defp validate_lookback(lookback) when is_integer(lookback) and lookback >= 0, do: :ok
   defp validate_lookback(lookback), do: {:error, {:invalid_lookback, lookback}}
 
-  defp validate_refresh_from(nil), do: :ok
-  defp validate_refresh_from(refresh_from) when refresh_from in [:hour, :day, :month], do: :ok
-  defp validate_refresh_from(refresh_from), do: {:error, {:invalid_refresh_from, refresh_from}}
+  defp validate_refresh_from(:hour, nil), do: :ok
+  defp validate_refresh_from(:hour, :hour), do: :ok
+  defp validate_refresh_from(:hour, value), do: {:error, {:invalid_refresh_from, :hour, value}}
 
-  defp validate_timezone(timezone) when is_binary(timezone) and byte_size(timezone) > 0, do: :ok
-  defp validate_timezone(timezone), do: {:error, {:invalid_timezone, timezone}}
+  defp validate_refresh_from(:day, nil), do: :ok
+  defp validate_refresh_from(:day, :hour), do: :ok
+  defp validate_refresh_from(:day, :day), do: :ok
+  defp validate_refresh_from(:day, value), do: {:error, {:invalid_refresh_from, :day, value}}
+
+  defp validate_refresh_from(:month, nil), do: :ok
+  defp validate_refresh_from(:month, :day), do: :ok
+  defp validate_refresh_from(:month, :month), do: :ok
+  defp validate_refresh_from(:month, value), do: {:error, {:invalid_refresh_from, :month, value}}
 end
