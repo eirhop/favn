@@ -38,7 +38,7 @@ defmodule Favn.Plan do
   @type t :: %__MODULE__{
           target_refs: [Ref.t()],
           dependencies: Favn.dependencies_mode(),
-          nodes: %{required(Ref.t()) => plan_node()},
+          nodes: %{required(node_key()) => plan_node()},
           topo_order: [Ref.t()],
           stages: [stage()]
         }

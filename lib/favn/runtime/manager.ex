@@ -200,7 +200,9 @@ defmodule Favn.Runtime.Manager do
 
   defp build_steps(plan, retry_policy, resume_successful_steps) do
     plan.nodes
-    |> Enum.reduce(%{}, fn {ref, node}, acc ->
+    |> Enum.reduce(%{}, fn {_node_key, node}, acc ->
+      ref = node.ref
+
       step =
         case Map.fetch(resume_successful_steps, ref) do
           {:ok, result} ->
@@ -418,7 +420,7 @@ defmodule Favn.Runtime.Manager do
   defp build_resume_successful_steps(_source_run, _plan, :exact_replay), do: %{}
 
   defp build_resume_successful_steps(source_run, %Favn.Plan{} = plan, :resume_from_failure) do
-    planned_refs = Map.keys(plan.nodes) |> MapSet.new()
+    planned_refs = plan.nodes |> Map.values() |> Enum.map(& &1.ref) |> MapSet.new()
 
     Enum.reduce(source_run.asset_results || %{}, %{}, fn {ref, result}, acc ->
       if result.status == :ok and MapSet.member?(planned_refs, ref) do

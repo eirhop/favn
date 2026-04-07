@@ -29,12 +29,12 @@ defmodule Favn.Assets.PlannerTest do
 
     assert Map.keys(plan.nodes) |> MapSet.new() ==
              MapSet.new([
-               {BronzeAssets, :raw_customers},
-               {BronzeAssets, :raw_orders},
-               {SilverAssets, :monthly_customers},
-               {SilverAssets, :nightly_orders},
-               {GoldAssets, :gold_finance},
-               {GoldAssets, :gold_sales}
+               {{BronzeAssets, :raw_customers}, nil},
+               {{BronzeAssets, :raw_orders}, nil},
+               {{SilverAssets, :monthly_customers}, nil},
+               {{SilverAssets, :nightly_orders}, nil},
+               {{GoldAssets, :gold_finance}, nil},
+               {{GoldAssets, :gold_sales}, nil}
              ])
 
     assert plan.stages == [
@@ -43,12 +43,12 @@ defmodule Favn.Assets.PlannerTest do
              [{GoldAssets, :gold_finance}, {GoldAssets, :gold_sales}]
            ]
 
-    assert plan.nodes[{SilverAssets, :nightly_orders}].downstream == [
+    assert plan.nodes[{{SilverAssets, :nightly_orders}, nil}].downstream == [
              {GoldAssets, :gold_finance},
              {GoldAssets, :gold_sales}
            ]
 
-    assert plan.nodes[{SilverAssets, :nightly_orders}].node_key ==
+    assert plan.nodes[{{SilverAssets, :nightly_orders}, nil}].node_key ==
              {{SilverAssets, :nightly_orders}, nil}
   end
 
@@ -57,7 +57,7 @@ defmodule Favn.Assets.PlannerTest do
 
     assert plan.topo_order == [{GoldAssets, :gold_sales}]
     assert plan.stages == [[{GoldAssets, :gold_sales}]]
-    assert plan.nodes[{GoldAssets, :gold_sales}].upstream == []
+    assert plan.nodes[{{GoldAssets, :gold_sales}, nil}].upstream == []
   end
 
   test "returns errors for invalid planner input" do

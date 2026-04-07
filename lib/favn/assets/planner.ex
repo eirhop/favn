@@ -131,7 +131,7 @@ defmodule Favn.Assets.Planner do
         action: :run
       }
 
-      Map.put(acc, ref, node)
+      Map.put(acc, node.node_key, node)
     end)
   end
 
