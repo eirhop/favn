@@ -43,6 +43,12 @@ defmodule Favn.Assets.PlannerTest do
              [{GoldAssets, :gold_finance}, {GoldAssets, :gold_sales}]
            ]
 
+    assert plan.node_stages == [
+             [{{BronzeAssets, :raw_customers}, nil}, {{BronzeAssets, :raw_orders}, nil}],
+             [{{SilverAssets, :monthly_customers}, nil}, {{SilverAssets, :nightly_orders}, nil}],
+             [{{GoldAssets, :gold_finance}, nil}, {{GoldAssets, :gold_sales}, nil}]
+           ]
+
     assert plan.target_node_keys == [
              {{GoldAssets, :gold_finance}, nil},
              {{GoldAssets, :gold_sales}, nil}
@@ -62,6 +68,7 @@ defmodule Favn.Assets.PlannerTest do
 
     assert plan.topo_order == [{GoldAssets, :gold_sales}]
     assert plan.stages == [[{GoldAssets, :gold_sales}]]
+    assert plan.node_stages == [[{{GoldAssets, :gold_sales}, nil}]]
     assert plan.nodes[{{GoldAssets, :gold_sales}, nil}].upstream == []
   end
 

@@ -243,9 +243,8 @@ defmodule Favn.Runtime.Manager do
   end
 
   defp promote_ready_steps_from_restored_success(steps, %Favn.Plan{} = plan) do
-    Enum.reduce(plan.stages, steps, fn stage_refs, acc ->
-      Enum.reduce(stage_refs, acc, fn ref, stage_acc ->
-        node_key = {ref, nil}
+    Enum.reduce(stage_node_keys(plan), steps, fn stage_node_keys, acc ->
+      Enum.reduce(stage_node_keys, acc, fn node_key, stage_acc ->
         step = Map.fetch!(stage_acc, node_key)
 
         cond do
@@ -262,6 +261,14 @@ defmodule Favn.Runtime.Manager do
         end
       end)
     end)
+  end
+
+  defp stage_node_keys(%Favn.Plan{node_stages: node_stages})
+       when is_list(node_stages) and node_stages != [],
+       do: node_stages
+
+  defp stage_node_keys(%Favn.Plan{stages: stages}) do
+    Enum.map(stages, fn stage_refs -> Enum.map(stage_refs, &{&1, nil}) end)
   end
 
   defp persist_initial_snapshot(%State{} = runtime_state) do

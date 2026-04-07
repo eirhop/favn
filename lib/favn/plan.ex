@@ -37,6 +37,7 @@ defmodule Favn.Plan do
   Topologically ordered plan stages.
   """
   @type stage :: [Ref.t()]
+  @type node_stage :: [node_key()]
 
   @type t :: %__MODULE__{
           target_refs: [Ref.t()],
@@ -44,7 +45,8 @@ defmodule Favn.Plan do
           dependencies: Favn.dependencies_mode(),
           nodes: %{required(node_key()) => plan_node()},
           topo_order: [Ref.t()],
-          stages: [stage()]
+          stages: [stage()],
+          node_stages: [node_stage()]
         }
 
   defstruct target_refs: [],
@@ -52,5 +54,6 @@ defmodule Favn.Plan do
             dependencies: :all,
             nodes: %{},
             topo_order: [],
-            stages: []
+            stages: [],
+            node_stages: []
 end

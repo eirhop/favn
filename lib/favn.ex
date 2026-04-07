@@ -71,7 +71,8 @@ defmodule Favn do
   `{asset_ref, window_key}` with `window_key` currently scaffolded as `nil`
   until full planner/runtime window identity is enabled end-to-end. Planned
   target identity is now carried as `plan.target_node_keys` to keep runtime
-  completion checks node-key based.
+  completion checks node-key based, and staged runtime recovery now consumes
+  `plan.node_stages` so stage traversal is also node-key native.
 
   ### Runs
 

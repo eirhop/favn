@@ -43,7 +43,8 @@ defmodule Favn.Assets.Planner do
          dependencies: dependencies,
          nodes: build_nodes(projected_index, stage_map),
          topo_order: projected_index.topo_order,
-         stages: build_stages(projected_index, stage_map)
+         stages: build_stages(projected_index, stage_map),
+         node_stages: build_node_stages(projected_index, stage_map)
        }}
     end
   end
@@ -143,5 +144,16 @@ defmodule Favn.Assets.Planner do
     |> Enum.group_by(&Map.fetch!(stage_map, &1))
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(fn {_rank, refs} -> Enum.sort(refs) end)
+  end
+
+  defp build_node_stages(index, stage_map) do
+    index.topo_order
+    |> Enum.group_by(&Map.fetch!(stage_map, &1))
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {_rank, refs} ->
+      refs
+      |> Enum.sort()
+      |> Enum.map(&{&1, nil})
+    end)
   end
 end
