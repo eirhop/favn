@@ -38,7 +38,6 @@ defmodule Favn.Pipeline.Resolver do
         meta: definition.meta,
         trigger: trigger,
         params: params,
-        runtime_window: nil,
         anchor_window: anchor_window,
         window: definition.window,
         schedule: schedule,

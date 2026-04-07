@@ -227,7 +227,6 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.meta == %{owner: "data-platform", domain: :sales}
     assert ctx.pipeline.trigger == %{kind: :manual, requested_by: :user}
     assert ctx.pipeline.params == %{requested_by: "operator"}
-    assert ctx.pipeline.runtime_window == nil
     assert ctx.pipeline.anchor_window == nil
     assert ctx.pipeline.window == :calendar_day
     assert ctx.window == nil

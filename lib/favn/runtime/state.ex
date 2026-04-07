@@ -43,7 +43,7 @@ defmodule Favn.Runtime.State do
           finished_at: DateTime.t() | nil,
           cancel_requested_at: DateTime.t() | nil,
           timeout_ms: pos_integer() | nil,
-          submit_kind: :asset | :pipeline | :rerun,
+          submit_kind: :asset | :pipeline | :backfill_asset | :backfill_pipeline | :rerun,
           submit_ref: term() | nil,
           replay_mode: :none | :resume_from_failure | :exact_replay,
           backfill: map() | nil,

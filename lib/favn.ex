@@ -68,8 +68,7 @@ defmodule Favn do
   primitives under `Favn.Window.*` (`Spec`, `Anchor`, `Runtime`, and `Key`) so
   window semantics can be reused consistently across current Elixir assets and
   future SQL assets. Runtime internals also now carry step identity as
-  `{asset_ref, window_key}` with `window_key` currently scaffolded as `nil`
-  until full planner/runtime window identity is enabled end-to-end. Planned
+  `{asset_ref, window_key}`. Planned
   target identity is now carried as `plan.target_node_keys` to keep runtime
   completion checks node-key based, and staged runtime recovery now consumes
   `plan.node_stages` so stage traversal is also node-key native.
@@ -929,7 +928,6 @@ defmodule Favn do
     * `trigger: map()` trigger metadata exposed through `ctx.pipeline.trigger`
     * `anchor_window: %Favn.Window.Anchor{}` explicit anchor for window-aware planning
     * runtime context exposes `ctx.window` and `ctx.pipeline.anchor_window`
-      (currently transitional placeholders until window-aware planner/runtime land)
     * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run_asset/2`)
   """
   @spec run_pipeline(pipeline_module(), run_pipeline_opts()) ::

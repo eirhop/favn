@@ -218,16 +218,14 @@ window-key encoding/decoding. Planner/runtime/storage integration lands in
 subsequent v0.3 slices.
 
 Current runtime internals now key step state by `{asset_ref, window_key}`
-with `window_key` currently scaffolded as `nil` until full window-aware
-planning and persistence are completed.
 The plan model also includes `target_node_keys` so runtime target completion
 checks are node-key-based rather than ref scans.
 It also includes `node_stages` so runtime recovery/promotion logic can iterate
-stages by node key without reconstructing `{ref, nil}` keys.
+stages by node key.
 Planner v1 now expands windowed assets into concrete `{asset_ref, window_key}`
 nodes from an optional `anchor_window` (hour/day/month with lookback).
-`resume_from_failure` reruns are currently restricted to non-duplicated refs
-until node-key keyed persisted resume state is introduced.
+`resume_from_failure` reruns now support duplicate refs when node-keyed
+persisted run results are available.
 
 Asset modules can now attach window specs directly on assets:
 
@@ -239,7 +237,7 @@ def daily_sales(ctx), do: :ok
 
 Runtime context now includes:
 
-- `ctx.window` (concrete execution window, transitional placeholder in current slice)
+- `ctx.window` (concrete execution window for the current node)
 - `ctx.pipeline.anchor_window` (run-level requested window intent)
 
 ## Guarantees in this release
