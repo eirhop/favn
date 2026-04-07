@@ -91,6 +91,7 @@ defmodule Favn.Pipeline do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "window")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_window, "window")
       Favn.Pipeline.validate_atom_clause!(name, "window")
+      Favn.Pipeline.ensure_window_partition_compat!(__MODULE__, :window, name)
       @favn_pipeline_window name
     end
   end
@@ -100,6 +101,7 @@ defmodule Favn.Pipeline do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "partition")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_partition, "partition")
       Favn.Pipeline.validate_atom_clause!(name, "partition")
+      Favn.Pipeline.ensure_window_partition_compat!(__MODULE__, :partition, name)
       @favn_pipeline_partition name
 
       if Module.get_attribute(__MODULE__, :favn_pipeline_window) == nil do
@@ -291,6 +293,26 @@ defmodule Favn.Pipeline do
       :ok
     else
       raise ArgumentError, "pipeline clause `outputs` must be a list of atoms"
+    end
+  end
+
+  @doc false
+  def ensure_window_partition_compat!(module, clause, value)
+      when clause in [:window, :partition] do
+    window = Module.get_attribute(module, :favn_pipeline_window)
+    partition = Module.get_attribute(module, :favn_pipeline_partition)
+
+    cond do
+      clause == :window and not is_nil(partition) and is_atom(partition) and partition != value ->
+        raise ArgumentError,
+              "pipeline clauses `window` and `partition` cannot diverge (got window: #{inspect(value)}, partition: #{inspect(partition)})"
+
+      clause == :partition and not is_nil(window) and is_atom(window) and window != value ->
+        raise ArgumentError,
+              "pipeline clauses `window` and `partition` cannot diverge (got window: #{inspect(window)}, partition: #{inspect(value)})"
+
+      true ->
+        :ok
     end
   end
 

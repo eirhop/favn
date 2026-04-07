@@ -187,6 +187,7 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.runtime_window == nil
     assert ctx.pipeline.anchor_window == nil
     assert ctx.pipeline.window == :calendar_day
+    assert ctx.window == nil
     assert %Schedule{} = ctx.pipeline.schedule
     assert ctx.pipeline.schedule.ref == {Schedules, :daily_default}
     assert ctx.pipeline.partition == :calendar_day
@@ -528,6 +529,20 @@ defmodule Favn.PipelineTest do
         pipeline :invalid_window do
           asset {#{inspect(SalesAssets)}, :sales_daily}
           window "day"
+        end
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/cannot diverge/, fn ->
+      Code.compile_string("""
+      defmodule DivergingWindowPartitionPipeline do
+        use Favn.Pipeline
+
+        pipeline :diverging_window_partition do
+          asset {#{inspect(SalesAssets)}, :sales_daily}
+          window :day
+          partition :calendar_day
         end
       end
       """)

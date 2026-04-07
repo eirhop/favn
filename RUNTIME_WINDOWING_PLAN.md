@@ -239,7 +239,7 @@ This avoids a large separate DSL concept before foundation state exists.
   - Add `window` clause.
   - Keep `partition` temporarily as deprecated alias for a short transition.
 
-- [ ] 4. **Runtime context split**
+- [x] 4. **Runtime context split**
   - Add `ctx.window`.
   - Add `ctx.pipeline.anchor_window`.
   - Keep compatibility alias for old `runtime_window` for one slice.

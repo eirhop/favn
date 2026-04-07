@@ -194,6 +194,11 @@ Asset modules can now attach window specs directly on assets:
 def daily_sales(ctx), do: :ok
 ```
 
+Runtime context now includes:
+
+- `ctx.window` (concrete execution window, transitional placeholder in current slice)
+- `ctx.pipeline.anchor_window` (run-level requested window intent)
+
 ## Guarantees in this release
 
 - **Run lifecycle semantics**

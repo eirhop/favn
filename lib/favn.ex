@@ -865,6 +865,8 @@ defmodule Favn do
     * `params: map()` runtime params (available on both `ctx.params` and
       `ctx.pipeline.params` for pipeline-triggered runs)
     * `trigger: map()` trigger metadata exposed through `ctx.pipeline.trigger`
+    * runtime context exposes `ctx.window` and `ctx.pipeline.anchor_window`
+      (currently transitional placeholders until window-aware planner/runtime land)
     * `max_concurrency`, `timeout_ms`, `retry` (same semantics as `run_asset/2`)
   """
   @spec run_pipeline(pipeline_module(), run_pipeline_opts()) ::
