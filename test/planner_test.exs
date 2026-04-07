@@ -47,6 +47,9 @@ defmodule Favn.Assets.PlannerTest do
              {GoldAssets, :gold_finance},
              {GoldAssets, :gold_sales}
            ]
+
+    assert plan.nodes[{SilverAssets, :nightly_orders}].node_key ==
+             {{SilverAssets, :nightly_orders}, nil}
   end
 
   test "supports dependencies: :none for target-only planning" do

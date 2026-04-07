@@ -4,13 +4,14 @@ defmodule Favn.Run.Context do
   """
 
   alias Favn.Ref
+  alias Favn.Window.Runtime
 
   @type t :: %__MODULE__{
           run_id: String.t(),
           target_refs: [Ref.t()],
           current_ref: Ref.t(),
           params: map(),
-          window: map() | nil,
+          window: Runtime.t() | nil,
           pipeline: map() | nil,
           run_started_at: DateTime.t(),
           stage: non_neg_integer(),

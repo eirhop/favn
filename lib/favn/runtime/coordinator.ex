@@ -718,13 +718,17 @@ defmodule Favn.Runtime.Coordinator do
   defp build_context(%State{} = state, ref) do
     step = Map.fetch!(state.steps, ref)
     pipeline_context = state.pipeline_context || %{}
+    runtime_window = Map.get(pipeline_context, :runtime_window)
+
+    runtime_window =
+      if match?(%Favn.Window.Runtime{}, runtime_window), do: runtime_window, else: nil
 
     %Context{
       run_id: state.run_id,
       target_refs: state.target_refs,
       current_ref: ref,
       params: state.params,
-      window: Map.get(pipeline_context, :runtime_window),
+      window: runtime_window,
       pipeline: state.pipeline_context,
       run_started_at: state.started_at,
       stage: step.stage,

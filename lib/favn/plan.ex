@@ -19,8 +19,11 @@ defmodule Favn.Plan do
   @typedoc """
   One planned node keyed by canonical ref.
   """
+  @type node_key :: {Ref.t(), term() | nil}
+
   @type plan_node :: %{
           ref: Ref.t(),
+          node_key: node_key(),
           upstream: [Ref.t()],
           downstream: [Ref.t()],
           stage: non_neg_integer(),

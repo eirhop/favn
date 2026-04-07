@@ -124,6 +124,7 @@ defmodule Favn.Assets.Planner do
     Enum.reduce(index.topo_order, %{}, fn ref, acc ->
       node = %{
         ref: ref,
+        node_key: {ref, nil},
         upstream: index.upstream |> Map.fetch!(ref) |> Enum.sort(),
         downstream: index.downstream |> Map.fetch!(ref) |> Enum.sort(),
         stage: Map.fetch!(stage_map, ref),
