@@ -169,6 +169,23 @@ SQLite ordering notes:
 - **Internal telemetry**: runtime boundaries emit machine-oriented `:telemetry` events under `[:favn, :runtime, ...]` for operators and future external exporters.
 - **Logger correlation metadata**: runtime coordinator/executor processes attach lightweight metadata (`run_id`, `ref`, `stage`, `attempt`) for human diagnostics without treating logs as telemetry.
 
+## Runtime windowing foundation (in progress)
+
+v0.3 introduces shared runtime windowing primitives intended for both Elixir
+assets now and SQL assets later.
+
+Current foundation modules:
+
+- `Favn.Window`
+- `Favn.Window.Spec`
+- `Favn.Window.Anchor`
+- `Favn.Window.Runtime`
+- `Favn.Window.Key`
+
+These modules establish canonical window data types and deterministic
+window-key encoding/decoding. Planner/runtime/storage integration lands in
+subsequent v0.3 slices.
+
 ## Guarantees in this release
 
 - **Run lifecycle semantics**

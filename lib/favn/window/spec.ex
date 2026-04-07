@@ -1,0 +1,90 @@
+defmodule Favn.Window.Spec do
+  @moduledoc """
+  Canonical asset-level runtime window specification.
+
+  A window spec describes how an asset is windowed independently from any
+  particular run request.
+  """
+
+  @type kind :: :hour | :day | :month
+  @type refresh_from :: :hour | :day | :month
+
+  @type t :: %__MODULE__{
+          kind: kind(),
+          lookback: non_neg_integer(),
+          refresh_from: refresh_from() | nil,
+          timezone: String.t()
+        }
+
+  defstruct [:kind, lookback: 0, refresh_from: nil, timezone: "Etc/UTC"]
+
+  @doc """
+  Build and validate a canonical `%Favn.Window.Spec{}`.
+
+  ## Examples
+
+      iex> Favn.Window.Spec.new(:day)
+      {:ok, %Favn.Window.Spec{kind: :day, lookback: 0, refresh_from: nil, timezone: "Etc/UTC"}}
+
+      iex> Favn.Window.Spec.new(:month, lookback: 2, refresh_from: :day)
+      {:ok, %Favn.Window.Spec{kind: :month, lookback: 2, refresh_from: :day, timezone: "Etc/UTC"}}
+  """
+  @spec new(kind(), keyword()) :: {:ok, t()} | {:error, term()}
+  def new(kind, opts \\ []) when is_list(opts) do
+    lookback = Keyword.get(opts, :lookback, 0)
+    refresh_from = Keyword.get(opts, :refresh_from)
+    timezone = Keyword.get(opts, :timezone, "Etc/UTC")
+
+    with :ok <- validate_kind(kind),
+         :ok <- validate_lookback(lookback),
+         :ok <- validate_refresh_from(refresh_from),
+         :ok <- validate_timezone(timezone) do
+      {:ok,
+       %__MODULE__{
+         kind: kind,
+         lookback: lookback,
+         refresh_from: refresh_from,
+         timezone: timezone
+       }}
+    end
+  end
+
+  @doc """
+  Build and validate a canonical `%Favn.Window.Spec{}`.
+
+  Raises `ArgumentError` on invalid input.
+  """
+  @spec new!(kind(), keyword()) :: t()
+  def new!(kind, opts \\ []) when is_list(opts) do
+    case new(kind, opts) do
+      {:ok, spec} -> spec
+      {:error, reason} -> raise ArgumentError, "invalid window spec: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Validate an existing `%Favn.Window.Spec{}` struct.
+  """
+  @spec validate(t()) :: :ok | {:error, term()}
+  def validate(%__MODULE__{} = spec) do
+    with :ok <- validate_kind(spec.kind),
+         :ok <- validate_lookback(spec.lookback),
+         :ok <- validate_refresh_from(spec.refresh_from),
+         :ok <- validate_timezone(spec.timezone) do
+      :ok
+    end
+  end
+
+  defp validate_kind(kind) when kind in [:hour, :day, :month], do: :ok
+  defp validate_kind(kind), do: {:error, {:invalid_kind, kind}}
+
+  defp validate_lookback(lookback) when is_integer(lookback) and lookback >= 0, do: :ok
+  defp validate_lookback(lookback), do: {:error, {:invalid_lookback, lookback}}
+
+  defp validate_refresh_from(nil), do: :ok
+  defp validate_refresh_from(refresh_from) when refresh_from in [:hour, :day, :month], do: :ok
+  defp validate_refresh_from(refresh_from), do: {:error, {:invalid_refresh_from, refresh_from}}
+
+  defp validate_timezone(timezone) when is_binary(timezone) and byte_size(timezone) > 0, do: :ok
+  defp validate_timezone(timezone), do: {:error, {:invalid_timezone, timezone}}
+end

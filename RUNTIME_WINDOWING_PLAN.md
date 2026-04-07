@@ -41,15 +41,14 @@ Suggested canonical struct:
 ```elixir
 %Favn.Window.Spec{
   kind: :hour | :day | :month,
-  anchor_rule: term() | nil,
+  refresh_from: :hour | :day | :month | nil,
   lookback: non_neg_integer(),
-  timezone: String.t() | nil
+  timezone: String.t()
 }
 ```
 
-`anchor_rule` is intentionally generic at this stage. It represents anchor-to-runtime
-mapping behavior (for example, “monthly asset expanded from daily anchors”) without
-locking semantics too early to one field meaning.
+`refresh_from` is intentionally narrow in the first foundation wave to avoid
+over-design while still covering mixed-granularity planning requirements.
 
 ### 2) Anchor window (run-level request)
 
@@ -60,6 +59,7 @@ Represents window intent from scheduler/operator/pipeline.
   kind: :hour | :day | :month,
   start_at: DateTime.t(),
   end_at: DateTime.t(),
+  timezone: String.t(),
   key: Favn.Window.Key.t()
 }
 ```
@@ -73,6 +73,7 @@ Represents the concrete window used for one asset execution.
   kind: :hour | :day | :month,
   start_at: DateTime.t(),
   end_at: DateTime.t(),
+  timezone: String.t(),
   key: Favn.Window.Key.t(),
   anchor_key: Favn.Window.Key.t()
 }
@@ -90,6 +91,16 @@ This key is the dedupe identity for execution and reruns.
 
 `window_key` should be canonical and structured internally. String keys should be
 derived only for storage/indexing/display as needed.
+
+Recommended key shape:
+
+```elixir
+%{
+  kind: :hour | :day | :month,
+  start_at_us: integer(),
+  timezone: String.t()
+}
+```
 
 ### 5) Persisted window/materialization state
 
@@ -120,7 +131,7 @@ Validation (compile-time):
 - `@window` must attach immediately above an `@asset` function.
 - Max one `@window` per asset function.
 - `lookback >= 0`.
-- `anchor_rule` (when present) must be valid for declared granularity.
+- `refresh_from` (when present) must be valid for declared granularity.
 
 ## Pipeline DSL (`use Favn.Pipeline`)
 
@@ -216,44 +227,45 @@ This avoids a large separate DSL concept before foundation state exists.
 
 ## Suggested PR slices (ordered)
 
-1. **Domain primitives (no behavior change)**
-   - Add `Favn.Window.*` structs + validators + key helpers.
+- [x] 1. **Domain primitives (no behavior change)**
+  - Add `Favn.Window.*` structs + validators + key helpers.
+  - Include deterministic key encode/decode helpers for storage/indexing.
 
-2. **Asset DSL window annotation**
-   - Add `@window` capture/validation in `Favn.Assets`.
-   - Add `window_spec` to `Favn.Asset`.
+- [ ] 2. **Asset DSL window annotation**
+  - Add `@window` capture/validation in `Favn.Assets`.
+  - Add `window_spec` to `Favn.Asset`.
 
-3. **Pipeline DSL migration**
-   - Add `window` clause.
-   - Keep `partition` temporarily as deprecated alias for a short transition.
+- [ ] 3. **Pipeline DSL migration**
+  - Add `window` clause.
+  - Keep `partition` temporarily as deprecated alias for a short transition.
 
-4. **Runtime context split**
-   - Add `ctx.window`.
-   - Add `ctx.pipeline.anchor_window`.
-   - Keep compatibility alias for old `runtime_window` for one slice.
+- [ ] 4. **Runtime context split**
+  - Add `ctx.window`.
+  - Add `ctx.pipeline.anchor_window`.
+  - Keep compatibility alias for old `runtime_window` for one slice.
 
-5. **Window-aware planner v1**
-   - Introduce windowed node keys `{asset_ref, window_key}`.
-   - Implement hourly/daily/monthly expansion + lookback.
+- [ ] 5. **Window-aware planner v1**
+  - Introduce windowed node keys `{asset_ref, window_key}`.
+  - Implement hourly/daily/monthly expansion + lookback.
 
-6. **Runtime execution adaptation**
-   - Switch step state/coordinator identity from `ref` to `node_key`.
-   - Preserve retry/rerun semantics per node key.
+- [ ] 6. **Runtime execution adaptation**
+  - Switch step state/coordinator identity from `ref` to `node_key`.
+  - Preserve retry/rerun semantics per node key.
 
-7. **Storage window state foundation**
-   - Add SQLite migrations + adapter writes for window run/state records.
+- [ ] 7. **Storage window state foundation**
+  - Add SQLite migrations + adapter writes for window run/state records.
 
-8. **Public API window options**
-   - Add `anchor_window` options to plan/run APIs.
+- [ ] 8. **Public API window options**
+  - Add `anchor_window` options to plan/run APIs.
 
-9. **Backfill scaffold**
-   - Add API and internal range expansion over same planner.
+- [ ] 9. **Backfill scaffold**
+  - Add API and internal range expansion over same planner.
 
-10. **Freshness policy layer**
-    - Implement freshness checks against persisted window/materialization state.
+- [ ] 10. **Freshness policy layer**
+  - Implement freshness checks against persisted window/materialization state.
 
-11. **SQL-readiness seam**
-    - Ensure future SQL assets compile into same asset/window/planner model.
+- [ ] 11. **SQL-readiness seam**
+  - Ensure future SQL assets compile into same asset/window/planner model.
 
 ## Non-goals for first implementation waves
 

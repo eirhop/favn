@@ -64,6 +64,11 @@ defmodule Favn do
   Rerun defaults to `:resume_from_failure`, with explicit `:exact_replay` also supported.
   Both modes preserve lineage in `%Favn.Run{}`.
 
+  Runtime windowing foundation work in v0.3 also introduces shared temporal
+  primitives under `Favn.Window.*` (`Spec`, `Anchor`, `Runtime`, and `Key`) so
+  window semantics can be reused consistently across current Elixir assets and
+  future SQL assets.
+
   ### Runs
 
   A run is a single execution of a target asset.
