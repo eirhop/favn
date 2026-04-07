@@ -61,10 +61,10 @@ defmodule Favn.Runtime.Projector do
   defp public_status(_status), do: :error
 
   defp build_asset_results(%State{} = state) do
-    Enum.reduce(state.steps, %{}, fn {ref, step}, acc ->
+    Enum.reduce(state.steps, %{}, fn {_node_key, step}, acc ->
       if include_asset_result?(step) do
         result = %AssetResult{
-          ref: ref,
+          ref: step.ref,
           stage: step.stage,
           status: public_step_status(step.status),
           started_at: step.started_at,
@@ -78,7 +78,7 @@ defmodule Favn.Runtime.Projector do
           next_retry_at: step.next_retry_at
         }
 
-        Map.put(acc, ref, result)
+        Map.put(acc, step.ref, result)
       else
         acc
       end

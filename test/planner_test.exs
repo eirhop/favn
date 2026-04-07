@@ -44,8 +44,8 @@ defmodule Favn.Assets.PlannerTest do
            ]
 
     assert plan.nodes[{{SilverAssets, :nightly_orders}, nil}].downstream == [
-             {GoldAssets, :gold_finance},
-             {GoldAssets, :gold_sales}
+             {{GoldAssets, :gold_finance}, nil},
+             {{GoldAssets, :gold_sales}, nil}
            ]
 
     assert plan.nodes[{{SilverAssets, :nightly_orders}, nil}].node_key ==

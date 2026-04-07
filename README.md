@@ -186,6 +186,10 @@ These modules establish canonical window data types and deterministic
 window-key encoding/decoding. Planner/runtime/storage integration lands in
 subsequent v0.3 slices.
 
+Current runtime internals now key step state by `{asset_ref, window_key}`
+with `window_key` currently scaffolded as `nil` until full window-aware
+planning and persistence are completed.
+
 Asset modules can now attach window specs directly on assets:
 
 ```elixir

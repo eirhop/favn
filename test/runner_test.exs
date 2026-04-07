@@ -446,7 +446,7 @@ defmodule Favn.RunnerTest do
         assert run.status == :ok
       end)
 
-    assert log =~ "Executor returned mismatched step ref; using tracked ref."
+    assert log =~ "Executor returned mismatched step key; using tracked key."
   end
 
   test "duplicate executor result for same exec_ref is ignored and does not crash coordinator" do

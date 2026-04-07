@@ -200,7 +200,7 @@ defmodule Favn.Runtime.Manager do
 
   defp build_steps(plan, retry_policy, resume_successful_steps) do
     plan.nodes
-    |> Enum.reduce(%{}, fn {_node_key, node}, acc ->
+    |> Enum.reduce(%{}, fn {node_key, node}, acc ->
       ref = node.ref
 
       step =
@@ -208,6 +208,7 @@ defmodule Favn.Runtime.Manager do
           {:ok, result} ->
             %Favn.Runtime.StepState{
               ref: ref,
+              node_key: node_key,
               stage: node.stage,
               upstream: node.upstream,
               downstream: node.downstream,
@@ -226,6 +227,7 @@ defmodule Favn.Runtime.Manager do
 
             %Favn.Runtime.StepState{
               ref: ref,
+              node_key: node_key,
               stage: node.stage,
               upstream: node.upstream,
               downstream: node.downstream,
@@ -234,7 +236,7 @@ defmodule Favn.Runtime.Manager do
             }
         end
 
-      Map.put(acc, ref, step)
+      Map.put(acc, node_key, step)
     end)
     |> promote_ready_steps_from_restored_success(plan)
   end
@@ -242,16 +244,17 @@ defmodule Favn.Runtime.Manager do
   defp promote_ready_steps_from_restored_success(steps, %Favn.Plan{} = plan) do
     Enum.reduce(plan.stages, steps, fn stage_refs, acc ->
       Enum.reduce(stage_refs, acc, fn ref, stage_acc ->
-        step = Map.fetch!(stage_acc, ref)
+        node_key = {ref, nil}
+        step = Map.fetch!(stage_acc, node_key)
 
         cond do
           step.status != :pending ->
             stage_acc
 
-          Enum.all?(step.upstream, fn upstream_ref ->
-            Map.fetch!(stage_acc, upstream_ref).status == :success
+          Enum.all?(step.upstream, fn upstream_key ->
+            Map.fetch!(stage_acc, upstream_key).status == :success
           end) ->
-            Map.update!(stage_acc, ref, &%{&1 | status: :ready})
+            Map.update!(stage_acc, node_key, &%{&1 | status: :ready})
 
           true ->
             stage_acc

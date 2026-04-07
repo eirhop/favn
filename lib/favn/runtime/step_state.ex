@@ -31,9 +31,10 @@ defmodule Favn.Runtime.StepState do
 
   @type t :: %__MODULE__{
           ref: Ref.t(),
+          node_key: Favn.Plan.node_key(),
           stage: non_neg_integer(),
-          upstream: [Ref.t()],
-          downstream: [Ref.t()],
+          upstream: [Favn.Plan.node_key()],
+          downstream: [Favn.Plan.node_key()],
           status: status(),
           attempt: non_neg_integer(),
           max_attempts: pos_integer(),
@@ -49,6 +50,7 @@ defmodule Favn.Runtime.StepState do
 
   defstruct [
     :ref,
+    :node_key,
     :stage,
     upstream: [],
     downstream: [],

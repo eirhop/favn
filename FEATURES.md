@@ -76,6 +76,7 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [x] Runtime window domain primitives (`Favn.Window.*`)
 - [x] `ctx.window`
 - [x] `ctx.pipeline.anchor_window`
+- [x] Runtime/coordinator step identity keyed as `{asset_ref, window_key}` (current scaffold uses `nil` window keys)
 - [ ] Window-aware planner identity `{asset_ref, window_key}`
 - [ ] Window-aware execution and retry semantics
 - [ ] SQLite persisted window state

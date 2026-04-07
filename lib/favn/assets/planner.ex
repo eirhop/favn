@@ -122,11 +122,13 @@ defmodule Favn.Assets.Planner do
 
   defp build_nodes(index, stage_map) do
     Enum.reduce(index.topo_order, %{}, fn ref, acc ->
+      node_key = {ref, nil}
+
       node = %{
         ref: ref,
-        node_key: {ref, nil},
-        upstream: index.upstream |> Map.fetch!(ref) |> Enum.sort(),
-        downstream: index.downstream |> Map.fetch!(ref) |> Enum.sort(),
+        node_key: node_key,
+        upstream: index.upstream |> Map.fetch!(ref) |> Enum.sort() |> Enum.map(&{&1, nil}),
+        downstream: index.downstream |> Map.fetch!(ref) |> Enum.sort() |> Enum.map(&{&1, nil}),
         stage: Map.fetch!(stage_map, ref),
         action: :run
       }

@@ -17,7 +17,7 @@ defmodule Favn.Runtime.State do
           | :failed
           | :timed_out
 
-  @type exec_info :: %{ref: Ref.t(), monitor_ref: reference(), pid: pid()}
+  @type exec_info :: %{node_key: Plan.node_key(), monitor_ref: reference(), pid: pid()}
 
   @type retry_class ::
           :exception | :exit | :throw | :timeout | :executor_error | :error_return
@@ -53,9 +53,9 @@ defmodule Favn.Runtime.State do
           deadline_at: DateTime.t() | nil,
           timeout_timer_ref: reference() | nil,
           retry_policy: retry_policy(),
-          retry_timers: %{Ref.t() => reference()},
-          steps: %{Ref.t() => StepState.t()},
-          ready_queue: [Ref.t()],
+          retry_timers: %{Plan.node_key() => reference()},
+          steps: %{Plan.node_key() => StepState.t()},
+          ready_queue: [Plan.node_key()],
           inflight_execs: %{reference() => exec_info()},
           exec_refs_by_monitor: %{reference() => reference()},
           completed_exec_refs: MapSet.t(reference()),

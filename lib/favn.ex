@@ -67,7 +67,9 @@ defmodule Favn do
   Runtime windowing foundation work in v0.3 also introduces shared temporal
   primitives under `Favn.Window.*` (`Spec`, `Anchor`, `Runtime`, and `Key`) so
   window semantics can be reused consistently across current Elixir assets and
-  future SQL assets.
+  future SQL assets. Runtime internals also now carry step identity as
+  `{asset_ref, window_key}` with `window_key` currently scaffolded as `nil`
+  until full planner/runtime window identity is enabled end-to-end.
 
   ### Runs
 

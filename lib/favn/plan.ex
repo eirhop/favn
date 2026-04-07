@@ -24,8 +24,8 @@ defmodule Favn.Plan do
   @type plan_node :: %{
           ref: Ref.t(),
           node_key: node_key(),
-          upstream: [Ref.t()],
-          downstream: [Ref.t()],
+          upstream: [node_key()],
+          downstream: [node_key()],
           stage: non_neg_integer(),
           action: action()
         }
