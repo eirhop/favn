@@ -182,8 +182,19 @@ defmodule Favn.Connection.Loader do
   end
 
   defp normalize_keyword_connections(entries) do
+    duplicate_errors =
+      entries
+      |> duplicate_keyword_keys()
+      |> Enum.map(fn key ->
+        %Error{
+          type: :invalid_connections_config,
+          connection: key,
+          message: "duplicate runtime connection name in keyword config: #{inspect(key)}"
+        }
+      end)
+
     {map, errors} =
-      Enum.reduce(entries, {%{}, []}, fn
+      Enum.reduce(entries, {%{}, duplicate_errors}, fn
         {key, values}, {acc, errs} when is_atom(key) ->
           case normalize_runtime_values(values, key) do
             {:ok, normalized} -> {Map.put(acc, key, normalized), errs}
@@ -245,7 +256,19 @@ defmodule Favn.Connection.Loader do
 
   defp normalize_runtime_values(values, _name) when is_list(values) do
     if Keyword.keyword?(values) do
-      {:ok, Map.new(values)}
+      case duplicate_keyword_keys(values) do
+        [] ->
+          {:ok, Map.new(values)}
+
+        duplicate_keys ->
+          {:error,
+           Enum.map(duplicate_keys, fn key ->
+             %Error{
+               type: :invalid_connections_config,
+               message: "duplicate runtime config key in keyword config: #{inspect(key)}"
+             }
+           end)}
+      end
     else
       {:error,
        [
@@ -299,5 +322,13 @@ defmodule Favn.Connection.Loader do
 
   defp invalid_connections_message(other) do
     "config :favn, :connections must be a keyword/map, got: #{inspect(other)}"
+  end
+
+  defp duplicate_keyword_keys(keyword) do
+    keyword
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.frequencies()
+    |> Enum.filter(fn {_key, count} -> count > 1 end)
+    |> Enum.map(&elem(&1, 0))
   end
 end

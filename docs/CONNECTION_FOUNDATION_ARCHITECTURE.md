@@ -288,6 +288,7 @@ Rationale: this is foundational infra for SQL assets; failing fast is safer than
 
 - runtime top-level `connections` must be keyword/map keyed by connection name atoms
 - each runtime entry must be keyword/map with atom keys
+- duplicate keys in keyword config are rejected (top-level and per-connection)
 - unknown keys are rejected against schema key set
 - required keys must exist after merge
 - required keys may be `nil` only if explicitly allowed by field validator (default behavior: nil is invalid for required keys)

@@ -137,6 +137,18 @@ defmodule Favn.ConnectionTest do
     assert Enum.any?(errors, &(&1.message =~ "runtime connection name must be an atom"))
   end
 
+  test "loader rejects duplicate top-level keyword connection names" do
+    Application.put_env(:favn, :connection_modules, [WarehouseConnection])
+
+    Application.put_env(:favn, :connections,
+      warehouse: [database: "/tmp/one"],
+      warehouse: [database: "/tmp/two"]
+    )
+
+    assert {:error, errors} = Loader.load()
+    assert Enum.any?(errors, &(&1.message =~ "duplicate runtime connection name"))
+  end
+
   test "loader rejects duplicate connection names" do
     Application.put_env(:favn, :connection_modules, [
       WarehouseConnection,
@@ -166,6 +178,17 @@ defmodule Favn.ConnectionTest do
              error.type == :invalid_type and
                error.details[:reason] == :invalid_custom_validator_return
            end)
+  end
+
+  test "loader rejects duplicate per-connection keyword keys" do
+    Application.put_env(:favn, :connection_modules, [WarehouseConnection])
+
+    Application.put_env(:favn, :connections,
+      warehouse: [database: "/tmp/one", database: "/tmp/two"]
+    )
+
+    assert {:error, errors} = Loader.load()
+    assert Enum.any?(errors, &(&1.message =~ "duplicate runtime config key"))
   end
 
   test "public facade returns redacted connection inspection" do
