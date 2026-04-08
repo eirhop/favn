@@ -195,6 +195,7 @@ SQLite ordering notes:
 The first SQL foundation step is documented in:
 
 - [`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`](docs/CONNECTION_FOUNDATION_ARCHITECTURE.md)
+- [`docs/SQL_ADAPTER_ARCHITECTURE.md`](docs/SQL_ADAPTER_ARCHITECTURE.md)
 
 The architecture and current implementation provide:
 
