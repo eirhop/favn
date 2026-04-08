@@ -65,7 +65,7 @@ Near-term priority is a practical path to real usage:
 
 ## v0.3.0 — Pipelines, Scheduler, and Windowing
 
-**Status: Release candidate**
+**Status: Released**
 
 Goal: make Favn usable for scheduled and windowed asset execution.
 
