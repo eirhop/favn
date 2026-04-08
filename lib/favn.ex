@@ -101,6 +101,15 @@ defmodule Favn do
   machine telemetry is emitted separately via `:telemetry` event names under
   `[:favn, :runtime, ...]`.
 
+  ### SQL connection foundation
+
+  The first SQL foundation step is documented in
+  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`.
+
+  This includes explicit `Favn.Connection` provider modules, schema-driven
+  runtime config merge validation, boot-time loading with fail-fast validation,
+  and redacted connection lookup/inspection APIs exposed through `Favn`.
+
 
   ## New v0.2 DSL contract
 
@@ -626,6 +635,68 @@ defmodule Favn do
   Direction used by dependency graph inspection APIs.
   """
   @type dependency_direction :: Favn.Assets.GraphIndex.direction()
+
+  @typedoc """
+  Public connection lookup errors.
+  """
+  @type connection_error :: :not_found
+
+  @typedoc """
+  Public redacted connection inspection payload.
+  """
+  @type connection_info :: %{
+          name: atom(),
+          adapter: module(),
+          module: module(),
+          config: map(),
+          required_keys: [atom()],
+          secret_fields: [atom()],
+          schema_keys: [atom()],
+          metadata: map()
+        }
+
+  @doc """
+  List all registered connections with secrets redacted.
+
+  Returns:
+
+    * list of maps with stable connection metadata and redacted config
+  """
+  @spec list_connections() :: [connection_info()]
+  def list_connections do
+    Favn.Connection.Registry.list()
+    |> Enum.map(&Favn.Connection.Sanitizer.redact/1)
+  end
+
+  @doc """
+  Fetch one registered connection by name with secrets redacted.
+  """
+  @spec get_connection(atom()) :: {:ok, connection_info()} | {:error, connection_error()}
+  def get_connection(name) when is_atom(name) do
+    case Favn.Connection.Registry.fetch(name) do
+      {:ok, resolved} -> {:ok, Favn.Connection.Sanitizer.redact(resolved)}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Fetch one registered connection by name and raise when missing.
+  """
+  @spec get_connection!(atom()) :: connection_info()
+  def get_connection!(name) when is_atom(name) do
+    case get_connection(name) do
+      {:ok, connection} -> connection
+      {:error, :not_found} -> raise Favn.Connection.NotFoundError, name: name
+    end
+  end
+
+  @doc """
+  Return true when a connection with the given name is registered.
+  """
+  @spec connection_registered?(atom()) :: boolean()
+  def connection_registered?(name) when is_atom(name) do
+    Favn.Connection.Registry.registered?(name)
+  end
 
   @typedoc """
   Options for dependency graph inspection APIs.

@@ -6,8 +6,9 @@ defmodule Favn.Application do
 
     1. load the global asset registry
     2. build the global dependency graph index
-    3. validate the configured storage adapter
-    4. start PubSub and any storage adapter child processes
+    3. load and validate configured connection definitions/runtime values
+    4. validate the configured storage adapter
+    5. start PubSub, connection registry, and any storage adapter child processes
 
   If any of the preflight steps fail, startup returns that error and Favn does
   not boot in a partially initialized state.
@@ -23,17 +24,34 @@ defmodule Favn.Application do
 
     with :ok <- Favn.Assets.Registry.load(),
          :ok <- Favn.Assets.GraphIndex.load(),
+         {:ok, connections} <- load_connections_or_raise(),
          :ok <- Favn.Storage.validate_adapter(adapter),
          {:ok, child_specs} <- Favn.Storage.child_specs() do
-      runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]
-      scheduler_children = if scheduler_enabled?(), do: [Favn.Scheduler.Supervisor], else: []
-
-      Supervisor.start_link(
-        [pubsub_child | child_specs] ++ runtime_children ++ scheduler_children,
-        strategy: :one_for_one,
-        name: Favn.Supervisor
-      )
+      start_supervisor(pubsub_child, child_specs, connections)
     end
+  end
+
+  defp load_connections_or_raise do
+    case Favn.Connection.Loader.load() do
+      {:ok, connections} ->
+        {:ok, connections}
+
+      {:error, errors} when is_list(errors) ->
+        raise Favn.Connection.ConfigError, errors: errors
+    end
+  end
+
+  defp start_supervisor(pubsub_child, child_specs, connections) do
+    connection_registry_child = {Favn.Connection.Registry, connections: connections}
+    runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]
+    scheduler_children = if scheduler_enabled?(), do: [Favn.Scheduler.Supervisor], else: []
+
+    Supervisor.start_link(
+      [pubsub_child, connection_registry_child | child_specs] ++
+        runtime_children ++ scheduler_children,
+      strategy: :one_for_one,
+      name: Favn.Supervisor
+    )
   end
 
   defp scheduler_enabled? do

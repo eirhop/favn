@@ -109,16 +109,14 @@ Introduce a reusable connection model for SQL backends.
 ### Responsibilities
 
 - define a named connection
-- validate configuration
-- support defaults and required fields
-- mark secret fields
-- create and dispose backend connections
-- support health check / ping behavior
+- validate configuration through an explicit field schema
+- support required, optional, defaulted, secret, and typed fields
 - provide a stable connection reference that assets can depend on indirectly
 
 ### Requirements
 
 - configuration validation must fail fast
+- connection definitions must declare allowed keys explicitly (schema-driven strict mode)
 - secrets must not leak in logs or runtime metadata
 - connection definitions must be reusable across multiple SQL assets
 - host applications must be able to register one or more SQL connections
@@ -127,6 +125,14 @@ Introduce a reusable connection model for SQL backends.
 ### Notes
 
 `Favn.Connection` should be backend-agnostic enough to work for multiple SQL engines, but it does **not** need to solve generic source connector config in v0.4.
+
+Startup boundary for v0.4:
+
+- SQL asset compile/discovery must not depend on resolved runtime connection payloads.
+- SQL assets may reference connection **names** during compile/discovery.
+- Resolved connection values are required at runtime/execution boundaries.
+- Connection lifecycle callbacks (`connect`, `disconnect`, `ping`) belong to
+  `Favn.SQL.Adapter`, not `Favn.Connection`.
 
 ---
 

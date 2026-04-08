@@ -6,6 +6,7 @@ This document maps the current `test/` layout for the Favn core library.
 test/
 ├── asset_test.exs
 ├── assets_test.exs
+├── connection_test.exs
 ├── events_test.exs
 ├── favn_test.exs
 ├── freshness_test.exs

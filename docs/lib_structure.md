@@ -14,6 +14,15 @@ lib/
     │   ├── graph_index.ex
     │   ├── planner.ex
     │   └── registry.ex
+    ├── connection.ex
+    ├── connection/
+    │   ├── definition.ex
+    │   ├── error.ex
+    │   ├── loader.ex
+    │   ├── registry.ex
+    │   ├── resolved.ex
+    │   ├── sanitizer.ex
+    │   └── validator.ex
     ├── freshness.ex
     ├── pipeline.ex
     ├── pipeline/
