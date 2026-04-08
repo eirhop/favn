@@ -21,6 +21,7 @@ lib/
     │   ├── loader.ex
     │   ├── registry.ex
     │   ├── resolved.ex
+    │   ├── sanitizer.ex
     │   └── validator.ex
     ├── freshness.ex
     ├── pipeline.ex

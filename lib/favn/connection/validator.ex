@@ -285,8 +285,17 @@ defmodule Favn.Connection.Validator do
 
       type ->
         case type_valid?(type, value) do
-          :ok -> errors
-          {:error, reason} -> [validation_type_error(definition, field, reason) | errors]
+          :ok ->
+            errors
+
+          {:error, reason} ->
+            [validation_type_error(definition, field, reason) | errors]
+
+          other ->
+            [
+              validation_type_error(definition, field, {:invalid_validator_return, other})
+              | errors
+            ]
         end
     end
   end
@@ -334,7 +343,13 @@ defmodule Favn.Connection.Validator do
     if value in values, do: :ok, else: {:error, {:expected_in, values}}
   end
 
-  defp type_valid?({:custom, fun}, value), do: fun.(value)
+  defp type_valid?({:custom, fun}, value) do
+    case fun.(value) do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :invalid_custom_validator_return}
+    end
+  end
 
   defp duplicates(values) do
     values

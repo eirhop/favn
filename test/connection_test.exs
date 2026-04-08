@@ -67,6 +67,21 @@ defmodule Favn.ConnectionTest do
     end
   end
 
+  defmodule CustomValidatorConnection do
+    @behaviour Favn.Connection
+
+    @impl true
+    def definition do
+      %Definition{
+        name: :custom,
+        adapter: Favn.SQL.Adapter.DuckDB,
+        config_schema: [
+          %{key: :token, required: true, type: {:custom, fn _value -> :bad_return end}}
+        ]
+      }
+    end
+  end
+
   setup do
     state = Favn.TestSetup.capture_state()
 
@@ -102,6 +117,26 @@ defmodule Favn.ConnectionTest do
     assert Enum.any?(errors, &(&1.type == :unknown_keys))
   end
 
+  test "loader rejects unknown top-level runtime connection names" do
+    Application.put_env(:favn, :connection_modules, [WarehouseConnection])
+
+    Application.put_env(:favn, :connections,
+      warehouse: [database: "/tmp/db"],
+      ghost_connection: []
+    )
+
+    assert {:error, errors} = Loader.load()
+    assert Enum.any?(errors, &(&1.message =~ "ghost_connection"))
+  end
+
+  test "loader rejects non-atom top-level runtime connection names for map config" do
+    Application.put_env(:favn, :connection_modules, [WarehouseConnection])
+    Application.put_env(:favn, :connections, %{"warehouse" => %{database: "/tmp/db"}})
+
+    assert {:error, errors} = Loader.load()
+    assert Enum.any?(errors, &(&1.message =~ "runtime connection name must be an atom"))
+  end
+
   test "loader rejects duplicate connection names" do
     Application.put_env(:favn, :connection_modules, [
       WarehouseConnection,
@@ -119,6 +154,18 @@ defmodule Favn.ConnectionTest do
 
     assert {:error, errors} = Loader.load()
     assert Enum.any?(errors, &(&1.type == :invalid_definition))
+  end
+
+  test "custom validator invalid return is normalized to invalid_type" do
+    Application.put_env(:favn, :connection_modules, [CustomValidatorConnection])
+    Application.put_env(:favn, :connections, custom: [token: "value"])
+
+    assert {:error, errors} = Loader.load()
+
+    assert Enum.any?(errors, fn error ->
+             error.type == :invalid_type and
+               error.details[:reason] == :invalid_custom_validator_return
+           end)
   end
 
   test "public facade returns redacted connection inspection" do

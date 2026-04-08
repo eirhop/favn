@@ -10,7 +10,8 @@ defmodule Favn.Connection.Loader do
     with {:ok, modules} <- configured_modules(),
          {:ok, runtime_connections} <- configured_runtime_connections(),
          {:ok, definitions} <- load_definitions(modules),
-         :ok <- validate_duplicate_names(definitions) do
+         :ok <- validate_duplicate_names(definitions),
+         :ok <- validate_unknown_runtime_connection_names(definitions, runtime_connections) do
       resolve_connections(definitions, runtime_connections)
     end
   end
@@ -31,10 +32,20 @@ defmodule Favn.Connection.Loader do
   def configured_runtime_connections do
     case Application.get_env(:favn, :connections, []) do
       entries when is_list(entries) ->
-        {:ok, normalize_connection_entries(entries)}
+        if Keyword.keyword?(entries) do
+          normalize_keyword_connections(entries)
+        else
+          {:error,
+           [
+             %Error{
+               type: :invalid_connections_config,
+               message: "config :favn, :connections list must be a keyword list"
+             }
+           ]}
+        end
 
       entries when is_map(entries) ->
-        {:ok, entries}
+        normalize_map_connections(entries)
 
       other ->
         {:error,
@@ -57,27 +68,29 @@ defmodule Favn.Connection.Loader do
 
   defp load_definition(module) when is_atom(module) do
     if function_exported?(module, :definition, 0) do
-      definition = module.definition()
+      with :ok <- validate_behaviour(module) do
+        definition = module.definition()
 
-      case definition do
-        %Definition{} = defn ->
-          normalized = %Definition{defn | module: module}
+        case definition do
+          %Definition{} = defn ->
+            normalized = %Definition{defn | module: module}
 
-          case Validator.validate_definition(normalized) do
-            :ok -> {:ok, normalized}
-            {:error, errors} -> {:error, errors}
-          end
+            case Validator.validate_definition(normalized) do
+              :ok -> {:ok, normalized}
+              {:error, errors} -> {:error, errors}
+            end
 
-        _other ->
-          {:error,
-           [
-             %Error{
-               type: :invalid_definition,
-               module: module,
-               message:
-                 "connection module #{inspect(module)} must return %Favn.Connection.Definition{}"
-             }
-           ]}
+          _other ->
+            {:error,
+             [
+               %Error{
+                 type: :invalid_definition,
+                 module: module,
+                 message:
+                   "connection module #{inspect(module)} must return %Favn.Connection.Definition{}"
+               }
+             ]}
+        end
       end
     else
       {:error,
@@ -101,28 +114,52 @@ defmodule Favn.Connection.Loader do
      ]}
   end
 
-  defp validate_duplicate_names(definitions) do
-    duplicate_names =
-      definitions
-      |> Enum.group_by(& &1.name)
-      |> Enum.filter(fn {_name, defs} -> length(defs) > 1 end)
+  defp validate_behaviour(module) do
+    behaviours =
+      module
+      |> module_attributes(:behaviour)
+      |> List.flatten()
 
-    if duplicate_names == [] do
+    if Favn.Connection in behaviours do
       :ok
     else
-      errors =
-        Enum.flat_map(duplicate_names, fn {name, defs} ->
-          Enum.map(defs, fn defn ->
-            %Error{
-              type: :duplicate_name,
-              module: defn.module,
-              connection: name,
-              message: "duplicate connection name registered: #{inspect(name)}"
-            }
-          end)
-        end)
+      {:error,
+       [
+         %Error{
+           type: :invalid_module,
+           module: module,
+           message: "connection module #{inspect(module)} must declare @behaviour Favn.Connection"
+         }
+       ]}
+    end
+  end
 
-      {:error, errors}
+  defp module_attributes(module, key) do
+    module
+    |> apply(:module_info, [:attributes])
+    |> Keyword.get(key, [])
+  rescue
+    _ -> []
+  end
+
+  defp validate_unknown_runtime_connection_names(definitions, runtime_connections) do
+    known_names = definitions |> Enum.map(& &1.name) |> MapSet.new()
+    runtime_names = runtime_connections |> Map.keys() |> MapSet.new()
+
+    unknown_names =
+      runtime_names |> MapSet.difference(known_names) |> MapSet.to_list() |> Enum.sort()
+
+    if unknown_names == [] do
+      :ok
+    else
+      {:error,
+       Enum.map(unknown_names, fn name ->
+         %Error{
+           type: :invalid_connections_config,
+           connection: name,
+           message: "runtime connection #{inspect(name)} has no matching provider definition"
+         }
+       end)}
     end
   end
 
@@ -131,15 +168,9 @@ defmodule Favn.Connection.Loader do
       Enum.reduce(definitions, {[], []}, fn definition, {entries, errs} ->
         runtime_values = Map.get(runtime_connections, definition.name, %{})
 
-        case normalize_runtime_values(runtime_values, definition.name) do
-          {:ok, values} ->
-            case Validator.resolve(definition, values) do
-              {:ok, resolved} -> {[{definition.name, resolved} | entries], errs}
-              {:error, resolver_errors} -> {entries, resolver_errors ++ errs}
-            end
-
-          {:error, runtime_errors} ->
-            {entries, runtime_errors ++ errs}
+        case Validator.resolve(definition, runtime_values) do
+          {:ok, resolved} -> {[{definition.name, resolved} | entries], errs}
+          {:error, resolver_errors} -> {entries, resolver_errors ++ errs}
         end
       end)
 
@@ -150,7 +181,66 @@ defmodule Favn.Connection.Loader do
     end
   end
 
-  defp normalize_runtime_values(values, _name) when is_map(values), do: {:ok, values}
+  defp normalize_keyword_connections(entries) do
+    {map, errors} =
+      Enum.reduce(entries, {%{}, []}, fn
+        {key, values}, {acc, errs} when is_atom(key) ->
+          case normalize_runtime_values(values, key) do
+            {:ok, normalized} -> {Map.put(acc, key, normalized), errs}
+            {:error, runtime_errors} -> {acc, runtime_errors ++ errs}
+          end
+
+        invalid_entry, {acc, errs} ->
+          {acc,
+           [
+             %Error{
+               type: :invalid_connections_config,
+               message: "invalid runtime connection entry: #{inspect(invalid_entry)}"
+             }
+             | errs
+           ]}
+      end)
+
+    if errors == [], do: {:ok, map}, else: {:error, Enum.reverse(errors)}
+  end
+
+  defp normalize_map_connections(entries) do
+    {map, errors} =
+      Enum.reduce(entries, {%{}, []}, fn
+        {key, values}, {acc, errs} when is_atom(key) ->
+          case normalize_runtime_values(values, key) do
+            {:ok, normalized} -> {Map.put(acc, key, normalized), errs}
+            {:error, runtime_errors} -> {acc, runtime_errors ++ errs}
+          end
+
+        {key, _values}, {acc, errs} ->
+          {acc,
+           [
+             %Error{
+               type: :invalid_connections_config,
+               message: "runtime connection name must be an atom, got: #{inspect(key)}"
+             }
+             | errs
+           ]}
+      end)
+
+    if errors == [], do: {:ok, map}, else: {:error, Enum.reverse(errors)}
+  end
+
+  defp normalize_runtime_values(values, _name) when is_map(values) do
+    if Enum.all?(Map.keys(values), &is_atom/1) do
+      {:ok, values}
+    else
+      {:error,
+       [
+         %Error{
+           type: :invalid_connections_config,
+           message: "connection runtime value maps must use atom keys"
+         }
+       ]}
+    end
+  end
+
   defp normalize_runtime_values(values, _name) when values == [], do: {:ok, %{}}
 
   defp normalize_runtime_values(values, _name) when is_list(values) do
@@ -178,12 +268,29 @@ defmodule Favn.Connection.Loader do
      ]}
   end
 
-  defp normalize_connection_entries(entries) do
-    entries
-    |> Enum.reduce(%{}, fn
-      {key, values}, acc when is_atom(key) -> Map.put(acc, key, values)
-      _, acc -> acc
-    end)
+  defp validate_duplicate_names(definitions) do
+    duplicate_names =
+      definitions
+      |> Enum.group_by(& &1.name)
+      |> Enum.filter(fn {_name, defs} -> length(defs) > 1 end)
+
+    if duplicate_names == [] do
+      :ok
+    else
+      errors =
+        Enum.flat_map(duplicate_names, fn {name, defs} ->
+          Enum.map(defs, fn defn ->
+            %Error{
+              type: :duplicate_name,
+              module: defn.module,
+              connection: name,
+              message: "duplicate connection name registered: #{inspect(name)}"
+            }
+          end)
+        end)
+
+      {:error, errors}
+    end
   end
 
   defp invalid_modules_message(other) do

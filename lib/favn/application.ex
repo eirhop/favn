@@ -24,23 +24,34 @@ defmodule Favn.Application do
 
     with :ok <- Favn.Assets.Registry.load(),
          :ok <- Favn.Assets.GraphIndex.load(),
-         {:ok, connections} <- Favn.Connection.Loader.load(),
+         {:ok, connections} <- load_connections_or_raise(),
          :ok <- Favn.Storage.validate_adapter(adapter),
          {:ok, child_specs} <- Favn.Storage.child_specs() do
-      connection_registry_child = {Favn.Connection.Registry, connections: connections}
-      runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]
-      scheduler_children = if scheduler_enabled?(), do: [Favn.Scheduler.Supervisor], else: []
+      start_supervisor(pubsub_child, child_specs, connections)
+    end
+  end
 
-      Supervisor.start_link(
-        [pubsub_child, connection_registry_child | child_specs] ++
-          runtime_children ++ scheduler_children,
-        strategy: :one_for_one,
-        name: Favn.Supervisor
-      )
-    else
+  defp load_connections_or_raise do
+    case Favn.Connection.Loader.load() do
+      {:ok, connections} ->
+        {:ok, connections}
+
       {:error, errors} when is_list(errors) ->
         raise Favn.Connection.ConfigError, errors: errors
     end
+  end
+
+  defp start_supervisor(pubsub_child, child_specs, connections) do
+    connection_registry_child = {Favn.Connection.Registry, connections: connections}
+    runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]
+    scheduler_children = if scheduler_enabled?(), do: [Favn.Scheduler.Supervisor], else: []
+
+    Supervisor.start_link(
+      [pubsub_child, connection_registry_child | child_specs] ++
+        runtime_children ++ scheduler_children,
+      strategy: :one_for_one,
+      name: Favn.Supervisor
+    )
   end
 
   defp scheduler_enabled? do

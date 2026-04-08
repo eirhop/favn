@@ -665,7 +665,7 @@ defmodule Favn do
   @spec list_connections() :: [connection_info()]
   def list_connections do
     Favn.Connection.Registry.list()
-    |> Enum.map(&sanitize_connection/1)
+    |> Enum.map(&Favn.Connection.Sanitizer.redact/1)
   end
 
   @doc """
@@ -674,7 +674,7 @@ defmodule Favn do
   @spec get_connection(atom()) :: {:ok, connection_info()} | {:error, connection_error()}
   def get_connection(name) when is_atom(name) do
     case Favn.Connection.Registry.fetch(name) do
-      {:ok, resolved} -> {:ok, sanitize_connection(resolved)}
+      {:ok, resolved} -> {:ok, Favn.Connection.Sanitizer.redact(resolved)}
       :error -> {:error, :not_found}
     end
   end
@@ -1336,23 +1336,5 @@ defmodule Favn do
   @spec unsubscribe_run(run_id()) :: :ok
   def unsubscribe_run(run_id) do
     Favn.Runtime.Events.unsubscribe_run(run_id)
-  end
-
-  defp sanitize_connection(%Favn.Connection.Resolved{} = resolved) do
-    redacted_config =
-      Enum.reduce(resolved.secret_fields, resolved.config, fn key, acc ->
-        if Map.has_key?(acc, key), do: Map.put(acc, key, :redacted), else: acc
-      end)
-
-    %{
-      name: resolved.name,
-      adapter: resolved.adapter,
-      module: resolved.module,
-      config: redacted_config,
-      required_keys: resolved.required_keys,
-      secret_fields: resolved.secret_fields,
-      schema_keys: resolved.schema_keys,
-      metadata: resolved.metadata
-    }
   end
 end
