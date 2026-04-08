@@ -120,6 +120,31 @@ defmodule Favn.StorageTest do
     def get_scheduler_state(_pipeline_module, _opts), do: throw(:scheduler_throw)
   end
 
+  defmodule ExitingSchedulerStore do
+    @behaviour Favn.Storage.Adapter
+
+    @impl true
+    def child_spec(_opts), do: :none
+
+    @impl true
+    def scheduler_child_spec(_opts), do: :none
+
+    @impl true
+    def put_run(_run, _opts), do: :ok
+
+    @impl true
+    def get_run(_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def put_scheduler_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_scheduler_state(_pipeline_module, _opts), do: exit(:scheduler_exit)
+  end
+
   setup do
     previous_store = Application.get_env(:favn, :storage_adapter)
     previous_store_opts = Application.get_env(:favn, :storage_adapter_opts)
@@ -176,6 +201,13 @@ defmodule Favn.StorageTest do
              SchedulerStorage.put_state(%SchedulerState{pipeline_module: __MODULE__})
 
     assert {:error, {:store_error, {:thrown, :scheduler_throw}}} =
+             SchedulerStorage.get_state(__MODULE__)
+  end
+
+  test "scheduler storage wraps adapter exits as store_error" do
+    Application.put_env(:favn, :storage_adapter, ExitingSchedulerStore)
+
+    assert {:error, {:store_error, {:exited, :scheduler_exit}}} =
              SchedulerStorage.get_state(__MODULE__)
   end
 
