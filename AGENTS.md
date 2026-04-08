@@ -5,14 +5,15 @@
 Favn is an Elixir library for defining and orchestrating business-oriented data assets.
 This repository currently focuses on the **core Favn library**.
 The main api interface for library is found in `/lib/favn.ex`. This file contains extensive documentation and main interface functions and documentation should be continuously updated as we progress. 
-The most important file is `FEATURES.md`. We will use this file to document our progress and roadmap.
+The most important file is `docs/FEATURES.md`. We will use this file to document our progress and roadmap.
 
 **Important rules**
 - Favn is currently in private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
 - Always start by reading `/lib/favn.ex` and `readme.md` to get overview of project, code interface and progress
-- Keep status of roadmap features and task list always up to date in `FEATURES.md`. 
+- Keep status of roadmap features and task list always up to date in `docs/FEATURES.md`. 
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
 - Always keep user documentation up to date in `/lib/favn.ex` and `README.md`.
+- when creating new files, please update `docs/lib_structure.md` or `docs/test_structure.md`
 - We are using git dependencies and not hex. Therefore following commands must be run before compile. This also reduced terminal noise:
     - mix archive.install github hexpm/hex branch latest --force >/dev/null 2>&1
     - mix deps.get >/dev/null 2>&1
