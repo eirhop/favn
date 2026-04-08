@@ -111,6 +111,7 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 Goal: first complete SQL workflow on top of the shared runtime window model.
 
 - [ ] `Favn.Connection` behaviour and reusable connection model
+  - [x] Connection foundation architecture design doc (`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`)
 - [ ] `Favn.SQL.Adapter` behaviour
 - [ ] DuckDB adapter
 - [ ] Typed source identities

@@ -190,6 +190,17 @@ SQLite ordering notes:
 - Independent ready steps execute in parallel within a run, bounded by `max_concurrency`.
 - Run events are best-effort pubsub notifications.
 
+## SQL connection foundation design (v0.4 planning)
+
+The first SQL foundation step is now documented in:
+
+- [`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`](docs/CONNECTION_FOUNDATION_ARCHITECTURE.md)
+
+This design defines the proposed `Favn.Connection` behaviour boundary,
+canonical `%Favn.Connection.Definition{}` shape, boot-time registry loading,
+runtime config merge/validation, normalized error model, and public lookup API
+that `Favn.SQL.Adapter` work will build on.
+
 ## Runtime behavior in this release
 
 - **Planning and orchestration**: Favn plans dependency-aware runs with deterministic topological stages and orchestrates execution through a run-scoped coordinator with bounded parallel step dispatch per run.

@@ -101,6 +101,16 @@ defmodule Favn do
   machine telemetry is emitted separately via `:telemetry` event names under
   `[:favn, :runtime, ...]`.
 
+  ### SQL connection foundation planning
+
+  The first SQL foundation step (v0.4 planning) is documented in
+  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`.
+
+  That document defines the proposed `Favn.Connection` behaviour and
+  `%Favn.Connection.Definition{}` contract, with explicit provider modules,
+  boot-time registry loading, strict runtime config merge validation, and
+  public connection lookup/inspection API shape in `Favn`.
+
 
   ## New v0.2 DSL contract
 
