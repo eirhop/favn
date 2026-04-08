@@ -111,6 +111,9 @@ defmodule Favn do
   runtime config merge validation, boot-time loading with fail-fast validation,
   and redacted connection lookup/inspection APIs exposed through `Favn`.
 
+  v0.4 also introduces `Favn.SQL.Adapter` and the internal `Favn.SQL` facade as
+  the runtime SQL backend contract starting from `%Favn.Connection.Resolved{}`.
+
 
   ## New v0.2 DSL contract
 

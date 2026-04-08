@@ -112,7 +112,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 
 - [x] `Favn.Connection` behaviour and reusable connection model
   - [x] Connection foundation architecture design doc (`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`)
-- [ ] `Favn.SQL.Adapter` behaviour
+- [x] `Favn.SQL.Adapter` behaviour
   - [x] Adapter architecture design doc (`docs/SQL_ADAPTER_ARCHITECTURE.md`)
 - [ ] DuckDB adapter
 - [ ] Typed source identities

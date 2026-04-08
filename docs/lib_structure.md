@@ -52,6 +52,17 @@ lib/
     │       ├── run.ex
     │       └── step.ex
     ├── scheduler.ex
+    ├── sql.ex
+    ├── sql/
+    │   ├── adapter.ex
+    │   ├── capabilities.ex
+    │   ├── column.ex
+    │   ├── error.ex
+    │   ├── relation.ex
+    │   ├── relation_ref.ex
+    │   ├── result.ex
+    │   ├── session.ex
+    │   └── write_plan.ex
     ├── scheduler/
     │   ├── cron.ex
     │   ├── registry.ex
