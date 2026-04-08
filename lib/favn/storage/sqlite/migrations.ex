@@ -4,8 +4,12 @@ defmodule Favn.Storage.SQLite.Migrations do
   """
 
   alias Favn.Storage.SQLite.Migrations.CreateRuns
+  alias Favn.Storage.SQLite.Migrations.CreateSchedulerStates
 
-  @migrations [{20260330000000, CreateRuns}]
+  @migrations [
+    {20_260_330_000_000, CreateRuns},
+    {20_260_408_010_000, CreateSchedulerStates}
+  ]
 
   @spec migrate!(module()) :: :ok
   def migrate!(repo) do

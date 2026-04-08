@@ -149,3 +149,42 @@ defmodule Favn.Test.Fixtures.Pipelines.RunnerSlowPipeline do
     deps(:none)
   end
 end
+
+defmodule Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
+
+  pipeline :scheduler_daily do
+    asset({SalesAssets, :sales_daily})
+    deps(:all)
+    window(:day)
+
+    schedule(
+      cron: "* * * * *",
+      timezone: "Etc/UTC",
+      missed: :all,
+      overlap: :forbid,
+      active: true
+    )
+  end
+end
+
+defmodule Favn.Test.Fixtures.Pipelines.SchedulerInactivePipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
+
+  pipeline :scheduler_inactive do
+    asset({SalesAssets, :sales_daily})
+    deps(:none)
+
+    schedule(
+      cron: "* * * * *",
+      timezone: "Etc/UTC",
+      missed: :all,
+      overlap: :allow,
+      active: false
+    )
+  end
+end

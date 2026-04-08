@@ -22,6 +22,7 @@ defmodule Favn.TriggersSchedulesTest do
     assert schedule.id == :daily_oslo
     assert schedule.ref == {ExampleSchedules, :daily_oslo}
     assert schedule.origin == :named
+    assert schedule.active == true
   end
 
   test "schedule DSL rejects unknown option keys" do
@@ -95,6 +96,16 @@ defmodule Favn.TriggersSchedulesTest do
         use Favn.Triggers.Schedules
 
         schedule :daily, cron: "0 2 * * *", overlap: :maybe
+      end
+      """)
+    end
+
+    assert_raise ArgumentError, ~r/invalid_schedule_active/, fn ->
+      Code.compile_string("""
+      defmodule InvalidScheduleActive do
+        use Favn.Triggers.Schedules
+
+        schedule :daily, cron: "0 2 * * *", active: :yes
       end
       """)
     end

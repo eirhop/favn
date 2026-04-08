@@ -20,6 +20,7 @@ defmodule Favn.SQLiteStorageTest do
         database: db_path,
         pool_size: 1
       )
+
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
     :ok = Migrations.migrate!(Repo)
 

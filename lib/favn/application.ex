@@ -19,8 +19,6 @@ defmodule Favn.Application do
   def start(_type, _args) do
     adapter = Favn.Storage.adapter_module()
     pubsub_name = Application.get_env(:favn, :pubsub_name, Favn.PubSub)
-    # Favn starts its own PubSub by default so it works standalone; a future
-    # host-managed mode can reuse the same configurable pubsub_name boundary.
     pubsub_child = {Phoenix.PubSub, name: pubsub_name}
 
     with :ok <- Favn.Assets.Registry.load(),
@@ -28,11 +26,20 @@ defmodule Favn.Application do
          :ok <- Favn.Storage.validate_adapter(adapter),
          {:ok, child_specs} <- Favn.Storage.child_specs() do
       runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]
+      scheduler_children = if scheduler_enabled?(), do: [Favn.Scheduler.Supervisor], else: []
 
-      Supervisor.start_link([pubsub_child | child_specs] ++ runtime_children,
+      Supervisor.start_link(
+        [pubsub_child | child_specs] ++ runtime_children ++ scheduler_children,
         strategy: :one_for_one,
         name: Favn.Supervisor
       )
+    end
+  end
+
+  defp scheduler_enabled? do
+    case Application.get_env(:favn, :scheduler, []) do
+      opts when is_list(opts) -> Keyword.get(opts, :enabled, true)
+      _ -> true
     end
   end
 end

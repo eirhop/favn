@@ -3,9 +3,11 @@ defmodule Favn.TestSetup do
 
   @type state :: %{
           previous_modules: list(module()) | nil,
+          previous_pipeline_modules: list(module()) | nil,
           previous_catalog: {:ok, Favn.Assets.Registry.catalog()} | {:error, term()},
           previous_storage_adapter: module() | nil,
-          previous_storage_adapter_opts: keyword() | nil
+          previous_storage_adapter_opts: keyword() | nil,
+          previous_scheduler_opts: keyword() | nil
         }
 
   @spec capture_state() :: state()
@@ -14,9 +16,11 @@ defmodule Favn.TestSetup do
 
     %{
       previous_modules: previous_modules,
+      previous_pipeline_modules: Application.get_env(:favn, :pipeline_modules),
       previous_catalog: Favn.Assets.Registry.build_catalog(previous_modules || []),
       previous_storage_adapter: Application.get_env(:favn, :storage_adapter),
-      previous_storage_adapter_opts: Application.get_env(:favn, :storage_adapter_opts)
+      previous_storage_adapter_opts: Application.get_env(:favn, :storage_adapter_opts),
+      previous_scheduler_opts: Application.get_env(:favn, :scheduler)
     }
   end
 
@@ -49,6 +53,17 @@ defmodule Favn.TestSetup do
     :ok
   end
 
+  @spec clear_memory_scheduler_storage() :: :ok
+  def clear_memory_scheduler_storage do
+    table = Favn.Scheduler.Storage.Memory.Table
+
+    if :ets.whereis(table) != :undefined do
+      :ets.delete_all_objects(table)
+    end
+
+    :ok
+  end
+
   @spec restore_state(state(), keyword()) :: :ok
   def restore_state(state, opts \\ []) do
     restore_asset_modules(state.previous_modules)
@@ -60,6 +75,9 @@ defmodule Favn.TestSetup do
       restore_env(:storage_adapter, state.previous_storage_adapter)
       restore_env(:storage_adapter_opts, state.previous_storage_adapter_opts)
     end
+
+    restore_env(:pipeline_modules, state.previous_pipeline_modules)
+    restore_env(:scheduler, state.previous_scheduler_opts)
 
     restore_registry(state.previous_catalog, opts)
   end

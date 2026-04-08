@@ -1,0 +1,123 @@
+defmodule Favn.Scheduler.Cron do
+  @moduledoc false
+
+  @spec latest_due(String.t(), String.t(), DateTime.t()) :: DateTime.t() | nil
+  def latest_due(cron, timezone, %DateTime{} = now_utc) do
+    now = floor_to_minute(DateTime.shift_zone!(now_utc, timezone))
+
+    Stream.iterate(now, &DateTime.add(&1, -60, :second))
+    |> Enum.take(525_600)
+    |> Enum.find(&matches?(cron, &1))
+    |> maybe_to_utc()
+  end
+
+  @spec occurrences_between(String.t(), String.t(), DateTime.t(), DateTime.t()) :: [DateTime.t()]
+  def occurrences_between(
+        cron,
+        timezone,
+        %DateTime{} = last_due_utc,
+        %DateTime{} = latest_due_utc
+      ) do
+    from = DateTime.shift_zone!(last_due_utc, timezone)
+    to = DateTime.shift_zone!(latest_due_utc, timezone)
+
+    cursor = DateTime.add(floor_to_minute(from), 60, :second)
+
+    Stream.unfold(cursor, fn current ->
+      if DateTime.compare(current, to) in [:lt, :eq] do
+        {current, DateTime.add(current, 60, :second)}
+      else
+        nil
+      end
+    end)
+    |> Enum.filter(&matches?(cron, &1))
+    |> Enum.map(&DateTime.shift_zone!(&1, "Etc/UTC"))
+  end
+
+  @spec matches?(String.t(), DateTime.t()) :: boolean()
+  def matches?(cron, %DateTime{} = dt) when is_binary(cron) do
+    case String.split(cron, ~r/\s+/, trim: true) do
+      [minute, hour, day, month, weekday] ->
+        match_field?(minute, dt.minute) and
+          match_field?(hour, dt.hour) and
+          match_field?(day, dt.day) and
+          match_field?(month, dt.month) and
+          match_weekday?(weekday, dt)
+
+      _ ->
+        false
+    end
+  end
+
+  defp match_weekday?(field, dt) do
+    weekday = Date.day_of_week(DateTime.to_date(dt))
+    cron_weekday = if weekday == 7, do: 0, else: weekday
+    match_field?(field, cron_weekday) or (cron_weekday == 0 and match_field?(field, 7))
+  end
+
+  defp match_field?(field, value) do
+    field
+    |> String.split(",", trim: true)
+    |> Enum.any?(&match_token?(&1, value))
+  end
+
+  defp match_token?("*", _value), do: true
+
+  defp match_token?(token, value) do
+    case String.split(token, "/", parts: 2) do
+      [base, step] ->
+        with {step_int, ""} when step_int > 0 <- Integer.parse(step),
+             true <- base_match?(base, value),
+             true <- rem(value - step_origin(base), step_int) == 0 do
+          true
+        else
+          _ -> false
+        end
+
+      [base] ->
+        base_match?(base, value)
+
+      _ ->
+        false
+    end
+  end
+
+  defp base_match?("*", _value), do: true
+
+  defp base_match?(base, value) do
+    case String.split(base, "-", parts: 2) do
+      [single] ->
+        parse_int(single) == value
+
+      [left, right] ->
+        l = parse_int(left)
+        r = parse_int(right)
+        is_integer(l) and is_integer(r) and value >= l and value <= r
+
+      _ ->
+        false
+    end
+  end
+
+  defp step_origin("*"), do: 0
+
+  defp step_origin(base) do
+    case String.split(base, "-", parts: 2) do
+      [single] -> parse_int(single) || 0
+      [left, _right] -> parse_int(left) || 0
+      _ -> 0
+    end
+  end
+
+  defp parse_int(value) do
+    case Integer.parse(String.trim(value)) do
+      {int, ""} -> int
+      _ -> nil
+    end
+  end
+
+  defp floor_to_minute(%DateTime{} = dt), do: %{dt | second: 0, microsecond: {0, 0}}
+
+  defp maybe_to_utc(nil), do: nil
+  defp maybe_to_utc(dt), do: DateTime.shift_zone!(dt, "Etc/UTC")
+end
