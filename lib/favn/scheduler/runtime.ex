@@ -8,7 +8,7 @@ defmodule Favn.Scheduler.Runtime do
   alias Favn.Scheduler.State
   alias Favn.Scheduler.Storage
 
-  @default_tick_ms 1_000
+  @default_tick_ms 15_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -22,7 +22,7 @@ defmodule Favn.Scheduler.Runtime do
   def init(_opts) do
     case load_runtime() do
       {:ok, state} ->
-        schedule_tick(state.tick_ms)
+        schedule_tick(next_tick_delay_ms(state.tick_ms))
         {:ok, state}
 
       {:error, reason} ->
@@ -54,7 +54,7 @@ defmodule Favn.Scheduler.Runtime do
   @impl true
   def handle_info(:tick, state) do
     next = evaluate_all(state)
-    schedule_tick(next.tick_ms)
+    schedule_tick(next_tick_delay_ms(next.tick_ms))
     {:noreply, next}
   end
 
@@ -150,10 +150,12 @@ defmodule Favn.Scheduler.Runtime do
             latest_due
           )
 
-        {next_state, submitted_due_ats} =
+        {next_state, submitted_due_ats_reversed} =
           state
           |> maybe_submit_queued(entry, latest_due, now)
           |> submit_due_occurrences(entry, selected, latest_due, now)
+
+        submitted_due_ats = Enum.reverse(submitted_due_ats_reversed)
 
         cursor_due =
           next_cursor_due(
@@ -185,43 +187,43 @@ defmodule Favn.Scheduler.Runtime do
     end
   end
 
-  defp submit_due_occurrences({state, submitted}, _entry, [], _latest_due, _now),
-    do: {state, submitted}
+  defp submit_due_occurrences({state, submitted_reversed}, _entry, [], _latest_due, _now),
+    do: {state, submitted_reversed}
 
-  defp submit_due_occurrences({state, submitted}, entry, [due | rest], latest_due, now) do
+  defp submit_due_occurrences({state, submitted_reversed}, entry, [due | rest], latest_due, now) do
     state = reconcile_in_flight(state)
 
     case entry.schedule.overlap do
       :allow ->
         {next, submitted_next} =
           case submit_occurrence(state, entry, due, latest_due, now, track_in_flight?: false) do
-            {:ok, value} -> {value, submitted ++ [due]}
-            {:error, _} -> {state, submitted}
+            {:ok, value} -> {value, [due | submitted_reversed]}
+            {:error, _} -> {state, submitted_reversed}
           end
 
         submit_due_occurrences({next, submitted_next}, entry, rest, latest_due, now)
 
       :forbid ->
         if is_binary(state.in_flight_run_id) do
-          {state, submitted}
+          {state, submitted_reversed}
         else
           case submit_occurrence(state, entry, due, latest_due, now) do
-            {:ok, value} -> {value, submitted ++ [due]}
-            {:error, _} -> {state, submitted}
+            {:ok, value} -> {value, [due | submitted_reversed]}
+            {:error, _} -> {state, submitted_reversed}
           end
         end
 
       :queue_one ->
         if is_binary(state.in_flight_run_id) do
-          {%{state | queued_due_at: List.last([due | rest])}, submitted}
+          {%{state | queued_due_at: List.last([due | rest])}, submitted_reversed}
         else
           case submit_occurrence(state, entry, due, latest_due, now) do
             {:ok, value} ->
               next = if rest == [], do: value, else: %{value | queued_due_at: List.last(rest)}
-              {next, submitted ++ [due]}
+              {next, [due | submitted_reversed]}
 
             {:error, _} ->
-              {state, submitted}
+              {state, submitted_reversed}
           end
         end
     end
@@ -340,6 +342,12 @@ defmodule Favn.Scheduler.Runtime do
   end
 
   defp schedule_tick(ms), do: Process.send_after(self(), :tick, ms)
+
+  defp next_tick_delay_ms(base_tick_ms) do
+    now = DateTime.utc_now()
+    ms_to_next_minute = 60_000 - now.second * 1_000 - div(elem(now.microsecond, 0), 1_000)
+    max(100, min(base_tick_ms, ms_to_next_minute))
+  end
 
   defp floor_kind(dt, :hour), do: %{dt | minute: 0, second: 0, microsecond: {0, 0}}
 

@@ -155,7 +155,7 @@ Key settings:
 - `asset_modules`: modules that define assets with `use Favn.Assets`.
 - `pipeline_modules`: pipeline modules discovered by the scheduler runtime.
 - `:pubsub_name`: PubSub server name used for run event broadcasting.
-- `:scheduler`: trigger scheduler runtime options (`enabled`, `default_timezone`, `tick_ms`). `enabled` defaults to `true`.
+- `:scheduler`: trigger scheduler runtime options (`enabled`, `default_timezone`, `tick_ms`). `enabled` defaults to `true`; `tick_ms` defaults to `15_000`.
 - `:storage_adapter`: run storage adapter module.
 - `:storage_adapter_opts`: options passed to the configured storage adapter.
 
