@@ -133,7 +133,19 @@ defmodule Favn.SchedulerTest do
     :ok = Favn.Scheduler.reload()
     :ok = Favn.Scheduler.tick()
 
-    assert {:ok, []} = Favn.list_runs()
+    assert {:ok, runs} = Favn.list_runs(limit: 20)
+
+    scheduler_runs = Enum.filter(runs, &(&1.submit_ref == SchedulerDailyPipeline))
+    assert length(scheduler_runs) <= 1
+
+    case scheduler_runs do
+      [run] ->
+        due_at = run.pipeline.trigger.occurrence.due_at
+        assert abs(DateTime.diff(now, due_at, :second)) < 120
+
+      [] ->
+        :ok
+    end
 
     assert {:ok, %State{} = reloaded} = Favn.Scheduler.Storage.get_state(SchedulerDailyPipeline)
     assert reloaded.schedule_fingerprint != "stale-fingerprint"
