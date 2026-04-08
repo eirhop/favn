@@ -1,6 +1,9 @@
 defmodule Favn.FreshnessTest do
   use ExUnit.Case
 
+  alias Favn.Run
+  alias Favn.Run.AssetResult
+
   defmodule FreshnessAssets do
     use Favn.Assets
 
@@ -87,5 +90,67 @@ defmodule Favn.FreshnessTest do
 
     assert {:ok, missing} = Favn.missing_asset_windows({FreshnessAssets, :daily}, range)
     assert length(missing) == 2
+  end
+
+  test "check_asset_freshness/2 scans full successful history by default" do
+    key =
+      Favn.Window.Key.new!(
+        :day,
+        DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+        "Etc/UTC"
+      )
+
+    ref = {FreshnessAssets, :daily}
+
+    stale_at = DateTime.from_naive!(~N[2025-01-10 00:10:00], "Etc/UTC")
+    fresh_at = DateTime.from_naive!(~N[2025-01-10 12:00:00], "Etc/UTC")
+
+    stale_run = synthetic_success_run("freshness-stale", ref, key, stale_at)
+    fresh_run = synthetic_success_run("freshness-fresh", ref, key, fresh_at)
+
+    assert :ok = Favn.Storage.put_run(stale_run)
+
+    Enum.each(1..220, fn index ->
+      assert :ok =
+               Favn.Storage.put_run(synthetic_success_run("noise-#{index}", ref, nil, stale_at))
+    end)
+
+    assert :ok = Favn.Storage.put_run(fresh_run)
+
+    assert {:ok, result} =
+             Favn.check_asset_freshness(ref,
+               window_key: key,
+               now: DateTime.add(fresh_at, 10, :second),
+               max_age_seconds: 60
+             )
+
+    assert result.status == :fresh
+    assert result.last_materialized_at == fresh_at
+  end
+
+  defp synthetic_success_run(run_id, ref, window_key, finished_at) do
+    node_key = {ref, window_key}
+
+    result = %AssetResult{
+      ref: ref,
+      stage: 0,
+      status: :ok,
+      started_at: finished_at,
+      finished_at: finished_at,
+      duration_ms: 0,
+      attempt_count: 1,
+      max_attempts: 1
+    }
+
+    %Run{
+      id: run_id,
+      status: :ok,
+      event_seq: 1,
+      started_at: finished_at,
+      finished_at: finished_at,
+      target_refs: [ref],
+      node_results: %{node_key => result},
+      asset_results: %{ref => result}
+    }
   end
 end

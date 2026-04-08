@@ -157,6 +157,46 @@ defmodule Favn.SQLiteStorageTest do
     assert fetched.in_flight_run_id == state.in_flight_run_id
   end
 
+  test "malformed scheduler datetime columns are treated as nil" do
+    assert {:ok, _} =
+             Ecto.Adapters.SQL.query(
+               Repo,
+               """
+               INSERT INTO scheduler_states (
+                 pipeline_module,
+                 schedule_id,
+                 schedule_fingerprint,
+                 last_evaluated_at,
+                 last_due_at,
+                 last_submitted_due_at,
+                 in_flight_run_id,
+                 queued_due_at,
+                 updated_at
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+               """,
+               [
+                 "Elixir.Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline",
+                 "scheduler_daily",
+                 "fingerprint-bad",
+                 "not-a-datetime",
+                 "also-bad",
+                 "still-bad",
+                 "run-123",
+                 "bad-too",
+                 "bad-updated"
+               ]
+             )
+
+    assert {:ok, %SchedulerState{} = fetched} =
+             Favn.Scheduler.Storage.get_state(Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline)
+
+    assert fetched.last_evaluated_at == nil
+    assert fetched.last_due_at == nil
+    assert fetched.last_submitted_due_at == nil
+    assert fetched.queued_due_at == nil
+    assert fetched.updated_at == nil
+  end
+
   defp sample_run(id, status, started_at \\ DateTime.utc_now()) do
     now = DateTime.truncate(started_at, :second)
 

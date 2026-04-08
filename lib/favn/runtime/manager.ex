@@ -124,23 +124,28 @@ defmodule Favn.Runtime.Manager do
              retry_policy,
              opts
            ),
-         {:ok, pid} <- start_run_coordinator(runtime_state),
-         :ok <- persist_initial_snapshot(runtime_state),
-         :ok <- emit_run_created(runtime_state),
-         :ok <- kickoff_run(pid) do
-      ref = Process.monitor(pid)
+         {:ok, pid} <- start_run_coordinator(runtime_state) do
+      with :ok <- persist_initial_snapshot(runtime_state),
+           :ok <- emit_run_created(runtime_state),
+           :ok <- kickoff_run(pid) do
+        ref = Process.monitor(pid)
 
-      next_state =
-        state
-        |> put_in([:run_monitors, ref], runtime_state.run_id)
-        |> put_in([:run_pids, runtime_state.run_id], pid)
+        next_state =
+          state
+          |> put_in([:run_monitors, ref], runtime_state.run_id)
+          |> put_in([:run_pids, runtime_state.run_id], pid)
 
-      {{:ok, runtime_state.run_id}, next_state}
+        {{:ok, runtime_state.run_id}, next_state}
+      else
+        {:error, reason} ->
+          _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
+          {{:error, reason}, state}
+
+        {:start_failed_after_spawn, ^pid, reason} ->
+          _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
+          {{:error, reason}, state}
+      end
     else
-      {:start_failed_after_spawn, pid, reason} ->
-        _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
-        {{:error, reason}, state}
-
       {:error, reason} ->
         {{:error, reason}, state}
     end

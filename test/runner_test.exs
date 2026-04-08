@@ -340,9 +340,14 @@ defmodule Favn.RunnerTest do
 
   test "fails immediately when first persisted snapshot cannot be written" do
     :ok = Favn.TestSetup.configure_storage_adapter(InitialFailingStore, [])
+    initial_children = DynamicSupervisor.count_children(Favn.Runtime.RunSupervisor).active
 
     assert {:error, {:storage_persist_failed, {:store_error, :initial_write_failed}}} =
              Favn.run_asset({RunnerAssets, :final})
+
+    assert_eventually(fn ->
+      DynamicSupervisor.count_children(Favn.Runtime.RunSupervisor).active == initial_children
+    end)
   end
 
   test "long-running assets are not capped by a hardcoded sync timeout" do
@@ -1135,4 +1140,17 @@ defmodule Favn.RunnerTest do
         flunk("did not receive terminal run event")
     end
   end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      assert true
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition was not met in time")
 end

@@ -4,7 +4,7 @@ defmodule Favn.MixProject do
   def project do
     [
       app: :favn,
-      version: "0.2.0",
+      version: "0.3.0",
       description: "Asset-oriented workflow orchestration for Elixir applications",
       elixir: "~> 1.17",
       source_url: "https://github.com/eirhop/favn",

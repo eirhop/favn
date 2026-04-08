@@ -408,5 +408,11 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp iso_to_datetime(nil), do: nil
-  defp iso_to_datetime(value) when is_binary(value), do: DateTime.from_iso8601(value) |> elem(1)
+
+  defp iso_to_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, %DateTime{} = dt, _offset} -> dt
+      _ -> nil
+    end
+  end
 end

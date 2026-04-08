@@ -2,7 +2,7 @@
 
 ## Current Version
 
-**Current release: v0.2.0**
+**Current release: v0.3.0**
 
 ## Current Focus
 
@@ -65,7 +65,7 @@ Near-term priority is a practical path to real usage:
 
 ## v0.3.0 — Pipelines, Scheduler, and Windowing
 
-**Status: Planned**
+**Status: Release candidate**
 
 Goal: make Favn usable for scheduled and windowed asset execution.
 
@@ -93,6 +93,11 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [x] Planner anchor-range expansion via `Anchor.expand_range/4` with cross-anchor node-key dedupe
 - [x] Backfill provenance persisted on runs (`run.backfill`, `pipeline.backfill_range`, `pipeline.anchor_ranges`)
 - [x] Freshness policy checks over persisted node/window run state
+- [x] Initial snapshot persistence failure cleanup (terminate spawned coordinator on submit failure)
+- [x] Cron day-of-month/day-of-week semantics aligned with standard OR behavior
+- [x] Freshness scan correctness no longer defaults to capped run history
+- [x] SQLite scheduler datetime parsing hardened for malformed persisted values
+- [x] Release metadata/version docs aligned to v0.3.0
 - [x] SQL-readiness asset compiler seam for future SQL frontend integration
 - [x] Manual run support with explicit anchor windows
 - [x] Replace `partition` direction with runtime windowing
