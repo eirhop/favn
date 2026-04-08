@@ -2,6 +2,8 @@ defmodule Favn.StorageTest do
   use ExUnit.Case, async: false
 
   alias Favn.Run
+  alias Favn.Scheduler.State, as: SchedulerState
+  alias Favn.Scheduler.Storage, as: SchedulerStorage
   alias Favn.Storage
 
   defmodule RawErrorStore do
@@ -68,6 +70,56 @@ defmodule Favn.StorageTest do
     def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
   end
 
+  defmodule InvalidSchedulerChildSpecStore do
+    @behaviour Favn.Storage.Adapter
+
+    @impl true
+    def child_spec(_opts), do: :none
+
+    @impl true
+    def scheduler_child_spec(_opts), do: :invalid
+
+    @impl true
+    def put_run(_run, _opts), do: :ok
+
+    @impl true
+    def get_run(_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def put_scheduler_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
+  end
+
+  defmodule RaisingSchedulerStore do
+    @behaviour Favn.Storage.Adapter
+
+    @impl true
+    def child_spec(_opts), do: :none
+
+    @impl true
+    def scheduler_child_spec(_opts), do: :none
+
+    @impl true
+    def put_run(_run, _opts), do: :ok
+
+    @impl true
+    def get_run(_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def put_scheduler_state(_state, _opts), do: raise("scheduler boom")
+
+    @impl true
+    def get_scheduler_state(_pipeline_module, _opts), do: throw(:scheduler_throw)
+  end
+
   setup do
     previous_store = Application.get_env(:favn, :storage_adapter)
     previous_store_opts = Application.get_env(:favn, :storage_adapter_opts)
@@ -108,6 +160,23 @@ defmodule Favn.StorageTest do
 
     assert {:error, :invalid_opts} = Storage.list_runs(status: :pending)
     assert {:error, :invalid_opts} = Storage.list_runs(limit: 0)
+  end
+
+  test "scheduler child_specs normalize malformed adapter responses" do
+    Application.put_env(:favn, :storage_adapter, InvalidSchedulerChildSpecStore)
+
+    assert {:error, {:store_error, {:invalid_child_spec_response, :invalid}}} =
+             SchedulerStorage.child_specs()
+  end
+
+  test "scheduler storage wraps adapter raises/throws as store_error" do
+    Application.put_env(:favn, :storage_adapter, RaisingSchedulerStore)
+
+    assert {:error, {:store_error, {:raised, %RuntimeError{message: "scheduler boom"}}}} =
+             SchedulerStorage.put_state(%SchedulerState{pipeline_module: __MODULE__})
+
+    assert {:error, {:store_error, {:thrown, :scheduler_throw}}} =
+             SchedulerStorage.get_state(__MODULE__)
   end
 
   test "invalid adapter configuration is normalized as store_error" do
