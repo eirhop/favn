@@ -58,6 +58,7 @@ lib/
       adapter.ex
       capabilities.ex
       relation.ex
+      relation_ref.ex
       column.ex
       result.ex
       error.ex
@@ -108,7 +109,7 @@ lib/
 - `Favn.SQL.Materialization`
   - Build `%WritePlan{}` from compiled SQL asset metadata.
 - `Favn.SQL.Fallback`
-  - Canonical SQL fallback implementation when optional `materialize/2` is absent.
+  - Canonical SQL fallback implementation when optional `materialize/3` is absent.
 
 ---
 
@@ -141,10 +142,10 @@ defmodule Favn.SQL.Adapter do
   # Optional optimized callbacks
   @callback ping(conn(), adapter_opts()) :: :ok | {:error, Error.t()}
   @callback schema_exists?(conn(), binary(), adapter_opts()) :: {:ok, boolean()} | {:error, Error.t()}
-  @callback relation(conn(), Relation.ref(), adapter_opts()) :: {:ok, Relation.t() | nil} | {:error, Error.t()}
+  @callback relation(conn(), Favn.SQL.RelationRef.t(), adapter_opts()) :: {:ok, Relation.t() | nil} | {:error, Error.t()}
   @callback list_schemas(conn(), adapter_opts()) :: {:ok, [binary()]} | {:error, Error.t()}
   @callback list_relations(conn(), binary() | nil, adapter_opts()) :: {:ok, [Relation.t()]} | {:error, Error.t()}
-  @callback columns(conn(), Relation.ref(), adapter_opts()) :: {:ok, [Column.t()]} | {:error, Error.t()}
+  @callback columns(conn(), Favn.SQL.RelationRef.t(), adapter_opts()) :: {:ok, [Column.t()]} | {:error, Error.t()}
 
   @callback transaction(conn(), (conn() -> {:ok, term()} | {:error, Error.t()}), adapter_opts()) ::
               {:ok, term()} | {:error, Error.t()}
@@ -223,11 +224,14 @@ defstruct [
   metadata: %{}
 ]
 
-@type ref :: %{
-  optional(:catalog) => binary() | nil,
-  optional(:schema) => binary() | nil,
-  required(:name) => binary()
-}
+```
+
+### `Favn.SQL.RelationRef`
+
+Why: keeps adapter/facade introspection APIs struct-driven for relation lookup inputs.
+
+```elixir
+defstruct [:catalog, :schema, :name]
 ```
 
 ### `Favn.SQL.Column`
