@@ -30,6 +30,34 @@ defmodule Favn.Scheduler.Cron do
     |> Enum.map(&DateTime.shift_zone!(&1, "Etc/UTC"))
   end
 
+  @spec first_occurrence_between(String.t(), String.t(), DateTime.t(), DateTime.t()) ::
+          DateTime.t() | nil
+  def first_occurrence_between(
+        cron,
+        timezone,
+        %DateTime{} = last_due_utc,
+        %DateTime{} = latest_due_utc
+      ) do
+    from = DateTime.shift_zone!(last_due_utc, timezone)
+    to = DateTime.shift_zone!(latest_due_utc, timezone)
+    cursor = DateTime.add(floor_to_minute(from), 60, :second)
+    find_forward(cron, cursor, to)
+  end
+
+  @spec last_occurrence_between(String.t(), String.t(), DateTime.t(), DateTime.t()) ::
+          DateTime.t() | nil
+  def last_occurrence_between(
+        cron,
+        timezone,
+        %DateTime{} = last_due_utc,
+        %DateTime{} = latest_due_utc
+      ) do
+    from = DateTime.shift_zone!(last_due_utc, timezone)
+    to = DateTime.shift_zone!(latest_due_utc, timezone)
+    cursor = floor_to_minute(to)
+    find_backward_after(cron, cursor, from)
+  end
+
   @spec matches?(String.t(), DateTime.t()) :: boolean()
   def matches?(cron, %DateTime{} = dt) when is_binary(cron) do
     case String.split(cron, ~r/\s+/, trim: true) do
@@ -124,6 +152,34 @@ defmodule Favn.Scheduler.Cron do
       cursor
     else
       find_latest(cron, DateTime.add(cursor, -60, :second), remaining - 1)
+    end
+  end
+
+  defp find_forward(cron, cursor, to) do
+    case DateTime.compare(cursor, to) do
+      :gt ->
+        nil
+
+      _ ->
+        if matches?(cron, cursor) do
+          DateTime.shift_zone!(cursor, "Etc/UTC")
+        else
+          find_forward(cron, DateTime.add(cursor, 60, :second), to)
+        end
+    end
+  end
+
+  defp find_backward_after(cron, cursor, from) do
+    case DateTime.compare(cursor, from) do
+      :gt ->
+        if matches?(cron, cursor) do
+          DateTime.shift_zone!(cursor, "Etc/UTC")
+        else
+          find_backward_after(cron, DateTime.add(cursor, -60, :second), from)
+        end
+
+      _ ->
+        nil
     end
   end
 end

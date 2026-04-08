@@ -20,23 +20,26 @@ defmodule Favn.Scheduler.Registry do
     pipeline_modules = Application.get_env(:favn, :pipeline_modules, [])
 
     if is_list(pipeline_modules) do
-      pipeline_modules
-      |> Enum.uniq()
-      |> Enum.reduce_while({:ok, %{}}, fn pipeline_module, {:ok, acc} ->
-        case discover_module(pipeline_module) do
-          {:ok, nil} -> {:cont, {:ok, acc}}
-          {:ok, scheduled} -> {:cont, {:ok, Map.put(acc, pipeline_module, scheduled)}}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-      end)
+      with {:ok, assets} <- Favn.list_assets() do
+        pipeline_modules
+        |> Enum.uniq()
+        |> Enum.reduce_while({:ok, %{}}, fn pipeline_module, {:ok, acc} ->
+          case discover_module(pipeline_module, assets) do
+            {:ok, nil} -> {:cont, {:ok, acc}}
+            {:ok, scheduled} -> {:cont, {:ok, Map.put(acc, pipeline_module, scheduled)}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+      end
     else
       {:error, :invalid_pipeline_modules}
     end
   end
 
-  defp discover_module(pipeline_module) when is_atom(pipeline_module) do
+  defp discover_module(pipeline_module, assets)
+       when is_atom(pipeline_module) and is_list(assets) do
     with {:ok, definition} <- Pipeline.fetch(pipeline_module),
-         {:ok, resolution} <- Resolver.resolve(definition),
+         {:ok, resolution} <- Resolver.resolve(definition, assets: assets),
          {:ok, schedule} <- resolve_schedule(resolution.pipeline_ctx.schedule),
          :ok <- validate_window_for_schedule(definition.window, schedule) do
       case schedule do
@@ -56,7 +59,7 @@ defmodule Favn.Scheduler.Registry do
     end
   end
 
-  defp discover_module(_), do: {:error, :invalid_pipeline_module}
+  defp discover_module(_pipeline_module, _assets), do: {:error, :invalid_pipeline_module}
 
   defp resolve_schedule(nil), do: {:ok, nil}
   defp resolve_schedule(%Schedule{} = schedule), do: {:ok, schedule}
@@ -82,6 +85,9 @@ defmodule Favn.Scheduler.Registry do
       window: window
     }
 
-    :erlang.phash2(payload) |> Integer.to_string()
+    payload
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 end

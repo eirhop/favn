@@ -90,6 +90,10 @@ defmodule Favn.Scheduler.Runtime do
                 }
               end
 
+            if stored.schedule_fingerprint != entry.schedule_fingerprint do
+              :ok = Storage.put_state(value)
+            end
+
             {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
 
           {:error, reason} ->
@@ -114,7 +118,10 @@ defmodule Favn.Scheduler.Runtime do
             %{current | last_evaluated_at: now, updated_at: now}
           end
 
-        :ok = Storage.put_state(updated)
+        if persist_state_change?(current, updated) do
+          :ok = Storage.put_state(updated)
+        end
+
         Map.put(acc, pipeline_module, updated)
       end)
 
@@ -134,20 +141,30 @@ defmodule Favn.Scheduler.Runtime do
         %{state | last_due_at: latest_due, last_evaluated_at: now, updated_at: now}
 
       true ->
-        occurrences =
-          Cron.occurrences_between(
+        selected =
+          select_occurrences(
+            entry.schedule.missed,
             entry.schedule.cron,
             entry.schedule.timezone,
             state.last_due_at,
             latest_due
           )
 
-        {selected, cursor_due} =
-          select_occurrences(entry.schedule.missed, occurrences, latest_due)
+        {next_state, submitted_due_ats} =
+          state
+          |> maybe_submit_queued(entry, latest_due, now)
+          |> submit_due_occurrences(entry, selected, latest_due, now)
 
-        state
-        |> maybe_submit_queued(entry, latest_due, now)
-        |> submit_due_occurrences(entry, selected, latest_due, now)
+        cursor_due =
+          next_cursor_due(
+            entry.schedule.missed,
+            state.last_due_at,
+            latest_due,
+            selected,
+            submitted_due_ats
+          )
+
+        next_state
         |> Map.put(:last_due_at, cursor_due)
         |> Map.put(:last_evaluated_at, now)
         |> Map.put(:updated_at, now)
@@ -155,54 +172,56 @@ defmodule Favn.Scheduler.Runtime do
   end
 
   defp maybe_submit_queued(%State{queued_due_at: nil} = state, _entry, _latest_due, _now),
-    do: state
+    do: {state, []}
 
   defp maybe_submit_queued(%State{in_flight_run_id: run_id} = state, _entry, _latest_due, _now)
        when is_binary(run_id),
-       do: state
+       do: {state, []}
 
   defp maybe_submit_queued(state, entry, latest_due, now) do
     case submit_occurrence(state, entry, state.queued_due_at, latest_due, now) do
-      {:ok, next} -> %{next | queued_due_at: nil}
-      {:error, _} -> state
+      {:ok, next} -> {%{next | queued_due_at: nil}, [state.queued_due_at]}
+      {:error, _} -> {state, []}
     end
   end
 
-  defp submit_due_occurrences(state, _entry, [], _latest_due, _now), do: state
+  defp submit_due_occurrences({state, submitted}, _entry, [], _latest_due, _now),
+    do: {state, submitted}
 
-  defp submit_due_occurrences(state, entry, [due | rest], latest_due, now) do
+  defp submit_due_occurrences({state, submitted}, entry, [due | rest], latest_due, now) do
     state = reconcile_in_flight(state)
 
     case entry.schedule.overlap do
       :allow ->
-        next =
+        {next, submitted_next} =
           case submit_occurrence(state, entry, due, latest_due, now, track_in_flight?: false) do
-            {:ok, value} -> value
-            {:error, _} -> state
+            {:ok, value} -> {value, submitted ++ [due]}
+            {:error, _} -> {state, submitted}
           end
 
-        submit_due_occurrences(next, entry, rest, latest_due, now)
+        submit_due_occurrences({next, submitted_next}, entry, rest, latest_due, now)
 
       :forbid ->
         if is_binary(state.in_flight_run_id) do
-          state
+          {state, submitted}
         else
           case submit_occurrence(state, entry, due, latest_due, now) do
-            {:ok, value} -> value
-            {:error, _} -> state
+            {:ok, value} -> {value, submitted ++ [due]}
+            {:error, _} -> {state, submitted}
           end
         end
 
       :queue_one ->
         if is_binary(state.in_flight_run_id) do
-          %{state | queued_due_at: List.last([due | rest])}
+          {%{state | queued_due_at: List.last([due | rest])}, submitted}
         else
           case submit_occurrence(state, entry, due, latest_due, now) do
             {:ok, value} ->
-              if rest == [], do: value, else: %{value | queued_due_at: List.last(rest)}
+              next = if rest == [], do: value, else: %{value | queued_due_at: List.last(rest)}
+              {next, submitted ++ [due]}
 
             {:error, _} ->
-              state
+              {state, submitted}
           end
         end
     end
@@ -261,17 +280,41 @@ defmodule Favn.Scheduler.Runtime do
     Keyword.put(run_opts, :anchor_window, anchor)
   end
 
-  defp select_occurrences(:all, occurrences, latest_due), do: {occurrences, latest_due}
+  defp select_occurrences(:all, cron, timezone, last_due_at, latest_due) do
+    Cron.occurrences_between(cron, timezone, last_due_at, latest_due)
+  end
 
-  defp select_occurrences(:skip, [], latest_due), do: {[], latest_due}
-  defp select_occurrences(:one, [], latest_due), do: {[], latest_due}
+  defp select_occurrences(:skip, cron, timezone, last_due_at, latest_due) do
+    case Cron.last_occurrence_between(cron, timezone, last_due_at, latest_due) do
+      nil -> []
+      due_at -> [due_at]
+    end
+  end
 
-  defp select_occurrences(:skip, occurrences, latest_due),
-    do: {[List.last(occurrences)], latest_due}
+  defp select_occurrences(:one, cron, timezone, last_due_at, latest_due) do
+    case Cron.first_occurrence_between(cron, timezone, last_due_at, latest_due) do
+      nil -> []
+      due_at -> [due_at]
+    end
+  end
 
-  defp select_occurrences(:one, occurrences, _latest_due) do
-    first = hd(occurrences)
-    {[first], first}
+  defp next_cursor_due(_policy, previous_due_at, _latest_due, _selected, []), do: previous_due_at
+
+  defp next_cursor_due(:skip, _previous_due_at, latest_due, _selected, _submitted), do: latest_due
+
+  defp next_cursor_due(:one, _previous_due_at, _latest_due, _selected, submitted),
+    do: List.last(submitted)
+
+  defp next_cursor_due(:all, _previous_due_at, _latest_due, _selected, submitted),
+    do: List.last(submitted)
+
+  defp persist_state_change?(previous, next) do
+    previous.schedule_id != next.schedule_id or
+      previous.schedule_fingerprint != next.schedule_fingerprint or
+      previous.last_due_at != next.last_due_at or
+      previous.last_submitted_due_at != next.last_submitted_due_at or
+      previous.in_flight_run_id != next.in_flight_run_id or
+      previous.queued_due_at != next.queued_due_at
   end
 
   defp reconcile_in_flight(%State{in_flight_run_id: nil} = state), do: state

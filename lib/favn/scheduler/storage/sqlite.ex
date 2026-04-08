@@ -36,7 +36,7 @@ defmodule Favn.Scheduler.Storage.SQLite do
         in_flight_run_id,
         queued_due_at,
         updated_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
       ON CONFLICT(pipeline_module) DO UPDATE SET
         schedule_id = excluded.schedule_id,
         schedule_fingerprint = excluded.schedule_fingerprint,

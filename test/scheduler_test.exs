@@ -198,6 +198,29 @@ defmodule Favn.SchedulerTest do
     assert DateTime.compare(one_due, skip_due) == :lt
   end
 
+  test "scheduler does not advance cursor when run submission fails" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = %{now | second: 0, microsecond: {0, 0}}
+    previous_due = DateTime.add(now, -120, :second)
+
+    :ok =
+      Favn.Scheduler.Storage.put_state(%State{
+        pipeline_module: SchedulerDailyPipeline,
+        schedule_id: :scheduler_daily,
+        schedule_fingerprint: fingerprint_for(SchedulerDailyPipeline),
+        last_due_at: previous_due
+      })
+
+    :ok = Favn.Scheduler.reload()
+
+    :ok = Favn.TestSetup.setup_asset_modules([], reload_graph?: true)
+    :ok = Favn.Scheduler.tick()
+
+    assert {:ok, %State{} = reloaded} = Favn.Scheduler.Storage.get_state(SchedulerDailyPipeline)
+    assert reloaded.last_due_at == previous_due
+    assert reloaded.last_submitted_due_at == nil
+  end
+
   defp fingerprint_for(pipeline_module) do
     Favn.Scheduler.list_scheduled_pipelines()
     |> Enum.find(&(&1.module == pipeline_module))
