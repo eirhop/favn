@@ -75,18 +75,15 @@ defmodule Favn.Connection do
 
   alias Favn.Connection.Definition
 
-  @type definition_result :: Definition.t() | {:error, term()}
-
-  @callback definition() :: definition_result
+  @callback definition() :: Definition.t()
 end
 ```
 
 ### Decision
 
 - Keep callback surface as `definition/0` only.
-- Allow providers to return either `%Definition{}` or `{:error, reason}`.
-  - `%Definition{}` is expected in normal use.
-  - `{:error, reason}` allows custom provider modules to fail explicitly.
+- Require `definition/0` to always return `%Definition{}` (pure, declarative, total).
+- Loader/validator own all runtime/config error handling.
 
 No lifecycle callbacks here yet (`connect`, `disconnect`, `ping`) because that belongs to `Favn.SQL.Adapter` phase.
 
@@ -100,14 +97,12 @@ Static contract returned by provider module.
 
 ```elixir
 defmodule Favn.Connection.Definition do
-  @enforce_keys [:name, :adapter]
+  @enforce_keys [:name, :adapter, :config_schema]
   defstruct [
     :name,
     :adapter,
     :module,
-    required: [],
-    defaults: [],
-    secret_fields: [],
+    config_schema: [],
     doc: nil,
     metadata: %{}
   ]
@@ -116,11 +111,28 @@ defmodule Favn.Connection.Definition do
           name: atom(),
           adapter: module(),
           module: module() | nil,
-          required: [atom()],
-          defaults: keyword(),
-          secret_fields: [atom()],
+          config_schema: [field()],
           doc: String.t() | nil,
           metadata: map()
+        }
+
+  @type field_type ::
+          :string
+          | :atom
+          | :boolean
+          | :integer
+          | :float
+          | :path
+          | :module
+          | {:in, [term()]}
+          | {:custom, (term() -> :ok | {:error, term()})}
+
+  @type field :: %{
+          required(:key) => atom(),
+          optional(:required) => boolean(),
+          optional(:default) => term(),
+          optional(:secret) => boolean(),
+          optional(:type) => field_type()
         }
 end
 ```
@@ -130,11 +142,19 @@ Field intent:
 - `name`: registry key and public lookup name.
 - `adapter`: SQL adapter module reference (must be module atom).
 - `module`: populated by loader to source provider module.
-- `required`: required runtime keys.
-- `defaults`: non-secret defaults to merge before runtime values.
-- `secret_fields`: keys that must be redacted in inspection output.
+- `config_schema`: explicit field contract used to derive required/default/secret/type rules.
 - `doc`: optional user-facing description.
 - `metadata`: free-form introspection metadata.
+
+Example schema:
+
+```elixir
+config_schema: [
+  %{key: :database, required: true, type: :path},
+  %{key: :read_only, required: false, default: false, type: :boolean},
+  %{key: :password, required: true, secret: true, type: :string}
+]
+```
 
 ### `Favn.Connection.Resolved`
 
@@ -148,8 +168,9 @@ defmodule Favn.Connection.Resolved do
     :adapter,
     :module,
     :config,
-    required: [],
+    required_keys: [],
     secret_fields: [],
+    schema_keys: [],
     metadata: %{}
   ]
 
@@ -158,8 +179,9 @@ defmodule Favn.Connection.Resolved do
           adapter: module(),
           module: module(),
           config: map(),
-          required: [atom()],
+          required_keys: [atom()],
           secret_fields: [atom()],
+          schema_keys: [atom()],
           metadata: map()
         }
 end
@@ -192,16 +214,18 @@ config :favn,
 
 For each definition `name`:
 
-1. start from `%Definition{defaults: ...}`
-2. overlay runtime `connections[name]`
-3. produce final `config` map in `%Resolved{}`
+1. derive schema key set from `definition.config_schema`
+2. build defaults map from schema fields with `:default`
+3. overlay runtime `connections[name]`
+4. validate by schema (`required`, `type`, `allowed keys`, custom validator)
+5. produce final `config` map in `%Resolved{}`
 
 ### Hard rules
 
-- Runtime config may only provide runtime value keys.
-- Runtime keys **cannot override structural fields** (`name`, `adapter`, `required`, etc.).
+- Runtime config may only provide keys declared in `config_schema`.
+- Runtime keys **cannot override structural fields** (`name`, `adapter`, `config_schema`, etc.).
 - Adapter is definition-only and immutable at runtime.
-- Unknown runtime keys fail validation by default (strict mode).
+- Unknown runtime keys fail validation by default (strict mode via schema key set).
 
 This strictness avoids silent misconfiguration and typo drift.
 
@@ -211,21 +235,32 @@ This strictness avoids silent misconfiguration and typo drift.
 
 Load connections before scheduler/runtime services become available.
 
-1. `Favn.Application.start/2` boots connection registry early.
-2. `Favn.Connection.Loader.load/0` reads:
+### Startup boundary decision (locked)
+
+**Decision A:** SQL asset compilation/discovery must **not** depend on resolved connection payloads.
+
+- Asset registry and graph index may compile/discover SQL assets by connection **name** only.
+- Resolved connection values are required at execution/use time, not compile/discovery time.
+- This keeps current startup order stable and avoids coupling asset discovery to secret-bearing runtime config resolution.
+
+If a future feature requires compile-time connection presence, that must be a new explicit RFC and startup-order change.
+
+1. `Favn.Application.start/2` loads asset/pipeline registries as today.
+2. `Favn.Connection.Loader.load/0` runs before runtime/scheduler children start.
+3. Loader reads:
    - `:connection_modules`
    - `:connections`
-3. For each module:
+4. For each module:
    - verify module is loaded
    - verify behaviour implementation
    - call `definition/0`
    - normalize `%Definition{module: provider_module}`
-4. Validate all definitions:
+5. Validate all definitions:
    - unique names
    - valid struct fields/types
-5. Merge runtime config + validate merged result.
-6. Start `Favn.Connection.Registry` with resolved map.
-7. If any error exists, fail app boot with normalized startup error.
+6. Merge runtime config + schema-validate merged result.
+7. Start `Favn.Connection.Registry` with resolved map.
+8. If any error exists, fail app boot with normalized startup error.
 
 ### Boot failure policy
 
@@ -240,21 +275,24 @@ Rationale: this is foundational infra for SQL assets; failing fast is safer than
 ## Definition validation
 
 - provider module must export `definition/0`
-- returned value must be `%Favn.Connection.Definition{}` or `{:error, reason}`
+- returned value must be `%Favn.Connection.Definition{}`
 - `name` must be atom
 - `adapter` must be module atom
-- `required` must be unique atom list
-- `defaults` must be keyword with atom keys
-- `secret_fields` must be unique atom list
-- `secret_fields` must be subset of `required ++ Keyword.keys(defaults) ++ runtime_keys` (enforced post-merge)
+- `config_schema` must be a non-empty list of field maps
+- every field must include atom `:key`
+- field keys must be unique
+- `required`, `default`, `secret` values must match expected types when present
+- `type` value must be one of supported field types
 
 ## Merge/runtime validation
 
 - runtime top-level `connections` must be keyword/map keyed by connection name atoms
 - each runtime entry must be keyword/map with atom keys
-- unknown keys are rejected
+- unknown keys are rejected against schema key set
 - required keys must exist after merge
-- required keys may be `nil` only if explicitly allowed later (for v0.4 step 1: treat `nil` as missing)
+- required keys may be `nil` only if explicitly allowed by field validator (default behavior: nil is invalid for required keys)
+- typed fields must pass type validation
+- `{:custom, validator}` fields must return `:ok` or `{:error, reason}`
 
 ## Duplicate handling
 
@@ -269,7 +307,6 @@ Expose read-only APIs for list/fetch/inspect.
 
 ```elixir
 @spec list_connections() :: [Favn.Connection.Resolved.t()]
-@spec list_connections(keyword()) :: [Favn.Connection.Resolved.t()]
 @spec get_connection(atom()) :: {:ok, Favn.Connection.Resolved.t()} | {:error, :not_found}
 @spec get_connection!(atom()) :: Favn.Connection.Resolved.t()
 @spec connection_registered?(atom()) :: boolean()
@@ -278,12 +315,11 @@ Expose read-only APIs for list/fetch/inspect.
 Recommended behavior:
 
 - `list_connections/0`: sanitized output by default (secret fields redacted)
-- `list_connections(raw: true)`: internal-only option for full config (not exposed in logs)
 - `get_connection/1`: sanitized shape by default
 - `get_connection!/1`: raises `Favn.Connection.NotFoundError`
 - `connection_registered?/1`: fast boolean lookup
 
-Keep API small and predictable. Do not expose mutation/registration runtime APIs in first version.
+Keep API small and predictable. Do not expose raw secret-bearing config through the public `Favn` facade, and do not expose mutation/registration runtime APIs in first version.
 
 ---
 
@@ -331,7 +367,7 @@ Internal return shape from loader/validator:
 
 `%Favn.Connection.Error{}` fields:
 
-- `:type` (`:invalid_module | :invalid_definition | :duplicate_name | :missing_required | :unknown_keys | :invalid_adapter`)
+- `:type` (`:invalid_module | :invalid_definition | :duplicate_name | :missing_required | :unknown_keys | :invalid_type | :invalid_adapter`)
 - `:connection` (name or nil)
 - `:module` (provider module or nil)
 - `:details` (map)
@@ -354,6 +390,9 @@ App boot should raise a single `Favn.Connection.ConfigError` containing aggregat
 - runtime attempt to override structural fields rejected
 - unknown runtime keys rejected
 - missing required keys rejected
+- optional no-default field accepted when absent
+- typed field validation failures are surfaced
+- custom validator failures are surfaced
 - secret_fields redaction contract works
 
 ## Registry tests
@@ -384,13 +423,9 @@ App boot should raise a single `Favn.Connection.ConfigError` containing aggregat
 
 2. **Redaction behavior in public API**
    - Recommended: redacted by default.
-   - Tradeoff: users may need `raw: true` for internal diagnostics.
+   - Tradeoff: deep diagnostics must use internal modules/log-safe tooling, not the public facade.
 
-3. **`definition/0` error return support**
-   - Recommended: allow `{:error, reason}` for extensibility.
-   - Tradeoff: slightly larger validation branch.
-
-4. **Allow non-atom names?**
+3. **Allow non-atom names?**
    - Recommended: no; keep atom-only for first version.
    - Tradeoff: simplest and fastest lookup vs dynamic external naming.
 

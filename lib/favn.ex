@@ -108,8 +108,9 @@ defmodule Favn do
 
   That document defines the proposed `Favn.Connection` behaviour and
   `%Favn.Connection.Definition{}` contract, with explicit provider modules,
-  boot-time registry loading, strict runtime config merge validation, and
-  public connection lookup/inspection API shape in `Favn`.
+  schema-driven strict runtime config merge validation, startup ordering
+  boundaries relative to asset discovery, boot-time registry loading, and
+  public redacted connection lookup/inspection API shape in `Favn`.
 
 
   ## New v0.2 DSL contract

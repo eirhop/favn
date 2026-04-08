@@ -197,9 +197,10 @@ The first SQL foundation step is now documented in:
 - [`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`](docs/CONNECTION_FOUNDATION_ARCHITECTURE.md)
 
 This design defines the proposed `Favn.Connection` behaviour boundary,
-canonical `%Favn.Connection.Definition{}` shape, boot-time registry loading,
-runtime config merge/validation, normalized error model, and public lookup API
-that `Favn.SQL.Adapter` work will build on.
+canonical `%Favn.Connection.Definition{}` shape, schema-driven runtime config
+merge/validation, boot-time registry loading, startup ordering constraints,
+normalized error model, and redacted public lookup API that
+`Favn.SQL.Adapter` work will build on.
 
 ## Runtime behavior in this release
 
