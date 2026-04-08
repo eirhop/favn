@@ -76,8 +76,8 @@ defmodule Favn.Scheduler.Cron do
   end
 
   defp match_day_constraints?(day_field, day_match, weekday_field, weekday_match) do
-    day_unrestricted? = field_unrestricted?(day_field)
-    weekday_unrestricted? = field_unrestricted?(weekday_field)
+    day_unrestricted? = day_of_month_unrestricted?(day_field)
+    weekday_unrestricted? = day_of_week_unrestricted?(weekday_field)
 
     cond do
       day_unrestricted? and weekday_unrestricted? -> true
@@ -87,7 +87,15 @@ defmodule Favn.Scheduler.Cron do
     end
   end
 
-  defp field_unrestricted?(field), do: String.trim(field) == "*"
+  defp day_of_month_unrestricted?(field) do
+    Enum.all?(1..31, &match_field?(field, &1))
+  end
+
+  defp day_of_week_unrestricted?(field) do
+    Enum.all?(0..6, fn value ->
+      match_field?(field, value) or (value == 0 and match_field?(field, 7))
+    end)
+  end
 
   defp match_weekday?(field, dt) do
     weekday = Date.day_of_week(DateTime.to_date(dt))
