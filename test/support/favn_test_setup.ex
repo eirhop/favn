@@ -7,7 +7,9 @@ defmodule Favn.TestSetup do
           previous_catalog: {:ok, Favn.Assets.Registry.catalog()} | {:error, term()},
           previous_storage_adapter: module() | nil,
           previous_storage_adapter_opts: keyword() | nil,
-          previous_scheduler_opts: keyword() | nil
+          previous_scheduler_opts: keyword() | nil,
+          previous_connection_modules: list(module()) | nil,
+          previous_connections: keyword() | map() | nil
         }
 
   @spec capture_state() :: state()
@@ -20,7 +22,9 @@ defmodule Favn.TestSetup do
       previous_catalog: Favn.Assets.Registry.build_catalog(previous_modules || []),
       previous_storage_adapter: Application.get_env(:favn, :storage_adapter),
       previous_storage_adapter_opts: Application.get_env(:favn, :storage_adapter_opts),
-      previous_scheduler_opts: Application.get_env(:favn, :scheduler)
+      previous_scheduler_opts: Application.get_env(:favn, :scheduler),
+      previous_connection_modules: Application.get_env(:favn, :connection_modules),
+      previous_connections: Application.get_env(:favn, :connections)
     }
   end
 
@@ -78,6 +82,8 @@ defmodule Favn.TestSetup do
 
     restore_env(:pipeline_modules, state.previous_pipeline_modules)
     restore_env(:scheduler, state.previous_scheduler_opts)
+    restore_env(:connection_modules, state.previous_connection_modules)
+    restore_env(:connections, state.previous_connections)
 
     restore_registry(state.previous_catalog, opts)
   end

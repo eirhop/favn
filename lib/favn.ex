@@ -101,16 +101,14 @@ defmodule Favn do
   machine telemetry is emitted separately via `:telemetry` event names under
   `[:favn, :runtime, ...]`.
 
-  ### SQL connection foundation planning
+  ### SQL connection foundation
 
-  The first SQL foundation step (v0.4 planning) is documented in
+  The first SQL foundation step is documented in
   `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`.
 
-  That document defines the proposed `Favn.Connection` behaviour and
-  `%Favn.Connection.Definition{}` contract, with explicit provider modules,
-  schema-driven strict runtime config merge validation, startup ordering
-  boundaries relative to asset discovery, boot-time registry loading, and
-  public redacted connection lookup/inspection API shape in `Favn`.
+  This includes explicit `Favn.Connection` provider modules, schema-driven
+  runtime config merge validation, boot-time loading with fail-fast validation,
+  and redacted connection lookup/inspection APIs exposed through `Favn`.
 
 
   ## New v0.2 DSL contract
@@ -637,6 +635,68 @@ defmodule Favn do
   Direction used by dependency graph inspection APIs.
   """
   @type dependency_direction :: Favn.Assets.GraphIndex.direction()
+
+  @typedoc """
+  Public connection lookup errors.
+  """
+  @type connection_error :: :not_found
+
+  @typedoc """
+  Public redacted connection inspection payload.
+  """
+  @type connection_info :: %{
+          name: atom(),
+          adapter: module(),
+          module: module(),
+          config: map(),
+          required_keys: [atom()],
+          secret_fields: [atom()],
+          schema_keys: [atom()],
+          metadata: map()
+        }
+
+  @doc """
+  List all registered connections with secrets redacted.
+
+  Returns:
+
+    * list of maps with stable connection metadata and redacted config
+  """
+  @spec list_connections() :: [connection_info()]
+  def list_connections do
+    Favn.Connection.Registry.list()
+    |> Enum.map(&sanitize_connection/1)
+  end
+
+  @doc """
+  Fetch one registered connection by name with secrets redacted.
+  """
+  @spec get_connection(atom()) :: {:ok, connection_info()} | {:error, connection_error()}
+  def get_connection(name) when is_atom(name) do
+    case Favn.Connection.Registry.fetch(name) do
+      {:ok, resolved} -> {:ok, sanitize_connection(resolved)}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Fetch one registered connection by name and raise when missing.
+  """
+  @spec get_connection!(atom()) :: connection_info()
+  def get_connection!(name) when is_atom(name) do
+    case get_connection(name) do
+      {:ok, connection} -> connection
+      {:error, :not_found} -> raise Favn.Connection.NotFoundError, name: name
+    end
+  end
+
+  @doc """
+  Return true when a connection with the given name is registered.
+  """
+  @spec connection_registered?(atom()) :: boolean()
+  def connection_registered?(name) when is_atom(name) do
+    Favn.Connection.Registry.registered?(name)
+  end
 
   @typedoc """
   Options for dependency graph inspection APIs.
@@ -1276,5 +1336,23 @@ defmodule Favn do
   @spec unsubscribe_run(run_id()) :: :ok
   def unsubscribe_run(run_id) do
     Favn.Runtime.Events.unsubscribe_run(run_id)
+  end
+
+  defp sanitize_connection(%Favn.Connection.Resolved{} = resolved) do
+    redacted_config =
+      Enum.reduce(resolved.secret_fields, resolved.config, fn key, acc ->
+        if Map.has_key?(acc, key), do: Map.put(acc, key, :redacted), else: acc
+      end)
+
+    %{
+      name: resolved.name,
+      adapter: resolved.adapter,
+      module: resolved.module,
+      config: redacted_config,
+      required_keys: resolved.required_keys,
+      secret_fields: resolved.secret_fields,
+      schema_keys: resolved.schema_keys,
+      metadata: resolved.metadata
+    }
   end
 end

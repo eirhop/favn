@@ -23,7 +23,7 @@ Adopt a **behaviour + definition struct + boot registry** architecture:
 1. Connection providers are explicit modules implementing `Favn.Connection`.
 2. Providers return a canonical `%Favn.Connection.Definition{}`.
 3. Runtime values come from app config (`config :favn, connections: ...`).
-4. Boot loader merges `definition.defaults` with runtime values, validates, and stores
+4. Boot loader derives defaults from `definition.config_schema`, merges runtime values, validates, and stores
    resolved connections in a registry process.
 5. Public `Favn` APIs read from that registry.
 
