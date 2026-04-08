@@ -73,7 +73,9 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 - [x] Working pipeline execution
   - Plan: `WORKING_PIPELINE_EXECUTION_PLAN.md`
   - Scope: manual `run_pipeline/2`, deterministic `plan_pipeline/2`, anchor-window runs, `backfill_pipeline/2`, and pipeline rerun/cancel/timeout/retry/resume semantics
-- [ ] Working scheduler trigger runtime
+- [x] Working scheduler trigger runtime
+  - Plan: `WORKING_SCHEDULER_TRIGGER_RUNTIME_PLAN.md`
+  - Scope: scheduler runtime engine startup, pipeline schedule discovery, active/inactive schedule handling, missed/overlap policy enforcement, trigger metadata submission through `run_pipeline/2`, and single-node persisted scheduler state recovery
 - [x] Pipeline `window` clause
 - [x] Asset-level `@window`
 - [x] Runtime window domain primitives (`Favn.Window.*`)

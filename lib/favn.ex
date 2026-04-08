@@ -252,12 +252,14 @@ defmodule Favn do
           MyApp.SalesETL,
           MyApp.GoldETL
         ],
-        scheduler: [default_timezone: "Etc/UTC"]
+        pipeline_modules: [MyApp.Pipelines.DailySales],
+        scheduler: [enabled: true, default_timezone: "Etc/UTC"]
 
   The configured module list is the global discovery scope used by
   `Favn.list_assets/0` and `Favn.get_asset/1`.
 
   Run event subscriptions use Phoenix PubSub and default to `Favn.PubSub`.
+  Scheduler runtime discovery is scoped by `config :favn, pipeline_modules: [...]`.
   Host applications can override the pubsub server name:
 
       import Config

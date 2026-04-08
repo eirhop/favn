@@ -143,8 +143,9 @@ import Config
 
 config :favn,
   asset_modules: [MyApp.SalesAssets],
+  pipeline_modules: [MyApp.Pipelines.DailySales],
   pubsub_name: MyApp.PubSub,
-  scheduler: [default_timezone: "Etc/UTC"],
+  scheduler: [enabled: true, default_timezone: "Etc/UTC"],
   storage_adapter: Favn.Storage.Adapter.Memory,
   storage_adapter_opts: []
 ```
@@ -152,10 +153,14 @@ config :favn,
 Key settings:
 
 - `asset_modules`: modules that define assets with `use Favn.Assets`.
+- `pipeline_modules`: pipeline modules discovered by the scheduler runtime.
 - `:pubsub_name`: PubSub server name used for run event broadcasting.
-- `:scheduler`: trigger scheduler configuration (`default_timezone` for schedule trigger resolution).
-- `:storage_adapter`: run storage adapter module.
+- `:scheduler`: trigger scheduler runtime options (`enabled`, `default_timezone`, `tick_ms`). `enabled` defaults to `true`; `tick_ms` defaults to `15_000`.
+- `:storage_adapter`: storage adapter module (must persist both runs and scheduler state).
 - `:storage_adapter_opts`: options passed to the configured storage adapter.
+
+Custom adapters are supported. To integrate cleanly, implement the full `Favn.Storage.Adapter`
+contract, including run persistence callbacks and scheduler-state callbacks.
 
 SQLite durable storage (single-node) can be configured with:
 

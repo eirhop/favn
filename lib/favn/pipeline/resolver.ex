@@ -14,7 +14,8 @@ defmodule Favn.Pipeline.Resolver do
   @type resolve_opts :: [
           params: map(),
           trigger: map(),
-          anchor_window: Favn.Window.Anchor.t() | nil
+          anchor_window: Favn.Window.Anchor.t() | nil,
+          assets: [Favn.asset()]
         ]
 
   @spec resolve(Definition.t(), resolve_opts()) :: {:ok, Resolution.t()} | {:error, term()}
@@ -22,14 +23,16 @@ defmodule Favn.Pipeline.Resolver do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
+    assets_opt = Keyword.get(opts, :assets)
     default_timezone = Schedule.default_timezone()
 
     with :ok <- validate_definition(definition),
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_anchor_window(anchor_window),
+         :ok <- validate_assets_opt(assets_opt),
          {:ok, schedule} <- resolve_schedule(definition.schedule, default_timezone),
-         {:ok, assets} <- Favn.list_assets(),
+         {:ok, assets} <- resolve_assets(assets_opt),
          {:ok, target_refs} <- resolve_selectors(definition, assets) do
       pipeline_ctx = %{
         id: definition.name,
@@ -116,6 +119,13 @@ defmodule Favn.Pipeline.Resolver do
     do: Favn.Window.Anchor.validate(anchor_window)
 
   defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
+
+  defp validate_assets_opt(nil), do: :ok
+  defp validate_assets_opt(values) when is_list(values), do: :ok
+  defp validate_assets_opt(other), do: {:error, {:invalid_assets_opt, other}}
+
+  defp resolve_assets(nil), do: Favn.list_assets()
+  defp resolve_assets(values), do: {:ok, values}
 
   defp resolve_schedule(nil, _default_timezone), do: {:ok, nil}
 

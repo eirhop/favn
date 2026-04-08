@@ -245,6 +245,7 @@ defmodule Favn.PipelineTest do
                    timezone_source: :schedule,
                    missed: :skip,
                    overlap: :forbid,
+                   active: true,
                    origin: :inline
                  },
                  window: :manual_window,

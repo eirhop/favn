@@ -29,10 +29,10 @@ defmodule Favn.Storage do
     adapter = adapter_module()
 
     with :ok <- validate_adapter(adapter),
-         {:ok, child_spec} <- adapter.child_spec(adapter_opts()) do
-      {:ok, [child_spec]}
+         child_spec_result <- adapter.child_spec(adapter_opts()),
+         {:ok, child_spec} <- normalize_child_spec_result(child_spec_result) do
+      {:ok, maybe_child_to_list(child_spec)}
     else
-      :none -> {:ok, []}
       {:error, {:store_error, _reason}} = error -> error
       {:error, reason} -> {:error, {:store_error, reason}}
     end
@@ -105,9 +105,12 @@ defmodule Favn.Storage do
   def validate_adapter(adapter) when is_atom(adapter) do
     required_callbacks = [
       {:child_spec, 1},
+      {:scheduler_child_spec, 1},
       {:put_run, 2},
       {:get_run, 2},
-      {:list_runs, 2}
+      {:list_runs, 2},
+      {:put_scheduler_state, 2},
+      {:get_scheduler_state, 2}
     ]
 
     with {:module, ^adapter} <- Code.ensure_loaded(adapter),
@@ -201,4 +204,12 @@ defmodule Favn.Storage do
   defp normalize_result({:error, :invalid_opts}), do: {:error, :invalid_opts}
   defp normalize_result({:error, {:store_error, _reason}} = error), do: error
   defp normalize_result({:error, reason}), do: {:error, {:store_error, reason}}
+
+  defp maybe_child_to_list(:none), do: []
+  defp maybe_child_to_list(value), do: [value]
+
+  defp normalize_child_spec_result(:none), do: {:ok, :none}
+  defp normalize_child_spec_result({:ok, child_spec}), do: {:ok, child_spec}
+  defp normalize_child_spec_result({:error, reason}), do: {:error, reason}
+  defp normalize_child_spec_result(other), do: {:error, {:invalid_child_spec_response, other}}
 end

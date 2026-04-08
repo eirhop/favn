@@ -52,6 +52,18 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
 
     create(unique_index(:window_latest_results, [:ref_module, :ref_name, :window_key]))
 
+    create table(:scheduler_states, primary_key: false) do
+      add(:pipeline_module, :text, primary_key: true)
+      add(:schedule_id, :text)
+      add(:schedule_fingerprint, :text)
+      add(:last_evaluated_at, :utc_datetime)
+      add(:last_due_at, :utc_datetime)
+      add(:last_submitted_due_at, :utc_datetime)
+      add(:in_flight_run_id, :text)
+      add(:queued_due_at, :utc_datetime)
+      add(:updated_at, :utc_datetime)
+    end
+
     execute("""
     INSERT INTO favn_counters (name, value)
     VALUES ('run_write_order', 0)

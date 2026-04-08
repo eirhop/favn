@@ -2,6 +2,7 @@ defmodule Favn.SQLiteStorageTest do
   use ExUnit.Case, async: false
 
   alias Favn.Run
+  alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
   alias Favn.Storage.SQLite.Migrations
   alias Favn.Storage.SQLite.Repo
@@ -20,6 +21,7 @@ defmodule Favn.SQLiteStorageTest do
         database: db_path,
         pool_size: 1
       )
+
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
     :ok = Migrations.migrate!(Repo)
 
@@ -130,6 +132,29 @@ defmodule Favn.SQLiteStorageTest do
 
     assert {:ok, reordered_runs} = Storage.list_runs()
     assert Enum.map(reordered_runs, & &1.id) == ["run-a", "run-b"]
+  end
+
+  test "persists and fetches scheduler state rows" do
+    state = %SchedulerState{
+      pipeline_module: Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline,
+      schedule_id: :scheduler_daily,
+      schedule_fingerprint: "fingerprint-v1",
+      last_evaluated_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      last_due_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      last_submitted_due_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      in_flight_run_id: "run-123",
+      queued_due_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    }
+
+    assert :ok = Favn.Scheduler.Storage.put_state(state)
+
+    assert {:ok, %SchedulerState{} = fetched} =
+             Favn.Scheduler.Storage.get_state(state.pipeline_module)
+
+    assert fetched.pipeline_module == state.pipeline_module
+    assert fetched.schedule_id == state.schedule_id
+    assert fetched.schedule_fingerprint == state.schedule_fingerprint
+    assert fetched.in_flight_run_id == state.in_flight_run_id
   end
 
   defp sample_run(id, status, started_at \\ DateTime.utc_now()) do
