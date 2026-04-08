@@ -8,7 +8,7 @@ defmodule Favn.Scheduler.Storage.SQLite do
   def get_state(pipeline_module) when is_atom(pipeline_module) do
     with :ok <- ensure_repo_started() do
       sql = """
-      SELECT schedule_id, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
       FROM scheduler_states
       WHERE pipeline_module = ?1
       LIMIT 1
@@ -29,6 +29,7 @@ defmodule Favn.Scheduler.Storage.SQLite do
       INSERT INTO scheduler_states (
         pipeline_module,
         schedule_id,
+        schedule_fingerprint,
         last_evaluated_at,
         last_due_at,
         last_submitted_due_at,
@@ -38,6 +39,7 @@ defmodule Favn.Scheduler.Storage.SQLite do
       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
       ON CONFLICT(pipeline_module) DO UPDATE SET
         schedule_id = excluded.schedule_id,
+        schedule_fingerprint = excluded.schedule_fingerprint,
         last_evaluated_at = excluded.last_evaluated_at,
         last_due_at = excluded.last_due_at,
         last_submitted_due_at = excluded.last_submitted_due_at,
@@ -49,6 +51,7 @@ defmodule Favn.Scheduler.Storage.SQLite do
       params = [
         Atom.to_string(state.pipeline_module),
         if(is_atom(state.schedule_id), do: Atom.to_string(state.schedule_id), else: nil),
+        state.schedule_fingerprint,
         iso(state.last_evaluated_at),
         iso(state.last_due_at),
         iso(state.last_submitted_due_at),
@@ -66,6 +69,7 @@ defmodule Favn.Scheduler.Storage.SQLite do
 
   defp from_row(pipeline_module, [
          schedule_id,
+         schedule_fingerprint,
          last_eval,
          last_due,
          last_sub,
@@ -76,6 +80,7 @@ defmodule Favn.Scheduler.Storage.SQLite do
     %State{
       pipeline_module: pipeline_module,
       schedule_id: parse_schedule_id(schedule_id),
+      schedule_fingerprint: schedule_fingerprint,
       last_evaluated_at: from_iso(last_eval),
       last_due_at: from_iso(last_due),
       last_submitted_due_at: from_iso(last_sub),

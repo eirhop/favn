@@ -70,12 +70,27 @@ defmodule Favn.Scheduler.Runtime do
       Enum.reduce_while(entries, {:ok, %{}}, fn {pipeline_module, entry}, {:ok, acc} ->
         case Storage.get_state(pipeline_module) do
           {:ok, nil} ->
-            base = %State{pipeline_module: pipeline_module, schedule_id: entry.schedule.id}
+            base = %State{
+              pipeline_module: pipeline_module,
+              schedule_id: entry.schedule.id,
+              schedule_fingerprint: entry.schedule_fingerprint
+            }
+
             {:cont, {:ok, Map.put(acc, pipeline_module, base)}}
 
           {:ok, %State{} = stored} ->
-            {:cont,
-             {:ok, Map.put(acc, pipeline_module, %{stored | schedule_id: entry.schedule.id})}}
+            value =
+              if stored.schedule_fingerprint == entry.schedule_fingerprint do
+                %{stored | schedule_id: entry.schedule.id}
+              else
+                %State{
+                  pipeline_module: pipeline_module,
+                  schedule_id: entry.schedule.id,
+                  schedule_fingerprint: entry.schedule_fingerprint
+                }
+              end
+
+            {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
 
           {:error, reason} ->
             {:halt, {:error, reason}}
@@ -127,15 +142,13 @@ defmodule Favn.Scheduler.Runtime do
             latest_due
           )
 
+        {selected, cursor_due} =
+          select_occurrences(entry.schedule.missed, occurrences, latest_due)
+
         state
         |> maybe_submit_queued(entry, latest_due, now)
-        |> submit_due_occurrences(
-          entry,
-          select_occurrences(entry.schedule.missed, occurrences),
-          latest_due,
-          now
-        )
-        |> Map.put(:last_due_at, latest_due)
+        |> submit_due_occurrences(entry, selected, latest_due, now)
+        |> Map.put(:last_due_at, cursor_due)
         |> Map.put(:last_evaluated_at, now)
         |> Map.put(:updated_at, now)
     end
@@ -163,7 +176,7 @@ defmodule Favn.Scheduler.Runtime do
     case entry.schedule.overlap do
       :allow ->
         next =
-          case submit_occurrence(state, entry, due, latest_due, now) do
+          case submit_occurrence(state, entry, due, latest_due, now, track_in_flight?: false) do
             {:ok, value} -> value
             {:error, _} -> state
           end
@@ -195,7 +208,9 @@ defmodule Favn.Scheduler.Runtime do
     end
   end
 
-  defp submit_occurrence(state, entry, due_at, latest_due, now) do
+  defp submit_occurrence(state, entry, due_at, latest_due, now, opts \\ []) do
+    track_in_flight? = Keyword.get(opts, :track_in_flight?, true)
+
     trigger = %{
       kind: :schedule,
       pipeline: %{module: entry.module, id: entry.id},
@@ -221,7 +236,14 @@ defmodule Favn.Scheduler.Runtime do
 
     case Favn.run_pipeline(entry.module, run_opts) do
       {:ok, run_id} ->
-        {:ok, %{state | in_flight_run_id: run_id, last_submitted_due_at: due_at, updated_at: now}}
+        next =
+          if track_in_flight? do
+            %{state | in_flight_run_id: run_id, last_submitted_due_at: due_at, updated_at: now}
+          else
+            %{state | last_submitted_due_at: due_at, updated_at: now}
+          end
+
+        {:ok, next}
 
       {:error, reason} ->
         Logger.warning("scheduler submit failed for #{inspect(entry.module)}: #{inspect(reason)}")
@@ -239,11 +261,18 @@ defmodule Favn.Scheduler.Runtime do
     Keyword.put(run_opts, :anchor_window, anchor)
   end
 
-  defp select_occurrences(:all, occurrences), do: occurrences
-  defp select_occurrences(:skip, []), do: []
-  defp select_occurrences(:one, []), do: []
-  defp select_occurrences(:skip, occurrences), do: [List.last(occurrences)]
-  defp select_occurrences(:one, occurrences), do: [List.last(occurrences)]
+  defp select_occurrences(:all, occurrences, latest_due), do: {occurrences, latest_due}
+
+  defp select_occurrences(:skip, [], latest_due), do: {[], latest_due}
+  defp select_occurrences(:one, [], latest_due), do: {[], latest_due}
+
+  defp select_occurrences(:skip, occurrences, latest_due),
+    do: {[List.last(occurrences)], latest_due}
+
+  defp select_occurrences(:one, occurrences, _latest_due) do
+    first = hd(occurrences)
+    {[first], first}
+  end
 
   defp reconcile_in_flight(%State{in_flight_run_id: nil} = state), do: state
 
@@ -273,7 +302,8 @@ defmodule Favn.Scheduler.Runtime do
 
   defp floor_kind(dt, :day), do: %{dt | hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
 
-  defp floor_kind(dt, :month), do: %{dt | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
+  defp floor_kind(dt, :month),
+    do: %{dt | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
 
   defp shift_kind(dt, :hour), do: DateTime.add(dt, 3600, :second)
   defp shift_kind(dt, :day), do: DateTime.add(dt, 1, :day)

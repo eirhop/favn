@@ -7,6 +7,9 @@ defmodule Favn.SchedulerTest do
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
   alias Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline
   alias Favn.Test.Fixtures.Pipelines.SchedulerInactivePipeline
+  alias Favn.Test.Fixtures.Pipelines.SchedulerMissedAllPipeline
+  alias Favn.Test.Fixtures.Pipelines.SchedulerMissedOnePipeline
+  alias Favn.Test.Fixtures.Pipelines.SchedulerMissedSkipPipeline
 
   setup_all do
     start_supervised!(CtxRecorder)
@@ -64,6 +67,7 @@ defmodule Favn.SchedulerTest do
       Favn.Scheduler.Storage.put_state(%State{
         pipeline_module: SchedulerDailyPipeline,
         schedule_id: :scheduler_daily,
+        schedule_fingerprint: fingerprint_for(SchedulerDailyPipeline),
         last_due_at: two_minutes_ago
       })
 
@@ -71,6 +75,7 @@ defmodule Favn.SchedulerTest do
       Favn.Scheduler.Storage.put_state(%State{
         pipeline_module: SchedulerInactivePipeline,
         schedule_id: :scheduler_inactive,
+        schedule_fingerprint: fingerprint_for(SchedulerInactivePipeline),
         last_due_at: two_minutes_ago
       })
 
@@ -94,6 +99,7 @@ defmodule Favn.SchedulerTest do
       Favn.Scheduler.Storage.put_state(%State{
         pipeline_module: SchedulerDailyPipeline,
         schedule_id: :scheduler_daily,
+        schedule_fingerprint: fingerprint_for(SchedulerDailyPipeline),
         last_due_at: DateTime.add(now, -120, :second)
       })
 
@@ -109,5 +115,92 @@ defmodule Favn.SchedulerTest do
     assert run.pipeline.trigger.schedule.active == true
     assert is_binary(run.pipeline.trigger.occurrence.occurrence_key)
     assert %Favn.Window.Anchor{} = run.pipeline.anchor_window
+  end
+
+  test "scheduler resets persisted cursor when schedule fingerprint changes" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = %{now | second: 0, microsecond: {0, 0}}
+
+    :ok =
+      Favn.Scheduler.Storage.put_state(%State{
+        pipeline_module: SchedulerDailyPipeline,
+        schedule_id: :scheduler_daily,
+        schedule_fingerprint: "stale-fingerprint",
+        last_due_at: DateTime.add(now, -3_600, :second)
+      })
+
+    :ok = Favn.Scheduler.reload()
+    :ok = Favn.Scheduler.tick()
+
+    assert {:ok, []} = Favn.list_runs()
+
+    assert {:ok, %State{} = reloaded} = Favn.Scheduler.Storage.get_state(SchedulerDailyPipeline)
+    assert reloaded.schedule_fingerprint != "stale-fingerprint"
+    assert reloaded.last_due_at != nil
+  end
+
+  test "missed policies differ for skip, one, and all with overlap allow" do
+    Application.put_env(:favn, :pipeline_modules, [
+      SchedulerMissedSkipPipeline,
+      SchedulerMissedOnePipeline,
+      SchedulerMissedAllPipeline
+    ])
+
+    :ok = Favn.Scheduler.reload()
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    now = %{now | second: 0, microsecond: {0, 0}}
+    three_minutes_ago = DateTime.add(now, -180, :second)
+
+    for {pipeline, id} <- [
+          {SchedulerMissedSkipPipeline, :scheduler_missed_skip},
+          {SchedulerMissedOnePipeline, :scheduler_missed_one},
+          {SchedulerMissedAllPipeline, :scheduler_missed_all}
+        ] do
+      :ok =
+        Favn.Scheduler.Storage.put_state(%State{
+          pipeline_module: pipeline,
+          schedule_id: id,
+          schedule_fingerprint: fingerprint_for(pipeline),
+          last_due_at: three_minutes_ago
+        })
+    end
+
+    :ok = Favn.Scheduler.reload()
+    :ok = Favn.Scheduler.tick()
+
+    assert {:ok, runs} = Favn.list_runs(limit: 20)
+
+    by_pipeline = Enum.group_by(runs, & &1.submit_ref)
+
+    assert length(Map.get(by_pipeline, SchedulerMissedSkipPipeline, [])) == 1
+    assert length(Map.get(by_pipeline, SchedulerMissedOnePipeline, [])) == 1
+    assert length(Map.get(by_pipeline, SchedulerMissedAllPipeline, [])) >= 3
+
+    skip_due =
+      by_pipeline
+      |> Map.fetch!(SchedulerMissedSkipPipeline)
+      |> hd()
+      |> Map.fetch!(:pipeline)
+      |> Map.fetch!(:trigger)
+      |> Map.fetch!(:occurrence)
+      |> Map.fetch!(:due_at)
+
+    one_due =
+      by_pipeline
+      |> Map.fetch!(SchedulerMissedOnePipeline)
+      |> hd()
+      |> Map.fetch!(:pipeline)
+      |> Map.fetch!(:trigger)
+      |> Map.fetch!(:occurrence)
+      |> Map.fetch!(:due_at)
+
+    assert DateTime.compare(one_due, skip_due) == :lt
+  end
+
+  defp fingerprint_for(pipeline_module) do
+    Favn.Scheduler.list_scheduled_pipelines()
+    |> Enum.find(&(&1.module == pipeline_module))
+    |> Map.fetch!(:schedule_fingerprint)
   end
 end

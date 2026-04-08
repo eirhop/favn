@@ -4,11 +4,7 @@ defmodule Favn.Scheduler.Cron do
   @spec latest_due(String.t(), String.t(), DateTime.t()) :: DateTime.t() | nil
   def latest_due(cron, timezone, %DateTime{} = now_utc) do
     now = floor_to_minute(DateTime.shift_zone!(now_utc, timezone))
-
-    Stream.iterate(now, &DateTime.add(&1, -60, :second))
-    |> Enum.take(525_600)
-    |> Enum.find(&matches?(cron, &1))
-    |> maybe_to_utc()
+    find_latest(cron, now, 525_600) |> maybe_to_utc()
   end
 
   @spec occurrences_between(String.t(), String.t(), DateTime.t(), DateTime.t()) :: [DateTime.t()]
@@ -120,4 +116,14 @@ defmodule Favn.Scheduler.Cron do
 
   defp maybe_to_utc(nil), do: nil
   defp maybe_to_utc(dt), do: DateTime.shift_zone!(dt, "Etc/UTC")
+
+  defp find_latest(_cron, _cursor, 0), do: nil
+
+  defp find_latest(cron, cursor, remaining) do
+    if matches?(cron, cursor) do
+      cursor
+    else
+      find_latest(cron, DateTime.add(cursor, -60, :second), remaining - 1)
+    end
+  end
 end

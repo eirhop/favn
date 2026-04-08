@@ -11,7 +11,8 @@ defmodule Favn.Scheduler.Registry do
           module: module(),
           id: atom(),
           schedule: Schedule.t(),
-          window: atom() | nil
+          window: atom() | nil,
+          schedule_fingerprint: String.t()
         }
 
   @spec discover() :: {:ok, %{optional(module()) => scheduled_pipeline()}} | {:error, term()}
@@ -48,7 +49,8 @@ defmodule Favn.Scheduler.Registry do
              module: pipeline_module,
              id: definition.name,
              schedule: value,
-             window: definition.window
+             window: definition.window,
+             schedule_fingerprint: fingerprint(value, definition.window)
            }}
       end
     end
@@ -67,4 +69,19 @@ defmodule Favn.Scheduler.Registry do
 
   defp validate_window_for_schedule(window, %Schedule{}),
     do: {:error, {:invalid_scheduler_window, window}}
+
+  defp fingerprint(%Schedule{} = schedule, window) do
+    payload = %{
+      id: schedule.id,
+      ref: schedule.ref,
+      cron: schedule.cron,
+      timezone: schedule.timezone,
+      overlap: schedule.overlap,
+      missed: schedule.missed,
+      active: schedule.active,
+      window: window
+    }
+
+    :erlang.phash2(payload) |> Integer.to_string()
+  end
 end

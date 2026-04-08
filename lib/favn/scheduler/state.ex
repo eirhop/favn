@@ -6,6 +6,7 @@ defmodule Favn.Scheduler.State do
   @type t :: %__MODULE__{
           pipeline_module: module(),
           schedule_id: atom() | nil,
+          schedule_fingerprint: String.t() | nil,
           last_evaluated_at: DateTime.t() | nil,
           last_due_at: DateTime.t() | nil,
           last_submitted_due_at: DateTime.t() | nil,
@@ -16,6 +17,7 @@ defmodule Favn.Scheduler.State do
 
   defstruct pipeline_module: nil,
             schedule_id: nil,
+            schedule_fingerprint: nil,
             last_evaluated_at: nil,
             last_due_at: nil,
             last_submitted_due_at: nil,

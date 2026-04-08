@@ -188,3 +188,39 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerInactivePipeline do
     )
   end
 end
+
+defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedSkipPipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
+
+  pipeline :scheduler_missed_skip do
+    asset({SalesAssets, :sales_daily})
+    deps(:none)
+    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :skip, overlap: :allow, active: true)
+  end
+end
+
+defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedOnePipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
+
+  pipeline :scheduler_missed_one do
+    asset({SalesAssets, :sales_daily})
+    deps(:none)
+    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :one, overlap: :allow, active: true)
+  end
+end
+
+defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedAllPipeline do
+  use Favn.Pipeline
+
+  alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
+
+  pipeline :scheduler_missed_all do
+    asset({SalesAssets, :sales_daily})
+    deps(:none)
+    schedule(cron: "* * * * *", timezone: "Etc/UTC", missed: :all, overlap: :allow, active: true)
+  end
+end
