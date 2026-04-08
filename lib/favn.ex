@@ -223,7 +223,7 @@ defmodule Favn do
 
       defp deps do
         [
-          {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.2.0"}
+          {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.3.0"}
         ]
       end
 
@@ -232,7 +232,7 @@ defmodule Favn do
 
       defp deps do
         [
-          {:favn, "~> 0.2.0"}
+          {:favn, "~> 0.3.0"}
         ]
       end
 

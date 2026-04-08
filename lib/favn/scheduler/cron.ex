@@ -62,15 +62,39 @@ defmodule Favn.Scheduler.Cron do
   def matches?(cron, %DateTime{} = dt) when is_binary(cron) do
     case String.split(cron, ~r/\s+/, trim: true) do
       [minute, hour, day, month, weekday] ->
+        day_match = match_field?(day, dt.day)
+        weekday_match = match_weekday?(weekday, dt)
+
         match_field?(minute, dt.minute) and
           match_field?(hour, dt.hour) and
-          match_field?(day, dt.day) and
           match_field?(month, dt.month) and
-          match_weekday?(weekday, dt)
+          match_day_constraints?(day, day_match, weekday, weekday_match)
 
       _ ->
         false
     end
+  end
+
+  defp match_day_constraints?(day_field, day_match, weekday_field, weekday_match) do
+    day_unrestricted? = day_of_month_unrestricted?(day_field)
+    weekday_unrestricted? = day_of_week_unrestricted?(weekday_field)
+
+    cond do
+      day_unrestricted? and weekday_unrestricted? -> true
+      day_unrestricted? -> weekday_match
+      weekday_unrestricted? -> day_match
+      true -> day_match or weekday_match
+    end
+  end
+
+  defp day_of_month_unrestricted?(field) do
+    Enum.all?(1..31, &match_field?(field, &1))
+  end
+
+  defp day_of_week_unrestricted?(field) do
+    Enum.all?(0..6, fn value ->
+      match_field?(field, value) or (value == 0 and match_field?(field, 7))
+    end)
   end
 
   defp match_weekday?(field, dt) do

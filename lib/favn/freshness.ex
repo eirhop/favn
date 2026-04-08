@@ -24,7 +24,7 @@ defmodule Favn.Freshness do
     max_age_seconds = Keyword.get(opts, :max_age_seconds)
     window_key = Keyword.get(opts, :window_key)
     checked_at = Keyword.get(opts, :now, DateTime.utc_now())
-    limit = Keyword.get(opts, :limit, 200)
+    limit = Keyword.get(opts, :limit)
 
     with :ok <- validate_max_age(max_age_seconds),
          :ok <- validate_window_key(window_key),
@@ -43,7 +43,7 @@ defmodule Favn.Freshness do
 
   def missing_windows({module, name} = ref, range, opts)
       when is_atom(module) and is_atom(name) and is_map(range) and is_list(opts) do
-    limit = Keyword.get(opts, :limit, 200)
+    limit = Keyword.get(opts, :limit)
 
     with {:ok, plan} <- Favn.plan_asset_run(ref, dependencies: :none, anchor_ranges: [range]),
          {:ok, runs} <- Favn.list_runs(status: :ok, limit: limit) do

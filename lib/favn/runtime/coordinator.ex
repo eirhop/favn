@@ -60,6 +60,13 @@ defmodule Favn.Runtime.Coordinator do
          {:ok, state} <- maybe_finalize_terminal(state) do
       {:noreply, %{data | state: state}}
     else
+      {:error, {:invalid_step_transition, status, event}} ->
+        Logger.warning(
+          "Ignoring executor result that produced invalid transition status=#{inspect(status)} event=#{inspect(event)} exec_ref=#{inspect(exec_ref)} node_key=#{inspect(ref)}"
+        )
+
+        {:noreply, data}
+
       {:error, reason} ->
         {:stop, reason, data}
     end
@@ -208,7 +215,18 @@ defmodule Favn.Runtime.Coordinator do
        ) do
     case take_execution(state, exec_ref, maybe_ref) do
       {:ok, node_key, state} ->
-        apply_step_transition(state, &StepTransitions.complete_success(&1, node_key, meta))
+        complete_step_transition(
+          state,
+          fn next_state ->
+            apply_step_transition(
+              next_state,
+              &StepTransitions.complete_success(&1, node_key, meta)
+            )
+          end,
+          exec_ref,
+          node_key,
+          :success
+        )
 
       {:ignore, state} ->
         {:ok, state}
@@ -219,24 +237,51 @@ defmodule Favn.Runtime.Coordinator do
        when is_map(error) do
     case take_execution(state, exec_ref, maybe_ref) do
       {:ok, node_key, state} ->
-        handle_step_error(state, node_key, error)
+        complete_step_transition(
+          state,
+          fn next_state -> handle_step_error(next_state, node_key, error) end,
+          exec_ref,
+          node_key,
+          :failure
+        )
 
       {:ignore, state} ->
         {:ok, state}
     end
   end
 
+  defp complete_step_transition(%State{} = state, transition_fun, exec_ref, node_key, outcome) do
+    case transition_fun.(state) do
+      {:ok, %State{} = next_state} ->
+        {:ok, next_state}
+
+      {:error, {:invalid_step_transition, status, _event}} ->
+        Logger.warning(
+          "Ignoring late executor #{outcome} for node_key=#{inspect(node_key)} exec_ref=#{inspect(exec_ref)} from_status=#{inspect(status)}"
+        )
+
+        {:ok, state}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp handle_step_error(%State{run_status: :cancelling} = state, node_key, _error) do
-    apply_step_transition(
+    apply_step_transition_allow_stale(
       state,
-      &StepTransitions.complete_cancelled(&1, node_key, %{kind: :run_cancelled})
+      &StepTransitions.complete_cancelled(&1, node_key, %{kind: :run_cancelled}),
+      node_key,
+      :complete_cancelled
     )
   end
 
   defp handle_step_error(%State{run_status: :timing_out} = state, node_key, _error) do
-    apply_step_transition(
+    apply_step_transition_allow_stale(
       state,
-      &StepTransitions.complete_timed_out(&1, node_key, %{kind: :run_timed_out})
+      &StepTransitions.complete_timed_out(&1, node_key, %{kind: :run_timed_out}),
+      node_key,
+      :complete_timed_out
     )
   end
 
@@ -259,17 +304,36 @@ defmodule Favn.Runtime.Coordinator do
       end
     else
       with {:ok, state} <-
-             apply_step_transition(
+             apply_step_transition_allow_stale(
                state,
                &StepTransitions.complete_failure(&1, node_key, payload,
                  retryable?: retryable?,
                  exhausted?: true
-               )
+               ),
+               node_key,
+               :complete_failure
              ),
            {:ok, state} <- maybe_emit_retry_exhausted(state, node_key, step, retryable?),
            {:ok, state} <- close_admission_with_failure(state, node_key, payload[:reason]) do
         {:ok, state}
       end
+    end
+  end
+
+  defp apply_step_transition_allow_stale(%State{} = state, transition_fun, node_key, command) do
+    case apply_step_transition(state, transition_fun) do
+      {:ok, %State{} = next_state} ->
+        {:ok, next_state}
+
+      {:error, {:invalid_step_transition, status, _event}} ->
+        Logger.warning(
+          "Ignoring stale step transition command=#{inspect(command)} node_key=#{inspect(node_key)} from_status=#{inspect(status)}"
+        )
+
+        {:ok, state}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

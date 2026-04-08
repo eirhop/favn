@@ -314,6 +314,7 @@ Pipeline schedule references use explicit refs:
 Schedule DSL validation is strict at authoring time:
 
 - cron must be a valid 5-field cron expression
+- when both cron day-of-month and day-of-week are restricted, evaluation uses standard OR semantics
 - timezone must be a known zoneinfo identifier
 
 Deferred from the first v0.3 pipeline foundation PR:
@@ -379,7 +380,7 @@ dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.2.0"}
+    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.3.0"}
   ]
 end
 ```
@@ -390,7 +391,7 @@ package declaration:
 ```elixir
 def deps do
   [
-    {:favn, "~> 0.2.0"}
+    {:favn, "~> 0.3.0"}
   ]
 end
 ```

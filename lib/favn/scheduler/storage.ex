@@ -41,7 +41,8 @@ defmodule Favn.Scheduler.Storage do
     adapter = Storage.adapter_module()
 
     with :ok <- Storage.validate_adapter(adapter),
-         result <- safe_adapter_call(adapter, fn value, opts -> value.put_scheduler_state(state, opts) end),
+         result <-
+           safe_adapter_call(adapter, fn value, opts -> value.put_scheduler_state(state, opts) end),
          :ok <- normalize_put_state_result(result) do
       :ok
     end
@@ -60,20 +61,26 @@ defmodule Favn.Scheduler.Storage do
   defp normalize_child_spec_result({:ok, child_spec}), do: {:ok, child_spec}
   defp normalize_child_spec_result({:error, {:store_error, _} = reason}), do: {:error, reason}
   defp normalize_child_spec_result({:error, reason}), do: {:error, {:store_error, reason}}
-  defp normalize_child_spec_result(other), do: {:error, {:store_error, {:invalid_child_spec_response, other}}}
+
+  defp normalize_child_spec_result(other),
+    do: {:error, {:store_error, {:invalid_child_spec_response, other}}}
 
   defp normalize_get_state_result({:ok, nil}), do: {:ok, nil}
   defp normalize_get_state_result({:ok, %State{} = state}), do: {:ok, state}
   defp normalize_get_state_result({:error, {:store_error, _} = reason}), do: {:error, reason}
   defp normalize_get_state_result({:error, :invalid_opts}), do: {:error, :invalid_opts}
   defp normalize_get_state_result({:error, reason}), do: {:error, {:store_error, reason}}
-  defp normalize_get_state_result(other), do: {:error, {:store_error, {:invalid_scheduler_state_response, other}}}
+
+  defp normalize_get_state_result(other),
+    do: {:error, {:store_error, {:invalid_scheduler_state_response, other}}}
 
   defp normalize_put_state_result(:ok), do: :ok
   defp normalize_put_state_result({:error, {:store_error, _} = reason}), do: {:error, reason}
   defp normalize_put_state_result({:error, :invalid_opts}), do: {:error, :invalid_opts}
   defp normalize_put_state_result({:error, reason}), do: {:error, {:store_error, reason}}
-  defp normalize_put_state_result(other), do: {:error, {:store_error, {:invalid_put_state_response, other}}}
+
+  defp normalize_put_state_result(other),
+    do: {:error, {:store_error, {:invalid_put_state_response, other}}}
 
   defp maybe_child_to_list(:none), do: []
   defp maybe_child_to_list(value), do: [value]
