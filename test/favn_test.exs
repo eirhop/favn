@@ -56,8 +56,14 @@ defmodule FavnTest do
 
     @impl true
     def list_runs(_opts, _adapter_opts), do: {:error, :list_failed}
+
+    @impl true
     def scheduler_child_spec(_opts), do: :none
+
+    @impl true
     def put_scheduler_state(_state, _opts), do: :ok
+
+    @impl true
     def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
   end
 
