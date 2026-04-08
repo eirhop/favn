@@ -55,7 +55,7 @@ defmodule Favn.TestSetup do
 
   @spec clear_memory_scheduler_storage() :: :ok
   def clear_memory_scheduler_storage do
-    table = Favn.Scheduler.Storage.Memory.Table
+    table = Favn.Storage.Adapter.Memory.SchedulerTable
 
     if :ets.whereis(table) != :undefined do
       :ets.delete_all_objects(table)

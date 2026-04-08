@@ -8,7 +8,13 @@ defmodule Favn.Scheduler.Supervisor do
 
   @impl true
   def init(_opts) do
-    children = Favn.Scheduler.Storage.child_specs() ++ [Favn.Scheduler.Runtime]
-    Supervisor.init(children, strategy: :one_for_one)
+    case Favn.Scheduler.Storage.child_specs() do
+      {:ok, scheduler_storage_children} ->
+        children = scheduler_storage_children ++ [Favn.Scheduler.Runtime]
+        Supervisor.init(children, strategy: :one_for_one)
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
   end
 end

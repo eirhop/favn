@@ -16,6 +16,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   @behaviour Favn.Storage.Adapter
 
   alias Favn.Run
+  alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Window.Key
   alias Favn.Storage.SQLite.Repo
   alias Favn.Storage.SQLite.Supervisor, as: SQLiteSupervisor
@@ -35,6 +36,9 @@ defmodule Favn.Storage.Adapter.SQLite do
       {:ok, child}
     end
   end
+
+  @impl true
+  def scheduler_child_spec(_opts), do: :none
 
   @impl true
   def put_run(%Run{} = run, opts) do
@@ -300,4 +304,109 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp encode_window_key(nil), do: "__nil__"
   defp encode_window_key(key) when is_map(key), do: Key.encode(key)
+
+  @impl true
+  def get_scheduler_state(pipeline_module, opts)
+      when is_atom(pipeline_module) and is_list(opts) do
+    with {:ok, _repo_config} <- repo_config(opts),
+         :ok <- ensure_repo_started() do
+      sql = """
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      FROM scheduler_states
+      WHERE pipeline_module = ?1
+      LIMIT 1
+      """
+
+      case Ecto.Adapters.SQL.query(Repo, sql, [Atom.to_string(pipeline_module)]) do
+        {:ok, %{rows: []}} ->
+          {:ok, nil}
+
+        {:ok, %{rows: [row]}} ->
+          {:ok, scheduler_state_from_row(pipeline_module, row)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def put_scheduler_state(%SchedulerState{} = state, opts) when is_list(opts) do
+    with {:ok, _repo_config} <- repo_config(opts),
+         :ok <- ensure_repo_started() do
+      sql = """
+      INSERT INTO scheduler_states (
+        pipeline_module,
+        schedule_id,
+        schedule_fingerprint,
+        last_evaluated_at,
+        last_due_at,
+        last_submitted_due_at,
+        in_flight_run_id,
+        queued_due_at,
+        updated_at
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+      ON CONFLICT(pipeline_module) DO UPDATE SET
+        schedule_id = excluded.schedule_id,
+        schedule_fingerprint = excluded.schedule_fingerprint,
+        last_evaluated_at = excluded.last_evaluated_at,
+        last_due_at = excluded.last_due_at,
+        last_submitted_due_at = excluded.last_submitted_due_at,
+        in_flight_run_id = excluded.in_flight_run_id,
+        queued_due_at = excluded.queued_due_at,
+        updated_at = excluded.updated_at
+      """
+
+      params = [
+        Atom.to_string(state.pipeline_module),
+        if(is_atom(state.schedule_id), do: Atom.to_string(state.schedule_id), else: nil),
+        state.schedule_fingerprint,
+        datetime_to_iso(state.last_evaluated_at),
+        datetime_to_iso(state.last_due_at),
+        datetime_to_iso(state.last_submitted_due_at),
+        state.in_flight_run_id,
+        datetime_to_iso(state.queued_due_at),
+        datetime_to_iso(DateTime.utc_now())
+      ]
+
+      case Ecto.Adapters.SQL.query(Repo, sql, params) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp scheduler_state_from_row(pipeline_module, [
+         schedule_id,
+         schedule_fingerprint,
+         last_eval,
+         last_due,
+         last_sub,
+         in_flight,
+         queued,
+         updated
+       ]) do
+    %SchedulerState{
+      pipeline_module: pipeline_module,
+      schedule_id: parse_schedule_id(schedule_id),
+      schedule_fingerprint: schedule_fingerprint,
+      last_evaluated_at: iso_to_datetime(last_eval),
+      last_due_at: iso_to_datetime(last_due),
+      last_submitted_due_at: iso_to_datetime(last_sub),
+      in_flight_run_id: in_flight,
+      queued_due_at: iso_to_datetime(queued),
+      updated_at: iso_to_datetime(updated)
+    }
+  end
+
+  defp parse_schedule_id(nil), do: nil
+
+  defp parse_schedule_id(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp iso_to_datetime(nil), do: nil
+  defp iso_to_datetime(value) when is_binary(value), do: DateTime.from_iso8601(value) |> elem(1)
 end

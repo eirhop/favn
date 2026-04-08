@@ -10,11 +10,15 @@ defmodule Favn.Storage.Adapter.Memory do
   """
 
   use GenServer
+  @behaviour Favn.Storage.Adapter
 
   alias Favn.Run
+  alias Favn.Scheduler.State, as: SchedulerState
 
   @table_name __MODULE__.Table
+  @scheduler_table __MODULE__.SchedulerTable
 
+  @impl true
   @spec child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
   def child_spec(opts \\ []) do
     {:ok,
@@ -27,6 +31,10 @@ defmodule Favn.Storage.Adapter.Memory do
      }}
   end
 
+  @impl true
+  @spec scheduler_child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
+  def scheduler_child_spec(_opts), do: :none
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -35,9 +43,14 @@ defmodule Favn.Storage.Adapter.Memory do
   @impl true
   def init(state) do
     _table = :ets.new(@table_name, [:set, :named_table, :public, read_concurrency: true])
+
+    _scheduler_table =
+      :ets.new(@scheduler_table, [:set, :named_table, :public, read_concurrency: true])
+
     {:ok, state}
   end
 
+  @impl true
   @spec put_run(Run.t(), keyword()) :: :ok | {:error, term()}
   def put_run(%Run{} = run, _opts) do
     inserted_seq =
@@ -56,6 +69,7 @@ defmodule Favn.Storage.Adapter.Memory do
     error -> {:error, error}
   end
 
+  @impl true
   @spec get_run(Favn.run_id(), keyword()) :: {:ok, Run.t()} | {:error, :not_found | term()}
   def get_run(run_id, _opts) do
     case :ets.lookup(@table_name, run_id) do
@@ -66,6 +80,7 @@ defmodule Favn.Storage.Adapter.Memory do
     error -> {:error, error}
   end
 
+  @impl true
   @spec list_runs(Favn.list_runs_opts(), keyword()) :: {:ok, [Run.t()]} | {:error, term()}
   def list_runs(opts, _adapter_opts) when is_list(opts) do
     status = Keyword.get(opts, :status)
@@ -96,5 +111,26 @@ defmodule Favn.Storage.Adapter.Memory do
 
   defp sort_key({run, updated_seq}) do
     {updated_seq, run.id}
+  end
+
+  @impl true
+  @spec put_scheduler_state(SchedulerState.t(), keyword()) :: :ok | {:error, term()}
+  def put_scheduler_state(%SchedulerState{} = state, _opts) do
+    true = :ets.insert(@scheduler_table, {state.pipeline_module, state})
+    :ok
+  rescue
+    error -> {:error, error}
+  end
+
+  @impl true
+  @spec get_scheduler_state(module(), keyword()) ::
+          {:ok, SchedulerState.t() | nil} | {:error, term()}
+  def get_scheduler_state(pipeline_module, _opts) when is_atom(pipeline_module) do
+    case :ets.lookup(@scheduler_table, pipeline_module) do
+      [{^pipeline_module, %SchedulerState{} = state}] -> {:ok, state}
+      [] -> {:ok, nil}
+    end
+  rescue
+    error -> {:error, error}
   end
 end
