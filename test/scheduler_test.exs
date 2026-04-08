@@ -1,5 +1,6 @@
 defmodule Favn.SchedulerTest do
   use ExUnit.Case
+  import ExUnit.CaptureLog
 
   alias Favn.Scheduler.State
   alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
@@ -214,7 +215,10 @@ defmodule Favn.SchedulerTest do
     :ok = Favn.Scheduler.reload()
 
     :ok = Favn.TestSetup.setup_asset_modules([], reload_graph?: true)
-    :ok = Favn.Scheduler.tick()
+
+    capture_log(fn ->
+      assert :ok = Favn.Scheduler.tick()
+    end)
 
     assert {:ok, %State{} = reloaded} = Favn.Scheduler.Storage.get_state(SchedulerDailyPipeline)
     assert reloaded.last_due_at == previous_due

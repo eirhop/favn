@@ -331,8 +331,11 @@ defmodule Favn.RunnerTest do
     :ok = Favn.TestSetup.configure_storage_adapter(TerminalFailingStore, [])
     TerminalFailingStore.reset!()
 
-    assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :final})
-    assert is_binary(run_id)
+    capture_log(fn ->
+      assert {:ok, run_id} = Favn.run_asset({RunnerAssets, :final})
+      assert is_binary(run_id)
+      Process.sleep(25)
+    end)
   end
 
   test "fails immediately when first persisted snapshot cannot be written" do
@@ -837,8 +840,16 @@ defmodule Favn.RunnerTest do
     assert resume_rerun.status == :ok
     assert resume_rerun.replay_mode == :resume_from_failure
 
-    assert {:ok, exact_rerun_id} = Favn.rerun_run(run_id, mode: :exact_replay)
-    assert {:error, exact_rerun} = Favn.await_run(exact_rerun_id)
+    parent = self()
+
+    capture_log(fn ->
+      assert {:ok, exact_rerun_id} = Favn.rerun_run(run_id, mode: :exact_replay)
+      assert {:error, exact_rerun} = Favn.await_run(exact_rerun_id)
+      send(parent, {:exact_rerun, exact_rerun})
+    end)
+
+    assert_receive {:exact_rerun, exact_rerun}
+
     assert exact_rerun.status == :error
     assert exact_rerun.replay_mode == :exact_replay
   end
@@ -895,8 +906,15 @@ defmodule Favn.RunnerTest do
       timezone: "Etc/UTC"
     }
 
-    assert {:ok, run_id} = Favn.backfill_asset({BackfillAssets, :daily_target}, range: range)
-    assert {:ok, run} = Favn.await_run(run_id)
+    parent = self()
+
+    capture_log(fn ->
+      assert {:ok, run_id} = Favn.backfill_asset({BackfillAssets, :daily_target}, range: range)
+      assert {:ok, run} = Favn.await_run(run_id)
+      send(parent, {:dedupe_backfill_run, run})
+    end)
+
+    assert_receive {:dedupe_backfill_run, run}
 
     source_results =
       run.node_results
