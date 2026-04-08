@@ -14,7 +14,7 @@
   <a href="#current-limitations">Current limitations</a> •
   <a href="#roadmap-and-release-focus">Roadmap</a> •
   <a href="#installation">Installation</a> • 
-  <a href="/FEATURES.md">Features</a> • 
+  <a href="/docs/FEATURES.md">Features</a> • 
   <a href="/lib/favn.ex">Docs</a>
 
 </p>
