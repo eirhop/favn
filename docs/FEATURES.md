@@ -8,6 +8,8 @@
 
 Favn is an asset-first orchestrator for ETL/ELT workloads.
 
+- [x] Credo strict cleanup across runtime, storage, docs, fixtures, and tests
+
 Near-term priority is a practical path to real usage:
 
 - working pipelines

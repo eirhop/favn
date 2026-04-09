@@ -1,6 +1,7 @@
 defmodule Favn.RuntimeTelemetryTest do
   use ExUnit.Case
 
+  alias Favn.Runtime.Events
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
 
   defmodule RaisingStore do
@@ -237,7 +238,7 @@ defmodule Favn.RuntimeTelemetryTest do
     Application.put_env(:favn, :pubsub_name, MissingPubSub)
 
     assert {:error, {:raised, %ArgumentError{}}} =
-             Favn.Runtime.Events.publish_run_event("r1", :run_started, %{
+             Events.publish_run_event("r1", :run_started, %{
                seq: 1,
                entity: :run,
                status: :running,

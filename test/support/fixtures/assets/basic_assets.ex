@@ -1,4 +1,5 @@
 defmodule Favn.Test.Fixtures.Assets.Basic.SampleAssets do
+  @moduledoc false
   use Favn.Assets
 
   @doc "Extract raw orders"
@@ -13,6 +14,7 @@ defmodule Favn.Test.Fixtures.Assets.Basic.SampleAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Basic.CrossModuleAssets do
+  @moduledoc false
   use Favn.Assets
 
   alias Favn.Test.Fixtures.Assets.Basic.SampleAssets
@@ -25,10 +27,12 @@ defmodule Favn.Test.Fixtures.Assets.Basic.CrossModuleAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Basic.SpoofedAssets do
+  @moduledoc false
   def __favn_assets__, do: :oops
 end
 
 defmodule Favn.Test.Fixtures.Assets.Basic.AdditionalAssets do
+  @moduledoc false
   use Favn.Assets
 
   alias Favn.Test.Fixtures.Assets.Basic.CrossModuleAssets

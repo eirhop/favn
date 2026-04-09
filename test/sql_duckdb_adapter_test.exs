@@ -2,6 +2,8 @@ defmodule Favn.SQLDuckDBAdapterTest do
   use ExUnit.Case
 
   alias Favn.Connection.Definition
+  alias Favn.Connection.Loader
+  alias Favn.Connection.Registry
   alias Favn.SQL
   alias Favn.SQL.{Error, Relation, RelationRef, Result, WritePlan}
 
@@ -29,8 +31,8 @@ defmodule Favn.SQLDuckDBAdapterTest do
     Application.put_env(:favn, :connection_modules, [DuckDBConnectionProvider])
     Application.put_env(:favn, :connections, duckdb_runtime: [database: ":memory:"])
 
-    {:ok, resolved} = Favn.Connection.Loader.load()
-    :ok = Favn.Connection.Registry.reload(resolved)
+    {:ok, resolved} = Loader.load()
+    :ok = Registry.reload(resolved)
 
     {:ok, session} = SQL.connect(:duckdb_runtime)
 

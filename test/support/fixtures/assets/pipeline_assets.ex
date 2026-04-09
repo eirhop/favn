@@ -1,4 +1,5 @@
 defmodule Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder do
+  @moduledoc false
   use Agent
 
   def start_link(_opts) do
@@ -19,6 +20,7 @@ defmodule Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Pipeline.SalesAssets do
+  @moduledoc false
   use Favn.Assets
 
   alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
@@ -47,6 +49,7 @@ defmodule Favn.Test.Fixtures.Assets.Pipeline.SalesAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets do
+  @moduledoc false
   use Favn.Assets
 
   @asset true
@@ -55,6 +58,7 @@ defmodule Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SimplePipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -75,6 +79,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SimplePipeline do
 end
 
 defmodule Favn.Test.Fixtures.Triggers.Schedules do
+  @moduledoc false
   use Favn.Triggers.Schedules
 
   schedule(:daily_default,
@@ -86,6 +91,7 @@ defmodule Favn.Test.Fixtures.Triggers.Schedules do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SelectPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets
@@ -103,6 +109,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SelectPipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.AssetsShorthandPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -118,6 +125,7 @@ defmodule Favn.Test.Fixtures.Pipelines.AssetsShorthandPipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.RunnerFailingPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
@@ -129,6 +137,7 @@ defmodule Favn.Test.Fixtures.Pipelines.RunnerFailingPipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.RunnerRetryPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
@@ -140,6 +149,7 @@ defmodule Favn.Test.Fixtures.Pipelines.RunnerRetryPipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.RunnerSlowPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
@@ -151,6 +161,7 @@ defmodule Favn.Test.Fixtures.Pipelines.RunnerSlowPipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -171,6 +182,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SchedulerInactivePipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -190,6 +202,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerInactivePipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedSkipPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -202,6 +215,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedSkipPipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedOnePipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -214,6 +228,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedOnePipeline do
 end
 
 defmodule Favn.Test.Fixtures.Pipelines.SchedulerMissedAllPipeline do
+  @moduledoc false
   use Favn.Pipeline
 
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets

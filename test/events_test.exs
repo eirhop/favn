@@ -1,6 +1,8 @@
 defmodule Favn.EventsTest do
   use ExUnit.Case
 
+  alias Favn.Runtime.Events
+
   test "subscribes and unsubscribes per run topic" do
     run_id = "run-events-1"
     ref = {__MODULE__, :asset_a}
@@ -8,7 +10,7 @@ defmodule Favn.EventsTest do
     assert :ok = Favn.subscribe_run(run_id)
 
     assert :ok =
-             Favn.Runtime.Events.publish_run_event(run_id, :step_finished, %{
+             Events.publish_run_event(run_id, :step_finished, %{
                seq: 1,
                entity: :step,
                status: :success,
@@ -33,7 +35,7 @@ defmodule Favn.EventsTest do
     assert :ok = Favn.unsubscribe_run(run_id)
 
     assert :ok =
-             Favn.Runtime.Events.publish_run_event(run_id, :run_finished, %{
+             Events.publish_run_event(run_id, :run_finished, %{
                seq: 2,
                entity: :run,
                status: :success,

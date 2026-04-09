@@ -2,7 +2,9 @@ defmodule Favn.SchedulerTest do
   use ExUnit.Case
   import ExUnit.CaptureLog
 
+  alias Favn.Scheduler
   alias Favn.Scheduler.State
+  alias Favn.Scheduler.Storage
   alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
   alias Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -40,18 +42,18 @@ defmodule Favn.SchedulerTest do
     :ok = Favn.TestSetup.clear_memory_scheduler_storage()
     CtxRecorder.reset()
 
-    :ok = Favn.Scheduler.reload()
+    :ok = Scheduler.reload()
 
     on_exit(fn ->
       :ok = Favn.TestSetup.restore_state(state, reload_graph?: true)
-      _ = Favn.Scheduler.reload()
+      _ = Scheduler.reload()
     end)
 
     :ok
   end
 
   test "scheduler discovers pipelines and skips inactive schedules" do
-    scheduled = Favn.Scheduler.list_scheduled_pipelines()
+    scheduled = Scheduler.list_scheduled_pipelines()
 
     assert Enum.any?(scheduled, &(&1.module == SchedulerDailyPipeline and &1.schedule.active))
 
@@ -65,7 +67,7 @@ defmodule Favn.SchedulerTest do
     two_minutes_ago = DateTime.add(now, -120, :second)
 
     :ok =
-      Favn.Scheduler.Storage.put_state(%State{
+      Storage.put_state(%State{
         pipeline_module: SchedulerDailyPipeline,
         schedule_id: :scheduler_daily,
         schedule_fingerprint: fingerprint_for(SchedulerDailyPipeline),
@@ -73,15 +75,15 @@ defmodule Favn.SchedulerTest do
       })
 
     :ok =
-      Favn.Scheduler.Storage.put_state(%State{
+      Storage.put_state(%State{
         pipeline_module: SchedulerInactivePipeline,
         schedule_id: :scheduler_inactive,
         schedule_fingerprint: fingerprint_for(SchedulerInactivePipeline),
         last_due_at: two_minutes_ago
       })
 
-    :ok = Favn.Scheduler.reload()
-    :ok = Favn.Scheduler.tick()
+    :ok = Scheduler.reload()
+    :ok = Scheduler.tick()
 
     assert {:ok, runs} = Favn.list_runs()
 
@@ -97,15 +99,15 @@ defmodule Favn.SchedulerTest do
     now = %{now | second: 0, microsecond: {0, 0}}
 
     :ok =
-      Favn.Scheduler.Storage.put_state(%State{
+      Storage.put_state(%State{
         pipeline_module: SchedulerDailyPipeline,
         schedule_id: :scheduler_daily,
         schedule_fingerprint: fingerprint_for(SchedulerDailyPipeline),
         last_due_at: DateTime.add(now, -120, :second)
       })
 
-    :ok = Favn.Scheduler.reload()
-    :ok = Favn.Scheduler.tick()
+    :ok = Scheduler.reload()
+    :ok = Scheduler.tick()
 
     assert {:ok, runs} = Favn.list_runs(limit: 1)
     [run | _] = runs
@@ -123,15 +125,15 @@ defmodule Favn.SchedulerTest do
     now = %{now | second: 0, microsecond: {0, 0}}
 
     :ok =
-      Favn.Scheduler.Storage.put_state(%State{
+      Storage.put_state(%State{
         pipeline_module: SchedulerDailyPipeline,
         schedule_id: :scheduler_daily,
         schedule_fingerprint: "stale-fingerprint",
         last_due_at: DateTime.add(now, -3_600, :second)
       })
 
-    :ok = Favn.Scheduler.reload()
-    :ok = Favn.Scheduler.tick()
+    :ok = Scheduler.reload()
+    :ok = Scheduler.tick()
 
     assert {:ok, runs} = Favn.list_runs(limit: 20)
 
@@ -147,7 +149,7 @@ defmodule Favn.SchedulerTest do
         :ok
     end
 
-    assert {:ok, %State{} = reloaded} = Favn.Scheduler.Storage.get_state(SchedulerDailyPipeline)
+    assert {:ok, %State{} = reloaded} = Storage.get_state(SchedulerDailyPipeline)
     assert reloaded.schedule_fingerprint != "stale-fingerprint"
     assert reloaded.last_due_at != nil
   end
@@ -159,7 +161,7 @@ defmodule Favn.SchedulerTest do
       SchedulerMissedAllPipeline
     ])
 
-    :ok = Favn.Scheduler.reload()
+    :ok = Scheduler.reload()
 
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     now = %{now | second: 0, microsecond: {0, 0}}
@@ -171,7 +173,7 @@ defmodule Favn.SchedulerTest do
           {SchedulerMissedAllPipeline, :scheduler_missed_all}
         ] do
       :ok =
-        Favn.Scheduler.Storage.put_state(%State{
+        Storage.put_state(%State{
           pipeline_module: pipeline,
           schedule_id: id,
           schedule_fingerprint: fingerprint_for(pipeline),
@@ -179,8 +181,8 @@ defmodule Favn.SchedulerTest do
         })
     end
 
-    :ok = Favn.Scheduler.reload()
-    :ok = Favn.Scheduler.tick()
+    :ok = Scheduler.reload()
+    :ok = Scheduler.tick()
 
     assert {:ok, runs} = Favn.list_runs(limit: 20)
 
@@ -217,28 +219,28 @@ defmodule Favn.SchedulerTest do
     previous_due = DateTime.add(now, -120, :second)
 
     :ok =
-      Favn.Scheduler.Storage.put_state(%State{
+      Storage.put_state(%State{
         pipeline_module: SchedulerDailyPipeline,
         schedule_id: :scheduler_daily,
         schedule_fingerprint: fingerprint_for(SchedulerDailyPipeline),
         last_due_at: previous_due
       })
 
-    :ok = Favn.Scheduler.reload()
+    :ok = Scheduler.reload()
 
     :ok = Favn.TestSetup.setup_asset_modules([], reload_graph?: true)
 
     capture_log(fn ->
-      assert :ok = Favn.Scheduler.tick()
+      assert :ok = Scheduler.tick()
     end)
 
-    assert {:ok, %State{} = reloaded} = Favn.Scheduler.Storage.get_state(SchedulerDailyPipeline)
+    assert {:ok, %State{} = reloaded} = Storage.get_state(SchedulerDailyPipeline)
     assert reloaded.last_due_at == previous_due
     assert reloaded.last_submitted_due_at == nil
   end
 
   defp fingerprint_for(pipeline_module) do
-    Favn.Scheduler.list_scheduled_pipelines()
+    Scheduler.list_scheduled_pipelines()
     |> Enum.find(&(&1.module == pipeline_module))
     |> Map.fetch!(:schedule_fingerprint)
   end

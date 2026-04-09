@@ -1,6 +1,7 @@
 defmodule Favn.PipelineTest do
   use ExUnit.Case
 
+  alias Favn.Pipeline.Resolver
   alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
   alias Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -13,6 +14,7 @@ defmodule Favn.PipelineTest do
   alias Favn.Test.Fixtures.Pipelines.SimplePipeline
   alias Favn.Test.Fixtures.Triggers.Schedules
   alias Favn.Triggers.Schedule
+  alias Favn.Window.Anchor
 
   setup_all do
     start_supervised!(CtxRecorder)
@@ -112,7 +114,7 @@ defmodule Favn.PipelineTest do
 
   test "run_pipeline/2 supports explicit anchor_window and projects it to ctx.pipeline" do
     anchor =
-      Favn.Window.Anchor.new!(
+      Anchor.new!(
         :day,
         DateTime.from_naive!(~N[2025-01-15 00:00:00], "Etc/UTC"),
         DateTime.from_naive!(~N[2025-01-16 00:00:00], "Etc/UTC"),
@@ -162,7 +164,7 @@ defmodule Favn.PipelineTest do
     :ok = Favn.TestSetup.setup_asset_modules([WindowedAnchorAssets], reload_graph?: true)
 
     anchor =
-      Favn.Window.Anchor.new!(
+      Anchor.new!(
         :day,
         DateTime.from_naive!(~N[2025-01-20 00:00:00], "Etc/UTC"),
         DateTime.from_naive!(~N[2025-01-21 00:00:00], "Etc/UTC"),
@@ -802,6 +804,6 @@ defmodule Favn.PipelineTest do
     }
 
     assert {:error, {:invalid_schedule, {:bogus, :value}}} =
-             Favn.Pipeline.Resolver.resolve(definition)
+             Resolver.resolve(definition)
   end
 end

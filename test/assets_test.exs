@@ -34,6 +34,7 @@ defmodule Favn.AssetsTest do
   use ExUnit.Case, async: true
 
   alias Favn.Asset
+  alias Favn.AssetsTest.Sample
 
   defmodule SQLLikeCompiler do
     @behaviour Favn.Assets.Compiler
@@ -60,7 +61,7 @@ defmodule Favn.AssetsTest do
   end
 
   test "captures canonical asset metadata in source order" do
-    assets = Favn.AssetsTest.Sample.__favn_assets__()
+    assets = Sample.__favn_assets__()
 
     assert Enum.map(assets, & &1.name) == [:extract_orders, :normalize_orders, :fact_sales]
     assert [%Asset{} = extract, %Asset{} = normalize, %Asset{} = fact] = assets

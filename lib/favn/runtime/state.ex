@@ -60,7 +60,7 @@ defmodule Favn.Runtime.State do
           ready_queue: [Plan.node_key()],
           inflight_execs: %{reference() => exec_info()},
           exec_refs_by_monitor: %{reference() => reference()},
-          completed_exec_refs: MapSet.t(reference()),
+          completed_exec_refs: %{reference() => true},
           run_error: term() | nil,
           run_terminal_reason: map() | nil
         }
@@ -97,7 +97,7 @@ defmodule Favn.Runtime.State do
     ready_queue: [],
     inflight_execs: %{},
     exec_refs_by_monitor: %{},
-    completed_exec_refs: MapSet.new(),
+    completed_exec_refs: %{},
     run_error: nil,
     run_terminal_reason: nil
   ]

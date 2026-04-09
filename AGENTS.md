@@ -14,6 +14,8 @@ The most important file is `docs/FEATURES.md`. We will use this file to document
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
 - Always keep user documentation up to date in `/lib/favn.ex` and `README.md`.
 - when creating new files, please update `docs/lib_structure.md` or `docs/test_structure.md`
+- When we are starting a new coding session, always create a new git branch before you start coding, unless user asks you explicitly to use a specific branch.
+- After any Elixir code change, run `mix format`, `MIX_ENV=test mix compile --warnings-as-errors`, `mix test`, `mix credo --strict`, `mix dialyzer`, and `mix xref graph --format stats --label compile-connected`. Fix all failures before finishing.
 
 
 ### Breaking changes and legacy code

@@ -8,8 +8,10 @@ defmodule Favn.Runtime.Manager do
 
   use GenServer
 
+  alias Favn.Runtime.Events
   alias Favn.Runtime.Projector
   alias Favn.Runtime.State
+  alias Favn.Runtime.Telemetry
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -80,11 +82,13 @@ defmodule Favn.Runtime.Manager do
           {:error, :timeout_in_progress}
 
         {:ok, %{status: :running}} ->
-          with {:ok, pid} <- Map.fetch(state.run_pids, run_id) do
-            GenServer.cast(pid, {:cancel_run, %{requested_by: :api}})
-            {:ok, :cancelling}
-          else
-            :error -> {:error, :coordinator_unavailable}
+          case Map.fetch(state.run_pids, run_id) do
+            {:ok, pid} ->
+              GenServer.cast(pid, {:cancel_run, %{requested_by: :api}})
+              {:ok, :cancelling}
+
+            :error ->
+              {:error, :coordinator_unavailable}
           end
 
         {:ok, _run} ->
@@ -287,7 +291,7 @@ defmodule Favn.Runtime.Manager do
 
   defp emit_run_created(%State{} = runtime_state) do
     _ =
-      Favn.Runtime.Telemetry.emit_runtime_event(:run_created, %{
+      Telemetry.emit_runtime_event(:run_created, %{
         run_id: runtime_state.run_id,
         seq: 1,
         entity: :run,
@@ -295,7 +299,7 @@ defmodule Favn.Runtime.Manager do
         data: %{}
       })
 
-    Favn.Runtime.Events.publish_run_event(runtime_state.run_id, :run_created, %{
+    Events.publish_run_event(runtime_state.run_id, :run_created, %{
       seq: 1,
       entity: :run,
       status: runtime_state.run_status,
@@ -349,7 +353,7 @@ defmodule Favn.Runtime.Manager do
       case Favn.Storage.put_run(failed) do
         :ok ->
           _ =
-            Favn.Runtime.Telemetry.emit_runtime_event(:run_failed, %{
+            Telemetry.emit_runtime_event(:run_failed, %{
               run_id: run_id,
               seq: failed.event_seq,
               entity: :run,
@@ -363,7 +367,7 @@ defmodule Favn.Runtime.Manager do
             })
 
           _ =
-            Favn.Runtime.Events.publish_run_event(run_id, :run_failed, %{
+            Events.publish_run_event(run_id, :run_failed, %{
               seq: failed.event_seq,
               entity: :run,
               status: failed.status,
@@ -399,17 +403,17 @@ defmodule Favn.Runtime.Manager do
   defp build_rerun_submit_opts(%Favn.Run{} = source_run, opts, mode) do
     with {:ok, plan} <- ensure_replay_plan(source_run) do
       with {:ok, resume_successful_steps} <- build_resume_successful_steps(source_run, plan, mode) do
-        parent_depth = source_run.lineage_depth || 0
+        parent_depth = source_run.lineage_depth
         root_run_id = source_run.root_run_id || source_run.id
 
         {:ok,
          [
            dependencies: plan.dependencies,
-           params: source_run.params || %{},
+           params: source_run.params,
            _pipeline_context: source_run.pipeline_context || source_run.pipeline,
-           max_concurrency: source_run.max_concurrency || 1,
+           max_concurrency: source_run.max_concurrency,
            timeout_ms: source_run.timeout_ms,
-           retry: source_run.retry_policy || %{},
+           retry: source_run.retry_policy,
            _plan_override: plan,
            _resume_successful_steps: resume_successful_steps,
            _submit_kind: :rerun,
@@ -457,7 +461,7 @@ defmodule Favn.Runtime.Manager do
 
   defp build_resume_successful_steps(source_run, %Favn.Plan{} = plan, :resume_from_failure) do
     planned_node_keys = Map.keys(plan.nodes) |> MapSet.new()
-    source_node_results = source_run.node_results || %{}
+    source_node_results = source_run.node_results
 
     if map_size(source_node_results) == 0 and duplicate_ref_node_keys?(plan) do
       {:error, :resume_from_failure_requires_node_key_results}
@@ -489,14 +493,11 @@ defmodule Favn.Runtime.Manager do
   defp validate_pipeline_context(value) when is_map(value), do: :ok
   defp validate_pipeline_context(_), do: {:error, :invalid_pipeline_context}
 
-  defp run_duration_ms(run) do
-    case {run.started_at, run.finished_at} do
-      {%DateTime{} = started_at, %DateTime{} = finished_at} ->
-        max(DateTime.diff(finished_at, started_at, :millisecond), 0)
-
-      _ ->
-        nil
-    end
+  defp run_duration_ms(%Favn.Run{
+         started_at: %DateTime{} = started_at,
+         finished_at: %DateTime{} = finished_at
+       }) do
+    max(DateTime.diff(finished_at, started_at, :millisecond), 0)
   end
 
   defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok

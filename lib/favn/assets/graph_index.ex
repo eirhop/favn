@@ -265,9 +265,8 @@ defmodule Favn.Assets.GraphIndex do
          :ok <- validate_boolean_opt(opts, :transitive),
          :ok <- validate_boolean_opt(opts, :include_target),
          :ok <- validate_list_opt(opts, :tags),
-         :ok <- validate_list_opt(opts, :modules),
-         :ok <- validate_list_opt(opts, :names) do
-      :ok
+         :ok <- validate_list_opt(opts, :modules) do
+      validate_list_opt(opts, :names)
     end
   end
 
@@ -446,19 +445,19 @@ defmodule Favn.Assets.GraphIndex do
 
   defp build_transitive_index(adjacency) do
     Map.new(adjacency, fn {ref, _neighbors} ->
-      {ref, reachable_from(ref, adjacency, MapSet.new())}
+      reachable = reachable_from_map(ref, adjacency, %{})
+      {ref, reachable |> Map.keys() |> MapSet.new()}
     end)
   end
 
-  defp reachable_from(ref, adjacency, visited) do
+  defp reachable_from_map(ref, adjacency, visited) do
     adjacency
     |> Map.fetch!(ref)
     |> Enum.reduce(visited, fn neighbor, acc ->
-      if MapSet.member?(acc, neighbor) do
+      if Map.has_key?(acc, neighbor) do
         acc
       else
-        acc = MapSet.put(acc, neighbor)
-        reachable_from(neighbor, adjacency, acc)
+        reachable_from_map(neighbor, adjacency, Map.put(acc, neighbor, true))
       end
     end)
   end
@@ -466,18 +465,18 @@ defmodule Favn.Assets.GraphIndex do
   defp cycle_path(upstream) do
     refs = Map.keys(upstream) |> Enum.sort(&compare_refs/2)
 
-    Enum.reduce_while(refs, MapSet.new(), fn ref, globally_visited ->
-      if MapSet.member?(globally_visited, ref) do
+    Enum.reduce_while(refs, %{}, fn ref, globally_visited ->
+      if Map.has_key?(globally_visited, ref) do
         {:cont, globally_visited}
       else
-        case dfs_cycle(ref, upstream, globally_visited, [], MapSet.new()) do
+        case dfs_cycle(ref, upstream, globally_visited, [], %{}) do
           {:ok, cycle} -> {:halt, cycle}
           {:error, visited} -> {:cont, visited}
         end
       end
     end)
     |> case do
-      %MapSet{} -> []
+      visited when is_map(visited) -> []
       cycle -> cycle
     end
   end
@@ -487,17 +486,17 @@ defmodule Favn.Assets.GraphIndex do
   # reconstruct a concrete cycle path for error messages.
   defp dfs_cycle(ref, upstream, globally_visited, path, stack) do
     next_path = [ref | path]
-    next_stack = MapSet.put(stack, ref)
-    next_visited = MapSet.put(globally_visited, ref)
+    next_stack = Map.put(stack, ref, true)
+    next_visited = Map.put(globally_visited, ref, true)
 
     Enum.reduce_while(Map.fetch!(upstream, ref), {:error, next_visited}, fn dependency,
                                                                             {:error,
                                                                              current_visited} ->
       cond do
-        MapSet.member?(next_stack, dependency) ->
+        Map.has_key?(next_stack, dependency) ->
           {:halt, {:ok, extract_cycle([dependency | next_path], dependency)}}
 
-        MapSet.member?(current_visited, dependency) ->
+        Map.has_key?(current_visited, dependency) ->
           {:cont, {:error, current_visited}}
 
         true ->

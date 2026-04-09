@@ -37,7 +37,7 @@ defmodule Favn.Triggers.Schedules do
       end
 
       schedule =
-        case Favn.Triggers.Schedule.named(name, opts) do
+        case Schedule.named(name, opts) do
           {:ok, value} ->
             value
 

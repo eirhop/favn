@@ -1,4 +1,5 @@
 defmodule Favn.Test.Fixtures.Assets.Graph.SourceAssets do
+  @moduledoc false
   use Favn.Assets
 
   @doc "Raw orders"
@@ -11,6 +12,7 @@ defmodule Favn.Test.Fixtures.Assets.Graph.SourceAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.WarehouseAssets do
+  @moduledoc false
   use Favn.Assets
 
   alias Favn.Test.Fixtures.Assets.Graph.SourceAssets
@@ -36,6 +38,7 @@ defmodule Favn.Test.Fixtures.Assets.Graph.WarehouseAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.ReportingAssets do
+  @moduledoc false
   use Favn.Assets
 
   alias Favn.Test.Fixtures.Assets.Graph.WarehouseAssets
@@ -48,6 +51,7 @@ defmodule Favn.Test.Fixtures.Assets.Graph.ReportingAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.BronzeAssets do
+  @moduledoc false
   use Favn.Assets
 
   @asset true
@@ -58,6 +62,7 @@ defmodule Favn.Test.Fixtures.Assets.Graph.BronzeAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.SilverAssets do
+  @moduledoc false
   use Favn.Assets
 
   alias Favn.Test.Fixtures.Assets.Graph.BronzeAssets
@@ -72,6 +77,7 @@ defmodule Favn.Test.Fixtures.Assets.Graph.SilverAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Graph.GoldAssets do
+  @moduledoc false
   use Favn.Assets
 
   alias Favn.Test.Fixtures.Assets.Graph.SilverAssets

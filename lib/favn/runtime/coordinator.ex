@@ -9,11 +9,13 @@ defmodule Favn.Runtime.Coordinator do
   use GenServer
 
   alias Favn.Run.Context
+  alias Favn.Runtime.Events
   alias Favn.Runtime.Executor.Local
 
   require Logger
   alias Favn.Runtime.Projector
   alias Favn.Runtime.State
+  alias Favn.Runtime.Telemetry
   alias Favn.Runtime.Transitions.Run, as: RunTransitions
   alias Favn.Runtime.Transitions.Step, as: StepTransitions
 
@@ -98,7 +100,7 @@ defmodule Favn.Runtime.Coordinator do
   def handle_info({:DOWN, monitor_ref, :process, _pid, reason}, %{state: state} = data) do
     case Map.fetch(state.exec_refs_by_monitor, monitor_ref) do
       {:ok, exec_ref} ->
-        if MapSet.member?(state.completed_exec_refs, exec_ref) do
+        if Map.has_key?(state.completed_exec_refs, exec_ref) do
           {:noreply, %{data | state: clear_monitor(state, exec_ref, monitor_ref)}}
         else
           if abnormal_executor_exit_reason?(reason) do
@@ -150,7 +152,7 @@ defmodule Favn.Runtime.Coordinator do
         duration_ms = System.monotonic_time(:millisecond) - started_ms
 
         _ =
-          Favn.Runtime.Telemetry.emit_operation(:coordinator, :dispatch, duration_ms, %{
+          Telemetry.emit_operation(:coordinator, :dispatch, duration_ms, %{
             run_id: state.run_id,
             result: :ok,
             ready_before: ready_before,
@@ -164,7 +166,7 @@ defmodule Favn.Runtime.Coordinator do
         duration_ms = System.monotonic_time(:millisecond) - started_ms
 
         _ =
-          Favn.Runtime.Telemetry.emit_operation(:coordinator, :dispatch, duration_ms, %{
+          Telemetry.emit_operation(:coordinator, :dispatch, duration_ms, %{
             run_id: state.run_id,
             result: :error
           })
@@ -298,9 +300,10 @@ defmodule Favn.Runtime.Coordinator do
                state,
                &StepTransitions.schedule_retry(&1, node_key, payload, state.retry_policy.delay_ms)
              ),
-           {:ok, state} <- emit_retryable_step_failed(state, node_key, payload),
-           {:ok, state} <- schedule_retry_timer(state, node_key) do
-        {:ok, state}
+           {:ok, state} <- emit_retryable_step_failed(state, node_key, payload) do
+        schedule_retry_timer(state, node_key)
+      else
+        error -> error
       end
     else
       with {:ok, state} <-
@@ -313,9 +316,10 @@ defmodule Favn.Runtime.Coordinator do
                node_key,
                :complete_failure
              ),
-           {:ok, state} <- maybe_emit_retry_exhausted(state, node_key, step, retryable?),
-           {:ok, state} <- close_admission_with_failure(state, node_key, payload[:reason]) do
-        {:ok, state}
+           {:ok, state} <- maybe_emit_retry_exhausted(state, node_key, step, retryable?) do
+        close_admission_with_failure(state, node_key, payload[:reason])
+      else
+        error -> error
       end
     end
   end
@@ -352,9 +356,8 @@ defmodule Favn.Runtime.Coordinator do
         reason = state.run_error || %{reason: :run_did_not_reach_targets}
 
         with {:ok, state} <- close_admission(state),
-             {:ok, state} <- apply_run_transition(state, {:mark_failed, reason}),
-             {:ok, state} <- maybe_finalize_unresolved(state) do
-          {:ok, state}
+             {:ok, state} <- apply_run_transition(state, {:mark_failed, reason}) do
+          maybe_finalize_unresolved(state)
         end
     end
   end
@@ -369,9 +372,8 @@ defmodule Favn.Runtime.Coordinator do
 
   defp maybe_finalize_terminal(%State{run_status: :cancelling} = state) do
     if map_size(state.inflight_execs) == 0 do
-      with {:ok, state} <- maybe_finalize_unresolved(state, :cancelled),
-           {:ok, state} <- apply_run_transition(state, :mark_cancelled) do
-        {:ok, state}
+      with {:ok, state} <- maybe_finalize_unresolved(state, :cancelled) do
+        apply_run_transition(state, :mark_cancelled)
       end
     else
       {:ok, state}
@@ -380,9 +382,8 @@ defmodule Favn.Runtime.Coordinator do
 
   defp maybe_finalize_terminal(%State{run_status: :timing_out} = state) do
     if map_size(state.inflight_execs) == 0 do
-      with {:ok, state} <- maybe_finalize_unresolved(state, :timed_out),
-           {:ok, state} <- apply_run_transition(state, :mark_timed_out) do
-        {:ok, state}
+      with {:ok, state} <- maybe_finalize_unresolved(state, :timed_out) do
+        apply_run_transition(state, :mark_timed_out)
       end
     else
       {:ok, state}
@@ -402,14 +403,12 @@ defmodule Favn.Runtime.Coordinator do
   defp close_admission_with_failure(%State{} = state, node_key, reason) do
     step = Map.fetch!(state.steps, node_key)
 
-    with {:ok, state} <- close_admission(state),
-         {:ok, state} <-
-           maybe_mark_run_failed(state, %{
-             ref: step.ref,
-             stage: stage_for_key(state, node_key),
-             reason: reason
-           }) do
-      {:ok, state}
+    with {:ok, state} <- close_admission(state) do
+      maybe_mark_run_failed(state, %{
+        ref: step.ref,
+        stage: stage_for_key(state, node_key),
+        reason: reason
+      })
     end
   end
 
@@ -426,7 +425,7 @@ defmodule Favn.Runtime.Coordinator do
     duration_ms = System.monotonic_time(:millisecond) - started_ms
 
     _ =
-      Favn.Runtime.Telemetry.emit_operation(:coordinator, :admission, duration_ms, %{
+      Telemetry.emit_operation(:coordinator, :admission, duration_ms, %{
         run_id: state.run_id,
         result: :closed,
         inflight_count: map_size(state.inflight_execs),
@@ -437,17 +436,15 @@ defmodule Favn.Runtime.Coordinator do
   end
 
   defp request_cancellation(%State{run_status: :pending} = state, reason) do
-    with {:ok, state} <- apply_run_transition(state, :start),
-         {:ok, state} <- request_cancellation(state, reason) do
-      {:ok, state}
+    with {:ok, state} <- apply_run_transition(state, :start) do
+      request_cancellation(state, reason)
     end
   end
 
   defp request_cancellation(%State{run_status: :running} = state, reason) do
     with {:ok, state} <- apply_run_transition(state, :request_cancel),
-         {:ok, state} <- close_admission(state),
-         {:ok, state} <- interrupt_inflight(state, Map.put(reason, :kind, :run_cancelled)) do
-      {:ok, state}
+         {:ok, state} <- close_admission(state) do
+      interrupt_inflight(state, Map.put(reason, :kind, :run_cancelled))
     end
   end
 
@@ -456,9 +453,8 @@ defmodule Favn.Runtime.Coordinator do
 
   defp request_timeout(%State{run_status: :running} = state) do
     with {:ok, state} <- apply_run_transition(state, :request_timeout),
-         {:ok, state} <- close_admission(state),
-         {:ok, state} <- interrupt_inflight(state, %{kind: :run_timed_out}) do
-      {:ok, state}
+         {:ok, state} <- close_admission(state) do
+      interrupt_inflight(state, %{kind: :run_timed_out})
     end
   end
 
@@ -478,7 +474,7 @@ defmodule Favn.Runtime.Coordinator do
             duration_ms = System.monotonic_time(:millisecond) - started_ms
 
             _ =
-              Favn.Runtime.Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
+              Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
                 run_id: state.run_id,
                 ref: step.ref,
                 stage: step.stage,
@@ -492,7 +488,7 @@ defmodule Favn.Runtime.Coordinator do
             duration_ms = System.monotonic_time(:millisecond) - started_ms
 
             _ =
-              Favn.Runtime.Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
+              Telemetry.emit_operation(:executor, :cancel_step, duration_ms, %{
                 run_id: state.run_id,
                 ref: step.ref,
                 stage: step.stage,
@@ -529,7 +525,7 @@ defmodule Favn.Runtime.Coordinator do
           state
           |> Map.put(:inflight_execs, inflight)
           |> Map.put(:exec_refs_by_monitor, Map.delete(state.exec_refs_by_monitor, monitor_ref))
-          |> Map.put(:completed_exec_refs, MapSet.put(state.completed_exec_refs, exec_ref))
+          |> Map.put(:completed_exec_refs, Map.put(state.completed_exec_refs, exec_ref, true))
 
         {:ok, tracked_node_key, next_state}
     end
@@ -610,7 +606,7 @@ defmodule Favn.Runtime.Coordinator do
     %{
       state
       | exec_refs_by_monitor: Map.delete(state.exec_refs_by_monitor, monitor_ref),
-        completed_exec_refs: MapSet.put(state.completed_exec_refs, exec_ref)
+        completed_exec_refs: Map.put(state.completed_exec_refs, exec_ref, true)
     }
   end
 
@@ -630,26 +626,23 @@ defmodule Favn.Runtime.Coordinator do
 
   defp apply_run_transition(%State{} = state, command) do
     with {:ok, state, events} <- RunTransitions.apply(state, command),
-         {:ok, state} <- emit_events(state, events),
-         {:ok, state} <- persist_snapshot(state) do
-      {:ok, state}
+         {:ok, state} <- emit_events(state, events) do
+      persist_snapshot(state)
     end
   end
 
   defp apply_step_transition(%State{} = state, transition_fun) do
     with {:ok, state, events} <- transition_fun.(state),
-         {:ok, state} <- emit_events(state, events),
-         {:ok, state} <- persist_snapshot(state) do
-      {:ok, state}
+         {:ok, state} <- emit_events(state, events) do
+      persist_snapshot(state)
     end
   end
 
   defp apply_finalize_unresolved(%State{} = state, replacement_status) do
     {state, events} = StepTransitions.finalize_unresolved(state, replacement_status)
 
-    with {:ok, state} <- emit_events(state, events),
-         {:ok, state} <- persist_snapshot(state) do
-      {:ok, state}
+    with {:ok, state} <- emit_events(state, events) do
+      persist_snapshot(state)
     end
   end
 
@@ -675,10 +668,10 @@ defmodule Favn.Runtime.Coordinator do
         seq = acc.event_seq + 1
         attrs = Map.merge(attrs, %{run_id: acc.run_id, seq: seq})
 
-        _ = Favn.Runtime.Telemetry.emit_runtime_event(event_name, attrs)
+        _ = Telemetry.emit_runtime_event(event_name, attrs)
 
         _ =
-          Favn.Runtime.Events.publish_run_event(
+          Events.publish_run_event(
             acc.run_id,
             event_name,
             attrs
@@ -872,7 +865,7 @@ defmodule Favn.Runtime.Coordinator do
         duration_ms = System.monotonic_time(:millisecond) - started_ms
 
         _ =
-          Favn.Runtime.Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
+          Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
             run_id: state.run_id,
             ref: step.ref,
             stage: step.stage,
@@ -886,7 +879,7 @@ defmodule Favn.Runtime.Coordinator do
         duration_ms = System.monotonic_time(:millisecond) - started_ms
 
         _ =
-          Favn.Runtime.Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
+          Telemetry.emit_operation(:executor, :start_step, duration_ms, %{
             run_id: state.run_id,
             ref: step.ref,
             stage: step.stage,

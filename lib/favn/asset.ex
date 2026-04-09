@@ -83,7 +83,7 @@ defmodule Favn.Asset do
   end
 
   def normalize_meta!(meta) when is_map(meta) do
-    supported = MapSet.new([:owner, :category, :tags])
+    supported = [:owner, :category, :tags]
 
     Enum.each(meta, fn
       {:owner, owner} when is_binary(owner) ->
@@ -112,7 +112,7 @@ defmodule Favn.Asset do
         raise ArgumentError, "asset meta tags must be a list, got: #{inspect(value)}"
 
       {key, _value} ->
-        if MapSet.member?(supported, key) do
+        if key in supported do
           :ok
         else
           raise ArgumentError,

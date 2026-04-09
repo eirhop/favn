@@ -1,6 +1,7 @@
 defmodule Favn.SQLiteStorageTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
@@ -66,7 +67,7 @@ defmodule Favn.SQLiteStorageTest do
 
   test "does not keep run_write_orders helper table after migrations" do
     assert {:ok, %{rows: [[0]]}} =
-             Ecto.Adapters.SQL.query(
+             SQL.query(
                Repo,
                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'run_write_orders'",
                []
@@ -98,7 +99,7 @@ defmodule Favn.SQLiteStorageTest do
     assert length(listed_ids) == 12
 
     assert {:ok, %{rows: rows}} =
-             Ecto.Adapters.SQL.query(
+             SQL.query(
                Repo,
                "SELECT id FROM runs WHERE id LIKE 'concurrent-run-%' ORDER BY updated_seq DESC, updated_at_us DESC, id DESC",
                []
@@ -107,7 +108,7 @@ defmodule Favn.SQLiteStorageTest do
     assert listed_ids == Enum.map(rows, &hd/1)
 
     assert {:ok, %{rows: [[counter_value]]}} =
-             Ecto.Adapters.SQL.query(
+             SQL.query(
                Repo,
                "SELECT value FROM favn_counters WHERE name = 'run_write_order'",
                []
@@ -159,10 +160,10 @@ defmodule Favn.SQLiteStorageTest do
 
   test "malformed scheduler datetime columns are treated as nil" do
     assert {:ok, _} =
-             Ecto.Adapters.SQL.query(
+             SQL.query(
                Repo,
                """
-               INSERT INTO scheduler_states (
+                INSERT INTO scheduler_states (
                  pipeline_module,
                  schedule_id,
                  schedule_fingerprint,

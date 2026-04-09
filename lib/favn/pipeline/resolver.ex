@@ -10,6 +10,7 @@ defmodule Favn.Pipeline.Resolver do
   alias Favn.Pipeline.Resolution
   alias Favn.Triggers.Schedule
   alias Favn.Triggers.Schedules
+  alias Favn.Window.Anchor
 
   @type resolve_opts :: [
           params: map(),
@@ -66,9 +67,8 @@ defmodule Favn.Pipeline.Resolver do
          :ok <- validate_deps(definition.deps),
          :ok <- validate_selectors(definition.selectors),
          :ok <- validate_window(definition.window),
-         :ok <- validate_source(definition.source),
-         :ok <- validate_outputs(definition.outputs) do
-      :ok
+         :ok <- validate_source(definition.source) do
+      validate_outputs(definition.outputs)
     end
   end
 
@@ -115,8 +115,8 @@ defmodule Favn.Pipeline.Resolver do
 
   defp validate_anchor_window(nil), do: :ok
 
-  defp validate_anchor_window(%Favn.Window.Anchor{} = anchor_window),
-    do: Favn.Window.Anchor.validate(anchor_window)
+  defp validate_anchor_window(%Anchor{} = anchor_window),
+    do: Anchor.validate(anchor_window)
 
   defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
 
@@ -130,16 +130,13 @@ defmodule Favn.Pipeline.Resolver do
   defp resolve_schedule(nil, _default_timezone), do: {:ok, nil}
 
   defp resolve_schedule({:inline, %Schedule{} = schedule}, default_timezone) do
-    with {:ok, resolved} <- Schedule.apply_default_timezone(schedule, default_timezone) do
-      {:ok, resolved}
-    end
+    Schedule.apply_default_timezone(schedule, default_timezone)
   end
 
   defp resolve_schedule({:ref, {module, name}}, default_timezone)
        when is_atom(module) and is_atom(name) do
-    with {:ok, schedule} <- Schedules.fetch(module, name),
-         {:ok, resolved} <- Schedule.apply_default_timezone(schedule, default_timezone) do
-      {:ok, resolved}
+    with {:ok, schedule} <- Schedules.fetch(module, name) do
+      Schedule.apply_default_timezone(schedule, default_timezone)
     end
   end
 

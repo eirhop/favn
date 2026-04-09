@@ -203,12 +203,10 @@ defmodule Favn.Assets do
   end
 
   defp normalize_meta!(meta, raw_asset) do
-    try do
-      Asset.normalize_meta!(meta)
-    rescue
-      error in ArgumentError ->
-        compile_error!(raw_asset.file, raw_asset.line, error.message)
-    end
+    Asset.normalize_meta!(meta)
+  rescue
+    error in ArgumentError ->
+      compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
   defp normalize_window!([], _raw_asset), do: nil

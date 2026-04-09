@@ -554,6 +554,18 @@ defmodule Favn do
   """
   @type pipeline_module :: module()
 
+  alias Favn.Assets.Compiler
+  alias Favn.Assets.GraphIndex
+  alias Favn.Assets.Planner
+  alias Favn.Assets.Registry
+  alias Favn.Connection.NotFoundError
+  alias Favn.Connection.Registry, as: ConnectionRegistry
+  alias Favn.Connection.Sanitizer
+  alias Favn.Pipeline.Resolver
+  alias Favn.Runtime.Engine
+  alias Favn.Runtime.Events
+  alias Favn.Window.Anchor
+
   @doc """
   List all registered assets.
 
@@ -576,7 +588,7 @@ defmodule Favn do
   """
   @spec list_assets() :: {:ok, [asset()]} | {:error, term()}
   def list_assets do
-    with {:ok, assets} <- Favn.Assets.Registry.list_assets() do
+    with {:ok, assets} <- Registry.list_assets() do
       {:ok, Enum.sort_by(assets, & &1.ref)}
     end
   end
@@ -602,7 +614,7 @@ defmodule Favn do
   """
   @spec list_assets(module()) :: {:ok, [asset()]} | {:error, asset_error()}
   def list_assets(module) when is_atom(module) do
-    case Favn.Assets.Compiler.compile_module_assets(module) do
+    case Compiler.compile_module_assets(module) do
       {:ok, assets} -> {:ok, Enum.sort_by(assets, & &1.ref)}
       {:error, _reason} -> {:error, :not_asset_module}
     end
@@ -629,11 +641,15 @@ defmodule Favn do
   @spec get_asset(asset_ref()) :: {:ok, asset()} | {:error, asset_error()}
   def get_asset({module, name}) when is_atom(module) and is_atom(name) do
     if asset_module?(module) do
-      with {:ok, asset} <- Favn.Assets.Registry.get_asset({module, name}) do
-        {:ok, asset}
-      else
-        {:error, {:duplicate_asset, _ref}} -> {:error, :asset_not_found}
-        {:error, :asset_not_found} -> {:error, :asset_not_found}
+      case Registry.get_asset({module, name}) do
+        {:ok, asset} ->
+          {:ok, asset}
+
+        {:error, {:duplicate_asset, _ref}} ->
+          {:error, :asset_not_found}
+
+        {:error, :asset_not_found} ->
+          {:error, :asset_not_found}
       end
     else
       {:error, :not_asset_module}
@@ -673,8 +689,8 @@ defmodule Favn do
   """
   @spec list_connections() :: [connection_info()]
   def list_connections do
-    Favn.Connection.Registry.list()
-    |> Enum.map(&Favn.Connection.Sanitizer.redact/1)
+    ConnectionRegistry.list()
+    |> Enum.map(&Sanitizer.redact/1)
   end
 
   @doc """
@@ -682,8 +698,8 @@ defmodule Favn do
   """
   @spec get_connection(atom()) :: {:ok, connection_info()} | {:error, connection_error()}
   def get_connection(name) when is_atom(name) do
-    case Favn.Connection.Registry.fetch(name) do
-      {:ok, resolved} -> {:ok, Favn.Connection.Sanitizer.redact(resolved)}
+    case ConnectionRegistry.fetch(name) do
+      {:ok, resolved} -> {:ok, Sanitizer.redact(resolved)}
       :error -> {:error, :not_found}
     end
   end
@@ -695,7 +711,7 @@ defmodule Favn do
   def get_connection!(name) when is_atom(name) do
     case get_connection(name) do
       {:ok, connection} -> connection
-      {:error, :not_found} -> raise Favn.Connection.NotFoundError, name: name
+      {:error, :not_found} -> raise NotFoundError, name: name
     end
   end
 
@@ -704,7 +720,7 @@ defmodule Favn do
   """
   @spec connection_registered?(atom()) :: boolean()
   def connection_registered?(name) when is_atom(name) do
-    Favn.Connection.Registry.registered?(name)
+    ConnectionRegistry.registered?(name)
   end
 
   @typedoc """
@@ -750,7 +766,7 @@ defmodule Favn do
   def upstream_assets({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     if asset_module?(module) do
-      Favn.Assets.GraphIndex.related_assets(
+      GraphIndex.related_assets(
         {module, name},
         opts |> Keyword.put_new(:direction, :upstream) |> Keyword.put_new(:include_target, false)
       )
@@ -789,7 +805,7 @@ defmodule Favn do
   def downstream_assets({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     if asset_module?(module) do
-      Favn.Assets.GraphIndex.related_assets(
+      GraphIndex.related_assets(
         {module, name},
         Keyword.put_new(opts, :direction, :downstream)
       )
@@ -828,7 +844,7 @@ defmodule Favn do
   def dependency_graph({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
     if asset_module?(module) do
-      Favn.Assets.GraphIndex.subgraph({module, name}, opts)
+      GraphIndex.subgraph({module, name}, opts)
     else
       {:error, :not_asset_module}
     end
@@ -837,7 +853,7 @@ defmodule Favn do
   @doc false
   @spec asset_module?(module()) :: boolean()
   def asset_module?(module) when is_atom(module) do
-    match?({:ok, _}, Favn.Assets.Compiler.compile_module_assets(module))
+    match?({:ok, _}, Compiler.compile_module_assets(module))
   end
 
   @doc """
@@ -904,7 +920,7 @@ defmodule Favn do
   @spec plan_asset_run(asset_ref() | [asset_ref()], plan_asset_run_opts()) ::
           {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_asset_run(targets, opts \\ []) when is_list(opts) do
-    Favn.Assets.Planner.plan(targets, opts)
+    Planner.plan(targets, opts)
   end
 
   @doc """
@@ -917,13 +933,11 @@ defmodule Favn do
   def plan_pipeline(pipeline_module, opts \\ [])
       when is_atom(pipeline_module) and is_list(opts) do
     with {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
-         {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts),
-         {:ok, plan} <-
-           Favn.plan_asset_run(resolution.target_refs,
-             dependencies: resolution.dependencies,
-             anchor_window: resolution.pipeline_ctx.anchor_window
-           ) do
-      {:ok, plan}
+         {:ok, resolution} <- Resolver.resolve(definition, opts) do
+      Favn.plan_asset_run(resolution.target_refs,
+        dependencies: resolution.dependencies,
+        anchor_window: resolution.pipeline_ctx.anchor_window
+      )
     end
   end
 
@@ -990,7 +1004,7 @@ defmodule Favn do
       |> Keyword.put_new(:_submit_ref, {module, name})
       |> normalize_pipeline_context_opt()
 
-    Favn.Runtime.Engine.submit_run({module, name}, opts)
+    Engine.submit_run({module, name}, opts)
   end
 
   @doc """
@@ -1019,7 +1033,7 @@ defmodule Favn do
   def run_pipeline(pipeline_module, opts \\ [])
       when is_atom(pipeline_module) and is_list(opts) do
     with {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
-         {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts) do
+         {:ok, resolution} <- Resolver.resolve(definition, opts) do
       run_opts =
         opts
         |> Keyword.put(:dependencies, resolution.dependencies)
@@ -1028,7 +1042,7 @@ defmodule Favn do
         |> Keyword.put(:_submit_ref, pipeline_module)
         |> normalize_pipeline_context_opt()
 
-      Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
+      Engine.submit_run(resolution.target_refs, run_opts)
     end
   end
 
@@ -1061,7 +1075,7 @@ defmodule Favn do
         |> Keyword.put(:_backfill, %{range: range, anchor_ranges: anchor_ranges})
         |> normalize_pipeline_context_opt()
 
-      Favn.Runtime.Engine.submit_run({module, name}, run_opts)
+      Engine.submit_run({module, name}, run_opts)
     end
   end
 
@@ -1077,7 +1091,7 @@ defmodule Favn do
       when is_atom(pipeline_module) and is_list(opts) do
     with {:ok, range, anchor_ranges} <- fetch_backfill_range(opts),
          {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
-         {:ok, resolution} <- Favn.Pipeline.Resolver.resolve(definition, opts),
+         {:ok, resolution} <- Resolver.resolve(definition, opts),
          {:ok, plan} <-
            Favn.plan_asset_run(resolution.target_refs,
              dependencies: resolution.dependencies,
@@ -1100,7 +1114,7 @@ defmodule Favn do
         |> Keyword.put(:_backfill, %{range: range, anchor_ranges: anchor_ranges})
         |> normalize_pipeline_context_opt()
 
-      Favn.Runtime.Engine.submit_run(resolution.target_refs, run_opts)
+      Engine.submit_run(resolution.target_refs, run_opts)
     end
   end
 
@@ -1120,7 +1134,7 @@ defmodule Favn do
         timezone = Map.get(range, :timezone, "Etc/UTC")
         normalized = %{kind: kind, start_at: start_at, end_at: end_at, timezone: timezone}
 
-        case Favn.Window.Anchor.expand_range(kind, start_at, end_at, timezone: timezone) do
+        case Anchor.expand_range(kind, start_at, end_at, timezone: timezone) do
           {:ok, [_ | _] = anchor_ranges} -> {:ok, normalized, anchor_ranges}
           {:ok, []} -> {:error, :empty_backfill_range}
           {:error, _} = error -> error
@@ -1179,7 +1193,7 @@ defmodule Favn do
              | :timeout_in_progress
              | term()}
   def cancel_run(run_id) do
-    Favn.Runtime.Engine.cancel_run(run_id)
+    Engine.cancel_run(run_id)
   end
 
   @doc """
@@ -1210,7 +1224,7 @@ defmodule Favn do
   def rerun_run(run_id, opts \\ [])
 
   def rerun_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
-    Favn.Runtime.Engine.rerun_run(run_id, opts)
+    Engine.rerun_run(run_id, opts)
   end
 
   def rerun_run(_run_id, _opts), do: {:error, :invalid_run_id}
@@ -1236,7 +1250,7 @@ defmodule Favn do
   @spec await_run(run_id(), await_run_opts()) ::
           {:ok, Favn.Run.t()} | {:error, Favn.Run.t() | term()}
   def await_run(run_id, opts \\ []) when is_list(opts) do
-    Favn.Runtime.Engine.await_run(run_id, opts)
+    Engine.await_run(run_id, opts)
   end
 
   @doc """
@@ -1322,7 +1336,7 @@ defmodule Favn do
   """
   @spec subscribe_run(run_id()) :: :ok | {:error, term()}
   def subscribe_run(run_id) do
-    Favn.Runtime.Events.subscribe_run(run_id)
+    Events.subscribe_run(run_id)
   end
 
   @doc """
@@ -1344,6 +1358,6 @@ defmodule Favn do
   """
   @spec unsubscribe_run(run_id()) :: :ok
   def unsubscribe_run(run_id) do
-    Favn.Runtime.Events.unsubscribe_run(run_id)
+    Events.unsubscribe_run(run_id)
   end
 end

@@ -15,11 +15,12 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @behaviour Favn.Storage.Adapter
 
+  alias Ecto.Adapters.SQL
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
-  alias Favn.Window.Key
   alias Favn.Storage.SQLite.Repo
   alias Favn.Storage.SQLite.Supervisor, as: SQLiteSupervisor
+  alias Favn.Window.Key
 
   @impl true
   def child_spec(opts) when is_list(opts) do
@@ -111,7 +112,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       case Repo.transact(
              fn ->
                with {:ok, %{rows: [[updated_seq]]}} <-
-                      Ecto.Adapters.SQL.query(Repo, updated_seq_sql, ["run_write_order"]),
+                      SQL.query(Repo, updated_seq_sql, ["run_write_order"]),
                     params <- [
                       run.id,
                       Atom.to_string(run.status),
@@ -121,8 +122,8 @@ defmodule Favn.Storage.Adapter.SQLite do
                       updated_seq,
                       :erlang.term_to_binary(run)
                     ],
-                    {:ok, _} <- Ecto.Adapters.SQL.query(Repo, sql, params),
-                    {:ok, _} <- Ecto.Adapters.SQL.query(Repo, delete_node_results_sql, [run.id]),
+                    {:ok, _} <- SQL.query(Repo, sql, params),
+                    {:ok, _} <- SQL.query(Repo, delete_node_results_sql, [run.id]),
                     :ok <-
                       persist_node_results(
                         run,
@@ -149,7 +150,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          :ok <- ensure_repo_started() do
       sql = "SELECT run_blob FROM runs WHERE id = ?1 LIMIT 1"
 
-      case Ecto.Adapters.SQL.query(Repo, sql, [run_id]) do
+      case SQL.query(Repo, sql, [run_id]) do
         {:ok, %{rows: [[blob]]}} -> deserialize_run(blob)
         {:ok, %{rows: []}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
@@ -166,7 +167,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       {sql, params} = build_list_query(status, limit)
 
-      case Ecto.Adapters.SQL.query(Repo, sql, params) do
+      case SQL.query(Repo, sql, params) do
         {:ok, %{rows: rows}} ->
           rows
           |> Enum.reduce_while({:ok, []}, fn [blob], {:ok, acc} ->
@@ -247,20 +248,17 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp datetime_to_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   defp deserialize_run(blob) when is_binary(blob) do
-    try do
-      {:ok, :erlang.binary_to_term(blob, [:safe])}
-    rescue
-      error -> {:error, {:invalid_run_blob, error}}
-    end
+    {:ok, :erlang.binary_to_term(blob, [:safe])}
+  rescue
+    error -> {:error, {:invalid_run_blob, error}}
   end
 
   defp persist_node_results(%Run{} = run, updated_at_us, insert_sql, upsert_latest_sql) do
     run
     |> node_result_rows()
     |> Enum.reduce_while(:ok, fn row, :ok ->
-      with {:ok, _} <- Ecto.Adapters.SQL.query(Repo, insert_sql, row.insert_params),
-           {:ok, _} <-
-             Ecto.Adapters.SQL.query(Repo, upsert_latest_sql, row.latest_params.(updated_at_us)) do
+      with {:ok, _} <- SQL.query(Repo, insert_sql, row.insert_params),
+           {:ok, _} <- SQL.query(Repo, upsert_latest_sql, row.latest_params.(updated_at_us)) do
         {:cont, :ok}
       else
         {:error, reason} -> {:halt, {:error, reason}}
@@ -317,7 +315,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       LIMIT 1
       """
 
-      case Ecto.Adapters.SQL.query(Repo, sql, [Atom.to_string(pipeline_module)]) do
+      case SQL.query(Repo, sql, [Atom.to_string(pipeline_module)]) do
         {:ok, %{rows: []}} ->
           {:ok, nil}
 
@@ -369,7 +367,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         datetime_to_iso(DateTime.utc_now())
       ]
 
-      case Ecto.Adapters.SQL.query(Repo, sql, params) do
+      case SQL.query(Repo, sql, params) do
         {:ok, _} -> :ok
         {:error, reason} -> {:error, reason}
       end

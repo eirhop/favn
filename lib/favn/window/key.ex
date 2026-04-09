@@ -67,7 +67,6 @@ defmodule Favn.Window.Key do
           new(kind, dt, timezone)
         else
           {:error, reason} -> {:error, reason}
-          error -> {:error, {:invalid_encoded_key, error}}
         end
 
       _other ->
