@@ -19,7 +19,7 @@ We will **not** try to solve all "data platform adapters" in one abstraction.
 Instead, we will split responsibilities into clear layers:
 
 1. **`Favn.Connection`**  
-   Validated reusable connection configuration and connection lifecycle.
+   Validated reusable connection configuration and registration metadata.
 
 2. **`Favn.SQL.Adapter`**  
    Backend-specific SQL engine behavior for introspection, execution, and materialization.
@@ -654,7 +654,7 @@ then it is out of scope for v0.4 and belongs to a future source adapter layer.
 
 ---
 
-## DuckDB implementation request (v0.4 step 3)
+## DuckDB implementation request
 
 ### Executive recommendation
 
@@ -702,13 +702,16 @@ Boundary rule: `Duckdbex.*` modules and structs must never leak into public `Fav
 
 ### Runtime model fit
 
-Favn should model runtime access as:
+Favn should keep DB-handle ownership as a **Phase A implementation decision** validated by lifecycle tests, not a locked architectural commitment in this document.
 
-- one DB handle per resolved connection config
-- short-lived per-run/per-session connection handles
+Initial evaluation targets:
+
+- explicit resource ownership for DB/connection/statement/appender handles
+- explicit `release` discipline with best-effort cleanup on all paths
+- session patterns that can evolve (for example, shared DB handle + short-lived execution connections, or stricter per-run ownership)
 - explicit transaction boundaries at operation scope (not globally shared)
 
-Given DuckDB single-process writer expectations, v0.4 should keep defaults conservative (single-writer-friendly materialization flow with explicit conflict/error propagation).
+DuckDB concurrency should be described as a **single-process write domain with optimistic conflict handling**. Multiple writes can proceed concurrently within one process when they do not conflict (appends are generally non-conflicting), and write conflicts should be surfaced as explicit execution errors for Favn retry/cancel policy handling.
 
 ### v0.4 capability target
 
@@ -796,6 +799,7 @@ Deliver the first production-shaped DuckDB backend for Favn v0.4 using duckdbex 
    - dependency and build prerequisites
    - runtime open/config patterns
    - lifecycle and release expectations
+   - explicit version pin documentation (`0.3.21` evaluation target), without copy-pasting older upstream snippets
 
 2. duckdbex usage surface documented for Favn maintainers
    - prepared statements
