@@ -1,0 +1,45 @@
+defmodule Favn.SQL.WritePlan do
+  @moduledoc """
+  Canonical SQL materialization plan consumed by adapter materialization paths.
+  """
+
+  alias Favn.SQL.Relation
+
+  @type materialization :: :view | :table | :incremental
+  @type strategy :: :append | :replace | :delete_insert | :merge
+
+  @enforce_keys [:materialization, :target, :select_sql]
+  defstruct [
+    :materialization,
+    :strategy,
+    :target,
+    :select_sql,
+    :replace?,
+    :if_not_exists?,
+    :transactional?,
+    :window,
+    :unique_key,
+    :incremental_predicate_sql,
+    pre_statements: [],
+    post_statements: [],
+    options: %{},
+    metadata: %{}
+  ]
+
+  @type t :: %__MODULE__{
+          materialization: materialization(),
+          strategy: strategy() | nil,
+          target: Relation.t(),
+          select_sql: iodata(),
+          replace?: boolean() | nil,
+          if_not_exists?: boolean() | nil,
+          transactional?: boolean() | nil,
+          window: term(),
+          unique_key: [binary()] | nil,
+          incremental_predicate_sql: iodata() | nil,
+          pre_statements: [iodata()],
+          post_statements: [iodata()],
+          options: map(),
+          metadata: map()
+        }
+end

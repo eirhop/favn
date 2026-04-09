@@ -103,12 +103,16 @@ defmodule Favn do
 
   ### SQL connection foundation
 
-  The first SQL foundation step is documented in
-  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`.
+  The first SQL foundation steps are documented in
+  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md` and
+  `docs/SQL_ADAPTER_ARCHITECTURE.md`.
 
   This includes explicit `Favn.Connection` provider modules, schema-driven
   runtime config merge validation, boot-time loading with fail-fast validation,
   and redacted connection lookup/inspection APIs exposed through `Favn`.
+
+  v0.4 also introduces `Favn.SQL.Adapter` and the internal `Favn.SQL` facade as
+  the runtime SQL backend contract starting from `%Favn.Connection.Resolved{}`.
 
 
   ## New v0.2 DSL contract

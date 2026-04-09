@@ -195,6 +195,7 @@ SQLite ordering notes:
 The first SQL foundation step is documented in:
 
 - [`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`](docs/CONNECTION_FOUNDATION_ARCHITECTURE.md)
+- [`docs/SQL_ADAPTER_ARCHITECTURE.md`](docs/SQL_ADAPTER_ARCHITECTURE.md)
 
 The architecture and current implementation provide:
 
@@ -203,7 +204,12 @@ The architecture and current implementation provide:
 - boot-time connection loading with fail-fast validation
 - redacted public lookup APIs on `Favn`
 
-This foundation is the base contract that `Favn.SQL.Adapter` work will build on.
+This foundation is the base contract that `Favn.SQL.Adapter` work builds on.
+
+The internal SQL runtime contract now includes:
+
+- `Favn.SQL.Adapter` as the backend behaviour boundary
+- `Favn.SQL` as the runtime facade starting from `%Favn.Connection.Resolved{}`
 
 ## Runtime behavior in this release
 
