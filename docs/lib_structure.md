@@ -64,7 +64,9 @@ lib/
     │   ├── session.ex
     │   ├── write_plan.ex
     │   └── adapter/
-    │       └── duckdb.ex
+    │       ├── duckdb.ex
+    │       └── duckdb/
+    │           └── client.ex
     ├── scheduler/
     │   ├── cron.ex
     │   ├── registry.ex

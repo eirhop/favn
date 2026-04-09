@@ -6,7 +6,7 @@ defmodule Favn.MixProject do
       app: :favn,
       version: "0.3.0",
       description: "Asset-oriented workflow orchestration for Elixir applications",
-      elixir: "~> 1.17",
+      elixir: "~> 1.19",
       source_url: "https://github.com/eirhop/favn",
       homepage_url: "https://github.com/eirhop/favn",
       docs: [

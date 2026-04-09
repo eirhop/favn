@@ -665,7 +665,7 @@ This should be treated as a replaceable internal implementation detail used to p
 
 ### Why this decision now
 
-- It provides a working path for core v0.4 needs (open DB, connect, execute/query, introspection, prepared statements, appender, transaction helpers).
+- It provides a working path for core v0.4 needs (open DB, connect, execute/query with parameter binding, introspection, appender, transaction helpers).
 - It lets Favn validate its SQL adapter architecture with a concrete runtime backend instead of only abstract contracts.
 - It keeps replacement cost bounded by isolating duckdbex-specific resource/NIF behavior in one internal module family.
 - It avoids building and maintaining a bespoke NIF client too early while Favn still needs to prove SQL runtime semantics.
@@ -720,7 +720,7 @@ Minimum implementation target for the first DuckDB slice:
 - open database + create runtime connection
 - execute and query with normalized `Favn.SQL.Result`
 - fallback introspection support (`schema_exists?`, `relation`, `list_*`, `columns`)
-- prepared statements and parameter binding for execution/query paths
+- parameter binding for execution/query paths (prepared statement lifecycle is a later hardening step)
 - appender-based bulk write support for table materialization paths
 - explicit transaction helpers for grouped materialization operations
 - baseline `:view` and `:table` materialization support
@@ -737,7 +737,7 @@ Deliver the first production-shaped DuckDB backend for Favn v0.4 using duckdbex 
 
 - Internal `Favn.SQL.Adapter.DuckDB` using duckdbex client wrapper modules
 - Lifecycle-safe connect/disconnect/release behavior
-- Query/execute + prepared statement support
+- Query/execute + parameter binding support
 - Introspection callbacks + fallback SQL renderer
 - Appender-powered bulk write path for table materialization
 - `:view` and `:table` materialization statements
@@ -786,7 +786,7 @@ Deliver the first production-shaped DuckDB backend for Favn v0.4 using duckdbex 
 
 4. **Phase D — Transactions + prepared statements + hardening**
    - Wire transaction helper usage for grouped writes.
-   - Add prepared statement support where it improves runtime safety/performance.
+   - Add explicit prepared statement lifecycle support (`prepare_statement`/`execute_statement`) where it improves runtime safety/performance.
    - Add failure cleanup tests and concurrency conflict smoke coverage.
 
 5. **Phase E — v0.4 documentation gate**
@@ -802,7 +802,7 @@ Deliver the first production-shaped DuckDB backend for Favn v0.4 using duckdbex 
    - explicit version pin documentation (`0.3.21` evaluation target), without copy-pasting older upstream snippets
 
 2. duckdbex usage surface documented for Favn maintainers
-   - prepared statements
+   - prepared statement lifecycle (future hardening step)
    - appender
    - transactions
    - cleanup/release patterns

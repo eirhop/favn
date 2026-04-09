@@ -10,6 +10,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Capabilities, Column, Error, Relation, RelationRef, Result, WritePlan}
+  alias Favn.SQL.Adapter.DuckDB.Client
 
   defmodule Conn do
     @moduledoc false
@@ -25,13 +26,22 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @impl true
   @spec connect(Resolved.t(), opts()) :: {:ok, Conn.t()} | {:error, Error.t()}
   def connect(%Resolved{config: config} = resolved, _opts) do
-    database = Map.get(config, :database)
-
-    with {:ok, db_ref} <- open_database(database),
-         {:ok, conn_ref} <- Duckdbex.connection(db_ref) do
+    with {:ok, db_ref} <- Client.open(Map.get(config, :database)),
+         {:ok, conn_ref} <- create_connection(db_ref) do
       {:ok, %Conn{db_ref: db_ref, conn_ref: conn_ref}}
     else
       {:error, reason} -> {:error, normalize_error(:connect, resolved.name, reason)}
+    end
+  end
+
+  defp create_connection(db_ref) do
+    case Client.connection(db_ref) do
+      {:ok, conn_ref} ->
+        {:ok, conn_ref}
+
+      {:error, reason} ->
+        _ = safe_release(db_ref)
+        {:error, reason}
     end
   end
 
@@ -74,34 +84,23 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @impl true
   @spec execute(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   def execute(%Conn{} = conn, statement, opts) do
-    params = Keyword.get(opts, :params, [])
-
-    with {:ok, result_ref} <- run_query(conn, statement, params),
-         {:ok, rows, columns} <- fetch_rows(result_ref) do
-      {:ok,
-       %Result{
-         kind: :execute,
-         command: IO.iodata_to_binary(statement),
-         rows_affected: nil,
-         rows: rows,
-         columns: columns,
-         metadata: %{}
-       }}
-    else
-      {:error, reason} -> {:error, normalize_error(:execute, nil, reason)}
-    end
+    run_and_fetch(conn, statement, opts, :execute)
   end
 
   @impl true
   @spec query(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   def query(%Conn{} = conn, statement, opts) do
+    run_and_fetch(conn, statement, opts, :query)
+  end
+
+  defp run_and_fetch(%Conn{} = conn, statement, opts, kind) do
     params = Keyword.get(opts, :params, [])
 
     with {:ok, result_ref} <- run_query(conn, statement, params),
          {:ok, rows, columns} <- fetch_rows(result_ref) do
       {:ok,
        %Result{
-         kind: :query,
+         kind: kind,
          command: IO.iodata_to_binary(statement),
          rows_affected: nil,
          rows: rows,
@@ -109,7 +108,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
          metadata: %{}
        }}
     else
-      {:error, reason} -> {:error, normalize_error(:query, nil, reason)}
+      {:error, reason} -> {:error, normalize_error(kind, nil, reason)}
     end
   end
 
@@ -184,14 +183,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
     statements =
       case plan.materialization do
-        :view ->
-          [create_view_statement(target, plan)]
-
-        :table ->
-          [create_table_statement(target, plan)]
-
-        :incremental ->
-          incremental_statements(target, plan)
+        :view -> [create_view_statement(target, plan)]
+        :table -> [create_table_statement(target, plan)]
+        :incremental -> incremental_statements(target, plan)
       end
 
     {:ok, plan.pre_statements ++ statements ++ plan.post_statements}
@@ -293,37 +287,40 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @impl true
   @spec materialize(Conn.t(), WritePlan.t(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   def materialize(%Conn{} = conn, %WritePlan{} = plan, opts) do
-    rows =
-      plan.options
-      |> Map.get(:appender_rows, Keyword.get(opts, :appender_rows, []))
-      |> List.wrap()
+    rows = appender_rows(plan, opts)
 
     if plan.materialization == :table and rows != [] do
       appender_materialize(conn, plan, rows)
     else
-      with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
-        Enum.reduce_while(statements, {:ok, 0}, fn statement, {:ok, count} ->
-          case execute(conn, statement, opts) do
-            {:ok, _} -> {:cont, {:ok, count + 1}}
-            {:error, error} -> {:halt, {:error, error}}
-          end
-        end)
-        |> case do
-          {:ok, _} -> {:ok, %Result{kind: :materialize, command: "sql", rows_affected: nil}}
-          {:error, error} -> {:error, error}
+      run_materialization_statements(conn, plan, opts)
+    end
+  end
+
+  defp run_materialization_statements(%Conn{} = conn, %WritePlan{} = plan, opts) do
+    with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
+      Enum.reduce_while(statements, {:ok, 0}, fn statement, {:ok, count} ->
+        case execute(conn, statement, opts) do
+          {:ok, _} -> {:cont, {:ok, count + 1}}
+          {:error, error} -> {:halt, {:error, error}}
         end
+      end)
+      |> case do
+        {:ok, _} -> {:ok, %Result{kind: :materialize, command: "sql", rows_affected: nil}}
+        {:error, error} -> {:error, error}
       end
     end
   end
 
   defp appender_materialize(%Conn{} = conn, %WritePlan{} = plan, rows) do
-    target = qualified_relation(plan.target)
-
-    with {:ok, _} <- execute(conn, create_table_for_appender(target, plan.select_sql), []),
-         {:ok, appender} <- open_appender(conn, plan),
-         :ok <- Duckdbex.appender_add_rows(appender, rows),
-         :ok <- Duckdbex.appender_flush(appender),
-         :ok <- Duckdbex.appender_close(appender) do
+    with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, []),
+         {:ok, pre, post} <- split_materialization_statements(plan, statements),
+         {:ok, _} <- execute_statements(conn, pre),
+         {:ok, _} <- execute(conn, appender_table_statement(plan), []),
+         {:ok, appender} <- open_appender(conn, plan.target),
+         :ok <- Client.appender_add_rows(appender, rows),
+         :ok <- Client.appender_flush(appender),
+         :ok <- Client.appender_close(appender),
+         {:ok, _} <- execute_statements(conn, post) do
       {:ok,
        %Result{
          kind: :materialize,
@@ -336,41 +333,85 @@ defmodule Favn.SQL.Adapter.DuckDB do
     end
   end
 
-  defp open_database(nil), do: Duckdbex.open()
-  defp open_database(":memory:"), do: Duckdbex.open()
-  defp open_database(path) when is_binary(path), do: Duckdbex.open(path)
-  defp open_database(_), do: {:error, :invalid_database}
+  defp split_materialization_statements(%WritePlan{} = plan, statements) do
+    pre_count = length(plan.pre_statements)
+    post_count = length(plan.post_statements)
 
-  defp run_query(%Conn{conn_ref: conn_ref}, statement, []),
-    do: Duckdbex.query(conn_ref, to_string(statement))
+    {pre, rest} = Enum.split(statements, pre_count)
+    main_count = max(length(rest) - post_count, 0)
+    {_main, post} = Enum.split(rest, main_count)
 
-  defp run_query(%Conn{conn_ref: conn_ref}, statement, params),
-    do: Duckdbex.query(conn_ref, to_string(statement), params)
+    {:ok, pre, post}
+  end
+
+  defp execute_statements(_conn, []), do: {:ok, :noop}
+
+  defp execute_statements(conn, statements) do
+    Enum.reduce_while(statements, {:ok, :ok}, fn statement, _acc ->
+      case execute(conn, statement, []) do
+        {:ok, _} -> {:cont, {:ok, :ok}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp appender_table_statement(%WritePlan{} = plan) do
+    target = qualified_relation(plan.target)
+
+    cond do
+      plan.if_not_exists? == true ->
+        [
+          "CREATE TABLE IF NOT EXISTS ",
+          target,
+          " AS SELECT * FROM (",
+          plan.select_sql,
+          ") LIMIT 0"
+        ]
+
+      true ->
+        ["CREATE OR REPLACE TABLE ", target, " AS SELECT * FROM (", plan.select_sql, ") LIMIT 0"]
+    end
+  end
+
+  defp appender_rows(%WritePlan{} = plan, opts) do
+    plan.options
+    |> Map.get(:appender_rows, Keyword.get(opts, :appender_rows, []))
+    |> List.wrap()
+  end
+
+  defp run_query(%Conn{conn_ref: conn_ref}, statement, params) do
+    Client.query(conn_ref, IO.iodata_to_binary(statement), params)
+  end
 
   defp fetch_rows(result_ref) do
     columns =
-      case Duckdbex.columns(result_ref) do
+      case Client.columns(result_ref) do
         cols when is_list(cols) -> Enum.map(cols, &to_string/1)
         _ -> []
       end
 
     rows =
-      case Duckdbex.fetch_all(result_ref) do
+      case Client.fetch_all(result_ref) do
         rows when is_list(rows) -> Enum.map(rows, &normalize_row(&1, columns))
         other -> other
       end
 
     _ = safe_release(result_ref)
 
-    if is_list(rows) do
-      {:ok, rows, columns}
-    else
-      {:error, rows}
-    end
+    if is_list(rows), do: {:ok, rows, columns}, else: {:error, rows}
   end
 
-  defp normalize_row(row, _columns) when is_map(row), do: row
-  defp normalize_row(row, _columns) when is_list(row) and Keyword.keyword?(row), do: Map.new(row)
+  defp normalize_row(row, _columns) when is_map(row) do
+    row
+    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+    |> Map.new()
+  end
+
+  defp normalize_row(row, _columns) when is_list(row) and Keyword.keyword?(row) do
+    row
+    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+    |> Map.new()
+  end
 
   defp normalize_row(row, columns) when is_list(row) do
     columns
@@ -381,21 +422,21 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp normalize_row(other, _columns), do: %{"value" => other}
 
   defp tx_begin(%Conn{conn_ref: conn_ref}) do
-    case Duckdbex.begin_transaction(conn_ref) do
+    case Client.begin_transaction(conn_ref) do
       :ok -> :ok
       {:error, reason} -> {:error, normalize_error(:transaction, nil, reason)}
     end
   end
 
   defp tx_commit(%Conn{conn_ref: conn_ref}) do
-    case Duckdbex.commit(conn_ref) do
+    case Client.commit(conn_ref) do
       :ok -> :ok
       {:error, reason} -> {:error, normalize_error(:transaction, nil, reason)}
     end
   end
 
   defp tx_rollback(%Conn{conn_ref: conn_ref}) do
-    case Duckdbex.rollback(conn_ref) do
+    case Client.rollback(conn_ref) do
       :ok -> :ok
       {:error, _reason} -> :ok
     end
@@ -426,18 +467,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
     raise ArgumentError, "unsupported incremental strategy for DuckDB: #{inspect(strategy)}"
   end
 
-  defp create_table_for_appender(target, select_sql),
-    do: ["CREATE OR REPLACE TABLE ", target, " AS SELECT * FROM (", select_sql, ") LIMIT 0"]
-
-  defp open_appender(%Conn{conn_ref: conn_ref}, %WritePlan{
-         target: %Relation{schema: nil, name: name}
-       }),
-       do: Duckdbex.appender(conn_ref, name)
-
-  defp open_appender(%Conn{conn_ref: conn_ref}, %WritePlan{
-         target: %Relation{schema: schema, name: name}
-       }),
-       do: Duckdbex.appender(conn_ref, schema, name)
+  defp open_appender(%Conn{conn_ref: conn_ref}, %Relation{name: name, schema: schema}) do
+    Client.appender(conn_ref, name, schema)
+  end
 
   defp relation_introspection_base(%RelationRef{} = ref) do
     schema = ref.schema || "main"
@@ -501,7 +533,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp quote_literal(value), do: ["'", String.replace(value, "'", "''"), "'"]
 
   defp safe_release(resource) do
-    case Duckdbex.release(resource) do
+    case Client.release(resource) do
       :ok -> :ok
       {:error, _} -> :ok
     end
@@ -510,11 +542,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp normalize_error(operation, connection, reason) do
-    message = if is_binary(reason), do: reason, else: "duckdb operation failed"
-
     %Error{
-      type: error_type(reason),
-      message: message,
+      type: error_type(operation, reason),
+      message: error_message(reason),
       retryable?: retryable_reason?(reason),
       adapter: __MODULE__,
       operation: operation,
@@ -523,10 +553,25 @@ defmodule Favn.SQL.Adapter.DuckDB do
     }
   end
 
-  defp error_type(:invalid_database), do: :invalid_config
-  defp error_type(reason) when reason in [:invalid_argument, :syntax_error], do: :execution_error
-  defp error_type(_), do: :connection_error
+  defp error_type(:connect, :invalid_database), do: :invalid_config
+  defp error_type(:connect, _), do: :connection_error
+  defp error_type(:ping, _), do: :connection_error
+  defp error_type(:transaction, _), do: :execution_error
+
+  defp error_type(_, reason) when reason in [:invalid_argument, :syntax_error],
+    do: :execution_error
+
+  defp error_type(_, {:error, _}), do: :execution_error
+  defp error_type(_, _), do: :execution_error
+
+  defp error_message(reason) when is_binary(reason), do: reason
+  defp error_message({:error, message}) when is_binary(message), do: message
+  defp error_message(_), do: "duckdb operation failed"
 
   defp retryable_reason?(reason) when reason in [:busy, :locked], do: true
+
+  defp retryable_reason?("Transaction conflict: cannot update a table that has been altered!"),
+    do: true
+
   defp retryable_reason?(_), do: false
 end
