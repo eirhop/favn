@@ -196,6 +196,7 @@ The first SQL foundation step is documented in:
 
 - [`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`](docs/CONNECTION_FOUNDATION_ARCHITECTURE.md)
 - [`docs/SQL_ADAPTER_ARCHITECTURE.md`](docs/SQL_ADAPTER_ARCHITECTURE.md)
+- [`docs/sql_adapter_scope.md`](docs/sql_adapter_scope.md) (includes the DuckDB/duckdbex v0.4 implementation request and risk gates)
 
 The architecture and current implementation provide:
 

@@ -104,8 +104,10 @@ defmodule Favn do
   ### SQL connection foundation
 
   The first SQL foundation steps are documented in
-  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md` and
-  `docs/SQL_ADAPTER_ARCHITECTURE.md`.
+  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`,
+  `docs/SQL_ADAPTER_ARCHITECTURE.md`, and
+  `docs/sql_adapter_scope.md` (DuckDB/duckdbex v0.4 request scope and
+  implementation gates).
 
   This includes explicit `Favn.Connection` provider modules, schema-driven
   runtime config merge validation, boot-time loading with fail-fast validation,
