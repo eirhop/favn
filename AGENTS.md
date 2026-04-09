@@ -14,9 +14,6 @@ The most important file is `docs/FEATURES.md`. We will use this file to document
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
 - Always keep user documentation up to date in `/lib/favn.ex` and `README.md`.
 - when creating new files, please update `docs/lib_structure.md` or `docs/test_structure.md`
-- We are using git dependencies and not hex. Therefore following commands must be run before compile. This also reduced terminal noise:
-    - mix archive.install github hexpm/hex branch latest --force >/dev/null 2>&1
-    - mix deps.get >/dev/null 2>&1
 
 
 ### Breaking changes and legacy code
