@@ -77,6 +77,44 @@ defmodule Favn.SQLTest do
       do: {:ok, ["prep", "write", "post"]}
   end
 
+  defmodule BadCapabilitiesAdapter do
+    @behaviour Favn.SQL.Adapter
+
+    @impl true
+    def connect(%Resolved{}, _opts), do: {:ok, :bad_conn}
+
+    @impl true
+    def disconnect(:bad_conn, _opts), do: :ok
+
+    @impl true
+    def capabilities(%Resolved{}, _opts), do: {:ok, %{invalid: true}}
+
+    @impl true
+    def execute(:bad_conn, _statement, _opts), do: {:ok, %Result{kind: :execute}}
+
+    @impl true
+    def query(:bad_conn, _statement, _opts), do: {:ok, %Result{kind: :query}}
+
+    @impl true
+    def introspection_query(_kind, _payload, _opts), do: {:ok, "ignored"}
+
+    @impl true
+    def materialization_statements(%WritePlan{}, %Capabilities{}, _opts), do: {:ok, []}
+  end
+
+  defmodule BadCapabilitiesProvider do
+    @behaviour Favn.Connection
+
+    @impl true
+    def definition do
+      %Definition{
+        name: :sql_bad_caps,
+        adapter: Favn.SQLTest.BadCapabilitiesAdapter,
+        config_schema: [%{key: :database, required: true, type: :string}]
+      }
+    end
+  end
+
   setup do
     state = Favn.TestSetup.capture_state()
 
@@ -131,5 +169,15 @@ defmodule Favn.SQLTest do
 
   test "connect returns normalized missing connection error" do
     assert {:error, %Error{type: :invalid_config, connection: :unknown}} = SQL.connect(:unknown)
+  end
+
+  test "connect normalizes invalid capabilities payload" do
+    Application.put_env(:favn, :connection_modules, [BadCapabilitiesProvider])
+    Application.put_env(:favn, :connections, sql_bad_caps: [database: "local"])
+    {:ok, resolved} = Favn.Connection.Loader.load()
+    :ok = Favn.Connection.Registry.reload(resolved)
+
+    assert {:error, %Error{type: :execution_error, operation: :capabilities}} =
+             SQL.connect(:sql_bad_caps)
   end
 end
