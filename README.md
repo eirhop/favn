@@ -196,6 +196,7 @@ The first SQL foundation step is documented in:
 
 - [`docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`](docs/CONNECTION_FOUNDATION_ARCHITECTURE.md)
 - [`docs/SQL_ADAPTER_ARCHITECTURE.md`](docs/SQL_ADAPTER_ARCHITECTURE.md)
+- [`docs/sql_adapter_scope.md`](docs/sql_adapter_scope.md) (includes the DuckDB/duckdbex v0.4 implementation request and risk gates)
 
 The architecture and current implementation provide:
 
@@ -210,6 +211,8 @@ The internal SQL runtime contract now includes:
 
 - `Favn.SQL.Adapter` as the backend behaviour boundary
 - `Favn.SQL` as the runtime facade starting from `%Favn.Connection.Resolved{}`
+- `Favn.SQL.Adapter.DuckDB` as the first internal DuckDB runtime adapter backed by `duckdbex`
+- DuckDB appender-backed table writes now preserve normal table create semantics and use explicit best-effort appender cleanup on failure paths
 
 ## Runtime behavior in this release
 

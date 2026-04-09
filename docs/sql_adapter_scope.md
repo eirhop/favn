@@ -19,7 +19,7 @@ We will **not** try to solve all "data platform adapters" in one abstraction.
 Instead, we will split responsibilities into clear layers:
 
 1. **`Favn.Connection`**  
-   Validated reusable connection configuration and connection lifecycle.
+   Validated reusable connection configuration and registration metadata.
 
 2. **`Favn.SQL.Adapter`**  
    Backend-specific SQL engine behavior for introspection, execution, and materialization.
@@ -650,3 +650,180 @@ If a behavior is mainly about:
 * generic connector delivery guarantees
 
 then it is out of scope for v0.4 and belongs to a future source adapter layer.
+
+
+---
+
+## DuckDB implementation request
+
+### Executive recommendation
+
+Adopt **duckdbex now behind a strict internal Favn DuckDB client boundary**.
+
+This should be treated as a replaceable internal implementation detail used to prove the
+`Favn.SQL.Adapter` architecture with a real backend in v0.4, not as a public dependency contract.
+
+### Why this decision now
+
+- It provides a working path for core v0.4 needs (open DB, connect, execute/query with parameter binding, introspection, appender, transaction helpers).
+- It lets Favn validate its SQL adapter architecture with a concrete runtime backend instead of only abstract contracts.
+- It keeps replacement cost bounded by isolating duckdbex-specific resource/NIF behavior in one internal module family.
+- It avoids building and maintaining a bespoke NIF client too early while Favn still needs to prove SQL runtime semantics.
+
+### Risk profile and boundaries
+
+`duckdbex` is NIF-backed and currently uses Dirty NIF execution.
+
+That has two consequences for Favn:
+
+1. The adapter/client layer must enforce explicit lifecycle discipline (`open/connect`, `release`, `disconnect`) with best-effort cleanup in all execution paths.
+2. Favn should isolate NIF-facing calls behind internal boundaries so unexpected crashes or resource leaks are contained and observable at adapter/session boundaries.
+
+The documented amalgamation path also excludes bundled JSON/HTTPFS/SQLite Scanner/Postgres Scanner/Substrait extensions, so v0.4 must not promise those extension capabilities by default.
+
+### Proposed module boundaries
+
+```text
+lib/favn/
+  sql.ex                         # facade, normalization, orchestration
+  sql/
+    adapter.ex                   # behaviour contract
+    adapter/
+      duckdb.ex                  # Favn.SQL.Adapter implementation (DuckDB-facing)
+      duckdb/
+        client.ex                # internal duckdbex wrapper boundary
+        session.ex               # runtime session/resource ownership
+        mapper.ex                # duckdbex -> Favn.SQL.Result/Error mapping
+        introspection.ex         # fallback SQL for schema/relation/column reads
+        materialization.ex       # :view/:table statements + appender write path
+```
+
+Boundary rule: `Duckdbex.*` modules and structs must never leak into public `Favn`, `Favn.Connection`, or `Favn.SQL.Adapter` contracts.
+
+### Runtime model fit
+
+Favn should keep DB-handle ownership as a **Phase A implementation decision** validated by lifecycle tests, not a locked architectural commitment in this document.
+
+Initial evaluation targets:
+
+- explicit resource ownership for DB/connection/statement/appender handles
+- explicit `release` discipline with best-effort cleanup on all paths
+- session patterns that can evolve (for example, shared DB handle + short-lived execution connections, or stricter per-run ownership)
+- explicit transaction boundaries at operation scope (not globally shared)
+
+DuckDB concurrency should be described as a **single-process write domain with optimistic conflict handling**. Multiple writes can proceed concurrently within one process when they do not conflict (appends are generally non-conflicting), and write conflicts should be surfaced as explicit execution errors for Favn retry/cancel policy handling.
+
+### v0.4 capability target
+
+Minimum implementation target for the first DuckDB slice:
+
+- open database + create runtime connection
+- execute and query with normalized `Favn.SQL.Result`
+- fallback introspection support (`schema_exists?`, `relation`, `list_*`, `columns`)
+- parameter binding for execution/query paths (prepared statement lifecycle is a later hardening step)
+- appender-based bulk write support for table materialization paths
+- explicit transaction helpers for grouped materialization operations
+- baseline `:view` and `:table` materialization support
+
+Incremental strategies stay foundation-only in this step (`:append` first; other strategies staged behind capability checks).
+
+### Feature request scope (implementation ticket)
+
+#### Objective
+
+Deliver the first production-shaped DuckDB backend for Favn v0.4 using duckdbex behind a replaceable internal client boundary, proving the SQL adapter architecture end-to-end.
+
+#### In scope
+
+- Internal `Favn.SQL.Adapter.DuckDB` using duckdbex client wrapper modules
+- Lifecycle-safe connect/disconnect/release behavior
+- Query/execute + parameter binding support
+- Introspection callbacks + fallback SQL renderer
+- Appender-powered bulk write path for table materialization
+- `:view` and `:table` materialization statements
+- Adapter conformance and DuckDB smoke tests
+
+#### Non-goals
+
+- Public exposure of duckdbex API/types/errors
+- Multi-node/distributed DuckDB execution semantics
+- Full extension management surface (JSON/HTTPFS/scanners/Substrait)
+- Complete incremental strategy matrix in first slice
+
+#### Acceptance criteria
+
+- `Favn.SQL.Adapter` conformance tests pass for DuckDB adapter
+- Runtime operations never return raw duckdbex values across Favn public/internal contracts
+- Materialization `:view` and `:table` complete through adapter path in integration tests
+- Resource lifecycle tests verify release/cleanup on success and failure paths
+- docs clearly declare DuckDB extension and concurrency limits for v0.4
+
+#### Risks
+
+- NIF crash/resource leak surface if lifecycle discipline is incomplete
+- Runtime contention from optimistic write conflicts
+- Environment-specific build/runtime constraints from amalgamation setup
+
+#### Dependencies
+
+- `duckdbex` (target evaluation version: `0.3.21`)
+- existing `Favn.Connection` registry/validation
+- existing `Favn.SQL.Adapter` + `Favn.SQL` normalization paths
+
+### Phased implementation plan
+
+1. **Phase A — Client boundary + lifecycle guards**
+   - Add internal DuckDB client wrapper around duckdbex.
+   - Add session/resource ownership model and best-effort cleanup helpers.
+
+2. **Phase B — Execute/query + introspection**
+   - Implement adapter required callbacks for execute/query and fallback introspection SQL.
+   - Map all errors/results to Favn normalized structs.
+
+3. **Phase C — Materialization baseline**
+   - Implement `:view` and `:table` materialization fallback statements.
+   - Use appender path for bulk insert-oriented table writes.
+
+4. **Phase D — Transactions + prepared statements + hardening**
+   - Wire transaction helper usage for grouped writes.
+   - Add explicit prepared statement lifecycle support (`prepare_statement`/`execute_statement`) where it improves runtime safety/performance.
+   - Add failure cleanup tests and concurrency conflict smoke coverage.
+
+5. **Phase E — v0.4 documentation gate**
+   - Publish setup and lifecycle docs (dependency/build/runtime/release).
+   - Publish limitations: dirty NIF usage, extension bundle limits, single-process write model expectations.
+
+### Documentation checklist for this work
+
+1. duckdbex dependency/setup in Favn docs
+   - dependency and build prerequisites
+   - runtime open/config patterns
+   - lifecycle and release expectations
+   - explicit version pin documentation (`0.3.21` evaluation target), without copy-pasting older upstream snippets
+
+2. duckdbex usage surface documented for Favn maintainers
+   - prepared statement lifecycle (future hardening step)
+   - appender
+   - transactions
+   - cleanup/release patterns
+   - pinned library version visibility
+
+3. DuckDB behavior references in Favn docs
+   - concurrency model and optimistic conflicts
+   - single-process write assumptions
+   - appender guidance for bulk ingest
+
+4. Favn user-facing DuckDB adapter docs
+   - connection configuration examples
+   - how adapter plugs into `Favn.Connection` and `Favn.SQL.Adapter`
+   - v0.4 limitations and extension constraints
+   - recommended single-node local analytics usage patterns
+
+### Decision gates
+
+Revisit and potentially reject duckdbex for v0.4 if either gate fails:
+
+- **Gate 1 (stability):** adapter conformance/lifecycle tests reveal unacceptable crash/leak behavior under normal retry/cancel/failure flows.
+- **Gate 2 (scope fit):** required v0.4 capabilities cannot be implemented without leaking duckdbex details into Favn contracts.
+
+If both gates pass, proceed with duckdbex-backed DuckDB adapter as the v0.4 reference backend implementation.

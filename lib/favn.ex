@@ -104,8 +104,10 @@ defmodule Favn do
   ### SQL connection foundation
 
   The first SQL foundation steps are documented in
-  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md` and
-  `docs/SQL_ADAPTER_ARCHITECTURE.md`.
+  `docs/CONNECTION_FOUNDATION_ARCHITECTURE.md`,
+  `docs/SQL_ADAPTER_ARCHITECTURE.md`, and
+  `docs/sql_adapter_scope.md` (DuckDB/duckdbex v0.4 request scope and
+  implementation gates).
 
   This includes explicit `Favn.Connection` provider modules, schema-driven
   runtime config merge validation, boot-time loading with fail-fast validation,
@@ -113,6 +115,9 @@ defmodule Favn do
 
   v0.4 also introduces `Favn.SQL.Adapter` and the internal `Favn.SQL` facade as
   the runtime SQL backend contract starting from `%Favn.Connection.Resolved{}`.
+  DuckDB table materialization now keeps the same create-table flags across
+  normal and appender-backed write paths, with explicit best-effort appender
+  cleanup on failure.
 
 
   ## New v0.2 DSL contract
