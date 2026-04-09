@@ -115,7 +115,8 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 - [x] `Favn.SQL.Adapter` behaviour
   - [x] Adapter architecture design doc (`docs/SQL_ADAPTER_ARCHITECTURE.md`)
 - [x] DuckDB/duckdbex architecture recommendation and implementation request scope (`docs/sql_adapter_scope.md`)
-- [ ] DuckDB adapter
+- [x] DuckDB adapter foundation (duckdbex-backed connect/query/introspection/materialization baseline)
+- [ ] DuckDB adapter hardening + incremental strategy expansion
 - [ ] Typed source identities
 - [ ] `Favn.SQL` / `Favn.SQLAssets` authoring model
 - [ ] Multi-asset SQL modules

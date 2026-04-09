@@ -49,6 +49,7 @@ defmodule Favn.MixProject do
       {:ecto_sql,
        git: "https://github.com/elixir-ecto/ecto_sql.git", tag: "v3.13.4", override: true},
       {:ecto_sqlite3, git: "https://github.com/elixir-sqlite/ecto_sqlite3.git", tag: "v0.22.0"},
+      {:duckdbex, git: "https://github.com/AlexR2D2/duckdbex.git", tag: "v0.3.21"},
       {:phoenix_pubsub,
        git: "https://github.com/phoenixframework/phoenix_pubsub.git", tag: "v2.2.0"}
     ]

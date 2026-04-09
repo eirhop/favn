@@ -62,7 +62,9 @@ lib/
     │   ├── relation_ref.ex
     │   ├── result.ex
     │   ├── session.ex
-    │   └── write_plan.ex
+    │   ├── write_plan.ex
+    │   └── adapter/
+    │       └── duckdb.ex
     ├── scheduler/
     │   ├── cron.ex
     │   ├── registry.ex

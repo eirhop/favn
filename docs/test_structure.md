@@ -21,6 +21,7 @@ test/
 ├── runtime_transitions_test.exs
 ├── scheduler_cron_test.exs
 ├── scheduler_test.exs
+├── sql_duckdb_adapter_test.exs
 ├── sql_test.exs
 ├── sqlite_storage_bootstrap_test.exs
 ├── sqlite_storage_test.exs

@@ -211,6 +211,7 @@ The internal SQL runtime contract now includes:
 
 - `Favn.SQL.Adapter` as the backend behaviour boundary
 - `Favn.SQL` as the runtime facade starting from `%Favn.Connection.Resolved{}`
+- `Favn.SQL.Adapter.DuckDB` as the first internal DuckDB runtime adapter backed by `duckdbex`
 
 ## Runtime behavior in this release
 
