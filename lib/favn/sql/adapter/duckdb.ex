@@ -407,16 +407,16 @@ defmodule Favn.SQL.Adapter.DuckDB do
     |> Map.new()
   end
 
-  defp normalize_row(row, _columns) when is_list(row) and Keyword.keyword?(row) do
-    row
-    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
-    |> Map.new()
-  end
-
   defp normalize_row(row, columns) when is_list(row) do
-    columns
-    |> Enum.zip(row)
-    |> Map.new()
+    if Keyword.keyword?(row) do
+      row
+      |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+      |> Map.new()
+    else
+      columns
+      |> Enum.zip(row)
+      |> Map.new()
+    end
   end
 
   defp normalize_row(other, _columns), do: %{"value" => other}
