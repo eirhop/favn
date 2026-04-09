@@ -33,7 +33,13 @@ defmodule Favn.SQL do
              fn -> adapter(resolved).capabilities(resolved, opts) end,
              &validate_capabilities/1
            ),
-         {:ok, conn} <- adapter(resolved).connect(resolved, opts) do
+         {:ok, conn} <-
+           call_adapter(
+             :connect,
+             resolved.name,
+             fn -> adapter(resolved).connect(resolved, opts) end,
+             &validate_conn/1
+           ) do
       {:ok,
        %Session{
          adapter: adapter(resolved),
@@ -42,8 +48,12 @@ defmodule Favn.SQL do
          capabilities: capabilities
        }}
     else
-      {:error, %Error{} = error} -> {:error, decorate_error(error, connection_name_or_resolved)}
-      other -> {:error, normalize_unexpected(other, :connect, connection_name_or_resolved)}
+      {:error, %Error{} = error} ->
+        {:error, decorate_error(error, resolved_name(connection_name_or_resolved))}
+
+      other ->
+        {:error,
+         normalize_unexpected(other, :connect, resolved_name(connection_name_or_resolved))}
     end
   end
 
@@ -241,6 +251,9 @@ defmodule Favn.SQL do
 
   defp resolve_input(%Resolved{} = resolved), do: {:ok, resolved}
   defp resolve_input(name) when is_atom(name), do: resolve_connection(name)
+  defp resolved_name(%Resolved{name: name}), do: name
+  defp resolved_name(name) when is_atom(name), do: name
+  defp resolved_name(_), do: nil
 
   defp decorate_error(%Error{} = error, %Resolved{name: name}), do: decorate_error(error, name)
 
@@ -293,6 +306,8 @@ defmodule Favn.SQL do
 
   defp validate_result(%Result{} = result), do: {:ok, result}
   defp validate_result(other), do: {:error, other}
+
+  defp validate_conn(conn), do: {:ok, conn}
 
   defp validate_boolean(value) when is_boolean(value), do: {:ok, value}
   defp validate_boolean(other), do: {:error, other}

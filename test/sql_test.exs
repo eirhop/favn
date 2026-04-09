@@ -115,6 +115,44 @@ defmodule Favn.SQLTest do
     end
   end
 
+  defmodule RaisingConnectAdapter do
+    @behaviour Favn.SQL.Adapter
+
+    @impl true
+    def connect(%Resolved{}, _opts), do: raise("boom")
+
+    @impl true
+    def disconnect(_conn, _opts), do: :ok
+
+    @impl true
+    def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+    @impl true
+    def execute(_conn, _statement, _opts), do: {:ok, %Result{kind: :execute}}
+
+    @impl true
+    def query(_conn, _statement, _opts), do: {:ok, %Result{kind: :query}}
+
+    @impl true
+    def introspection_query(_kind, _payload, _opts), do: {:ok, "ignored"}
+
+    @impl true
+    def materialization_statements(%WritePlan{}, %Capabilities{}, _opts), do: {:ok, []}
+  end
+
+  defmodule RaisingConnectProvider do
+    @behaviour Favn.Connection
+
+    @impl true
+    def definition do
+      %Definition{
+        name: :sql_raise_connect,
+        adapter: Favn.SQLTest.RaisingConnectAdapter,
+        config_schema: [%{key: :database, required: true, type: :string}]
+      }
+    end
+  end
+
   setup do
     state = Favn.TestSetup.capture_state()
 
@@ -179,5 +217,22 @@ defmodule Favn.SQLTest do
 
     assert {:error, %Error{type: :execution_error, operation: :capabilities}} =
              SQL.connect(:sql_bad_caps)
+  end
+
+  test "connect normalizes adapter connect raise when given resolved directly" do
+    Application.put_env(:favn, :connection_modules, [RaisingConnectProvider])
+    Application.put_env(:favn, :connections, sql_raise_connect: [database: "local"])
+    {:ok, resolved_map} = Favn.Connection.Loader.load()
+    :ok = Favn.Connection.Registry.reload(resolved_map)
+
+    assert {:ok, resolved} = SQL.resolve_connection(:sql_raise_connect)
+
+    assert {:error,
+            %Error{
+              type: :execution_error,
+              operation: :connect,
+              connection: :sql_raise_connect,
+              message: "adapter call raised exception"
+            }} = SQL.connect(resolved)
   end
 end
