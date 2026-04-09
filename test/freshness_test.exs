@@ -129,6 +129,29 @@ defmodule Favn.FreshnessTest do
     assert result.last_materialized_at == fresh_at
   end
 
+  test "check_asset_freshness/2 returns fresh when max_age_seconds is nil" do
+    range = %{
+      kind: :day,
+      start_at: DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
+      end_at: DateTime.from_naive!(~N[2025-01-11 00:00:00], "Etc/UTC"),
+      timezone: "Etc/UTC"
+    }
+
+    assert {:ok, run_id} = Favn.backfill_asset({FreshnessAssets, :daily}, range: range)
+    assert {:ok, run} = Favn.await_run(run_id)
+    [node_key] = run.plan.target_node_keys
+    {_, key} = node_key
+
+    assert {:ok, fresh} =
+             Favn.check_asset_freshness({FreshnessAssets, :daily},
+               window_key: key,
+               max_age_seconds: nil
+             )
+
+    assert fresh.status == :fresh
+    assert fresh.max_age_seconds == nil
+  end
+
   defp synthetic_success_run(run_id, ref, window_key, finished_at) do
     node_key = {ref, window_key}
 

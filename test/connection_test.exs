@@ -209,4 +209,22 @@ defmodule Favn.ConnectionTest do
     assert {:error, :not_found} = Favn.get_connection(:missing)
     assert_raise Favn.Connection.NotFoundError, fn -> Favn.get_connection!(:missing) end
   end
+
+  test "ConfigError exception formats multiple errors" do
+    error1 = %Favn.Connection.Error{type: :missing_required, message: "database is required"}
+    error2 = %Favn.Connection.Error{type: :invalid_type, message: "expected string"}
+
+    config_error = Favn.Connection.ConfigError.exception(errors: [error1, error2])
+
+    assert config_error.message =~ "connection configuration is invalid"
+    assert config_error.message =~ "database is required"
+    assert config_error.message =~ "expected string"
+    assert config_error.errors == [error1, error2]
+  end
+
+  test "ConfigError exception handles empty errors" do
+    config_error = Favn.Connection.ConfigError.exception(errors: [])
+    assert config_error.message == "connection configuration is invalid"
+    assert config_error.errors == []
+  end
 end

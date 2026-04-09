@@ -16,7 +16,10 @@ defmodule Favn.MixProject do
       test_ignore_filters: [~r"^test/support/"],
       package: package(),
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      elixir: "~> 1.19",
+      preferred_envs: [coverage: :test],
+      coverage: [tool: ExCoveralls, threshold: 80]
     ]
   end
 
