@@ -45,9 +45,8 @@ defmodule Favn.Window.Anchor do
   def validate(%__MODULE__{} = anchor) do
     with :ok <- Validate.kind(anchor.kind),
          :ok <- validate_order(anchor.start_at, anchor.end_at),
-         :ok <- Validate.timezone(anchor.timezone),
-         :ok <- validate_key(anchor) do
-      :ok
+         :ok <- Validate.timezone(anchor.timezone) do
+      validate_key(anchor)
     end
   end
 

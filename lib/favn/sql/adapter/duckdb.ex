@@ -9,8 +9,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @behaviour Favn.SQL.Adapter
 
   alias Favn.Connection.Resolved
-  alias Favn.SQL.{Capabilities, Column, Error, Relation, RelationRef, Result, WritePlan}
   alias Favn.SQL.Adapter.DuckDB.Client
+  alias Favn.SQL.{Capabilities, Column, Error, Relation, RelationRef, Result, WritePlan}
 
   defmodule Conn do
     @moduledoc false
@@ -461,10 +461,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp append_rows(%Conn{} = conn, %Relation{} = target, rows) do
     with {:ok, appender} <- open_appender(conn, target) do
       result =
-        with :ok <- Client.appender_add_rows(appender, rows),
-             :ok <- Client.appender_flush(appender) do
-          :ok
-        end
+        with :ok <- Client.appender_add_rows(appender, rows), do: Client.appender_flush(appender)
 
       case {result, close_appender(appender)} do
         {:ok, :ok} -> :ok
@@ -551,10 +548,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp quote_literal(value), do: ["'", String.replace(value, "'", "''"), "'"]
 
   defp safe_release(resource) do
-    case Client.release(resource) do
-      :ok -> :ok
-      {:error, _} -> :ok
-    end
+    _ = Client.release(resource)
+    :ok
   rescue
     _ -> :ok
   end

@@ -14,7 +14,7 @@ defmodule Favn.Run do
   @type t :: %__MODULE__{
           id: String.t(),
           target_refs: [Ref.t()],
-          plan: Favn.Plan.t(),
+          plan: Favn.Plan.t() | nil,
           pipeline: map() | nil,
           pipeline_context: map() | nil,
           submit_kind: :asset | :pipeline | :backfill_asset | :backfill_pipeline | :rerun,

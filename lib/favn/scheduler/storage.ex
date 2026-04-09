@@ -30,9 +30,8 @@ defmodule Favn.Scheduler.Storage do
          result <-
            safe_adapter_call(adapter, fn value, opts ->
              value.get_scheduler_state(pipeline_module, opts)
-           end),
-         {:ok, normalized} <- normalize_get_state_result(result) do
-      {:ok, normalized}
+           end) do
+      normalize_get_state_result(result)
     end
   end
 
@@ -42,9 +41,8 @@ defmodule Favn.Scheduler.Storage do
 
     with :ok <- Storage.validate_adapter(adapter),
          result <-
-           safe_adapter_call(adapter, fn value, opts -> value.put_scheduler_state(state, opts) end),
-         :ok <- normalize_put_state_result(result) do
-      :ok
+           safe_adapter_call(adapter, fn value, opts -> value.put_scheduler_state(state, opts) end) do
+      normalize_put_state_result(result)
     end
   end
 

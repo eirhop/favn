@@ -1,4 +1,5 @@
 defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
+  @moduledoc false
   use Ecto.Migration
 
   def change do

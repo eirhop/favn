@@ -71,9 +71,8 @@ defmodule Favn.Window.Spec do
   def validate(%__MODULE__{} = spec) do
     with :ok <- Validate.kind(spec.kind),
          :ok <- validate_lookback(spec.lookback),
-         :ok <- validate_refresh_from(spec.kind, spec.refresh_from),
-         :ok <- Validate.timezone(spec.timezone) do
-      :ok
+         :ok <- validate_refresh_from(spec.kind, spec.refresh_from) do
+      Validate.timezone(spec.timezone)
     end
   end
 

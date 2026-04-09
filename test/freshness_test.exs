@@ -3,6 +3,7 @@ defmodule Favn.FreshnessTest do
 
   alias Favn.Run
   alias Favn.Run.AssetResult
+  alias Favn.Window.Key
 
   defmodule FreshnessAssets do
     use Favn.Assets
@@ -26,7 +27,7 @@ defmodule Favn.FreshnessTest do
 
   test "check_asset_freshness/2 returns missing when no persisted success exists" do
     key =
-      Favn.Window.Key.new!(
+      Key.new!(
         :day,
         DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
         "Etc/UTC"
@@ -94,7 +95,7 @@ defmodule Favn.FreshnessTest do
 
   test "check_asset_freshness/2 scans full successful history by default" do
     key =
-      Favn.Window.Key.new!(
+      Key.new!(
         :day,
         DateTime.from_naive!(~N[2025-01-10 00:00:00], "Etc/UTC"),
         "Etc/UTC"

@@ -137,39 +137,37 @@ defmodule Favn.RunnerTest do
     end
 
     defp invoke(asset, %Context{} = ctx) do
-      try do
-        case apply(asset.module, asset.name, [ctx]) do
-          :ok ->
-            {:ok, %{}}
+      case apply(asset.module, asset.name, [ctx]) do
+        :ok ->
+          {:ok, %{}}
 
-          {:ok, meta} when is_map(meta) ->
-            {:ok, meta}
+        {:ok, meta} when is_map(meta) ->
+          {:ok, meta}
 
-          {:error, reason} ->
-            {:error, %{kind: :error, reason: reason, stacktrace: []}}
+        {:error, reason} ->
+          {:error, %{kind: :error, reason: reason, stacktrace: []}}
 
-          other ->
-            {:error,
-             %{
-               kind: :error,
-               reason:
-                 {:invalid_return_shape, other, expected: ":ok | {:ok, map()} | {:error, reason}"},
-               stacktrace: []
-             }}
-        end
-      rescue
-        error ->
+        other ->
           {:error,
            %{
              kind: :error,
-             reason: error,
-             stacktrace: __STACKTRACE__,
-             message: Exception.message(error)
+             reason:
+               {:invalid_return_shape, other, expected: ":ok | {:ok, map()} | {:error, reason}"},
+             stacktrace: []
            }}
-      catch
-        :throw, reason -> {:error, %{kind: :throw, reason: reason, stacktrace: __STACKTRACE__}}
-        :exit, reason -> {:error, %{kind: :exit, reason: reason, stacktrace: __STACKTRACE__}}
       end
+    rescue
+      error ->
+        {:error,
+         %{
+           kind: :error,
+           reason: error,
+           stacktrace: __STACKTRACE__,
+           message: Exception.message(error)
+         }}
+    catch
+      :throw, reason -> {:error, %{kind: :throw, reason: reason, stacktrace: __STACKTRACE__}}
+      :exit, reason -> {:error, %{kind: :exit, reason: reason, stacktrace: __STACKTRACE__}}
     end
   end
 

@@ -19,9 +19,8 @@ defmodule Favn.Window.Validate do
   @spec strict_keyword_opts(keyword(), [atom()]) :: :ok | {:error, term()}
   def strict_keyword_opts(opts, allowed_keys) when is_list(opts) and is_list(allowed_keys) do
     with :ok <- validate_keyword_list(opts),
-         :ok <- validate_duplicate_keys(opts),
-         :ok <- validate_allowed_keys(opts, allowed_keys) do
-      :ok
+         :ok <- validate_duplicate_keys(opts) do
+      validate_allowed_keys(opts, allowed_keys)
     end
   end
 

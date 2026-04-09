@@ -2,6 +2,8 @@ defmodule Favn.SQLTest do
   use ExUnit.Case
 
   alias Favn.Connection.Definition
+  alias Favn.Connection.Loader
+  alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
   alias Favn.SQL
   alias Favn.SQL.{Capabilities, Error, Relation, RelationRef, Result, WritePlan}
@@ -164,8 +166,8 @@ defmodule Favn.SQLTest do
     Application.put_env(:favn, :connection_modules, [ConnectionProvider])
     Application.put_env(:favn, :connections, sql_runtime: [database: "local"])
 
-    {:ok, resolved} = Favn.Connection.Loader.load()
-    :ok = Favn.Connection.Registry.reload(resolved)
+    {:ok, resolved} = Loader.load()
+    :ok = Registry.reload(resolved)
     :ok
   end
 
@@ -212,8 +214,8 @@ defmodule Favn.SQLTest do
   test "connect normalizes invalid capabilities payload" do
     Application.put_env(:favn, :connection_modules, [BadCapabilitiesProvider])
     Application.put_env(:favn, :connections, sql_bad_caps: [database: "local"])
-    {:ok, resolved} = Favn.Connection.Loader.load()
-    :ok = Favn.Connection.Registry.reload(resolved)
+    {:ok, resolved} = Loader.load()
+    :ok = Registry.reload(resolved)
 
     assert {:error, %Error{type: :execution_error, operation: :capabilities}} =
              SQL.connect(:sql_bad_caps)
@@ -222,8 +224,8 @@ defmodule Favn.SQLTest do
   test "connect normalizes adapter connect raise when given resolved directly" do
     Application.put_env(:favn, :connection_modules, [RaisingConnectProvider])
     Application.put_env(:favn, :connections, sql_raise_connect: [database: "local"])
-    {:ok, resolved_map} = Favn.Connection.Loader.load()
-    :ok = Favn.Connection.Registry.reload(resolved_map)
+    {:ok, resolved_map} = Loader.load()
+    :ok = Registry.reload(resolved_map)
 
     assert {:ok, resolved} = SQL.resolve_connection(:sql_raise_connect)
 

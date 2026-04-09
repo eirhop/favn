@@ -8,6 +8,8 @@ defmodule Favn.Runtime.Events do
   Event payloads follow a stable envelope with `schema_version`.
   """
 
+  alias Favn.Runtime.Telemetry
+
   @typedoc "Run lifecycle event type."
   @type event_type ::
           :run_created
@@ -140,7 +142,6 @@ defmodule Favn.Runtime.Events do
 
   defp pubsub_result_status(:ok), do: :ok
   defp pubsub_result_status({:error, _}), do: :error
-  defp pubsub_result_status(_), do: :error
 
   defp pubsub_error_kind({:error, _}), do: :error
   defp pubsub_error_kind(_), do: nil
@@ -155,7 +156,7 @@ defmodule Favn.Runtime.Events do
     duration_ms = System.monotonic_time(:millisecond) - started
 
     _ =
-      Favn.Runtime.Telemetry.emit_operation(:pubsub, :publish, duration_ms, %{
+      Telemetry.emit_operation(:pubsub, :publish, duration_ms, %{
         run_id: run_id,
         event_type: event_type,
         entity: Map.fetch!(attrs, :entity),

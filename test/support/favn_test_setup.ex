@@ -1,6 +1,9 @@
 defmodule Favn.TestSetup do
   @moduledoc false
 
+  alias Favn.Assets.GraphIndex
+  alias Favn.Assets.Registry
+
   @type state :: %{
           previous_modules: list(module()) | nil,
           previous_pipeline_modules: list(module()) | nil,
@@ -19,7 +22,7 @@ defmodule Favn.TestSetup do
     %{
       previous_modules: previous_modules,
       previous_pipeline_modules: Application.get_env(:favn, :pipeline_modules),
-      previous_catalog: Favn.Assets.Registry.build_catalog(previous_modules || []),
+      previous_catalog: Registry.build_catalog(previous_modules || []),
       previous_storage_adapter: Application.get_env(:favn, :storage_adapter),
       previous_storage_adapter_opts: Application.get_env(:favn, :storage_adapter_opts),
       previous_scheduler_opts: Application.get_env(:favn, :scheduler),
@@ -31,10 +34,10 @@ defmodule Favn.TestSetup do
   @spec setup_asset_modules([module()], keyword()) :: :ok
   def setup_asset_modules(modules, opts \\ []) do
     Application.put_env(:favn, :asset_modules, modules)
-    :ok = Favn.Assets.Registry.reload()
+    :ok = Registry.reload()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = Favn.Assets.GraphIndex.reload()
+      :ok = GraphIndex.reload()
     end
 
     :ok
@@ -92,10 +95,10 @@ defmodule Favn.TestSetup do
   defp restore_asset_modules(modules), do: Application.put_env(:favn, :asset_modules, modules)
 
   defp restore_registry({:ok, _catalog}, opts) do
-    :ok = Favn.Assets.Registry.reload()
+    :ok = Registry.reload()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = Favn.Assets.GraphIndex.reload()
+      :ok = GraphIndex.reload()
     end
 
     :ok

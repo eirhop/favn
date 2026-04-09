@@ -102,42 +102,40 @@ defmodule Favn.Connection.Validator do
   end
 
   defp validate_schema(errors, %Definition{config_schema: schema, module: module, name: name}) do
-    cond do
-      not is_list(schema) or schema == [] ->
-        [
+    if not is_list(schema) or schema == [] do
+      [
+        %Error{
+          type: :invalid_definition,
+          module: module,
+          connection: name,
+          message: "connection config_schema must be a non-empty list"
+        }
+        | errors
+      ]
+    else
+      field_errors =
+        schema
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {field, index} ->
+          validate_schema_field(field, index, module, name)
+        end)
+
+      duplicate_errors =
+        schema
+        |> Enum.map(&Map.get(&1, :key))
+        |> Enum.reject(&is_nil/1)
+        |> duplicates()
+        |> Enum.map(fn key ->
           %Error{
             type: :invalid_definition,
             module: module,
             connection: name,
-            message: "connection config_schema must be a non-empty list"
+            details: %{key: key},
+            message: "connection config_schema defines duplicate key #{inspect(key)}"
           }
-          | errors
-        ]
+        end)
 
-      true ->
-        field_errors =
-          schema
-          |> Enum.with_index()
-          |> Enum.flat_map(fn {field, index} ->
-            validate_schema_field(field, index, module, name)
-          end)
-
-        duplicate_errors =
-          schema
-          |> Enum.map(&Map.get(&1, :key))
-          |> Enum.reject(&is_nil/1)
-          |> duplicates()
-          |> Enum.map(fn key ->
-            %Error{
-              type: :invalid_definition,
-              module: module,
-              connection: name,
-              details: %{key: key},
-              message: "connection config_schema defines duplicate key #{inspect(key)}"
-            }
-          end)
-
-        Enum.reverse(field_errors ++ duplicate_errors, errors)
+      Enum.reverse(field_errors ++ duplicate_errors, errors)
     end
   end
 
@@ -290,12 +288,6 @@ defmodule Favn.Connection.Validator do
 
           {:error, reason} ->
             [validation_type_error(definition, field, reason) | errors]
-
-          other ->
-            [
-              validation_type_error(definition, field, {:invalid_validator_return, other})
-              | errors
-            ]
         end
     end
   end

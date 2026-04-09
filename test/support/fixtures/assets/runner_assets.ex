@@ -1,4 +1,5 @@
 defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
+  @moduledoc false
   use Favn.Assets
 
   @asset true
@@ -236,6 +237,7 @@ defmodule Favn.Test.Fixtures.Assets.Runner.RunnerAssets do
 end
 
 defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
+  @moduledoc false
   @behaviour Favn.Storage.Adapter
 
   @counter_key {__MODULE__, :put_count}

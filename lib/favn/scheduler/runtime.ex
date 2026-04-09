@@ -7,6 +7,7 @@ defmodule Favn.Scheduler.Runtime do
   alias Favn.Scheduler.Registry
   alias Favn.Scheduler.State
   alias Favn.Scheduler.Storage
+  alias Favn.Window.Anchor
 
   @default_tick_ms 15_000
 
@@ -278,7 +279,7 @@ defmodule Favn.Scheduler.Runtime do
     local = DateTime.shift_zone!(due_at, timezone)
     start_at = floor_kind(local, kind)
     end_at = shift_kind(start_at, kind)
-    anchor = Favn.Window.Anchor.new!(kind, start_at, end_at, timezone: timezone)
+    anchor = Anchor.new!(kind, start_at, end_at, timezone: timezone)
     Keyword.put(run_opts, :anchor_window, anchor)
   end
 

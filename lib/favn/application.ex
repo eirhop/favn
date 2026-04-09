@@ -16,14 +16,23 @@ defmodule Favn.Application do
 
   use Application
 
+  alias Favn.Assets.GraphIndex
+  alias Favn.Assets.Registry
+  alias Favn.Connection.ConfigError
+  alias Favn.Connection.Loader
+  alias Favn.Connection.Registry, as: ConnectionRegistry
+  alias Favn.Runtime.Manager
+  alias Favn.Runtime.RunSupervisor
+  alias Favn.Scheduler.Supervisor, as: SchedulerSupervisor
+
   @impl true
   def start(_type, _args) do
     adapter = Favn.Storage.adapter_module()
     pubsub_name = Application.get_env(:favn, :pubsub_name, Favn.PubSub)
     pubsub_child = {Phoenix.PubSub, name: pubsub_name}
 
-    with :ok <- Favn.Assets.Registry.load(),
-         :ok <- Favn.Assets.GraphIndex.load(),
+    with :ok <- Registry.load(),
+         :ok <- GraphIndex.load(),
          {:ok, connections} <- load_connections_or_raise(),
          :ok <- Favn.Storage.validate_adapter(adapter),
          {:ok, child_specs} <- Favn.Storage.child_specs() do
@@ -32,19 +41,19 @@ defmodule Favn.Application do
   end
 
   defp load_connections_or_raise do
-    case Favn.Connection.Loader.load() do
+    case Loader.load() do
       {:ok, connections} ->
         {:ok, connections}
 
       {:error, errors} when is_list(errors) ->
-        raise Favn.Connection.ConfigError, errors: errors
+        raise ConfigError, errors: errors
     end
   end
 
   defp start_supervisor(pubsub_child, child_specs, connections) do
-    connection_registry_child = {Favn.Connection.Registry, connections: connections}
-    runtime_children = [Favn.Runtime.RunSupervisor, Favn.Runtime.Manager]
-    scheduler_children = if scheduler_enabled?(), do: [Favn.Scheduler.Supervisor], else: []
+    connection_registry_child = {ConnectionRegistry, connections: connections}
+    runtime_children = [RunSupervisor, Manager]
+    scheduler_children = if scheduler_enabled?(), do: [SchedulerSupervisor], else: []
 
     Supervisor.start_link(
       [pubsub_child, connection_registry_child | child_specs] ++

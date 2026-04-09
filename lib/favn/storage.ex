@@ -8,6 +8,7 @@ defmodule Favn.Storage do
   """
 
   alias Favn.Run
+  alias Favn.Runtime.Telemetry
 
   @default_adapter Favn.Storage.Adapter.Memory
 
@@ -156,7 +157,7 @@ defmodule Favn.Storage do
     duration_ms = System.monotonic_time(:millisecond) - started
 
     _ =
-      Favn.Runtime.Telemetry.emit_operation(:storage, operation, duration_ms, %{
+      Telemetry.emit_operation(:storage, operation, duration_ms, %{
         run_id: Map.get(metadata, :run_id, :unknown),
         operation: operation,
         adapter: adapter,
@@ -171,7 +172,6 @@ defmodule Favn.Storage do
   defp storage_result_status(:ok), do: :ok
   defp storage_result_status({:ok, _}), do: :ok
   defp storage_result_status({:error, _}), do: :error
-  defp storage_result_status(_), do: :error
 
   defp storage_error_kind({:error, _}), do: :error
   defp storage_error_kind(_), do: nil

@@ -135,8 +135,7 @@ defmodule Favn.Connection.Loader do
   end
 
   defp module_attributes(module, key) do
-    module
-    |> apply(:module_info, [:attributes])
+    module.module_info(:attributes)
     |> Keyword.get(key, [])
   rescue
     _ -> []

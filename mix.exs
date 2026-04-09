@@ -36,7 +36,9 @@ defmodule Favn.MixProject do
       {:ecto_sql, "~> 3.13.4"},
       {:ecto_sqlite3, "~> 0.22.0"},
       {:duckdbex, "~> 0.3.21"},
-      {:phoenix_pubsub, "~> 2.2.0"}
+      {:phoenix_pubsub, "~> 2.2.0"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 

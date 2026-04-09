@@ -5,10 +5,12 @@ defmodule Favn.Runtime.Engine do
 
   @default_poll_interval_ms 50
 
+  alias Favn.Runtime.Manager
+
   @spec submit_run(Favn.asset_ref() | [Favn.asset_ref()], keyword()) ::
           {:ok, Favn.run_id()} | {:error, term()}
   def submit_run(target_refs, opts \\ []) when is_list(opts) do
-    Favn.Runtime.Manager.submit_run(target_refs, opts)
+    Manager.submit_run(target_refs, opts)
   end
 
   @spec cancel_run(Favn.run_id()) ::
@@ -20,14 +22,14 @@ defmodule Favn.Runtime.Engine do
              | :timeout_in_progress
              | term()}
   def cancel_run(run_id) do
-    Favn.Runtime.Manager.cancel_run(run_id)
+    Manager.cancel_run(run_id)
   end
 
   @spec rerun_run(Favn.run_id(), keyword()) :: {:ok, Favn.run_id()} | {:error, term()}
   def rerun_run(run_id, opts \\ [])
 
   def rerun_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
-    Favn.Runtime.Manager.rerun_run(run_id, opts)
+    Manager.rerun_run(run_id, opts)
   end
 
   def rerun_run(_run_id, _opts), do: {:error, :invalid_run_id}

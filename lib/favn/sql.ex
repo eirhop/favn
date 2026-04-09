@@ -50,10 +50,6 @@ defmodule Favn.SQL do
     else
       {:error, %Error{} = error} ->
         {:error, decorate_error(error, resolved_name(connection_name_or_resolved))}
-
-      other ->
-        {:error,
-         normalize_unexpected(other, :connect, resolved_name(connection_name_or_resolved))}
     end
   end
 
@@ -313,11 +309,8 @@ defmodule Favn.SQL do
   defp validate_boolean(other), do: {:error, other}
 
   defp validate_statement(statement) do
-    if IO.iodata_length(statement) >= 0 do
-      {:ok, statement}
-    else
-      {:error, statement}
-    end
+    _ = IO.iodata_length(statement)
+    {:ok, statement}
   rescue
     _ -> {:error, statement}
   end
@@ -379,9 +372,6 @@ defmodule Favn.SQL do
       {_ok, [{:error, bad} | _]} -> {:error, invalid_shape_error(:list_schemas, connection, bad)}
     end
   end
-
-  defp normalize_schema_rows(other, connection),
-    do: {:error, invalid_shape_error(:list_schemas, connection, other)}
 
   defp invalid_shape_error(operation, connection, value) do
     %Error{
