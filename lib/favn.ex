@@ -115,6 +115,9 @@ defmodule Favn do
 
   v0.4 also introduces `Favn.SQL.Adapter` and the internal `Favn.SQL` facade as
   the runtime SQL backend contract starting from `%Favn.Connection.Resolved{}`.
+  DuckDB table materialization now keeps the same create-table flags across
+  normal and appender-backed write paths, with explicit best-effort appender
+  cleanup on failure.
 
 
   ## New v0.2 DSL contract

@@ -3,7 +3,7 @@ defmodule Favn.SQLDuckDBAdapterTest do
 
   alias Favn.Connection.Definition
   alias Favn.SQL
-  alias Favn.SQL.{Relation, RelationRef, Result, WritePlan}
+  alias Favn.SQL.{Error, Relation, RelationRef, Result, WritePlan}
 
   defmodule DuckDBConnectionProvider do
     @behaviour Favn.Connection
@@ -95,6 +95,51 @@ defmodule Favn.SQLDuckDBAdapterTest do
              SQL.query(session, "SELECT id, name FROM bulk_users ORDER BY id")
 
     assert rows == [%{"id" => 2, "name" => "alpha"}, %{"id" => 3, "name" => "beta"}]
+  end
+
+  test "appender table path preserves non-replacing table semantics", %{session: session} do
+    plan =
+      %WritePlan{
+        materialization: :table,
+        target: %Relation{schema: "main", name: "bulk_semantics_users", type: :table},
+        select_sql: "SELECT 1::INTEGER AS id, 'seed'::VARCHAR AS name",
+        options: %{appender_rows: [[2, "alpha"]]}
+      }
+
+    assert {:ok, %Result{kind: :materialize, command: "appender", rows_affected: 1}} =
+             SQL.materialize(session, plan)
+
+    assert {:error, %Error{type: :execution_error, operation: :materialize}} =
+             SQL.materialize(session, plan)
+
+    assert {:ok, %Result{rows: [%{"id" => 2, "name" => "alpha"}]}} =
+             SQL.query(session, "SELECT id, name FROM bulk_semantics_users")
+  end
+
+  test "appender failure path cleans up for later replacement", %{session: session} do
+    failing_plan =
+      %WritePlan{
+        materialization: :table,
+        target: %Relation{schema: "main", name: "bulk_retry_users", type: :table},
+        select_sql: "SELECT 1::INTEGER AS id, 'seed'::VARCHAR AS name",
+        options: %{appender_rows: [[2]]}
+      }
+
+    assert {:error, %Error{type: :execution_error, operation: :materialize}} =
+             SQL.materialize(session, failing_plan)
+
+    retry_plan =
+      %WritePlan{
+        failing_plan
+        | replace?: true,
+          options: %{appender_rows: [[4, "delta"]]}
+      }
+
+    assert {:ok, %Result{kind: :materialize, command: "appender", rows_affected: 1}} =
+             SQL.materialize(session, retry_plan)
+
+    assert {:ok, %Result{rows: [%{"id" => 4, "name" => "delta"}]}} =
+             SQL.query(session, "SELECT id, name FROM bulk_retry_users")
   end
 
   test "materialize view via fallback sql generation", %{session: session} do

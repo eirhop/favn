@@ -316,10 +316,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
          {:ok, pre, post} <- split_materialization_statements(plan, statements),
          {:ok, _} <- execute_statements(conn, pre),
          {:ok, _} <- execute(conn, appender_table_statement(plan), []),
-         {:ok, appender} <- open_appender(conn, plan.target),
-         :ok <- Client.appender_add_rows(appender, rows),
-         :ok <- Client.appender_flush(appender),
-         :ok <- Client.appender_close(appender),
+         :ok <- append_rows(conn, plan.target, rows),
          {:ok, _} <- execute_statements(conn, post) do
       {:ok,
        %Result{
@@ -358,19 +355,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp appender_table_statement(%WritePlan{} = plan) do
     target = qualified_relation(plan.target)
 
-    cond do
-      plan.if_not_exists? == true ->
-        [
-          "CREATE TABLE IF NOT EXISTS ",
-          target,
-          " AS SELECT * FROM (",
-          plan.select_sql,
-          ") LIMIT 0"
-        ]
+    empty_plan = %WritePlan{plan | select_sql: ["SELECT * FROM (", plan.select_sql, ") LIMIT 0"]}
 
-      true ->
-        ["CREATE OR REPLACE TABLE ", target, " AS SELECT * FROM (", plan.select_sql, ") LIMIT 0"]
-    end
+    create_table_statement(target, empty_plan)
   end
 
   defp appender_rows(%WritePlan{} = plan, opts) do
@@ -469,6 +456,37 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   defp open_appender(%Conn{conn_ref: conn_ref}, %Relation{name: name, schema: schema}) do
     Client.appender(conn_ref, name, schema)
+  end
+
+  defp append_rows(%Conn{} = conn, %Relation{} = target, rows) do
+    with {:ok, appender} <- open_appender(conn, target) do
+      result =
+        with :ok <- Client.appender_add_rows(appender, rows),
+             :ok <- Client.appender_flush(appender) do
+          :ok
+        end
+
+      case {result, close_appender(appender)} do
+        {:ok, :ok} -> :ok
+        {{:error, reason}, _close_result} -> {:error, reason}
+        {:ok, {:error, reason}} -> {:error, reason}
+      end
+    end
+  end
+
+  defp close_appender(appender) do
+    case Client.appender_close(appender) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        _ = safe_release(appender)
+        {:error, reason}
+    end
+  rescue
+    _ ->
+      _ = safe_release(appender)
+      {:error, :appender_close_failed}
   end
 
   defp relation_introspection_base(%RelationRef{} = ref) do
