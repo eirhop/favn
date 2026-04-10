@@ -72,19 +72,21 @@ defmodule Favn.Assets.Compiler do
   end
 
   defp resolve_produced_relation(%Asset{} = asset, defaults) do
+    inferred_name = inferred_relation_name(asset)
+
     produces =
       case fetch_raw_produces(asset.module, asset.name) do
         nil ->
           asset.produces
 
         true ->
-          RelationRef.new!(Map.put(defaults, :name, asset.name))
+          RelationRef.new!(Map.put(defaults, :name, inferred_name))
 
         attrs when is_list(attrs) ->
           if Keyword.keyword?(attrs) do
             attrs
             |> Map.new()
-            |> merge_produces_attrs(defaults, asset.name)
+            |> merge_produces_attrs(defaults, inferred_name)
             |> RelationRef.new!()
           else
             raise ArgumentError,
@@ -93,7 +95,7 @@ defmodule Favn.Assets.Compiler do
 
         attrs when is_map(attrs) ->
           attrs
-          |> merge_produces_attrs(defaults, asset.name)
+          |> merge_produces_attrs(defaults, inferred_name)
           |> RelationRef.new!()
 
         other ->
@@ -154,4 +156,17 @@ defmodule Favn.Assets.Compiler do
       end
     end)
   end
+
+  defp inferred_relation_name(%Asset{module: module, name: :asset}) do
+    if function_exported?(module, :__favn_single_asset__, 0) do
+      module
+      |> Module.split()
+      |> List.last()
+      |> Macro.underscore()
+    else
+      :asset
+    end
+  end
+
+  defp inferred_relation_name(%Asset{name: name}), do: name
 end

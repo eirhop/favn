@@ -209,6 +209,29 @@ defmodule FavnTest do
     assert {:error, :not_asset_module} = Favn.get_asset({Enum, :map})
   end
 
+  test "fetches single-asset module refs through the public facade" do
+    module_name =
+      Module.concat(__MODULE__, "SingleAssetFacade#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Asset
+
+        @doc "Single asset facade"
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    :ok = Favn.TestSetup.setup_asset_modules([module_name])
+
+    assert {:ok, asset} = Favn.get_asset(module_name)
+    assert asset.ref == {module_name, :asset}
+    assert asset.doc == "Single asset facade"
+  end
+
   test "inspects dependency queries through the public facade" do
     :ok =
       Favn.TestSetup.setup_asset_modules([SampleAssets, CrossModuleAssets], reload_graph?: true)

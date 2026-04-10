@@ -22,10 +22,40 @@
 ## Favn at a glance
 
 - Plain Elixir functions become assets with metadata and dependencies.
+- Preferred single-asset authoring uses one module with `use Favn.Asset` and `def asset(ctx)`.
 - Assets can optionally own produced warehouse relations through `@produces`.
 - Dependency graphs are discovered automatically from asset definitions.
 - Runs are planned deterministically and executed in dependency order.
 - Runtime state and run events are exposed through a small public API.
+
+## Preferred single-asset DSL
+
+Phase 2 introduces `Favn.Asset` as the preferred one-module-per-asset DSL:
+
+```elixir
+defmodule MyWarehouse.Raw.Sales.Orders do
+  use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+  use Favn.Asset
+
+  @doc "Extract raw orders from upstream API"
+  @meta owner: "data-platform", category: :sales, tags: [:raw]
+  @produces true
+  def asset(ctx) do
+    _target = ctx.asset.produces
+    :ok
+  end
+end
+```
+
+`Favn.Asset` supports:
+
+- `@doc`
+- `@meta`
+- `@depends` (module shorthand `@depends MyApp.UpstreamAsset` or canonical tuple)
+- `@window`
+- `@produces`
+
+Single-asset modules compile to one canonical `%Favn.Asset{}` with ref `{Module, :asset}`.
 
 ## Introduction
 

@@ -152,6 +152,106 @@ defmodule Favn.AssetsTest do
            }
   end
 
+  test "supports single-asset modules with use Favn.Asset" do
+    module_name = Module.concat(__MODULE__, "SingleAsset#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+      use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+      use Favn.Asset
+
+      @doc "Extract raw orders"
+      @meta owner: "data-platform", category: :sales, tags: [:raw]
+      @depends Favn.AssetsTest.Upstream
+      @window Favn.Window.daily(lookback: 2)
+      @produces true
+      def asset(ctx) do
+        _target = ctx.asset.produces
+        :ok
+      end
+    end
+    """
+
+    assert Enum.any?(Code.compile_string(source, "test/dynamic_assets_test.exs"), fn {mod, _} ->
+             mod == module_name
+           end)
+
+    assert {:ok, [%Asset{} = asset]} = Compiler.compile_module_assets(module_name)
+    expected_name = module_name |> Module.split() |> List.last() |> Macro.underscore()
+
+    assert asset.ref == {module_name, :asset}
+    assert asset.depends_on == [{Favn.AssetsTest.Upstream, :asset}]
+
+    assert asset.window_spec == %Favn.Window.Spec{kind: :day, lookback: 2, timezone: "Etc/UTC"}
+
+    assert asset.meta == %{owner: "data-platform", category: :sales, tags: [:raw]}
+
+    assert asset.produces == %RelationRef{
+             connection: :warehouse,
+             catalog: "raw",
+             schema: "sales",
+             name: expected_name
+           }
+  end
+
+  test "single-asset module infers relation name from module leaf" do
+    module_name = Module.concat(__MODULE__, "FctOrders#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+      use Favn.Asset
+
+      @produces true
+      def asset(_ctx), do: :ok
+    end
+    """
+
+    assert Enum.any?(Code.compile_string(source, "test/dynamic_assets_test.exs"), fn {mod, _} ->
+             mod == module_name
+           end)
+
+    assert {:ok, [%Asset{produces: %RelationRef{name: name}}]} =
+             Compiler.compile_module_assets(module_name)
+
+    assert name =~ ~r/^fct_orders\d+$/
+  end
+
+  test "single-asset module supports tuple and module depends refs" do
+    upstream = Module.concat(__MODULE__, "Upstream#{System.unique_integer([:positive])}")
+    module_name = Module.concat(__MODULE__, "Depends#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(upstream)} do
+        use Favn.Asset
+
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Asset
+
+        @depends #{inspect(upstream)}
+        @depends {#{inspect(Favn.AssetsTest.Upstream)}, :source_rows}
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    assert {:ok, [%Asset{depends_on: depends_on}]} = Compiler.compile_module_assets(module_name)
+
+    assert depends_on == [
+             {upstream, :asset},
+             {Favn.AssetsTest.Upstream, :source_rows}
+           ]
+  end
+
   test "resolves namespace inheritance from separately compiled ancestor modules" do
     root = Module.concat(__MODULE__, "Root#{System.unique_integer([:positive])}")
     raw = Module.concat(root, Raw)
@@ -492,6 +592,48 @@ defmodule Favn.AssetsTest do
              Compiler.compile_module_assets(duplicate_name_module)
 
     assert message =~ "duplicate values for canonical key :name"
+
+    assert_raise CompileError, ~r/must define exactly one public asset\/1 function/, fn ->
+      compile_single_asset_module("""
+      use Favn.Asset
+      """)
+    end
+
+    assert_raise CompileError, ~r/requires exactly one public asset\/1 function/, fn ->
+      compile_single_asset_module("""
+      use Favn.Asset
+
+      def asset(_ctx, _opts), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/can define only one asset\/1 function/, fn ->
+      compile_single_asset_module("""
+      use Favn.Asset
+
+      def asset(_ctx), do: :ok
+      def asset(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/requires a public def asset\(ctx\)/, fn ->
+      compile_single_asset_module("""
+      use Favn.Asset
+
+      defp asset(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/requires def asset\(ctx\) immediately below/, fn ->
+      compile_single_asset_module("""
+      use Favn.Asset
+
+      @meta owner: "data"
+      def helper(_ctx), do: :ok
+
+      def asset(_ctx), do: :ok
+      """)
+    end
   end
 
   test "consumes @depends and @meta only for the intended asset" do
@@ -592,6 +734,18 @@ defmodule Favn.AssetsTest do
 
   defp compile_test_module(body) do
     module_name = Module.concat(__MODULE__, "Dynamic#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+    #{indent(body, 2)}
+    end
+    """
+
+    Code.compile_string(source, "test/dynamic_assets_test.exs")
+  end
+
+  defp compile_single_asset_module(body) do
+    module_name = Module.concat(__MODULE__, "SingleDynamic#{System.unique_integer([:positive])}")
 
     source = """
     defmodule #{inspect(module_name)} do

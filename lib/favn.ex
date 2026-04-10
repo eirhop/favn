@@ -28,7 +28,12 @@ defmodule Favn do
   An asset is a function that represents a meaningful unit of work in a workflow, such as
   extracting data, transforming a dataset, or producing a modeled output.
 
-  Assets are intended to be authored in modules that `use Favn.Assets`. At compile time,
+  Assets can be authored with:
+
+    * `use Favn.Asset` (preferred single-asset module DSL)
+    * `use Favn.Assets` (compact multi-asset module DSL)
+
+  At compile time,
   Favn will collect metadata such as:
 
     * asset name
@@ -164,7 +169,19 @@ defmodule Favn do
 
   ## Authoring assets
 
-  Assets are defined in normal modules using `Favn.Assets`.
+  Preferred one-module-per-asset style uses `Favn.Asset`:
+
+      defmodule MyApp.Raw.Sales.Orders do
+        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Asset
+
+        @doc "Extract raw orders"
+        @meta owner: "data-platform", category: :sales, tags: [:raw]
+        @produces true
+        def asset(ctx), do: :ok
+      end
+
+  Compact multi-asset style uses `Favn.Assets`:
 
   A simplified example:
 
@@ -209,6 +226,8 @@ defmodule Favn do
 
       Favn.get_asset({MyApp.SalesETL, :normalize_orders})
 
+      Favn.get_asset(MyApp.Raw.Sales.Orders)
+
       Favn.upstream_assets({MyApp.GoldETL, :fact_sales})
 
       Favn.dependency_graph({MyApp.GoldETL, :fact_sales}, tags: [:warehouse])
@@ -252,7 +271,7 @@ defmodule Favn do
   A consumer application typically sets Favn up in four steps:
 
     1. add `:favn` as a dependency in `mix.exs`
-    2. define one or more asset modules with `use Favn.Assets`
+    2. define one or more asset modules with `use Favn.Asset` and/or `use Favn.Assets`
     3. register those modules under `config :favn, asset_modules: [...]`
     4. start the host application normally
 
@@ -646,6 +665,7 @@ defmodule Favn do
   Accepted input:
 
     * `{module, name}` where both values are atoms
+    * `module` for single-asset modules authored with `use Favn.Asset`
 
   Returns:
 
@@ -673,6 +693,20 @@ defmodule Favn do
       end
     else
       {:error, :not_asset_module}
+    end
+  end
+
+  @spec get_asset(module()) :: {:ok, asset()} | {:error, asset_error()}
+  def get_asset(module) when is_atom(module) do
+    cond do
+      not asset_module?(module) ->
+        {:error, :not_asset_module}
+
+      function_exported?(module, :__favn_single_asset__, 0) ->
+        Registry.get_asset({module, :asset})
+
+      true ->
+        {:error, :asset_not_found}
     end
   end
 
