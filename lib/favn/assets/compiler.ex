@@ -111,21 +111,10 @@ defmodule Favn.Assets.Compiler do
   end
 
   defp fetch_raw_assets(module) do
-    cond do
-      function_exported?(module, :__favn_assets_raw__, 0) ->
-        {:ok, module.__favn_assets_raw__()}
-
-      function_exported?(module, :__favn_sql_asset_definition__, 0) ->
-        case module.__favn_sql_asset_definition__() do
-          %{asset: %{module: ^module}, depends_on: _depends_on} = definition ->
-            {:ok, [%{depends: Map.get(definition.asset, :depends_on, [])}]}
-
-          _other ->
-            :error
-        end
-
-      true ->
-        :error
+    if function_exported?(module, :__favn_assets_raw__, 0) do
+      {:ok, module.__favn_assets_raw__()}
+    else
+      :error
     end
   end
 
