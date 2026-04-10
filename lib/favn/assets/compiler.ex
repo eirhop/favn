@@ -8,6 +8,8 @@ defmodule Favn.Assets.Compiler do
   """
 
   alias Favn.Asset
+  alias Favn.Namespace
+  alias Favn.RelationRef
 
   @callback compile_assets(module()) :: {:ok, [Asset.t()]} | {:error, term()}
 
@@ -15,7 +17,8 @@ defmodule Favn.Assets.Compiler do
   def compile_module_assets(module) when is_atom(module) do
     cond do
       function_exported?(module, :__favn_assets__, 0) ->
-        normalize_assets(module.__favn_assets__())
+        module.__favn_assets__()
+        |> normalize_module_assets(module)
 
       function_exported?(module, :__favn_asset_compiler__, 0) ->
         with compiler when is_atom(compiler) <- module.__favn_asset_compiler__(),
@@ -36,11 +39,119 @@ defmodule Favn.Assets.Compiler do
 
   defp normalize_assets(assets) when is_list(assets) do
     if Enum.all?(assets, &match?(%Asset{}, &1)) do
-      {:ok, assets}
+      try do
+        {:ok, Enum.map(assets, &Asset.validate!/1)}
+      rescue
+        error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
+      end
     else
       {:error, :invalid_compiled_assets}
     end
   end
 
   defp normalize_assets(_), do: {:error, :invalid_compiled_assets}
+
+  defp normalize_module_assets(assets, module) when is_list(assets) do
+    normalize_assets(assets)
+    |> case do
+      {:ok, assets} -> resolve_produced_relations(assets, module)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp resolve_produced_relations(assets, module) do
+    defaults = Namespace.resolve(module)
+
+    try do
+      assets = Enum.map(assets, &resolve_produced_relation(&1, defaults))
+      ensure_unique_relation_owners!(assets)
+      {:ok, assets}
+    rescue
+      error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
+    end
+  end
+
+  defp resolve_produced_relation(%Asset{} = asset, defaults) do
+    produces =
+      case fetch_raw_produces(asset.module, asset.name) do
+        nil ->
+          asset.produces
+
+        true ->
+          RelationRef.new!(Map.put(defaults, :name, asset.name))
+
+        attrs when is_list(attrs) ->
+          if Keyword.keyword?(attrs) do
+            attrs
+            |> Map.new()
+            |> merge_produces_attrs(defaults, asset.name)
+            |> RelationRef.new!()
+          else
+            raise ArgumentError,
+                  "invalid @produces value #{inspect(attrs)}; expected true, a keyword list, or a map"
+          end
+
+        attrs when is_map(attrs) ->
+          attrs
+          |> merge_produces_attrs(defaults, asset.name)
+          |> RelationRef.new!()
+
+        other ->
+          raise ArgumentError,
+                "invalid @produces value #{inspect(other)}; expected true, a keyword list, or a map"
+      end
+
+    %{asset | produces: produces}
+  end
+
+  defp fetch_raw_produces(module, name) do
+    with true <- function_exported?(module, :__favn_assets_raw__, 0),
+         entries when is_list(entries) <- module.__favn_assets_raw__(),
+         %{produces: produces} <- Enum.find(entries, &(&1.name == name)) do
+      case produces do
+        [] -> nil
+        [value] -> value
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp merge_produces_attrs(attrs, defaults, asset_name) when is_map(attrs) do
+    attrs =
+      if has_explicit_name?(attrs) do
+        attrs
+      else
+        Map.put(attrs, :name, asset_name)
+      end
+
+    defaults
+    |> maybe_drop_default_key(attrs, [:catalog], [:database, "database"])
+    |> maybe_drop_default_key(attrs, [:name], [:table, "table", :name, "name"])
+    |> Map.merge(attrs)
+  end
+
+  defp has_explicit_name?(attrs) do
+    Enum.any?([:name, "name", :table, "table"], &Map.has_key?(attrs, &1))
+  end
+
+  defp maybe_drop_default_key(defaults, attrs, canonical_keys, authored_keys) do
+    if Enum.any?(authored_keys, &Map.has_key?(attrs, &1)) do
+      Enum.reduce(canonical_keys, defaults, &Map.delete(&2, &1))
+    else
+      defaults
+    end
+  end
+
+  defp ensure_unique_relation_owners!(assets) do
+    assets
+    |> Enum.reject(&is_nil(&1.produces))
+    |> Enum.group_by(& &1.produces)
+    |> Enum.each(fn {relation_ref, owners} ->
+      case owners do
+        [_single] -> :ok
+        _many -> raise ArgumentError, "duplicate produced relation #{inspect(relation_ref)}"
+      end
+    end)
+  end
 end

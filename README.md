@@ -22,6 +22,7 @@
 ## Favn at a glance
 
 - Plain Elixir functions become assets with metadata and dependencies.
+- Assets can optionally own produced warehouse relations through `@produces`.
 - Dependency graphs are discovered automatically from asset definitions.
 - Runs are planned deterministically and executed in dependency order.
 - Runtime state and run events are exposed through a small public API.
@@ -63,6 +64,26 @@ defmodule MyApp.SalesAssets do
   @asset true
   @depends :extract_orders
   def build_daily_report(_ctx), do: :ok
+end
+```
+
+Produced relation ownership can be declared separately from logical dependencies:
+
+```elixir
+defmodule MyApp.Warehouse.Raw.Sales do
+  use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+end
+
+defmodule MyApp.Warehouse.Raw.Sales.Assets do
+  use Favn.Namespace
+  use Favn.Assets
+
+  @asset true
+  @produces true
+  def orders(ctx) do
+    ctx.asset.produces
+    :ok
+  end
 end
 ```
 
@@ -267,6 +288,7 @@ def daily_sales(ctx), do: :ok
 Runtime context now includes:
 
 - `ctx.window` (concrete execution window for the current node)
+- `ctx.asset.ref` and `ctx.asset.produces`
 - `ctx.pipeline.anchor_window` (run-level requested window intent)
 - `ctx.pipeline.run_kind` (`:pipeline` or `:pipeline_backfill`)
 - `ctx.pipeline.resolved_refs` (deterministic resolved target refs snapshot)

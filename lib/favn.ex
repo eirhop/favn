@@ -36,10 +36,30 @@ defmodule Favn do
     * documentation
     * metadata (`owner`, `category`, `tags`)
     * dependency references
+    * optional produced relation ownership
     * source file and line
 
   This keeps the workflow definition close to the business logic while still allowing Favn to
   introspect and orchestrate the workflow later.
+
+  Asset modules can also inherit relation defaults from `Favn.Namespace` and declare owned
+  relations with `@produces`. Produced relation ownership is distinct from `@depends`:
+
+      defmodule MyApp.Warehouse.Raw.Sales do
+        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+      end
+
+      defmodule MyApp.Warehouse.Raw.Sales.Assets do
+        use Favn.Namespace
+        use Favn.Assets
+
+        @asset true
+        @produces true
+        def orders(ctx) do
+          ctx.asset.produces
+          :ok
+        end
+      end
 
   ### Dependencies
 
@@ -981,7 +1001,7 @@ defmodule Favn do
 
   Asset invocation contract:
 
-    * assets are invoked as `def asset(ctx)`
+    * assets are invoked as public arity-1 functions receiving `ctx`
     * success may return `:ok` or `{:ok, map()}`
     * failure must be `{:error, reason}`
 

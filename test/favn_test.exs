@@ -136,6 +136,60 @@ defmodule FavnTest do
            ]
   end
 
+  test "build_catalog tracks relation ownership and rejects duplicate owners" do
+    owner_a = Module.concat(__MODULE__, "OwnerA#{System.unique_integer([:positive])}")
+    owner_b = Module.concat(__MODULE__, "OwnerB#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(owner_a)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Assets
+
+        @asset true
+        @produces true
+        def orders(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(owner_b)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Assets
+
+        @asset true
+        @produces name: :orders
+        def duplicate_orders(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    assert {:ok, catalog} = Favn.Assets.Registry.build_catalog([owner_a])
+
+    assert catalog.relation_owners == %{
+             %Favn.RelationRef{
+               connection: :warehouse,
+               catalog: "raw",
+               schema: "sales",
+               name: "orders"
+             } => {owner_a, :orders}
+           }
+
+    assert {:error,
+            {:duplicate_relation_owner,
+             %Favn.RelationRef{
+               name: "orders",
+               schema: "sales",
+               catalog: "raw",
+               connection: :warehouse
+             }, {^owner_a, :orders}, {^owner_b, :duplicate_orders}}} =
+             Favn.Assets.Registry.build_catalog([owner_a, owner_b])
+  end
+
   test "lists assets for a module through the public facade" do
     assert {:ok, assets} = Favn.list_assets(SampleAssets)
 

@@ -7,7 +7,8 @@ defmodule Favn.SQL.Adapter do
   """
 
   alias Favn.Connection.Resolved
-  alias Favn.SQL.{Capabilities, Column, Error, Relation, RelationRef, Result, WritePlan}
+  alias Favn.RelationRef
+  alias Favn.SQL.{Capabilities, Column, Error, Relation, Result, WritePlan}
 
   @type conn :: term()
   @type statement :: iodata()
