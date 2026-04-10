@@ -22,10 +22,15 @@ defmodule Favn.Assets.Compiler do
 
       function_exported?(module, :__favn_asset_compiler__, 0) ->
         with compiler when is_atom(compiler) <- module.__favn_asset_compiler__(),
-             true <- function_exported?(compiler, :compile_assets, 1),
-             {:ok, assets} <- compiler.compile_assets(module) do
-          normalize_assets(assets)
+             {:module, _loaded} <- Code.ensure_loaded(compiler),
+             true <- function_exported?(compiler, :compile_assets, 1) do
+          case compiler.compile_assets(module) do
+            {:ok, assets} -> normalize_compiled_assets(assets, module)
+            {:error, reason} -> {:error, reason}
+            _ -> {:error, {:invalid_asset_compiler, module}}
+          end
         else
+          {:error, _reason} -> {:error, {:invalid_asset_compiler, module}}
           false -> {:error, {:invalid_asset_compiler, module}}
           _ -> {:error, {:invalid_asset_compiler, module}}
         end
@@ -51,6 +56,22 @@ defmodule Favn.Assets.Compiler do
 
   defp normalize_assets(_), do: {:error, :invalid_compiled_assets}
 
+  defp normalize_compiled_assets(assets, module) do
+    normalize_assets(assets)
+    |> case do
+      {:ok, assets} ->
+        try do
+          validate_single_asset_depends_shorthand!(module)
+          {:ok, assets}
+        rescue
+          error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp normalize_module_assets(assets, module) when is_list(assets) do
     normalize_assets(assets)
     |> case do
@@ -68,20 +89,33 @@ defmodule Favn.Assets.Compiler do
   end
 
   defp validate_single_asset_depends_shorthand!(module) do
-    if function_exported?(module, :__favn_single_asset__, 0) and
-         function_exported?(module, :__favn_assets_raw__, 0) do
-      module.__favn_assets_raw__()
-      |> Enum.flat_map(&Map.get(&1, :depends, []))
-      |> Enum.each(fn
-        dependency_module when is_atom(dependency_module) ->
-          ensure_single_asset_dependency_module!(module, dependency_module)
+    if function_exported?(module, :__favn_single_asset__, 0) do
+      case fetch_raw_assets(module) do
+        {:ok, raw_assets} ->
+          raw_assets
+          |> Enum.flat_map(&Map.get(&1, :depends, []))
+          |> Enum.each(fn
+            dependency_module when is_atom(dependency_module) ->
+              ensure_single_asset_dependency_module!(module, dependency_module)
 
-        _other ->
+            _other ->
+              :ok
+          end)
+
+        :error ->
           :ok
-      end)
+      end
     end
 
     :ok
+  end
+
+  defp fetch_raw_assets(module) do
+    if function_exported?(module, :__favn_assets_raw__, 0) do
+      {:ok, module.__favn_assets_raw__()}
+    else
+      :error
+    end
   end
 
   defp ensure_single_asset_dependency_module!(module, dependency_module) do
@@ -91,12 +125,12 @@ defmodule Favn.Assets.Compiler do
           :ok
         else
           raise ArgumentError,
-                "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a `use Favn.Asset` module, use {Module, :asset_name} for multi-asset modules"
+                "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a single-asset module, use {Module, :asset_name} for multi-asset modules"
         end
 
       _ ->
         raise ArgumentError,
-              "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a loadable `use Favn.Asset` module"
+              "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a loadable single-asset module"
     end
   end
 

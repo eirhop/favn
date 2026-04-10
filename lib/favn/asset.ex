@@ -22,6 +22,7 @@ defmodule Favn.Asset do
 
   alias Favn.Ref
   alias Favn.RelationRef
+  alias Favn.SQLAsset.Materialization
   alias Favn.Window.Spec
 
   @doc false
@@ -113,6 +114,7 @@ defmodule Favn.Asset do
           name: atom(),
           ref: Ref.t(),
           arity: non_neg_integer(),
+          type: :elixir | :sql,
           title: String.t() | nil,
           doc: String.t() | nil,
           file: String.t(),
@@ -120,7 +122,8 @@ defmodule Favn.Asset do
           meta: map(),
           depends_on: [Ref.t()],
           window_spec: Spec.t() | nil,
-          produces: RelationRef.t() | nil
+          produces: RelationRef.t() | nil,
+          materialization: Favn.SQLAsset.Materialization.t() | nil
         }
 
   @typedoc """
@@ -137,10 +140,12 @@ defmodule Favn.Asset do
     :doc,
     :file,
     :line,
+    type: :elixir,
     meta: %{},
     depends_on: [],
     window_spec: nil,
-    produces: nil
+    produces: nil,
+    materialization: nil
   ]
 
   @doc """
@@ -160,6 +165,8 @@ defmodule Favn.Asset do
     validate_depends_on!(asset.depends_on)
     validate_window_spec!(asset.window_spec)
     validate_produces!(asset.produces)
+    validate_type!(asset.type)
+    validate_materialization!(asset.materialization)
 
     %{asset | meta: meta}
   end
@@ -263,6 +270,21 @@ defmodule Favn.Asset do
           "asset produces must be a Favn.RelationRef or nil, got: #{inspect(value)}"
   end
 
+  defp validate_type!(type) when type in [:elixir, :sql], do: :ok
+
+  defp validate_type!(value) do
+    raise ArgumentError, "asset type must be :elixir or :sql, got: #{inspect(value)}"
+  end
+
+  defp validate_materialization!(nil), do: :ok
+
+  defp validate_materialization!(materialization) do
+    case Materialization.normalize!(materialization) do
+      normalized when normalized == materialization -> :ok
+      _normalized -> raise ArgumentError, "asset materialization must already be normalized"
+    end
+  end
+
   defp capture_single_asset_definition!(env) do
     if Module.get_attribute(env.module, :favn_single_asset_raw) do
       compile_error!(
@@ -307,6 +329,7 @@ defmodule Favn.Asset do
       name: :asset,
       ref: Ref.new(raw_asset.module, :asset),
       arity: 1,
+      type: :elixir,
       title: nil,
       doc: raw_asset.doc,
       file: raw_asset.file,

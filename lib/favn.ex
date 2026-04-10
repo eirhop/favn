@@ -181,6 +181,29 @@ defmodule Favn do
         def asset(ctx), do: :ok
       end
 
+  Preferred one-module-per-asset SQL style uses `Favn.SQLAsset`:
+
+      defmodule MyApp.Gold.Sales.FctOrders do
+        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.SQLAsset
+
+        @doc "Build the gold fact table for orders"
+        @meta owner: "analytics", category: :sales, tags: [:gold]
+        @materialized :table
+
+        query do
+          ~SQL\"\"\"
+          select *
+          from silver.sales.stg_orders
+          \"\"\"
+        end
+      end
+
+  The current SQL implementation keeps `~SQL` intentionally simple: it is a real
+  Elixir sigil, but it currently returns a plain SQL string. Future work is expected
+  to add reusable `defsql`, `@name` value binding, and Favn-aware relation resolution
+  while keeping `~SQL` as the one SQL body language.
+
   Compact multi-asset style uses `Favn.Assets`:
 
   A simplified example:
@@ -665,7 +688,7 @@ defmodule Favn do
   Accepted input:
 
     * `{module, name}` where both values are atoms
-    * `module` for single-asset modules authored with `use Favn.Asset`
+     * `module` for single-asset modules authored with `use Favn.Asset` or `use Favn.SQLAsset`
 
   Returns:
 

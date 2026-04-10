@@ -137,15 +137,24 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] module dependency shorthand normalization (`@depends Some.AssetModule`)
   - [x] `@produces true` relation-name inference from module leaf (`Macro.underscore/1`)
   - [x] module convenience lookup via `Favn.get_asset(module)` for single-asset modules
+- [x] Phase 3 single-asset SQL DSL (`Favn.SQLAsset`)
+  - [x] one-module-per-asset SQL DSL with `query do ... end` and a real `~SQL""" ... """` sigil
+  - [x] `@doc`, `@meta`, `@depends`, `@window`, `@materialized`, `@produces`
+  - [x] relation default inheritance via `Favn.Namespace`
+  - [x] canonical compile output as one `%Favn.Asset{ref: {Module, :asset}}`
+  - [x] module convenience lookup via `Favn.get_asset(module)` for single-asset modules
+  - [x] explicit runtime guard until SQL execution lands
 - [ ] DuckDB adapter hardening + incremental strategy expansion
 - [ ] Typed source identities
-- [ ] `Favn.SQL` / `Favn.SQLAssets` authoring model
+- [ ] SQL execution through shared runtime
+- [ ] SQL helper APIs (`render`, `preview`, `explain`, `materialize`)
+- [ ] Reusable SQL via `Favn.SQL` and `defsql ... do ... end`
+- [ ] `@name` placeholder binding for SQL values
+- [ ] Favn-aware relation resolution from module refs inside SQL
+- [ ] SQL-aware macro expansion / AST model
 - [ ] Multi-asset SQL modules
-- [ ] Inline SQL support
 - [ ] SQL file support
 - [ ] Dependency inference from typed SQL references
-- [ ] Materialization strategies: `:view`, `:table`, `:incremental`
-- [ ] SQL asset windowing
 - [ ] SQL asset dependency planning on the shared window-aware runtime model
 - [ ] Window-aware incremental execution
 - [ ] Lookback handling for incremental SQL assets

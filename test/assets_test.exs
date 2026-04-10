@@ -270,7 +270,7 @@ defmodule Favn.AssetsTest do
     assert {:error, {:invalid_compiled_assets, message}} =
              Compiler.compile_module_assets(module_name)
 
-    assert message =~ "module shorthand requires a `use Favn.Asset` module"
+    assert message =~ "module shorthand requires a single-asset module"
   end
 
   test "resolves namespace inheritance from separately compiled ancestor modules" do
