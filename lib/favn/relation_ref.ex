@@ -63,21 +63,16 @@ defmodule Favn.RelationRef do
 
   defp normalize_keys!(attrs) do
     attrs
-    |> reject_conflicting_aliases!(:database, :catalog)
-    |> reject_conflicting_aliases!(:table, :name)
     |> Enum.reduce(%{}, fn {key, value}, acc ->
-      Map.put(acc, normalize_key!(key), value)
+      canonical_key = normalize_key!(key)
+
+      if Map.has_key?(acc, canonical_key) do
+        raise ArgumentError,
+              "relation ref received duplicate values for canonical key #{inspect(canonical_key)}"
+      else
+        Map.put(acc, canonical_key, value)
+      end
     end)
-    |> validate_supported_keys!()
-  end
-
-  defp reject_conflicting_aliases!(attrs, alias_key, canonical_key) do
-    if Map.has_key?(attrs, alias_key) and Map.has_key?(attrs, canonical_key) do
-      raise ArgumentError,
-            "relation ref cannot include both #{inspect(alias_key)} and #{inspect(canonical_key)}"
-    end
-
-    attrs
   end
 
   defp normalize_key!(:database), do: :catalog
@@ -93,17 +88,6 @@ defmodule Favn.RelationRef do
   defp normalize_key!(key) do
     raise ArgumentError,
           "relation ref contains unsupported key #{inspect(key)}; allowed keys: [:connection, :catalog, :schema, :name, :database, :table]"
-  end
-
-  defp validate_supported_keys!(attrs) do
-    Enum.each(attrs, fn {key, _value} ->
-      if key not in [:connection, :catalog, :schema, :name] do
-        raise ArgumentError,
-              "relation ref contains unsupported key #{inspect(key)}; allowed keys: [:connection, :catalog, :schema, :name, :database, :table]"
-      end
-    end)
-
-    attrs
   end
 
   defp normalize_connection!(nil), do: nil

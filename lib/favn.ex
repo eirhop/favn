@@ -1001,7 +1001,7 @@ defmodule Favn do
 
   Asset invocation contract:
 
-    * assets are invoked as `def asset(ctx)`
+    * assets are invoked as public arity-1 functions receiving `ctx`
     * success may return `:ok` or `{:ok, map()}`
     * failure must be `{:error, reason}`
 

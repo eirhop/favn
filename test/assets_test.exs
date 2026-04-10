@@ -135,7 +135,7 @@ defmodule Favn.AssetsTest do
              mod == module_name
            end)
 
-    [orders, stage_orders] = module_name.__favn_assets__()
+    assert {:ok, [orders, stage_orders]} = Compiler.compile_module_assets(module_name)
 
     assert orders.produces == %RelationRef{
              connection: :warehouse,
@@ -149,6 +149,96 @@ defmodule Favn.AssetsTest do
              catalog: "silver",
              schema: "sales",
              name: "daily_orders"
+           }
+  end
+
+  test "resolves namespace inheritance from separately compiled ancestor modules" do
+    root = Module.concat(__MODULE__, "Root#{System.unique_integer([:positive])}")
+    raw = Module.concat(root, Raw)
+    sales = Module.concat(raw, Sales)
+    assets = Module.concat(sales, Assets)
+
+    Code.compile_string(
+      "defmodule #{inspect(root)} do\n  use Favn.Namespace, connection: :warehouse\nend",
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, catalog: :raw\nend",
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, schema: :sales\nend",
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(assets)} do
+        use Favn.Assets
+
+        @asset true
+        @produces true
+        def orders(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    assert {:ok, [%Asset{produces: %RelationRef{} = produces}]} =
+             Compiler.compile_module_assets(assets)
+
+    assert produces == %RelationRef{
+             connection: :warehouse,
+             catalog: "raw",
+             schema: "sales",
+             name: "orders"
+           }
+  end
+
+  test "produced relation inheritance is compile-order independent" do
+    root = Module.concat(__MODULE__, "OrderRoot#{System.unique_integer([:positive])}")
+    raw = Module.concat(root, Raw)
+    sales = Module.concat(raw, Sales)
+    assets = Module.concat(sales, Assets)
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(assets)} do
+        use Favn.Assets
+
+        @asset true
+        @produces true
+        def orders(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      "defmodule #{inspect(root)} do\n  use Favn.Namespace, connection: :warehouse\nend",
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, catalog: :raw\nend",
+      "test/dynamic_assets_test.exs"
+    )
+
+    Code.compile_string(
+      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, schema: :sales\nend",
+      "test/dynamic_assets_test.exs"
+    )
+
+    assert {:ok, [%Asset{produces: %RelationRef{} = produces}]} =
+             Compiler.compile_module_assets(assets)
+
+    assert produces == %RelationRef{
+             connection: :warehouse,
+             catalog: "raw",
+             schema: "sales",
+             name: "orders"
            }
   end
 
@@ -317,20 +407,34 @@ defmodule Favn.AssetsTest do
       """)
     end
 
-    assert_raise CompileError, ~r/duplicate produced relation/, fn ->
-      compile_test_module("""
-      use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
-      use Favn.Assets
+    duplicate_module =
+      Module.concat(__MODULE__, "DuplicateProduces#{System.unique_integer([:positive])}")
 
-      @asset true
-      @produces true
-      def orders(_ctx), do: :ok
+    assert Enum.any?(
+             Code.compile_string(
+               """
+               defmodule #{inspect(duplicate_module)} do
+                 use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+                 use Favn.Assets
 
-      @asset true
-      @produces name: :orders
-      def duplicate_orders(_ctx), do: :ok
-      """)
-    end
+                 @asset true
+                 @produces true
+                 def orders(_ctx), do: :ok
+
+                 @asset true
+                 @produces name: :orders
+                 def duplicate_orders(_ctx), do: :ok
+               end
+               """,
+               "test/dynamic_assets_test.exs"
+             ),
+             fn {mod, _} -> mod == duplicate_module end
+           )
+
+    assert {:error, {:invalid_compiled_assets, message}} =
+             Compiler.compile_module_assets(duplicate_module)
+
+    assert message =~ "duplicate produced relation"
 
     assert_raise CompileError, ~r/requires @asset immediately above/, fn ->
       compile_test_module("""
@@ -340,6 +444,54 @@ defmodule Favn.AssetsTest do
       def helper(_ctx), do: :ok
       """)
     end
+
+    duplicate_catalog_module =
+      Module.concat(__MODULE__, "DuplicateCatalog#{System.unique_integer([:positive])}")
+
+    assert Enum.any?(
+             Code.compile_string(
+               """
+               defmodule #{inspect(duplicate_catalog_module)} do
+                 use Favn.Assets
+
+                 @asset true
+                 @produces %{"database" => "raw", :catalog => "silver", "name" => "orders"}
+                 def duplicate_catalog_keys(_ctx), do: :ok
+               end
+               """,
+               "test/dynamic_assets_test.exs"
+             ),
+             fn {mod, _} -> mod == duplicate_catalog_module end
+           )
+
+    assert {:error, {:invalid_compiled_assets, message}} =
+             Compiler.compile_module_assets(duplicate_catalog_module)
+
+    assert message =~ "duplicate values for canonical key :catalog"
+
+    duplicate_name_module =
+      Module.concat(__MODULE__, "DuplicateName#{System.unique_integer([:positive])}")
+
+    assert Enum.any?(
+             Code.compile_string(
+               """
+               defmodule #{inspect(duplicate_name_module)} do
+                 use Favn.Assets
+
+                 @asset true
+                 @produces %{"table" => "orders", :name => "other_orders"}
+                 def duplicate_name_keys(_ctx), do: :ok
+               end
+               """,
+               "test/dynamic_assets_test.exs"
+             ),
+             fn {mod, _} -> mod == duplicate_name_module end
+           )
+
+    assert {:error, {:invalid_compiled_assets, message}} =
+             Compiler.compile_module_assets(duplicate_name_module)
+
+    assert message =~ "duplicate values for canonical key :name"
   end
 
   test "consumes @depends and @meta only for the intended asset" do
@@ -407,10 +559,35 @@ defmodule Favn.AssetsTest do
     end
     """
 
-    [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
+    assert Enum.any?(Code.compile_string(source, "test/dynamic_assets_test.exs"), fn {mod, _} ->
+             mod == module_name
+           end)
 
     assert {:error, {:invalid_compiled_assets, _message}} =
              Compiler.compile_module_assets(module_name)
+  end
+
+  test "supports string-key produces maps without name inference collisions" do
+    module_name = Module.concat(__MODULE__, "StringKeys#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Assets
+
+        @asset true
+        @produces %{"name" => "orders"}
+        def ignored_name_inference(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    assert {:ok, [%Asset{produces: %RelationRef{name: "orders"} = produces}]} =
+             Compiler.compile_module_assets(module_name)
+
+    assert produces.catalog == nil
+    assert produces.schema == nil
   end
 
   defp compile_test_module(body) do
