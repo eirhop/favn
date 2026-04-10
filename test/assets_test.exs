@@ -162,7 +162,7 @@ defmodule Favn.AssetsTest do
 
       @doc "Extract raw orders"
       @meta owner: "data-platform", category: :sales, tags: [:raw]
-      @depends Favn.AssetsTest.Upstream
+      @depends {Favn.AssetsTest.Upstream, :source_rows}
       @window Favn.Window.daily(lookback: 2)
       @produces true
       def asset(ctx) do
@@ -180,7 +180,7 @@ defmodule Favn.AssetsTest do
     expected_name = module_name |> Module.split() |> List.last() |> Macro.underscore()
 
     assert asset.ref == {module_name, :asset}
-    assert asset.depends_on == [{Favn.AssetsTest.Upstream, :asset}]
+    assert asset.depends_on == [{Favn.AssetsTest.Upstream, :source_rows}]
 
     assert asset.window_spec == %Favn.Window.Spec{kind: :day, lookback: 2, timezone: "Etc/UTC"}
 
@@ -250,6 +250,27 @@ defmodule Favn.AssetsTest do
              {upstream, :asset},
              {Favn.AssetsTest.Upstream, :source_rows}
            ]
+  end
+
+  test "single-asset module rejects module shorthand for multi-asset modules" do
+    module_name = Module.concat(__MODULE__, "BadDepends#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Asset
+
+        @depends #{inspect(Favn.AssetsTest.Upstream)}
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_assets_test.exs"
+    )
+
+    assert {:error, {:invalid_compiled_assets, message}} =
+             Compiler.compile_module_assets(module_name)
+
+    assert message =~ "module shorthand requires a `use Favn.Asset` module"
   end
 
   test "resolves namespace inheritance from separately compiled ancestor modules" do

@@ -54,8 +54,49 @@ defmodule Favn.Assets.Compiler do
   defp normalize_module_assets(assets, module) when is_list(assets) do
     normalize_assets(assets)
     |> case do
-      {:ok, assets} -> resolve_produced_relations(assets, module)
-      {:error, _reason} = error -> error
+      {:ok, assets} ->
+        try do
+          validate_single_asset_depends_shorthand!(module)
+          resolve_produced_relations(assets, module)
+        rescue
+          error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp validate_single_asset_depends_shorthand!(module) do
+    if function_exported?(module, :__favn_single_asset__, 0) and
+         function_exported?(module, :__favn_assets_raw__, 0) do
+      module.__favn_assets_raw__()
+      |> Enum.flat_map(&Map.get(&1, :depends, []))
+      |> Enum.each(fn
+        dependency_module when is_atom(dependency_module) ->
+          ensure_single_asset_dependency_module!(module, dependency_module)
+
+        _other ->
+          :ok
+      end)
+    end
+
+    :ok
+  end
+
+  defp ensure_single_asset_dependency_module!(module, dependency_module) do
+    case Code.ensure_loaded(dependency_module) do
+      {:module, _loaded} ->
+        if function_exported?(dependency_module, :__favn_single_asset__, 0) do
+          :ok
+        else
+          raise ArgumentError,
+                "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a `use Favn.Asset` module, use {Module, :asset_name} for multi-asset modules"
+        end
+
+      _ ->
+        raise ArgumentError,
+              "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a loadable `use Favn.Asset` module"
     end
   end
 

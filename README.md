@@ -51,7 +51,7 @@ end
 
 - `@doc`
 - `@meta`
-- `@depends` (module shorthand `@depends MyApp.UpstreamAsset` or canonical tuple)
+- `@depends` (module shorthand `@depends MyApp.UpstreamAsset` only for single-asset modules; use tuple refs for multi-asset modules)
 - `@window`
 - `@produces`
 

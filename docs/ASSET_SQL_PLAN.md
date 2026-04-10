@@ -820,7 +820,7 @@ Implemented semantics:
 * one `use Favn.Asset` module compiles to exactly one canonical asset with ref `{Module, :asset}`
 * `@depends` in `Favn.Asset` accepts:
 
-  * `Some.Module` (normalized to `{Some.Module, :asset}`)
+  * `Some.Module` (only when `Some.Module` uses `Favn.Asset`, normalized to `{Some.Module, :asset}`)
   * `{Some.Module, :asset_name}`
 * `@produces true` relation-name inference for single-asset modules uses module leaf `Macro.underscore/1`
 
