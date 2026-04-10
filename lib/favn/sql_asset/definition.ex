@@ -7,12 +7,13 @@ defmodule Favn.SQLAsset.Definition do
   alias Favn.SQLAsset.Materialization
 
   @enforce_keys [:module, :asset, :sql, :materialization]
-  defstruct [:module, :asset, :sql, :materialization]
+  defstruct [:module, :asset, :sql, :materialization, raw_asset: nil]
 
   @type t :: %__MODULE__{
           module: module(),
           asset: Asset.t(),
           sql: String.t(),
-          materialization: Materialization.t()
+          materialization: Materialization.t(),
+          raw_asset: map() | nil
         }
 end

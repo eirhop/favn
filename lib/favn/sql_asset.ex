@@ -41,6 +41,7 @@ defmodule Favn.SQLAsset do
         kind == :def and
         name in [
           :__favn_asset_compiler__,
+          :__favn_assets_raw__,
           :__favn_sql_asset_definition__,
           :__favn_single_asset__,
           :asset
@@ -122,6 +123,9 @@ defmodule Favn.SQLAsset do
       def __favn_asset_compiler__, do: Favn.SQLAsset.Compiler
 
       @doc false
+      def __favn_assets_raw__, do: [unquote(Macro.escape(raw_definition))]
+
+      @doc false
       @spec __favn_sql_asset_definition__() :: Favn.SQLAsset.Definition.t()
       def __favn_sql_asset_definition__, do: unquote(Macro.escape(definition))
 
@@ -162,7 +166,8 @@ defmodule Favn.SQLAsset do
       module: raw_definition.module,
       asset: asset,
       sql: raw_definition.sql,
-      materialization: materialization
+      materialization: materialization,
+      raw_asset: raw_definition
     }
 
     try do
@@ -177,7 +182,6 @@ defmodule Favn.SQLAsset do
   defp normalize_depends!(depends, raw_definition) do
     Enum.map(depends, fn
       module when is_atom(module) ->
-        ensure_single_asset_dependency_module!(raw_definition.module, module)
         Ref.new(module, :asset)
 
       {module, name} when is_atom(module) and is_atom(name) ->
@@ -198,28 +202,6 @@ defmodule Favn.SQLAsset do
           "invalid @depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
         )
     end)
-  end
-
-  defp ensure_single_asset_dependency_module!(module, dependency_module) do
-    case Code.ensure_loaded(dependency_module) do
-      {:module, _loaded} ->
-        if function_exported?(dependency_module, :__favn_single_asset__, 0) do
-          :ok
-        else
-          compile_error!(
-            __ENV__.file,
-            __ENV__.line,
-            "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a single-asset module, use {Module, :asset_name} for multi-asset modules"
-          )
-        end
-
-      _ ->
-        compile_error!(
-          __ENV__.file,
-          __ENV__.line,
-          "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a loadable single-asset module"
-        )
-    end
   end
 
   defp normalize_meta!(meta, raw_definition) do
@@ -295,6 +277,13 @@ defmodule Favn.SQLAsset do
 
         [attrs] when is_map(attrs) ->
           attrs
+
+        [_a, _b | _rest] ->
+          compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "multiple @produces attributes are not allowed; use at most one @produces for sql ..."
+          )
 
         [other] ->
           compile_error!(

@@ -214,16 +214,74 @@ defmodule Favn.SQLAssetTest do
   end
 
   test "rejects module shorthand depends for multi-asset modules" do
-    assert_raise CompileError, ~r/module shorthand requires a single-asset module/, fn ->
+    asset_module = Module.concat(__MODULE__, "BadDepends#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(asset_module)} do
+        use Favn.Namespace, connection: :warehouse
+        use Favn.SQLAsset
+
+        @depends #{inspect(Favn.AssetsTest.Upstream)}
+        @materialized :view
+        sql "select 1"
+      end
+      """,
+      "test/dynamic_sql_asset_test.exs"
+    )
+
+    assert {:error, {:invalid_compiled_assets, message}} =
+             Compiler.compile_module_assets(asset_module)
+
+    assert message =~ "invalid @depends entry #{inspect(Favn.AssetsTest.Upstream)}"
+    assert message =~ "single-asset module"
+  end
+
+  test "rejects multiple produces attributes with a controlled compile error" do
+    assert_raise CompileError, ~r/multiple @produces attributes are not allowed/, fn ->
       compile_sql_asset_module("""
       use Favn.Namespace, connection: :warehouse
       use Favn.SQLAsset
 
-      @depends Favn.AssetsTest.Upstream
       @materialized :view
+      @produces true
+      @produces name: :orders
       sql "select 1"
       """)
     end
+  end
+
+  test "single-asset module shorthand depends is compile-order independent for SQL assets" do
+    upstream = Module.concat(__MODULE__, "LateUpstream#{System.unique_integer([:positive])}")
+    asset_module = Module.concat(__MODULE__, "LateDepends#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(asset_module)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.SQLAsset
+
+        @depends #{inspect(upstream)}
+        @materialized :view
+        sql "select 1"
+      end
+      """,
+      "test/dynamic_sql_asset_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(upstream)} do
+        use Favn.Asset
+
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_sql_asset_test.exs"
+    )
+
+    assert {:ok, [%Asset{} = asset]} = Compiler.compile_module_assets(asset_module)
+    assert asset.depends_on == [{upstream, :asset}]
   end
 
   defp compile_sql_asset_module(body) do
