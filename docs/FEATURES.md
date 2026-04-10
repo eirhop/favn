@@ -120,6 +120,15 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 - [x] DuckDB adapter foundation (duckdbex-backed connect/query/introspection/materialization baseline)
   - [x] Appender-backed table writes preserve normal `WritePlan` create semantics
   - [x] Appender lifecycle cleanup is explicit on failure paths
+- [x] Phase 1 shared produced relation foundation
+  - [x] `Favn.RelationRef`
+  - [x] `%Favn.Asset{produces: ...}`
+  - [x] `Favn.Namespace` config inheritance for `connection` / `catalog` / `schema`
+  - [x] `Favn.Assets` support for `@produces`
+  - [x] runtime exposure through `ctx.asset.produces`
+  - [x] relation normalization and validation (`database`/`table` aliases included)
+  - [x] relation ownership uniqueness checks
+  - [x] relation ownership index in the registry catalog
 - [ ] DuckDB adapter hardening + incremental strategy expansion
 - [ ] Typed source identities
 - [ ] `Favn.SQL` / `Favn.SQLAssets` authoring model

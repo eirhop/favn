@@ -15,6 +15,7 @@ defmodule Favn.Assets.Registry do
   alias Favn.Asset
   alias Favn.Assets.Compiler
   alias Favn.Ref
+  alias Favn.RelationRef
 
   @catalog_key {__MODULE__, :catalog}
 
@@ -24,6 +25,13 @@ defmodule Favn.Assets.Registry do
   @type error ::
           {:invalid_asset_module, module()}
           | {:duplicate_asset, Favn.asset_ref()}
+          | {:duplicate_relation_owner, RelationRef.t(), Favn.asset_ref(), Favn.asset_ref()}
+
+  @type catalog :: %{
+          assets: [Asset.t()],
+          assets_by_ref: %{Ref.t() => Asset.t()},
+          relation_owners: %{RelationRef.t() => Ref.t()}
+        }
 
   @doc """
   List all globally configured assets.
@@ -77,7 +85,7 @@ defmodule Favn.Assets.Registry do
   Build a canonical asset catalog from configured asset modules.
   """
   @spec build_catalog() ::
-          {:ok, %{assets: [Asset.t()], assets_by_ref: %{Ref.t() => Asset.t()}}}
+          {:ok, catalog()}
           | {:error, error()}
   def build_catalog do
     configured_modules()
@@ -86,22 +94,25 @@ defmodule Favn.Assets.Registry do
 
   @doc false
   @spec build_catalog([module()]) ::
-          {:ok, %{assets: [Asset.t()], assets_by_ref: %{Ref.t() => Asset.t()}}}
+          {:ok, catalog()}
           | {:error, error()}
   def build_catalog(modules) when is_list(modules) do
     modules
-    |> Enum.reduce_while({:ok, %{assets: [], assets_by_ref: %{}}}, fn module, {:ok, catalog} ->
-      case Compiler.compile_module_assets(module) do
-        {:ok, assets} ->
-          case merge_assets(catalog, assets) do
-            {:ok, updated_catalog} -> {:cont, {:ok, updated_catalog}}
-            {:error, _reason} = error -> {:halt, error}
-          end
+    |> Enum.reduce_while(
+      {:ok, %{assets: [], assets_by_ref: %{}, relation_owners: %{}}},
+      fn module, {:ok, catalog} ->
+        case Compiler.compile_module_assets(module) do
+          {:ok, assets} ->
+            case merge_assets(catalog, assets) do
+              {:ok, updated_catalog} -> {:cont, {:ok, updated_catalog}}
+              {:error, _reason} = error -> {:halt, error}
+            end
 
-        {:error, _reason} ->
-          {:halt, {:error, {:invalid_asset_module, module}}}
+          {:error, _reason} ->
+            {:halt, {:error, {:invalid_asset_module, module}}}
+        end
       end
-    end)
+    )
     |> case do
       {:ok, catalog} -> {:ok, %{catalog | assets: Enum.reverse(catalog.assets)}}
       {:error, _reason} = error -> error
@@ -124,16 +135,50 @@ defmodule Favn.Assets.Registry do
   defp merge_assets(catalog, assets) do
     assets
     |> Enum.reduce_while({:ok, catalog}, fn %Asset{} = asset, {:ok, acc} ->
-      if Map.has_key?(acc.assets_by_ref, asset.ref) do
-        {:halt, {:error, {:duplicate_asset, asset.ref}}}
-      else
+      with :ok <- ensure_unique_asset_ref(acc, asset),
+           :ok <- ensure_unique_relation_owner(acc, asset) do
         {:cont,
          {:ok,
           %{
             assets: [asset | acc.assets],
-            assets_by_ref: Map.put(acc.assets_by_ref, asset.ref, asset)
+            assets_by_ref: Map.put(acc.assets_by_ref, asset.ref, asset),
+            relation_owners: put_relation_owner(acc.relation_owners, asset)
           }}}
+      else
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp ensure_unique_asset_ref(catalog, asset) do
+    if Map.has_key?(catalog.assets_by_ref, asset.ref) do
+      {:error, {:duplicate_asset, asset.ref}}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_unique_relation_owner(_catalog, %Asset{produces: nil}), do: :ok
+
+  defp ensure_unique_relation_owner(catalog, %Asset{
+         produces: %RelationRef{} = relation_ref,
+         ref: ref
+       }) do
+    case Map.fetch(catalog.relation_owners, relation_ref) do
+      {:ok, existing_ref} ->
+        {:error, {:duplicate_relation_owner, relation_ref, existing_ref, ref}}
+
+      :error ->
+        :ok
+    end
+  end
+
+  defp put_relation_owner(relation_owners, %Asset{produces: nil}), do: relation_owners
+
+  defp put_relation_owner(relation_owners, %Asset{
+         produces: %RelationRef{} = relation_ref,
+         ref: ref
+       }) do
+    Map.put(relation_owners, relation_ref, ref)
   end
 end

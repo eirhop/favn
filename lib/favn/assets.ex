@@ -21,7 +21,9 @@ defmodule Favn.Assets do
   """
 
   alias Favn.Asset
+  alias Favn.Namespace
   alias Favn.Ref
+  alias Favn.RelationRef
 
   @doc false
   defmacro __using__(_opts) do
@@ -29,6 +31,7 @@ defmodule Favn.Assets do
       Module.register_attribute(__MODULE__, :asset, persist: false)
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
+      Module.register_attribute(__MODULE__, :produces, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_assets_raw, accumulate: true)
 
@@ -65,7 +68,9 @@ defmodule Favn.Assets do
 
               Module.delete_attribute(env.module, :depends)
               Module.delete_attribute(env.module, :meta)
+              produces = env.module |> Module.get_attribute(:produces) |> Enum.reverse()
               Module.delete_attribute(env.module, :window)
+              Module.delete_attribute(env.module, :produces)
 
               Module.put_attribute(env.module, :favn_assets_raw, %{
                 module: env.module,
@@ -77,7 +82,8 @@ defmodule Favn.Assets do
                 asset_decl: asset_opts,
                 depends: depends,
                 meta: meta,
-                window: window
+                window: window,
+                produces: produces
               })
             else
               compile_error!(
@@ -110,16 +116,17 @@ defmodule Favn.Assets do
     case {
       Module.get_attribute(env.module, :depends),
       Module.get_attribute(env.module, :meta),
-      Module.get_attribute(env.module, :window)
+      Module.get_attribute(env.module, :window),
+      Module.get_attribute(env.module, :produces)
     } do
-      {[], nil, []} ->
+      {[], nil, [], []} ->
         :ok
 
       _ ->
         compile_error!(
           env.file,
           env.line,
-          "@depends/@meta/@window must be attached to an immediately following @asset function"
+          "@depends/@meta/@window/@produces must be attached to an immediately following @asset function"
         )
     end
 
@@ -128,6 +135,7 @@ defmodule Favn.Assets do
       |> Module.get_attribute(:favn_assets_raw)
       |> Enum.reverse()
       |> validate_unique_names!()
+      |> validate_unique_produced_relations!()
       |> Enum.map(&build_asset!/1)
 
     quote do
@@ -162,6 +170,7 @@ defmodule Favn.Assets do
     meta = normalize_meta!(raw_asset.meta, raw_asset)
     depends_on = normalize_depends!(raw_asset.depends, raw_asset)
     window_spec = normalize_window!(raw_asset.window, raw_asset)
+    produces = normalize_produces!(raw_asset.produces, raw_asset)
 
     asset = %Asset{
       module: raw_asset.module,
@@ -174,7 +183,8 @@ defmodule Favn.Assets do
       title: title,
       meta: meta,
       depends_on: depends_on,
-      window_spec: window_spec
+      window_spec: window_spec,
+      produces: produces
     }
 
     try do
@@ -229,6 +239,101 @@ defmodule Favn.Assets do
     )
   end
 
+  defp normalize_produces!([], _raw_asset), do: nil
+
+  defp normalize_produces!([produces], raw_asset) do
+    defaults = Namespace.resolve(raw_asset.module)
+
+    attrs =
+      case produces do
+        true ->
+          defaults |> Map.put(:name, raw_asset.name)
+
+        value when is_list(value) ->
+          if Keyword.keyword?(value) do
+            merge_produces_attrs(defaults, Map.new(value), raw_asset)
+          else
+            invalid_produces!(raw_asset, value)
+          end
+
+        value when is_map(value) ->
+          merge_produces_attrs(defaults, value, raw_asset)
+
+        value ->
+          invalid_produces!(raw_asset, value)
+      end
+
+    try do
+      RelationRef.new!(attrs)
+    rescue
+      error in ArgumentError ->
+        compile_error!(raw_asset.file, raw_asset.line, error.message)
+    end
+  end
+
+  defp normalize_produces!([_a, _b | _rest], raw_asset) do
+    compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "multiple @produces attributes are not allowed; use at most one @produces per @asset function"
+    )
+  end
+
+  @spec invalid_produces!(map(), term()) :: no_return()
+  defp invalid_produces!(raw_asset, value) do
+    compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "invalid @produces value #{inspect(value)}; expected true, a keyword list, or a map"
+    )
+  end
+
+  defp merge_produces_attrs(defaults, attrs, raw_asset) when is_map(attrs) do
+    attrs =
+      if Map.has_key?(attrs, :table) or Map.has_key?(attrs, "table") do
+        attrs
+      else
+        Map.put_new(attrs, :name, raw_asset.name)
+      end
+
+    defaults
+    |> maybe_drop_default_alias_target(attrs, :database, :catalog)
+    |> maybe_drop_default_alias_target(attrs, :table, :name)
+    |> Map.merge(attrs)
+  end
+
+  defp maybe_drop_default_alias_target(defaults, attrs, alias_key, canonical_key) do
+    if Map.has_key?(attrs, alias_key) or Map.has_key?(attrs, Atom.to_string(alias_key)) do
+      Map.delete(defaults, canonical_key)
+    else
+      defaults
+    end
+  end
+
+  defp validate_unique_produced_relations!(raw_assets) do
+    raw_assets
+    |> Enum.map(fn raw_asset ->
+      {raw_asset, normalize_produces!(raw_asset.produces, raw_asset)}
+    end)
+    |> Enum.reject(fn {_raw_asset, produces} -> is_nil(produces) end)
+    |> Enum.group_by(fn {_raw_asset, produces} -> produces end)
+    |> Enum.each(fn {produces, grouped_assets} ->
+      case grouped_assets do
+        [_single] ->
+          :ok
+
+        [{first, _} | _rest] ->
+          compile_error!(
+            first.file,
+            first.line,
+            "duplicate produced relation #{inspect(produces)}; produced relations must be unique within a module"
+          )
+      end
+    end)
+
+    raw_assets
+  end
+
   defp normalize_doc({_line, false}), do: nil
   defp normalize_doc({_line, doc}) when is_binary(doc), do: doc
   defp normalize_doc(false), do: nil
@@ -261,18 +366,20 @@ defmodule Favn.Assets do
     depends = Module.get_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
     window = Module.get_attribute(env.module, :window)
+    produces = Module.get_attribute(env.module, :produces)
 
-    if depends != [] or not is_nil(meta) or window != [] do
+    if depends != [] or not is_nil(meta) or window != [] or produces != [] do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
+      Module.delete_attribute(env.module, :produces)
 
       arity = length(args || [])
 
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window on #{kind} #{name}/#{arity} requires @asset immediately above that function"
+        "@depends/@meta/@window/@produces on #{kind} #{name}/#{arity} requires @asset immediately above that function"
       )
     else
       :ok

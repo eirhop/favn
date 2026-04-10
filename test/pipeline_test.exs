@@ -276,6 +276,48 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.trigger == %{kind: :manual, requested_by: :api}
   end
 
+  test "run_asset/2 projects produced relation ownership to ctx.asset.produces" do
+    module_name = Module.concat(__MODULE__, "ProducesAssets#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Assets
+
+        alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
+
+        @asset true
+        @produces true
+        def orders(ctx) do
+          CtxRecorder.record(ctx)
+          :ok
+        end
+      end
+      """,
+      "test/dynamic_pipeline_assets_test.exs"
+    )
+
+    :ok = Favn.TestSetup.setup_asset_modules([module_name], reload_graph?: true)
+    CtxRecorder.reset()
+
+    assert {:ok, run_id} = Favn.run_asset({module_name, :orders}, dependencies: :none)
+    assert {:ok, _run} = Favn.await_run(run_id, timeout: 5_000)
+
+    [ctx] =
+      CtxRecorder.all()
+      |> Enum.filter(&(&1.current_ref == {module_name, :orders}))
+
+    assert ctx.asset.ref == {module_name, :orders}
+
+    assert ctx.asset.produces == %Favn.RelationRef{
+             connection: :warehouse,
+             catalog: "raw",
+             schema: "sales",
+             name: "orders"
+           }
+  end
+
   test "run_asset/2 manual pipeline_context schedule is passed through without normalization" do
     assert {:ok, run_id} =
              Favn.run_asset({SalesAssets, :sales_daily},

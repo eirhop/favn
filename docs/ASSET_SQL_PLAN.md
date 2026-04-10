@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed plan.
+Phase 1 implemented.
 
 This document defines the target long-term asset authoring direction for Favn and the phased path to implement it safely.
 
@@ -783,15 +783,15 @@ This is the intended intuitive warehouse-oriented structure.
 
 Deliver:
 
-* `Favn.RelationRef`
-* `%Favn.Asset{produces: ...}`
-* namespace config inheritance
-* `Favn.Assets` support for:
+* [x] `Favn.RelationRef`
+* [x] `%Favn.Asset{produces: ...}`
+* [x] namespace config inheritance
+* [x] `Favn.Assets` support for:
   * `@produces`
   * `ctx.asset.produces`
-* validation and normalization
-* relation ownership uniqueness checks
-* relation ownership index
+* [x] validation and normalization
+* [x] relation ownership uniqueness checks
+* [x] relation ownership index
 
 This phase links Elixir materializing assets to warehouse relation ownership.
 

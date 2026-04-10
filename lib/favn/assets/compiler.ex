@@ -36,7 +36,11 @@ defmodule Favn.Assets.Compiler do
 
   defp normalize_assets(assets) when is_list(assets) do
     if Enum.all?(assets, &match?(%Asset{}, &1)) do
-      {:ok, assets}
+      try do
+        {:ok, Enum.map(assets, &Asset.validate!/1)}
+      rescue
+        error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
+      end
     else
       {:error, :invalid_compiled_assets}
     end

@@ -8,7 +8,9 @@ defmodule Favn.SQL do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
-  alias Favn.SQL.{Error, RelationRef, Result, Session, WritePlan}
+  alias Favn.RelationRef
+  alias Favn.SQL.{Error, Result, Session, WritePlan}
+  alias Favn.SQL.RelationRef, as: SQLRelationRef
 
   @type opts :: keyword()
 
@@ -104,12 +106,42 @@ defmodule Favn.SQL do
 
   @spec get_relation(Session.t(), RelationRef.t(), opts()) ::
           {:ok, Favn.SQL.Relation.t() | nil} | {:error, Error.t()}
-  def get_relation(%Session{} = session, %RelationRef{} = ref, opts \\ []) do
+  def get_relation(session, ref, opts \\ [])
+
+  def get_relation(%Session{} = session, %RelationRef{} = ref, opts) do
     if function_exported?(session.adapter, :relation, 3) do
       call_adapter(
         :relation,
         session.resolved.name,
         fn -> session.adapter.relation(session.conn, ref, opts) end,
+        &validate_optional_relation/1
+      )
+    else
+      with {:ok, sql} <-
+             call_adapter(
+               :introspection_query,
+               session.resolved.name,
+               fn -> session.adapter.introspection_query(:relation, ref, opts) end,
+               &validate_statement/1
+             ),
+           {:ok, %Result{} = result} <- query(session, sql, opts) do
+        case result.rows do
+          [%Favn.SQL.Relation{} = relation | _] -> {:ok, relation}
+          [] -> {:ok, nil}
+          other -> {:error, invalid_shape_error(:relation, session.resolved.name, other)}
+        end
+      end
+    end
+  end
+
+  def get_relation(%Session{} = session, %SQLRelationRef{} = ref, opts) do
+    canonical_ref = RelationRef.new!(Map.from_struct(ref))
+
+    if function_exported?(session.adapter, :relation, 3) do
+      call_adapter(
+        :relation,
+        session.resolved.name,
+        fn -> session.adapter.relation(session.conn, canonical_ref, opts) end,
         &validate_optional_relation/1
       )
     else
@@ -179,12 +211,38 @@ defmodule Favn.SQL do
 
   @spec columns(Session.t(), RelationRef.t(), opts()) ::
           {:ok, [Favn.SQL.Column.t()]} | {:error, Error.t()}
-  def columns(%Session{} = session, %RelationRef{} = ref, opts \\ []) do
+  def columns(session, ref, opts \\ [])
+
+  def columns(%Session{} = session, %RelationRef{} = ref, opts) do
     if function_exported?(session.adapter, :columns, 3) do
       call_adapter(
         :columns,
         session.resolved.name,
         fn -> session.adapter.columns(session.conn, ref, opts) end,
+        &validate_column_list/1
+      )
+    else
+      with {:ok, sql} <-
+             call_adapter(
+               :introspection_query,
+               session.resolved.name,
+               fn -> session.adapter.introspection_query(:columns, ref, opts) end,
+               &validate_statement/1
+             ),
+           {:ok, %Result{} = result} <- query(session, sql, opts) do
+        validate_column_list(result.rows)
+      end
+    end
+  end
+
+  def columns(%Session{} = session, %SQLRelationRef{} = ref, opts) do
+    canonical_ref = RelationRef.new!(Map.from_struct(ref))
+
+    if function_exported?(session.adapter, :columns, 3) do
+      call_adapter(
+        :columns,
+        session.resolved.name,
+        fn -> session.adapter.columns(session.conn, canonical_ref, opts) end,
         &validate_column_list/1
       )
     else

@@ -10,6 +10,7 @@ defmodule Favn.Asset do
   """
 
   alias Favn.Ref
+  alias Favn.RelationRef
   alias Favn.Window.Spec
 
   @type t :: %__MODULE__{
@@ -23,7 +24,8 @@ defmodule Favn.Asset do
           line: pos_integer(),
           meta: map(),
           depends_on: [Ref.t()],
-          window_spec: Spec.t() | nil
+          window_spec: Spec.t() | nil,
+          produces: RelationRef.t() | nil
         }
 
   @typedoc """
@@ -42,7 +44,8 @@ defmodule Favn.Asset do
     :line,
     meta: %{},
     depends_on: [],
-    window_spec: nil
+    window_spec: nil,
+    produces: nil
   ]
 
   @doc """
@@ -61,6 +64,7 @@ defmodule Favn.Asset do
     meta = normalize_meta!(asset.meta)
     validate_depends_on!(asset.depends_on)
     validate_window_spec!(asset.window_spec)
+    validate_produces!(asset.produces)
 
     %{asset | meta: meta}
   end
@@ -154,5 +158,13 @@ defmodule Favn.Asset do
   defp validate_window_spec!(value) do
     raise ArgumentError,
           "asset window_spec must be a Favn.Window.Spec or nil, got: #{inspect(value)}"
+  end
+
+  defp validate_produces!(nil), do: :ok
+  defp validate_produces!(%RelationRef{} = relation_ref), do: RelationRef.validate!(relation_ref)
+
+  defp validate_produces!(value) do
+    raise ArgumentError,
+          "asset produces must be a Favn.RelationRef or nil, got: #{inspect(value)}"
   end
 end

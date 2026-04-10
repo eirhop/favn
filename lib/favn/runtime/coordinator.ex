@@ -785,13 +785,14 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp build_context(%State{} = state, node_key) do
+  defp build_context(%State{} = state, node_key, asset) do
     step = Map.fetch!(state.steps, node_key)
 
     %Context{
       run_id: state.run_id,
       target_refs: state.target_refs,
       current_ref: step.ref,
+      asset: %{ref: step.ref, produces: asset.produces},
       params: state.params,
       window: step.runtime_window,
       pipeline: state.pipeline_context,
@@ -856,7 +857,7 @@ defmodule Favn.Runtime.Coordinator do
 
   defp start_executor_step(%State{} = state, node_key, asset) do
     step = Map.fetch!(state.steps, node_key)
-    ctx = build_context(state, node_key)
+    ctx = build_context(state, node_key, asset)
     Logger.metadata(ref: inspect(step.ref), stage: step.stage, attempt: step.attempt)
     started_ms = System.monotonic_time(:millisecond)
 

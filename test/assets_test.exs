@@ -34,7 +34,9 @@ defmodule Favn.AssetsTest do
   use ExUnit.Case, async: true
 
   alias Favn.Asset
+  alias Favn.Assets.Compiler
   alias Favn.AssetsTest.Sample
+  alias Favn.RelationRef
 
   defmodule SQLLikeCompiler do
     @behaviour Favn.Assets.Compiler
@@ -54,7 +56,28 @@ defmodule Favn.AssetsTest do
            title: "Compiled SQL Asset",
            meta: %{category: :sql},
            depends_on: [],
-           window_spec: Favn.Window.daily()
+           window_spec: Favn.Window.daily(),
+           produces: %Favn.RelationRef{name: "compiled_sql_asset"}
+         }
+       ]}
+    end
+  end
+
+  defmodule InvalidCompiledProducesCompiler do
+    @behaviour Favn.Assets.Compiler
+
+    @impl true
+    def compile_assets(module) do
+      {:ok,
+       [
+         %Favn.Asset{
+           module: module,
+           name: :bad_compiled_asset,
+           ref: {module, :bad_compiled_asset},
+           arity: 1,
+           file: "lib/sql_assets.ex",
+           line: 1,
+           produces: %{name: "bad"}
          }
        ]}
     end
@@ -72,6 +95,7 @@ defmodule Favn.AssetsTest do
     assert extract.doc == "Extract raw orders"
     assert extract.meta == %{}
     assert extract.depends_on == []
+    assert extract.produces == nil
 
     assert normalize.depends_on == [{Favn.AssetsTest.Sample, :extract_orders}]
     assert normalize.meta == %{owner: "data", tags: [:sales, "warehouse"]}
@@ -86,6 +110,46 @@ defmodule Favn.AssetsTest do
     assert fact.meta == %{owner: "analytics", category: :sales, tags: [:view]}
     assert fact.depends_on == [{Favn.AssetsTest.Upstream, :source_rows}]
     assert fact.window_spec == nil
+    assert fact.produces == nil
+  end
+
+  test "captures @produces with namespace defaults and runtime name inference" do
+    module_name = Module.concat(__MODULE__, "Produces#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+      use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+      use Favn.Assets
+
+      @asset true
+      @produces true
+      def orders(_ctx), do: :ok
+
+      @asset true
+      @produces database: :silver, table: :daily_orders
+      def stage_orders(_ctx), do: :ok
+    end
+    """
+
+    assert Enum.any?(Code.compile_string(source, "test/dynamic_assets_test.exs"), fn {mod, _} ->
+             mod == module_name
+           end)
+
+    [orders, stage_orders] = module_name.__favn_assets__()
+
+    assert orders.produces == %RelationRef{
+             connection: :warehouse,
+             catalog: "raw",
+             schema: "sales",
+             name: "orders"
+           }
+
+    assert stage_orders.produces == %RelationRef{
+             connection: :warehouse,
+             catalog: "silver",
+             schema: "sales",
+             name: "daily_orders"
+           }
   end
 
   test "rejects invalid asset declarations at compile time" do
@@ -231,6 +295,51 @@ defmodule Favn.AssetsTest do
       def too_many_windows(_ctx), do: :ok
       """)
     end
+
+    assert_raise CompileError, ~r/invalid @produces value/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @produces :bad
+      def bad_produces(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/multiple @produces attributes are not allowed/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @asset true
+      @produces true
+      @produces name: :orders
+      def duplicate_produces(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/duplicate produced relation/, fn ->
+      compile_test_module("""
+      use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+      use Favn.Assets
+
+      @asset true
+      @produces true
+      def orders(_ctx), do: :ok
+
+      @asset true
+      @produces name: :orders
+      def duplicate_orders(_ctx), do: :ok
+      """)
+    end
+
+    assert_raise CompileError, ~r/requires @asset immediately above/, fn ->
+      compile_test_module("""
+      use Favn.Assets
+
+      @produces true
+      def helper(_ctx), do: :ok
+      """)
+    end
   end
 
   test "consumes @depends and @meta only for the intended asset" do
@@ -253,7 +362,10 @@ defmodule Favn.AssetsTest do
     end
     """
 
-    [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
+    assert Enum.any?(Code.compile_string(source, "test/dynamic_assets_test.exs"), fn {mod, _} ->
+             mod == module_name
+           end)
+
     [first, a, second] = module_name.__favn_assets__()
 
     assert first.depends_on == [{module_name, :a}]
@@ -273,7 +385,9 @@ defmodule Favn.AssetsTest do
     end
     """
 
-    [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
+    assert Enum.any?(Code.compile_string(source, "test/dynamic_assets_test.exs"), fn {mod, _} ->
+             mod == module_name
+           end)
 
     assert Favn.asset_module?(module_name)
 
@@ -282,6 +396,21 @@ defmodule Favn.AssetsTest do
 
     assert {:ok, catalog} = Favn.Assets.Registry.build_catalog([module_name])
     assert [%Favn.Asset{name: :compiled_sql_asset, module: ^module_name}] = catalog.assets
+  end
+
+  test "asset compiler seam rejects invalid canonical produced relation shapes" do
+    module_name = Module.concat(__MODULE__, "BadCompiler#{System.unique_integer([:positive])}")
+
+    source = """
+    defmodule #{inspect(module_name)} do
+      def __favn_asset_compiler__, do: #{inspect(InvalidCompiledProducesCompiler)}
+    end
+    """
+
+    [{^module_name, _}] = Code.compile_string(source, "test/dynamic_assets_test.exs")
+
+    assert {:error, {:invalid_compiled_assets, _message}} =
+             Compiler.compile_module_assets(module_name)
   end
 
   defp compile_test_module(body) do

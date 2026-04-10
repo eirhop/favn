@@ -9,6 +9,8 @@ lib/
     ├── application.ex
     ├── asset.ex
     ├── assets.ex
+    ├── namespace.ex
+    ├── relation_ref.ex
     ├── assets/
     │   ├── compiler.ex
     │   ├── graph_index.ex

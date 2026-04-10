@@ -9,8 +9,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @behaviour Favn.SQL.Adapter
 
   alias Favn.Connection.Resolved
+  alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.Client
-  alias Favn.SQL.{Capabilities, Column, Error, Relation, RelationRef, Result, WritePlan}
+  alias Favn.SQL.{Capabilities, Column, Error, Relation, Result, WritePlan}
 
   defmodule Conn do
     @moduledoc false
