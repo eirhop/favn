@@ -1,6 +1,7 @@
 defmodule Favn.WindowTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Triggers.Schedules
   alias Favn.Window
   alias Favn.Window.{Anchor, Key, Runtime, Spec}
 
@@ -224,7 +225,7 @@ defmodule Favn.WindowTest do
   end
 
   test "Schedules.fetch returns error for non-schedule module" do
-    assert {:error, :not_schedule_module} = Favn.Triggers.Schedules.fetch(Favn.Window, :daily)
+    assert {:error, :not_schedule_module} = Schedules.fetch(Favn.Window, :daily)
   end
 
   test "Schedules.fetch returns error for schedule not found" do
@@ -233,7 +234,7 @@ defmodule Favn.WindowTest do
     end
 
     assert {:error, {:schedule_not_found, :nonexistent}} =
-             Favn.Triggers.Schedules.fetch(NoSchedules, :nonexistent)
+             Schedules.fetch(NoSchedules, :nonexistent)
   end
 
   test "Anchor.new! raises on invalid input" do
