@@ -229,6 +229,21 @@ defmodule Favn.SQLAssetTest do
     end
   end
 
+  test "rejects plain string query bodies" do
+    assert_raise CompileError, ~r/query body must contain a ~SQL literal/, fn ->
+      compile_sql_asset_module("""
+      use Favn.Namespace, connection: :warehouse
+      use Favn.SQLAsset
+
+      @materialized :view
+
+      query do
+        "select 1"
+      end
+      """)
+    end
+  end
+
   test "rejects module shorthand depends for multi-asset modules" do
     asset_module = Module.concat(__MODULE__, "BadDepends#{System.unique_integer([:positive])}")
 

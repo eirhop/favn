@@ -250,7 +250,7 @@ defmodule Favn.SQLAsset do
     compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @window attributes are not allowed; use at most one @window for sql ..."
+      "multiple @window attributes are not allowed; use at most one @window before query do ... end"
     )
   end
 
@@ -281,7 +281,7 @@ defmodule Favn.SQLAsset do
     compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @materialized attributes are not allowed; use exactly one @materialized for sql ..."
+      "multiple @materialized attributes are not allowed; use exactly one @materialized before query do ... end"
     )
   end
 
@@ -314,7 +314,7 @@ defmodule Favn.SQLAsset do
           compile_error!(
             raw_definition.file,
             raw_definition.line,
-            "multiple @produces attributes are not allowed; use at most one @produces for sql ..."
+            "multiple @produces attributes are not allowed; use at most one @produces before query do ... end"
           )
 
         [other] ->
@@ -365,7 +365,7 @@ defmodule Favn.SQLAsset do
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window/@produces/@materialized on #{kind} #{name}/#{arity} requires sql ... immediately below those attributes"
+        "@depends/@meta/@window/@produces/@materialized on #{kind} #{name}/#{arity} requires query do ... end immediately below those attributes"
       )
     else
       :ok
@@ -397,9 +397,6 @@ defmodule Favn.SQLAsset do
 
   defp extract_sql!(body, env) do
     case body do
-      binary when is_binary(binary) ->
-        binary
-
       {:sigil_SQL, _meta, [parts_ast, modifiers]} ->
         extract_sigil_sql!(parts_ast, modifiers, env)
 
