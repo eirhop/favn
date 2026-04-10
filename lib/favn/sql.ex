@@ -1,18 +1,137 @@
 defmodule Favn.SQL do
   @moduledoc """
-  Internal SQL facade used at runtime for adapter orchestration.
+  SQL runtime facade and reusable SQL authoring DSL.
 
   Compiler/discovery and planner flows should remain independent from SQL sessions.
-  This facade starts from `%Favn.Connection.Resolved{}` and is runtime-only.
+  Runtime SQL session APIs in this module start from `%Favn.Connection.Resolved{}`.
+
+  The same module also exposes SQL authoring macros:
+
+    * `use Favn.SQL`
+    * `defsql ... do ... end`
+    * `~SQL\""" ... \"""`
   """
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
+  alias Favn.SQL.Definition
   alias Favn.SQL.{Error, Result, Session, WritePlan}
   alias Favn.SQL.RelationRef, as: SQLRelationRef
+  alias Favn.SQL.Template
 
   @type opts :: keyword()
+
+  @doc false
+  defmacro __using__(_opts) do
+    quote do
+      Module.register_attribute(__MODULE__, :favn_sql_raw_definitions, accumulate: true)
+
+      Module.register_attribute(__MODULE__, :favn_sql_imports, accumulate: true)
+
+      @before_compile Favn.SQL
+
+      import Favn.SQL, only: [defsql: 2, sigil_SQL: 2]
+    end
+  end
+
+  @doc false
+  defmacro sigil_SQL({:<<>>, _meta, parts}, modifiers) when is_list(modifiers) do
+    if modifiers != [] do
+      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
+    end
+
+    if Enum.all?(parts, &is_binary/1) do
+      Enum.join(parts)
+    else
+      compile_error!(
+        __CALLER__.file,
+        __CALLER__.line,
+        "~SQL sigil does not support interpolation"
+      )
+    end
+  end
+
+  defmacro sigil_SQL(_body, modifiers) do
+    if modifiers != [] do
+      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
+    else
+      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL body must be a literal string")
+    end
+  end
+
+  @doc false
+  defmacro defsql({name, _meta, args_ast}, do: body)
+           when is_atom(name) and (is_list(args_ast) or is_nil(args_ast)) do
+    args = normalize_defsql_args!(args_ast || [], __CALLER__)
+    validate_reserved_arg_names!(args, __CALLER__)
+    sql = extract_sql!(body, __CALLER__, "defsql body must contain a ~SQL literal")
+    arity = length(args)
+
+    raw = %{
+      module: __CALLER__.module,
+      name: name,
+      args: args,
+      arity: arity,
+      sql: sql,
+      file: normalize_file(__CALLER__.file),
+      line: __CALLER__.line
+    }
+
+    quote bind_quoted: [raw: Macro.escape(raw)] do
+      @favn_sql_raw_definitions raw
+      :ok
+    end
+  end
+
+  defmacro defsql(_head, do: _body) do
+    compile_error!(
+      __CALLER__.file,
+      __CALLER__.line,
+      "defsql expects a function-style head, for example defsql my_macro(arg) do ... end"
+    )
+  end
+
+  @doc false
+  defmacro __before_compile__(env) do
+    provider_module = env.module
+
+    raw_definitions =
+      env.module
+      |> Module.get_attribute(:favn_sql_raw_definitions)
+      |> List.wrap()
+      |> Enum.reverse()
+
+    ensure_unique_definition_keys!(raw_definitions)
+
+    imports =
+      env.module
+      |> Module.get_attribute(:favn_sql_imports)
+      |> List.wrap()
+      |> Enum.reverse()
+      |> Enum.uniq()
+
+    definitions = build_sql_definitions!(env.module, raw_definitions, imports)
+
+    using_ast =
+      quote do
+        if not Module.has_attribute?(__MODULE__, :favn_sql_imports) do
+          Module.register_attribute(__MODULE__, :favn_sql_imports, accumulate: true)
+        end
+
+        @favn_sql_imports unquote(provider_module)
+        import Favn.SQL, only: [sigil_SQL: 2]
+      end
+
+    quote do
+      @doc false
+      @spec __favn_sql_definitions__() :: [Favn.SQL.Definition.t()]
+      def __favn_sql_definitions__, do: unquote(Macro.escape(definitions))
+
+      @doc false
+      defmacro __using__(_opts), do: unquote(Macro.escape(using_ast))
+    end
+  end
 
   @spec resolve_connection(atom()) :: {:ok, Resolved.t()} | {:error, Error.t()}
   def resolve_connection(name) when is_atom(name) do
@@ -285,6 +404,162 @@ defmodule Favn.SQL do
         run_statements(session, statements, opts)
       end
     end
+  end
+
+  defp build_sql_definitions!(module, raw_definitions, imports) do
+    imported_definitions = fetch_imported_definitions!(imports)
+
+    provisional =
+      Enum.map(raw_definitions, fn raw ->
+        shape = infer_shape(raw.sql)
+
+        %Definition{
+          module: module,
+          name: raw.name,
+          arity: raw.arity,
+          params: raw.args,
+          shape: shape,
+          sql: raw.sql,
+          template: %Template{
+            source: raw.sql,
+            inputs: MapSet.new(),
+            runtime_inputs: MapSet.new(),
+            param_inputs: MapSet.new()
+          },
+          file: raw.file,
+          line: raw.line
+        }
+      end)
+
+    known_definitions =
+      (provisional ++ imported_definitions)
+      |> Enum.map(fn %Definition{name: name, arity: arity} = definition ->
+        {{name, arity}, definition}
+      end)
+      |> Map.new()
+
+    Enum.map(provisional, fn %Definition{} = definition ->
+      template =
+        Template.compile!(definition.sql,
+          known_definitions: known_definitions,
+          file: definition.file,
+          line: definition.line,
+          module: module
+        )
+
+      %Definition{definition | template: template}
+    end)
+  end
+
+  defp fetch_imported_definitions!(imports) do
+    Enum.flat_map(imports, fn module ->
+      case Code.ensure_compiled(module) do
+        {:module, _} ->
+          if function_exported?(module, :__favn_sql_definitions__, 0) do
+            module.__favn_sql_definitions__()
+          else
+            []
+          end
+
+        {:error, _reason} ->
+          []
+      end
+    end)
+  end
+
+  defp infer_shape(sql) do
+    normalized = String.trim_leading(sql)
+
+    if Regex.match?(~r/^(?:select|with)\b/i, normalized) do
+      :relation
+    else
+      :expression
+    end
+  end
+
+  defp normalize_defsql_args!(args_ast, env) do
+    Enum.map(args_ast, fn
+      {name, _meta, context} when is_atom(name) and is_atom(context) ->
+        name
+
+      {name, _meta, nil} when is_atom(name) ->
+        name
+
+      other ->
+        compile_error!(
+          env.file,
+          env.line,
+          "defsql arguments must be plain variable names, got: #{Macro.to_string(other)}"
+        )
+    end)
+  end
+
+  defp validate_reserved_arg_names!(args, env) do
+    reserved = MapSet.new(Template.reserved_runtime_inputs())
+
+    Enum.each(args, fn arg ->
+      if MapSet.member?(reserved, arg) do
+        compile_error!(
+          env.file,
+          env.line,
+          "defsql argument @#{arg} is reserved for runtime SQL inputs"
+        )
+      end
+    end)
+  end
+
+  defp ensure_unique_definition_keys!(raw_definitions) do
+    raw_definitions
+    |> Enum.group_by(fn definition -> {definition.name, definition.arity} end)
+    |> Enum.each(fn
+      {{_name, _arity}, [_single]} ->
+        :ok
+
+      {{name, arity}, [definition | _rest]} ->
+        compile_error!(
+          definition.file,
+          definition.line,
+          "duplicate defsql #{name}/#{arity}; each defsql name/arity must be unique per module"
+        )
+    end)
+  end
+
+  @doc false
+  @spec extract_sql!(Macro.t(), Macro.Env.t(), String.t()) :: String.t()
+  def extract_sql!(body, env, error_message) do
+    case body do
+      {:sigil_SQL, _meta, [parts_ast, modifiers]} ->
+        extract_sigil_sql!(parts_ast, modifiers, env, error_message)
+
+      _ ->
+        compile_error!(env.file, env.line, error_message)
+    end
+  end
+
+  defp extract_sigil_sql!(_parts_ast, modifiers, env, _error_message) when modifiers != [] do
+    compile_error!(env.file, env.line, "~SQL sigil does not support modifiers")
+  end
+
+  defp extract_sigil_sql!({:<<>>, _meta, parts}, [], env, _error_message) do
+    if Enum.all?(parts, &is_binary/1) do
+      Enum.join(parts)
+    else
+      compile_error!(env.file, env.line, "~SQL sigil does not support interpolation")
+    end
+  end
+
+  defp extract_sigil_sql!(_parts_ast, [], env, error_message) do
+    compile_error!(env.file, env.line, error_message)
+  end
+
+  defp normalize_file(file) do
+    file
+    |> to_string()
+    |> Path.relative_to_cwd()
+  end
+
+  defp compile_error!(file, line, description) do
+    raise CompileError, file: file, line: line, description: description
   end
 
   defp run_statements(session, statements, opts) do

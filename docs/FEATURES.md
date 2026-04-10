@@ -144,18 +144,28 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] canonical compile output as one `%Favn.Asset{ref: {Module, :asset}}`
   - [x] module convenience lookup via `Favn.get_asset(module)` for single-asset modules
   - [x] explicit runtime guard until SQL execution lands
+- [x] Phase 3 follow-up: finalize SQL authoring DSL before runtime integration
+  - [x] `Favn.SQL` reusable SQL modules via `defsql ... do ... end`
+  - [x] keep `~SQL` as the only SQL body syntax for both `query` and `defsql`
+  - [x] one `@name` placeholder/input model across asset queries and reusable SQL
+  - [x] reserved runtime SQL inputs such as `@window_start` / `@window_end`
+  - [x] param-driven SQL inputs for non-reserved `@name` placeholders
+  - [x] expression SQL macros and relation SQL macros from day one
+  - [x] direct asset references in relation position, e.g. `from MyApp.Raw.Sales.Orders`
+  - [x] compile-time normalization and validation of reusable SQL definitions/calls
+  - [x] dedicated SQL IR instead of plain-string-only storage
 - [ ] DuckDB adapter hardening + incremental strategy expansion
 - [ ] Typed source identities
-- [ ] SQL execution through shared runtime
-- [ ] SQL helper APIs (`render`, `preview`, `explain`, `materialize`)
-- [ ] Reusable SQL via `Favn.SQL` and `defsql ... do ... end`
-- [ ] `@name` placeholder binding for SQL values
-- [ ] Favn-aware relation resolution from module refs inside SQL
-- [ ] SQL-aware macro expansion / AST model
+- [ ] Phase 4 runtime integration for SQL assets
+  - [ ] SQL execution through shared runtime
+  - [ ] SQL helper APIs (`render`, `preview`, `explain`, `materialize`)
+  - [ ] runtime SQL input resolution and parameter binding
+  - [ ] adapter-backed rendering/materialization from the SQL IR
 - [ ] Multi-asset SQL modules
 - [ ] SQL file support
-- [ ] Dependency inference from typed SQL references
-- [ ] SQL asset dependency planning on the shared window-aware runtime model
+- [ ] Phase 5 relation-based SQL inference
+  - [ ] dependency inference from typed SQL relation references
+  - [ ] SQL asset dependency planning on the shared window-aware runtime model
 - [ ] Window-aware incremental execution
 - [ ] Lookback handling for incremental SQL assets
 

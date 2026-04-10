@@ -6,13 +6,17 @@ defmodule Favn.SQLAsset do
   `%Favn.Asset{}` with ref `{Module, :asset}`.
 
   SQL bodies are authored with `query do ... end` and a real `~SQL` sigil.
-  In the current phase, `~SQL` simply returns a plain SQL string.
+  SQL compilation keeps the authored SQL source and a normalized SQL template IR
+  so reusable SQL definitions and relation references can be validated at compile time.
   """
 
   alias Favn.Asset
   alias Favn.Namespace
   alias Favn.Ref
   alias Favn.RelationRef
+  alias Favn.SQL
+  alias Favn.SQL.Definition, as: SQLDefinition
+  alias Favn.SQL.Template
   alias Favn.SQLAsset.Definition
   alias Favn.SQLAsset.Materialization
   alias Favn.SQLAsset.Runtime
@@ -27,11 +31,13 @@ defmodule Favn.SQLAsset do
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :materialized, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_asset_raw, persist: false)
+      Module.register_attribute(__MODULE__, :favn_sql_imports, accumulate: true)
 
       @on_definition Favn.SQLAsset
       @before_compile Favn.SQLAsset
 
-      import Favn.SQLAsset, only: [query: 1, sigil_SQL: 2]
+      import Favn.SQLAsset, only: [query: 1]
+      import Favn.SQL, only: [sigil_SQL: 2]
     end
   end
 
@@ -67,31 +73,6 @@ defmodule Favn.SQLAsset do
         _ ->
           :ok
       end
-    end
-  end
-
-  @doc false
-  defmacro sigil_SQL({:<<>>, _meta, parts}, modifiers) when is_list(modifiers) do
-    if modifiers != [] do
-      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
-    end
-
-    if Enum.all?(parts, &is_binary/1) do
-      Enum.join(parts)
-    else
-      compile_error!(
-        __CALLER__.file,
-        __CALLER__.line,
-        "~SQL sigil does not support interpolation"
-      )
-    end
-  end
-
-  defmacro sigil_SQL(_body, modifiers) do
-    if modifiers != [] do
-      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
-    else
-      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL body must be a literal string")
     end
   end
 
@@ -144,6 +125,10 @@ defmodule Favn.SQLAsset do
         :materialized,
         env.module |> fetch_accum_attribute(:materialized) |> Enum.reverse()
       )
+      |> Map.put(
+        :sql_imports,
+        env.module |> fetch_accum_attribute(:favn_sql_imports) |> Enum.reverse()
+      )
 
     definition = build_definition!(raw_definition)
 
@@ -176,6 +161,15 @@ defmodule Favn.SQLAsset do
     window_spec = normalize_window!(raw_definition.window, raw_definition)
     materialization = normalize_materialized!(raw_definition.materialized, raw_definition)
     produces = normalize_produces!(raw_definition, inferred_relation_name(raw_definition.module))
+    known_definitions = fetch_sql_definitions!(raw_definition)
+
+    template =
+      Template.compile!(raw_definition.sql,
+        known_definitions: known_definitions,
+        file: raw_definition.file,
+        line: raw_definition.line,
+        module: raw_definition.module
+      )
 
     asset = %Asset{
       module: raw_definition.module,
@@ -198,6 +192,8 @@ defmodule Favn.SQLAsset do
       module: raw_definition.module,
       asset: asset,
       sql: raw_definition.sql,
+      template: template,
+      sql_definitions: Map.values(known_definitions),
       materialization: materialization,
       raw_asset: raw_definition
     }
@@ -396,33 +392,38 @@ defmodule Favn.SQLAsset do
   end
 
   defp extract_sql!(body, env) do
-    case body do
-      {:sigil_SQL, _meta, [parts_ast, modifiers]} ->
-        extract_sigil_sql!(parts_ast, modifiers, env)
+    SQL.extract_sql!(body, env, "query body must contain a ~SQL literal")
+  end
 
-      _ ->
+  defp fetch_sql_definitions!(raw_definition) do
+    raw_definition
+    |> Map.get(:sql_imports, [])
+    |> Enum.uniq()
+    |> Enum.flat_map(fn module ->
+      case Code.ensure_compiled(module) do
+        {:module, _} ->
+          if function_exported?(module, :__favn_sql_definitions__, 0) do
+            module.__favn_sql_definitions__()
+          else
+            []
+          end
+
+        {:error, _reason} ->
+          []
+      end
+    end)
+    |> Enum.map(fn
+      %SQLDefinition{name: name, arity: arity} = definition ->
+        {{name, arity}, definition}
+
+      other ->
         compile_error!(
-          env.file,
-          env.line,
-          "query body must contain a ~SQL literal"
+          raw_definition.file,
+          raw_definition.line,
+          "invalid SQL definition import #{inspect(other)}"
         )
-    end
-  end
-
-  defp extract_sigil_sql!(_parts_ast, modifiers, env) when modifiers != [] do
-    compile_error!(env.file, env.line, "~SQL sigil does not support modifiers")
-  end
-
-  defp extract_sigil_sql!({:<<>>, _meta, parts}, [], env) do
-    if Enum.all?(parts, &is_binary/1) do
-      Enum.join(parts)
-    else
-      compile_error!(env.file, env.line, "~SQL sigil does not support interpolation")
-    end
-  end
-
-  defp extract_sigil_sql!(_parts_ast, [], env) do
-    compile_error!(env.file, env.line, "query body must contain a ~SQL literal")
+    end)
+    |> Map.new()
   end
 
   defp normalize_doc({_line, false}), do: nil
