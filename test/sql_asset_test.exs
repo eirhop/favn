@@ -47,7 +47,9 @@ defmodule Favn.SQLAssetTest do
         @window Favn.Window.daily(lookback: 2)
         @materialized {:incremental, strategy: :delete_insert, unique_key: [:order_id]}
 
-        sql "select order_id from silver.sales.stg_orders"
+        query do
+          ~SQL[select order_id from silver.sales.stg_orders]
+        end
       end
       """,
       "test/dynamic_sql_asset_test.exs"
@@ -102,7 +104,9 @@ defmodule Favn.SQLAssetTest do
         @depends #{inspect(upstream)}
         @materialized :table
         @produces schema: :mart, table: :fact_orders
-        sql "select * from silver.sales.stg_orders"
+        query do
+          ~SQL[select * from silver.sales.stg_orders]
+        end
       end
       """,
       "test/dynamic_sql_asset_test.exs"
@@ -131,7 +135,10 @@ defmodule Favn.SQLAssetTest do
 
         @doc "Facade SQL asset"
         @materialized :view
-        sql "select 1 as id"
+
+        query do
+          ~SQL[select 1 as id]
+        end
       end
       """,
       "test/dynamic_sql_asset_test.exs"
@@ -155,7 +162,10 @@ defmodule Favn.SQLAssetTest do
         use Favn.SQLAsset
 
         @materialized :table
-        sql "select 1 as id"
+
+        query do
+          ~SQL[select 1 as id]
+        end
       end
       """,
       "test/dynamic_sql_asset_test.exs"
@@ -178,7 +188,9 @@ defmodule Favn.SQLAssetTest do
       use Favn.Namespace, connection: :warehouse
       use Favn.SQLAsset
 
-      sql "select 1"
+      query do
+        ~SQL[select 1]
+      end
       """)
     end
   end
@@ -191,13 +203,15 @@ defmodule Favn.SQLAssetTest do
                    use Favn.SQLAsset
 
                    @materialized :view
-                   sql "select 1"
+                   query do
+                     ~SQL[select 1]
+                   end
                    """)
                  end
   end
 
   test "rejects SQL sigil modifiers" do
-    assert_raise CompileError, ~r/sql ~SQL sigil does not support modifiers/, fn ->
+    assert_raise CompileError, ~r/~SQL sigil does not support modifiers/, fn ->
       module_name =
         Module.concat(__MODULE__, "SigilModifiers#{System.unique_integer([:positive])}")
 
@@ -206,7 +220,9 @@ defmodule Favn.SQLAssetTest do
           "  use Favn.Namespace, connection: :warehouse\n" <>
           "  use Favn.SQLAsset\n\n" <>
           "  @materialized :view\n" <>
-          "  sql ~SQL[select 1]x\n" <>
+          "  query do\n" <>
+          "    ~SQL[select 1]x\n" <>
+          "  end\n" <>
           "end\n",
         "test/dynamic_sql_asset_test.exs"
       )
@@ -224,7 +240,10 @@ defmodule Favn.SQLAssetTest do
 
         @depends #{inspect(Favn.AssetsTest.Upstream)}
         @materialized :view
-        sql "select 1"
+
+        query do
+          ~SQL[select 1]
+        end
       end
       """,
       "test/dynamic_sql_asset_test.exs"
@@ -246,7 +265,10 @@ defmodule Favn.SQLAssetTest do
       @materialized :view
       @produces true
       @produces name: :orders
-      sql "select 1"
+
+      query do
+        ~SQL[select 1]
+      end
       """)
     end
   end
@@ -263,7 +285,10 @@ defmodule Favn.SQLAssetTest do
 
         @depends #{inspect(upstream)}
         @materialized :view
-        sql "select 1"
+
+        query do
+          ~SQL[select 1]
+        end
       end
       """,
       "test/dynamic_sql_asset_test.exs"

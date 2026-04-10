@@ -138,7 +138,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] `@produces true` relation-name inference from module leaf (`Macro.underscore/1`)
   - [x] module convenience lookup via `Favn.get_asset(module)` for single-asset modules
 - [x] Phase 3 single-asset SQL DSL (`Favn.SQLAsset`)
-  - [x] one-module-per-asset SQL DSL with inline `sql ~SQL""" ... """`
+  - [x] one-module-per-asset SQL DSL with `query do ... end` and a real `~SQL""" ... """` sigil
   - [x] `@doc`, `@meta`, `@depends`, `@window`, `@materialized`, `@produces`
   - [x] relation default inheritance via `Favn.Namespace`
   - [x] canonical compile output as one `%Favn.Asset{ref: {Module, :asset}}`
@@ -148,6 +148,10 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 - [ ] Typed source identities
 - [ ] SQL execution through shared runtime
 - [ ] SQL helper APIs (`render`, `preview`, `explain`, `materialize`)
+- [ ] Reusable SQL via `Favn.SQL` and `defsql ... do ... end`
+- [ ] `@name` placeholder binding for SQL values
+- [ ] Favn-aware relation resolution from module refs inside SQL
+- [ ] SQL-aware macro expansion / AST model
 - [ ] Multi-asset SQL modules
 - [ ] SQL file support
 - [ ] Dependency inference from typed SQL references

@@ -4,6 +4,9 @@ defmodule Favn.SQLAsset do
 
   `Favn.SQLAsset` compiles one SQL-authored module into one canonical
   `%Favn.Asset{}` with ref `{Module, :asset}`.
+
+  SQL bodies are authored with `query do ... end` and a real `~SQL` sigil.
+  In the current phase, `~SQL` simply returns a plain SQL string.
   """
 
   alias Favn.Asset
@@ -28,7 +31,7 @@ defmodule Favn.SQLAsset do
       @on_definition Favn.SQLAsset
       @before_compile Favn.SQLAsset
 
-      import Favn.SQLAsset, only: [sql: 1]
+      import Favn.SQLAsset, only: [query: 1, sigil_SQL: 2]
     end
   end
 
@@ -68,14 +71,39 @@ defmodule Favn.SQLAsset do
   end
 
   @doc false
-  defmacro sql(body) do
+  defmacro sigil_SQL({:<<>>, _meta, parts}, modifiers) when is_list(modifiers) do
+    if modifiers != [] do
+      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
+    end
+
+    if Enum.all?(parts, &is_binary/1) do
+      Enum.join(parts)
+    else
+      compile_error!(
+        __CALLER__.file,
+        __CALLER__.line,
+        "~SQL sigil does not support interpolation"
+      )
+    end
+  end
+
+  defmacro sigil_SQL(_body, modifiers) do
+    if modifiers != [] do
+      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
+    else
+      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL body must be a literal string")
+    end
+  end
+
+  @doc false
+  defmacro query(do: body) do
     raw_definition = Module.get_attribute(__CALLER__.module, :favn_sql_asset_raw)
 
     if raw_definition do
       compile_error!(
         __CALLER__.file,
         __CALLER__.line,
-        "Favn.SQLAsset modules can define only one sql body"
+        "Favn.SQLAsset modules can define only one query body"
       )
     end
 
@@ -98,7 +126,11 @@ defmodule Favn.SQLAsset do
     base_definition = Module.get_attribute(env.module, :favn_sql_asset_raw)
 
     if is_nil(base_definition) do
-      compile_error!(env.file, env.line, "Favn.SQLAsset modules must define exactly one sql body")
+      compile_error!(
+        env.file,
+        env.line,
+        "Favn.SQLAsset modules must define exactly one query body"
+      )
     end
 
     raw_definition =
@@ -375,29 +407,25 @@ defmodule Favn.SQLAsset do
         compile_error!(
           env.file,
           env.line,
-          "sql body must be a plain string or ~SQL sigil without interpolation"
+          "query body must contain a ~SQL literal"
         )
     end
   end
 
   defp extract_sigil_sql!(_parts_ast, modifiers, env) when modifiers != [] do
-    compile_error!(env.file, env.line, "sql ~SQL sigil does not support modifiers")
+    compile_error!(env.file, env.line, "~SQL sigil does not support modifiers")
   end
 
   defp extract_sigil_sql!({:<<>>, _meta, parts}, [], env) do
     if Enum.all?(parts, &is_binary/1) do
       Enum.join(parts)
     else
-      compile_error!(env.file, env.line, "sql ~SQL sigil does not support interpolation")
+      compile_error!(env.file, env.line, "~SQL sigil does not support interpolation")
     end
   end
 
   defp extract_sigil_sql!(_parts_ast, [], env) do
-    compile_error!(
-      env.file,
-      env.line,
-      "sql body must be a plain string or ~SQL sigil without interpolation"
-    )
+    compile_error!(env.file, env.line, "query body must contain a ~SQL literal")
   end
 
   defp normalize_doc({_line, false}), do: nil

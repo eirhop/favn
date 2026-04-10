@@ -336,21 +336,23 @@ defmodule MyWarehouse.Gold.Sales.FctOrders do
   @window Favn.Window.daily(on: :order_date, lookback: 2)
   @materialized {:incremental, strategy: :delete_insert, unique_key: [:order_id]}
 
-  sql ~SQL"""
-  select
-    order_id,
-    customer_id,
-    order_date,
-    total_amount
-  from gold.sales.stg_orders
-  """
+  query do
+    ~SQL"""
+    select
+      order_id,
+      customer_id,
+      order_date,
+      total_amount
+    from gold.sales.stg_orders
+    """
+  end
 end
 ```
 
 ### Core rules
 
 * one SQL asset module = one asset
-* SQL body remains normal SQL
+* SQL body remains normal SQL authored through a real `~SQL` sigil
 * metadata uses familiar Favn conventions
 * produced relation is normally inferred from namespace/module path
 * explicit override via `@produces` is allowed
@@ -367,12 +369,19 @@ Example:
 
 Favn should avoid custom SQL syntax in the SQL body for v1.
 
+Favn SQL should use one real SQL body language:
+
+* asset SQL uses `query do ... end`
+* reusable SQL should later use `defsql ... do ... end`
+* both should contain `~SQL` bodies
+
 Do not require:
 
 * `ref(...)`
 * `source(...)`
 * interpolation-heavy SQL DSL
 * Jinja-like templating
+* fake sigils
 
 The SQL text should stay as close to standard SQL as possible so ordinary SQL editor tooling remains usable.
 
@@ -625,10 +634,12 @@ Explicit dependency declaration must remain supported.
 SQL authoring should prefer:
 
 ```elixir
-sql ~SQL"""
-select *
-from raw.sales.orders
-"""
+query do
+  ~SQL"""
+  select *
+  from raw.sales.orders
+  """
+end
 ```
 
 not custom SQL DSL constructs inside the query body.
@@ -833,7 +844,8 @@ Implemented semantics:
 Deliver:
 
 * [x] one-module-per-asset SQL DSL
-* [x] inline SQL via `sql ~SQL""" ... """`
+* [x] real `~SQL""" ... """` sigil
+* [x] `query do ... end` for asset queries
 * [x] support for:
   * [x] `@doc`
   * [x] `@meta`
@@ -852,6 +864,8 @@ Implemented semantics:
 
 * one `use Favn.SQLAsset` module compiles to exactly one canonical asset with ref `{Module, :asset}`
 * `Favn.SQLAsset` reuses `Favn.Namespace` for inherited `connection` / `catalog` / `schema` defaults
+* SQL asset queries are authored as `query do ... end`
+* `~SQL` is now a real Elixir sigil and currently returns a plain SQL string
 * `@depends` accepts:
 
   * `Some.Module` only when `Some.Module` is another single-asset module, normalized to `{Some.Module, :asset}`
@@ -863,9 +877,43 @@ Implemented semantics:
   * `{:incremental, strategy: :append | :replace | :delete_insert | :merge, unique_key: [...]}`
 * SQL assets infer their produced relation from `Favn.Namespace` defaults plus module leaf `Macro.underscore/1`
 * SQL assets require a resolved produced relation with a connection name
-* `sql ~SQL` stays plain SQL and currently rejects interpolation/modifiers in phase 3
+* `~SQL` stays plain SQL and currently rejects interpolation/modifiers in phase 3
 * SQL modules expose the existing asset compiler seam via `__favn_asset_compiler__/0`
 * generated `asset/1` currently returns `{:error, :sql_asset_runtime_not_implemented}` until phase 4 runtime execution lands
+
+### SQL DSL direction
+
+Favn SQL uses a real `~SQL` sigil as the single SQL body language.
+
+SQL assets declare their main query with `query do ... end`.
+Reusable SQL should later be declared with `defsql ... do ... end`.
+
+Both asset queries and reusable SQL macros should use the same `~SQL` body syntax and the same `@name` placeholder syntax for injected values.
+
+What is implemented now:
+
+* real `~SQL` sigil
+* `query do ~SQL""" ... """ end`
+* `~SQL` returns a plain SQL string
+* `Favn.SQLAsset` stores that SQL string
+
+What is not implemented yet:
+
+* expression SQL macros
+* relation SQL macros
+* module-reference relation resolution
+* `@param` / runtime value binding
+* CTE composition helpers
+* SQL-aware macro expansion
+* SQL AST representation
+
+The DSL should explicitly avoid:
+
+* fake sigils
+* Jinja-style templating
+* arbitrary Elixir interpolation inside SQL
+* string stitching as the normal authoring workflow
+* multiple placeholder syntaxes across SQL contexts
 
 ### Phase 4 — SQL runtime integration and helper APIs
 
