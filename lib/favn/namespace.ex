@@ -57,11 +57,12 @@ defmodule Favn.Namespace do
 
   defp namespace_config(module) do
     cond do
-      function_exported?(module, :__favn_namespace_config__, 0) ->
-        module.__favn_namespace_config__()
-
       Module.open?(module) ->
         Module.get_attribute(module, :favn_namespace_config)
+
+      match?({:module, _}, Code.ensure_loaded(module)) and
+          function_exported?(module, :__favn_namespace_config__, 0) ->
+        module.__favn_namespace_config__()
 
       true ->
         nil

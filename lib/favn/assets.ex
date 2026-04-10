@@ -88,7 +88,7 @@ defmodule Favn.Assets do
               compile_error!(
                 env.file,
                 env.line,
-                "@asset functions must have arity 1 and use signature def asset(ctx)"
+                "@asset functions must have arity 1 and accept one runtime context argument"
               )
             end
 
