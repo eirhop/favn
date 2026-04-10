@@ -828,23 +828,44 @@ Implemented semantics:
   * `MyWarehouse.Gold.Sales.FctOrders` -> `"fct_orders"`
 * `Favn.get_asset/1` now also accepts a single-asset module ref directly (`Favn.get_asset(MyAssetModule)`)
 
-### Phase 3 — `Favn.SQL.Namespace` and `Favn.SQLAsset`
+### Phase 3 — `Favn.SQLAsset` authoring and catalog integration
 
 Deliver:
 
-* one-module-per-asset SQL DSL
-* inline SQL via `sql ~SQL""" ... """`
-* support for:
-  * `@doc`
-  * `@meta`
-  * `@depends`
-  * `@window`
-  * `@materialized`
-  * optional `@produces` override
-* produced relation inference from namespace/module path
-* compilation into one canonical `%Favn.Asset{}`
+* [x] one-module-per-asset SQL DSL
+* [x] inline SQL via `sql ~SQL""" ... """`
+* [x] support for:
+  * [x] `@doc`
+  * [x] `@meta`
+  * [x] `@depends`
+  * [x] `@window`
+  * [x] `@materialized`
+  * [x] optional `@produces` override
+* [x] produced relation inference from namespace/module path
+* [x] compilation into one canonical `%Favn.Asset{}`
 
 This phase establishes the SQL asset authoring model.
+
+#### Phase 3 implementation notes
+
+Implemented semantics:
+
+* one `use Favn.SQLAsset` module compiles to exactly one canonical asset with ref `{Module, :asset}`
+* `Favn.SQLAsset` reuses `Favn.Namespace` for inherited `connection` / `catalog` / `schema` defaults
+* `@depends` accepts:
+
+  * `Some.Module` only when `Some.Module` is another single-asset module, normalized to `{Some.Module, :asset}`
+  * `{Some.Module, :asset_name}`
+* `@materialized` is required and currently accepts:
+
+  * `:view`
+  * `:table`
+  * `{:incremental, strategy: :append | :replace | :delete_insert | :merge, unique_key: [...]}`
+* SQL assets infer their produced relation from `Favn.Namespace` defaults plus module leaf `Macro.underscore/1`
+* SQL assets require a resolved produced relation with a connection name
+* `sql ~SQL` stays plain SQL and currently rejects interpolation/modifiers in phase 3
+* SQL modules expose the existing asset compiler seam via `__favn_asset_compiler__/0`
+* generated `asset/1` currently returns `{:error, :sql_asset_runtime_not_implemented}` until phase 4 runtime execution lands
 
 ### Phase 4 — SQL runtime integration and helper APIs
 

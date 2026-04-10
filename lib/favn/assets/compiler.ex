@@ -22,10 +22,15 @@ defmodule Favn.Assets.Compiler do
 
       function_exported?(module, :__favn_asset_compiler__, 0) ->
         with compiler when is_atom(compiler) <- module.__favn_asset_compiler__(),
-             true <- function_exported?(compiler, :compile_assets, 1),
-             {:ok, assets} <- compiler.compile_assets(module) do
-          normalize_assets(assets)
+             {:module, _loaded} <- Code.ensure_loaded(compiler),
+             true <- function_exported?(compiler, :compile_assets, 1) do
+          case compiler.compile_assets(module) do
+            {:ok, assets} -> normalize_assets(assets)
+            {:error, reason} -> {:error, reason}
+            _ -> {:error, {:invalid_asset_compiler, module}}
+          end
         else
+          {:error, _reason} -> {:error, {:invalid_asset_compiler, module}}
           false -> {:error, {:invalid_asset_compiler, module}}
           _ -> {:error, {:invalid_asset_compiler, module}}
         end

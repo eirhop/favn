@@ -55,6 +55,7 @@ lib/
     │       └── step.ex
     ├── scheduler.ex
     ├── sql.ex
+    ├── sql_asset.ex
     ├── sql/
     │   ├── adapter.ex
     │   ├── capabilities.ex
@@ -69,6 +70,11 @@ lib/
     │       ├── duckdb.ex
     │       └── duckdb/
     │           └── client.ex
+    ├── sql_asset/
+    │   ├── compiler.ex
+    │   ├── definition.ex
+    │   ├── materialization.ex
+    │   └── runtime.ex
     ├── scheduler/
     │   ├── cron.ex
     │   ├── registry.ex

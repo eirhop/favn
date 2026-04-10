@@ -665,7 +665,7 @@ defmodule Favn do
   Accepted input:
 
     * `{module, name}` where both values are atoms
-    * `module` for single-asset modules authored with `use Favn.Asset`
+     * `module` for single-asset modules authored with `use Favn.Asset` or `use Favn.SQLAsset`
 
   Returns:
 
