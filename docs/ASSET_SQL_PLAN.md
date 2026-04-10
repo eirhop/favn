@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 1 implemented.
+Phase 1 and Phase 2 implemented.
 
 This document defines the target long-term asset authoring direction for Favn and the phased path to implement it safely.
 
@@ -799,19 +799,34 @@ This phase links Elixir materializing assets to warehouse relation ownership.
 
 Deliver:
 
-* `Favn.Asset` as preferred one-module-per-asset Elixir DSL
-* single asset entrypoint convention
-* support for:
+* [x] `Favn.Asset` as preferred one-module-per-asset Elixir DSL
+* [x] single asset entrypoint convention (`def asset(ctx)`)
+* [x] support for:
 
-  * `@doc`
-  * `@meta`
-  * `@depends`
-  * `@window`
-  * `@produces`
-  * relation defaults
-* compilation into one canonical `%Favn.Asset{}`
+  * [x] `@doc`
+  * [x] `@meta`
+  * [x] `@depends`
+  * [x] `@window`
+  * [x] `@produces`
+  * [x] relation defaults through `Favn.Namespace`
+* [x] compilation into one canonical `%Favn.Asset{}`
 
 This phase establishes the preferred Elixir asset model.
+
+#### Phase 2 implementation notes
+
+Implemented semantics:
+
+* one `use Favn.Asset` module compiles to exactly one canonical asset with ref `{Module, :asset}`
+* `@depends` in `Favn.Asset` accepts:
+
+  * `Some.Module` (only when `Some.Module` uses `Favn.Asset`, normalized to `{Some.Module, :asset}`)
+  * `{Some.Module, :asset_name}`
+* `@produces true` relation-name inference for single-asset modules uses module leaf `Macro.underscore/1`
+
+  * `MyWarehouse.Raw.Sales.Orders` -> `"orders"`
+  * `MyWarehouse.Gold.Sales.FctOrders` -> `"fct_orders"`
+* `Favn.get_asset/1` now also accepts a single-asset module ref directly (`Favn.get_asset(MyAssetModule)`)
 
 ### Phase 3 — `Favn.SQL.Namespace` and `Favn.SQLAsset`
 
@@ -867,15 +882,23 @@ This phase supports repetitive ingestion without weakening the clarity of the co
 
 ### 1. Canonical ref shape for `Favn.Asset`
 
-Should single-asset modules use a module-only public convenience ref while still compiling to the existing canonical ref shape internally?
+Resolved in Phase 2.
+
+* canonical internal ref remains `{module, :asset}`
+* public convenience module lookup is supported by `Favn.get_asset(module)` for single-asset modules
 
 ### 2. Produced relation name inference
 
-What exact transformation should turn module names such as `FctOrders` into relation names such as `fact_orders`, and how configurable should that be? Rr should we just turn it to lowercase and user should override with `@produces name: "fct_orders"` if the need underscore? 
+Resolved in Phase 2.
+
+* default inference uses module leaf `Macro.underscore/1`
+* custom naming should be explicit via `@produces name: ...` when needed
 
 ### 3. `Favn.Asset` function naming
 
-Should the single-asset Elixir DSL require `def asset(ctx)` or support another convention? Should a  @behaviour be implemented to ensure this? 
+Resolved in Phase 2.
+
+* `Favn.Asset` requires exactly one public `def asset(ctx)` entrypoint
 
 ### 4. Namespace discovery rules
 

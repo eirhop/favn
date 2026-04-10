@@ -54,8 +54,49 @@ defmodule Favn.Assets.Compiler do
   defp normalize_module_assets(assets, module) when is_list(assets) do
     normalize_assets(assets)
     |> case do
-      {:ok, assets} -> resolve_produced_relations(assets, module)
-      {:error, _reason} = error -> error
+      {:ok, assets} ->
+        try do
+          validate_single_asset_depends_shorthand!(module)
+          resolve_produced_relations(assets, module)
+        rescue
+          error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp validate_single_asset_depends_shorthand!(module) do
+    if function_exported?(module, :__favn_single_asset__, 0) and
+         function_exported?(module, :__favn_assets_raw__, 0) do
+      module.__favn_assets_raw__()
+      |> Enum.flat_map(&Map.get(&1, :depends, []))
+      |> Enum.each(fn
+        dependency_module when is_atom(dependency_module) ->
+          ensure_single_asset_dependency_module!(module, dependency_module)
+
+        _other ->
+          :ok
+      end)
+    end
+
+    :ok
+  end
+
+  defp ensure_single_asset_dependency_module!(module, dependency_module) do
+    case Code.ensure_loaded(dependency_module) do
+      {:module, _loaded} ->
+        if function_exported?(dependency_module, :__favn_single_asset__, 0) do
+          :ok
+        else
+          raise ArgumentError,
+                "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a `use Favn.Asset` module, use {Module, :asset_name} for multi-asset modules"
+        end
+
+      _ ->
+        raise ArgumentError,
+              "invalid @depends entry #{inspect(dependency_module)} in #{inspect(module)}; module shorthand requires a loadable `use Favn.Asset` module"
     end
   end
 
@@ -72,19 +113,21 @@ defmodule Favn.Assets.Compiler do
   end
 
   defp resolve_produced_relation(%Asset{} = asset, defaults) do
+    inferred_name = inferred_relation_name(asset)
+
     produces =
       case fetch_raw_produces(asset.module, asset.name) do
         nil ->
           asset.produces
 
         true ->
-          RelationRef.new!(Map.put(defaults, :name, asset.name))
+          RelationRef.new!(Map.put(defaults, :name, inferred_name))
 
         attrs when is_list(attrs) ->
           if Keyword.keyword?(attrs) do
             attrs
             |> Map.new()
-            |> merge_produces_attrs(defaults, asset.name)
+            |> merge_produces_attrs(defaults, inferred_name)
             |> RelationRef.new!()
           else
             raise ArgumentError,
@@ -93,7 +136,7 @@ defmodule Favn.Assets.Compiler do
 
         attrs when is_map(attrs) ->
           attrs
-          |> merge_produces_attrs(defaults, asset.name)
+          |> merge_produces_attrs(defaults, inferred_name)
           |> RelationRef.new!()
 
         other ->
@@ -154,4 +197,17 @@ defmodule Favn.Assets.Compiler do
       end
     end)
   end
+
+  defp inferred_relation_name(%Asset{module: module, name: :asset}) do
+    if function_exported?(module, :__favn_single_asset__, 0) do
+      module
+      |> Module.split()
+      |> List.last()
+      |> Macro.underscore()
+    else
+      :asset
+    end
+  end
+
+  defp inferred_relation_name(%Asset{name: name}), do: name
 end

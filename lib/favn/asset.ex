@@ -5,6 +5,17 @@ defmodule Favn.Asset do
   `Favn.Asset` is the normalized shape used by the rest of Favn for
   introspection, dependency resolution, and execution planning.
 
+  It also provides the preferred single-asset Elixir DSL:
+
+      defmodule MyApp.Raw.Sales.Orders do
+        use Favn.Asset
+
+        @doc "Extract raw orders"
+        @meta owner: "data-platform", category: :sales, tags: [:raw]
+        @produces true
+        def asset(ctx), do: :ok
+      end
+
   This module owns validation of the final canonical asset shape after the DSL
   has normalized authoring-friendly input into runtime-ready values.
   """
@@ -12,6 +23,90 @@ defmodule Favn.Asset do
   alias Favn.Ref
   alias Favn.RelationRef
   alias Favn.Window.Spec
+
+  @doc false
+  defmacro __using__(_opts) do
+    quote do
+      Module.register_attribute(__MODULE__, :depends, accumulate: true)
+      Module.register_attribute(__MODULE__, :meta, persist: false)
+      Module.register_attribute(__MODULE__, :produces, accumulate: true)
+      Module.register_attribute(__MODULE__, :window, accumulate: true)
+      Module.register_attribute(__MODULE__, :favn_single_asset_raw, persist: false)
+
+      @on_definition Favn.Asset
+      @before_compile Favn.Asset
+    end
+  end
+
+  @doc false
+  def __on_definition__(env, kind, name, args, _guards, _body) do
+    arity = length(args || [])
+
+    case {kind, name, arity} do
+      {:def, :asset, 1} ->
+        capture_single_asset_definition!(env)
+
+      {:def, :asset, _other_arity} ->
+        compile_error!(
+          env.file,
+          env.line,
+          "Favn.Asset requires exactly one public asset/1 function"
+        )
+
+      {:defp, :asset, _arity} ->
+        compile_error!(env.file, env.line, "Favn.Asset requires a public def asset(ctx)")
+
+      {kind, _name, _arity} when kind in [:def, :defp] ->
+        validate_no_stray_asset_attributes!(env, kind, name, arity)
+
+      _ ->
+        :ok
+    end
+  end
+
+  @doc false
+  defmacro __before_compile__(env) do
+    raw_asset = Module.get_attribute(env.module, :favn_single_asset_raw)
+
+    if is_nil(raw_asset) do
+      compile_error!(
+        env.file,
+        env.line,
+        "Favn.Asset modules must define exactly one public asset/1 function"
+      )
+    end
+
+    case {
+      Module.get_attribute(env.module, :depends),
+      Module.get_attribute(env.module, :meta),
+      Module.get_attribute(env.module, :window),
+      Module.get_attribute(env.module, :produces)
+    } do
+      {[], nil, [], []} ->
+        :ok
+
+      _ ->
+        compile_error!(
+          env.file,
+          env.line,
+          "@depends/@meta/@window/@produces must be attached to def asset(ctx)"
+        )
+    end
+
+    asset = build_single_asset!(raw_asset)
+
+    quote do
+      @doc false
+      @spec __favn_assets__() :: [Favn.Asset.t()]
+      def __favn_assets__, do: [unquote(Macro.escape(asset))]
+
+      @doc false
+      def __favn_assets_raw__, do: [unquote(Macro.escape(raw_asset))]
+
+      @doc false
+      def __favn_single_asset__, do: true
+    end
+  end
 
   @type t :: %__MODULE__{
           module: module(),
@@ -166,5 +261,193 @@ defmodule Favn.Asset do
   defp validate_produces!(value) do
     raise ArgumentError,
           "asset produces must be a Favn.RelationRef or nil, got: #{inspect(value)}"
+  end
+
+  defp capture_single_asset_definition!(env) do
+    if Module.get_attribute(env.module, :favn_single_asset_raw) do
+      compile_error!(
+        env.file,
+        env.line,
+        "Favn.Asset modules can define only one asset/1 function"
+      )
+    end
+
+    depends = env.module |> Module.get_attribute(:depends) |> Enum.reverse()
+    meta = Module.get_attribute(env.module, :meta)
+    window = env.module |> Module.get_attribute(:window) |> Enum.reverse()
+    produces = env.module |> Module.get_attribute(:produces) |> Enum.reverse()
+    validate_produces_attr!(produces, env)
+
+    Module.delete_attribute(env.module, :depends)
+    Module.delete_attribute(env.module, :meta)
+    Module.delete_attribute(env.module, :window)
+    Module.delete_attribute(env.module, :produces)
+
+    Module.put_attribute(env.module, :favn_single_asset_raw, %{
+      module: env.module,
+      name: :asset,
+      arity: 1,
+      doc: normalize_doc(Module.get_attribute(env.module, :doc)),
+      file: normalize_file(env.file),
+      line: env.line,
+      depends: depends,
+      meta: meta,
+      window: window,
+      produces: produces
+    })
+  end
+
+  defp build_single_asset!(raw_asset) do
+    depends_on = normalize_single_asset_depends!(raw_asset.depends, raw_asset)
+    meta = normalize_single_asset_meta!(raw_asset.meta, raw_asset)
+    window_spec = normalize_single_asset_window!(raw_asset.window, raw_asset)
+
+    asset = %__MODULE__{
+      module: raw_asset.module,
+      name: :asset,
+      ref: Ref.new(raw_asset.module, :asset),
+      arity: 1,
+      title: nil,
+      doc: raw_asset.doc,
+      file: raw_asset.file,
+      line: raw_asset.line,
+      meta: meta,
+      depends_on: depends_on,
+      window_spec: window_spec
+    }
+
+    try do
+      validate!(asset)
+    rescue
+      error in ArgumentError ->
+        compile_error!(raw_asset.file, raw_asset.line, error.message)
+    end
+  end
+
+  defp normalize_single_asset_depends!(depends, raw_asset) do
+    Enum.map(depends, fn
+      module when is_atom(module) ->
+        if module_atom?(module) do
+          Ref.new(module, :asset)
+        else
+          compile_error!(
+            raw_asset.file,
+            raw_asset.line,
+            "invalid @depends entry #{inspect(module)}; expected Module or {Module, :asset_name}"
+          )
+        end
+
+      {module, name} when is_atom(module) and is_atom(name) ->
+        if module_atom?(module) do
+          Ref.new(module, name)
+        else
+          compile_error!(
+            raw_asset.file,
+            raw_asset.line,
+            "invalid @depends entry #{inspect({module, name})}; expected Module or {Module, :asset_name}"
+          )
+        end
+
+      dependency ->
+        compile_error!(
+          raw_asset.file,
+          raw_asset.line,
+          "invalid @depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
+        )
+    end)
+  end
+
+  defp normalize_single_asset_meta!(meta, raw_asset) do
+    normalize_meta!(meta)
+  rescue
+    error in ArgumentError -> compile_error!(raw_asset.file, raw_asset.line, error.message)
+  end
+
+  defp normalize_single_asset_window!([], _raw_asset), do: nil
+  defp normalize_single_asset_window!([%Spec{} = spec], _raw_asset), do: spec
+
+  defp normalize_single_asset_window!([_a, _b | _rest], raw_asset) do
+    compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "multiple @window attributes are not allowed; use at most one @window for def asset(ctx)"
+    )
+  end
+
+  defp normalize_single_asset_window!(value, raw_asset) do
+    compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
+    )
+  end
+
+  defp validate_produces_attr!([], _env), do: :ok
+
+  defp validate_produces_attr!([produces], env) do
+    valid? =
+      produces == true or (is_list(produces) and Keyword.keyword?(produces)) or is_map(produces)
+
+    if valid? do
+      :ok
+    else
+      compile_error!(
+        env.file,
+        env.line,
+        "invalid @produces value #{inspect(produces)}; expected true, a keyword list, or a map"
+      )
+    end
+  end
+
+  defp validate_produces_attr!([_a, _b | _rest], env) do
+    compile_error!(
+      env.file,
+      env.line,
+      "multiple @produces attributes are not allowed; use at most one @produces for def asset(ctx)"
+    )
+  end
+
+  defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
+    depends = Module.get_attribute(env.module, :depends)
+    meta = Module.get_attribute(env.module, :meta)
+    window = Module.get_attribute(env.module, :window)
+    produces = Module.get_attribute(env.module, :produces)
+
+    if depends != [] or not is_nil(meta) or window != [] or produces != [] do
+      Module.delete_attribute(env.module, :depends)
+      Module.delete_attribute(env.module, :meta)
+      Module.delete_attribute(env.module, :window)
+      Module.delete_attribute(env.module, :produces)
+
+      compile_error!(
+        env.file,
+        env.line,
+        "@depends/@meta/@window/@produces on #{kind} #{name}/#{arity} requires def asset(ctx) immediately below those attributes"
+      )
+    else
+      :ok
+    end
+  end
+
+  defp normalize_doc({_line, false}), do: nil
+  defp normalize_doc({_line, doc}) when is_binary(doc), do: doc
+  defp normalize_doc(false), do: nil
+  defp normalize_doc(doc) when is_binary(doc), do: doc
+  defp normalize_doc(_), do: nil
+
+  defp normalize_file(file) do
+    file
+    |> to_string()
+    |> Path.relative_to_cwd()
+  end
+
+  defp compile_error!(file, line, description) do
+    raise CompileError, file: file, line: line, description: description
+  end
+
+  defp module_atom?(module) when is_atom(module) do
+    module
+    |> Atom.to_string()
+    |> String.starts_with?("Elixir.")
   end
 end

@@ -129,6 +129,14 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] relation normalization and validation (`database`/`table` aliases included)
   - [x] relation ownership uniqueness checks
   - [x] relation ownership index in the registry catalog
+- [x] Phase 2 single-asset Elixir DSL (`Favn.Asset`)
+  - [x] one-module-per-asset `def asset(ctx)` convention
+  - [x] `@doc`, `@meta`, `@depends`, `@window`, `@produces`
+  - [x] relation default inheritance via `Favn.Namespace`
+  - [x] canonical compile output as one `%Favn.Asset{ref: {Module, :asset}}`
+  - [x] module dependency shorthand normalization (`@depends Some.AssetModule`)
+  - [x] `@produces true` relation-name inference from module leaf (`Macro.underscore/1`)
+  - [x] module convenience lookup via `Favn.get_asset(module)` for single-asset modules
 - [ ] DuckDB adapter hardening + incremental strategy expansion
 - [ ] Typed source identities
 - [ ] `Favn.SQL` / `Favn.SQLAssets` authoring model
