@@ -425,6 +425,11 @@ defmodule Favn.SQL.Template do
     parse_nodes(rest, next_state, [text_node(";", state.position, next_state.position) | acc])
   end
 
+  defp parse_nodes([?; | rest], %{paren_depth: depth} = state, acc) when depth > 0 do
+    next_state = advance_state(state, ~c";")
+    parse_nodes(rest, next_state, [text_node(";", state.position, next_state.position) | acc])
+  end
+
   defp parse_placeholder([next | _] = rest, state, acc)
        when (next >= ?a and next <= ?z) or next == ?_ or (next >= ?A and next <= ?Z) or
               (next >= ?0 and next <= ?9) do

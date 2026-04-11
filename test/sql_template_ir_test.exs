@@ -371,6 +371,20 @@ defmodule Favn.SQLTemplateIRTest do
              Template.asset_refs(template)
   end
 
+  test "treats semicolon inside parentheses as ordinary text" do
+    template =
+      Template.compile!(
+        "select (1;2)",
+        file: "test/sql_template_ir_test.exs",
+        line: 1
+      )
+
+    assert Enum.any?(template.nodes, fn
+             %Template.Text{sql: ";"} -> true
+             _other -> false
+           end)
+  end
+
   defp non_text_nodes(nodes) do
     Enum.reject(nodes, &match?(%Template.Text{}, &1))
   end
