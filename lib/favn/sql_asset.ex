@@ -168,7 +168,10 @@ defmodule Favn.SQLAsset do
         known_definitions: known_definitions,
         file: raw_definition.file,
         line: raw_definition.line,
-        module: raw_definition.module
+        module: raw_definition.module,
+        scope: :query,
+        local_args: [],
+        enforce_query_root: true
       )
 
     asset = %Asset{
@@ -405,18 +408,39 @@ defmodule Favn.SQLAsset do
           if function_exported?(module, :__favn_sql_definitions__, 0) do
             module.__favn_sql_definitions__()
           else
-            []
+            compile_error!(
+              raw_definition.file,
+              raw_definition.line,
+              "imported SQL provider #{inspect(module)} does not define reusable SQL"
+            )
           end
 
         {:error, _reason} ->
-          []
+          compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "imported SQL provider #{inspect(module)} could not be resolved"
+          )
       end
     end)
+    |> Enum.group_by(fn
+      %SQLDefinition{name: name, arity: arity} -> {name, arity}
+      other -> other
+    end)
     |> Enum.map(fn
-      %SQLDefinition{name: name, arity: arity} = definition ->
+      {{name, arity}, [%SQLDefinition{} = definition]} ->
         {{name, arity}, definition}
 
-      other ->
+      {{name, arity}, definitions} ->
+        providers = definitions |> Enum.map(&inspect(&1.module)) |> Enum.sort() |> Enum.join(", ")
+
+        compile_error!(
+          raw_definition.file,
+          raw_definition.line,
+          "duplicate visible defsql #{name}/#{arity}; conflicting providers: #{providers}"
+        )
+
+      {other, _definitions} ->
         compile_error!(
           raw_definition.file,
           raw_definition.line,

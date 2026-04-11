@@ -152,8 +152,11 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] param-driven SQL inputs for non-reserved `@name` placeholders
   - [x] expression SQL macros and relation SQL macros from day one
   - [x] direct asset references in relation position, e.g. `from MyApp.Raw.Sales.Orders`
+  - [x] scanner-based ordered SQL IR instead of plain-string-only storage
   - [x] compile-time normalization and validation of reusable SQL definitions/calls
-  - [x] dedicated SQL IR instead of plain-string-only storage
+  - [x] duplicate visible reusable SQL definition detection across local/imported definitions
+  - [x] reusable SQL cycle detection
+  - [x] deferred symbolic asset refs for not-yet-compiled modules
 - [ ] DuckDB adapter hardening + incremental strategy expansion
 - [ ] Typed source identities
 - [ ] Phase 4 runtime integration for SQL assets

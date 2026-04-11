@@ -28,7 +28,7 @@ defmodule Favn.SQLTemplateAssetRefTest do
 
     template = Template.compile!(sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
 
-    assert Enum.map(template.asset_refs, & &1.module) == [
+    assert Enum.map(Template.asset_refs(template), & &1.module) == [
              orders_module,
              customers_module
            ]
@@ -43,7 +43,7 @@ defmodule Favn.SQLTemplateAssetRefTest do
     """
 
     template = Template.compile!(sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
-    assert template.asset_refs == []
+    assert Template.asset_refs(template) == []
   end
 
   test "does not treat table function syntax as direct asset ref" do
@@ -53,7 +53,7 @@ defmodule Favn.SQLTemplateAssetRefTest do
     """
 
     template = Template.compile!(sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
-    assert template.asset_refs == []
+    assert Template.asset_refs(template) == []
   end
 
   test "does not support update from and merge into asset refs" do
@@ -99,20 +99,22 @@ defmodule Favn.SQLTemplateAssetRefTest do
     with_merge_template =
       Template.compile!(with_merge_sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
 
-    assert update_template.asset_refs == []
-    assert merge_template.asset_refs == []
-    assert with_update_template.asset_refs == []
-    assert with_merge_template.asset_refs == []
+    assert Template.asset_refs(update_template) == []
+    assert Template.asset_refs(merge_template) == []
+    assert Template.asset_refs(with_update_template) == []
+    assert Template.asset_refs(with_merge_template) == []
   end
 
-  test "raises for unresolved module references" do
-    assert_raise CompileError, ~r/module could not be resolved/, fn ->
+  test "keeps unresolved module references as deferred asset refs" do
+    template =
       Template.compile!(
         "select * from MyApp.Gold.Sales.FctOrdres",
         file: "test/sql_template_asset_ref_test.exs",
         line: 1
       )
-    end
+
+    assert [%Template.AssetRef{module: MyApp.Gold.Sales.FctOrdres, resolution: :deferred}] =
+             Template.asset_refs(template)
   end
 
   test "raises for compiled module that is not a single asset module" do

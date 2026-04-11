@@ -886,7 +886,7 @@ Implemented semantics:
 Favn SQL uses a real `~SQL` sigil as the single SQL body language.
 
 SQL assets declare their main query with `query do ... end`.
-Reusable SQL should later be declared with `defsql ... do ... end`.
+Reusable SQL is declared with `defsql ... do ... end`.
 
 Both asset queries and reusable SQL macros use the same `~SQL` body syntax and the same `@name` placeholder syntax for injected values.
 
@@ -981,8 +981,9 @@ Inside any `~SQL` body, `@name` is the only value placeholder syntax.
 Meaning:
 
 * SQL built-ins such as `@window_start` and `@window_end` resolve from reserved runtime inputs
-* any other `@name` resolves from SQL params supplied by the caller
+* in asset `query` bodies, any other `@name` resolves from SQL params supplied by the caller
 * inside `defsql`, function arguments become local SQL params with the same names
+* in `defsql`, non-reserved placeholders must match declared arguments; reusable SQL does not implicitly capture query params
 * when a `defsql` body calls another `defsql`, passed arguments bind that callee's local SQL params
 * SQL bodies never reference `ctx` directly
 
@@ -1059,7 +1060,10 @@ Phase 3 validates:
 * duplicate reusable SQL names / arities in a module
 * reserved input names are not used as `defsql` arguments
 * `defsql` call arity matches the declared reusable SQL definition
-* direct asset references must resolve to compiled single-asset modules with produced relations
+* duplicate visible imported/local reusable SQL definitions are compile-time errors
+* cyclic reusable SQL definitions are compile-time errors
+* compiled asset references must resolve to single-asset modules with produced relations
+* unresolved asset references stay as deferred symbolic refs in the SQL IR
 * obvious relation-only positions such as `from` / `join` do not receive known expression macros
 * obvious expression positions do not receive known relation macros
 

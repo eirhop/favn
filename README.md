@@ -113,9 +113,10 @@ Implemented now:
 - `query do ... end`
 - reusable `defsql ... do ... end` via `Favn.SQL`
 - one `@name` placeholder model for runtime inputs and reusable SQL arguments
+- ordered scanner-based SQL IR with parsed placeholders, reusable SQL calls, and asset refs
 - expression SQL macros and relation SQL macros
 - direct asset references in relation position, such as `from MyApp.Raw.Sales.Orders`
-- compile-time normalization into a dedicated SQL IR
+- compile-time validation for duplicate visible SQL definitions and reusable SQL cycles
 
 Not supported yet for direct SQL asset refs:
 
@@ -130,6 +131,11 @@ Planned next:
 - Phase 4 runtime execution and helper APIs on top of that IR
 
 Favn explicitly avoids fake sigils, Jinja-style templating, arbitrary Elixir interpolation inside SQL, and string stitching as the normal authoring workflow.
+
+Placeholder rules:
+
+- in `query` bodies, non-reserved `@name` placeholders resolve from runtime params
+- in `defsql` bodies, non-reserved `@name` placeholders must match declared arguments
 
 ## Introduction
 

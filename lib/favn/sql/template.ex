@@ -1,392 +1,966 @@
 defmodule Favn.SQL.Template do
   @moduledoc """
-  Normalized SQL template representation used by SQL asset authoring.
+  Ordered SQL template IR used by Phase 3 SQL authoring.
   """
 
   alias Favn.Assets.Compiler
+  alias Favn.RelationRef
+  alias Favn.SQL.Definition
 
-  @relation_prefix_regex ~r/(?:^|\s)(?:from|join|inner\s+join|left(?:\s+outer)?\s+join|right(?:\s+outer)?\s+join|full(?:\s+outer)?\s+join|cross\s+join)\s*$/i
-
-  @enforce_keys [:source, :inputs, :runtime_inputs, :param_inputs]
-  defstruct [
-    :source,
-    :inputs,
-    :runtime_inputs,
-    :param_inputs,
-    calls: [],
-    asset_refs: []
+  @reserved_runtime_inputs [:window_start, :window_end]
+  @join_prefixes ["inner", "left", "right", "full", "cross"]
+  @outer_join_prefixes ["left", "right", "full"]
+  @join_entry_prefixes [
+    "inner",
+    "left",
+    "right",
+    "full",
+    "cross",
+    "left outer",
+    "right outer",
+    "full outer"
   ]
 
+  @type root_kind :: :query | :expression
+  @type placeholder_source :: :runtime | :query_param | {:local_arg, non_neg_integer()}
   @type context :: :expression | :relation
 
-  defmodule Call do
+  defmodule Position do
     @moduledoc false
-    @enforce_keys [:name, :arity, :context, :line]
-    defstruct [:name, :arity, :context, :line]
+    @enforce_keys [:offset, :line, :column]
+    defstruct [:offset, :line, :column]
+
+    @type t :: %__MODULE__{offset: non_neg_integer(), line: pos_integer(), column: pos_integer()}
+  end
+
+  defmodule Span do
+    @moduledoc false
+    @enforce_keys [
+      :start_offset,
+      :end_offset,
+      :start_line,
+      :start_column,
+      :end_line,
+      :end_column
+    ]
+    defstruct [
+      :start_offset,
+      :end_offset,
+      :start_line,
+      :start_column,
+      :end_line,
+      :end_column
+    ]
+
+    @type t :: %__MODULE__{
+            start_offset: non_neg_integer(),
+            end_offset: non_neg_integer(),
+            start_line: pos_integer(),
+            start_column: pos_integer(),
+            end_line: pos_integer(),
+            end_column: pos_integer()
+          }
+  end
+
+  defmodule Requirements do
+    @moduledoc false
+    @enforce_keys [:runtime_inputs, :query_params]
+    defstruct [:runtime_inputs, :query_params]
+
+    @type t :: %__MODULE__{runtime_inputs: MapSet.t(atom()), query_params: MapSet.t(atom())}
+  end
+
+  defmodule Fragment do
+    @moduledoc false
+    @enforce_keys [:nodes, :span]
+    defstruct [:nodes, :span]
+
+    @type t :: %__MODULE__{nodes: [Favn.SQL.Template.ir_node()], span: Favn.SQL.Template.Span.t()}
+  end
+
+  defmodule Text do
+    @moduledoc false
+    @enforce_keys [:sql, :span]
+    defstruct [:sql, :span]
+
+    @type t :: %__MODULE__{sql: String.t(), span: Favn.SQL.Template.Span.t()}
+  end
+
+  defmodule Placeholder do
+    @moduledoc false
+    @enforce_keys [:name, :source, :span]
+    defstruct [:name, :source, :span]
 
     @type t :: %__MODULE__{
             name: atom(),
+            source: Favn.SQL.Template.placeholder_source(),
+            span: Favn.SQL.Template.Span.t()
+          }
+  end
+
+  defmodule DefinitionRef do
+    @moduledoc false
+    @enforce_keys [:provider, :name, :arity, :kind]
+    defstruct [:provider, :name, :arity, :kind]
+
+    @type t :: %__MODULE__{
+            provider: module(),
+            name: atom(),
             arity: non_neg_integer(),
+            kind: :expression | :relation
+          }
+  end
+
+  defmodule Call do
+    @moduledoc false
+    @enforce_keys [:definition, :args, :context, :span]
+    defstruct [:definition, :args, :context, :span]
+
+    @type t :: %__MODULE__{
+            definition: Favn.SQL.Template.DefinitionRef.t(),
+            args: [Favn.SQL.Template.Fragment.t()],
             context: Favn.SQL.Template.context(),
-            line: pos_integer()
+            span: Favn.SQL.Template.Span.t()
           }
   end
 
   defmodule AssetRef do
     @moduledoc false
-    @enforce_keys [:module, :line]
-    defstruct [:module, :line]
+    @enforce_keys [:module, :asset_ref, :produced_relation, :resolution, :span]
+    defstruct [:module, :asset_ref, :produced_relation, :resolution, :span]
 
-    @type t :: %__MODULE__{module: module(), line: pos_integer()}
+    @type t :: %__MODULE__{
+            module: module(),
+            asset_ref: {module(), :asset},
+            produced_relation: RelationRef.t() | nil,
+            resolution: :resolved | :deferred,
+            span: Favn.SQL.Template.Span.t()
+          }
   end
+
+  @type ir_node :: Text.t() | Placeholder.t() | Call.t() | AssetRef.t()
+
+  @enforce_keys [:source, :root_kind, :nodes, :span, :requires]
+  defstruct [:source, :root_kind, :nodes, :span, :requires]
 
   @type t :: %__MODULE__{
           source: String.t(),
-          inputs: MapSet.t(atom()),
-          runtime_inputs: MapSet.t(atom()),
-          param_inputs: MapSet.t(atom()),
-          calls: [Call.t()],
-          asset_refs: [AssetRef.t()]
+          root_kind: root_kind(),
+          nodes: [ir_node()],
+          span: Span.t(),
+          requires: Requirements.t()
         }
 
-  @spec reserved_runtime_inputs() :: [atom()]
-  def reserved_runtime_inputs, do: [:window_start, :window_end]
+  @type compile_opt ::
+          {:known_definitions, %{optional({atom(), non_neg_integer()}) => Definition.t()}}
+          | {:file, String.t()}
+          | {:line, pos_integer()}
+          | {:column, pos_integer()}
+          | {:offset, non_neg_integer()}
+          | {:module, module() | nil}
+          | {:scope, :query | :definition | :fragment}
+          | {:local_args, [atom()]}
+          | {:enforce_query_root, boolean()}
 
-  @spec compile!(String.t(), keyword()) :: t()
+  @spec reserved_runtime_inputs() :: [atom()]
+  def reserved_runtime_inputs, do: @reserved_runtime_inputs
+
+  @spec compile!(String.t(), [compile_opt()]) :: t()
   def compile!(sql, opts \\ []) when is_binary(sql) and is_list(opts) do
-    known_definitions = Keyword.get(opts, :known_definitions, %{})
     file = Keyword.fetch!(opts, :file)
     line = Keyword.fetch!(opts, :line)
+    column = Keyword.get(opts, :column, 1)
+    offset = Keyword.get(opts, :offset, 0)
+    known_definitions = Keyword.get(opts, :known_definitions, %{})
     module = Keyword.get(opts, :module)
+    scope = Keyword.get(opts, :scope, :query)
+    local_args = Keyword.get(opts, :local_args, [])
+    enforce_query_root = Keyword.get(opts, :enforce_query_root, false)
 
-    calls = extract_calls(sql, known_definitions)
-    validate_calls!(calls, known_definitions, file, line)
+    start_pos = %Position{offset: offset, line: line, column: column}
+    root_kind = infer_root_kind!(sql, file, line, start_pos)
 
-    asset_refs = extract_asset_refs(sql)
-    validate_asset_refs!(asset_refs, module, file, line)
+    if enforce_query_root and root_kind != :query do
+      compile_error!(file, line, "query body must start with select or with")
+    end
 
-    inputs = extract_inputs(sql)
-    reserved_inputs = MapSet.new(reserved_runtime_inputs())
-    runtime_inputs = MapSet.intersection(inputs, reserved_inputs)
-    param_inputs = MapSet.difference(inputs, reserved_inputs)
+    parser_state = %{
+      file: file,
+      module: module,
+      known_definitions: known_definitions,
+      local_args: local_arg_index(local_args),
+      position: start_pos,
+      relation_entry?: false,
+      join_prefix: nil,
+      paren_depth: 0,
+      statement_kind: top_level_statement_kind(root_kind),
+      scope: scope
+    }
+
+    {nodes, end_state} = parse_nodes(String.to_charlist(sql), parser_state, [])
+    span = span(start_pos, end_state.position)
 
     %__MODULE__{
       source: sql,
-      inputs: inputs,
-      runtime_inputs: runtime_inputs,
-      param_inputs: param_inputs,
-      calls: calls,
-      asset_refs: asset_refs
+      root_kind: root_kind,
+      nodes: nodes,
+      span: span,
+      requires: gather_requirements(nodes)
     }
   end
 
-  defp extract_inputs(sql) do
-    ~r/@([a-z][a-z0-9_]*)/
-    |> Regex.scan(sql, capture: :all_but_first)
-    |> List.flatten()
-    |> Enum.map(&String.to_atom/1)
-    |> MapSet.new()
-  end
+  @spec called_definition_keys(t()) :: [{atom(), non_neg_integer()}]
+  def called_definition_keys(%__MODULE__{nodes: nodes}),
+    do: called_definition_keys_from_nodes(nodes)
 
-  defp extract_calls(sql, known_definitions) do
-    known_definitions
-    |> Map.keys()
-    |> Enum.map(&elem(&1, 0))
+  @spec runtime_inputs(t()) :: MapSet.t(atom())
+  def runtime_inputs(%__MODULE__{requires: %Requirements{runtime_inputs: runtime_inputs}}),
+    do: runtime_inputs
+
+  @spec query_params(t()) :: MapSet.t(atom())
+  def query_params(%__MODULE__{requires: %Requirements{query_params: query_params}}),
+    do: query_params
+
+  @spec asset_refs(t()) :: [AssetRef.t()]
+  def asset_refs(%__MODULE__{nodes: nodes}), do: collect_asset_refs(nodes)
+
+  @spec calls(t()) :: [Call.t()]
+  def calls(%__MODULE__{nodes: nodes}), do: collect_calls(nodes)
+
+  defp called_definition_keys_from_nodes(nodes) do
+    nodes
+    |> Enum.flat_map(fn
+      %Call{definition: %DefinitionRef{name: name, arity: arity}, args: args} ->
+        [{name, arity} | Enum.flat_map(args, &called_definition_keys_from_nodes(&1.nodes))]
+
+      _other ->
+        []
+    end)
     |> Enum.uniq()
-    |> Enum.flat_map(&extract_named_calls(sql, &1))
-    |> Enum.uniq_by(fn %Call{name: name, arity: arity, context: context, line: line} ->
-      {name, arity, context, line}
+  end
+
+  defp collect_asset_refs(nodes) do
+    Enum.flat_map(nodes, fn
+      %AssetRef{} = asset_ref -> [asset_ref]
+      %Call{args: args} -> Enum.flat_map(args, &collect_asset_refs(&1.nodes))
+      _other -> []
     end)
   end
 
-  defp extract_named_calls(sql, name) do
-    pattern = ~r/\b#{name}\s*\(/
-
-    pattern
-    |> Regex.scan(sql, return: :index)
-    |> Enum.flat_map(fn [{start_idx, _len}] ->
-      case parse_call(sql, start_idx, name) do
-        {:ok, call} -> [call]
-        :error -> []
-      end
+  defp collect_calls(nodes) do
+    Enum.flat_map(nodes, fn
+      %Call{} = call -> [call | Enum.flat_map(call.args, &collect_calls(&1.nodes))]
+      _other -> []
     end)
   end
 
-  defp parse_call(sql, start_idx, name) do
-    name_string = Atom.to_string(name)
-    after_name_idx = start_idx + byte_size(name_string)
-    open_idx = skip_spaces(sql, after_name_idx)
-
-    if open_idx >= byte_size(sql) do
-      :error
-    else
-      prefix = String.slice(sql, 0, start_idx)
-      line = line_for_index(prefix)
-
-      if String.at(sql, open_idx) == "(" do
-        args_source = String.slice(sql, (open_idx + 1)..-1//1)
-
-        case parse_arity(args_source) do
-          {:ok, arity} ->
-            context = if relation_prefix?(prefix), do: :relation, else: :expression
-            {:ok, %Call{name: name, arity: arity, context: context, line: line}}
-
-          :error ->
-            :error
-        end
-      else
-        :error
-      end
+  defp infer_root_kind!(sql, file, line, _start_pos) do
+    case first_top_level_token(String.to_charlist(sql), :code, 0) do
+      nil -> compile_error!(file, line, "SQL body cannot be empty")
+      "select" -> :query
+      "with" -> :query
+      _other -> :expression
     end
   end
 
-  defp parse_arity(source) do
-    chars = String.to_charlist(source)
+  defp first_top_level_token([], _lex_state, _depth), do: nil
 
-    do_parse_arity(chars, 0, :outside, false, 0)
+  defp first_top_level_token([?-, ?- | rest], :code, depth),
+    do: first_top_level_token(rest, :line_comment, depth)
+
+  defp first_top_level_token([?/, ?* | rest], :code, depth),
+    do: first_top_level_token(rest, :block_comment, depth)
+
+  defp first_top_level_token([?' | rest], :code, depth),
+    do: first_top_level_token(rest, :single_quote, depth)
+
+  defp first_top_level_token([?" | rest], :code, depth),
+    do: first_top_level_token(rest, :double_quote, depth)
+
+  defp first_top_level_token([char | rest], :line_comment, depth) do
+    if char == ?\n,
+      do: first_top_level_token(rest, :code, depth),
+      else: first_top_level_token(rest, :line_comment, depth)
   end
 
-  defp do_parse_arity([], _depth, _quote_state, _seen_nonspace, _count), do: :error
+  defp first_top_level_token([?*, ?/ | rest], :block_comment, depth),
+    do: first_top_level_token(rest, :code, depth)
 
-  defp do_parse_arity([char | rest], depth, quote_state, _seen_nonspace, count)
-       when quote_state in [:single, :double] do
-    case {quote_state, char} do
-      {:single, ?'} -> do_parse_arity(rest, depth, :outside, true, count)
-      {:double, ?"} -> do_parse_arity(rest, depth, :outside, true, count)
-      _ -> do_parse_arity(rest, depth, quote_state, true, count)
+  defp first_top_level_token([_char | rest], :block_comment, depth),
+    do: first_top_level_token(rest, :block_comment, depth)
+
+  defp first_top_level_token([?', ?' | rest], :single_quote, depth),
+    do: first_top_level_token(rest, :single_quote, depth)
+
+  defp first_top_level_token([?' | rest], :single_quote, depth),
+    do: first_top_level_token(rest, :code, depth)
+
+  defp first_top_level_token([_char | rest], :single_quote, depth),
+    do: first_top_level_token(rest, :single_quote, depth)
+
+  defp first_top_level_token([?", ?" | rest], :double_quote, depth),
+    do: first_top_level_token(rest, :double_quote, depth)
+
+  defp first_top_level_token([?" | rest], :double_quote, depth),
+    do: first_top_level_token(rest, :code, depth)
+
+  defp first_top_level_token([_char | rest], :double_quote, depth),
+    do: first_top_level_token(rest, :double_quote, depth)
+
+  defp first_top_level_token([char | rest], :code, depth) when char in [32, 9, 10, 13],
+    do: first_top_level_token(rest, :code, depth)
+
+  defp first_top_level_token([?( | rest], :code, depth),
+    do: first_top_level_token(rest, :code, depth + 1)
+
+  defp first_top_level_token([?) | rest], :code, depth) when depth > 0,
+    do: first_top_level_token(rest, :code, depth - 1)
+
+  defp first_top_level_token([char | _rest] = chars, :code, 0)
+       when (char >= ?A and char <= ?Z) or (char >= ?a and char <= ?z) or char == ?_ do
+    {word, _tail} = read_identifier(chars)
+    String.downcase(word)
+  end
+
+  defp first_top_level_token([_char | rest], :code, depth),
+    do: first_top_level_token(rest, :code, depth)
+
+  defp parse_nodes([], state, acc), do: {Enum.reverse(acc), state}
+
+  defp parse_nodes([?-, ?- | rest], state, acc) do
+    {text, tail, next_pos} = consume_line_comment(rest, state.position, ~c"--")
+
+    parse_nodes(tail, %{state | position: next_pos}, [
+      text_node(text, state.position, next_pos) | acc
+    ])
+  end
+
+  defp parse_nodes([?/, ?* | rest], state, acc) do
+    {text, tail, next_pos} = consume_block_comment(rest, state.position, ~c"/*")
+
+    parse_nodes(tail, %{state | position: next_pos}, [
+      text_node(text, state.position, next_pos) | acc
+    ])
+  end
+
+  defp parse_nodes([?' | rest], state, acc) do
+    {text, tail, next_pos} = consume_quoted(rest, state.position, ?')
+
+    parse_nodes(tail, %{state | position: next_pos}, [
+      text_node(text, state.position, next_pos) | acc
+    ])
+  end
+
+  defp parse_nodes([?" | rest], state, acc) do
+    {text, tail, next_pos} = consume_quoted(rest, state.position, ?")
+
+    parse_nodes(tail, %{state | position: next_pos}, [
+      text_node(text, state.position, next_pos) | acc
+    ])
+  end
+
+  defp parse_nodes([?@ | rest], state, acc) do
+    parse_placeholder(rest, state, acc)
+  end
+
+  defp parse_nodes([char | _rest] = chars, state, acc)
+       when (char >= ?A and char <= ?Z) or (char >= ?a and char <= ?z) or char == ?_ do
+    parse_identifier(chars, state, acc)
+  end
+
+  defp parse_nodes([char | rest], state, acc) do
+    {next_state, text} = consume_single_char(char, state)
+    parse_nodes(rest, next_state, [text_node(text, state.position, next_state.position) | acc])
+  end
+
+  defp parse_placeholder([next | _] = rest, state, acc)
+       when (next >= ?a and next <= ?z) or next == ?_ or (next >= ?A and next <= ?Z) or
+              (next >= ?0 and next <= ?9) do
+    case rest do
+      [valid | _] when valid >= ?a and valid <= ?z ->
+        {name_string, tail} = read_identifier(rest)
+        name = String.to_atom(name_string)
+        next_state = advance_state(state, ~c"@" ++ String.to_charlist(name_string))
+        placeholder = build_placeholder(name, state, next_state)
+        parse_nodes(tail, next_state, [placeholder | acc])
+
+      _other ->
+        compile_error!(
+          state.file,
+          state.position.line,
+          "invalid SQL placeholder at line #{state.position.line}, column #{state.position.column}"
+        )
     end
   end
 
-  defp do_parse_arity([char | rest], depth, :outside, seen_nonspace, count) do
+  defp parse_placeholder(rest, state, acc) do
+    next_state = advance_state(state, ~c"@")
+    parse_nodes(rest, next_state, [text_node("@", state.position, next_state.position) | acc])
+  end
+
+  defp parse_identifier(chars, state, acc) do
+    {word, tail} = read_identifier(chars)
+    context = if state.relation_entry?, do: :relation, else: :expression
+
     cond do
-      char == ?' ->
-        do_parse_arity(rest, depth, :single, true, count)
+      asset_ref_candidate?(word, tail, state) ->
+        parse_asset_ref(word, tail, state, acc)
 
-      char == ?" ->
-        do_parse_arity(rest, depth, :double, true, count)
-
-      char == ?( ->
-        do_parse_arity(rest, depth + 1, :outside, true, count)
-
-      char == ?) and depth > 0 ->
-        do_parse_arity(rest, depth - 1, :outside, true, count)
-
-      char == ?) and depth == 0 ->
-        final_count = if seen_nonspace, do: count + 1, else: 0
-        {:ok, final_count}
-
-      char == ?, and depth == 0 ->
-        do_parse_arity(rest, depth, :outside, false, count + 1)
-
-      char in [32, 9, 10, 13] ->
-        do_parse_arity(rest, depth, :outside, seen_nonspace, count)
+      call_candidate?(word, tail, state) ->
+        parse_call(word, tail, state, context, acc)
 
       true ->
-        do_parse_arity(rest, depth, :outside, true, count)
+        next_state =
+          advance_state(state, String.to_charlist(word))
+          |> update_relation_context(String.downcase(word))
+
+        parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
     end
   end
 
-  defp relation_prefix?(prefix) do
-    line_prefix =
-      prefix
-      |> String.split("\n")
-      |> List.last()
-      |> to_string()
-      |> String.trim_leading()
+  defp parse_asset_ref(word, tail, state, acc) do
+    {segments, tail_after_module} = read_alias_chain(tail, [word])
+    next_char = peek_nonspace_char(tail_after_module)
 
-    Regex.match?(@relation_prefix_regex, line_prefix)
-  end
+    if length(segments) >= 2 and uppercase_alias_segments?(segments) and next_char != ?( do
+      raw = Enum.join(segments, ".")
 
-  defp line_for_index(prefix) do
-    prefix
-    |> String.split("\n")
-    |> length()
-  end
+      next_state =
+        advance_state(state, String.to_charlist(raw))
+        |> Map.put(:relation_entry?, false)
+        |> Map.put(:join_prefix, nil)
 
-  defp skip_spaces(sql, index) do
-    case String.at(sql, index) do
-      value when value in [" ", "\t", "\n", "\r"] -> skip_spaces(sql, index + 1)
-      _ -> index
+      node = build_asset_ref(Module.concat(segments), state, next_state)
+      parse_nodes(tail_after_module, next_state, [node | acc])
+    else
+      next_state =
+        advance_state(state, String.to_charlist(word))
+        |> update_relation_context(String.downcase(word))
+
+      parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
     end
   end
 
-  defp validate_calls!(calls, known_definitions, file, fallback_line) do
-    Enum.each(calls, fn %Call{name: name, arity: arity, context: context, line: line} ->
-      case Map.fetch(known_definitions, {name, arity}) do
-        {:ok, definition} ->
-          validate_call_context!(definition.shape, context, name, arity, file, line)
+  defp parse_call(word, tail, state, context, acc) do
+    {space_chars, after_spaces} = take_horizontal_space(tail, [])
 
-        :error ->
-          arities =
-            known_definitions
-            |> Map.keys()
-            |> Enum.filter(fn {candidate_name, _candidate_arity} -> candidate_name == name end)
-            |> Enum.map(&elem(&1, 1))
-            |> Enum.sort()
+    case after_spaces do
+      [?( | rest_after_open] ->
+        start_pos = state.position
+        open_state = advance_state(state, String.to_charlist(word) ++ space_chars ++ ~c"(")
 
-          if arities != [] do
+        {args, tail_after_call, end_pos} =
+          parse_call_arguments(rest_after_open, open_state.position, state, [])
+
+        arity = length(args)
+        visible_arities = visible_arities(word, state.known_definitions)
+
+        case Map.fetch(state.known_definitions, {String.to_atom(word), arity}) do
+          {:ok, definition} ->
+            call = build_call(definition, args, context, start_pos, end_pos)
+
+            next_state = %{
+              state
+              | position: end_pos,
+                relation_entry?: false,
+                join_prefix: nil,
+                paren_depth: state.paren_depth
+            }
+
+            validate_call_context!(call, state.file)
+            parse_nodes(tail_after_call, next_state, [call | acc])
+
+          :error when visible_arities != [] ->
             compile_error!(
-              file,
-              line || fallback_line,
-              "invalid SQL call #{name}/#{arity}; expected one of arities #{inspect(arities)}"
+              state.file,
+              start_pos.line,
+              "invalid SQL call #{word}/#{arity}; expected one of arities #{inspect(visible_arities)}"
             )
-          end
-      end
-    end)
+
+          :error ->
+            next_state =
+              advance_state(state, String.to_charlist(word))
+              |> update_relation_context(String.downcase(word))
+
+            parse_nodes(tail, next_state, [
+              text_node(word, state.position, next_state.position) | acc
+            ])
+        end
+
+      _other ->
+        next_state =
+          advance_state(state, String.to_charlist(word))
+          |> update_relation_context(String.downcase(word))
+
+        parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
+    end
   end
 
-  defp validate_call_context!(:expression, :relation, name, arity, file, line) do
+  defp parse_call_arguments(chars, current_pos, state, acc) do
+    do_parse_call_arguments(chars, current_pos, current_pos, :code, 0, [], state, acc)
+  end
+
+  defp do_parse_call_arguments(
+         [],
+         _current_pos,
+         _arg_start,
+         _lex_state,
+         _depth,
+         _buffer,
+         state,
+         _acc
+       ) do
+    compile_error!(state.file, state.position.line, "unterminated SQL call arguments")
+  end
+
+  defp do_parse_call_arguments(
+         [?-, ?- | rest],
+         current_pos,
+         arg_start,
+         :code,
+         depth,
+         buffer,
+         state,
+         acc
+       ),
+       do: consume_arg_line_comment(rest, current_pos, arg_start, depth, buffer, state, acc)
+
+  defp do_parse_call_arguments(
+         [?/, ?* | rest],
+         current_pos,
+         arg_start,
+         :code,
+         depth,
+         buffer,
+         state,
+         acc
+       ),
+       do: consume_arg_block_comment(rest, current_pos, arg_start, depth, buffer, state, acc)
+
+  defp do_parse_call_arguments(
+         [?' | rest],
+         current_pos,
+         arg_start,
+         :code,
+         depth,
+         buffer,
+         state,
+         acc
+       ),
+       do: consume_arg_quoted(rest, current_pos, arg_start, depth, buffer, state, acc, ?')
+
+  defp do_parse_call_arguments(
+         [?" | rest],
+         current_pos,
+         arg_start,
+         :code,
+         depth,
+         buffer,
+         state,
+         acc
+       ),
+       do: consume_arg_quoted(rest, current_pos, arg_start, depth, buffer, state, acc, ?")
+
+  defp do_parse_call_arguments(
+         [?( | rest],
+         current_pos,
+         arg_start,
+         :code,
+         depth,
+         buffer,
+         state,
+         acc
+       ) do
+    next_pos = advance_position(current_pos, ~c"(")
+
+    do_parse_call_arguments(
+      rest,
+      next_pos,
+      arg_start,
+      :code,
+      depth + 1,
+      [?( | buffer],
+      state,
+      acc
+    )
+  end
+
+  defp do_parse_call_arguments([?) | rest], current_pos, arg_start, :code, 0, buffer, state, acc) do
+    end_pos = advance_position(current_pos, ~c")")
+    fragment = build_argument_fragment(Enum.reverse(buffer), arg_start, current_pos, state)
+    {Enum.reverse([fragment | acc]), rest, end_pos}
+  end
+
+  defp do_parse_call_arguments(
+         [?) | rest],
+         current_pos,
+         arg_start,
+         :code,
+         depth,
+         buffer,
+         state,
+         acc
+       ) do
+    next_pos = advance_position(current_pos, ~c")")
+
+    do_parse_call_arguments(
+      rest,
+      next_pos,
+      arg_start,
+      :code,
+      depth - 1,
+      [?) | buffer],
+      state,
+      acc
+    )
+  end
+
+  defp do_parse_call_arguments([?, | rest], current_pos, arg_start, :code, 0, buffer, state, acc) do
+    comma_pos = advance_position(current_pos, ~c",")
+    fragment = build_argument_fragment(Enum.reverse(buffer), arg_start, current_pos, state)
+    do_parse_call_arguments(rest, comma_pos, comma_pos, :code, 0, [], state, [fragment | acc])
+  end
+
+  defp do_parse_call_arguments(
+         [char | rest],
+         current_pos,
+         arg_start,
+         :code,
+         depth,
+         buffer,
+         state,
+         acc
+       ) do
+    next_pos = advance_position(current_pos, [char])
+    do_parse_call_arguments(rest, next_pos, arg_start, :code, depth, [char | buffer], state, acc)
+  end
+
+  defp consume_arg_line_comment(rest, current_pos, arg_start, depth, buffer, state, acc) do
+    {text, tail, next_pos} = consume_line_comment(rest, current_pos, ~c"--")
+
+    do_parse_call_arguments(
+      tail,
+      next_pos,
+      arg_start,
+      :code,
+      depth,
+      Enum.reverse(String.to_charlist(text)) ++ buffer,
+      state,
+      acc
+    )
+  end
+
+  defp consume_arg_block_comment(rest, current_pos, arg_start, depth, buffer, state, acc) do
+    {text, tail, next_pos} = consume_block_comment(rest, current_pos, ~c"/*")
+
+    do_parse_call_arguments(
+      tail,
+      next_pos,
+      arg_start,
+      :code,
+      depth,
+      Enum.reverse(String.to_charlist(text)) ++ buffer,
+      state,
+      acc
+    )
+  end
+
+  defp consume_arg_quoted(rest, current_pos, arg_start, depth, buffer, state, acc, quote_char) do
+    {text, tail, next_pos} = consume_quoted(rest, current_pos, [quote_char])
+
+    do_parse_call_arguments(
+      tail,
+      next_pos,
+      arg_start,
+      :code,
+      depth,
+      Enum.reverse(String.to_charlist(text)) ++ buffer,
+      state,
+      acc
+    )
+  end
+
+  defp build_argument_fragment(chars, start_pos, end_pos, state) do
+    source = chars |> to_string()
+
+    template =
+      compile!(source,
+        known_definitions: state.known_definitions,
+        file: state.file,
+        line: start_pos.line,
+        column: start_pos.column,
+        offset: start_pos.offset,
+        module: state.module,
+        scope: state.scope,
+        local_args: Map.keys(state.local_args),
+        enforce_query_root: false
+      )
+
+    %Fragment{nodes: template.nodes, span: span(start_pos, end_pos)}
+  end
+
+  defp build_placeholder(name, state, next_state) do
+    source = classify_placeholder_source(name, state)
+    %Placeholder{name: name, source: source, span: span(state.position, next_state.position)}
+  end
+
+  defp build_call(definition, args, context, start_pos, end_pos) do
+    %Call{
+      definition: %DefinitionRef{
+        provider: definition.module,
+        name: definition.name,
+        arity: definition.arity,
+        kind: definition.shape
+      },
+      args: args,
+      context: context,
+      span: span(start_pos, end_pos)
+    }
+  end
+
+  defp build_asset_ref(module, state, next_state) do
+    {resolution, produced_relation} =
+      resolve_asset_reference(module, state.file, state.position.line, state.module)
+
+    %AssetRef{
+      module: module,
+      asset_ref: {module, :asset},
+      produced_relation: produced_relation,
+      resolution: resolution,
+      span: span(state.position, next_state.position)
+    }
+  end
+
+  defp classify_placeholder_source(name, _state) when name in @reserved_runtime_inputs,
+    do: :runtime
+
+  defp classify_placeholder_source(name, %{scope: :definition, local_args: local_args} = state) do
+    case Map.fetch(local_args, name) do
+      {:ok, index} ->
+        {:local_arg, index}
+
+      :error ->
+        compile_error!(
+          state.file,
+          state.position.line,
+          "undefined defsql placeholder @#{name}; expected one of #{inspect(Map.keys(local_args))}"
+        )
+    end
+  end
+
+  defp classify_placeholder_source(_name, _state), do: :query_param
+
+  defp asset_ref_candidate?(word, tail, state) do
+    state.statement_kind not in [:update, :merge] and
+      state.relation_entry? and
+      String.match?(word, ~r/^[A-Z][A-Za-z0-9_]*$/) and
+      List.first(tail) == ?.
+  end
+
+  defp call_candidate?(word, tail, state) do
+    state.known_definitions != %{} and
+      visible_arities(word, state.known_definitions) != [] and
+      peek_nonspace_char(tail) == ?(
+  end
+
+  defp visible_arities(word, known_definitions) do
+    name = String.to_atom(word)
+
+    known_definitions
+    |> Map.keys()
+    |> Enum.filter(fn {candidate_name, _arity} -> candidate_name == name end)
+    |> Enum.map(&elem(&1, 1))
+    |> Enum.sort()
+  end
+
+  defp validate_call_context!(
+         %Call{
+           definition: %DefinitionRef{kind: :expression, name: name, arity: arity},
+           context: :relation,
+           span: span
+         },
+         file
+       ) do
     compile_error!(
       file,
-      line,
+      span.start_line,
       "invalid SQL call #{name}/#{arity} in relation position; expected a relation SQL macro"
     )
   end
 
-  defp validate_call_context!(:relation, :expression, name, arity, file, line) do
+  defp validate_call_context!(
+         %Call{
+           definition: %DefinitionRef{kind: :relation, name: name, arity: arity},
+           context: :expression,
+           span: span
+         },
+         file
+       ) do
     compile_error!(
       file,
-      line,
+      span.start_line,
       "invalid SQL call #{name}/#{arity} in expression position; expected an expression SQL macro"
     )
   end
 
-  defp validate_call_context!(_shape, _context, _name, _arity, _file, _line), do: :ok
+  defp validate_call_context!(_call, _file), do: :ok
 
-  defp extract_asset_refs(sql) do
-    sql
-    |> String.to_charlist()
-    |> do_extract_asset_refs(
-      1,
-      :code,
-      %{asset_refs_enabled?: true, relation_entry?: false, join_prefix: nil, paren_depth: 0},
-      []
-    )
-    |> Enum.reverse()
-  end
+  defp resolve_asset_reference(module, file, line, current_module) do
+    if module == current_module do
+      compile_error!(file, line, "SQL asset cannot reference itself as a relation")
+    end
 
-  defp do_extract_asset_refs([], _line, _state, _ctx, acc), do: acc
-
-  defp do_extract_asset_refs([?-, ?- | rest], line, :code, ctx, acc),
-    do: do_extract_asset_refs(rest, line, :line_comment, ctx, acc)
-
-  defp do_extract_asset_refs([?/, ?* | rest], line, :code, ctx, acc),
-    do: do_extract_asset_refs(rest, line, :block_comment, ctx, acc)
-
-  defp do_extract_asset_refs([?' | rest], line, :code, ctx, acc),
-    do: do_extract_asset_refs(rest, line, :single_quote, ctx, acc)
-
-  defp do_extract_asset_refs([?" | rest], line, :code, ctx, acc),
-    do: do_extract_asset_refs(rest, line, :double_quote, ctx, acc)
-
-  defp do_extract_asset_refs([char | rest], line, :line_comment, ctx, acc) do
-    if char == ?\n do
-      do_extract_asset_refs(rest, line + 1, :code, ctx, acc)
-    else
-      do_extract_asset_refs(rest, line, :line_comment, ctx, acc)
+    case Code.ensure_compiled(module) do
+      {:module, _} -> validate_compiled_asset_module!(module, file, line)
+      {:error, _reason} -> {:deferred, nil}
     end
   end
 
-  defp do_extract_asset_refs([?*, ?/ | rest], line, :block_comment, ctx, acc),
-    do: do_extract_asset_refs(rest, line, :code, ctx, acc)
+  defp validate_compiled_asset_module!(module, file, line) do
+    if function_exported?(module, :__favn_single_asset__, 0) and module.__favn_single_asset__() do
+      case Compiler.compile_module_assets(module) do
+        {:ok, [%{produces: %RelationRef{} = produces}]} ->
+          {:resolved, produces}
 
-  defp do_extract_asset_refs([char | rest], line, :block_comment, ctx, acc) do
-    next_line = if char == ?\n, do: line + 1, else: line
-    do_extract_asset_refs(rest, next_line, :block_comment, ctx, acc)
-  end
+        {:ok, [%{produces: nil}]} ->
+          compile_error!(
+            file,
+            line,
+            "SQL asset reference #{inspect(module)} does not resolve to a produced relation"
+          )
 
-  defp do_extract_asset_refs([?' | rest], line, :single_quote, ctx, acc),
-    do: do_extract_asset_refs(rest, line, :code, ctx, acc)
+        {:ok, [_asset | _rest]} ->
+          compile_error!(
+            file,
+            line,
+            "invalid SQL asset reference #{inspect(module)}; expected a compiled single-asset module"
+          )
 
-  defp do_extract_asset_refs([char | rest], line, :single_quote, ctx, acc) do
-    next_line = if char == ?\n, do: line + 1, else: line
-    do_extract_asset_refs(rest, next_line, :single_quote, ctx, acc)
-  end
-
-  defp do_extract_asset_refs([?" | rest], line, :double_quote, ctx, acc),
-    do: do_extract_asset_refs(rest, line, :code, ctx, acc)
-
-  defp do_extract_asset_refs([char | rest], line, :double_quote, ctx, acc) do
-    next_line = if char == ?\n, do: line + 1, else: line
-    do_extract_asset_refs(rest, next_line, :double_quote, ctx, acc)
-  end
-
-  defp do_extract_asset_refs([char | rest], line, :code, ctx, acc)
-       when char in [32, 9, 13] do
-    do_extract_asset_refs(rest, line, :code, ctx, acc)
-  end
-
-  defp do_extract_asset_refs([?\n | rest], line, :code, ctx, acc),
-    do: do_extract_asset_refs(rest, line + 1, :code, ctx, acc)
-
-  defp do_extract_asset_refs([char | _rest] = chars, line, :code, ctx, acc)
-       when (char >= ?A and char <= ?Z) or (char >= ?a and char <= ?z) or char == ?_ do
-    {word, tail} = read_identifier(chars)
-    word_down = String.downcase(word)
-    ctx = update_statement_context(ctx, word_down)
-
-    if relation_reference_candidate?(ctx, word, tail) do
-      {segments, tail_after_module} = read_alias_chain(tail, [word])
-      next_char = skip_horizontal_space(tail_after_module)
-
-      if length(segments) >= 2 and uppercase_alias_segments?(segments) and next_char != ?( do
-        module = Module.concat(segments)
-        ref = %AssetRef{module: module, line: line}
-        next_ctx = %{ctx | relation_entry?: false, join_prefix: nil}
-        do_extract_asset_refs(tail_after_module, line, :code, next_ctx, [ref | acc])
-      else
-        next_ctx = update_relation_context(ctx, word_down)
-        do_extract_asset_refs(tail, line, :code, next_ctx, acc)
+        {:error, _reason} ->
+          compile_error!(
+            file,
+            line,
+            "invalid SQL asset reference #{inspect(module)}; failed to compile asset definition"
+          )
       end
     else
-      next_ctx = update_relation_context(ctx, word_down)
-      do_extract_asset_refs(tail, line, :code, next_ctx, acc)
+      compile_error!(
+        file,
+        line,
+        "invalid SQL asset reference #{inspect(module)}; expected a compiled single-asset module"
+      )
     end
   end
 
-  defp do_extract_asset_refs([?( | rest], line, :code, ctx, acc) do
-    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil, paren_depth: ctx.paren_depth + 1}
-    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  defp gather_requirements(nodes) do
+    {runtime_inputs, query_params} = gather_requirements(nodes, MapSet.new(), MapSet.new())
+    %Requirements{runtime_inputs: runtime_inputs, query_params: query_params}
   end
 
-  defp do_extract_asset_refs([?) | rest], line, :code, ctx, acc) do
-    next_ctx = %{
-      ctx
-      | relation_entry?: false,
-        join_prefix: nil,
-        paren_depth: max(ctx.paren_depth - 1, 0)
-    }
+  defp gather_requirements([], runtime_inputs, query_params), do: {runtime_inputs, query_params}
 
-    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  defp gather_requirements([node | rest], runtime_inputs, query_params) do
+    {runtime_inputs, query_params} =
+      case node do
+        %Placeholder{name: name, source: :runtime} ->
+          {MapSet.put(runtime_inputs, name), query_params}
+
+        %Placeholder{name: name, source: :query_param} ->
+          {runtime_inputs, MapSet.put(query_params, name)}
+
+        %Call{args: args} ->
+          Enum.reduce(args, {runtime_inputs, query_params}, fn %Fragment{nodes: arg_nodes}, acc ->
+            gather_requirements(arg_nodes, elem(acc, 0), elem(acc, 1))
+          end)
+
+        _other ->
+          {runtime_inputs, query_params}
+      end
+
+    gather_requirements(rest, runtime_inputs, query_params)
   end
 
-  defp do_extract_asset_refs([?; | rest], line, :code, %{paren_depth: 0} = ctx, acc) do
-    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil, asset_refs_enabled?: true}
-    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  defp text_node(text, start_pos, end_pos),
+    do: %Text{sql: to_string(text), span: span(start_pos, end_pos)}
+
+  defp consume_single_char(char, state) do
+    text = <<char::utf8>>
+    {advance_state(state, [char]), text}
   end
 
-  defp do_extract_asset_refs([_char | rest], line, :code, ctx, acc) do
-    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil}
-    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  defp consume_line_comment(rest, start_pos, prefix_chars) do
+    do_consume_line_comment(
+      rest,
+      advance_position(start_pos, prefix_chars),
+      Enum.reverse(prefix_chars)
+    )
   end
 
-  defp update_statement_context(%{paren_depth: depth} = ctx, _word) when depth > 0, do: ctx
+  defp do_consume_line_comment([], pos, acc), do: {acc |> Enum.reverse() |> to_string(), [], pos}
 
-  defp update_statement_context(ctx, "update"), do: %{ctx | asset_refs_enabled?: false}
+  defp do_consume_line_comment([char | rest] = chars, pos, acc) do
+    next_pos = advance_position(pos, [char])
 
-  defp update_statement_context(ctx, "merge"), do: %{ctx | asset_refs_enabled?: false}
-
-  defp update_statement_context(ctx, _word), do: ctx
-
-  defp relation_reference_candidate?(
-         %{asset_refs_enabled?: true, relation_entry?: true},
-         word,
-         tail
-       ) do
-    String.match?(word, ~r/^[A-Z][A-Za-z0-9_]*$/) and List.first(tail) == ?.
+    if char == ?\n do
+      {[char | acc] |> Enum.reverse() |> to_string(), rest, next_pos}
+    else
+      do_consume_line_comment(chars |> tl(), next_pos, [char | acc])
+    end
   end
 
-  defp relation_reference_candidate?(_ctx, _word, _tail), do: false
+  defp consume_block_comment(rest, start_pos, prefix_chars) do
+    do_consume_block_comment(
+      rest,
+      advance_position(start_pos, prefix_chars),
+      Enum.reverse(prefix_chars)
+    )
+  end
+
+  defp do_consume_block_comment([], pos, acc), do: {acc |> Enum.reverse() |> to_string(), [], pos}
+
+  defp do_consume_block_comment([?*, ?/ | rest], pos, acc) do
+    next_pos = advance_position(pos, ~c"*/")
+    {[?/, ?* | acc] |> Enum.reverse() |> to_string(), rest, next_pos}
+  end
+
+  defp do_consume_block_comment([char | rest], pos, acc) do
+    do_consume_block_comment(rest, advance_position(pos, [char]), [char | acc])
+  end
+
+  defp consume_quoted(rest, start_pos, quote_char) when is_integer(quote_char),
+    do: consume_quoted(rest, start_pos, [quote_char])
+
+  defp consume_quoted(rest, start_pos, [quote_char]) do
+    do_consume_quoted(rest, advance_position(start_pos, [quote_char]), [quote_char], quote_char)
+  end
+
+  defp do_consume_quoted([], pos, acc, _quote_char),
+    do: {acc |> Enum.reverse() |> to_string(), [], pos}
+
+  defp do_consume_quoted([quote_char, quote_char | rest], pos, acc, quote_char) do
+    next_pos = advance_position(pos, [quote_char, quote_char])
+    do_consume_quoted(rest, next_pos, [quote_char, quote_char | acc], quote_char)
+  end
+
+  defp do_consume_quoted([quote_char | rest], pos, acc, quote_char) do
+    next_pos = advance_position(pos, [quote_char])
+    {[quote_char | acc] |> Enum.reverse() |> to_string(), rest, next_pos}
+  end
+
+  defp do_consume_quoted([char | rest], pos, acc, quote_char) do
+    do_consume_quoted(rest, advance_position(pos, [char]), [char | acc], quote_char)
+  end
+
+  defp take_horizontal_space([char | rest], acc) when char in [32, 9, 10, 13],
+    do: take_horizontal_space(rest, [char | acc])
+
+  defp take_horizontal_space(rest, acc), do: {Enum.reverse(acc), rest}
+
+  defp peek_nonspace_char([char | rest]) when char in [32, 9, 10, 13],
+    do: peek_nonspace_char(rest)
+
+  defp peek_nonspace_char([char | _rest]), do: char
+  defp peek_nonspace_char([]), do: nil
 
   defp read_identifier(chars), do: do_read_identifier(chars, [])
 
@@ -411,98 +985,98 @@ defmodule Favn.SQL.Template do
 
   defp read_alias_chain(rest, segments), do: {segments, rest}
 
-  defp uppercase_alias_segments?(segments) do
-    Enum.all?(segments, &String.match?(&1, ~r/^[A-Z][A-Za-z0-9_]*$/))
+  defp uppercase_alias_segments?(segments),
+    do: Enum.all?(segments, &String.match?(&1, ~r/^[A-Z][A-Za-z0-9_]*$/))
+
+  defp update_relation_context(state, "from"),
+    do: %{
+      state
+      | relation_entry?: true,
+        join_prefix: nil,
+        statement_kind: update_statement_kind(state.statement_kind, "from", state.paren_depth)
+    }
+
+  defp update_relation_context(state, "join"),
+    do: %{
+      state
+      | relation_entry?: true,
+        join_prefix: nil,
+        statement_kind: update_statement_kind(state.statement_kind, "join", state.paren_depth)
+    }
+
+  defp update_relation_context(state, word) when word in @join_prefixes,
+    do: %{
+      state
+      | relation_entry?: false,
+        join_prefix: word,
+        statement_kind: update_statement_kind(state.statement_kind, word, state.paren_depth)
+    }
+
+  defp update_relation_context(%{join_prefix: prefix} = state, "outer")
+       when prefix in @outer_join_prefixes,
+       do: %{
+         state
+         | relation_entry?: false,
+           join_prefix: "#{prefix} outer",
+           statement_kind: update_statement_kind(state.statement_kind, "outer", state.paren_depth)
+       }
+
+  defp update_relation_context(%{join_prefix: prefix} = state, "join")
+       when prefix in @join_entry_prefixes,
+       do: %{
+         state
+         | relation_entry?: true,
+           join_prefix: nil,
+           statement_kind: update_statement_kind(state.statement_kind, "join", state.paren_depth)
+       }
+
+  defp update_relation_context(state, word),
+    do: %{
+      state
+      | relation_entry?: false,
+        join_prefix: nil,
+        statement_kind: update_statement_kind(state.statement_kind, word, state.paren_depth)
+    }
+
+  defp top_level_statement_kind(:query), do: :query
+  defp top_level_statement_kind(:expression), do: :expression
+
+  defp update_statement_kind(kind, word, _depth) do
+    cond do
+      word == "update" -> :update
+      word == "merge" -> :merge
+      true -> kind
+    end
   end
 
-  defp skip_horizontal_space([char | rest]) when char in [32, 9, 13],
-    do: skip_horizontal_space(rest)
+  defp local_arg_index(args) do
+    args
+    |> Enum.with_index()
+    |> Map.new(fn {name, index} -> {name, index} end)
+  end
 
-  defp skip_horizontal_space([char | _]), do: char
-  defp skip_horizontal_space([]), do: nil
+  defp span(%Position{} = start_pos, %Position{} = end_pos) do
+    %Span{
+      start_offset: start_pos.offset,
+      end_offset: end_pos.offset,
+      start_line: start_pos.line,
+      start_column: start_pos.column,
+      end_line: end_pos.line,
+      end_column: end_pos.column
+    }
+  end
 
-  defp update_relation_context(ctx, "from"), do: %{ctx | relation_entry?: true, join_prefix: nil}
-  defp update_relation_context(ctx, "join"), do: %{ctx | relation_entry?: true, join_prefix: nil}
+  defp advance_state(state, chars),
+    do: %{state | position: advance_position(state.position, chars)}
 
-  defp update_relation_context(ctx, word)
-       when word in ["inner", "left", "right", "full", "cross"],
-       do: %{ctx | relation_entry?: false, join_prefix: word}
-
-  defp update_relation_context(%{join_prefix: prefix} = ctx, "outer")
-       when prefix in ["left", "right", "full"],
-       do: %{ctx | relation_entry?: false, join_prefix: "#{prefix} outer"}
-
-  defp update_relation_context(%{join_prefix: prefix} = ctx, "join")
-       when prefix in [
-              "inner",
-              "left",
-              "right",
-              "full",
-              "cross",
-              "left outer",
-              "right outer",
-              "full outer"
-            ],
-       do: %{ctx | relation_entry?: true, join_prefix: nil}
-
-  defp update_relation_context(ctx, _word), do: %{ctx | relation_entry?: false, join_prefix: nil}
-
-  defp validate_asset_refs!(asset_refs, current_module, file, fallback_line) do
-    Enum.each(asset_refs, fn %AssetRef{module: module, line: line} ->
-      if module == current_module do
-        compile_error!(
-          file,
-          line || fallback_line,
-          "SQL asset cannot reference itself as a relation"
-        )
+  defp advance_position(%Position{} = pos, chars) when is_list(chars) do
+    Enum.reduce(chars, pos, fn char, acc ->
+      if char == ?\n do
+        %Position{offset: acc.offset + 1, line: acc.line + 1, column: 1}
       else
-        validate_compiled_asset_module!(module, file, line || fallback_line)
+        %Position{offset: acc.offset + 1, line: acc.line, column: acc.column + 1}
       end
     end)
-  end
-
-  defp validate_compiled_asset_module!(module, file, line) do
-    case Code.ensure_compiled(module) do
-      {:module, _module} ->
-        if function_exported?(module, :__favn_single_asset__, 0) and
-             module.__favn_single_asset__() do
-          validate_produced_relation!(module, file, line)
-        else
-          compile_error!(
-            file,
-            line,
-            "invalid SQL asset reference #{inspect(module)}; expected a compiled single-asset module"
-          )
-        end
-
-      {:error, _reason} ->
-        compile_error!(
-          file,
-          line,
-          "invalid SQL asset reference #{inspect(module)}; module could not be resolved"
-        )
-    end
-  end
-
-  defp validate_produced_relation!(module, file, line) do
-    case Compiler.compile_module_assets(module) do
-      {:ok, [%{produces: nil}]} ->
-        compile_error!(
-          file,
-          line,
-          "SQL asset reference #{inspect(module)} does not resolve to a produced relation"
-        )
-
-      {:ok, [_asset]} ->
-        :ok
-
-      {:error, _reason} ->
-        compile_error!(
-          file,
-          line,
-          "invalid SQL asset reference #{inspect(module)}; failed to compile asset definition"
-        )
-    end
   end
 
   defp compile_error!(file, line, description) do

@@ -16,6 +16,7 @@ defmodule Favn.SQL do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Definition
+  alias Favn.SQL.Definition.Param
   alias Favn.SQL.{Error, Result, Session, WritePlan}
   alias Favn.SQL.RelationRef, as: SQLRelationRef
   alias Favn.SQL.Template
@@ -411,44 +412,45 @@ defmodule Favn.SQL do
 
     provisional =
       Enum.map(raw_definitions, fn raw ->
-        shape = infer_shape(raw.sql)
-
         %Definition{
           module: module,
           name: raw.name,
           arity: raw.arity,
-          params: raw.args,
-          shape: shape,
+          params:
+            Enum.with_index(raw.args, fn name, index -> %Param{name: name, index: index} end),
+          shape: :expression,
           sql: raw.sql,
-          template: %Template{
-            source: raw.sql,
-            inputs: MapSet.new(),
-            runtime_inputs: MapSet.new(),
-            param_inputs: MapSet.new()
-          },
+          template: nil,
           file: raw.file,
           line: raw.line
         }
       end)
 
     known_definitions =
-      (provisional ++ imported_definitions)
-      |> Enum.map(fn %Definition{name: name, arity: arity} = definition ->
-        {{name, arity}, definition}
+      build_visible_definition_catalog!(module, provisional, imported_definitions)
+
+    local_definitions =
+      Enum.map(provisional, fn %Definition{} = definition ->
+        template =
+          Template.compile!(definition.sql,
+            known_definitions: known_definitions,
+            file: definition.file,
+            line: definition.line,
+            module: module,
+            scope: :definition,
+            local_args: Enum.map(definition.params, & &1.name),
+            enforce_query_root: false
+          )
+
+        shape = if template.root_kind == :query, do: :relation, else: :expression
+        %Definition{definition | template: template, shape: shape}
       end)
-      |> Map.new()
 
-    Enum.map(provisional, fn %Definition{} = definition ->
-      template =
-        Template.compile!(definition.sql,
-          known_definitions: known_definitions,
-          file: definition.file,
-          line: definition.line,
-          module: module
-        )
+    visible_definitions =
+      build_visible_definition_catalog!(module, local_definitions, imported_definitions)
 
-      %Definition{definition | template: template}
-    end)
+    detect_definition_cycles!(local_definitions, visible_definitions)
+    local_definitions
   end
 
   defp fetch_imported_definitions!(imports) do
@@ -458,23 +460,21 @@ defmodule Favn.SQL do
           if function_exported?(module, :__favn_sql_definitions__, 0) do
             module.__favn_sql_definitions__()
           else
-            []
+            compile_error!(
+              "nofile",
+              1,
+              "imported SQL provider #{inspect(module)} does not define reusable SQL"
+            )
           end
 
         {:error, _reason} ->
-          []
+          compile_error!(
+            "nofile",
+            1,
+            "imported SQL provider #{inspect(module)} could not be resolved"
+          )
       end
     end)
-  end
-
-  defp infer_shape(sql) do
-    normalized = String.trim_leading(sql)
-
-    if Regex.match?(~r/^(?:select|with)\b/i, normalized) do
-      :relation
-    else
-      :expression
-    end
   end
 
   defp normalize_defsql_args!(args_ast, env) do
@@ -521,6 +521,57 @@ defmodule Favn.SQL do
           definition.line,
           "duplicate defsql #{name}/#{arity}; each defsql name/arity must be unique per module"
         )
+    end)
+  end
+
+  defp build_visible_definition_catalog!(owner_module, local_definitions, imported_definitions) do
+    (local_definitions ++ imported_definitions)
+    |> Enum.group_by(&Definition.key/1)
+    |> Enum.map(fn
+      {_key, [%Definition{} = definition]} ->
+        {Definition.key(definition), definition}
+
+      {{name, arity}, definitions} ->
+        providers = definitions |> Enum.map(&inspect(&1.module)) |> Enum.sort() |> Enum.join(", ")
+
+        compile_error!(
+          hd(definitions).file,
+          hd(definitions).line,
+          "duplicate visible defsql #{name}/#{arity} for #{inspect(owner_module)}; conflicting providers: #{providers}"
+        )
+    end)
+    |> Map.new()
+  end
+
+  defp detect_definition_cycles!(local_definitions, visible_definitions) do
+    Enum.each(local_definitions, fn definition ->
+      detect_definition_cycle!(definition, visible_definitions, [])
+    end)
+  end
+
+  defp detect_definition_cycle!(definition, visible_definitions, stack) do
+    key = Definition.key(definition)
+
+    if key in stack do
+      path =
+        Enum.reverse([key | stack])
+        |> Enum.map_join(" -> ", fn {name, arity} -> "#{name}/#{arity}" end)
+
+      compile_error!(
+        definition.file,
+        definition.line,
+        "cyclic defsql definitions detected: #{path}"
+      )
+    end
+
+    Enum.each(Template.called_definition_keys(definition.template), fn child_key ->
+      case Map.fetch(visible_definitions, child_key) do
+        {:ok, child_definition} ->
+          detect_definition_cycle!(child_definition, visible_definitions, [key | stack])
+
+        :error ->
+          :ok
+      end
     end)
   end
 

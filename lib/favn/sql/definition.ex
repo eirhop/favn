@@ -7,6 +7,14 @@ defmodule Favn.SQL.Definition do
 
   @type shape :: :expression | :relation
 
+  defmodule Param do
+    @moduledoc false
+    @enforce_keys [:name, :index]
+    defstruct [:name, :index]
+
+    @type t :: %__MODULE__{name: atom(), index: non_neg_integer()}
+  end
+
   @enforce_keys [:module, :name, :arity, :params, :shape, :sql, :template, :file, :line]
   defstruct [:module, :name, :arity, :params, :shape, :sql, :template, :file, :line]
 
@@ -14,11 +22,14 @@ defmodule Favn.SQL.Definition do
           module: module(),
           name: atom(),
           arity: non_neg_integer(),
-          params: [atom()],
+          params: [Param.t()],
           shape: shape(),
           sql: String.t(),
           template: Template.t(),
           file: String.t(),
           line: pos_integer()
         }
+
+  @spec key(t()) :: {atom(), non_neg_integer()}
+  def key(%__MODULE__{name: name, arity: arity}), do: {name, arity}
 end

@@ -93,15 +93,17 @@ defmodule Favn.SQLDSLTest do
            ] =
              Enum.sort_by(definition.sql_definitions, &{&1.name, &1.arity})
 
-    assert definition.template.runtime_inputs == MapSet.new([:window_start, :window_end])
-    assert definition.template.param_inputs == MapSet.new([:country])
+    assert Template.runtime_inputs(definition.template) ==
+             MapSet.new([:window_start, :window_end])
 
-    assert Enum.any?(definition.template.calls, fn %Template.Call{} = call ->
-             call.name == :cents_to_dollars and call.context == :expression
+    assert Template.query_params(definition.template) == MapSet.new([:country])
+
+    assert Enum.any?(Template.calls(definition.template), fn %Template.Call{} = call ->
+             call.definition.name == :cents_to_dollars and call.context == :expression
            end)
 
-    assert Enum.any?(definition.template.calls, fn %Template.Call{} = call ->
-             call.name == :orders_in_window and call.context == :relation
+    assert Enum.any?(Template.calls(definition.template), fn %Template.Call{} = call ->
+             call.definition.name == :orders_in_window and call.context == :relation
            end)
 
     assert {:ok, [_asset]} = Compiler.compile_module_assets(asset_module)
