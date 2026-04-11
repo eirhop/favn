@@ -1059,7 +1059,7 @@ Phase 3 validates:
 * duplicate reusable SQL names / arities in a module
 * reserved input names are not used as `defsql` arguments
 * `defsql` call arity matches the declared reusable SQL definition
-* direct asset references resolve to compiled modules when possible
+* direct asset references must resolve to compiled single-asset modules with produced relations
 * obvious relation-only positions such as `from` / `join` do not receive known expression macros
 * obvious expression positions do not receive known relation macros
 

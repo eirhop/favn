@@ -14,17 +14,23 @@ defmodule Favn.SQLTemplateAssetRefTest do
   end
 
   test "detects direct asset refs in from and join positions" do
+    orders_module = Module.concat(__MODULE__, "Orders#{System.unique_integer([:positive])}")
+    customers_module = Module.concat(__MODULE__, "Customers#{System.unique_integer([:positive])}")
+
+    compile_single_asset_module!(orders_module)
+    compile_single_asset_module!(customers_module)
+
     sql = """
     select *
-    from MyApp.Gold.Sales.FctOrders o
-    left outer join /* customer lookup */ MyApp.Silver.Sales.StgCustomers c on c.customer_id = o.customer_id
+    from #{inspect(orders_module)} o
+    left outer join /* customer lookup */ #{inspect(customers_module)} c on c.customer_id = o.customer_id
     """
 
     template = Template.compile!(sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
 
     assert Enum.map(template.asset_refs, & &1.module) == [
-             MyApp.Gold.Sales.FctOrders,
-             MyApp.Silver.Sales.StgCustomers
+             orders_module,
+             customers_module
            ]
   end
 
@@ -63,14 +69,50 @@ defmodule Favn.SQLTemplateAssetRefTest do
     on tgt.customer_id = src.customer_id
     """
 
+    with_update_sql = """
+    with src as (
+      select 1 as customer_id
+    )
+    update silver.sales.orders as o
+    set customer_id = s.customer_id
+    from MyApp.Silver.Sales.StgCustomers s
+    """
+
+    with_merge_sql = """
+    with src as (
+      select 1 as customer_id
+    )
+    merge into silver.sales.orders as tgt
+    using MyApp.Silver.Sales.StgCustomers as src
+    on tgt.customer_id = src.customer_id
+    """
+
     update_template =
       Template.compile!(update_sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
 
     merge_template =
       Template.compile!(merge_sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
 
+    with_update_template =
+      Template.compile!(with_update_sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
+
+    with_merge_template =
+      Template.compile!(with_merge_sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
+
     assert update_template.asset_refs == []
     assert merge_template.asset_refs == []
+    assert with_update_template.asset_refs == []
+    assert with_merge_template.asset_refs == []
+  end
+
+  test "raises for unresolved module references" do
+    assert_raise CompileError, ~r/module could not be resolved/, fn ->
+      Template.compile!(
+        "select * from MyApp.Gold.Sales.FctOrdres",
+        file: "test/sql_template_asset_ref_test.exs",
+        line: 1
+      )
+    end
   end
 
   test "raises for compiled module that is not a single asset module" do
@@ -128,5 +170,21 @@ defmodule Favn.SQLTemplateAssetRefTest do
         module: current_module
       )
     end
+  end
+
+  defp compile_single_asset_module!(module) do
+    Code.compile_string(
+      """
+      defmodule #{inspect(module)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Asset
+
+        @produces true
+
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_sql_template_asset_ref.exs"
+    )
   end
 end

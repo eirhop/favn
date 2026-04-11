@@ -259,7 +259,7 @@ defmodule Favn.SQL.Template do
     |> do_extract_asset_refs(
       1,
       :code,
-      %{allow_refs?: nil, relation_entry?: false, join_prefix: nil},
+      %{asset_refs_enabled?: true, relation_entry?: false, join_prefix: nil, paren_depth: 0},
       []
     )
     |> Enum.reverse()
@@ -323,7 +323,7 @@ defmodule Favn.SQL.Template do
        when (char >= ?A and char <= ?Z) or (char >= ?a and char <= ?z) or char == ?_ do
     {word, tail} = read_identifier(chars)
     word_down = String.downcase(word)
-    ctx = maybe_set_allow_refs(ctx, word_down)
+    ctx = update_statement_context(ctx, word_down)
 
     if relation_reference_candidate?(ctx, word, tail) do
       {segments, tail_after_module} = read_alias_chain(tail, [word])
@@ -345,7 +345,23 @@ defmodule Favn.SQL.Template do
   end
 
   defp do_extract_asset_refs([?( | rest], line, :code, ctx, acc) do
-    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil}
+    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil, paren_depth: ctx.paren_depth + 1}
+    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  end
+
+  defp do_extract_asset_refs([?) | rest], line, :code, ctx, acc) do
+    next_ctx = %{
+      ctx
+      | relation_entry?: false,
+        join_prefix: nil,
+        paren_depth: max(ctx.paren_depth - 1, 0)
+    }
+
+    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  end
+
+  defp do_extract_asset_refs([?; | rest], line, :code, %{paren_depth: 0} = ctx, acc) do
+    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil, asset_refs_enabled?: true}
     do_extract_asset_refs(rest, line, :code, next_ctx, acc)
   end
 
@@ -354,18 +370,19 @@ defmodule Favn.SQL.Template do
     do_extract_asset_refs(rest, line, :code, next_ctx, acc)
   end
 
-  defp maybe_set_allow_refs(%{allow_refs?: nil} = ctx, "update"),
-    do: %{ctx | allow_refs?: false}
+  defp update_statement_context(%{paren_depth: depth} = ctx, _word) when depth > 0, do: ctx
 
-  defp maybe_set_allow_refs(%{allow_refs?: nil} = ctx, "merge"),
-    do: %{ctx | allow_refs?: false}
+  defp update_statement_context(ctx, "update"), do: %{ctx | asset_refs_enabled?: false}
 
-  defp maybe_set_allow_refs(%{allow_refs?: nil} = ctx, _word),
-    do: %{ctx | allow_refs?: true}
+  defp update_statement_context(ctx, "merge"), do: %{ctx | asset_refs_enabled?: false}
 
-  defp maybe_set_allow_refs(ctx, _word), do: ctx
+  defp update_statement_context(ctx, _word), do: ctx
 
-  defp relation_reference_candidate?(%{allow_refs?: true, relation_entry?: true}, word, tail) do
+  defp relation_reference_candidate?(
+         %{asset_refs_enabled?: true, relation_entry?: true},
+         word,
+         tail
+       ) do
     String.match?(word, ~r/^[A-Z][A-Za-z0-9_]*$/) and List.first(tail) == ?.
   end
 
@@ -459,7 +476,11 @@ defmodule Favn.SQL.Template do
         end
 
       {:error, _reason} ->
-        :ok
+        compile_error!(
+          file,
+          line,
+          "invalid SQL asset reference #{inspect(module)}; module could not be resolved"
+        )
     end
   end
 
