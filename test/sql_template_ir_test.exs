@@ -91,6 +91,75 @@ defmodule Favn.SQLTemplateIRTest do
     assert Enum.count(calls, &(&1.definition.name == :add_money)) == 1
   end
 
+  test "allows local relation macros to call earlier local relation macros" do
+    root = Module.concat(__MODULE__, "LocalRelation#{System.unique_integer([:positive])}")
+    sql_module = Module.concat(root, SQL)
+    raw_orders = Module.concat(root, RawOrders)
+
+    compile_single_asset_module!(raw_orders)
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(sql_module)} do
+        use Favn.SQL
+
+        defsql base_orders(start_at, end_at) do
+          ~SQL[
+          select *
+          from #{inspect(raw_orders)}
+          where inserted_at >= @start_at and inserted_at < @end_at
+          ]
+        end
+
+        defsql orders_in_window(start_at, end_at) do
+          ~SQL[
+          select *
+          from base_orders(@start_at, @end_at)
+          ]
+        end
+      end
+      """,
+      "test/dynamic_sql_template_ir_test.exs"
+    )
+
+    definitions = sql_module.__favn_sql_definitions__()
+    orders_in_window = Enum.find(definitions, &(&1.name == :orders_in_window))
+
+    assert orders_in_window.shape == :relation
+
+    assert [%Template.Call{context: :relation, definition: %{name: :base_orders}}] =
+             Template.calls(orders_in_window.template)
+  end
+
+  test "preserves declared local arg indexes inside nested fragments" do
+    root = Module.concat(__MODULE__, "ArgIndex#{System.unique_integer([:positive])}")
+    sql_module = Module.concat(root, SQL)
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(sql_module)} do
+        use Favn.SQL
+
+        defsql add_money(left_amount, right_amount) do
+          ~SQL[@left_amount + @right_amount]
+        end
+
+        defsql swap_money(left_amount, right_amount) do
+          ~SQL[add_money(@right_amount, @left_amount)]
+        end
+      end
+      """,
+      "test/dynamic_sql_template_ir_test.exs"
+    )
+
+    definitions = sql_module.__favn_sql_definitions__()
+    swap_money = Enum.find(definitions, &(&1.name == :swap_money))
+    [%Template.Call{args: [first_arg, second_arg]}] = Template.calls(swap_money.template)
+
+    assert [%Template.Placeholder{source: {:local_arg, 1}}] = non_text_nodes(first_arg.nodes)
+    assert [%Template.Placeholder{source: {:local_arg, 0}}] = non_text_nodes(second_arg.nodes)
+  end
+
   test "parses relation macro calls across newlines" do
     root = Module.concat(__MODULE__, "Relation#{System.unique_integer([:positive])}")
     sql_module = Module.concat(root, SQL)
@@ -221,6 +290,41 @@ defmodule Favn.SQLTemplateIRTest do
     end
   end
 
+  test "rejects duplicate visible definitions between imported and local sql" do
+    root = Module.concat(__MODULE__, "LocalImportConflict#{System.unique_integer([:positive])}")
+    imported_sql = Module.concat(root, ImportedSQL)
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(imported_sql)} do
+        use Favn.SQL
+
+        defsql cents_to_dollars(amount_cents) do
+          ~SQL[@amount_cents]
+        end
+      end
+      """,
+      "test/dynamic_sql_template_ir_test.exs"
+    )
+
+    assert_raise CompileError, ~r/duplicate visible defsql cents_to_dollars\/1/, fn ->
+      Code.compile_string(
+        """
+        defmodule #{inspect(Module.concat(root, LocalSQL))} do
+          use Favn.SQL
+          use #{inspect(imported_sql)}
+          import Favn.SQL, only: [defsql: 2, sigil_SQL: 2]
+
+          defsql cents_to_dollars(amount_cents) do
+            ~SQL[@amount_cents]
+          end
+        end
+        """,
+        "test/dynamic_sql_template_ir_test.exs"
+      )
+    end
+  end
+
   test "rejects cyclic defsql definitions" do
     assert_raise CompileError, ~r/cyclic defsql definitions detected/, fn ->
       Code.compile_string(
@@ -240,5 +344,50 @@ defmodule Favn.SQLTemplateIRTest do
         "test/dynamic_sql_template_ir_test.exs"
       )
     end
+  end
+
+  test "does not let nested update statements disable later top-level asset refs" do
+    asset_module =
+      Module.concat(__MODULE__, "NestedUpdateAsset#{System.unique_integer([:positive])}")
+
+    compile_single_asset_module!(asset_module)
+
+    template =
+      Template.compile!(
+        """
+        with nested as (
+          update sales.orders
+          set customer_id = 1
+          returning customer_id
+        )
+        select *
+        from #{inspect(asset_module)}
+        """,
+        file: "test/sql_template_ir_test.exs",
+        line: 1
+      )
+
+    assert [%Template.AssetRef{module: ^asset_module, resolution: :resolved}] =
+             Template.asset_refs(template)
+  end
+
+  defp non_text_nodes(nodes) do
+    Enum.reject(nodes, &match?(%Template.Text{}, &1))
+  end
+
+  defp compile_single_asset_module!(module) do
+    Code.compile_string(
+      """
+      defmodule #{inspect(module)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Asset
+
+        @produces true
+
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_sql_template_ir_test.exs"
+    )
   end
 end

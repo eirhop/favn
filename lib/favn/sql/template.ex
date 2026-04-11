@@ -160,10 +160,21 @@ defmodule Favn.SQL.Template do
           | {:module, module() | nil}
           | {:scope, :query | :definition | :fragment}
           | {:local_args, [atom()]}
+          | {:local_arg_index, %{optional(atom()) => non_neg_integer()}}
           | {:enforce_query_root, boolean()}
 
   @spec reserved_runtime_inputs() :: [atom()]
   def reserved_runtime_inputs, do: @reserved_runtime_inputs
+
+  @spec infer_root_kind!(String.t(), keyword()) :: root_kind()
+  def infer_root_kind!(sql, opts) when is_binary(sql) and is_list(opts) do
+    file = Keyword.fetch!(opts, :file)
+    line = Keyword.fetch!(opts, :line)
+    column = Keyword.get(opts, :column, 1)
+    offset = Keyword.get(opts, :offset, 0)
+    start_pos = %Position{offset: offset, line: line, column: column}
+    infer_root_kind!(sql, file, line, start_pos)
+  end
 
   @spec compile!(String.t(), [compile_opt()]) :: t()
   def compile!(sql, opts \\ []) when is_binary(sql) and is_list(opts) do
@@ -174,7 +185,14 @@ defmodule Favn.SQL.Template do
     known_definitions = Keyword.get(opts, :known_definitions, %{})
     module = Keyword.get(opts, :module)
     scope = Keyword.get(opts, :scope, :query)
-    local_args = Keyword.get(opts, :local_args, [])
+
+    local_arg_index =
+      Keyword.get_lazy(opts, :local_arg_index, fn ->
+        opts
+        |> Keyword.get(:local_args, [])
+        |> local_arg_index()
+      end)
+
     enforce_query_root = Keyword.get(opts, :enforce_query_root, false)
 
     start_pos = %Position{offset: offset, line: line, column: column}
@@ -188,13 +206,14 @@ defmodule Favn.SQL.Template do
       file: file,
       module: module,
       known_definitions: known_definitions,
-      local_args: local_arg_index(local_args),
+      local_args: local_arg_index,
       position: start_pos,
       relation_entry?: false,
       join_prefix: nil,
       paren_depth: 0,
       statement_kind: top_level_statement_kind(root_kind),
-      scope: scope
+      scope: scope,
+      root_kind: root_kind
     }
 
     {nodes, end_state} = parse_nodes(String.to_charlist(sql), parser_state, [])
@@ -368,9 +387,42 @@ defmodule Favn.SQL.Template do
     parse_identifier(chars, state, acc)
   end
 
-  defp parse_nodes([char | rest], state, acc) do
+  defp parse_nodes([char | rest], state, acc) when char not in [?(, ?), ?;] do
     {next_state, text} = consume_single_char(char, state)
     parse_nodes(rest, next_state, [text_node(text, state.position, next_state.position) | acc])
+  end
+
+  defp parse_nodes([?( | rest], state, acc) do
+    next_state =
+      state
+      |> advance_state(~c"(")
+      |> Map.put(:paren_depth, state.paren_depth + 1)
+      |> Map.put(:relation_entry?, false)
+      |> Map.put(:join_prefix, nil)
+
+    parse_nodes(rest, next_state, [text_node("(", state.position, next_state.position) | acc])
+  end
+
+  defp parse_nodes([?) | rest], state, acc) do
+    next_state =
+      state
+      |> advance_state(~c")")
+      |> Map.put(:paren_depth, max(state.paren_depth - 1, 0))
+      |> Map.put(:relation_entry?, false)
+      |> Map.put(:join_prefix, nil)
+
+    parse_nodes(rest, next_state, [text_node(")", state.position, next_state.position) | acc])
+  end
+
+  defp parse_nodes([?; | rest], %{paren_depth: 0} = state, acc) do
+    next_state =
+      state
+      |> advance_state(~c";")
+      |> Map.put(:relation_entry?, false)
+      |> Map.put(:join_prefix, nil)
+      |> Map.put(:statement_kind, top_level_statement_kind(state.root_kind))
+
+    parse_nodes(rest, next_state, [text_node(";", state.position, next_state.position) | acc])
   end
 
   defp parse_placeholder([next | _] = rest, state, acc)
@@ -692,7 +744,7 @@ defmodule Favn.SQL.Template do
         offset: start_pos.offset,
         module: state.module,
         scope: state.scope,
-        local_args: Map.keys(state.local_args),
+        local_arg_index: state.local_args,
         enforce_query_root: false
       )
 
@@ -1041,11 +1093,16 @@ defmodule Favn.SQL.Template do
   defp top_level_statement_kind(:query), do: :query
   defp top_level_statement_kind(:expression), do: :expression
 
-  defp update_statement_kind(kind, word, _depth) do
-    cond do
-      word == "update" -> :update
-      word == "merge" -> :merge
-      true -> kind
+  defp update_statement_kind(kind, word, depth) do
+    if depth > 0 do
+      kind
+    else
+      cond do
+        kind in [:update, :merge] -> kind
+        word == "update" -> :update
+        word == "merge" -> :merge
+        true -> kind
+      end
     end
   end
 

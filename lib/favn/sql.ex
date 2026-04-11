@@ -412,13 +412,19 @@ defmodule Favn.SQL do
 
     provisional =
       Enum.map(raw_definitions, fn raw ->
+        inferred_root_kind =
+          Template.infer_root_kind!(raw.sql,
+            file: raw.file,
+            line: raw.line
+          )
+
         %Definition{
           module: module,
           name: raw.name,
           arity: raw.arity,
           params:
             Enum.with_index(raw.args, fn name, index -> %Param{name: name, index: index} end),
-          shape: :expression,
+          shape: if(inferred_root_kind == :query, do: :relation, else: :expression),
           sql: raw.sql,
           template: nil,
           file: raw.file,
@@ -438,12 +444,11 @@ defmodule Favn.SQL do
             line: definition.line,
             module: module,
             scope: :definition,
-            local_args: Enum.map(definition.params, & &1.name),
+            local_arg_index: Map.new(definition.params, &{&1.name, &1.index}),
             enforce_query_root: false
           )
 
-        shape = if template.root_kind == :query, do: :relation, else: :expression
-        %Definition{definition | template: template, shape: shape}
+        %Definition{definition | template: template}
       end)
 
     visible_definitions =
