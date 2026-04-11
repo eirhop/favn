@@ -199,10 +199,11 @@ defmodule Favn do
         end
       end
 
-  The current SQL implementation keeps `~SQL` intentionally simple: it is a real
-  Elixir sigil, but it currently returns a plain SQL string. Future work is expected
-  to add reusable `defsql`, `@name` value binding, and Favn-aware relation resolution
-  while keeping `~SQL` as the one SQL body language.
+  The current SQL implementation keeps `~SQL` as the one SQL body language across
+  `query` and reusable `defsql` definitions. SQL authoring now includes one `@name`
+  placeholder model for SQL inputs, expression and relation SQL macros, direct asset
+  references in relation position, and compile-time normalization into a dedicated SQL
+  IR. Runtime SQL execution APIs remain a later phase.
 
   Compact multi-asset style uses `Favn.Assets`:
 

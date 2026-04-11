@@ -60,11 +60,13 @@ lib/
     │   ├── adapter.ex
     │   ├── capabilities.ex
     │   ├── column.ex
+    │   ├── definition.ex
     │   ├── error.ex
     │   ├── relation.ex
     │   ├── relation_ref.ex
     │   ├── result.ex
     │   ├── session.ex
+    │   ├── template.ex
     │   ├── write_plan.ex
     │   └── adapter/
     │       ├── duckdb.ex

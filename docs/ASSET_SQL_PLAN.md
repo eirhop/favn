@@ -886,26 +886,220 @@ Implemented semantics:
 Favn SQL uses a real `~SQL` sigil as the single SQL body language.
 
 SQL assets declare their main query with `query do ... end`.
-Reusable SQL should later be declared with `defsql ... do ... end`.
+Reusable SQL is declared with `defsql ... do ... end`.
 
-Both asset queries and reusable SQL macros should use the same `~SQL` body syntax and the same `@name` placeholder syntax for injected values.
+Both asset queries and reusable SQL macros use the same `~SQL` body syntax and the same `@name` placeholder syntax for injected values.
 
 What is implemented now:
 
 * real `~SQL` sigil
 * `query do ~SQL""" ... """ end`
-* `~SQL` returns a plain SQL string
-* `Favn.SQLAsset` stores that SQL string
+* `defsql ... do ... end` reusable SQL definitions through `Favn.SQL`
+* expression SQL macros and relation SQL macros
+* direct asset references in relation position
+* one `@name` placeholder/input model with reserved runtime inputs
+* compile-time normalization and validation into SQL IR
 
-What is not implemented yet:
+#### Phase 3 follow-up — finalized SQL authoring DSL
 
-* expression SQL macros
-* relation SQL macros
-* module-reference relation resolution
-* `@param` / runtime value binding
-* CTE composition helpers
-* SQL-aware macro expansion
-* SQL AST representation
+This follow-up completes the SQL authoring model before Phase 4 runtime execution.
+
+The finalized DSL contract includes:
+
+* asset queries via `query do ... end`
+* reusable SQL via `defsql ... do ... end`
+* one `~SQL` body language across both
+* one `@name` placeholder model across both
+* expression SQL macros and relation SQL macros from day one
+* direct Favn asset references in relation position
+* compile-time SQL normalization and validation
+* an internal SQL representation suitable for later render/execute work
+
+##### Proposed public DSL
+
+Asset query example:
+
+```elixir
+defmodule MyApp.Gold.Sales.FctCustomerRevenue do
+  use Favn.SQLAsset
+  use MyApp.SQL
+
+  @materialized :table
+
+  query do
+    ~SQL"""
+    select
+      customer_id,
+      sum(cents_to_dollars(total_amount_cents)) as gross_revenue
+    from orders_in_window(@window_start, @window_end)
+    where (@country is null or country = @country)
+    group by 1
+    """
+  end
+end
+```
+
+Reusable expression SQL example:
+
+```elixir
+defmodule MyApp.SQL do
+  use Favn.SQL
+
+  defsql cents_to_dollars(amount_cents) do
+    ~SQL"""
+    cast((@amount_cents / 100.0) as numeric(16, 2))
+    """
+  end
+end
+```
+
+Reusable relation SQL example:
+
+```elixir
+defmodule MyApp.SQL do
+  use Favn.SQL
+
+  defsql orders_in_window(start_at, end_at) do
+    ~SQL"""
+    select
+      order_id,
+      customer_id,
+      total_amount,
+      country
+    from MyApp.Raw.Sales.Orders
+    where inserted_at >= @start_at
+      and inserted_at < @end_at
+    """
+  end
+end
+```
+
+##### `@name` placeholder model
+
+Inside any `~SQL` body, `@name` is the only value placeholder syntax.
+
+Meaning:
+
+* SQL built-ins such as `@window_start` and `@window_end` resolve from reserved runtime inputs
+* in asset `query` bodies, any other `@name` resolves from SQL params supplied by the caller
+* inside `defsql`, function arguments become local SQL params with the same names
+* in `defsql`, non-reserved placeholders must match declared arguments; reusable SQL does not implicitly capture query params
+* when a `defsql` body calls another `defsql`, passed arguments bind that callee's local SQL params
+* SQL bodies never reference `ctx` directly
+
+The model should stay intentionally small:
+
+* reserved runtime inputs are explicit and documented
+* all non-reserved names come from params
+* missing inputs fail with clear diagnostics
+* reserved names cannot be shadowed by `defsql` arguments
+
+##### Expression and relation SQL macros
+
+`defsql` should compile to reusable SQL fragments with one of two validated shapes:
+
+* expression macro: body expands to a SQL expression and can be used in expression position
+* relation macro: body expands to a relation-producing query and can be used in `from` / `join` / relation position
+
+Phase 3 should support both from the beginning, with the distinction captured in the
+compiled representation and validated at compile time where possible.
+
+The author should not need separate syntaxes such as `defsql_expr` or `defsql_relation`.
+Instead, Favn should infer and store the shape during normalization.
+
+##### Direct asset references inside SQL
+
+Phase 3 should allow direct module references in relation position, for example:
+
+```sql
+from MyApp.Raw.Sales.Orders
+join MyApp.Silver.Sales.StgCustomers
+```
+
+These should normalize into Favn-aware relation reference nodes in the internal SQL
+representation.
+
+Not supported yet for direct asset refs:
+
+* dialect-specific table functions
+* `update ... from`
+* `merge into`
+* arbitrary nested dialect syntax
+* plain relation names inferred from raw text
+
+In Phase 3 this is a SQL authoring and validation feature, not yet full dependency
+inference. Dependency inference remains Phase 5 work.
+
+##### Internal representation recommendation
+
+Phase 3 should stop treating `~SQL` as only a stored plain string.
+
+Recommended direction:
+
+* preserve the original SQL source string for docs/debugging
+* normalize the SQL body into a dedicated Favn SQL IR at compile time
+* the IR should represent at least:
+  * literal SQL segments
+  * `@name` placeholders
+  * `defsql` calls with resolved module/name/arity metadata
+  * direct asset references in relation position
+  * normalized query bodies for assets and reusable SQL definitions
+  * definition kind metadata for expression vs relation bodies
+
+This does not require a full SQL parser in Phase 3.
+It does require enough structure that Phase 4 rendering and adapter execution can work
+from the IR instead of re-parsing authored strings or forcing a rewrite.
+
+##### Compile-time validation in this follow-up
+
+Phase 3 validates:
+
+* `query` contains exactly one `~SQL` body
+* `defsql` contains exactly one `~SQL` body
+* no interpolation or arbitrary Elixir execution inside `~SQL`
+* duplicate reusable SQL names / arities in a module
+* reserved input names are not used as `defsql` arguments
+* `defsql` call arity matches the declared reusable SQL definition
+* duplicate visible imported/local reusable SQL definitions are compile-time errors
+* cyclic reusable SQL definitions are compile-time errors
+* compiled asset references must resolve to single-asset modules with produced relations
+* unresolved asset references stay as deferred symbolic refs in the SQL IR
+* obvious relation-only positions such as `from` / `join` do not receive known expression macros
+* obvious expression positions do not receive known relation macros
+
+Phase 3 defers:
+
+* runtime value presence checks against actual invocation params
+* adapter-specific SQL type validation
+* full dependency inference from relation usage
+* execution-time parameter encoding and prepared-statement behavior
+* full SQL semantic analysis across every dialect edge case
+
+##### Phase boundary discipline
+
+What belongs in Phase 3:
+
+* final authoring syntax
+* final placeholder/input model
+* reusable SQL definition and call model
+* expression vs relation macro distinction
+* direct asset-reference syntax in SQL
+* compile-time normalization/validation
+* stable SQL IR for later runtime work
+
+What belongs in Phase 4:
+
+* render final executable SQL plus bound params
+* preview / explain / materialize helper APIs
+* runtime context to SQL-input resolution
+* adapter integration and execution
+* execution-time errors for missing params or backend failures
+
+What belongs in Phase 5:
+
+* dependency inference from normalized relation references
+* additive inferred `@depends` diagnostics
+* relation-ownership-driven lineage and compile-time warnings around unresolved refs
 
 The DSL should explicitly avoid:
 

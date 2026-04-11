@@ -96,33 +96,46 @@ end
 - `@produces`
 
 SQL assets compile into the same canonical `%Favn.Asset{}` shape as Elixir assets, including ref `{Module, :asset}` and inferred produced relation ownership.
-Phase 3 is authoring/catalog integration only. The current implementation introduces a real `~SQL` sigil and `query do ... end`, but `~SQL` still compiles to a plain SQL string. SQL runtime execution and helper APIs land in a later phase, so direct execution currently returns an explicit not-yet-implemented error.
+Phase 3 is authoring/catalog integration only. SQL runtime execution and helper APIs land in a later phase, so direct execution currently returns an explicit not-yet-implemented error.
 
 ## SQL DSL direction
 
 Favn SQL uses a real `~SQL` sigil as the single SQL body language.
 
 SQL assets declare their main query with `query do ... end`.
-Reusable SQL is planned to use `defsql ... do ... end`.
+Reusable SQL uses `defsql ... do ... end` through `Favn.SQL`.
 
-Both asset queries and reusable SQL macros are intended to use the same `~SQL` body syntax and the same `@name` placeholder syntax for injected values.
+Both asset queries and reusable SQL macros use the same `~SQL` body syntax and the same `@name` placeholder syntax for injected values.
 
 Implemented now:
 
 - real `~SQL` sigil
 - `query do ... end`
-- `~SQL` returning a plain SQL string
-- SQL string storage in `Favn.SQLAsset`
+- reusable `defsql ... do ... end` via `Favn.SQL`
+- one `@name` placeholder model for runtime inputs and reusable SQL arguments
+- ordered scanner-based SQL IR with parsed placeholders, reusable SQL calls, and asset refs
+- expression SQL macros and relation SQL macros
+- direct asset references in relation position, such as `from MyApp.Raw.Sales.Orders`
+- compile-time validation for duplicate visible SQL definitions and reusable SQL cycles
+
+Not supported yet for direct SQL asset refs:
+
+- dialect-specific table functions
+- `update ... from`
+- `merge into`
+- arbitrary nested dialect syntax
+- plain relation names inferred from raw text
 
 Planned next:
 
-- reusable `defsql`
-- `@name` value binding
-- Favn-aware relation resolution from module references
-- SQL-aware macro expansion
-- SQL AST representation
+- Phase 4 runtime execution and helper APIs on top of that IR
 
 Favn explicitly avoids fake sigils, Jinja-style templating, arbitrary Elixir interpolation inside SQL, and string stitching as the normal authoring workflow.
+
+Placeholder rules:
+
+- in `query` bodies, non-reserved `@name` placeholders resolve from runtime params
+- in `defsql` bodies, non-reserved `@name` placeholders must match declared arguments
 
 ## Introduction
 
