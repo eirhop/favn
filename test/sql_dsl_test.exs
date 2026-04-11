@@ -25,7 +25,10 @@ defmodule Favn.SQLDSLTest do
     Code.compile_string(
       """
       defmodule #{inspect(raw_orders)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
         use Favn.Asset
+
+        @produces true
 
         def asset(_ctx), do: :ok
       end
@@ -177,7 +180,10 @@ defmodule Favn.SQLDSLTest do
     Code.compile_string(
       """
       defmodule #{inspect(raw_orders)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
         use Favn.Asset
+
+        @produces true
 
         def asset(_ctx), do: :ok
       end

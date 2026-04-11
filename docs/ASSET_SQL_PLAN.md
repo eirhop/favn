@@ -1018,6 +1018,14 @@ join MyApp.Silver.Sales.StgCustomers
 These should normalize into Favn-aware relation reference nodes in the internal SQL
 representation.
 
+Not supported yet for direct asset refs:
+
+* dialect-specific table functions
+* `update ... from`
+* `merge into`
+* arbitrary nested dialect syntax
+* plain relation names inferred from raw text
+
 In Phase 3 this is a SQL authoring and validation feature, not yet full dependency
 inference. Dependency inference remains Phase 5 work.
 

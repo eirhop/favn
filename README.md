@@ -117,6 +117,14 @@ Implemented now:
 - direct asset references in relation position, such as `from MyApp.Raw.Sales.Orders`
 - compile-time normalization into a dedicated SQL IR
 
+Not supported yet for direct SQL asset refs:
+
+- dialect-specific table functions
+- `update ... from`
+- `merge into`
+- arbitrary nested dialect syntax
+- plain relation names inferred from raw text
+
 Planned next:
 
 - Phase 4 runtime execution and helper APIs on top of that IR

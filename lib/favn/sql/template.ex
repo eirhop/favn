@@ -3,6 +3,8 @@ defmodule Favn.SQL.Template do
   Normalized SQL template representation used by SQL asset authoring.
   """
 
+  alias Favn.Assets.Compiler
+
   @relation_prefix_regex ~r/(?:^|\s)(?:from|join|inner\s+join|left(?:\s+outer)?\s+join|right(?:\s+outer)?\s+join|full(?:\s+outer)?\s+join|cross\s+join)\s*$/i
 
   @enforce_keys [:source, :inputs, :runtime_inputs, :param_inputs]
@@ -252,18 +254,181 @@ defmodule Favn.SQL.Template do
   defp validate_call_context!(_shape, _context, _name, _arity, _file, _line), do: :ok
 
   defp extract_asset_refs(sql) do
-    pattern =
-      ~r/\b(?:from|join|inner\s+join|left(?:\s+outer)?\s+join|right(?:\s+outer)?\s+join|full(?:\s+outer)?\s+join|cross\s+join)\s+([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)+)/i
-
-    pattern
-    |> Regex.scan(sql, capture: :all_but_first, return: :index)
-    |> Enum.map(fn [{name_start, name_len}] ->
-      name = String.slice(sql, name_start, name_len)
-      module = name |> String.split(".") |> Module.concat()
-      line = line_for_index(String.slice(sql, 0, name_start))
-      %AssetRef{module: module, line: line}
-    end)
+    sql
+    |> String.to_charlist()
+    |> do_extract_asset_refs(
+      1,
+      :code,
+      %{allow_refs?: nil, relation_entry?: false, join_prefix: nil},
+      []
+    )
+    |> Enum.reverse()
   end
+
+  defp do_extract_asset_refs([], _line, _state, _ctx, acc), do: acc
+
+  defp do_extract_asset_refs([?-, ?- | rest], line, :code, ctx, acc),
+    do: do_extract_asset_refs(rest, line, :line_comment, ctx, acc)
+
+  defp do_extract_asset_refs([?/, ?* | rest], line, :code, ctx, acc),
+    do: do_extract_asset_refs(rest, line, :block_comment, ctx, acc)
+
+  defp do_extract_asset_refs([?' | rest], line, :code, ctx, acc),
+    do: do_extract_asset_refs(rest, line, :single_quote, ctx, acc)
+
+  defp do_extract_asset_refs([?" | rest], line, :code, ctx, acc),
+    do: do_extract_asset_refs(rest, line, :double_quote, ctx, acc)
+
+  defp do_extract_asset_refs([char | rest], line, :line_comment, ctx, acc) do
+    if char == ?\n do
+      do_extract_asset_refs(rest, line + 1, :code, ctx, acc)
+    else
+      do_extract_asset_refs(rest, line, :line_comment, ctx, acc)
+    end
+  end
+
+  defp do_extract_asset_refs([?*, ?/ | rest], line, :block_comment, ctx, acc),
+    do: do_extract_asset_refs(rest, line, :code, ctx, acc)
+
+  defp do_extract_asset_refs([char | rest], line, :block_comment, ctx, acc) do
+    next_line = if char == ?\n, do: line + 1, else: line
+    do_extract_asset_refs(rest, next_line, :block_comment, ctx, acc)
+  end
+
+  defp do_extract_asset_refs([?' | rest], line, :single_quote, ctx, acc),
+    do: do_extract_asset_refs(rest, line, :code, ctx, acc)
+
+  defp do_extract_asset_refs([char | rest], line, :single_quote, ctx, acc) do
+    next_line = if char == ?\n, do: line + 1, else: line
+    do_extract_asset_refs(rest, next_line, :single_quote, ctx, acc)
+  end
+
+  defp do_extract_asset_refs([?" | rest], line, :double_quote, ctx, acc),
+    do: do_extract_asset_refs(rest, line, :code, ctx, acc)
+
+  defp do_extract_asset_refs([char | rest], line, :double_quote, ctx, acc) do
+    next_line = if char == ?\n, do: line + 1, else: line
+    do_extract_asset_refs(rest, next_line, :double_quote, ctx, acc)
+  end
+
+  defp do_extract_asset_refs([char | rest], line, :code, ctx, acc)
+       when char in [32, 9, 13] do
+    do_extract_asset_refs(rest, line, :code, ctx, acc)
+  end
+
+  defp do_extract_asset_refs([?\n | rest], line, :code, ctx, acc),
+    do: do_extract_asset_refs(rest, line + 1, :code, ctx, acc)
+
+  defp do_extract_asset_refs([char | _rest] = chars, line, :code, ctx, acc)
+       when (char >= ?A and char <= ?Z) or (char >= ?a and char <= ?z) or char == ?_ do
+    {word, tail} = read_identifier(chars)
+    word_down = String.downcase(word)
+    ctx = maybe_set_allow_refs(ctx, word_down)
+
+    if relation_reference_candidate?(ctx, word, tail) do
+      {segments, tail_after_module} = read_alias_chain(tail, [word])
+      next_char = skip_horizontal_space(tail_after_module)
+
+      if length(segments) >= 2 and uppercase_alias_segments?(segments) and next_char != ?( do
+        module = Module.concat(segments)
+        ref = %AssetRef{module: module, line: line}
+        next_ctx = %{ctx | relation_entry?: false, join_prefix: nil}
+        do_extract_asset_refs(tail_after_module, line, :code, next_ctx, [ref | acc])
+      else
+        next_ctx = update_relation_context(ctx, word_down)
+        do_extract_asset_refs(tail, line, :code, next_ctx, acc)
+      end
+    else
+      next_ctx = update_relation_context(ctx, word_down)
+      do_extract_asset_refs(tail, line, :code, next_ctx, acc)
+    end
+  end
+
+  defp do_extract_asset_refs([?( | rest], line, :code, ctx, acc) do
+    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil}
+    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  end
+
+  defp do_extract_asset_refs([_char | rest], line, :code, ctx, acc) do
+    next_ctx = %{ctx | relation_entry?: false, join_prefix: nil}
+    do_extract_asset_refs(rest, line, :code, next_ctx, acc)
+  end
+
+  defp maybe_set_allow_refs(%{allow_refs?: nil} = ctx, "update"),
+    do: %{ctx | allow_refs?: false}
+
+  defp maybe_set_allow_refs(%{allow_refs?: nil} = ctx, "merge"),
+    do: %{ctx | allow_refs?: false}
+
+  defp maybe_set_allow_refs(%{allow_refs?: nil} = ctx, _word),
+    do: %{ctx | allow_refs?: true}
+
+  defp maybe_set_allow_refs(ctx, _word), do: ctx
+
+  defp relation_reference_candidate?(%{allow_refs?: true, relation_entry?: true}, word, tail) do
+    String.match?(word, ~r/^[A-Z][A-Za-z0-9_]*$/) and List.first(tail) == ?.
+  end
+
+  defp relation_reference_candidate?(_ctx, _word, _tail), do: false
+
+  defp read_identifier(chars), do: do_read_identifier(chars, [])
+
+  defp do_read_identifier([char | rest], acc)
+       when (char >= ?A and char <= ?Z) or (char >= ?a and char <= ?z) or
+              (char >= ?0 and char <= ?9) or char == ?_ do
+    do_read_identifier(rest, [char | acc])
+  end
+
+  defp do_read_identifier(rest, acc), do: {acc |> Enum.reverse() |> to_string(), rest}
+
+  defp read_alias_chain([?. | rest], segments) do
+    case rest do
+      [char | _] when (char >= ?A and char <= ?Z) or (char >= ?a and char <= ?z) or char == ?_ ->
+        {segment, tail} = read_identifier(rest)
+        read_alias_chain(tail, segments ++ [segment])
+
+      _ ->
+        {segments, [?. | rest]}
+    end
+  end
+
+  defp read_alias_chain(rest, segments), do: {segments, rest}
+
+  defp uppercase_alias_segments?(segments) do
+    Enum.all?(segments, &String.match?(&1, ~r/^[A-Z][A-Za-z0-9_]*$/))
+  end
+
+  defp skip_horizontal_space([char | rest]) when char in [32, 9, 13],
+    do: skip_horizontal_space(rest)
+
+  defp skip_horizontal_space([char | _]), do: char
+  defp skip_horizontal_space([]), do: nil
+
+  defp update_relation_context(ctx, "from"), do: %{ctx | relation_entry?: true, join_prefix: nil}
+  defp update_relation_context(ctx, "join"), do: %{ctx | relation_entry?: true, join_prefix: nil}
+
+  defp update_relation_context(ctx, word)
+       when word in ["inner", "left", "right", "full", "cross"],
+       do: %{ctx | relation_entry?: false, join_prefix: word}
+
+  defp update_relation_context(%{join_prefix: prefix} = ctx, "outer")
+       when prefix in ["left", "right", "full"],
+       do: %{ctx | relation_entry?: false, join_prefix: "#{prefix} outer"}
+
+  defp update_relation_context(%{join_prefix: prefix} = ctx, "join")
+       when prefix in [
+              "inner",
+              "left",
+              "right",
+              "full",
+              "cross",
+              "left outer",
+              "right outer",
+              "full outer"
+            ],
+       do: %{ctx | relation_entry?: true, join_prefix: nil}
+
+  defp update_relation_context(ctx, _word), do: %{ctx | relation_entry?: false, join_prefix: nil}
 
   defp validate_asset_refs!(asset_refs, current_module, file, fallback_line) do
     Enum.each(asset_refs, fn %AssetRef{module: module, line: line} ->
@@ -284,7 +449,7 @@ defmodule Favn.SQL.Template do
       {:module, _module} ->
         if function_exported?(module, :__favn_single_asset__, 0) and
              module.__favn_single_asset__() do
-          :ok
+          validate_produced_relation!(module, file, line)
         else
           compile_error!(
             file,
@@ -295,6 +460,27 @@ defmodule Favn.SQL.Template do
 
       {:error, _reason} ->
         :ok
+    end
+  end
+
+  defp validate_produced_relation!(module, file, line) do
+    case Compiler.compile_module_assets(module) do
+      {:ok, [%{produces: nil}]} ->
+        compile_error!(
+          file,
+          line,
+          "SQL asset reference #{inspect(module)} does not resolve to a produced relation"
+        )
+
+      {:ok, [_asset]} ->
+        :ok
+
+      {:error, _reason} ->
+        compile_error!(
+          file,
+          line,
+          "invalid SQL asset reference #{inspect(module)}; failed to compile asset definition"
+        )
     end
   end
 
