@@ -203,7 +203,8 @@ defmodule Favn do
   `query` and reusable `defsql` definitions. SQL authoring now includes one `@name`
   placeholder model for SQL inputs, expression and relation SQL macros, direct asset
   references in relation position, and compile-time normalization into a dedicated SQL
-  IR. Runtime SQL execution APIs remain a later phase.
+  IR. Runtime helper APIs are available through `render/2`, `preview/2`, `explain/2`,
+  and `materialize/2`.
 
   Compact multi-asset style uses `Favn.Assets`:
 
@@ -627,6 +628,8 @@ defmodule Favn do
   alias Favn.Pipeline.Resolver
   alias Favn.Runtime.Engine
   alias Favn.Runtime.Events
+  alias Favn.SQLAsset.Error, as: SQLAssetError
+  alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias Favn.Window.Anchor
 
   @doc """
@@ -732,6 +735,140 @@ defmodule Favn do
       true ->
         {:error, :asset_not_found}
     end
+  end
+
+  @typedoc """
+  Accepted SQL asset helper target input.
+  """
+  @type sql_asset_input :: module() | asset_ref() | asset()
+
+  @typedoc """
+  Common options for SQL helper APIs.
+
+  `:params` contains query parameter values for non-reserved `@name` placeholders.
+  `:runtime` contains reserved runtime SQL inputs such as `:window_start`, `:window_end`,
+  or `:window` (`%Favn.Window.Runtime{}`).
+  """
+  @type sql_helper_opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
+
+  @typedoc """
+  SQL preview options.
+  """
+  @type sql_preview_opts :: keyword()
+
+  @typedoc """
+  SQL explain options.
+  """
+  @type sql_explain_opts :: keyword()
+
+  @doc """
+  Render one SQL asset into canonical executable SQL and canonical bound params.
+
+  This helper is backend/session free: it resolves compiled asset metadata and SQL
+  definitions but does not open a SQL connection.
+  """
+  @spec render(sql_asset_input(), sql_helper_opts()) ::
+          {:ok, Favn.SQL.Render.t()} | {:error, SQLAssetError.t()}
+  def render(asset_input, opts \\ []) when is_list(opts) do
+    case normalize_sql_asset_input(asset_input) do
+      {:ok, asset} -> SQLAssetRuntime.render(asset, opts)
+      {:error, %SQLAssetError{} = error} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Preview one SQL asset query result.
+
+  `preview.statement` is the actual SQL executed for preview. `preview.render.sql`
+  remains the canonical rendered SQL query.
+  """
+  @spec preview(sql_asset_input(), sql_preview_opts()) ::
+          {:ok, Favn.SQL.Preview.t()} | {:error, SQLAssetError.t()}
+  def preview(asset_input, opts \\ []) when is_list(opts) do
+    case normalize_sql_asset_input(asset_input) do
+      {:ok, asset} -> SQLAssetRuntime.preview(asset, opts)
+      {:error, %SQLAssetError{} = error} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Explain one SQL asset query.
+  """
+  @spec explain(sql_asset_input(), sql_explain_opts()) ::
+          {:ok, Favn.SQL.Explain.t()} | {:error, SQLAssetError.t()}
+  def explain(asset_input, opts \\ []) when is_list(opts) do
+    case normalize_sql_asset_input(asset_input) do
+      {:ok, asset} -> SQLAssetRuntime.explain(asset, opts)
+      {:error, %SQLAssetError{} = error} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Materialize one SQL asset.
+  """
+  @spec materialize(sql_asset_input(), sql_helper_opts()) ::
+          {:ok, Favn.SQL.MaterializationResult.t()} | {:error, SQLAssetError.t()}
+  def materialize(asset_input, opts \\ []) when is_list(opts) do
+    case normalize_sql_asset_input(asset_input) do
+      {:ok, asset} -> SQLAssetRuntime.materialize(asset, opts)
+      {:error, %SQLAssetError{} = error} -> {:error, error}
+    end
+  end
+
+  defp normalize_sql_asset_input(%Favn.Asset{type: :sql} = asset), do: {:ok, asset}
+
+  defp normalize_sql_asset_input(%Favn.Asset{} = asset) do
+    {:error,
+     %SQLAssetError{
+       type: :not_sql_asset,
+       phase: :render,
+       asset_ref: asset.ref,
+       message: "asset #{inspect(asset.ref)} is not a SQL asset"
+     }}
+  end
+
+  defp normalize_sql_asset_input({module, name} = ref) when is_atom(module) and is_atom(name) do
+    case get_asset(ref) do
+      {:ok, %Favn.Asset{} = asset} ->
+        normalize_sql_asset_input(asset)
+
+      {:error, reason} ->
+        {:error,
+         %SQLAssetError{
+           type: :invalid_asset_input,
+           phase: :render,
+           asset_ref: ref,
+           message: "could not resolve SQL asset #{inspect(ref)}",
+           details: %{reason: reason}
+         }}
+    end
+  end
+
+  defp normalize_sql_asset_input(module) when is_atom(module) do
+    case get_asset(module) do
+      {:ok, %Favn.Asset{} = asset} ->
+        normalize_sql_asset_input(asset)
+
+      {:error, reason} ->
+        {:error,
+         %SQLAssetError{
+           type: :invalid_asset_input,
+           phase: :render,
+           asset_ref: {module, :asset},
+           message: "could not resolve SQL asset #{inspect(module)}",
+           details: %{reason: reason}
+         }}
+    end
+  end
+
+  defp normalize_sql_asset_input(other) do
+    {:error,
+     %SQLAssetError{
+       type: :invalid_asset_input,
+       phase: :render,
+       message: "invalid SQL asset input; expected module, {module, name}, or %Favn.Asset{}",
+       details: %{input: other}
+     }}
   end
 
   @typedoc """

@@ -670,12 +670,31 @@ Target helper capabilities include:
 * inspect resolved connection
 * inspect resolved produced relation
 
-Possible public APIs:
+Recommended public APIs:
 
-* `Favn.render_asset_sql(asset_ref_or_module, opts)`
-* `Favn.preview_asset(asset_ref_or_module, opts)`
-* `Favn.explain_asset(asset_ref_or_module, opts)`
-* `Favn.materialize_asset(asset_ref_or_module, opts)`
+* `Favn.render(asset, opts)`
+* `Favn.preview(asset, opts)`
+* `Favn.explain(asset, opts)`
+* `Favn.materialize(asset, opts)`
+
+Recommended accepted public inputs:
+
+* single-asset module such as `MyApp.Gold.Sales.FctOrders`
+* canonical asset ref such as `{MyApp.Gold.Sales.FctOrders, :asset}`
+* `%Favn.Asset{type: :sql}` for already-resolved assets
+
+These helpers should stay SQL-asset focused in Phase 4. Internal runtime/render code may work from
+compiled `%Favn.SQLAsset.Definition{}` values, but that struct should not be part of the public API.
+
+Additional Phase 4 API rules:
+
+* `render/2` is a pure render helper from the caller's point of view: it may resolve compiled modules,
+  asset metadata, and reusable SQL definitions, but it must not open SQL sessions or hit the backend
+* `preview/2` should expose the actual executed preview statement separately from the canonical rendered
+  query SQL; the canonical query remains in `render.sql`
+* renderer output uses one backend-neutral positional binding model; adapters may rewrite placeholders if
+  needed, but renderer output stays adapter-neutral
+* direct SQL asset refs across different connections are a render-time error in Phase 4
 
 Similar conveniences may later be added for Elixir materializing assets.
 
@@ -1087,13 +1106,27 @@ What belongs in Phase 3:
 * compile-time normalization/validation
 * stable SQL IR for later runtime work
 
-What belongs in Phase 4:
+What belongs in Phase 4a:
 
-* render final executable SQL plus bound params
+* render final executable query SQL plus canonical bound params
 * preview / explain / materialize helper APIs
 * runtime context to SQL-input resolution
+* pure render helper semantics with no backend/session work in `render/2`
+* one backend-neutral positional binding model from renderer to adapters
+* render-time deferred asset-ref resolution
+* render-time validation that direct SQL asset refs stay within one connection
+* fully inlined `defsql` expansion
+* materialization planning for `:view` and `:table`
 * adapter integration and execution
 * execution-time errors for missing params or backend failures
+
+What belongs in Phase 4b:
+
+* dedicated incremental materialization planning
+* explicit strategy semantics and validation
+* window-aware incremental execution and lookback handling
+* first backend support for safe incremental strategies
+* clear unsupported-strategy errors for deferred strategies
 
 What belongs in Phase 5:
 
@@ -1109,15 +1142,52 @@ The DSL should explicitly avoid:
 * string stitching as the normal authoring workflow
 * multiple placeholder syntaxes across SQL contexts
 
-### Phase 4 — SQL runtime integration and helper APIs
+### Phase 4a — SQL runtime integration and helper APIs
+
+Status: implemented in current codebase.
 
 Deliver:
 
 * SQL execution through shared runtime
 * render/preview/explain/materialize helper APIs
 * inspectable resolved connection and produced relation
+* strict render result struct with final SQL, canonical bound params, and diagnostics metadata
+* pure `render/2` semantics with no backend calls or session creation
+* backend-neutral positional bindings from renderer, with adapter-side placeholder rewriting when needed
+* render-time deferred asset-ref resolution and fully inlined `defsql` expansion
+* explicit render-time failure for cross-connection direct asset refs
+* materialization planning for `:view` and `:table`
 
 This phase makes SQL assets practical for everyday work.
+
+Preview helper rule:
+
+* `preview/2` should return the canonical rendered query in `preview.render.sql`
+* `preview.statement` should be the actual preview SQL executed against the adapter, for example with an
+  added preview `limit`
+
+Important limit for this phase:
+
+* incremental SQL materialization is not part of Phase 4a
+* `@materialized {:incremental, ...}` should keep compiling but fail at runtime with a clear unsupported-phase error until Phase 4b lands
+
+### Phase 4b — incremental SQL materialization
+
+Deliver:
+
+* dedicated incremental planning layer on top of rendered query SQL
+* explicit first-pass strategy support for `:append` and `:delete_insert`
+* required strategy metadata and validation for window-aware writes
+* explicit deferral of `:merge` until backend capability and planner semantics are ready
+* explicit deferral of current `:replace` incremental semantics until they are renamed or specified more precisely
+
+This phase keeps incremental behavior deliberate instead of letting it drift into runtime integration.
+
+Write-plan naming rule for Phase 4a:
+
+* avoid using incremental-style `replace` language for normal `:view` and `:table` rebuild behavior
+* prefer names such as `replace_existing?`, `rebuild?`, or explicit `create_or_replace` semantics
+* reserve incremental strategy naming for the dedicated incremental materialization phase
 
 ### Phase 5 — relation-based inference
 

@@ -157,20 +157,29 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] duplicate visible reusable SQL definition detection across local/imported definitions
   - [x] reusable SQL cycle detection
   - [x] deferred symbolic asset refs for not-yet-compiled modules
-- [ ] DuckDB adapter hardening + incremental strategy expansion
+- [ ] DuckDB adapter hardening for runtime execution
 - [ ] Typed source identities
-- [ ] Phase 4 runtime integration for SQL assets
-  - [ ] SQL execution through shared runtime
-  - [ ] SQL helper APIs (`render`, `preview`, `explain`, `materialize`)
-  - [ ] runtime SQL input resolution and parameter binding
-  - [ ] adapter-backed rendering/materialization from the SQL IR
+- [x] Phase 4a runtime integration for SQL assets
+  - [x] SQL execution through shared runtime
+  - [x] SQL helper APIs (`Favn.render/2`, `Favn.preview/2`, `Favn.explain/2`, `Favn.materialize/2`)
+  - [x] strict render result struct with final SQL, canonical bound params, and diagnostics metadata
+  - [x] `render/2` remains backend-free and session-free; it resolves compiled metadata but does not hit adapters
+  - [x] runtime SQL input resolution and parameter binding from explicit `params` plus normalized runtime inputs
+  - [x] renderer always emits one backend-neutral positional binding model; adapters may rewrite placeholders if required
+  - [x] render-time deferred asset-ref resolution and fully inlined `defsql` expansion from the SQL IR
+  - [x] cross-connection direct asset refs fail during render with clear diagnostics
+  - [x] materialization planning for `:view` and `:table`
+  - [x] `preview/2` returns both canonical rendered SQL and the actual executed preview statement
+- [ ] Phase 4b incremental SQL materialization
+  - [ ] incremental planning layer that extends render output into backend-agnostic `WritePlan`s
+  - [ ] first safe incremental strategies: `:append` and `:delete_insert`
+  - [ ] explicit runtime guard for unsupported incremental strategies such as `:merge` and current `:replace`
+  - [ ] window-aware incremental execution and explicit lookback handling
 - [ ] Multi-asset SQL modules
 - [ ] SQL file support
 - [ ] Phase 5 relation-based SQL inference
   - [ ] dependency inference from typed SQL relation references
   - [ ] SQL asset dependency planning on the shared window-aware runtime model
-- [ ] Window-aware incremental execution
-- [ ] Lookback handling for incremental SQL assets
 
 ---
 
