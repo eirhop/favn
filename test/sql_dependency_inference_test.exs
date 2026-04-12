@@ -125,6 +125,146 @@ defmodule Favn.SQLDependencyInferenceTest do
     assert {:error, {:cycle, _cycle}} = GraphIndex.build_index(catalog.assets)
   end
 
+  test "infers dependency from relation ref inside defsql body" do
+    root = Module.concat(__MODULE__, "Defsql#{System.unique_integer([:positive])}")
+    sql_module = Module.concat(root, SQL)
+    raw_orders = Module.concat(root, RawOrders)
+    consumer = Module.concat(root, Consumer)
+
+    compile_elixir_asset!(raw_orders, "raw_orders")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(sql_module)} do
+        use Favn.SQL
+
+        defsql orders_in_window(start_at, end_at) do
+          ~SQL[
+          select *
+          from silver.sales.raw_orders
+          where inserted_at >= @start_at and inserted_at < @end_at
+          ]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(consumer)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.SQLAsset
+        use #{inspect(sql_module)}
+
+        @materialized :view
+
+        query do
+          ~SQL[select * from orders_in_window(@window_start, @window_end)]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    :ok = Favn.TestSetup.setup_asset_modules([raw_orders, consumer], reload_graph?: true)
+
+    assert {:ok, asset} = Favn.get_asset(consumer)
+    assert asset.depends_on == [{raw_orders, :asset}]
+  end
+
+  test "infers dependency from nested defsql relation chain" do
+    root = Module.concat(__MODULE__, "NestedDefsql#{System.unique_integer([:positive])}")
+    sql_module = Module.concat(root, SQL)
+    raw_orders = Module.concat(root, RawOrders)
+    consumer = Module.concat(root, Consumer)
+
+    compile_elixir_asset!(raw_orders, "raw_orders")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(sql_module)} do
+        use Favn.SQL
+
+        defsql raw_orders_relation(start_at) do
+          ~SQL[select * from silver.sales.raw_orders where inserted_at >= @start_at]
+        end
+
+        defsql wrapped_orders(start_at) do
+          ~SQL[select * from raw_orders_relation(@start_at)]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(consumer)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.SQLAsset
+        use #{inspect(sql_module)}
+
+        @materialized :view
+
+        query do
+          ~SQL[select * from wrapped_orders(@window_start)]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    :ok = Favn.TestSetup.setup_asset_modules([raw_orders, consumer], reload_graph?: true)
+
+    assert {:ok, asset} = Favn.get_asset(consumer)
+    assert asset.depends_on == [{raw_orders, :asset}]
+  end
+
+  test "infers direct asset refs used inside defsql body" do
+    root = Module.concat(__MODULE__, "DefsqlAssetRef#{System.unique_integer([:positive])}")
+    sql_module = Module.concat(root, SQL)
+    raw_orders = Module.concat(root, RawOrders)
+    consumer = Module.concat(root, Consumer)
+
+    compile_elixir_asset!(raw_orders, "raw_orders")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(sql_module)} do
+        use Favn.SQL
+
+        defsql raw_orders_relation(start_at) do
+          ~SQL[select * from #{inspect(raw_orders)} where inserted_at >= @start_at]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(consumer)} do
+        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.SQLAsset
+        use #{inspect(sql_module)}
+
+        @materialized :view
+
+        query do
+          ~SQL[select * from raw_orders_relation(@window_start)]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    :ok = Favn.TestSetup.setup_asset_modules([raw_orders, consumer], reload_graph?: true)
+
+    assert {:ok, asset} = Favn.get_asset(consumer)
+    assert asset.depends_on == [{raw_orders, :asset}]
+  end
+
   test "fails catalog build for cross-connection direct asset ref" do
     root = Module.concat(__MODULE__, "CrossConn#{System.unique_integer([:positive])}")
     upstream = Module.concat(root, Upstream)

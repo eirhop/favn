@@ -178,7 +178,8 @@ defmodule Favn.SQLAsset do
         enforce_query_root: true
       )
 
-    relation_inputs = RelationUsage.collect(raw_definition.module, template)
+    relation_inputs =
+      RelationUsage.collect(raw_definition.module, template, Map.values(known_definitions))
 
     asset = %Asset{
       module: raw_definition.module,

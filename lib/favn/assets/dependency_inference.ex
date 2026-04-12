@@ -126,12 +126,15 @@ defmodule Favn.Assets.DependencyInference do
          _relation_owner_entries
        ) do
     with {:ok, dependency_ref, relation_ref} <- resolve_direct_asset_ref(asset, input),
-         :ok <- ensure_direct_asset_registered(catalog, dependency_ref, asset, input),
          :ok <- ensure_same_connection(asset, input, relation_ref) do
       if dependency_ref == asset.ref do
         {:ok, :no_dependency, []}
       else
-        {:ok, dependency_ref, :inferred_sql_asset_ref, []}
+        if Map.has_key?(catalog.assets_by_ref, dependency_ref) do
+          {:ok, dependency_ref, :inferred_sql_asset_ref, []}
+        else
+          {:ok, :no_dependency, []}
+        end
       end
     else
       {:error, %Diagnostic{} = diagnostic} ->
@@ -280,23 +283,5 @@ defmodule Favn.Assets.DependencyInference do
        span: input.span,
        details: %{}
      }}
-  end
-
-  defp ensure_direct_asset_registered(catalog, dependency_ref, asset, input) do
-    if Map.has_key?(catalog.assets_by_ref, dependency_ref) do
-      :ok
-    else
-      {:error,
-       %Diagnostic{
-         severity: :error,
-         stage: :registry,
-         code: :unresolved_direct_asset_ref,
-         message:
-           "direct SQL asset reference #{inspect(input.raw)} for #{inspect(asset.ref)} resolves to #{inspect(dependency_ref)}, but that asset is not registered",
-         asset_ref: asset.ref,
-         span: input.span,
-         details: %{dependency_ref: dependency_ref}
-       }}
-    end
   end
 end
