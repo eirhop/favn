@@ -22,7 +22,7 @@ defmodule Favn.SQLAsset.Renderer do
          {:ok, runtime_inputs} <- normalize_runtime_inputs(definition, opts),
          {:ok, definition_catalog} <- definition_catalog(definition),
          env <- base_env(definition, params, runtime_inputs, definition_catalog),
-         {:ok, %Fragment{} = fragment} <- render_nodes(definition.template.nodes, env),
+         {:ok, %Fragment{} = fragment, _env} <- render_nodes(definition.template.nodes, env),
          {:ok, %Params{} = normalized_params} <- normalize_bindings(fragment.bindings) do
       {:ok,
        %Render{
@@ -142,10 +142,6 @@ defmodule Favn.SQLAsset.Renderer do
       {:ok, fragment, next_env} -> {:ok, fragment, next_env}
       {:error, %Error{} = error} -> {:error, error}
     end
-    |> case do
-      {:ok, fragment, _env} -> {:ok, fragment}
-      {:error, %Error{} = error} -> {:error, error}
-    end
   end
 
   defp render_node(%Text{sql: sql}, env), do: {:ok, %Fragment{sql: sql}, env}
@@ -193,8 +189,9 @@ defmodule Favn.SQLAsset.Renderer do
            |> Map.put(:local_args, local_arg_map(arg_fragments))
            |> Map.put(:stack, [stack_frame(call, definition) | env.stack])
            |> Map.put(:cache, next_env.cache),
-         {:ok, %Fragment{} = expanded} <- render_nodes(definition.template.nodes, callee_env) do
-      {:ok, expanded, %{env | cache: callee_env.cache}}
+         {:ok, %Fragment{} = expanded, callee_env_after} <-
+           render_nodes(definition.template.nodes, callee_env) do
+      {:ok, expanded, %{env | cache: callee_env_after.cache}}
     else
       {:error, %Error{} = error} -> {:error, error}
     end
@@ -248,8 +245,8 @@ defmodule Favn.SQLAsset.Renderer do
   defp render_call_args(call, env) do
     Enum.reduce_while(call.args, {:ok, [], env}, fn fragment, {:ok, acc, env_acc} ->
       case render_nodes(fragment.nodes, env_acc) do
-        {:ok, rendered_fragment} ->
-          {:cont, {:ok, [rendered_fragment | acc], env_acc}}
+        {:ok, rendered_fragment, env_after_arg} ->
+          {:cont, {:ok, [rendered_fragment | acc], env_after_arg}}
 
         {:error, %Error{} = error} ->
           {:halt, {:error, error}}

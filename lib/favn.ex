@@ -628,6 +628,7 @@ defmodule Favn do
   alias Favn.Pipeline.Resolver
   alias Favn.Runtime.Engine
   alias Favn.Runtime.Events
+  alias Favn.SQLAsset.Compiler, as: SQLAssetCompiler
   alias Favn.SQLAsset.Error, as: SQLAssetError
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias Favn.Window.Anchor
@@ -828,37 +829,24 @@ defmodule Favn do
   end
 
   defp normalize_sql_asset_input({module, name} = ref) when is_atom(module) and is_atom(name) do
-    case get_asset(ref) do
-      {:ok, %Favn.Asset{} = asset} ->
-        normalize_sql_asset_input(asset)
+    case name do
+      :asset ->
+        resolve_sql_asset_module(module, ref)
 
-      {:error, reason} ->
+      _other ->
         {:error,
          %SQLAssetError{
            type: :invalid_asset_input,
            phase: :render,
            asset_ref: ref,
-           message: "could not resolve SQL asset #{inspect(ref)}",
-           details: %{reason: reason}
+           message: "invalid SQL asset ref #{inspect(ref)}; expected {module, :asset}",
+           details: %{reason: :invalid_sql_asset_ref_name}
          }}
     end
   end
 
   defp normalize_sql_asset_input(module) when is_atom(module) do
-    case get_asset(module) do
-      {:ok, %Favn.Asset{} = asset} ->
-        normalize_sql_asset_input(asset)
-
-      {:error, reason} ->
-        {:error,
-         %SQLAssetError{
-           type: :invalid_asset_input,
-           phase: :render,
-           asset_ref: {module, :asset},
-           message: "could not resolve SQL asset #{inspect(module)}",
-           details: %{reason: reason}
-         }}
-    end
+    resolve_sql_asset_module(module, {module, :asset})
   end
 
   defp normalize_sql_asset_input(other) do
@@ -869,6 +857,29 @@ defmodule Favn do
        message: "invalid SQL asset input; expected module, {module, name}, or %Favn.Asset{}",
        details: %{input: other}
      }}
+  end
+
+  defp resolve_sql_asset_module(module, asset_ref) do
+    case SQLAssetCompiler.fetch_definition(module) do
+      {:ok, %Favn.SQLAsset.Definition{asset: %Favn.Asset{} = asset}} ->
+        {:ok, asset}
+
+      {:error, _reason} ->
+        case get_asset(module) do
+          {:ok, %Favn.Asset{} = asset} ->
+            normalize_sql_asset_input(asset)
+
+          {:error, reason} ->
+            {:error,
+             %SQLAssetError{
+               type: :invalid_asset_input,
+               phase: :render,
+               asset_ref: asset_ref,
+               message: "could not resolve SQL asset #{inspect(module)}",
+               details: %{reason: reason}
+             }}
+        end
+    end
   end
 
   @typedoc """

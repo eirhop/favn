@@ -5,7 +5,9 @@ defmodule Favn.SQLAssetRuntimeTest do
   alias Favn.Connection.Loader
   alias Favn.Connection.Registry
   alias Favn.SQL.{Capabilities, Params, Result, WritePlan}
-  alias Favn.SQLAsset.Error
+  alias Favn.SQL.Error, as: SQLError
+  alias Favn.SQLAsset.Error, as: SQLAssetError
+  alias Favn.Window.{Key, Runtime}
 
   @events_table :sql_asset_runtime_test_events
 
@@ -47,8 +49,20 @@ defmodule Favn.SQLAssetRuntimeTest do
     @impl true
     def execute(:runtime_conn, statement, opts) do
       sql = IO.iodata_to_binary(statement)
-      record({:execute, sql, Keyword.get(opts, :params, [])})
-      {:ok, %Result{kind: :execute, command: sql, rows_affected: 1, metadata: %{}}}
+      params = Keyword.get(opts, :params, [])
+      record({:execute, sql, params})
+
+      if "FAIL" in params do
+        {:error,
+         %SQLError{
+           type: :execution_error,
+           operation: :execute,
+           connection: :sql_asset_runtime,
+           message: "forced execute failure"
+         }}
+      else
+        {:ok, %Result{kind: :execute, command: sql, rows_affected: 1, metadata: %{}}}
+      end
     end
 
     @impl true
@@ -57,8 +71,18 @@ defmodule Favn.SQLAssetRuntimeTest do
       params = Keyword.get(opts, :params, [])
       record({:query, sql, params})
 
-      {:ok,
-       %Result{kind: :query, command: sql, rows: [%{"ok" => true}], metadata: %{params: params}}}
+      if "FAIL" in params do
+        {:error,
+         %SQLError{
+           type: :execution_error,
+           operation: :query,
+           connection: :sql_asset_runtime,
+           message: "forced query failure"
+         }}
+      else
+        {:ok,
+         %Result{kind: :query, command: sql, rows: [%{"ok" => true}], metadata: %{params: params}}}
+      end
     end
 
     @impl true
@@ -122,6 +146,21 @@ defmodule Favn.SQLAssetRuntimeTest do
     refute Enum.any?(events(), fn event -> event == {:connect} end)
   end
 
+  test "render accepts compiled SQL module input without global asset registration" do
+    %{asset: asset_module} = compile_runtime_modules!()
+
+    assert {:ok, render} =
+             Favn.render(asset_module,
+               params: %{country: "NO"},
+               runtime: %{
+                 window_start: ~U[2025-01-01 00:00:00Z],
+                 window_end: ~U[2025-01-02 00:00:00Z]
+               }
+             )
+
+    assert render.asset_ref == {asset_module, :asset}
+  end
+
   test "preview returns executed preview statement and keeps canonical rendered SQL" do
     %{asset: asset_module} = compile_runtime_modules!()
 
@@ -160,6 +199,23 @@ defmodule Favn.SQLAssetRuntimeTest do
     assert explain.result.command == explain.statement
   end
 
+  test "render accepts runtime.window struct input" do
+    %{asset: asset_module} = compile_runtime_modules!()
+
+    assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+
+    window_start = ~U[2025-01-01 00:00:00Z]
+    window_end = ~U[2025-01-02 00:00:00Z]
+    anchor_key = Key.new!(:day, window_start, "Etc/UTC")
+    window = Runtime.new!(:day, window_start, window_end, anchor_key, timezone: "Etc/UTC")
+
+    assert {:ok, render} =
+             Favn.render(asset_module, params: %{country: "NO"}, runtime: %{window: window})
+
+    assert render.runtime == window
+    assert Params.to_adapter_params(render.params) == [window_start, window_end, "NO"]
+  end
+
   test "materialize builds write plan with replace_existing semantics" do
     %{asset: asset_module} = compile_runtime_modules!()
 
@@ -185,7 +241,7 @@ defmodule Favn.SQLAssetRuntimeTest do
 
     assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
 
-    assert {:error, %Error{type: :missing_query_param}} =
+    assert {:error, %SQLAssetError{type: :missing_query_param}} =
              Favn.render(asset_module,
                runtime: %{
                  window_start: ~U[2025-01-01 00:00:00Z],
@@ -193,7 +249,7 @@ defmodule Favn.SQLAssetRuntimeTest do
                }
              )
 
-    assert {:error, %Error{type: :missing_runtime_input}} =
+    assert {:error, %SQLAssetError{type: :missing_runtime_input}} =
              Favn.render(asset_module, params: %{country: "NO"})
   end
 
@@ -202,7 +258,39 @@ defmodule Favn.SQLAssetRuntimeTest do
 
     assert :ok = Favn.TestSetup.setup_asset_modules([cross_asset], reload_graph?: true)
 
-    assert {:error, %Error{type: :cross_connection_asset_ref}} = Favn.render(cross_asset)
+    assert {:error, %SQLAssetError{type: :cross_connection_asset_ref}} = Favn.render(cross_asset)
+  end
+
+  test "preview, explain, and materialize normalize backend failures" do
+    %{asset: asset_module} = compile_runtime_modules!()
+
+    assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+
+    opts = [
+      params: %{country: "FAIL"},
+      runtime: %{
+        window_start: ~U[2025-01-01 00:00:00Z],
+        window_end: ~U[2025-01-02 00:00:00Z]
+      }
+    ]
+
+    assert {:error, %SQLAssetError{type: :backend_execution_failed, phase: :preview}} =
+             Favn.preview(asset_module, opts)
+
+    assert {:error, %SQLAssetError{type: :backend_execution_failed, phase: :explain}} =
+             Favn.explain(asset_module, opts)
+
+    assert {:error, %SQLAssetError{type: :backend_execution_failed, phase: :materialize}} =
+             Favn.materialize(asset_module, opts)
+  end
+
+  test "nested defsql arguments support deferred asset refs resolved at render time" do
+    %{asset: asset_module} = compile_nested_deferred_modules!()
+
+    assert {:ok, render} = Favn.render(asset_module)
+
+    assert length(render.resolved_asset_refs) == 1
+    assert render.sql =~ "raw.sales.orders"
   end
 
   defp compile_runtime_modules! do
@@ -328,6 +416,84 @@ defmodule Favn.SQLAssetRuntimeTest do
     )
 
     %{cross: cross_asset}
+  end
+
+  defp compile_nested_deferred_modules! do
+    root = Module.concat(__MODULE__, "Deferred#{System.unique_integer([:positive])}")
+    raw_namespace = Module.concat([root, Raw, Sales])
+    gold_namespace = Module.concat([root, Gold, Sales])
+    sql_provider = Module.concat(root, SQL)
+    deferred_module = Module.concat(raw_namespace, Orders)
+    asset_module = Module.concat(gold_namespace, FctOrders)
+
+    Code.compile_string(
+      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :raw, schema: :sales\nend",
+      "test/dynamic_sql_asset_runtime_test.exs"
+    )
+
+    Code.compile_string(
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "test/dynamic_sql_asset_runtime_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(sql_provider)} do
+        use Favn.SQL
+
+        defsql wrap_relation(source_relation) do
+          ~SQL[
+          select *
+          from @source_relation
+          ]
+        end
+
+        defsql nested_relation(source_relation) do
+          ~SQL[
+          select *
+          from wrap_relation(@source_relation)
+          ]
+        end
+      end
+      """,
+      "test/dynamic_sql_asset_runtime_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(asset_module)} do
+        use Favn.Namespace
+        use Favn.SQLAsset
+        use #{inspect(sql_provider)}
+
+        @materialized :view
+
+        query do
+          ~SQL[
+          select *
+          from nested_relation(select * from #{inspect(deferred_module)})
+          ]
+        end
+      end
+      """,
+      "test/dynamic_sql_asset_runtime_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(deferred_module)} do
+        use Favn.Namespace
+        use Favn.Asset
+
+        @produces true
+
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/dynamic_sql_asset_runtime_test.exs"
+    )
+
+    %{asset: asset_module}
   end
 
   defp events do

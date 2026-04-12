@@ -1170,6 +1170,7 @@ Important limit for this phase:
 
 * incremental SQL materialization is not part of Phase 4a
 * `@materialized {:incremental, ...}` should keep compiling but fail at runtime with a clear unsupported-phase error until Phase 4b lands
+* rendered direct relation identifiers currently assume standard unquoted identifier compatibility; dialect-specific identifier quoting should be introduced behind adapter-aware rendering in a later phase
 
 ### Phase 4b — incremental SQL materialization
 
