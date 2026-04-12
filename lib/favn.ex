@@ -854,7 +854,7 @@ defmodule Favn do
      %SQLAssetError{
        type: :invalid_asset_input,
        phase: :render,
-       message: "invalid SQL asset input; expected module, {module, name}, or %Favn.Asset{}",
+       message: "invalid SQL asset input; expected module, {module, :asset}, or %Favn.Asset{}",
        details: %{input: other}
      }}
   end
