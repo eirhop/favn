@@ -2,7 +2,7 @@
 
 ## Current Version
 
-**Current release: v0.4.0**
+**Current release: v0.3.0**
 
 ## Current Focus
 
