@@ -276,7 +276,7 @@ defmodule Favn.SQLDependencyInferenceTest do
         use Favn.Namespace, connection: :other, catalog: :silver, schema: :sales
         use Favn.Asset
 
-        @produces true
+        @relation true
         def asset(_ctx), do: :ok
       end
       """,
@@ -312,7 +312,7 @@ defmodule Favn.SQLDependencyInferenceTest do
         use Favn.Namespace, connection: :warehouse, catalog: :silver, schema: :sales
         use Favn.Asset
 
-        @produces name: #{inspect(table_name)}
+        @relation name: #{inspect(table_name)}
         def asset(_ctx), do: :ok
       end
       """,
@@ -327,7 +327,7 @@ defmodule Favn.SQLDependencyInferenceTest do
         use Favn.Namespace, connection: :warehouse, catalog: :silver, schema: #{inspect(schema_name)}
         use Favn.Asset
 
-        @produces name: #{inspect(table_name)}
+        @relation name: #{inspect(table_name)}
         def asset(_ctx), do: :ok
       end
       """,

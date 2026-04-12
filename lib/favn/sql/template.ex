@@ -967,14 +967,14 @@ defmodule Favn.SQL.Template do
   defp validate_compiled_asset_module!(module, file, line) do
     if function_exported?(module, :__favn_single_asset__, 0) and module.__favn_single_asset__() do
       case Compiler.compile_module_assets(module) do
-        {:ok, [%{produces: %RelationRef{} = produces}]} ->
-          {:resolved, produces}
+        {:ok, [%{relation: %RelationRef{} = relation}]} ->
+          {:resolved, relation}
 
-        {:ok, [%{produces: nil}]} ->
+        {:ok, [%{relation: nil}]} ->
           compile_error!(
             file,
             line,
-            "SQL asset reference #{inspect(module)} does not resolve to a produced relation"
+            "SQL asset reference #{inspect(module)} does not resolve to a relation"
           )
 
         {:ok, [_asset | _rest]} ->

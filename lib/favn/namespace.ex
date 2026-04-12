@@ -2,7 +2,21 @@ defmodule Favn.Namespace do
   @moduledoc """
   Namespace config carrier for inherited asset relation defaults.
 
-  Phase 1 supports `:connection`, `:catalog`, and `:schema` inheritance.
+  Supports grouped `relation: [connection: ..., catalog: ..., schema: ...]` for relation defaults.
+
+  Example:
+
+      defmodule MyApp do
+        use Favn.Namespace, relation: [connection: :warehouse]
+      end
+
+      defmodule MyApp.Raw do
+        use Favn.Namespace, relation: [catalog: "raw"]
+      end
+
+      defmodule MyApp.Raw.Stripe do
+        use Favn.Namespace, relation: [schema: "stripe"]
+      end
   """
 
   @supported_keys [:connection, :catalog, :schema]
@@ -33,6 +47,16 @@ defmodule Favn.Namespace do
     end)
   end
 
+  @doc """
+  Resolve relation defaults for a module by merging ancestor namespaces.
+
+  Returns a map with `:connection`, `:catalog`, and `:schema` keys for relation construction.
+  """
+  @spec resolve_relation(module()) :: map()
+  def resolve_relation(module) when is_atom(module) do
+    resolve(module)
+  end
+
   @doc false
   @spec normalize_config!(keyword() | map()) :: map()
   def normalize_config!(opts) when is_list(opts) do
@@ -45,10 +69,36 @@ defmodule Favn.Namespace do
   end
 
   def normalize_config!(opts) when is_map(opts) do
-    Enum.reduce(opts, %{}, fn {key, value}, acc ->
-      canonical_key = normalize_key!(key)
-      Map.put(acc, canonical_key, normalize_value!(canonical_key, value))
-    end)
+    relation_defaults =
+      case Map.fetch(opts, :relation) do
+        {:ok, defaults} when is_map(defaults) ->
+          Enum.reduce(defaults, %{}, fn {key, value}, acc ->
+            canonical_key = normalize_key!(key)
+            Map.put(acc, canonical_key, normalize_value!(canonical_key, value))
+          end)
+
+        {:ok, defaults} when is_list(defaults) and defaults != [] ->
+          Enum.reduce(defaults, %{}, fn {key, value}, acc ->
+            canonical_key = normalize_key!(key)
+            Map.put(acc, canonical_key, normalize_value!(canonical_key, value))
+          end)
+
+        :error ->
+          %{}
+      end
+
+    flat_defaults =
+      Enum.reduce([:connection, :catalog, :schema], %{}, fn key, acc ->
+        case Map.fetch(opts, key) do
+          {:ok, value} ->
+            Map.put(acc, key, normalize_value!(key, value))
+
+          :error ->
+            acc
+        end
+      end)
+
+    Map.merge(flat_defaults, relation_defaults)
   end
 
   def normalize_config!(opts) do

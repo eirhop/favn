@@ -147,7 +147,7 @@ defmodule FavnTest do
         use Favn.Assets
 
         @asset true
-        @produces true
+        @relation true
         def orders(_ctx), do: :ok
       end
       """,
@@ -161,7 +161,7 @@ defmodule FavnTest do
         use Favn.Assets
 
         @asset true
-        @produces name: :orders
+        @relation name: :orders
         def duplicate_orders(_ctx), do: :ok
       end
       """,

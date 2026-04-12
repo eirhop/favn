@@ -68,7 +68,7 @@ defmodule Favn.SQLAssetTest do
 
     assert asset.window_spec == %Favn.Window.Spec{kind: :day, lookback: 2, timezone: "Etc/UTC"}
 
-    assert asset.produces == %Favn.RelationRef{
+    assert asset.relation == %Favn.RelationRef{
              connection: :warehouse,
              catalog: "gold",
              schema: "sales",
@@ -103,7 +103,7 @@ defmodule Favn.SQLAssetTest do
 
         @depends #{inspect(upstream)}
         @materialized :table
-        @produces schema: :mart, table: :fact_orders
+        @relation schema: :mart, table: :fact_orders
         query do
           ~SQL[select * from silver.sales.stg_orders]
         end
@@ -116,7 +116,7 @@ defmodule Favn.SQLAssetTest do
 
     assert asset.depends_on == [{upstream, :asset}]
 
-    assert asset.produces == %Favn.RelationRef{
+    assert asset.relation == %Favn.RelationRef{
              connection: :warehouse,
              catalog: "silver",
              schema: "mart",
@@ -232,7 +232,7 @@ defmodule Favn.SQLAssetTest do
 
   test "rejects missing connection for produced SQL relation" do
     assert_raise CompileError,
-                 ~r/SQL assets require a connection through Favn\.Namespace or @produces/,
+                 ~r/SQL assets require a connection through Favn\.Namespace or @relation/,
                  fn ->
                    compile_sql_asset_module("""
                    use Favn.SQLAsset
@@ -307,14 +307,14 @@ defmodule Favn.SQLAssetTest do
   end
 
   test "rejects multiple produces attributes with a controlled compile error" do
-    assert_raise CompileError, ~r/multiple @produces attributes are not allowed/, fn ->
+    assert_raise CompileError, ~r/multiple @relation attributes are not allowed/, fn ->
       compile_sql_asset_module("""
       use Favn.Namespace, connection: :warehouse
       use Favn.SQLAsset
 
       @materialized :view
-      @produces true
-      @produces name: :orders
+      @relation true
+      @relation name: :orders
 
       query do
         ~SQL[select 1]

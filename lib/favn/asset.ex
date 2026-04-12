@@ -12,7 +12,7 @@ defmodule Favn.Asset do
 
         @doc "Extract raw orders"
         @meta owner: "data-platform", category: :sales, tags: [:raw]
-        @produces true
+        @relation true
         def asset(ctx), do: :ok
       end
 
@@ -33,7 +33,7 @@ defmodule Favn.Asset do
     quote do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
-      Module.register_attribute(__MODULE__, :produces, accumulate: true)
+      Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_single_asset_raw, persist: false)
 
@@ -84,7 +84,7 @@ defmodule Favn.Asset do
       Module.get_attribute(env.module, :depends),
       Module.get_attribute(env.module, :meta),
       Module.get_attribute(env.module, :window),
-      Module.get_attribute(env.module, :produces)
+      Module.get_attribute(env.module, :relation)
     } do
       {[], nil, [], []} ->
         :ok
@@ -93,7 +93,7 @@ defmodule Favn.Asset do
         compile_error!(
           env.file,
           env.line,
-          "@depends/@meta/@window/@produces must be attached to def asset(ctx)"
+          "@depends/@meta/@window/@relation must be attached to def asset(ctx)"
         )
     end
 
@@ -117,7 +117,7 @@ defmodule Favn.Asset do
           name: atom(),
           ref: Ref.t(),
           arity: non_neg_integer(),
-          type: :elixir | :sql,
+          type: :elixir | :sql | :source,
           title: String.t() | nil,
           doc: String.t() | nil,
           file: String.t(),
@@ -126,7 +126,7 @@ defmodule Favn.Asset do
           depends_on: [Ref.t()],
           dependencies: [Dependency.t()],
           window_spec: Spec.t() | nil,
-          produces: RelationRef.t() | nil,
+          relation: RelationRef.t() | nil,
           materialization: Favn.SQLAsset.Materialization.t() | nil,
           relation_inputs: [RelationInput.t()],
           diagnostics: [Diagnostic.t()]
@@ -151,7 +151,7 @@ defmodule Favn.Asset do
     depends_on: [],
     dependencies: [],
     window_spec: nil,
-    produces: nil,
+    relation: nil,
     materialization: nil,
     relation_inputs: [],
     diagnostics: []
@@ -173,7 +173,7 @@ defmodule Favn.Asset do
     meta = normalize_meta!(asset.meta)
     validate_depends_on!(asset.depends_on)
     validate_window_spec!(asset.window_spec)
-    validate_produces!(asset.produces)
+    validate_relation!(asset.relation)
     validate_type!(asset.type)
     validate_materialization!(asset.materialization)
 
@@ -271,18 +271,18 @@ defmodule Favn.Asset do
           "asset window_spec must be a Favn.Window.Spec or nil, got: #{inspect(value)}"
   end
 
-  defp validate_produces!(nil), do: :ok
-  defp validate_produces!(%RelationRef{} = relation_ref), do: RelationRef.validate!(relation_ref)
+  defp validate_relation!(nil), do: :ok
+  defp validate_relation!(%RelationRef{} = relation_ref), do: RelationRef.validate!(relation_ref)
 
-  defp validate_produces!(value) do
+  defp validate_relation!(value) do
     raise ArgumentError,
-          "asset produces must be a Favn.RelationRef or nil, got: #{inspect(value)}"
+          "asset relation must be a Favn.RelationRef or nil, got: #{inspect(value)}"
   end
 
-  defp validate_type!(type) when type in [:elixir, :sql], do: :ok
+  defp validate_type!(type) when type in [:elixir, :sql, :source], do: :ok
 
   defp validate_type!(value) do
-    raise ArgumentError, "asset type must be :elixir or :sql, got: #{inspect(value)}"
+    raise ArgumentError, "asset type must be :elixir, :sql, or :source, got: #{inspect(value)}"
   end
 
   defp validate_materialization!(nil), do: :ok
@@ -306,13 +306,13 @@ defmodule Favn.Asset do
     depends = env.module |> Module.get_attribute(:depends) |> Enum.reverse()
     meta = Module.get_attribute(env.module, :meta)
     window = env.module |> Module.get_attribute(:window) |> Enum.reverse()
-    produces = env.module |> Module.get_attribute(:produces) |> Enum.reverse()
-    validate_produces_attr!(produces, env)
+    relation = env.module |> Module.get_attribute(:relation) |> Enum.reverse()
+    validate_relation_attr!(relation, env)
 
     Module.delete_attribute(env.module, :depends)
     Module.delete_attribute(env.module, :meta)
     Module.delete_attribute(env.module, :window)
-    Module.delete_attribute(env.module, :produces)
+    Module.delete_attribute(env.module, :relation)
 
     Module.put_attribute(env.module, :favn_single_asset_raw, %{
       module: env.module,
@@ -324,7 +324,7 @@ defmodule Favn.Asset do
       depends: depends,
       meta: meta,
       window: window,
-      produces: produces
+      relation: relation
     })
   end
 
@@ -414,11 +414,11 @@ defmodule Favn.Asset do
     )
   end
 
-  defp validate_produces_attr!([], _env), do: :ok
+  defp validate_relation_attr!([], _env), do: :ok
 
-  defp validate_produces_attr!([produces], env) do
+  defp validate_relation_attr!([relation], env) do
     valid? =
-      produces == true or (is_list(produces) and Keyword.keyword?(produces)) or is_map(produces)
+      relation == true or (is_list(relation) and Keyword.keyword?(relation)) or is_map(relation)
 
     if valid? do
       :ok
@@ -426,16 +426,16 @@ defmodule Favn.Asset do
       compile_error!(
         env.file,
         env.line,
-        "invalid @produces value #{inspect(produces)}; expected true, a keyword list, or a map"
+        "invalid @relation value #{inspect(relation)}; expected true, a keyword list, or a map"
       )
     end
   end
 
-  defp validate_produces_attr!([_a, _b | _rest], env) do
+  defp validate_relation_attr!([_a, _b | _rest], env) do
     compile_error!(
       env.file,
       env.line,
-      "multiple @produces attributes are not allowed; use at most one @produces for def asset(ctx)"
+      "multiple @relation attributes are not allowed; use at most one @relation for def asset(ctx)"
     )
   end
 
@@ -443,18 +443,18 @@ defmodule Favn.Asset do
     depends = Module.get_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
     window = Module.get_attribute(env.module, :window)
-    produces = Module.get_attribute(env.module, :produces)
+    relation = Module.get_attribute(env.module, :relation)
 
-    if depends != [] or not is_nil(meta) or window != [] or produces != [] do
+    if depends != [] or not is_nil(meta) or window != [] or relation != [] do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
-      Module.delete_attribute(env.module, :produces)
+      Module.delete_attribute(env.module, :relation)
 
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window/@produces on #{kind} #{name}/#{arity} requires def asset(ctx) immediately below those attributes"
+        "@depends/@meta/@window/@relation on #{kind} #{name}/#{arity} requires def asset(ctx) immediately below those attributes"
       )
     else
       :ok

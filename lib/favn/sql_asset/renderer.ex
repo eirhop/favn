@@ -27,8 +27,8 @@ defmodule Favn.SQLAsset.Renderer do
       {:ok,
        %Render{
          asset_ref: definition.asset.ref,
-         connection: definition.asset.produces.connection,
-         produced_relation: definition.asset.produces,
+         connection: definition.asset.relation.connection,
+         produced_relation: definition.asset.relation,
          materialization: definition.materialization,
          sql: fragment.sql,
          params: normalized_params,
@@ -118,7 +118,7 @@ defmodule Favn.SQLAsset.Renderer do
   defp base_env(definition, params, runtime_inputs, definition_catalog) do
     %{
       asset_ref: definition.asset.ref,
-      root_connection: definition.asset.produces.connection,
+      root_connection: definition.asset.relation.connection,
       params: params,
       runtime_values: runtime_inputs.runtime_values,
       local_args: %{},
@@ -305,10 +305,10 @@ defmodule Favn.SQLAsset.Renderer do
     case Code.ensure_compiled(module) do
       {:module, _compiled} ->
         case Compiler.compile_module_assets(module) do
-          {:ok, [%{produces: %RelationRef{} = relation_ref}]} ->
+          {:ok, [%{relation: %RelationRef{} = relation_ref}]} ->
             {:ok, relation_ref}
 
-          {:ok, [%{produces: nil}]} ->
+          {:ok, [%{relation: nil}]} ->
             {:error,
              %Error{
                type: :invalid_produced_relation,
@@ -317,7 +317,7 @@ defmodule Favn.SQLAsset.Renderer do
                span: span,
                line: span.start_line,
                message:
-                 "SQL asset reference #{inspect(module)} resolved, but it does not produce a relation",
+                 "SQL asset reference #{inspect(module)} resolved, but it does not have a relation",
                stack: stack,
                details: %{module: module}
              }}

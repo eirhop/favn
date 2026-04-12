@@ -2,7 +2,7 @@
 
 ## Current Version
 
-**Current release: v0.3.0**
+**Current release: v0.4.0**
 
 ## Current Focus
 
@@ -22,7 +22,8 @@ Near-term priority is a practical path to real usage:
 ## Terminology
 
 - **Asset** — a Favn executable unit
-- **Source** — an external relation Favn reads from but does not build
+- **Source** — an external relation declared via `Favn.Source`, used in lineage but not executed
+- **Relation** — warehouse identity: connection, catalog, schema, name
 - **Connection** — reusable backend configuration used by assets and pipelines
 - **Adapter** — implementation for a backend such as DuckDB, Snowflake, or Databricks
 
@@ -120,26 +121,26 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 - [x] DuckDB adapter foundation (duckdbex-backed connect/query/introspection/materialization baseline)
   - [x] Appender-backed table writes preserve normal `WritePlan` create semantics
   - [x] Appender lifecycle cleanup is explicit on failure paths
-- [x] Phase 1 shared produced relation foundation
+- [x] Phase 1 shared relation foundation
   - [x] `Favn.RelationRef`
-  - [x] `%Favn.Asset{produces: ...}`
-  - [x] `Favn.Namespace` config inheritance for `connection` / `catalog` / `schema`
-  - [x] `Favn.Assets` support for `@produces`
-  - [x] runtime exposure through `ctx.asset.produces`
+  - [x] `%Favn.Asset{relation: ...}`
+  - [x] `Favn.Namespace` config inheritance for `connection` / `catalog` / `schema` via grouped `relation:` key
+  - [x] `Favn.Assets` support for `@relation`
+  - [x] runtime exposure through `ctx.asset.relation`
   - [x] relation normalization and validation (`database`/`table` aliases included)
-  - [x] relation ownership uniqueness checks
-  - [x] relation ownership index in the registry catalog
+  - [x] relation uniqueness checks
+  - [x] relation index in the registry catalog
 - [x] Phase 2 single-asset Elixir DSL (`Favn.Asset`)
   - [x] one-module-per-asset `def asset(ctx)` convention
-  - [x] `@doc`, `@meta`, `@depends`, `@window`, `@produces`
+  - [x] `@doc`, `@meta`, `@depends`, `@window`, `@relation`
   - [x] relation default inheritance via `Favn.Namespace`
   - [x] canonical compile output as one `%Favn.Asset{ref: {Module, :asset}}`
   - [x] module dependency shorthand normalization (`@depends Some.AssetModule`)
-  - [x] `@produces true` relation-name inference from module leaf (`Macro.underscore/1`)
+  - [x] `@relation true` relation-name inference from module leaf (`Macro.underscore/1`)
   - [x] module convenience lookup via `Favn.get_asset(module)` for single-asset modules
 - [x] Phase 3 single-asset SQL DSL (`Favn.SQLAsset`)
   - [x] one-module-per-asset SQL DSL with `query do ... end` and a real `~SQL""" ... """` sigil
-  - [x] `@doc`, `@meta`, `@depends`, `@window`, `@materialized`, `@produces`
+  - [x] `@doc`, `@meta`, `@depends`, `@window`, `@materialized`, `@relation`
   - [x] relation default inheritance via `Favn.Namespace`
   - [x] canonical compile output as one `%Favn.Asset{ref: {Module, :asset}}`
   - [x] module convenience lookup via `Favn.get_asset(module)` for single-asset modules
@@ -158,7 +159,15 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] reusable SQL cycle detection
   - [x] deferred symbolic asset refs for not-yet-compiled modules
 - [ ] DuckDB adapter hardening for runtime execution
-- [ ] Typed source identities
+- [x] Typed external relational sources
+  - [x] Unified `relation` DSL naming
+  - [x] `Favn.Source` DSL for external relations
+  - [x] `@relation` in `Favn.Asset` (renamed from `@produces`)
+  - [x] `@relation` in `Favn.SQLAsset` (with inference by default)
+  - [x] `Favn.Namespace` grouped relation defaults: `relation: [connection: ..., catalog: ..., schema: ...]`
+  - [x] Relation-based dependency inference with registered sources
+  - [x] `%Favn.Asset{type: :source}` for non-materializing sources
+  - [x] Removed `@produces` legacy naming
 - [x] Phase 4a runtime integration for SQL assets
   - [x] SQL execution through shared runtime
   - [x] SQL helper APIs (`Favn.render/2`, `Favn.preview/2`, `Favn.explain/2`, `Favn.materialize/2`)
@@ -197,7 +206,7 @@ Goal: make single-node production usage reliable and inspectable.
 - [ ] Concurrency controls
 - [ ] Run deduplication / run keys
 - [ ] Improved failure recovery
-- [ ] Registered source/external dependency model (typed relation identities)
+- [x] Registered source/external dependency model (typed relation identities)
 - [ ] Materialization history tracking
 - [ ] Asset and window state inspection
 - [ ] Asset dependency provenance and relation-lineage inspection APIs

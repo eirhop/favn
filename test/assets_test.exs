@@ -57,7 +57,7 @@ defmodule Favn.AssetsTest do
            meta: %{category: :sql},
            depends_on: [],
            window_spec: Favn.Window.daily(),
-           produces: %Favn.RelationRef{name: "compiled_sql_asset"}
+           relation: %Favn.RelationRef{name: "compiled_sql_asset"}
          }
        ]}
     end
@@ -77,7 +77,7 @@ defmodule Favn.AssetsTest do
            arity: 1,
            file: "lib/sql_assets.ex",
            line: 1,
-           produces: %{name: "bad"}
+           relation: %{name: "bad"}
          }
        ]}
     end
@@ -95,7 +95,7 @@ defmodule Favn.AssetsTest do
     assert extract.doc == "Extract raw orders"
     assert extract.meta == %{}
     assert extract.depends_on == []
-    assert extract.produces == nil
+    assert extract.relation == nil
 
     assert normalize.depends_on == [{Favn.AssetsTest.Sample, :extract_orders}]
     assert normalize.meta == %{owner: "data", tags: [:sales, "warehouse"]}
@@ -110,10 +110,10 @@ defmodule Favn.AssetsTest do
     assert fact.meta == %{owner: "analytics", category: :sales, tags: [:view]}
     assert fact.depends_on == [{Favn.AssetsTest.Upstream, :source_rows}]
     assert fact.window_spec == nil
-    assert fact.produces == nil
+    assert fact.relation == nil
   end
 
-  test "captures @produces with namespace defaults and runtime name inference" do
+  test "captures @relation with namespace defaults and runtime name inference" do
     module_name = Module.concat(__MODULE__, "Produces#{System.unique_integer([:positive])}")
 
     source = """
@@ -122,11 +122,11 @@ defmodule Favn.AssetsTest do
       use Favn.Assets
 
       @asset true
-      @produces true
+      @relation true
       def orders(_ctx), do: :ok
 
       @asset true
-      @produces database: :silver, table: :daily_orders
+      @relation database: :silver, table: :daily_orders
       def stage_orders(_ctx), do: :ok
     end
     """
@@ -137,14 +137,14 @@ defmodule Favn.AssetsTest do
 
     assert {:ok, [orders, stage_orders]} = Compiler.compile_module_assets(module_name)
 
-    assert orders.produces == %RelationRef{
+    assert orders.relation == %RelationRef{
              connection: :warehouse,
              catalog: "raw",
              schema: "sales",
              name: "orders"
            }
 
-    assert stage_orders.produces == %RelationRef{
+    assert stage_orders.relation == %RelationRef{
              connection: :warehouse,
              catalog: "silver",
              schema: "sales",
@@ -164,9 +164,9 @@ defmodule Favn.AssetsTest do
       @meta owner: "data-platform", category: :sales, tags: [:raw]
       @depends {Favn.AssetsTest.Upstream, :source_rows}
       @window Favn.Window.daily(lookback: 2)
-      @produces true
+      @relation true
       def asset(ctx) do
-        _target = ctx.asset.produces
+        _target = ctx.asset.relation
         :ok
       end
     end
@@ -186,7 +186,7 @@ defmodule Favn.AssetsTest do
 
     assert asset.meta == %{owner: "data-platform", category: :sales, tags: [:raw]}
 
-    assert asset.produces == %RelationRef{
+    assert asset.relation == %RelationRef{
              connection: :warehouse,
              catalog: "raw",
              schema: "sales",
@@ -201,7 +201,7 @@ defmodule Favn.AssetsTest do
     defmodule #{inspect(module_name)} do
       use Favn.Asset
 
-      @produces true
+      @relation true
       def asset(_ctx), do: :ok
     end
     """
@@ -210,7 +210,7 @@ defmodule Favn.AssetsTest do
              mod == module_name
            end)
 
-    assert {:ok, [%Asset{produces: %RelationRef{name: name}}]} =
+    assert {:ok, [%Asset{relation: %RelationRef{name: name}}]} =
              Compiler.compile_module_assets(module_name)
 
     assert name =~ ~r/^fct_orders\d+$/
@@ -300,14 +300,14 @@ defmodule Favn.AssetsTest do
         use Favn.Assets
 
         @asset true
-        @produces true
+        @relation true
         def orders(_ctx), do: :ok
       end
       """,
       "test/dynamic_assets_test.exs"
     )
 
-    assert {:ok, [%Asset{produces: %RelationRef{} = produces}]} =
+    assert {:ok, [%Asset{relation: %RelationRef{} = produces}]} =
              Compiler.compile_module_assets(assets)
 
     assert produces == %RelationRef{
@@ -330,7 +330,7 @@ defmodule Favn.AssetsTest do
         use Favn.Assets
 
         @asset true
-        @produces true
+        @relation true
         def orders(_ctx), do: :ok
       end
       """,
@@ -352,7 +352,7 @@ defmodule Favn.AssetsTest do
       "test/dynamic_assets_test.exs"
     )
 
-    assert {:ok, [%Asset{produces: %RelationRef{} = produces}]} =
+    assert {:ok, [%Asset{relation: %RelationRef{} = produces}]} =
              Compiler.compile_module_assets(assets)
 
     assert produces == %RelationRef{
@@ -507,23 +507,23 @@ defmodule Favn.AssetsTest do
       """)
     end
 
-    assert_raise CompileError, ~r/invalid @produces value/, fn ->
+    assert_raise CompileError, ~r/invalid @relation value/, fn ->
       compile_test_module("""
       use Favn.Assets
 
       @asset true
-      @produces :bad
+      @relation :bad
       def bad_produces(_ctx), do: :ok
       """)
     end
 
-    assert_raise CompileError, ~r/multiple @produces attributes are not allowed/, fn ->
+    assert_raise CompileError, ~r/multiple @relation attributes are not allowed/, fn ->
       compile_test_module("""
       use Favn.Assets
 
       @asset true
-      @produces true
-      @produces name: :orders
+      @relation true
+      @relation name: :orders
       def duplicate_produces(_ctx), do: :ok
       """)
     end
@@ -539,11 +539,11 @@ defmodule Favn.AssetsTest do
                  use Favn.Assets
 
                  @asset true
-                 @produces true
+                 @relation true
                  def orders(_ctx), do: :ok
 
                  @asset true
-                 @produces name: :orders
+                 @relation name: :orders
                  def duplicate_orders(_ctx), do: :ok
                end
                """,
@@ -555,13 +555,13 @@ defmodule Favn.AssetsTest do
     assert {:error, {:invalid_compiled_assets, message}} =
              Compiler.compile_module_assets(duplicate_module)
 
-    assert message =~ "duplicate produced relation"
+    assert message =~ "duplicate relation"
 
     assert_raise CompileError, ~r/requires @asset immediately above/, fn ->
       compile_test_module("""
       use Favn.Assets
 
-      @produces true
+      @relation true
       def helper(_ctx), do: :ok
       """)
     end
@@ -576,7 +576,7 @@ defmodule Favn.AssetsTest do
                  use Favn.Assets
 
                  @asset true
-                 @produces %{"database" => "raw", :catalog => "silver", "name" => "orders"}
+                 @relation %{"database" => "raw", :catalog => "silver", "name" => "orders"}
                  def duplicate_catalog_keys(_ctx), do: :ok
                end
                """,
@@ -600,7 +600,7 @@ defmodule Favn.AssetsTest do
                  use Favn.Assets
 
                  @asset true
-                 @produces %{"table" => "orders", :name => "other_orders"}
+                 @relation %{"table" => "orders", :name => "other_orders"}
                  def duplicate_name_keys(_ctx), do: :ok
                end
                """,
@@ -739,14 +739,14 @@ defmodule Favn.AssetsTest do
         use Favn.Assets
 
         @asset true
-        @produces %{"name" => "orders"}
+        @relation %{"name" => "orders"}
         def ignored_name_inference(_ctx), do: :ok
       end
       """,
       "test/dynamic_assets_test.exs"
     )
 
-    assert {:ok, [%Asset{produces: %RelationRef{name: "orders"} = produces}]} =
+    assert {:ok, [%Asset{relation: %RelationRef{name: "orders"} = produces}]} =
              Compiler.compile_module_assets(module_name)
 
     assert produces.catalog == nil

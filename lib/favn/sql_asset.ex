@@ -28,7 +28,7 @@ defmodule Favn.SQLAsset do
     quote do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
-      Module.register_attribute(__MODULE__, :produces, accumulate: true)
+      Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :materialized, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_asset_raw, persist: false)
@@ -121,7 +121,7 @@ defmodule Favn.SQLAsset do
       |> Map.put(:depends, env.module |> fetch_accum_attribute(:depends) |> Enum.reverse())
       |> Map.put(:meta, Module.get_attribute(env.module, :meta))
       |> Map.put(:window, env.module |> fetch_accum_attribute(:window) |> Enum.reverse())
-      |> Map.put(:produces, env.module |> fetch_accum_attribute(:produces) |> Enum.reverse())
+      |> Map.put(:relation, env.module |> fetch_accum_attribute(:relation) |> Enum.reverse())
       |> Map.put(
         :materialized,
         env.module |> fetch_accum_attribute(:materialized) |> Enum.reverse()
@@ -164,7 +164,7 @@ defmodule Favn.SQLAsset do
     materialization =
       normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
 
-    produces = normalize_produces!(raw_definition, inferred_relation_name(raw_definition.module))
+    relation = normalize_relation!(raw_definition, inferred_relation_name(raw_definition.module))
     known_definitions = fetch_sql_definitions!(raw_definition)
 
     template =
@@ -195,7 +195,7 @@ defmodule Favn.SQLAsset do
       depends_on: depends_on,
       relation_inputs: relation_inputs,
       window_spec: window_spec,
-      produces: produces,
+      relation: relation,
       materialization: materialization
     }
 
@@ -362,11 +362,11 @@ defmodule Favn.SQLAsset do
   defp validate_incremental_materialized!(materialization, _window_spec, _raw_definition),
     do: materialization
 
-  defp normalize_produces!(raw_definition, inferred_name) do
+  defp normalize_relation!(raw_definition, inferred_name) do
     defaults = Namespace.resolve(raw_definition.module)
 
-    produces_attrs =
-      case raw_definition.produces do
+    relation_attrs =
+      case raw_definition.relation do
         [] ->
           %{}
 
@@ -380,7 +380,7 @@ defmodule Favn.SQLAsset do
             compile_error!(
               raw_definition.file,
               raw_definition.line,
-              "invalid @produces value #{inspect(attrs)}; expected true, a keyword list, or a map"
+              "invalid @relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
             )
           end
 
@@ -391,58 +391,58 @@ defmodule Favn.SQLAsset do
           compile_error!(
             raw_definition.file,
             raw_definition.line,
-            "multiple @produces attributes are not allowed; use at most one @produces before query do ... end"
+            "multiple @relation attributes are not allowed; use at most one @relation before query do ... end"
           )
 
         [other] ->
           compile_error!(
             raw_definition.file,
             raw_definition.line,
-            "invalid @produces value #{inspect(other)}; expected true, a keyword list, or a map"
+            "invalid @relation value #{inspect(other)}; expected true, a keyword list, or a map"
           )
       end
 
     defaults
-    |> maybe_drop_default_key(produces_attrs, [:catalog], [:database, "database"])
-    |> maybe_drop_default_key(produces_attrs, [:name], [:table, "table", :name, "name"])
-    |> Map.merge(produces_attrs)
+    |> maybe_drop_default_key(relation_attrs, [:catalog], [:database, "database"])
+    |> maybe_drop_default_key(relation_attrs, [:name], [:table, "table", :name, "name"])
+    |> Map.merge(relation_attrs)
     |> maybe_put_inferred_name(inferred_name)
     |> RelationRef.new!()
-    |> ensure_sql_relation_connection!(raw_definition)
+    |> ensure_sql_relation!(raw_definition)
   rescue
     error in ArgumentError ->
       compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
-  defp ensure_sql_relation_connection!(%RelationRef{connection: nil}, raw_definition) do
+  defp ensure_sql_relation!(%RelationRef{connection: nil}, raw_definition) do
     compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "SQL assets require a connection through Favn.Namespace or @produces"
+      "SQL assets require a connection through Favn.Namespace or @relation"
     )
   end
 
-  defp ensure_sql_relation_connection!(%RelationRef{} = relation_ref, _raw_definition),
+  defp ensure_sql_relation!(%RelationRef{} = relation_ref, _raw_definition),
     do: relation_ref
 
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
     depends = fetch_accum_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
     window = fetch_accum_attribute(env.module, :window)
-    produces = fetch_accum_attribute(env.module, :produces)
+    relation = fetch_accum_attribute(env.module, :relation)
     materialized = fetch_accum_attribute(env.module, :materialized)
 
-    if depends != [] or not is_nil(meta) or window != [] or produces != [] or materialized != [] do
+    if depends != [] or not is_nil(meta) or window != [] or relation != [] or materialized != [] do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
-      Module.delete_attribute(env.module, :produces)
+      Module.delete_attribute(env.module, :relation)
       Module.delete_attribute(env.module, :materialized)
 
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window/@produces/@materialized on #{kind} #{name}/#{arity} requires query do ... end immediately below those attributes"
+        "@depends/@meta/@window/@relation/@materialized on #{kind} #{name}/#{arity} requires query do ... end immediately below those attributes"
       )
     else
       :ok

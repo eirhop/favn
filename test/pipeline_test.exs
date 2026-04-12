@@ -276,7 +276,7 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.trigger == %{kind: :manual, requested_by: :api}
   end
 
-  test "run_asset/2 projects produced relation ownership to ctx.asset.produces" do
+  test "run_asset/2 projects produced relation ownership to ctx.asset.relation" do
     module_name = Module.concat(__MODULE__, "ProducesAssets#{System.unique_integer([:positive])}")
 
     Code.compile_string(
@@ -288,7 +288,7 @@ defmodule Favn.PipelineTest do
         alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder
 
         @asset true
-        @produces true
+        @relation true
         def orders(ctx) do
           CtxRecorder.record(ctx)
           :ok
@@ -310,7 +310,7 @@ defmodule Favn.PipelineTest do
 
     assert ctx.asset.ref == {module_name, :orders}
 
-    assert ctx.asset.produces == %Favn.RelationRef{
+    assert ctx.asset.relation == %Favn.RelationRef{
              connection: :warehouse,
              catalog: "raw",
              schema: "sales",

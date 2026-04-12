@@ -221,7 +221,7 @@ defmodule Favn.Assets.DependencyInference do
        })
        when is_atom(module) do
     case Compiler.compile_module_assets(module) do
-      {:ok, [%Asset{produces: %RelationRef{} = relation_ref}]} ->
+      {:ok, [%Asset{relation: %RelationRef{} = relation_ref}]} ->
         {:ok, {module, :asset}, relation_ref}
 
       _other ->
@@ -254,7 +254,7 @@ defmodule Favn.Assets.DependencyInference do
   end
 
   defp ensure_same_connection(asset, input, %RelationRef{connection: connection}) do
-    if connection == asset.produces.connection do
+    if connection == asset.relation.connection do
       :ok
     else
       {:error,
@@ -263,10 +263,10 @@ defmodule Favn.Assets.DependencyInference do
          stage: :registry,
          code: :cross_connection_direct_asset_ref,
          message:
-           "direct SQL asset reference #{inspect(input.raw)} for #{inspect(asset.ref)} resolves to connection #{inspect(connection)}, expected #{inspect(asset.produces.connection)}",
+           "direct SQL asset reference #{inspect(input.raw)} for #{inspect(asset.ref)} resolves to connection #{inspect(connection)}, expected #{inspect(asset.relation.connection)}",
          asset_ref: asset.ref,
          span: input.span,
-         details: %{expected_connection: asset.produces.connection, actual_connection: connection}
+         details: %{expected_connection: asset.relation.connection, actual_connection: connection}
        }}
     end
   end

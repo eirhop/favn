@@ -203,7 +203,7 @@ defmodule Favn.SQLTemplateAssetRefTest do
     )
 
     assert_raise CompileError,
-                 ~r/does not resolve to a produced relation/,
+                 ~r/does not resolve to a relation/,
                  fn ->
                    Template.compile!(
                      "select * from #{inspect(no_produces)}",
@@ -233,7 +233,7 @@ defmodule Favn.SQLTemplateAssetRefTest do
         use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end

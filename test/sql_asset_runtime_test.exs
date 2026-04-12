@@ -533,7 +533,7 @@ defmodule Favn.SQLAssetRuntimeTest do
         use Favn.Namespace
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end
@@ -605,7 +605,7 @@ defmodule Favn.SQLAssetRuntimeTest do
         use Favn.Namespace
         use Favn.Asset
 
-        @produces true
+        @relation true
         def asset(_ctx), do: :ok
       end
       """,
@@ -701,7 +701,7 @@ defmodule Favn.SQLAssetRuntimeTest do
         use Favn.Namespace
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end

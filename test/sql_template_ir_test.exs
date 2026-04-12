@@ -171,7 +171,7 @@ defmodule Favn.SQLTemplateIRTest do
         use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end
@@ -396,7 +396,7 @@ defmodule Favn.SQLTemplateIRTest do
         use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end

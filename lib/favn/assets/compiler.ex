@@ -138,7 +138,7 @@ defmodule Favn.Assets.Compiler do
     defaults = Namespace.resolve(module)
 
     try do
-      assets = Enum.map(assets, &resolve_produced_relation(&1, defaults))
+      assets = Enum.map(assets, &resolve_relation(&1, defaults))
       ensure_unique_relation_owners!(assets)
       {:ok, assets}
     rescue
@@ -146,13 +146,13 @@ defmodule Favn.Assets.Compiler do
     end
   end
 
-  defp resolve_produced_relation(%Asset{} = asset, defaults) do
+  defp resolve_relation(%Asset{} = asset, defaults) do
     inferred_name = inferred_relation_name(asset)
 
-    produces =
-      case fetch_raw_produces(asset.module, asset.name) do
+    relation =
+      case fetch_raw_relation(asset.module, asset.name) do
         nil ->
-          asset.produces
+          asset.relation
 
         true ->
           RelationRef.new!(Map.put(defaults, :name, inferred_name))
@@ -161,31 +161,31 @@ defmodule Favn.Assets.Compiler do
           if Keyword.keyword?(attrs) do
             attrs
             |> Map.new()
-            |> merge_produces_attrs(defaults, inferred_name)
+            |> merge_relation_attrs(defaults, inferred_name)
             |> RelationRef.new!()
           else
             raise ArgumentError,
-                  "invalid @produces value #{inspect(attrs)}; expected true, a keyword list, or a map"
+                  "invalid @relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
           end
 
         attrs when is_map(attrs) ->
           attrs
-          |> merge_produces_attrs(defaults, inferred_name)
+          |> merge_relation_attrs(defaults, inferred_name)
           |> RelationRef.new!()
 
         other ->
           raise ArgumentError,
-                "invalid @produces value #{inspect(other)}; expected true, a keyword list, or a map"
+                "invalid @relation value #{inspect(other)}; expected true, a keyword list, or a map"
       end
 
-    %{asset | produces: produces}
+    %{asset | relation: relation}
   end
 
-  defp fetch_raw_produces(module, name) do
+  defp fetch_raw_relation(module, name) do
     with true <- function_exported?(module, :__favn_assets_raw__, 0),
          entries when is_list(entries) <- module.__favn_assets_raw__(),
-         %{produces: produces} <- Enum.find(entries, &(&1.name == name)) do
-      case produces do
+         %{relation: relation} <- Enum.find(entries, &(&1.name == name)) do
+      case relation do
         [] -> nil
         [value] -> value
       end
@@ -194,7 +194,7 @@ defmodule Favn.Assets.Compiler do
     end
   end
 
-  defp merge_produces_attrs(attrs, defaults, asset_name) when is_map(attrs) do
+  defp merge_relation_attrs(attrs, defaults, asset_name) when is_map(attrs) do
     attrs =
       if has_explicit_name?(attrs) do
         attrs
@@ -222,12 +222,12 @@ defmodule Favn.Assets.Compiler do
 
   defp ensure_unique_relation_owners!(assets) do
     assets
-    |> Enum.reject(&is_nil(&1.produces))
-    |> Enum.group_by(& &1.produces)
+    |> Enum.reject(&is_nil(&1.relation))
+    |> Enum.group_by(& &1.relation)
     |> Enum.each(fn {relation_ref, owners} ->
       case owners do
         [_single] -> :ok
-        _many -> raise ArgumentError, "duplicate produced relation #{inspect(relation_ref)}"
+        _many -> raise ArgumentError, "duplicate relation #{inspect(relation_ref)}"
       end
     end)
   end

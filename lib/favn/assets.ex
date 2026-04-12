@@ -29,7 +29,7 @@ defmodule Favn.Assets do
       Module.register_attribute(__MODULE__, :asset, persist: false)
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
-      Module.register_attribute(__MODULE__, :produces, accumulate: true)
+      Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_assets_raw, accumulate: true)
 
@@ -64,12 +64,12 @@ defmodule Favn.Assets do
                 |> Module.get_attribute(:window)
                 |> Enum.reverse()
 
-              produces = env.module |> Module.get_attribute(:produces) |> Enum.reverse()
-              validate_produces_attr!(produces, env)
+              relation = env.module |> Module.get_attribute(:relation) |> Enum.reverse()
+              validate_relation_attr!(relation, env)
               Module.delete_attribute(env.module, :depends)
               Module.delete_attribute(env.module, :meta)
               Module.delete_attribute(env.module, :window)
-              Module.delete_attribute(env.module, :produces)
+              Module.delete_attribute(env.module, :relation)
 
               Module.put_attribute(env.module, :favn_assets_raw, %{
                 module: env.module,
@@ -82,7 +82,7 @@ defmodule Favn.Assets do
                 depends: depends,
                 meta: meta,
                 window: window,
-                produces: produces
+                relation: relation
               })
             else
               compile_error!(
@@ -116,7 +116,7 @@ defmodule Favn.Assets do
       Module.get_attribute(env.module, :depends),
       Module.get_attribute(env.module, :meta),
       Module.get_attribute(env.module, :window),
-      Module.get_attribute(env.module, :produces)
+      Module.get_attribute(env.module, :relation)
     } do
       {[], nil, [], []} ->
         :ok
@@ -125,7 +125,7 @@ defmodule Favn.Assets do
         compile_error!(
           env.file,
           env.line,
-          "@depends/@meta/@window/@produces must be attached to an immediately following @asset function"
+          "@depends/@meta/@window/@relation must be attached to an immediately following @asset function"
         )
     end
 
@@ -241,11 +241,11 @@ defmodule Favn.Assets do
     )
   end
 
-  defp validate_produces_attr!([], _env), do: :ok
+  defp validate_relation_attr!([], _env), do: :ok
 
-  defp validate_produces_attr!([produces], env) do
+  defp validate_relation_attr!([relation], env) do
     valid? =
-      produces == true or (is_list(produces) and Keyword.keyword?(produces)) or is_map(produces)
+      relation == true or (is_list(relation) and Keyword.keyword?(relation)) or is_map(relation)
 
     if valid? do
       :ok
@@ -253,16 +253,16 @@ defmodule Favn.Assets do
       compile_error!(
         env.file,
         env.line,
-        "invalid @produces value #{inspect(produces)}; expected true, a keyword list, or a map"
+        "invalid @relation value #{inspect(relation)}; expected true, a keyword list, or a map"
       )
     end
   end
 
-  defp validate_produces_attr!([_a, _b | _rest], env) do
+  defp validate_relation_attr!([_a, _b | _rest], env) do
     compile_error!(
       env.file,
       env.line,
-      "multiple @produces attributes are not allowed; use at most one @produces per @asset function"
+      "multiple @relation attributes are not allowed; use at most one @relation per @asset function"
     )
   end
 
@@ -298,20 +298,20 @@ defmodule Favn.Assets do
     depends = Module.get_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
     window = Module.get_attribute(env.module, :window)
-    produces = Module.get_attribute(env.module, :produces)
+    relation = Module.get_attribute(env.module, :relation)
 
-    if depends != [] or not is_nil(meta) or window != [] or produces != [] do
+    if depends != [] or not is_nil(meta) or window != [] or relation != [] do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
-      Module.delete_attribute(env.module, :produces)
+      Module.delete_attribute(env.module, :relation)
 
       arity = length(args || [])
 
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window/@produces on #{kind} #{name}/#{arity} requires @asset immediately above that function"
+        "@depends/@meta/@window/@relation on #{kind} #{name}/#{arity} requires @asset immediately above that function"
       )
     else
       :ok
