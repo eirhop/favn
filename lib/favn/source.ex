@@ -27,6 +27,7 @@ defmodule Favn.Source do
     quote do
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
+      Module.register_attribute(__MODULE__, :favn_source_generating, persist: false)
 
       @on_definition Favn.Source
       @before_compile Favn.Source
@@ -37,7 +38,12 @@ defmodule Favn.Source do
   def __on_definition__(env, kind, name, args, _guards, _body) do
     arity = length(args || [])
 
-    if kind in [:def, :defp] do
+    generated_definition? =
+      Module.get_attribute(env.module, :favn_source_generating) == true and
+        kind == :def and
+        name in [:__favn_assets__, :__favn_assets_raw__, :__favn_single_asset__, :__favn_source__]
+
+    if kind in [:def, :defp] and not generated_definition? do
       compile_error!(
         env.file,
         env.line,
@@ -96,6 +102,8 @@ defmodule Favn.Source do
     }
 
     ensure_valid_asset!(asset, env)
+
+    Module.put_attribute(env.module, :favn_source_generating, true)
 
     quote do
       @doc false

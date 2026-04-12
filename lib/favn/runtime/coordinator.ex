@@ -35,7 +35,7 @@ defmodule Favn.Runtime.Coordinator do
   def handle_cast(:start_run, %{state: state} = data) do
     with {:ok, state} <- apply_run_transition(state, :start),
          {:ok, state} <- maybe_schedule_timeout(state),
-         {:ok, state} <- emit_step_ready_for_sources(state),
+         {:ok, state} <- emit_initial_ready_steps(state),
          {:ok, state} <- dispatch_ready_work(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
       {:noreply, %{data | state: state}}
@@ -673,19 +673,19 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp emit_step_ready_for_sources(%State{} = state) do
-    source_keys =
+  defp emit_initial_ready_steps(%State{} = state) do
+    ready_keys =
       state.steps
       |> Enum.filter(fn {_node_key, step} -> step.status == :ready end)
       |> Enum.map(&elem(&1, 0))
       |> Enum.sort()
 
     events =
-      Enum.map(source_keys, fn node_key ->
+      Enum.map(ready_keys, fn node_key ->
         {:step_ready, node_key}
       end)
 
-    emit_events(%{state | ready_queue: source_keys}, events)
+    emit_events(%{state | ready_queue: ready_keys}, events)
   end
 
   defp emit_events(%State{} = state, events) when is_list(events) do
