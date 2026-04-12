@@ -8,14 +8,19 @@ lib/
 └── favn/
     ├── application.ex
     ├── asset.ex
+    ├── diagnostic.ex
     ├── assets.ex
     ├── namespace.ex
     ├── relation_ref.ex
     ├── assets/
     │   ├── compiler.ex
+    │   ├── dependency_inference.ex
     │   ├── graph_index.ex
     │   ├── planner.ex
     │   └── registry.ex
+    ├── asset/
+    │   ├── dependency.ex
+    │   └── relation_input.ex
     ├── connection.ex
     ├── connection/
     │   ├── definition.ex
@@ -81,6 +86,7 @@ lib/
     │   ├── error.ex
     │   ├── input.ex
     │   ├── materialization.ex
+    │   ├── relation_usage.ex
     │   ├── renderer.ex
     │   └── runtime.ex
     ├── scheduler/

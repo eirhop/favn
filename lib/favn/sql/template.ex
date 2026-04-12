@@ -6,6 +6,7 @@ defmodule Favn.SQL.Template do
   alias Favn.Assets.Compiler
   alias Favn.RelationRef
   alias Favn.SQL.Definition
+  alias MapSet
 
   @reserved_runtime_inputs [:window_start, :window_end]
   @join_prefixes ["inner", "left", "right", "full", "cross"]
@@ -138,7 +139,19 @@ defmodule Favn.SQL.Template do
           }
   end
 
-  @type ir_node :: Text.t() | Placeholder.t() | Call.t() | AssetRef.t()
+  defmodule Relation do
+    @moduledoc false
+    @enforce_keys [:raw, :segments, :span]
+    defstruct [:raw, :segments, :span]
+
+    @type t :: %__MODULE__{
+            raw: String.t(),
+            segments: [String.t()],
+            span: Favn.SQL.Template.Span.t()
+          }
+  end
+
+  @type ir_node :: Text.t() | Placeholder.t() | Call.t() | AssetRef.t() | Relation.t()
 
   @enforce_keys [:source, :root_kind, :nodes, :span, :requires]
   defstruct [:source, :root_kind, :nodes, :span, :requires]
@@ -213,7 +226,13 @@ defmodule Favn.SQL.Template do
       paren_depth: 0,
       statement_kind: top_level_statement_kind(root_kind),
       scope: scope,
-      root_kind: root_kind
+      root_kind: root_kind,
+      cte_names: MapSet.new(),
+      cte_active?: false,
+      cte_expect_alias?: false,
+      cte_waiting_query?: false,
+      cte_query_depth: nil,
+      cte_ready_for_next?: false
     }
 
     {nodes, end_state} = parse_nodes(String.to_charlist(sql), parser_state, [])
@@ -243,6 +262,9 @@ defmodule Favn.SQL.Template do
   @spec asset_refs(t()) :: [AssetRef.t()]
   def asset_refs(%__MODULE__{nodes: nodes}), do: collect_asset_refs(nodes)
 
+  @spec relation_refs(t()) :: [Relation.t()]
+  def relation_refs(%__MODULE__{nodes: nodes}), do: collect_relation_refs(nodes)
+
   @spec calls(t()) :: [Call.t()]
   def calls(%__MODULE__{nodes: nodes}), do: collect_calls(nodes)
 
@@ -269,6 +291,14 @@ defmodule Favn.SQL.Template do
   defp collect_calls(nodes) do
     Enum.flat_map(nodes, fn
       %Call{} = call -> [call | Enum.flat_map(call.args, &collect_calls(&1.nodes))]
+      _other -> []
+    end)
+  end
+
+  defp collect_relation_refs(nodes) do
+    Enum.flat_map(nodes, fn
+      %Relation{} = relation_ref -> [relation_ref]
+      %Call{args: args} -> Enum.flat_map(args, &collect_relation_refs(&1.nodes))
       _other -> []
     end)
   end
@@ -387,7 +417,17 @@ defmodule Favn.SQL.Template do
     parse_identifier(chars, state, acc)
   end
 
+  defp parse_nodes([?, | rest], state, acc) do
+    next_state =
+      state
+      |> advance_state(~c",")
+      |> maybe_continue_cte_sequence_after_comma()
+
+    parse_nodes(rest, next_state, [text_node(",", state.position, next_state.position) | acc])
+  end
+
   defp parse_nodes([char | rest], state, acc) when char not in [?(, ?), ?;] do
+    state = maybe_close_cte_sequence(state, char)
     {next_state, text} = consume_single_char(char, state)
     parse_nodes(rest, next_state, [text_node(text, state.position, next_state.position) | acc])
   end
@@ -399,6 +439,7 @@ defmodule Favn.SQL.Template do
       |> Map.put(:paren_depth, state.paren_depth + 1)
       |> Map.put(:relation_entry?, false)
       |> Map.put(:join_prefix, nil)
+      |> maybe_enter_cte_query()
 
     parse_nodes(rest, next_state, [text_node("(", state.position, next_state.position) | acc])
   end
@@ -410,6 +451,7 @@ defmodule Favn.SQL.Template do
       |> Map.put(:paren_depth, max(state.paren_depth - 1, 0))
       |> Map.put(:relation_entry?, false)
       |> Map.put(:join_prefix, nil)
+      |> maybe_exit_cte_query(state)
 
     parse_nodes(rest, next_state, [text_node(")", state.position, next_state.position) | acc])
   end
@@ -421,6 +463,12 @@ defmodule Favn.SQL.Template do
       |> Map.put(:relation_entry?, false)
       |> Map.put(:join_prefix, nil)
       |> Map.put(:statement_kind, top_level_statement_kind(state.root_kind))
+      |> Map.put(:cte_names, MapSet.new())
+      |> Map.put(:cte_active?, false)
+      |> Map.put(:cte_expect_alias?, false)
+      |> Map.put(:cte_waiting_query?, false)
+      |> Map.put(:cte_query_depth, nil)
+      |> Map.put(:cte_ready_for_next?, false)
 
     parse_nodes(rest, next_state, [text_node(";", state.position, next_state.position) | acc])
   end
@@ -457,6 +505,7 @@ defmodule Favn.SQL.Template do
 
   defp parse_identifier(chars, state, acc) do
     {word, tail} = read_identifier(chars)
+    state = update_cte_state_for_identifier(state, word)
     context = if state.relation_entry?, do: :relation, else: :expression
 
     cond do
@@ -466,12 +515,38 @@ defmodule Favn.SQL.Template do
       call_candidate?(word, tail, state) ->
         parse_call(word, tail, state, context, acc)
 
+      relation_ref_candidate?(word, tail, state) ->
+        parse_relation_ref(word, tail, state, acc)
+
       true ->
         next_state =
           advance_state(state, String.to_charlist(word))
           |> update_relation_context(String.downcase(word))
 
         parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
+    end
+  end
+
+  defp parse_relation_ref(word, tail, state, acc) do
+    {segments, tail_after_relation} = read_relation_chain(tail, [word])
+
+    if length(segments) in 1..3 do
+      raw = Enum.join(segments, ".")
+
+      next_state =
+        advance_state(state, String.to_charlist(raw))
+        |> Map.put(:relation_entry?, false)
+        |> Map.put(:join_prefix, nil)
+
+      node = build_relation_ref(raw, segments, state, next_state)
+      parse_nodes(tail_after_relation, next_state, [node | acc])
+    else
+      raw = Enum.join(segments, ".")
+      next_state = advance_state(state, String.to_charlist(raw))
+
+      parse_nodes(tail_after_relation, next_state, [
+        text_node(raw, state.position, next_state.position) | acc
+      ])
     end
   end
 
@@ -788,6 +863,10 @@ defmodule Favn.SQL.Template do
     }
   end
 
+  defp build_relation_ref(raw, segments, state, next_state) do
+    %Relation{raw: raw, segments: segments, span: span(state.position, next_state.position)}
+  end
+
   defp classify_placeholder_source(name, _state) when name in @reserved_runtime_inputs,
     do: :runtime
 
@@ -812,6 +891,18 @@ defmodule Favn.SQL.Template do
       state.relation_entry? and
       String.match?(word, ~r/^[A-Z][A-Za-z0-9_]*$/) and
       List.first(tail) == ?.
+  end
+
+  defp relation_ref_candidate?(word, tail, state) do
+    state.statement_kind not in [:update, :merge] and
+      state.relation_entry? and
+      String.match?(word, ~r/^[a-z_][A-Za-z0-9_]*$/) and
+      not cte_name?(state, word) and
+      peek_nonspace_char(tail) != ?(
+  end
+
+  defp cte_name?(state, word) do
+    MapSet.member?(state.cte_names, String.downcase(word))
   end
 
   defp call_candidate?(word, tail, state) do
@@ -1042,6 +1133,20 @@ defmodule Favn.SQL.Template do
 
   defp read_alias_chain(rest, segments), do: {segments, rest}
 
+  defp read_relation_chain([?. | rest], segments) do
+    case rest do
+      [char | _tail]
+      when (char >= ?a and char <= ?z) or (char >= ?A and char <= ?Z) or char == ?_ ->
+        {segment, tail_after_segment} = read_identifier(rest)
+        read_relation_chain(tail_after_segment, segments ++ [segment])
+
+      _other ->
+        {segments, [?. | rest]}
+    end
+  end
+
+  defp read_relation_chain(rest, segments), do: {segments, rest}
+
   defp uppercase_alias_segments?(segments),
     do: Enum.all?(segments, &String.match?(&1, ~r/^[A-Z][A-Za-z0-9_]*$/))
 
@@ -1094,6 +1199,106 @@ defmodule Favn.SQL.Template do
         join_prefix: nil,
         statement_kind: update_statement_kind(state.statement_kind, word, state.paren_depth)
     }
+
+  defp update_cte_state_for_identifier(state, word) do
+    lower_word = String.downcase(word)
+
+    state
+    |> maybe_finalize_cte_after_query_identifier()
+    |> transition_cte_identifier(lower_word)
+  end
+
+  defp maybe_finalize_cte_after_query_identifier(state) do
+    if state.cte_ready_for_next? and state.paren_depth == 0 and not state.cte_expect_alias? do
+      state
+      |> Map.put(:cte_active?, false)
+      |> Map.put(:cte_waiting_query?, false)
+      |> Map.put(:cte_query_depth, nil)
+      |> Map.put(:cte_ready_for_next?, false)
+    else
+      state
+    end
+  end
+
+  defp transition_cte_identifier(%{paren_depth: 0} = state, "with") do
+    state
+    |> Map.put(:cte_names, MapSet.new())
+    |> Map.put(:cte_active?, true)
+    |> Map.put(:cte_expect_alias?, true)
+    |> Map.put(:cte_waiting_query?, false)
+    |> Map.put(:cte_query_depth, nil)
+    |> Map.put(:cte_ready_for_next?, false)
+  end
+
+  defp transition_cte_identifier(
+         %{cte_active?: true, cte_expect_alias?: true, paren_depth: 0} = state,
+         "recursive"
+       ),
+       do: state
+
+  defp transition_cte_identifier(
+         %{cte_active?: true, cte_expect_alias?: true, paren_depth: 0} = state,
+         alias_name
+       ) do
+    state
+    |> Map.put(:cte_names, MapSet.put(state.cte_names, alias_name))
+    |> Map.put(:cte_expect_alias?, false)
+  end
+
+  defp transition_cte_identifier(
+         %{cte_active?: true, cte_expect_alias?: false, paren_depth: 0} = state,
+         "as"
+       ) do
+    Map.put(state, :cte_waiting_query?, true)
+  end
+
+  defp transition_cte_identifier(state, _word), do: state
+
+  defp maybe_enter_cte_query(state) do
+    if state.cte_active? and state.cte_waiting_query? and state.paren_depth > 0 and
+         is_nil(state.cte_query_depth) do
+      state
+      |> Map.put(:cte_query_depth, state.paren_depth)
+      |> Map.put(:cte_waiting_query?, false)
+      |> Map.put(:cte_ready_for_next?, false)
+    else
+      state
+    end
+  end
+
+  defp maybe_exit_cte_query(state, previous_state) do
+    if state.cte_active? and not is_nil(previous_state.cte_query_depth) and
+         previous_state.paren_depth == previous_state.cte_query_depth do
+      state
+      |> Map.put(:cte_query_depth, nil)
+      |> Map.put(:cte_ready_for_next?, true)
+    else
+      state
+    end
+  end
+
+  defp maybe_continue_cte_sequence_after_comma(state) do
+    if state.cte_active? and state.cte_ready_for_next? and state.paren_depth == 0 do
+      state
+      |> Map.put(:cte_expect_alias?, true)
+      |> Map.put(:cte_ready_for_next?, false)
+    else
+      state
+    end
+  end
+
+  defp maybe_close_cte_sequence(state, char) do
+    if state.cte_active? and state.cte_ready_for_next? and state.paren_depth == 0 and
+         char not in [32, 9, 10, 13] do
+      state
+      |> Map.put(:cte_active?, false)
+      |> Map.put(:cte_waiting_query?, false)
+      |> Map.put(:cte_query_depth, nil)
+      |> Map.put(:cte_ready_for_next?, false)
+    else
+      state
+    end
+  end
 
   defp top_level_statement_kind(:query), do: :query
   defp top_level_statement_kind(:expression), do: :expression

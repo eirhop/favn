@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 1 and Phase 2 implemented.
+Phase 1, Phase 2, Phase 3, Phase 4a, Phase 4b, and Phase 5 implemented.
 
 This document defines the target long-term asset authoring direction for Favn and the phased path to implement it safely.
 
@@ -1195,6 +1195,8 @@ Write-plan naming rule for Phase 4a:
 
 ### Phase 5 — relation-based inference
 
+Status: implemented in current codebase.
+
 Deliver:
 
 * controlled dependency inference from SQL relation usage
@@ -1202,6 +1204,21 @@ Deliver:
 * diagnostics and validation
 
 This phase improves ergonomics without changing the core model.
+
+Implemented shape:
+
+* infer dependencies from typed SQL IR relation references
+* merge explicit and inferred dependencies with provenance retained on canonical `%Favn.Asset{}` metadata
+* resolve through the relation ownership index during registry build
+* surface unmanaged relations as warnings
+* fail on ambiguous owners, unresolved direct asset refs, and cross-connection direct asset refs
+* feed merged dependency edges into the existing shared graph/planner/runtime model
+
+Future continuation (not in Phase 5):
+
+* register typed external sources/dependencies so unmanaged warnings can resolve into explicit registered external identities
+* expose public lineage/provenance inspection APIs on top of retained dependency metadata
+* expand CTE inference coverage for nested/subquery-local `with` scopes and lock behavior with focused tests
 
 ### Phase 6 — generated assets / multi-assets
 

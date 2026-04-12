@@ -205,7 +205,9 @@ defmodule Favn do
   placeholder model for SQL inputs, expression and relation SQL macros, direct asset
   references in relation position, and compile-time normalization into a dedicated SQL
   IR. Runtime helper APIs are available through `render/2`, `preview/2`, `explain/2`,
-  and `materialize/2`.
+  and `materialize/2`. SQL relation references discovered from the typed SQL IR are
+  now also used to infer additive asset dependencies through the registry ownership
+  index, with diagnostics retained on canonical asset metadata.
 
   Compact multi-asset style uses `Favn.Assets`:
 

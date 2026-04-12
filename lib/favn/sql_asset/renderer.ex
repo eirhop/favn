@@ -5,7 +5,7 @@ defmodule Favn.SQLAsset.Renderer do
   alias Favn.RelationRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.{ParamBinding, Params, Render, Template}
-  alias Favn.SQL.Template.{AssetRef, Call, Placeholder, Text}
+  alias Favn.SQL.Template.{AssetRef, Call, Placeholder, Relation, Text}
   alias Favn.SQLAsset.{Definition, Error}
   alias Favn.Window.Runtime
 
@@ -145,6 +145,8 @@ defmodule Favn.SQLAsset.Renderer do
   end
 
   defp render_node(%Text{sql: sql}, env), do: {:ok, %Fragment{sql: sql}, env}
+
+  defp render_node(%Relation{raw: raw}, env), do: {:ok, %Fragment{sql: raw}, env}
 
   defp render_node(%Placeholder{source: :runtime, name: name, span: span}, env) do
     case Map.fetch(env.runtime_values, name) do

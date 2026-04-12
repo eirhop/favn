@@ -469,11 +469,12 @@ defmodule Favn.SQLAssetRuntimeTest do
   end
 
   test "render fails hard for cross-connection direct asset refs" do
-    %{cross: cross_asset} = compile_cross_connection_modules!()
+    %{cross: cross_asset, other: other_asset} = compile_cross_connection_modules!()
 
-    assert :ok = Favn.TestSetup.setup_asset_modules([cross_asset], reload_graph?: true)
+    assert {:error, {:dependency_inference_error, {^cross_asset, :asset}, diagnostic}} =
+             Favn.Assets.Registry.build_catalog([other_asset, cross_asset])
 
-    assert {:error, %SQLAssetError{type: :cross_connection_asset_ref}} = Favn.render(cross_asset)
+    assert diagnostic.code == :cross_connection_direct_asset_ref
   end
 
   test "preview, explain, and materialize normalize backend failures" do
@@ -630,7 +631,7 @@ defmodule Favn.SQLAssetRuntimeTest do
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
-    %{cross: cross_asset}
+    %{cross: cross_asset, other: other_asset}
   end
 
   defp compile_nested_deferred_modules! do
