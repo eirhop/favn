@@ -363,7 +363,7 @@ defmodule Favn.SQLAsset do
     do: materialization
 
   defp normalize_relation!(raw_definition, inferred_name) do
-    defaults = Namespace.resolve(raw_definition.module)
+    defaults = Namespace.resolve_relation(raw_definition.module)
 
     relation_attrs =
       case raw_definition.relation do

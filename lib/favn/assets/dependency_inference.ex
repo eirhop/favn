@@ -278,7 +278,7 @@ defmodule Favn.Assets.DependencyInference do
        stage: :registry,
        code: :unresolved_direct_asset_ref,
        message:
-         "direct SQL asset reference #{inspect(input.raw)} for #{inspect(asset.ref)} did not resolve a produced relation",
+         "direct SQL asset reference #{inspect(input.raw)} for #{inspect(asset.ref)} did not resolve a relation",
        asset_ref: asset.ref,
        span: input.span,
        details: %{}

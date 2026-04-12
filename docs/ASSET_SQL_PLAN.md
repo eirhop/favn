@@ -55,7 +55,7 @@ Favn already has a strong canonical runtime model:
 The new SQL direction revealed a cleaner overall design:
 
 * SQL assets feel much more natural as one module per asset
-* produced relation inference becomes straightforward
+* relation inference becomes straightforward
 * module namespace can carry connection/catalog/schema defaults
 * plain SQL can stay plain SQL
 
@@ -89,7 +89,7 @@ SQL bodies should stay as standard SQL as much as possible.
 
 Elixir and SQL assets must compile into the same canonical `%Favn.Asset{}` shape.
 
-### 5. Shared produced relation model
+### 5. Shared relation model
 
 Both Elixir and SQL assets must be able to declare or infer the relation they materialize.
 
@@ -119,15 +119,15 @@ Example:
 
 ```elixir
 defmodule MyWarehouse do
-  use Favn.Namespace, connection: :warehouse
+  use Favn.Namespace, relation: [connection: :warehouse]
 end
 
 defmodule MyWarehouse.Raw do
-  use Favn.Namespace, catalog: "raw"
+  use Favn.Namespace, relation: [catalog: "raw"]
 end
 
 defmodule MyWarehouse.Raw.Sales do
-  use Favn.Namespace, schema: "sales"
+  use Favn.Namespace, relation: [schema: "sales"]
 end
 
 defmodule MyWarehouse.Raw.Sales.Orders do
@@ -135,11 +135,11 @@ defmodule MyWarehouse.Raw.Sales.Orders do
 
   @doc "Extract raw orders from upstream API"
   @meta owner: "data-platform", category: :sales, tags: [:raw]
-  @produces true
+  @relation true
   @window Favn.Window.daily(on: :order_date, lookback: 1)
 
   def asset(ctx) do
-    target = ctx.asset.produces
+    target = ctx.asset.relation
     # => %Favn.RelationRef{
     #      connection: :warehouse,
     #      catalog: "raw",
@@ -156,10 +156,10 @@ defmodule MyWarehouse.Raw.Sales.Customers do
 
   @doc "Extract raw customers from upstream API with asset name override"
   @meta owner: "data-platform", category: :sales, tags: [:raw]
-  @produces name: "crm_customers"
+  @relation name: "crm_customers"
 
   def asset(ctx) do
-    ctx.asset.produces
+    ctx.asset.relation
     :ok
   end
 end
@@ -171,7 +171,7 @@ It keeps Elixir asset authoring aligned with the SQL asset direction:
 
 * one module
 * one obvious asset
-* one obvious produced relation
+* one obvious relation
 * one obvious runtime entrypoint
 * easy IEx usage
 
@@ -182,7 +182,7 @@ A `Favn.Asset` module should compile to one canonical asset.
 Likely rules:
 
 * module defines exactly one public asset function, likely `def asset(ctx)`
-* `@doc`, `@meta`, `@depends`, `@window`, and `@produces` attach to that asset
+* `@doc`, `@meta`, `@depends`, `@window`, and `@relation` attach to that asset
 * module-level defaults such as `connection`, `catalog`, and `schema` may be used for relation ownership
 
 ### Relation defaults inside `Favn.Asset`
@@ -201,26 +201,26 @@ Example:
 
 or equivalent canonical ref shape.
 
-### `@produces`
+### `@relation`
 
-`@produces` should express **physical relation ownership**.
+`@relation` should express **physical relation ownership**.
 
 Example:
 
 ```elixir
-@produces true
+@relation true
 ```
 
 or:
 
 ```elixir
-@produces name: :orders
+@relation name: :orders
 ```
 
 or:
 
 ```elixir
-@produces connection: :warehouse, catalog: :raw, schema: :sales, name: :orders
+@relation connection: :warehouse, catalog: :raw, schema: :sales, name: :orders
 ```
 
 This must remain separate from `@depends`.
@@ -239,7 +239,7 @@ It remains useful when:
 
 ### Required extension to `Favn.Assets`
 
-`Favn.Assets` must be extended with produced relation support so Elixir assets can participate in relation ownership and SQL dependency linking.
+`Favn.Assets` must be extended with relation support so Elixir assets can participate in relation ownership and SQL dependency linking.
 
 Example:
 
@@ -253,15 +253,15 @@ defmodule MyApp.RawAssets do
   schema :sales
 
   @asset true
-  @produces true
+  @relation true
   def orders(ctx) do
-    target = ctx.asset.produces
+    target = ctx.asset.relation
     :ok
   end
 
   @asset true
   @depends :orders
-  @produces name: :stg_orders
+  @relation name: :stg_orders
   def stage_orders(ctx) do
     :ok
   end
@@ -271,10 +271,10 @@ end
 ### Meaning
 
 * `@depends` stays logical dependency
-* `@produces` becomes relation ownership
+* `@relation` becomes relation ownership
 * module defaults reduce repetition
 
-This change is required so SQL assets can later infer dependencies from Elixir-produced warehouse relations.
+This change is required so SQL assets can later infer dependencies from Elixir-warehouse relations.
 
 ---
 
@@ -354,15 +354,15 @@ end
 * one SQL asset module = one asset
 * SQL body remains normal SQL authored through a real `~SQL` sigil
 * metadata uses familiar Favn conventions
-* produced relation is normally inferred from namespace/module path
-* explicit override via `@produces` is allowed
+* relation is normally inferred from namespace/module path
+* explicit override via `@relation` is allowed
 
-### Explicit produced relation override
+### Explicit relation override
 
 Example:
 
 ```elixir
-@produces schema: "mart", name: "fact_orders"
+@relation schema: "mart", name: "fact_orders"
 ```
 
 ### SQL authoring principle
@@ -387,9 +387,9 @@ The SQL text should stay as close to standard SQL as possible so ordinary SQL ed
 
 ---
 
-## Shared produced relation model
+## Shared relation model
 
-A shared produced relation model is the bridge between Elixir assets and SQL assets.
+A shared relation model is the bridge between Elixir assets and SQL assets.
 
 This is required so a SQL asset can read a warehouse relation produced by an Elixir asset, and Favn can understand that relationship.
 
@@ -449,13 +449,13 @@ This keeps relation identifiers SQL-safe and avoids atom leakage.
 
 Extend `%Favn.Asset{}` with:
 
-* `produces :: Favn.RelationRef.t() | nil`
+* `relation :: Favn.RelationRef.t() | nil`
 
 This should be a first-class field on the canonical asset struct, not loose metadata.
 
 ### Why
 
-Produced relation ownership is:
+Relation ownership is:
 
 * structural
 * indexable
@@ -464,9 +464,9 @@ Produced relation ownership is:
 
 ---
 
-## `@produces` semantics
+## `@relation` semantics
 
-`@produces` means:
+`@relation` means:
 
 > this asset owns or materializes this relation
 
@@ -479,27 +479,27 @@ These two concepts must remain separate.
 ### Recommended accepted forms
 
 ```elixir
-@produces true
+@relation true
 ```
 
 ```elixir
-@produces name: :orders
+@relation name: :orders
 ```
 
 ```elixir
-@produces connection: :warehouse, catalog: :raw, schema: :sales, name: :orders
+@relation connection: :warehouse, catalog: :raw, schema: :sales, name: :orders
 ```
 
 ### Inference rules
 
 Recommended behavior:
 
-* no `@produces` means the asset does not declare a produced relation
-* `@produces true` means:
+* no `@relation` means the asset does not declare a relation
+* `@relation true` means:
 
   * use module defaults or namespace defaults
   * infer `name` if possible from function name or module leaf
-* partial `@produces` values merge on top of defaults
+* partial `@relation` values merge on top of defaults
 
 ### Validation rules
 
@@ -514,9 +514,9 @@ Recommended behavior:
 
 ## Runtime context exposure
 
-The resolved produced relation should be passed into runtime context as:
+The resolved relation should be passed into runtime context as:
 
-* `ctx.asset.produces`
+* `ctx.asset.relation`
 
 This should be a `%Favn.RelationRef{}`.
 
@@ -550,7 +550,7 @@ This index is needed for:
 
 ### Uniqueness rule
 
-No two assets may claim the same produced relation.
+No two assets may claim the same relation.
 
 If two assets compile to the same canonical `%Favn.RelationRef{}`, compilation or startup must fail.
 
@@ -577,10 +577,10 @@ defmodule MyWarehouse.Raw.Sales.Orders do
   schema :sales
 
   @doc "Extract raw orders from upstream API"
-  @produces connection: :warehouse catalog: "raw" schema: "sales" name: "orders"
+  @relation connection: :warehouse catalog: "raw" schema: "sales" name: "orders"
 
   def asset(ctx) do
-    target = ctx.asset.produces
+    target = ctx.asset.relation
     :ok
   end
 end
@@ -588,7 +588,7 @@ end
 
 A downstream SQL asset may read `raw.sales.orders`, and Favn can connect that relation back to the Elixir producer asset via the relation ownership index.
 
-This is why `@produces` is required as a first-class concept.
+This is why `@relation` is required as a first-class concept.
 
 ---
 
@@ -668,7 +668,7 @@ Target helper capabilities include:
 * explain query
 * materialize asset output
 * inspect resolved connection
-* inspect resolved produced relation
+* inspect resolved relation
 
 Recommended public APIs:
 
@@ -755,7 +755,7 @@ Relevant shared runtime concepts should include:
 
 * `ctx.window`
 * `ctx.pipeline.anchor_window`
-* `ctx.asset.produces`
+* `ctx.asset.relation`
 
 ---
 
@@ -775,7 +775,7 @@ Plain SQL remains the preferred path.
 
 ### Do not overload `@depends`
 
-Logical dependency and produced relation ownership remain separate concepts.
+Logical dependency and relation ownership remain separate concepts.
 
 ### Do not put scheduling into asset DSLs
 
@@ -809,16 +809,16 @@ This is the intended intuitive warehouse-oriented structure.
 
 ## Phased implementation plan
 
-### Phase 1 — shared produced relation foundation
+### Phase 1 — shared relation foundation
 
 Deliver:
 
 * [x] `Favn.RelationRef`
-* [x] `%Favn.Asset{produces: ...}`
+* [x] `%Favn.Asset{relation: ...}`
 * [x] namespace config inheritance
 * [x] `Favn.Assets` support for:
-  * `@produces`
-  * `ctx.asset.produces`
+  * `@relation`
+  * `ctx.asset.relation`
 * [x] validation and normalization
 * [x] relation ownership uniqueness checks
 * [x] relation ownership index
@@ -837,7 +837,7 @@ Deliver:
   * [x] `@meta`
   * [x] `@depends`
   * [x] `@window`
-  * [x] `@produces`
+  * [x] `@relation`
   * [x] relation defaults through `Favn.Namespace`
 * [x] compilation into one canonical `%Favn.Asset{}`
 
@@ -852,7 +852,7 @@ Implemented semantics:
 
   * `Some.Module` (only when `Some.Module` uses `Favn.Asset`, normalized to `{Some.Module, :asset}`)
   * `{Some.Module, :asset_name}`
-* `@produces true` relation-name inference for single-asset modules uses module leaf `Macro.underscore/1`
+* `@relation true` relation-name inference for single-asset modules uses module leaf `Macro.underscore/1`
 
   * `MyWarehouse.Raw.Sales.Orders` -> `"orders"`
   * `MyWarehouse.Gold.Sales.FctOrders` -> `"fct_orders"`
@@ -871,8 +871,8 @@ Deliver:
   * [x] `@depends`
   * [x] `@window`
   * [x] `@materialized`
-  * [x] optional `@produces` override
-* [x] produced relation inference from namespace/module path
+  * [x] optional `@relation` override
+* [x] relation inference from namespace/module path
 * [x] compilation into one canonical `%Favn.Asset{}`
 
 This phase establishes the SQL asset authoring model.
@@ -894,8 +894,8 @@ Implemented semantics:
   * `:view`
   * `:table`
   * `{:incremental, strategy: :append | :replace | :delete_insert | :merge, unique_key: [...]}`
-* SQL assets infer their produced relation from `Favn.Namespace` defaults plus module leaf `Macro.underscore/1`
-* SQL assets require a resolved produced relation with a connection name
+* SQL assets infer their relation from `Favn.Namespace` defaults plus module leaf `Macro.underscore/1`
+* SQL assets require a resolved relation with a connection name
 * `~SQL` stays plain SQL and currently rejects interpolation/modifiers in phase 3
 * SQL modules expose the existing asset compiler seam via `__favn_asset_compiler__/0`
 * generated `asset/1` currently returns `{:error, :sql_asset_runtime_not_implemented}` until phase 4 runtime execution lands
@@ -1081,7 +1081,7 @@ Phase 3 validates:
 * `defsql` call arity matches the declared reusable SQL definition
 * duplicate visible imported/local reusable SQL definitions are compile-time errors
 * cyclic reusable SQL definitions are compile-time errors
-* compiled asset references must resolve to single-asset modules with produced relations
+* compiled asset references must resolve to single-asset modules with relations
 * unresolved asset references stay as deferred symbolic refs in the SQL IR
 * obvious relation-only positions such as `from` / `join` do not receive known expression macros
 * obvious expression positions do not receive known relation macros
@@ -1150,7 +1150,7 @@ Deliver:
 
 * SQL execution through shared runtime
 * render/preview/explain/materialize helper APIs
-* inspectable resolved connection and produced relation
+* inspectable resolved connection and relation
 * strict render result struct with final SQL, canonical bound params, and diagnostics metadata
 * pure `render/2` semantics with no backend calls or session creation
 * backend-neutral positional bindings from renderer, with adapter-side placeholder rewriting when needed
@@ -1241,12 +1241,12 @@ Resolved in Phase 2.
 * canonical internal ref remains `{module, :asset}`
 * public convenience module lookup is supported by `Favn.get_asset(module)` for single-asset modules
 
-### 2. Produced relation name inference
+### 2. Relation name inference
 
 Resolved in Phase 2.
 
 * default inference uses module leaf `Macro.underscore/1`
-* custom naming should be explicit via `@produces name: ...` when needed
+* custom naming should be explicit via `@relation name: ...` when needed
 
 ### 3. `Favn.Asset` function naming
 
@@ -1271,8 +1271,8 @@ Adopt the following target direction for Favn:
 * `Favn.Asset` as the preferred single-module Elixir asset DSL
 * `Favn.SQLAsset` as the preferred single-module SQL asset DSL
 * `Favn.Namespace` for inherited configuration
-* shared produced relation model via `Favn.RelationRef`
-* extension of `Favn.Assets` with `@produces` and relation defaults
+* shared relation model via `Favn.RelationRef`
+* extension of `Favn.Assets` with `@relation` and relation defaults
 * relation ownership index as the bridge between Elixir and SQL assets
 * explicit dependencies first, inferred dependencies later
 * plain SQL bodies, not custom SQL templating

@@ -307,10 +307,10 @@ defmodule Favn.AssetsTest do
       "test/dynamic_assets_test.exs"
     )
 
-    assert {:ok, [%Asset{relation: %RelationRef{} = produces}]} =
+    assert {:ok, [%Asset{relation: %RelationRef{} = relation}]} =
              Compiler.compile_module_assets(assets)
 
-    assert produces == %RelationRef{
+    assert relation == %RelationRef{
              connection: :warehouse,
              catalog: "raw",
              schema: "sales",
@@ -318,7 +318,7 @@ defmodule Favn.AssetsTest do
            }
   end
 
-  test "produced relation inheritance is compile-order independent" do
+  test "relation inheritance is compile-order independent" do
     root = Module.concat(__MODULE__, "OrderRoot#{System.unique_integer([:positive])}")
     raw = Module.concat(root, Raw)
     sales = Module.concat(raw, Sales)
@@ -352,10 +352,10 @@ defmodule Favn.AssetsTest do
       "test/dynamic_assets_test.exs"
     )
 
-    assert {:ok, [%Asset{relation: %RelationRef{} = produces}]} =
+    assert {:ok, [%Asset{relation: %RelationRef{} = relation}]} =
              Compiler.compile_module_assets(assets)
 
-    assert produces == %RelationRef{
+    assert relation == %RelationRef{
              connection: :warehouse,
              catalog: "raw",
              schema: "sales",
@@ -513,7 +513,7 @@ defmodule Favn.AssetsTest do
 
       @asset true
       @relation :bad
-      def bad_produces(_ctx), do: :ok
+      def bad_relation(_ctx), do: :ok
       """)
     end
 
@@ -524,7 +524,7 @@ defmodule Favn.AssetsTest do
       @asset true
       @relation true
       @relation name: :orders
-      def duplicate_produces(_ctx), do: :ok
+      def duplicate_relation(_ctx), do: :ok
       """)
     end
 
@@ -713,7 +713,7 @@ defmodule Favn.AssetsTest do
     assert [%Favn.Asset{name: :compiled_sql_asset, module: ^module_name}] = catalog.assets
   end
 
-  test "asset compiler seam rejects invalid canonical produced relation shapes" do
+  test "asset compiler seam rejects invalid canonical relation shapes" do
     module_name = Module.concat(__MODULE__, "BadCompiler#{System.unique_integer([:positive])}")
 
     source = """
@@ -730,7 +730,7 @@ defmodule Favn.AssetsTest do
              Compiler.compile_module_assets(module_name)
   end
 
-  test "supports string-key produces maps without name inference collisions" do
+  test "supports string-key relation maps without name inference collisions" do
     module_name = Module.concat(__MODULE__, "StringKeys#{System.unique_integer([:positive])}")
 
     Code.compile_string(
@@ -746,11 +746,11 @@ defmodule Favn.AssetsTest do
       "test/dynamic_assets_test.exs"
     )
 
-    assert {:ok, [%Asset{relation: %RelationRef{name: "orders"} = produces}]} =
+    assert {:ok, [%Asset{relation: %RelationRef{name: "orders"} = relation}]} =
              Compiler.compile_module_assets(module_name)
 
-    assert produces.catalog == nil
-    assert produces.schema == nil
+    assert relation.catalog == nil
+    assert relation.schema == nil
   end
 
   defp compile_test_module(body) do

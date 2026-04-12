@@ -28,7 +28,7 @@ defmodule Favn.SQLAsset.Renderer do
        %Render{
          asset_ref: definition.asset.ref,
          connection: definition.asset.relation.connection,
-         produced_relation: definition.asset.relation,
+         relation: definition.asset.relation,
          materialization: definition.materialization,
          sql: fragment.sql,
          params: normalized_params,
@@ -276,7 +276,7 @@ defmodule Favn.SQLAsset.Renderer do
   end
 
   defp resolve_asset_ref(
-         %AssetRef{resolution: :resolved, produced_relation: %RelationRef{} = relation_ref} =
+         %AssetRef{resolution: :resolved, relation: %RelationRef{} = relation_ref} =
            asset_ref,
          env
        ) do
@@ -311,7 +311,7 @@ defmodule Favn.SQLAsset.Renderer do
           {:ok, [%{relation: nil}]} ->
             {:error,
              %Error{
-               type: :invalid_produced_relation,
+               type: :invalid_relation,
                phase: :render,
                asset_ref: asset_ref,
                span: span,
@@ -325,7 +325,7 @@ defmodule Favn.SQLAsset.Renderer do
           {:ok, _many} ->
             {:error,
              %Error{
-               type: :invalid_produced_relation,
+               type: :invalid_relation,
                phase: :render,
                asset_ref: asset_ref,
                span: span,

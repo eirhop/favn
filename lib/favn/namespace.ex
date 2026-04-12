@@ -33,10 +33,12 @@ defmodule Favn.Namespace do
   end
 
   @doc """
-  Resolve namespace config for a module by merging ancestor namespaces.
+  Resolve relation defaults for a module by merging ancestor namespaces.
+
+  Returns a map with `:connection`, `:catalog`, and `:schema` keys for relation construction.
   """
-  @spec resolve(module()) :: map()
-  def resolve(module) when is_atom(module) do
+  @spec resolve_relation(module()) :: map()
+  def resolve_relation(module) when is_atom(module) do
     module
     |> ancestors()
     |> Enum.reduce(%{}, fn ancestor, acc ->
@@ -45,16 +47,6 @@ defmodule Favn.Namespace do
         config -> Map.merge(acc, config)
       end
     end)
-  end
-
-  @doc """
-  Resolve relation defaults for a module by merging ancestor namespaces.
-
-  Returns a map with `:connection`, `:catalog`, and `:schema` keys for relation construction.
-  """
-  @spec resolve_relation(module()) :: map()
-  def resolve_relation(module) when is_atom(module) do
-    resolve(module)
   end
 
   @doc false

@@ -41,7 +41,7 @@ defmodule Favn do
     * documentation
     * metadata (`owner`, `category`, `tags`)
     * dependency references
-    * optional produced relation ownership
+    * optional relation ownership
     * source file and line
 
   This keeps the workflow definition close to the business logic while still allowing Favn to

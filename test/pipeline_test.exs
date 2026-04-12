@@ -276,7 +276,7 @@ defmodule Favn.PipelineTest do
     assert ctx.pipeline.trigger == %{kind: :manual, requested_by: :api}
   end
 
-  test "run_asset/2 projects produced relation ownership to ctx.asset.relation" do
+  test "run_asset/2 projects relation ownership to ctx.asset.relation" do
     module_name = Module.concat(__MODULE__, "ProducesAssets#{System.unique_integer([:positive])}")
 
     Code.compile_string(

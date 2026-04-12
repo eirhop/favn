@@ -17,7 +17,7 @@ defmodule Favn.SQLAsset.RelationUsage do
       end)
       |> Map.new()
 
-    root_defaults = Namespace.resolve(module)
+    root_defaults = Namespace.resolve_relation(module)
 
     {inputs, _visited} =
       collect_template(module, template, definition_catalog, %{}, root_defaults)
@@ -32,7 +32,7 @@ defmodule Favn.SQLAsset.RelationUsage do
          visited,
          root_defaults
        ) do
-    defaults = Namespace.resolve(module)
+    defaults = Namespace.resolve_relation(module)
     connection = Map.get(defaults, :connection) || Map.get(root_defaults, :connection)
     catalog = Map.get(defaults, :catalog) || Map.get(root_defaults, :catalog)
     schema = Map.get(defaults, :schema) || Map.get(root_defaults, :schema)
@@ -127,7 +127,7 @@ defmodule Favn.SQLAsset.RelationUsage do
     %RelationInput{
       kind: :direct_asset_ref,
       raw: inspect(asset_ref.module),
-      relation_ref: asset_ref.produced_relation,
+      relation_ref: asset_ref.relation,
       asset_ref: asset_ref.asset_ref,
       resolution: asset_ref.resolution,
       span: asset_ref.span

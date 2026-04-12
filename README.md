@@ -24,7 +24,7 @@
 - Plain Elixir functions become assets with metadata and dependencies.
 - Preferred single-asset authoring uses one module with `use Favn.Asset` and `def asset(ctx)`.
 - SQL assets can be authored as one module with `use Favn.SQLAsset`, `query do ... end`, and a real `~SQL""" ... """` sigil.
-- Assets can optionally own produced warehouse relations through `@produces`.
+- Assets can optionally own warehouse relations through `@relation`.
 - Dependency graphs are discovered automatically from asset definitions.
 - Runs are planned deterministically and executed in dependency order.
 - Runtime state and run events are exposed through a small public API.
@@ -35,14 +35,14 @@ Phase 2 introduces `Favn.Asset` as the preferred one-module-per-asset DSL:
 
 ```elixir
 defmodule MyWarehouse.Raw.Sales.Orders do
-  use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+  use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
   use Favn.Asset
 
   @doc "Extract raw orders from upstream API"
   @meta owner: "data-platform", category: :sales, tags: [:raw]
-  @produces true
+  @relation true
   def asset(ctx) do
-    _target = ctx.asset.produces
+    _target = ctx.asset.relation
     :ok
   end
 end
@@ -54,7 +54,7 @@ end
 - `@meta`
 - `@depends` (module shorthand `@depends MyApp.UpstreamAsset` only for single-asset modules; use tuple refs for multi-asset modules)
 - `@window`
-- `@produces`
+- `@relation`
 
 Single-asset modules compile to one canonical `%Favn.Asset{}` with ref `{Module, :asset}`.
 
@@ -64,7 +64,7 @@ Phase 3 introduces `Favn.SQLAsset` as the preferred one-module-per-asset SQL DSL
 
 ```elixir
 defmodule MyWarehouse.Gold.Sales.FctOrders do
-  use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+  use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
   use Favn.SQLAsset
 
   @doc "Gold fact table for orders"
@@ -93,9 +93,9 @@ end
 - `@depends`
 - `@window`
 - `@materialized`
-- `@produces`
+- `@relation`
 
-SQL assets compile into the same canonical `%Favn.Asset{}` shape as Elixir assets, including ref `{Module, :asset}` and inferred produced relation ownership.
+SQL assets compile into the same canonical `%Favn.Asset{}` shape as Elixir assets, including ref `{Module, :asset}` and inferred relation ownership.
 
 Phase 4a runtime integration now includes:
 
@@ -192,11 +192,11 @@ defmodule MyApp.SalesAssets do
 end
 ```
 
-Produced relation ownership can be declared separately from logical dependencies:
+Relation ownership can be declared separately from logical dependencies:
 
 ```elixir
 defmodule MyApp.Warehouse.Raw.Sales do
-  use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+  use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
 end
 
 defmodule MyApp.Warehouse.Raw.Sales.Assets do
@@ -204,9 +204,9 @@ defmodule MyApp.Warehouse.Raw.Sales.Assets do
   use Favn.Assets
 
   @asset true
-  @produces true
+  @relation true
   def orders(ctx) do
-    ctx.asset.produces
+    ctx.asset.relation
     :ok
   end
 end
@@ -413,7 +413,7 @@ def daily_sales(ctx), do: :ok
 Runtime context now includes:
 
 - `ctx.window` (concrete execution window for the current node)
-- `ctx.asset.ref` and `ctx.asset.produces`
+- `ctx.asset.ref` and `ctx.asset.relation`
 - `ctx.pipeline.anchor_window` (run-level requested window intent)
 - `ctx.pipeline.run_kind` (`:pipeline` or `:pipeline_backfill`)
 - `ctx.pipeline.resolved_refs` (deterministic resolved target refs snapshot)

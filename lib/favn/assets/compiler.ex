@@ -78,7 +78,7 @@ defmodule Favn.Assets.Compiler do
       {:ok, assets} ->
         try do
           validate_single_asset_depends_shorthand!(module)
-          resolve_produced_relations(assets, module)
+          resolve_relations(assets, module)
         rescue
           error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
         end
@@ -134,8 +134,8 @@ defmodule Favn.Assets.Compiler do
     end
   end
 
-  defp resolve_produced_relations(assets, module) do
-    defaults = Namespace.resolve(module)
+  defp resolve_relations(assets, module) do
+    defaults = Namespace.resolve_relation(module)
 
     try do
       assets = Enum.map(assets, &resolve_relation(&1, defaults))

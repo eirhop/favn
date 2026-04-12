@@ -80,7 +80,7 @@ defmodule Favn.SQLAssetTest do
     assert definition.materialization == asset.materialization
   end
 
-  test "supports explicit depends and produces overrides for SQL assets" do
+  test "supports explicit depends and relation overrides for SQL assets" do
     upstream = Module.concat(__MODULE__, "Upstream#{System.unique_integer([:positive])}")
     asset_module = Module.concat(__MODULE__, "SqlDepends#{System.unique_integer([:positive])}")
 
@@ -306,7 +306,7 @@ defmodule Favn.SQLAssetTest do
     assert message =~ "single-asset module"
   end
 
-  test "rejects multiple produces attributes with a controlled compile error" do
+  test "rejects multiple relation attributes with a controlled compile error" do
     assert_raise CompileError, ~r/multiple @relation attributes are not allowed/, fn ->
       compile_sql_asset_module("""
       use Favn.Namespace, relation: [connection: :warehouse]

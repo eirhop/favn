@@ -27,28 +27,8 @@ defmodule Favn.Source do
     quote do
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
-      Module.register_attribute(__MODULE__, :favn_source_generating, persist: false)
 
-      @on_definition Favn.Source
       @before_compile Favn.Source
-    end
-  end
-
-  @doc false
-  def __on_definition__(env, kind, name, args, _guards, _body) do
-    arity = length(args || [])
-
-    generated_definition? =
-      Module.get_attribute(env.module, :favn_source_generating) == true and
-        kind == :def and
-        name in [:__favn_assets__, :__favn_assets_raw__, :__favn_single_asset__, :__favn_source__]
-
-    if kind in [:def, :defp] and not generated_definition? do
-      compile_error!(
-        env.file,
-        env.line,
-        "Favn.Source modules are declarative and cannot define #{kind} #{name}/#{arity}"
-      )
     end
   end
 
@@ -66,6 +46,7 @@ defmodule Favn.Source do
       )
     end
 
+    validate_no_user_definitions!(env)
     validate_relation_attr!(relation, env)
 
     raw_asset = %{
@@ -101,9 +82,7 @@ defmodule Favn.Source do
       diagnostics: []
     }
 
-    ensure_valid_asset!(asset, env)
-
-    Module.put_attribute(env.module, :favn_source_generating, true)
+    asset = ensure_valid_asset!(asset, env)
 
     quote do
       @doc false
@@ -144,9 +123,32 @@ defmodule Favn.Source do
     )
   end
 
+  defp validate_no_user_definitions!(env) do
+    definitions =
+      env.module
+      |> Module.definitions_in()
+      |> Enum.reject(&allowed_generated_definition?/1)
+
+    case definitions do
+      [] ->
+        :ok
+
+      definitions ->
+        formatted = Enum.map_join(definitions, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
+
+        compile_error!(
+          env.file,
+          env.line,
+          "Favn.Source modules are declarative and cannot define functions; found: #{formatted}"
+        )
+    end
+  end
+
+  defp allowed_generated_definition?({:__favn_namespace_config__, 0}), do: true
+  defp allowed_generated_definition?(_definition), do: false
+
   defp ensure_valid_asset!(%Asset{} = asset, env) do
-    _ = Asset.validate!(asset)
-    :ok
+    Asset.validate!(asset)
   rescue
     error in ArgumentError -> compile_error!(env.file, env.line, error.message)
   end

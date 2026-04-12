@@ -127,13 +127,13 @@ defmodule Favn.SQL.Template do
 
   defmodule AssetRef do
     @moduledoc false
-    @enforce_keys [:module, :asset_ref, :produced_relation, :resolution, :span]
-    defstruct [:module, :asset_ref, :produced_relation, :resolution, :span]
+    @enforce_keys [:module, :asset_ref, :relation, :resolution, :span]
+    defstruct [:module, :asset_ref, :relation, :resolution, :span]
 
     @type t :: %__MODULE__{
             module: module(),
             asset_ref: {module(), :asset},
-            produced_relation: RelationRef.t() | nil,
+            relation: RelationRef.t() | nil,
             resolution: :resolved | :deferred,
             span: Favn.SQL.Template.Span.t()
           }
@@ -851,13 +851,13 @@ defmodule Favn.SQL.Template do
   end
 
   defp build_asset_ref(module, state, next_state) do
-    {resolution, produced_relation} =
+    {resolution, relation} =
       resolve_asset_reference(module, state.file, state.position.line, state.module)
 
     %AssetRef{
       module: module,
       asset_ref: {module, :asset},
-      produced_relation: produced_relation,
+      relation: relation,
       resolution: resolution,
       span: span(state.position, next_state.position)
     }
