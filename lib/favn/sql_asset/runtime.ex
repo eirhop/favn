@@ -4,8 +4,19 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.Asset
   alias Favn.Run.Context
   alias Favn.SQL
-  alias Favn.SQL.{Explain, MaterializationPlanner, MaterializationResult, Params, Preview, Render}
+
+  alias Favn.SQL.{
+    Explain,
+    IncrementalWindow,
+    MaterializationPlanner,
+    MaterializationResult,
+    Params,
+    Preview,
+    Render
+  }
+
   alias Favn.SQLAsset.{Compiler, Definition, Error, Renderer}
+  alias Favn.Window.Runtime
 
   @type opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
 
@@ -55,7 +66,7 @@ defmodule Favn.SQLAsset.Runtime do
   @spec materialize(Asset.t(), opts()) :: {:ok, MaterializationResult.t()} | {:error, Error.t()}
   def materialize(%Asset{type: :sql, module: module} = _asset, opts) when is_list(opts) do
     with {:ok, %Definition{} = definition} <- fetch_definition(module),
-         {:ok, %Render{} = rendered} <- Renderer.render(definition, opts),
+         {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
          {:ok, write_plan, result} <- materialize_render(definition, rendered, opts) do
       {:ok, %MaterializationResult{render: rendered, write_plan: write_plan, result: result}}
     end
@@ -149,6 +160,53 @@ defmodule Favn.SQLAsset.Runtime do
       end
     end)
     |> map_sql_result_error(rendered.asset_ref, :materialize)
+  end
+
+  defp render_for_materialize(
+         %Definition{materialization: {:incremental, _opts}} = definition,
+         opts
+       ) do
+    with {:ok, %Render{} = initial_render} <- Renderer.render(definition, opts),
+         {:ok, %Runtime{} = runtime_window} <- runtime_window(initial_render, definition),
+         {:ok, %IncrementalWindow{} = effective_window} <-
+           IncrementalWindow.resolve(runtime_window, definition.asset.window_spec),
+         {:ok, %Runtime{} = effective_runtime} <- IncrementalWindow.to_runtime(effective_window),
+         {:ok, %Render{} = widened_render} <-
+           Renderer.render(definition, put_runtime_window(opts, effective_runtime)) do
+      {:ok, widened_render}
+    end
+  end
+
+  defp render_for_materialize(%Definition{} = definition, opts),
+    do: Renderer.render(definition, opts)
+
+  defp runtime_window(%Render{} = render, %Definition{} = definition) do
+    case render.runtime do
+      %Runtime{} = window ->
+        {:ok, window}
+
+      _ ->
+        {:error,
+         %Error{
+           type: :materialization_planning_failed,
+           phase: :materialize,
+           asset_ref: render.asset_ref,
+           message: "incremental materialization requires runtime.window",
+           details: %{materialization: definition.materialization}
+         }}
+    end
+  end
+
+  defp put_runtime_window(opts, %Runtime{} = runtime_window) do
+    runtime_map =
+      opts
+      |> Keyword.get(:runtime, %{})
+      |> case do
+        map when is_map(map) -> map
+        _ -> %{}
+      end
+
+    Keyword.put(opts, :runtime, Map.put(runtime_map, :window, runtime_window))
   end
 
   defp with_session(connection, opts, fun) when is_function(fun, 1) do

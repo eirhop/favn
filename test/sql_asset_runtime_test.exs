@@ -389,6 +389,8 @@ defmodule Favn.SQLAssetRuntimeTest do
     assert output.write_plan.transactional?
     assert output.write_plan.mode == :incremental
     assert output.write_plan.window_column == "event_at"
+    assert output.write_plan.effective_window.start_at == ~U[2025-01-02 00:00:00Z]
+    assert output.write_plan.effective_window.end_at == ~U[2025-01-04 00:00:00Z]
 
     runtime_events = events()
     assert {:tx_begin} in runtime_events
@@ -402,6 +404,35 @@ defmodule Favn.SQLAssetRuntimeTest do
     assert Enum.any?(runtime_events, fn
              {:execute, sql, _params} -> String.starts_with?(sql, "INSERT INTO")
              _ -> false
+           end)
+  end
+
+  test "incremental lookback widens query input window params" do
+    %{asset: asset_module} = compile_incremental_runtime_modules!(:append)
+
+    Application.put_env(:favn, :sql_asset_runtime_target_exists, true)
+
+    assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+
+    assert {:ok, output} =
+             Favn.materialize(asset_module,
+               params: %{country: "NO"},
+               runtime: %{
+                 window: runtime_window(~U[2025-01-03 00:00:00Z], ~U[2025-01-04 00:00:00Z])
+               }
+             )
+
+    assert output.write_plan.effective_window.start_at == ~U[2025-01-02 00:00:00Z]
+    assert output.write_plan.effective_window.end_at == ~U[2025-01-04 00:00:00Z]
+
+    assert Enum.any?(events(), fn
+             {:execute, sql, [window_start, window_end, "NO"]} ->
+               String.starts_with?(sql, "INSERT INTO") and
+                 window_start == ~U[2025-01-02 00:00:00Z] and
+                 window_end == ~U[2025-01-04 00:00:00Z]
+
+             _ ->
+               false
            end)
   end
 

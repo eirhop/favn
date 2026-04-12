@@ -33,6 +33,30 @@ defmodule Favn.SQL.IncrementalWindow do
     end
   end
 
+  @spec from_runtime(Runtime.t(), Spec.t()) :: t()
+  def from_runtime(%Runtime{} = runtime, %Spec{} = spec) do
+    %__MODULE__{
+      kind: spec.kind,
+      start_at: runtime.start_at,
+      end_at: runtime.end_at,
+      timezone: spec.timezone,
+      lookback: spec.lookback,
+      requested_window: runtime,
+      widened?: spec.lookback > 0
+    }
+  end
+
+  @spec to_runtime(t()) :: {:ok, Runtime.t()} | {:error, term()}
+  def to_runtime(%__MODULE__{} = window) do
+    Runtime.new(
+      window.kind,
+      window.start_at,
+      window.end_at,
+      window.requested_window.anchor_key,
+      timezone: window.timezone
+    )
+  end
+
   defp validate_runtime(%Runtime{kind: kind, timezone: timezone}, %Spec{} = spec)
        when kind == spec.kind and timezone == spec.timezone,
        do: :ok

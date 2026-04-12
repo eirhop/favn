@@ -320,7 +320,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
     with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
       Enum.reduce_while(statements, {:ok, 0}, fn statement, {:ok, count} ->
-        case execute(conn, statement, params: params) do
+        statement_params = statement_params(plan, statement, params)
+
+        case execute(conn, statement, params: statement_params) do
           {:ok, _} -> {:cont, {:ok, count + 1}}
           {:error, error} -> {:halt, {:error, error}}
         end
@@ -515,6 +517,20 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp incremental_statements(_target, %WritePlan{strategy: strategy}) do
     raise ArgumentError, "unsupported incremental strategy for DuckDB: #{inspect(strategy)}"
   end
+
+  defp statement_params(
+         %WritePlan{materialization: :incremental, strategy: :delete_insert, mode: :incremental},
+         statement,
+         params
+       ) do
+    if IO.iodata_to_binary(statement) |> String.starts_with?("DELETE FROM") do
+      []
+    else
+      params
+    end
+  end
+
+  defp statement_params(_plan, _statement, params), do: params
 
   defp normalize_window_column(options) do
     options

@@ -26,8 +26,8 @@ defmodule Favn.SQL.MaterializationPlanner do
     strategy = Keyword.fetch!(opts, :strategy)
 
     with {:ok, %Runtime{} = runtime_window} <- runtime_window(definition, render),
-         {:ok, %IncrementalWindow{} = effective_window} <-
-           IncrementalWindow.resolve(runtime_window, definition.asset.window_spec),
+         %IncrementalWindow{} = effective_window <-
+           IncrementalWindow.from_runtime(runtime_window, definition.asset.window_spec),
          {:ok, target_exists?} <- target_exists?(session, render),
          {:ok, _} <- validate_strategy_shape(strategy, opts, session, render),
          {:ok, _} <-
