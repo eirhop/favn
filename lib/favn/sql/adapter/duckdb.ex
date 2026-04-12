@@ -430,6 +430,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
     end
   end
 
+  defp create_view_statement(target, %WritePlan{replace_existing?: true, select_sql: sql}),
+    do: ["CREATE OR REPLACE VIEW ", target, " AS ", sql]
+
   defp create_view_statement(target, %WritePlan{replace?: true, select_sql: sql}),
     do: ["CREATE OR REPLACE VIEW ", target, " AS ", sql]
 
@@ -438,6 +441,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   defp create_view_statement(target, %WritePlan{select_sql: sql}),
     do: ["CREATE VIEW ", target, " AS ", sql]
+
+  defp create_table_statement(target, %WritePlan{replace_existing?: true, select_sql: sql}),
+    do: ["CREATE OR REPLACE TABLE ", target, " AS ", sql]
 
   defp create_table_statement(target, %WritePlan{replace?: true, select_sql: sql}),
     do: ["CREATE OR REPLACE TABLE ", target, " AS ", sql]

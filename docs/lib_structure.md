@@ -62,6 +62,7 @@ lib/
     │   ├── column.ex
     │   ├── definition.ex
     │   ├── error.ex
+    │   ├── render.ex
     │   ├── relation.ex
     │   ├── relation_ref.ex
     │   ├── result.ex
@@ -75,7 +76,10 @@ lib/
     ├── sql_asset/
     │   ├── compiler.ex
     │   ├── definition.ex
+    │   ├── error.ex
+    │   ├── input.ex
     │   ├── materialization.ex
+    │   ├── renderer.ex
     │   └── runtime.ex
     ├── scheduler/
     │   ├── cron.ex

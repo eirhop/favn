@@ -22,6 +22,7 @@ test/
 ├── scheduler_cron_test.exs
 ├── scheduler_test.exs
 ├── sql_asset_test.exs
+├── sql_asset_runtime_test.exs
 ├── sql_template_asset_ref_test.exs
 ├── sql_template_ir_test.exs
 ├── sql_dsl_test.exs

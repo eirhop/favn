@@ -96,7 +96,16 @@ end
 - `@produces`
 
 SQL assets compile into the same canonical `%Favn.Asset{}` shape as Elixir assets, including ref `{Module, :asset}` and inferred produced relation ownership.
-Phase 3 is authoring/catalog integration only. SQL runtime execution and helper APIs land in a later phase, so direct execution currently returns an explicit not-yet-implemented error.
+
+Phase 4a runtime integration now includes:
+
+- `Favn.render/2`
+- `Favn.preview/2`
+- `Favn.explain/2`
+- `Favn.materialize/2`
+
+`render/2` is backend/session free and emits canonical rendered SQL plus backend-neutral positional bindings.
+`preview/2` returns both canonical rendered SQL (`preview.render.sql`) and the actual executed preview statement (`preview.statement`).
 
 ## SQL DSL direction
 
@@ -128,7 +137,8 @@ Not supported yet for direct SQL asset refs:
 
 Planned next:
 
-- Phase 4 runtime execution and helper APIs on top of that IR
+- dedicated incremental SQL materialization phase (`:append` / `:delete_insert` first)
+- relation-based dependency inference in a later separate phase
 
 Favn explicitly avoids fake sigils, Jinja-style templating, arbitrary Elixir interpolation inside SQL, and string stitching as the normal authoring workflow.
 

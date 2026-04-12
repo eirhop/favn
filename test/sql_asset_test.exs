@@ -152,7 +152,7 @@ defmodule Favn.SQLAssetTest do
     assert asset.ref == {asset_module, :asset}
   end
 
-  test "runtime execution returns an explicit not-implemented error for SQL assets" do
+  test "runtime execution returns explicit unsupported error for incremental SQL assets in Phase 4a" do
     asset_module = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
 
     Code.compile_string(
@@ -161,7 +161,7 @@ defmodule Favn.SQLAssetTest do
         use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
         use Favn.SQLAsset
 
-        @materialized :table
+        @materialized {:incremental, strategy: :append}
 
         query do
           ~SQL[select 1 as id]
@@ -178,8 +178,8 @@ defmodule Favn.SQLAssetTest do
 
     assert run.status == :error
 
-    assert run.asset_results[{asset_module, :asset}].error.reason ==
-             :sql_asset_runtime_not_implemented
+    assert %Favn.SQLAsset.Error{type: :unsupported_materialization} =
+             run.asset_results[{asset_module, :asset}].error.reason
   end
 
   test "rejects missing materialized attribute" do

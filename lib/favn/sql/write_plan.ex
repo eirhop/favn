@@ -10,10 +10,15 @@ defmodule Favn.SQL.WritePlan do
 
   @enforce_keys [:materialization, :target, :select_sql]
   defstruct [
+    :asset_ref,
+    :connection,
     :materialization,
     :strategy,
     :target,
+    :query,
     :select_sql,
+    :params,
+    :replace_existing?,
     :replace?,
     :if_not_exists?,
     :transactional?,
@@ -27,10 +32,15 @@ defmodule Favn.SQL.WritePlan do
   ]
 
   @type t :: %__MODULE__{
+          asset_ref: Favn.asset_ref() | nil,
+          connection: atom() | nil,
           materialization: materialization(),
           strategy: strategy() | nil,
           target: Relation.t(),
+          query: term() | nil,
           select_sql: iodata(),
+          params: term() | nil,
+          replace_existing?: boolean() | nil,
           replace?: boolean() | nil,
           if_not_exists?: boolean() | nil,
           transactional?: boolean() | nil,
