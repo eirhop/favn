@@ -628,8 +628,8 @@ defmodule Favn do
   alias Favn.Pipeline.Resolver
   alias Favn.Runtime.Engine
   alias Favn.Runtime.Events
-  alias Favn.SQLAsset.Compiler, as: SQLAssetCompiler
   alias Favn.SQLAsset.Error, as: SQLAssetError
+  alias Favn.SQLAsset.Input, as: SQLAssetInput
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias Favn.Window.Anchor
 
@@ -771,7 +771,7 @@ defmodule Favn do
   @spec render(sql_asset_input(), sql_helper_opts()) ::
           {:ok, Favn.SQL.Render.t()} | {:error, SQLAssetError.t()}
   def render(asset_input, opts \\ []) when is_list(opts) do
-    case normalize_sql_asset_input(asset_input) do
+    case SQLAssetInput.normalize(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.render(asset, opts)
       {:error, %SQLAssetError{} = error} -> {:error, error}
     end
@@ -786,7 +786,7 @@ defmodule Favn do
   @spec preview(sql_asset_input(), sql_preview_opts()) ::
           {:ok, Favn.SQL.Preview.t()} | {:error, SQLAssetError.t()}
   def preview(asset_input, opts \\ []) when is_list(opts) do
-    case normalize_sql_asset_input(asset_input) do
+    case SQLAssetInput.normalize(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.preview(asset, opts)
       {:error, %SQLAssetError{} = error} -> {:error, error}
     end
@@ -798,7 +798,7 @@ defmodule Favn do
   @spec explain(sql_asset_input(), sql_explain_opts()) ::
           {:ok, Favn.SQL.Explain.t()} | {:error, SQLAssetError.t()}
   def explain(asset_input, opts \\ []) when is_list(opts) do
-    case normalize_sql_asset_input(asset_input) do
+    case SQLAssetInput.normalize(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.explain(asset, opts)
       {:error, %SQLAssetError{} = error} -> {:error, error}
     end
@@ -810,75 +810,9 @@ defmodule Favn do
   @spec materialize(sql_asset_input(), sql_helper_opts()) ::
           {:ok, Favn.SQL.MaterializationResult.t()} | {:error, SQLAssetError.t()}
   def materialize(asset_input, opts \\ []) when is_list(opts) do
-    case normalize_sql_asset_input(asset_input) do
+    case SQLAssetInput.normalize(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.materialize(asset, opts)
       {:error, %SQLAssetError{} = error} -> {:error, error}
-    end
-  end
-
-  defp normalize_sql_asset_input(%Favn.Asset{type: :sql} = asset), do: {:ok, asset}
-
-  defp normalize_sql_asset_input(%Favn.Asset{} = asset) do
-    {:error,
-     %SQLAssetError{
-       type: :not_sql_asset,
-       phase: :render,
-       asset_ref: asset.ref,
-       message: "asset #{inspect(asset.ref)} is not a SQL asset"
-     }}
-  end
-
-  defp normalize_sql_asset_input({module, name} = ref) when is_atom(module) and is_atom(name) do
-    case name do
-      :asset ->
-        resolve_sql_asset_module(module, ref)
-
-      _other ->
-        {:error,
-         %SQLAssetError{
-           type: :invalid_asset_input,
-           phase: :render,
-           asset_ref: ref,
-           message: "invalid SQL asset ref #{inspect(ref)}; expected {module, :asset}",
-           details: %{reason: :invalid_sql_asset_ref_name}
-         }}
-    end
-  end
-
-  defp normalize_sql_asset_input(module) when is_atom(module) do
-    resolve_sql_asset_module(module, {module, :asset})
-  end
-
-  defp normalize_sql_asset_input(other) do
-    {:error,
-     %SQLAssetError{
-       type: :invalid_asset_input,
-       phase: :render,
-       message: "invalid SQL asset input; expected module, {module, :asset}, or %Favn.Asset{}",
-       details: %{input: other}
-     }}
-  end
-
-  defp resolve_sql_asset_module(module, asset_ref) do
-    case SQLAssetCompiler.fetch_definition(module) do
-      {:ok, %Favn.SQLAsset.Definition{asset: %Favn.Asset{} = asset}} ->
-        {:ok, asset}
-
-      {:error, _reason} ->
-        case get_asset(module) do
-          {:ok, %Favn.Asset{} = asset} ->
-            normalize_sql_asset_input(asset)
-
-          {:error, reason} ->
-            {:error,
-             %SQLAssetError{
-               type: :invalid_asset_input,
-               phase: :render,
-               asset_ref: asset_ref,
-               message: "could not resolve SQL asset #{inspect(module)}",
-               details: %{reason: reason}
-             }}
-        end
     end
   end
 
