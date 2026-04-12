@@ -221,4 +221,37 @@ defmodule Favn.SQLDuckDBAdapterTest do
 
     assert rows == [%{"id" => 2}, %{"id" => 3}]
   end
+
+  test "incremental delete_insert applies bind params only to insert statement", %{
+    session: session
+  } do
+    assert {:ok, %Result{}} =
+             SQL.execute(
+               session,
+               "CREATE TABLE inc_delete_param_orders(id INTEGER, event_at TIMESTAMP)"
+             )
+
+    assert {:ok, %Result{}} =
+             SQL.execute(
+               session,
+               "INSERT INTO inc_delete_param_orders VALUES (1, TIMESTAMP '2025-01-01T00:00:00Z')"
+             )
+
+    plan =
+      %WritePlan{
+        materialization: :incremental,
+        strategy: :delete_insert,
+        mode: :incremental,
+        transactional?: true,
+        window: %{start_at: ~U[2025-01-01 00:00:00Z], end_at: ~U[2025-01-02 00:00:00Z]},
+        options: %{window_column: "event_at"},
+        target: %Relation{schema: "main", name: "inc_delete_param_orders", type: :table},
+        select_sql: "SELECT $1::INTEGER AS id, TIMESTAMP '2025-01-01T06:00:00Z' AS event_at"
+      }
+
+    assert {:ok, %Result{kind: :materialize}} = SQL.materialize(session, plan, params: [2])
+
+    assert {:ok, %Result{rows: [%{"id" => 2}]}} =
+             SQL.query(session, "SELECT id FROM inc_delete_param_orders")
+  end
 end
