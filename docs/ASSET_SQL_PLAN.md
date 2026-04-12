@@ -1218,6 +1218,7 @@ Future continuation (not in Phase 5):
 
 * register typed external sources/dependencies so unmanaged warnings can resolve into explicit registered external identities
 * expose public lineage/provenance inspection APIs on top of retained dependency metadata
+* expand CTE inference coverage for nested/subquery-local `with` scopes and lock behavior with focused tests
 
 ### Phase 6 — generated assets / multi-assets
 

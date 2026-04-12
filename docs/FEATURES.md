@@ -182,6 +182,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] SQL asset dependency planning on the shared window-aware runtime model
   - [x] additive explicit + inferred dependency merge with provenance metadata
   - [x] unmanaged external relation warnings and ambiguous ownership errors
+  - [ ] follow-up hardening: nested/subquery `WITH` CTE alias exclusion tests for relation inference
 
 ---
 
