@@ -62,6 +62,8 @@ lib/
     │   ├── column.ex
     │   ├── definition.ex
     │   ├── error.ex
+    │   ├── incremental_window.ex
+    │   ├── materialization_planner.ex
     │   ├── render.ex
     │   ├── relation.ex
     │   ├── relation_ref.ex

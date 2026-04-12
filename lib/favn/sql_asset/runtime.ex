@@ -4,8 +4,19 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.Asset
   alias Favn.Run.Context
   alias Favn.SQL
-  alias Favn.SQL.{Explain, MaterializationResult, Params, Preview, Render, WritePlan}
+
+  alias Favn.SQL.{
+    Explain,
+    IncrementalWindow,
+    MaterializationPlanner,
+    MaterializationResult,
+    Params,
+    Preview,
+    Render
+  }
+
   alias Favn.SQLAsset.{Compiler, Definition, Error, Renderer}
+  alias Favn.Window.Runtime
 
   @type opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
 
@@ -53,12 +64,22 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   @spec materialize(Asset.t(), opts()) :: {:ok, MaterializationResult.t()} | {:error, Error.t()}
-  def materialize(%Asset{} = asset, opts \\ []) when is_list(opts) do
-    with {:ok, %Render{} = rendered} <- render(asset, opts),
-         {:ok, write_plan} <- build_write_plan(rendered),
-         {:ok, result} <- materialize_render(rendered, write_plan, opts) do
+  def materialize(%Asset{type: :sql, module: module} = _asset, opts) when is_list(opts) do
+    with {:ok, %Definition{} = definition} <- fetch_definition(module),
+         {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
+         {:ok, write_plan, result} <- materialize_render(definition, rendered, opts) do
       {:ok, %MaterializationResult{render: rendered, write_plan: write_plan, result: result}}
     end
+  end
+
+  def materialize(%Asset{} = asset, _opts) do
+    {:error,
+     %Error{
+       type: :not_sql_asset,
+       phase: :materialize,
+       asset_ref: asset.ref,
+       message: "asset #{inspect(asset.ref)} is not a SQL asset"
+     }}
   end
 
   @spec run(module(), Context.t()) :: Asset.return_value()
@@ -130,11 +151,62 @@ defmodule Favn.SQLAsset.Runtime do
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
 
-  defp materialize_render(%Render{} = rendered, %WritePlan{} = write_plan, opts) do
+  defp materialize_render(%Definition{} = definition, %Render{} = rendered, opts) do
     with_session(rendered.connection, opts, fn session ->
-      SQL.materialize(session, write_plan, params: adapter_params(rendered.params))
+      with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
+           {:ok, result} <-
+             SQL.materialize(session, write_plan, params: adapter_params(rendered.params)) do
+        {:ok, write_plan, result}
+      end
     end)
     |> map_sql_result_error(rendered.asset_ref, :materialize)
+  end
+
+  defp render_for_materialize(
+         %Definition{materialization: {:incremental, _opts}} = definition,
+         opts
+       ) do
+    with {:ok, %Render{} = initial_render} <- Renderer.render(definition, opts),
+         {:ok, %Runtime{} = runtime_window} <- runtime_window(initial_render, definition),
+         {:ok, %IncrementalWindow{} = effective_window} <-
+           IncrementalWindow.resolve(runtime_window, definition.asset.window_spec),
+         {:ok, %Runtime{} = effective_runtime} <- IncrementalWindow.to_runtime(effective_window),
+         {:ok, %Render{} = widened_render} <-
+           Renderer.render(definition, put_runtime_window(opts, effective_runtime)) do
+      {:ok, widened_render}
+    end
+  end
+
+  defp render_for_materialize(%Definition{} = definition, opts),
+    do: Renderer.render(definition, opts)
+
+  defp runtime_window(%Render{} = render, %Definition{} = definition) do
+    case render.runtime do
+      %Runtime{} = window ->
+        {:ok, window}
+
+      _ ->
+        {:error,
+         %Error{
+           type: :materialization_planning_failed,
+           phase: :materialize,
+           asset_ref: render.asset_ref,
+           message: "incremental materialization requires runtime.window",
+           details: %{materialization: definition.materialization}
+         }}
+    end
+  end
+
+  defp put_runtime_window(opts, %Runtime{} = runtime_window) do
+    runtime_map =
+      opts
+      |> Keyword.get(:runtime, %{})
+      |> case do
+        map when is_map(map) -> map
+        _ -> %{}
+      end
+
+    Keyword.put(opts, :runtime, Map.put(runtime_map, :window, runtime_window))
   end
 
   defp with_session(connection, opts, fun) when is_function(fun, 1) do
@@ -156,6 +228,9 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp map_sql_result_error({:ok, result}, _asset_ref, _phase), do: {:ok, result}
+
+  defp map_sql_result_error({:ok, write_plan, result}, _asset_ref, _phase),
+    do: {:ok, write_plan, result}
 
   defp map_sql_result_error({:error, %SQL.Error{} = error}, asset_ref, phase) do
     {:error,
@@ -182,59 +257,6 @@ defmodule Favn.SQLAsset.Runtime do
      }}
   end
 
-  defp build_write_plan(%Render{materialization: :view} = render) do
-    {:ok,
-     %WritePlan{
-       asset_ref: render.asset_ref,
-       connection: render.connection,
-       materialization: :view,
-       target: relation(render),
-       query: render,
-       select_sql: render.sql,
-       params: render.params,
-       replace_existing?: true,
-       replace?: true,
-       metadata: %{create_or_replace?: true}
-     }}
-  end
-
-  defp build_write_plan(%Render{materialization: :table} = render) do
-    {:ok,
-     %WritePlan{
-       asset_ref: render.asset_ref,
-       connection: render.connection,
-       materialization: :table,
-       target: relation(render),
-       query: render,
-       select_sql: render.sql,
-       params: render.params,
-       replace_existing?: true,
-       replace?: true,
-       metadata: %{rebuild?: true}
-     }}
-  end
-
-  defp build_write_plan(%Render{materialization: {:incremental, _opts}} = render) do
-    {:error,
-     %Error{
-       type: :unsupported_materialization,
-       phase: :materialize,
-       asset_ref: render.asset_ref,
-       message: "incremental SQL materialization is not supported in Phase 4a",
-       details: %{materialization: render.materialization}
-     }}
-  end
-
-  defp relation(%Render{} = render) do
-    %Favn.SQL.Relation{
-      catalog: render.produced_relation.catalog,
-      schema: render.produced_relation.schema,
-      name: render.produced_relation.name,
-      type: materialization_type(render),
-      metadata: %{}
-    }
-  end
-
   defp trim_sql(sql) when is_binary(sql) do
     sql
     |> String.trim()
@@ -243,7 +265,4 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp adapter_params(%Params{} = params), do: Params.to_adapter_params(params)
-
-  defp materialization_type(%Render{materialization: :view}), do: :view
-  defp materialization_type(%Render{materialization: :table}), do: :table
 end

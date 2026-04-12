@@ -4,7 +4,13 @@ defmodule Favn.SQLAsset.Materialization do
   """
 
   @type strategy :: :append | :replace | :delete_insert | :merge
-  @type incremental_opts :: [strategy: strategy(), unique_key: [atom()]]
+
+  @type incremental_opts ::
+          [
+            strategy: strategy(),
+            unique_key: [atom()],
+            window_column: atom() | String.t()
+          ]
   @type t :: :view | :table | {:incremental, incremental_opts()}
 
   @spec normalize!(t()) :: t()
@@ -60,9 +66,16 @@ defmodule Favn.SQLAsset.Materialization do
         raise ArgumentError,
               "incremental materialization unique_key must be a list of atoms, got: #{inspect(value)}"
 
+      {:window_column, column} when is_atom(column) or is_binary(column) ->
+        :ok
+
+      {:window_column, value} ->
+        raise ArgumentError,
+              "incremental materialization window_column must be an atom or string, got: #{inspect(value)}"
+
       {key, _value} ->
         raise ArgumentError,
-              "incremental materialization contains unsupported key #{inspect(key)}; allowed keys: [:strategy, :unique_key]"
+              "incremental materialization contains unsupported key #{inspect(key)}; allowed keys: [:strategy, :unique_key, :window_column]"
     end)
 
     case Keyword.fetch(opts, :strategy) do

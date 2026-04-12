@@ -159,7 +159,10 @@ defmodule Favn.SQLAsset do
     depends_on = normalize_depends!(raw_definition.depends, raw_definition)
     meta = normalize_meta!(raw_definition.meta, raw_definition)
     window_spec = normalize_window!(raw_definition.window, raw_definition)
-    materialization = normalize_materialized!(raw_definition.materialized, raw_definition)
+
+    materialization =
+      normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
+
     produces = normalize_produces!(raw_definition, inferred_relation_name(raw_definition.module))
     known_definitions = fetch_sql_definitions!(raw_definition)
 
@@ -261,14 +264,16 @@ defmodule Favn.SQLAsset do
     )
   end
 
-  defp normalize_materialized!([value], raw_definition) do
-    Materialization.normalize!(value)
+  defp normalize_materialized!([value], window_spec, raw_definition) do
+    value
+    |> Materialization.normalize!()
+    |> validate_incremental_materialized!(window_spec, raw_definition)
   rescue
     error in ArgumentError ->
       compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
-  defp normalize_materialized!([], raw_definition) do
+  defp normalize_materialized!([], _window_spec, raw_definition) do
     compile_error!(
       raw_definition.file,
       raw_definition.line,
@@ -276,13 +281,80 @@ defmodule Favn.SQLAsset do
     )
   end
 
-  defp normalize_materialized!([_a, _b | _rest], raw_definition) do
+  defp normalize_materialized!([_a, _b | _rest], _window_spec, raw_definition) do
     compile_error!(
       raw_definition.file,
       raw_definition.line,
       "multiple @materialized attributes are not allowed; use exactly one @materialized before query do ... end"
     )
   end
+
+  defp validate_incremental_materialized!(
+         {:incremental, opts} = materialization,
+         window_spec,
+         raw_definition
+       ) do
+    strategy = Keyword.fetch!(opts, :strategy)
+
+    if is_nil(window_spec) do
+      compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "incremental SQL materialization requires @window"
+      )
+    end
+
+    if Keyword.has_key?(opts, :unique_key) do
+      compile_error!(
+        raw_definition.file,
+        raw_definition.line,
+        "incremental materialization unique_key is reserved for future :merge semantics and is not supported in Phase 4b"
+      )
+    end
+
+    case strategy do
+      :append ->
+        if Keyword.has_key?(opts, :window_column) do
+          compile_error!(
+            raw_definition.file,
+            raw_definition.line,
+            "incremental :append does not accept :window_column"
+          )
+        end
+
+      :delete_insert ->
+        case Keyword.fetch(opts, :window_column) do
+          {:ok, _column} ->
+            :ok
+
+          :error ->
+            compile_error!(
+              raw_definition.file,
+              raw_definition.line,
+              "incremental :delete_insert requires :window_column"
+            )
+        end
+
+      :merge ->
+        compile_error!(
+          raw_definition.file,
+          raw_definition.line,
+          "incremental strategy :merge is not supported in Phase 4b"
+        )
+
+      :replace ->
+        compile_error!(
+          raw_definition.file,
+          raw_definition.line,
+          "incremental strategy :replace is not supported in Phase 4b"
+        )
+    end
+
+    materialization
+  end
+
+  defp validate_incremental_materialized!(materialization, _window_spec, _raw_definition),
+    do: materialization
 
   defp normalize_produces!(raw_definition, inferred_name) do
     defaults = Namespace.resolve(raw_definition.module)

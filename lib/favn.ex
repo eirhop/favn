@@ -189,7 +189,8 @@ defmodule Favn do
 
         @doc "Build the gold fact table for orders"
         @meta owner: "analytics", category: :sales, tags: [:gold]
-        @materialized :table
+        @window Favn.Window.daily(lookback: 2)
+        @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
         query do
           ~SQL\"\"\"

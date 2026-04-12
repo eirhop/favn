@@ -45,7 +45,7 @@ defmodule Favn.SQLAssetTest do
         @doc "Gold fact table for orders"
         @meta owner: "analytics", category: :sales, tags: [:gold]
         @window Favn.Window.daily(lookback: 2)
-        @materialized {:incremental, strategy: :delete_insert, unique_key: [:order_id]}
+        @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
         query do
           ~SQL[select order_id from silver.sales.stg_orders]
@@ -64,7 +64,7 @@ defmodule Favn.SQLAssetTest do
     assert asset.meta == %{owner: "analytics", category: :sales, tags: [:gold]}
 
     assert asset.materialization ==
-             {:incremental, strategy: :delete_insert, unique_key: [:order_id]}
+             {:incremental, strategy: :delete_insert, window_column: :order_date}
 
     assert asset.window_spec == %Favn.Window.Spec{kind: :day, lookback: 2, timezone: "Etc/UTC"}
 
@@ -152,34 +152,69 @@ defmodule Favn.SQLAssetTest do
     assert asset.ref == {asset_module, :asset}
   end
 
-  test "runtime execution returns explicit unsupported error for incremental SQL assets in Phase 4a" do
-    asset_module = Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
+  test "rejects deferred incremental strategy :merge at compile time" do
+    assert_raise CompileError, ~r/incremental strategy :merge is not supported in Phase 4b/, fn ->
+      compile_sql_asset_module("""
+      use Favn.Namespace, connection: :warehouse
+      use Favn.SQLAsset
 
-    Code.compile_string(
-      """
-      defmodule #{inspect(asset_module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
-        use Favn.SQLAsset
+      @window Favn.Window.daily()
+      @materialized {:incremental, strategy: :merge}
 
-        @materialized {:incremental, strategy: :append}
-
-        query do
-          ~SQL[select 1 as id]
-        end
+      query do
+        ~SQL[select 1 as id]
       end
-      """,
-      "test/dynamic_sql_asset_test.exs"
-    )
+      """)
+    end
+  end
 
-    :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+  test "rejects incremental unique_key for Phase 4b strategies" do
+    assert_raise CompileError,
+                 ~r/incremental materialization unique_key is reserved for future :merge semantics/,
+                 fn ->
+                   compile_sql_asset_module("""
+                   use Favn.Namespace, connection: :warehouse
+                   use Favn.SQLAsset
 
-    assert {:ok, run_id} = Favn.run_asset({asset_module, :asset}, dependencies: :none)
-    assert {:error, run} = Favn.await_run(run_id, timeout: 5_000)
+                   @window Favn.Window.daily()
+                   @materialized {:incremental, strategy: :append, unique_key: [:id]}
 
-    assert run.status == :error
+                   query do
+                     ~SQL[select 1 as id]
+                   end
+                   """)
+                 end
+  end
 
-    assert %Favn.SQLAsset.Error{type: :unsupported_materialization} =
-             run.asset_results[{asset_module, :asset}].error.reason
+  test "rejects delete_insert without window_column" do
+    assert_raise CompileError, ~r/incremental :delete_insert requires :window_column/, fn ->
+      compile_sql_asset_module("""
+      use Favn.Namespace, connection: :warehouse
+      use Favn.SQLAsset
+
+      @window Favn.Window.daily()
+      @materialized {:incremental, strategy: :delete_insert}
+
+      query do
+        ~SQL[select 1 as id]
+      end
+      """)
+    end
+  end
+
+  test "rejects incremental materialization without @window" do
+    assert_raise CompileError, ~r/incremental SQL materialization requires @window/, fn ->
+      compile_sql_asset_module("""
+      use Favn.Namespace, connection: :warehouse
+      use Favn.SQLAsset
+
+      @materialized {:incremental, strategy: :append}
+
+      query do
+        ~SQL[select 1 as id]
+      end
+      """)
+    end
   end
 
   test "rejects missing materialized attribute" do

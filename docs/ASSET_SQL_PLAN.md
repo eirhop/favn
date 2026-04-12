@@ -1174,10 +1174,13 @@ Important limit for this phase:
 
 ### Phase 4b — incremental SQL materialization
 
+Status: implemented in current codebase.
+
 Deliver:
 
 * dedicated incremental planning layer on top of rendered query SQL
 * explicit first-pass strategy support for `:append` and `:delete_insert`
+* `:delete_insert` uses explicit `window_column` metadata with runtime-resolved effective window bounds
 * required strategy metadata and validation for window-aware writes
 * explicit deferral of `:merge` until backend capability and planner semantics are ready
 * explicit deferral of current `:replace` incremental semantics until they are renamed or specified more precisely
