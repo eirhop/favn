@@ -56,6 +56,31 @@ defmodule Favn.SQLTemplateAssetRefTest do
     assert Template.asset_refs(template) == []
   end
 
+  test "captures plain relation refs in relation positions" do
+    sql = """
+    select *
+    from silver.sales.orders o
+    join sales.customers c on c.id = o.customer_id
+    """
+
+    template = Template.compile!(sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
+
+    assert Enum.map(Template.relation_refs(template), & &1.raw) == [
+             "silver.sales.orders",
+             "sales.customers"
+           ]
+  end
+
+  test "does not treat table function syntax as plain relation ref" do
+    sql = """
+    select *
+    from read_parquet('orders.parquet')
+    """
+
+    template = Template.compile!(sql, file: "test/sql_template_asset_ref_test.exs", line: 1)
+    assert Template.relation_refs(template) == []
+  end
+
   test "does not support update from and merge into asset refs" do
     update_sql = """
     update silver.sales.orders as o

@@ -177,9 +177,11 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] window-aware incremental execution and explicit lookback handling
 - [ ] Multi-asset SQL modules
 - [ ] SQL file support
-- [ ] Phase 5 relation-based SQL inference
-  - [ ] dependency inference from typed SQL relation references
-  - [ ] SQL asset dependency planning on the shared window-aware runtime model
+- [x] Phase 5 relation-based SQL inference
+  - [x] dependency inference from typed SQL relation references
+  - [x] SQL asset dependency planning on the shared window-aware runtime model
+  - [x] additive explicit + inferred dependency merge with provenance metadata
+  - [x] unmanaged external relation warnings and ambiguous ownership errors
 
 ---
 
@@ -194,8 +196,10 @@ Goal: make single-node production usage reliable and inspectable.
 - [ ] Concurrency controls
 - [ ] Run deduplication / run keys
 - [ ] Improved failure recovery
+- [ ] Registered source/external dependency model (typed relation identities)
 - [ ] Materialization history tracking
 - [ ] Asset and window state inspection
+- [ ] Asset dependency provenance and relation-lineage inspection APIs
 - [ ] Better rerun and replay ergonomics
 - [ ] Stronger test coverage for runtime, scheduler, windowing, and SQL execution
 - [ ] Operator-facing graph and run inspection foundation

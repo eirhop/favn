@@ -14,8 +14,11 @@ defmodule Favn.Assets.Registry do
 
   alias Favn.Asset
   alias Favn.Assets.Compiler
+  alias Favn.Assets.DependencyInference
+  alias Favn.Diagnostic
   alias Favn.Ref
   alias Favn.RelationRef
+  require Logger
 
   @catalog_key {__MODULE__, :catalog}
 
@@ -26,11 +29,13 @@ defmodule Favn.Assets.Registry do
           {:invalid_asset_module, module()}
           | {:duplicate_asset, Favn.asset_ref()}
           | {:duplicate_relation_owner, RelationRef.t(), Favn.asset_ref(), Favn.asset_ref()}
+          | DependencyInference.error()
 
   @type catalog :: %{
           assets: [Asset.t()],
           assets_by_ref: %{Ref.t() => Asset.t()},
-          relation_owners: %{RelationRef.t() => Ref.t()}
+          relation_owners: %{RelationRef.t() => Ref.t()},
+          diagnostics: [Diagnostic.t()]
         }
 
   @doc """
@@ -62,6 +67,7 @@ defmodule Favn.Assets.Registry do
   @spec load() :: :ok | {:error, error()}
   def load do
     with {:ok, catalog} <- build_catalog() do
+      log_catalog_warnings(catalog)
       :persistent_term.put(@catalog_key, catalog)
       :ok
     end
@@ -99,7 +105,7 @@ defmodule Favn.Assets.Registry do
   def build_catalog(modules) when is_list(modules) do
     modules
     |> Enum.reduce_while(
-      {:ok, %{assets: [], assets_by_ref: %{}, relation_owners: %{}}},
+      {:ok, %{assets: [], assets_by_ref: %{}, relation_owners: %{}, diagnostics: []}},
       fn module, {:ok, catalog} ->
         case Compiler.compile_module_assets(module) do
           {:ok, assets} ->
@@ -114,8 +120,13 @@ defmodule Favn.Assets.Registry do
       end
     )
     |> case do
-      {:ok, catalog} -> {:ok, %{catalog | assets: Enum.reverse(catalog.assets)}}
-      {:error, _reason} = error -> error
+      {:ok, catalog} ->
+        catalog = %{catalog | assets: Enum.reverse(catalog.assets)}
+
+        DependencyInference.infer(catalog)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -180,5 +191,13 @@ defmodule Favn.Assets.Registry do
          ref: ref
        }) do
     Map.put(relation_owners, relation_ref, ref)
+  end
+
+  defp log_catalog_warnings(%{diagnostics: diagnostics}) when is_list(diagnostics) do
+    diagnostics
+    |> Enum.filter(&(&1.severity == :warning))
+    |> Enum.each(fn diagnostic ->
+      Logger.warning(diagnostic.message)
+    end)
   end
 end

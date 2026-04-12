@@ -138,7 +138,19 @@ defmodule Favn.SQL.Template do
           }
   end
 
-  @type ir_node :: Text.t() | Placeholder.t() | Call.t() | AssetRef.t()
+  defmodule Relation do
+    @moduledoc false
+    @enforce_keys [:raw, :segments, :span]
+    defstruct [:raw, :segments, :span]
+
+    @type t :: %__MODULE__{
+            raw: String.t(),
+            segments: [String.t()],
+            span: Favn.SQL.Template.Span.t()
+          }
+  end
+
+  @type ir_node :: Text.t() | Placeholder.t() | Call.t() | AssetRef.t() | Relation.t()
 
   @enforce_keys [:source, :root_kind, :nodes, :span, :requires]
   defstruct [:source, :root_kind, :nodes, :span, :requires]
@@ -243,6 +255,9 @@ defmodule Favn.SQL.Template do
   @spec asset_refs(t()) :: [AssetRef.t()]
   def asset_refs(%__MODULE__{nodes: nodes}), do: collect_asset_refs(nodes)
 
+  @spec relation_refs(t()) :: [Relation.t()]
+  def relation_refs(%__MODULE__{nodes: nodes}), do: collect_relation_refs(nodes)
+
   @spec calls(t()) :: [Call.t()]
   def calls(%__MODULE__{nodes: nodes}), do: collect_calls(nodes)
 
@@ -269,6 +284,14 @@ defmodule Favn.SQL.Template do
   defp collect_calls(nodes) do
     Enum.flat_map(nodes, fn
       %Call{} = call -> [call | Enum.flat_map(call.args, &collect_calls(&1.nodes))]
+      _other -> []
+    end)
+  end
+
+  defp collect_relation_refs(nodes) do
+    Enum.flat_map(nodes, fn
+      %Relation{} = relation_ref -> [relation_ref]
+      %Call{args: args} -> Enum.flat_map(args, &collect_relation_refs(&1.nodes))
       _other -> []
     end)
   end
@@ -466,12 +489,38 @@ defmodule Favn.SQL.Template do
       call_candidate?(word, tail, state) ->
         parse_call(word, tail, state, context, acc)
 
+      relation_ref_candidate?(word, tail, state) ->
+        parse_relation_ref(word, tail, state, acc)
+
       true ->
         next_state =
           advance_state(state, String.to_charlist(word))
           |> update_relation_context(String.downcase(word))
 
         parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
+    end
+  end
+
+  defp parse_relation_ref(word, tail, state, acc) do
+    {segments, tail_after_relation} = read_relation_chain(tail, [word])
+
+    if length(segments) in 1..3 do
+      raw = Enum.join(segments, ".")
+
+      next_state =
+        advance_state(state, String.to_charlist(raw))
+        |> Map.put(:relation_entry?, false)
+        |> Map.put(:join_prefix, nil)
+
+      node = build_relation_ref(raw, segments, state, next_state)
+      parse_nodes(tail_after_relation, next_state, [node | acc])
+    else
+      raw = Enum.join(segments, ".")
+      next_state = advance_state(state, String.to_charlist(raw))
+
+      parse_nodes(tail_after_relation, next_state, [
+        text_node(raw, state.position, next_state.position) | acc
+      ])
     end
   end
 
@@ -788,6 +837,10 @@ defmodule Favn.SQL.Template do
     }
   end
 
+  defp build_relation_ref(raw, segments, state, next_state) do
+    %Relation{raw: raw, segments: segments, span: span(state.position, next_state.position)}
+  end
+
   defp classify_placeholder_source(name, _state) when name in @reserved_runtime_inputs,
     do: :runtime
 
@@ -812,6 +865,13 @@ defmodule Favn.SQL.Template do
       state.relation_entry? and
       String.match?(word, ~r/^[A-Z][A-Za-z0-9_]*$/) and
       List.first(tail) == ?.
+  end
+
+  defp relation_ref_candidate?(word, tail, state) do
+    state.statement_kind not in [:update, :merge] and
+      state.relation_entry? and
+      String.match?(word, ~r/^[a-z_][A-Za-z0-9_]*$/) and
+      peek_nonspace_char(tail) != ?(
   end
 
   defp call_candidate?(word, tail, state) do
@@ -1041,6 +1101,20 @@ defmodule Favn.SQL.Template do
   end
 
   defp read_alias_chain(rest, segments), do: {segments, rest}
+
+  defp read_relation_chain([?. | rest], segments) do
+    case rest do
+      [char | _tail]
+      when (char >= ?a and char <= ?z) or (char >= ?A and char <= ?Z) or char == ?_ ->
+        {segment, tail_after_segment} = read_identifier(rest)
+        read_relation_chain(tail_after_segment, segments ++ [segment])
+
+      _other ->
+        {segments, [?. | rest]}
+    end
+  end
+
+  defp read_relation_chain(rest, segments), do: {segments, rest}
 
   defp uppercase_alias_segments?(segments),
     do: Enum.all?(segments, &String.match?(&1, ~r/^[A-Z][A-Za-z0-9_]*$/))

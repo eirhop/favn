@@ -19,6 +19,7 @@ defmodule Favn.SQLAsset do
   alias Favn.SQL.Template
   alias Favn.SQLAsset.Definition
   alias Favn.SQLAsset.Materialization
+  alias Favn.SQLAsset.RelationUsage
   alias Favn.SQLAsset.Runtime
   alias Favn.Window.Spec
 
@@ -177,6 +178,8 @@ defmodule Favn.SQLAsset do
         enforce_query_root: true
       )
 
+    relation_inputs = RelationUsage.collect(raw_definition.module, template)
+
     asset = %Asset{
       module: raw_definition.module,
       name: :asset,
@@ -189,6 +192,7 @@ defmodule Favn.SQLAsset do
       line: raw_definition.line,
       meta: meta,
       depends_on: depends_on,
+      relation_inputs: relation_inputs,
       window_spec: window_spec,
       produces: produces,
       materialization: materialization
@@ -199,6 +203,7 @@ defmodule Favn.SQLAsset do
       asset: asset,
       sql: raw_definition.sql,
       template: template,
+      relation_inputs: relation_inputs,
       sql_definitions: Map.values(known_definitions),
       materialization: materialization,
       raw_asset: raw_definition

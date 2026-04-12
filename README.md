@@ -135,9 +135,15 @@ Not supported yet for direct SQL asset refs:
 - arbitrary nested dialect syntax
 - plain relation names inferred from raw text
 
-Planned next:
+Implemented in Phase 5:
 
-- relation-based dependency inference in a later separate phase
+- relation-based dependency inference from typed SQL relation references
+- additive merge of explicit + inferred dependencies with provenance metadata
+- relation ownership diagnostics (unmanaged warnings, ambiguous ownership errors)
+
+Planned later:
+
+- registered external source/dependency identities to replace unmanaged warnings with explicit registrations
 
 Favn explicitly avoids fake sigils, Jinja-style templating, arbitrary Elixir interpolation inside SQL, and string stitching as the normal authoring workflow.
 

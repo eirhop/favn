@@ -4,6 +4,7 @@ defmodule Favn.SQLAsset.Definition do
   """
 
   alias Favn.Asset
+  alias Favn.Asset.RelationInput
   alias Favn.SQL
   alias Favn.SQLAsset.Materialization
 
@@ -14,6 +15,7 @@ defmodule Favn.SQLAsset.Definition do
     :sql,
     :template,
     :materialization,
+    relation_inputs: [],
     sql_definitions: [],
     raw_asset: nil
   ]
@@ -24,6 +26,7 @@ defmodule Favn.SQLAsset.Definition do
           sql: String.t(),
           template: SQL.Template.t(),
           materialization: Materialization.t(),
+          relation_inputs: [RelationInput.t()],
           sql_definitions: [SQL.Definition.t()],
           raw_asset: map() | nil
         }

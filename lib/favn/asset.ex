@@ -20,6 +20,9 @@ defmodule Favn.Asset do
   has normalized authoring-friendly input into runtime-ready values.
   """
 
+  alias Favn.Asset.Dependency
+  alias Favn.Asset.RelationInput
+  alias Favn.Diagnostic
   alias Favn.Ref
   alias Favn.RelationRef
   alias Favn.SQLAsset.Materialization
@@ -121,9 +124,12 @@ defmodule Favn.Asset do
           line: pos_integer(),
           meta: map(),
           depends_on: [Ref.t()],
+          dependencies: [Dependency.t()],
           window_spec: Spec.t() | nil,
           produces: RelationRef.t() | nil,
-          materialization: Favn.SQLAsset.Materialization.t() | nil
+          materialization: Favn.SQLAsset.Materialization.t() | nil,
+          relation_inputs: [RelationInput.t()],
+          diagnostics: [Diagnostic.t()]
         }
 
   @typedoc """
@@ -143,9 +149,12 @@ defmodule Favn.Asset do
     type: :elixir,
     meta: %{},
     depends_on: [],
+    dependencies: [],
     window_spec: nil,
     produces: nil,
-    materialization: nil
+    materialization: nil,
+    relation_inputs: [],
+    diagnostics: []
   ]
 
   @doc """
