@@ -389,20 +389,32 @@ defmodule Favn.SQL do
         &validate_result/1
       )
     else
-      with {:ok, statements} <-
-             call_adapter(
-               :materialization_statements,
-               session.resolved.name,
-               fn ->
-                 session.adapter.materialization_statements(
-                   write_plan,
-                   session.capabilities,
-                   opts
-                 )
-               end,
-               &validate_statements/1
-             ) do
-        run_statements(session, statements, opts)
+      if write_plan.transactional? do
+        {:error,
+         %Error{
+           type: :unsupported_capability,
+           message: "transactional materialization requires adapter materialize/3 support",
+           adapter: session.adapter,
+           connection: session.resolved.name,
+           operation: :materialize,
+           details: %{transactional: true, strategy: write_plan.strategy}
+         }}
+      else
+        with {:ok, statements} <-
+               call_adapter(
+                 :materialization_statements,
+                 session.resolved.name,
+                 fn ->
+                   session.adapter.materialization_statements(
+                     write_plan,
+                     session.capabilities,
+                     opts
+                   )
+                 end,
+                 &validate_statements/1
+               ) do
+          run_statements(session, statements, opts)
+        end
       end
     end
   end

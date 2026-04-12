@@ -170,11 +170,11 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] cross-connection direct asset refs fail during render with clear diagnostics
   - [x] materialization planning for `:view` and `:table`
   - [x] `preview/2` returns both canonical rendered SQL and the actual executed preview statement
-- [ ] Phase 4b incremental SQL materialization
-  - [ ] incremental planning layer that extends render output into backend-agnostic `WritePlan`s
-  - [ ] first safe incremental strategies: `:append` and `:delete_insert`
-  - [ ] explicit runtime guard for unsupported incremental strategies such as `:merge` and current `:replace`
-  - [ ] window-aware incremental execution and explicit lookback handling
+- [x] Phase 4b incremental SQL materialization
+  - [x] incremental planning layer that extends render output into backend-agnostic `WritePlan`s
+  - [x] first safe incremental strategies: `:append` and `:delete_insert`
+  - [x] explicit runtime guard for unsupported incremental strategies such as `:merge` and current `:replace`
+  - [x] window-aware incremental execution and explicit lookback handling
 - [ ] Multi-asset SQL modules
 - [ ] SQL file support
 - [ ] Phase 5 relation-based SQL inference

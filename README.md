@@ -71,7 +71,7 @@ defmodule MyWarehouse.Gold.Sales.FctOrders do
   @meta owner: "analytics", category: :sales, tags: [:gold]
   @depends MyWarehouse.Silver.Sales.StgOrders
   @window Favn.Window.daily(lookback: 2)
-  @materialized {:incremental, strategy: :delete_insert, unique_key: [:order_id]}
+  @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
   query do
     ~SQL"""
@@ -137,7 +137,6 @@ Not supported yet for direct SQL asset refs:
 
 Planned next:
 
-- dedicated incremental SQL materialization phase (`:append` / `:delete_insert` first)
 - relation-based dependency inference in a later separate phase
 
 Favn explicitly avoids fake sigils, Jinja-style templating, arbitrary Elixir interpolation inside SQL, and string stitching as the normal authoring workflow.

@@ -293,21 +293,50 @@ defmodule Favn.SQL.Adapter.DuckDB do
     if plan.materialization == :table and rows != [] do
       appender_materialize(conn, plan, rows)
     else
-      run_materialization_statements(conn, plan, opts)
+      run_plan_materialization(conn, plan, opts)
     end
   end
 
+  defp run_plan_materialization(%Conn{} = conn, %WritePlan{transactional?: true} = plan, opts) do
+    case transaction(
+           conn,
+           fn tx_conn -> run_materialization_statements(tx_conn, plan, opts) end,
+           []
+         ) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:error, reason} ->
+        {:error, normalize_error(:materialize, nil, reason)}
+    end
+  end
+
+  defp run_plan_materialization(%Conn{} = conn, %WritePlan{} = plan, opts) do
+    run_materialization_statements(conn, plan, opts)
+  end
+
   defp run_materialization_statements(%Conn{} = conn, %WritePlan{} = plan, opts) do
+    params = Keyword.get(opts, :params, [])
+
     with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
       Enum.reduce_while(statements, {:ok, 0}, fn statement, {:ok, count} ->
-        case execute(conn, statement, opts) do
+        case execute(conn, statement, params: params) do
           {:ok, _} -> {:cont, {:ok, count + 1}}
           {:error, error} -> {:halt, {:error, error}}
         end
       end)
       |> case do
-        {:ok, _} -> {:ok, %Result{kind: :materialize, command: "sql", rows_affected: nil}}
-        {:error, error} -> {:error, error}
+        {:ok, _} ->
+          {:ok,
+           %Result{
+             kind: :materialize,
+             command: "sql",
+             rows_affected: nil,
+             metadata: %{mode: plan.mode || :materialize, strategy: plan.strategy}
+           }}
+
+        {:error, error} ->
+          {:error, error}
       end
     end
   end
@@ -454,11 +483,43 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp create_table_statement(target, %WritePlan{select_sql: sql}),
     do: ["CREATE TABLE ", target, " AS ", sql]
 
+  defp incremental_statements(target, %WritePlan{mode: :bootstrap} = plan),
+    do: [create_table_statement(target, plan)]
+
   defp incremental_statements(target, %WritePlan{strategy: :append, select_sql: sql}),
     do: [["INSERT INTO ", target, " ", sql]]
 
+  defp incremental_statements(
+         target,
+         %WritePlan{strategy: :delete_insert, select_sql: sql, window: window, options: options}
+       ) do
+    column = normalize_window_column(options)
+
+    [
+      [
+        "DELETE FROM ",
+        target,
+        " WHERE ",
+        quote_ident(column),
+        " >= TIMESTAMP ",
+        quote_literal(DateTime.to_iso8601(window.start_at)),
+        " AND ",
+        quote_ident(column),
+        " < TIMESTAMP ",
+        quote_literal(DateTime.to_iso8601(window.end_at))
+      ],
+      ["INSERT INTO ", target, " ", sql]
+    ]
+  end
+
   defp incremental_statements(_target, %WritePlan{strategy: strategy}) do
     raise ArgumentError, "unsupported incremental strategy for DuckDB: #{inspect(strategy)}"
+  end
+
+  defp normalize_window_column(options) do
+    options
+    |> Map.fetch!(:window_column)
+    |> to_string()
   end
 
   defp open_appender(%Conn{conn_ref: conn_ref}, %Relation{name: name, schema: schema}) do
