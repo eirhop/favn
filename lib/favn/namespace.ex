@@ -69,40 +69,46 @@ defmodule Favn.Namespace do
   end
 
   def normalize_config!(opts) when is_map(opts) do
-    relation_defaults =
-      case Map.fetch(opts, :relation) do
-        {:ok, defaults} when is_map(defaults) ->
-          Enum.reduce(defaults, %{}, fn {key, value}, acc ->
-            canonical_key = normalize_key!(key)
-            Map.put(acc, canonical_key, normalize_value!(canonical_key, value))
-          end)
-
-        {:ok, defaults} when is_list(defaults) and defaults != [] ->
-          Enum.reduce(defaults, %{}, fn {key, value}, acc ->
-            canonical_key = normalize_key!(key)
-            Map.put(acc, canonical_key, normalize_value!(canonical_key, value))
-          end)
-
-        :error ->
-          %{}
-      end
-
-    flat_defaults =
-      Enum.reduce([:connection, :catalog, :schema], %{}, fn key, acc ->
-        case Map.fetch(opts, key) do
-          {:ok, value} ->
-            Map.put(acc, key, normalize_value!(key, value))
-
-          :error ->
-            acc
-        end
-      end)
-
-    Map.merge(flat_defaults, relation_defaults)
+    relation_defaults = normalize_relation_defaults!(Map.get(opts, :relation, %{}))
+    validate_no_legacy_keys!(Map.delete(opts, :relation))
+    relation_defaults
   end
 
   def normalize_config!(opts) do
     raise ArgumentError, "namespace config must be a keyword list or map, got: #{inspect(opts)}"
+  end
+
+  defp normalize_relation_defaults!(defaults) when defaults in [%{}, []], do: %{}
+
+  defp normalize_relation_defaults!(defaults) when is_map(defaults) do
+    Enum.reduce(defaults, %{}, fn {key, value}, acc ->
+      canonical_key = normalize_key!(key)
+      Map.put(acc, canonical_key, normalize_value!(canonical_key, value))
+    end)
+  end
+
+  defp normalize_relation_defaults!(defaults) when is_list(defaults) do
+    if Keyword.keyword?(defaults) do
+      defaults
+      |> Map.new()
+      |> normalize_relation_defaults!()
+    else
+      raise ArgumentError,
+            "namespace relation config must be a keyword list or map, got: #{inspect(defaults)}"
+    end
+  end
+
+  defp normalize_relation_defaults!(defaults) do
+    raise ArgumentError,
+          "namespace relation config must be a keyword list or map, got: #{inspect(defaults)}"
+  end
+
+  defp validate_no_legacy_keys!(opts_without_relation) when map_size(opts_without_relation) == 0,
+    do: :ok
+
+  defp validate_no_legacy_keys!(opts_without_relation) do
+    raise ArgumentError,
+          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; use relation: [connection: ..., catalog: ..., schema: ...]"
   end
 
   defp namespace_config(module) do

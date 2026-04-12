@@ -118,7 +118,7 @@ defmodule Favn.AssetsTest do
 
     source = """
     defmodule #{inspect(module_name)} do
-      use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+      use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
       use Favn.Assets
 
       @asset true
@@ -157,7 +157,7 @@ defmodule Favn.AssetsTest do
 
     source = """
     defmodule #{inspect(module_name)} do
-      use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+      use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
       use Favn.Asset
 
       @doc "Extract raw orders"
@@ -280,17 +280,17 @@ defmodule Favn.AssetsTest do
     assets = Module.concat(sales, Assets)
 
     Code.compile_string(
-      "defmodule #{inspect(root)} do\n  use Favn.Namespace, connection: :warehouse\nend",
+      "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend",
       "test/dynamic_assets_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, catalog: :raw\nend",
+      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, relation: [catalog: :raw]\nend",
       "test/dynamic_assets_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, schema: :sales\nend",
+      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, relation: [schema: :sales]\nend",
       "test/dynamic_assets_test.exs"
     )
 
@@ -338,17 +338,17 @@ defmodule Favn.AssetsTest do
     )
 
     Code.compile_string(
-      "defmodule #{inspect(root)} do\n  use Favn.Namespace, connection: :warehouse\nend",
+      "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend",
       "test/dynamic_assets_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, catalog: :raw\nend",
+      "defmodule #{inspect(raw)} do\n  use Favn.Namespace, relation: [catalog: :raw]\nend",
       "test/dynamic_assets_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, schema: :sales\nend",
+      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, relation: [schema: :sales]\nend",
       "test/dynamic_assets_test.exs"
     )
 
@@ -535,7 +535,7 @@ defmodule Favn.AssetsTest do
              Code.compile_string(
                """
                defmodule #{inspect(duplicate_module)} do
-                 use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+                 use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
                  use Favn.Assets
 
                  @asset true

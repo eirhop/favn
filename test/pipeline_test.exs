@@ -282,7 +282,7 @@ defmodule Favn.PipelineTest do
     Code.compile_string(
       """
       defmodule #{inspect(module_name)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
         use Favn.Assets
 
         alias Favn.Test.Fixtures.Assets.Pipeline.CtxRecorder

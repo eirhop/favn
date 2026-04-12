@@ -200,12 +200,39 @@ defmodule Favn.Runtime.Coordinator do
     with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, node_key)),
          step <- Map.fetch!(state.steps, node_key),
          {:ok, asset} <- Favn.Assets.Registry.get_asset(step.ref),
-         {:ok, handle} <- start_executor_step(state, node_key, asset) do
-      {:ok, put_execution_handle(state, node_key, handle)}
+         node <- Map.fetch!(state.plan.nodes, node_key),
+         {:ok, state} <- start_node_execution(state, node_key, node, asset) do
+      {:ok, state}
     else
       {:error, reason} ->
         normalized = %{kind: :error, reason: reason, stacktrace: [], class: :executor_error}
         handle_step_error(state, node_key, normalized)
+    end
+  end
+
+  defp start_node_execution(
+         %State{} = state,
+         node_key,
+         %{action: :observe},
+         %Favn.Asset{} = asset
+       ) do
+    complete_step_transition(
+      state,
+      fn next_state ->
+        StepTransitions.complete_success(next_state, node_key, %{
+          observed: true,
+          relation: asset.relation
+        })
+      end,
+      :observe,
+      node_key,
+      :success
+    )
+  end
+
+  defp start_node_execution(%State{} = state, node_key, %{action: :run}, %Favn.Asset{} = asset) do
+    with {:ok, handle} <- start_executor_step(state, node_key, asset) do
+      {:ok, put_execution_handle(state, node_key, handle)}
     end
   end
 

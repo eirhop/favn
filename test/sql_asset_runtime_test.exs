@@ -518,12 +518,12 @@ defmodule Favn.SQLAssetRuntimeTest do
     asset_module = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :raw, schema: :sales\nend",
+      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :raw, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
@@ -590,12 +590,12 @@ defmodule Favn.SQLAssetRuntimeTest do
     cross_asset = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(other_namespace)} do\n  use Favn.Namespace, connection: :other_connection, catalog: :raw, schema: :sales\nend",
+      "defmodule #{inspect(other_namespace)} do\n  use Favn.Namespace, relation: [connection: :other_connection, catalog: :raw, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
@@ -643,12 +643,12 @@ defmodule Favn.SQLAssetRuntimeTest do
     asset_module = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :raw, schema: :sales\nend",
+      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :raw, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
@@ -718,7 +718,7 @@ defmodule Favn.SQLAssetRuntimeTest do
     asset_module = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 

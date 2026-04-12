@@ -143,7 +143,7 @@ defmodule FavnTest do
     Code.compile_string(
       """
       defmodule #{inspect(owner_a)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
         use Favn.Assets
 
         @asset true
@@ -157,7 +157,7 @@ defmodule FavnTest do
     Code.compile_string(
       """
       defmodule #{inspect(owner_b)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
         use Favn.Assets
 
         @asset true
