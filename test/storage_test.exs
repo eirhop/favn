@@ -28,7 +28,7 @@ defmodule Favn.StorageTest do
     def put_scheduler_state(_state, _opts), do: :ok
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: {:ok, nil}
   end
 
   defmodule NormalizedErrorStore do
@@ -53,7 +53,7 @@ defmodule Favn.StorageTest do
     def put_scheduler_state(_state, _opts), do: {:error, {:store_error, :already_normalized}}
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts),
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts),
       do: {:error, {:store_error, :already_normalized}}
   end
 
@@ -79,7 +79,7 @@ defmodule Favn.StorageTest do
     def put_scheduler_state(_state, _opts), do: :ok
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: {:ok, nil}
   end
 
   defmodule InvalidSchedulerChildSpecStore do
@@ -104,7 +104,7 @@ defmodule Favn.StorageTest do
     def put_scheduler_state(_state, _opts), do: :ok
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: {:ok, nil}
   end
 
   defmodule RaisingSchedulerStore do
@@ -129,7 +129,7 @@ defmodule Favn.StorageTest do
     def put_scheduler_state(_state, _opts), do: raise("scheduler boom")
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts), do: throw(:scheduler_throw)
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: throw(:scheduler_throw)
   end
 
   defmodule ExitingSchedulerStore do
@@ -154,7 +154,7 @@ defmodule Favn.StorageTest do
     def put_scheduler_state(_state, _opts), do: :ok
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts), do: exit(:scheduler_exit)
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: exit(:scheduler_exit)
   end
 
   setup do

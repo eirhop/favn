@@ -69,7 +69,7 @@ defmodule Favn.Scheduler.Runtime do
   defp load_states(entries) do
     states =
       Enum.reduce_while(entries, {:ok, %{}}, fn {pipeline_module, entry}, {:ok, acc} ->
-        case Storage.get_state(pipeline_module) do
+        case Storage.get_state(pipeline_module, entry.schedule.id) do
           {:ok, nil} ->
             base = %State{
               pipeline_module: pipeline_module,

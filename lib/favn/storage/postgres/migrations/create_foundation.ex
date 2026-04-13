@@ -99,7 +99,6 @@ defmodule Favn.Storage.Postgres.Migrations.CreateFoundation do
         null: false
       )
 
-      add(:last_run_node_id, references(:favn_run_nodes, on_delete: :nothing), null: false)
       add(:last_finished_at, :utc_datetime_usec, null: false)
       add(:last_write_seq, :bigint, null: false)
       add(:updated_at, :utc_datetime_usec, null: false)
@@ -110,7 +109,7 @@ defmodule Favn.Storage.Postgres.Migrations.CreateFoundation do
 
     create table(:favn_scheduler_cursors, primary_key: false) do
       add(:pipeline_module, :text, primary_key: true)
-      add(:schedule_id, :text)
+      add(:schedule_id, :text, primary_key: true)
       add(:schedule_fingerprint, :text)
       add(:last_evaluated_at, :utc_datetime_usec)
       add(:last_due_at, :utc_datetime_usec)

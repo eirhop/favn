@@ -619,7 +619,6 @@ ref_name                 text not null
 window_key_text          text not null
 window_key_json          jsonb null
 last_run_id              text not null references favn_runs(id) on delete restrict
-last_run_node_id         bigint not null references favn_run_nodes(id) on delete restrict
 last_finished_at         timestamptz not null
 last_write_seq           bigint not null
 updated_at               timestamptz not null default now()

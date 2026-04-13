@@ -111,7 +111,7 @@ defmodule Favn.Storage do
       {:get_run, 2},
       {:list_runs, 2},
       {:put_scheduler_state, 2},
-      {:get_scheduler_state, 2}
+      {:get_scheduler_state, 3}
     ]
 
     with {:module, ^adapter} <- Code.ensure_loaded(adapter),

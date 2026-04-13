@@ -72,7 +72,7 @@ defmodule Favn.RunnerTest do
     def put_scheduler_state(_state, _opts), do: :ok
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: {:ok, nil}
   end
 
   defmodule ProtocolTestExecutor do

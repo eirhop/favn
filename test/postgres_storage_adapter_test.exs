@@ -11,8 +11,22 @@ defmodule Favn.PostgresStorageAdapterTest do
     assert {:error, :postgres_external_repo_required} = Postgres.child_spec(repo_mode: :external)
   end
 
-  test "external mode with repo returns no managed child" do
-    assert :none = Postgres.child_spec(repo_mode: :external, repo: Favn.Storage.SQLite.Repo)
+  test "external mode rejects non-postgres repo" do
+    assert {:error, :postgres_external_repo_must_use_postgres} =
+             Postgres.child_spec(repo_mode: :external, repo: Favn.Storage.SQLite.Repo)
+  end
+
+  test "external mode with postgres repo returns no managed child" do
+    assert :none = Postgres.child_spec(repo_mode: :external, repo: Favn.Storage.Postgres.Repo)
+  end
+
+  test "external mode rejects auto migration mode" do
+    assert {:error, :postgres_external_repo_auto_migration_unsupported} =
+             Postgres.child_spec(
+               repo_mode: :external,
+               repo: Favn.Storage.Postgres.Repo,
+               migration_mode: :auto
+             )
   end
 
   test "invalid migration mode returns error" do

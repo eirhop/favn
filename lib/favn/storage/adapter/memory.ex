@@ -116,19 +116,34 @@ defmodule Favn.Storage.Adapter.Memory do
   @impl true
   @spec put_scheduler_state(SchedulerState.t(), keyword()) :: :ok | {:error, term()}
   def put_scheduler_state(%SchedulerState{} = state, _opts) do
-    true = :ets.insert(@scheduler_table, {state.pipeline_module, state})
+    key = {state.pipeline_module, state.schedule_id}
+    true = :ets.insert(@scheduler_table, {key, state})
     :ok
   rescue
     error -> {:error, error}
   end
 
   @impl true
-  @spec get_scheduler_state(module(), keyword()) ::
+  @spec get_scheduler_state(module(), atom() | nil, keyword()) ::
           {:ok, SchedulerState.t() | nil} | {:error, term()}
-  def get_scheduler_state(pipeline_module, _opts) when is_atom(pipeline_module) do
-    case :ets.lookup(@scheduler_table, pipeline_module) do
-      [{^pipeline_module, %SchedulerState{} = state}] -> {:ok, state}
-      [] -> {:ok, nil}
+  def get_scheduler_state(pipeline_module, schedule_id, _opts) when is_atom(pipeline_module) do
+    key = {pipeline_module, schedule_id}
+
+    case :ets.lookup(@scheduler_table, key) do
+      [{^key, %SchedulerState{} = state}] ->
+        {:ok, state}
+
+      [] when is_nil(schedule_id) ->
+        @scheduler_table
+        |> :ets.tab2list()
+        |> Enum.find_value(fn
+          {{^pipeline_module, _stored_schedule_id}, %SchedulerState{} = state} -> state
+          _ -> nil
+        end)
+        |> then(&{:ok, &1})
+
+      [] ->
+        {:ok, nil}
     end
   rescue
     error -> {:error, error}

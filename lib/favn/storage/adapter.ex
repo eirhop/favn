@@ -50,6 +50,6 @@ defmodule Favn.Storage.Adapter do
 
   @callback put_scheduler_state(SchedulerState.t(), adapter_opts()) :: :ok | {:error, error()}
 
-  @callback get_scheduler_state(module(), adapter_opts()) ::
+  @callback get_scheduler_state(module(), atom() | nil, adapter_opts()) ::
               {:ok, SchedulerState.t() | nil} | {:error, error()}
 end

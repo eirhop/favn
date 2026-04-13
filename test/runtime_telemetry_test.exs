@@ -26,7 +26,7 @@ defmodule Favn.RuntimeTelemetryTest do
     def put_scheduler_state(_state, _opts), do: raise("boom")
 
     @impl true
-    def get_scheduler_state(_pipeline_module, _opts), do: raise("boom")
+    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: raise("boom")
   end
 
   def handle_event(event, measurements, metadata, parent) do

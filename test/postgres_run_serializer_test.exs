@@ -62,4 +62,20 @@ defmodule Favn.PostgresRunSerializerTest do
     assert {:ok, decoded} = RunSerializer.run_from_snapshot(snapshot)
     assert decoded == run
   end
+
+  test "snapshot_from_run/1 fails on unsupported terms" do
+    run =
+      %Run{
+        id: "pg-serializer-unsupported",
+        target_refs: [{Favn.PostgresRunSerializerTest, :asset}],
+        status: :error,
+        event_seq: 1,
+        started_at: DateTime.utc_now() |> DateTime.truncate(:microsecond),
+        error: self()
+      }
+
+    assert_raise ArgumentError, fn ->
+      RunSerializer.snapshot_from_run(run)
+    end
+  end
 end

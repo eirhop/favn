@@ -51,7 +51,9 @@ defmodule Favn.Storage.Postgres.TermJSON do
     |> then(fn parts -> %{"$t" => "tuple", "v" => parts} end)
   end
 
-  defp do_encode(value), do: %{"$t" => "inspect", "v" => inspect(value)}
+  defp do_encode(value) do
+    raise ArgumentError, "unsupported term for JSON encoding: #{inspect(value)}"
+  end
 
   defp do_decode(%{"$t" => "nil"}), do: {:ok, nil}
   defp do_decode(%{"$t" => "bool", "v" => value}) when is_boolean(value), do: {:ok, value}
@@ -94,7 +96,6 @@ defmodule Favn.Storage.Postgres.TermJSON do
     end
   end
 
-  defp do_decode(%{"$t" => "inspect", "v" => value}), do: {:ok, value}
   defp do_decode(other), do: {:error, {:invalid_encoded_term, other}}
 
   defp decode_list([], acc), do: {:ok, Enum.reverse(acc)}

@@ -304,18 +304,14 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp encode_window_key(key) when is_map(key), do: Key.encode(key)
 
   @impl true
-  def get_scheduler_state(pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
+  def get_scheduler_state(pipeline_module, schedule_id, opts)
+      when is_atom(pipeline_module) and (is_atom(schedule_id) or is_nil(schedule_id)) and
+             is_list(opts) do
     with {:ok, _repo_config} <- repo_config(opts),
          :ok <- ensure_repo_started() do
-      sql = """
-      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
-      FROM scheduler_states
-      WHERE pipeline_module = ?1
-      LIMIT 1
-      """
+      {sql, params} = scheduler_state_query(pipeline_module, schedule_id)
 
-      case SQL.query(Repo, sql, [Atom.to_string(pipeline_module)]) do
+      case SQL.query(Repo, sql, params) do
         {:ok, %{rows: []}} ->
           {:ok, nil}
 
@@ -326,6 +322,31 @@ defmodule Favn.Storage.Adapter.SQLite do
           {:error, reason}
       end
     end
+  end
+
+  defp scheduler_state_query(pipeline_module, nil) do
+    {
+      """
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      FROM scheduler_states
+      WHERE pipeline_module = ?1
+      ORDER BY updated_at DESC
+      LIMIT 1
+      """,
+      [Atom.to_string(pipeline_module)]
+    }
+  end
+
+  defp scheduler_state_query(pipeline_module, schedule_id) when is_atom(schedule_id) do
+    {
+      """
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      FROM scheduler_states
+      WHERE pipeline_module = ?1 AND schedule_id = ?2
+      LIMIT 1
+      """,
+      [Atom.to_string(pipeline_module), Atom.to_string(schedule_id)]
+    }
   end
 
   @impl true

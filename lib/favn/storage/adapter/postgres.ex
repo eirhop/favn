@@ -50,7 +50,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
       :external ->
         with {:ok, _repo} <- validate_external_repo(opts),
-             :ok <- validate_migration_mode(opts) do
+             :ok <- validate_external_migration_mode(opts) do
           :none
         end
 
@@ -64,14 +64,25 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   @impl true
   def put_run(%Run{} = run, opts) do
-    snapshot = RunSerializer.snapshot_from_run(run)
-    snapshot_hash = snapshot_hash(snapshot)
-
-    with {:ok, repo} <- resolve_repo(opts),
+    with {:ok, snapshot} <- safe_snapshot_from_run(run),
+         {:ok, snapshot_hash} <- safe_snapshot_hash(snapshot),
+         {:ok, repo} <- resolve_repo(opts),
          :ok <- ensure_schema_ready(repo),
          {:ok, write_seq} <- next_write_seq(repo) do
       persist_run_transaction(repo, run, snapshot, snapshot_hash, write_seq)
     end
+  end
+
+  defp safe_snapshot_from_run(%Run{} = run) do
+    {:ok, RunSerializer.snapshot_from_run(run)}
+  rescue
+    error -> {:error, {:serialization_failed, error}}
+  end
+
+  defp safe_snapshot_hash(snapshot) do
+    {:ok, snapshot_hash(snapshot)}
+  rescue
+    error -> {:error, {:snapshot_hash_failed, error}}
   end
 
   @impl true
@@ -104,24 +115,46 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
-  def get_scheduler_state(pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
+  def get_scheduler_state(pipeline_module, schedule_id, opts)
+      when is_atom(pipeline_module) and (is_atom(schedule_id) or is_nil(schedule_id)) and
+             is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          :ok <- ensure_schema_ready(repo) do
-      sql = """
-      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at,
-             last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
-      FROM favn_scheduler_cursors
-      WHERE pipeline_module = $1
-      LIMIT 1
-      """
+      {sql, params} = scheduler_cursor_query(pipeline_module, schedule_id)
 
-      case SQL.query(repo, sql, [Atom.to_string(pipeline_module)]) do
+      case SQL.query(repo, sql, params) do
         {:ok, %{rows: []}} -> {:ok, nil}
         {:ok, %{rows: [row]}} -> {:ok, scheduler_state_from_row(pipeline_module, row)}
         {:error, reason} -> {:error, reason}
       end
     end
+  end
+
+  defp scheduler_cursor_query(pipeline_module, nil) do
+    {
+      """
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at,
+             last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      FROM favn_scheduler_cursors
+      WHERE pipeline_module = $1
+      ORDER BY updated_at DESC
+      LIMIT 1
+      """,
+      [Atom.to_string(pipeline_module)]
+    }
+  end
+
+  defp scheduler_cursor_query(pipeline_module, schedule_id) when is_atom(schedule_id) do
+    {
+      """
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at,
+             last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      FROM favn_scheduler_cursors
+      WHERE pipeline_module = $1 AND schedule_id = $2
+      LIMIT 1
+      """,
+      [Atom.to_string(pipeline_module), Atom.to_string(schedule_id)]
+    }
   end
 
   @impl true
@@ -142,8 +175,7 @@ defmodule Favn.Storage.Adapter.Postgres do
         inserted_at,
         updated_at
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $9)
-      ON CONFLICT(pipeline_module) DO UPDATE SET
-        schedule_id = EXCLUDED.schedule_id,
+      ON CONFLICT(pipeline_module, schedule_id) DO UPDATE SET
         schedule_fingerprint = EXCLUDED.schedule_fingerprint,
         last_evaluated_at = EXCLUDED.last_evaluated_at,
         last_due_at = EXCLUDED.last_due_at,
@@ -158,7 +190,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
       params = [
         Atom.to_string(state.pipeline_module),
-        if(is_atom(state.schedule_id), do: Atom.to_string(state.schedule_id), else: nil),
+        encode_schedule_id(state.schedule_id),
         state.schedule_fingerprint,
         state.last_evaluated_at,
         state.last_due_at,
@@ -215,7 +247,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp persist_run_transaction(repo, %Run{} = run, snapshot, snapshot_hash, write_seq) do
-    case Repo.transact(fn -> do_persist_run(repo, run, snapshot, snapshot_hash, write_seq) end) do
+    case repo.transact(fn -> do_persist_run(repo, run, snapshot, snapshot_hash, write_seq) end) do
       {:ok, :ok} -> :ok
       {:error, reason} -> {:error, reason}
     end
@@ -341,7 +373,7 @@ defmodule Favn.Storage.Adapter.Postgres do
        ) do
     case replace_run_nodes(repo, run, write_seq) do
       :ok -> :ok
-      {:error, reason} -> Repo.rollback(reason)
+      {:error, reason} -> repo.rollback(reason)
     end
   end
 
@@ -354,12 +386,12 @@ defmodule Favn.Storage.Adapter.Postgres do
        ) do
     case classify_run_conflict(repo, run.id, run.event_seq, snapshot_hash) do
       :idempotent -> :ok
-      {:error, reason} -> Repo.rollback(reason)
+      {:error, reason} -> repo.rollback(reason)
     end
   end
 
-  defp handle_run_upsert_result({:error, reason}, _repo, _run, _write_seq, _snapshot_hash) do
-    Repo.rollback(reason)
+  defp handle_run_upsert_result({:error, reason}, repo, _run, _write_seq, _snapshot_hash) do
+    repo.rollback(reason)
   end
 
   defp classify_run_conflict(repo, run_id, event_seq, snapshot_hash) do
@@ -426,7 +458,6 @@ defmodule Favn.Storage.Adapter.Postgres do
       $1, $2, $3, $4, $5, $6, $7, $8, $9,
       $10, $11, $12, $13, $14, $15, $16, $17, $17
     )
-    RETURNING id
     """
 
     now = DateTime.utc_now()
@@ -451,16 +482,12 @@ defmodule Favn.Storage.Adapter.Postgres do
       now
     ]
 
-    case SQL.query(repo, insert_sql, params) do
-      {:ok, %{rows: [[node_id]]}} ->
-        upsert_latest_success(repo, row, run_id, node_id, write_seq)
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, _result} <- SQL.query(repo, insert_sql, params) do
+      upsert_latest_success(repo, row, run_id, write_seq)
     end
   end
 
-  defp upsert_latest_success(repo, row, run_id, node_id, write_seq) do
+  defp upsert_latest_success(repo, row, run_id, write_seq) do
     cond do
       row.status != "ok" ->
         :ok
@@ -476,15 +503,13 @@ defmodule Favn.Storage.Adapter.Postgres do
           window_key_text,
           window_key_json,
           last_run_id,
-          last_run_node_id,
           last_finished_at,
           last_write_seq,
           updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT(ref_module, ref_name, window_key_text) DO UPDATE SET
           window_key_json = EXCLUDED.window_key_json,
           last_run_id = EXCLUDED.last_run_id,
-          last_run_node_id = EXCLUDED.last_run_node_id,
           last_finished_at = EXCLUDED.last_finished_at,
           last_write_seq = EXCLUDED.last_write_seq,
           updated_at = EXCLUDED.updated_at
@@ -497,7 +522,6 @@ defmodule Favn.Storage.Adapter.Postgres do
           row.window_key_text,
           row.window_key_json,
           run_id,
-          node_id,
           row.finished_at,
           write_seq,
           DateTime.utc_now()
@@ -559,12 +583,16 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp parse_schedule_id(nil), do: nil
+  defp parse_schedule_id("__default__"), do: nil
 
   defp parse_schedule_id(value) when is_binary(value) do
     String.to_existing_atom(value)
   rescue
     ArgumentError -> nil
   end
+
+  defp encode_schedule_id(nil), do: "__default__"
+  defp encode_schedule_id(value) when is_atom(value), do: Atom.to_string(value)
 
   defp next_write_seq(repo) do
     sql = "SELECT nextval('favn_run_write_seq')"
@@ -600,15 +628,46 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp validate_external_repo(opts) do
     case Keyword.get(opts, :repo) do
-      repo when is_atom(repo) and not is_nil(repo) -> {:ok, repo}
-      nil -> {:error, :postgres_external_repo_required}
-      _other -> {:error, :postgres_external_repo_invalid}
+      repo when is_atom(repo) and not is_nil(repo) ->
+        validate_external_repo_module(repo)
+
+      nil ->
+        {:error, :postgres_external_repo_required}
+
+      _other ->
+        {:error, :postgres_external_repo_invalid}
     end
+  end
+
+  defp validate_external_repo_module(repo) do
+    cond do
+      not Code.ensure_loaded?(repo) ->
+        {:error, :postgres_external_repo_invalid}
+
+      not function_exported?(repo, :__adapter__, 0) ->
+        {:error, :postgres_external_repo_invalid}
+
+      repo.__adapter__() != Ecto.Adapters.Postgres ->
+        {:error, :postgres_external_repo_must_use_postgres}
+
+      true ->
+        {:ok, repo}
+    end
+  rescue
+    UndefinedFunctionError -> {:error, :postgres_external_repo_invalid}
   end
 
   defp validate_migration_mode(opts) do
     case Keyword.get(opts, :migration_mode, :manual) do
       mode when mode in [:manual, :auto] -> :ok
+      mode -> {:error, {:invalid_migration_mode, mode}}
+    end
+  end
+
+  defp validate_external_migration_mode(opts) do
+    case Keyword.get(opts, :migration_mode, :manual) do
+      :manual -> :ok
+      :auto -> {:error, :postgres_external_repo_auto_migration_unsupported}
       mode -> {:error, {:invalid_migration_mode, mode}}
     end
   end
