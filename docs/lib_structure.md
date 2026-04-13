@@ -22,6 +22,7 @@ lib/
     │   └── registry.ex
     ├── asset/
     │   ├── dependency.ex
+    │   ├── relation_resolver.ex
     │   └── relation_input.ex
     ├── connection.ex
     ├── connection/

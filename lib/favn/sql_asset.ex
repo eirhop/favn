@@ -103,6 +103,7 @@ defmodule Favn.SQLAsset do
   """
 
   alias Favn.Asset
+  alias Favn.Asset.RelationResolver
   alias Favn.Namespace
   alias Favn.Ref
   alias Favn.RelationRef
@@ -315,7 +316,12 @@ defmodule Favn.SQLAsset do
     materialization =
       normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
 
-    relation = normalize_relation!(raw_definition, inferred_relation_name(raw_definition.module))
+    relation =
+      normalize_relation!(
+        raw_definition,
+        RelationResolver.inferred_relation_name_for_module(raw_definition.module)
+      )
+
     known_definitions = fetch_sql_definitions!(raw_definition)
 
     template =
@@ -555,12 +561,8 @@ defmodule Favn.SQLAsset do
           )
       end
 
-    defaults
-    |> maybe_drop_default_key(relation_attrs, [:catalog], [:database, "database"])
-    |> maybe_drop_default_key(relation_attrs, [:name], [:table, "table", :name, "name"])
-    |> Map.merge(relation_attrs)
-    |> maybe_put_inferred_name(inferred_name)
-    |> RelationRef.new!()
+    relation_attrs
+    |> RelationResolver.resolve_relation_attrs!(defaults, inferred_name)
     |> ensure_sql_relation!(raw_definition)
   rescue
     error in ArgumentError ->
@@ -599,29 +601,6 @@ defmodule Favn.SQLAsset do
       )
     else
       :ok
-    end
-  end
-
-  defp inferred_relation_name(module) do
-    module
-    |> Module.split()
-    |> List.last()
-    |> Macro.underscore()
-  end
-
-  defp maybe_drop_default_key(defaults, attrs, canonical_keys, authored_keys) do
-    if Enum.any?(authored_keys, &Map.has_key?(attrs, &1)) do
-      Enum.reduce(canonical_keys, defaults, &Map.delete(&2, &1))
-    else
-      defaults
-    end
-  end
-
-  defp maybe_put_inferred_name(attrs, inferred_name) do
-    if Enum.any?([:name, "name", :table, "table"], &Map.has_key?(attrs, &1)) do
-      attrs
-    else
-      Map.put(attrs, :name, inferred_name)
     end
   end
 
