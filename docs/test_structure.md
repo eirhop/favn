@@ -28,6 +28,7 @@ test/
 ├── sql_template_ir_test.exs
 ├── sql_dsl_test.exs
 ├── sql_duckdb_adapter_test.exs
+├── sql_duckdb_adapter_hardening_test.exs
 ├── sql_test.exs
 ├── sqlite_storage_bootstrap_test.exs
 ├── sqlite_storage_test.exs

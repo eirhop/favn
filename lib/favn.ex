@@ -140,9 +140,11 @@ defmodule Favn do
 
   v0.4 also introduces `Favn.SQL.Adapter` and the internal `Favn.SQL` facade as
   the runtime SQL backend contract starting from `%Favn.Connection.Resolved{}`.
-  DuckDB table materialization now keeps the same create-table flags across
-  normal and appender-backed write paths, with explicit best-effort appender
-  cleanup on failure.
+  DuckDB runtime hardening now keeps table-create semantics aligned across SQL
+  and appender-backed write paths, wraps multi-step write flows in explicit
+  transactions, and normalizes failure semantics into `%Favn.SQL.Error{}`.
+  Single-node runtime writes are serialized per connection name while
+  concurrent reads remain allowed.
 
 
   ## New v0.2 DSL contract

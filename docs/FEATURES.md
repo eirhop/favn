@@ -158,7 +158,11 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] duplicate visible reusable SQL definition detection across local/imported definitions
   - [x] reusable SQL cycle detection
   - [x] deferred symbolic asset refs for not-yet-compiled modules
-- [ ] DuckDB adapter hardening for runtime execution
+- [x] DuckDB adapter hardening for runtime execution
+  - [x] Explicit DuckDB runtime ownership/cleanup rules for db/conn/result/appender handles
+  - [x] DuckDB error normalization and rollback-failure surfacing via `%Favn.SQL.Error{}`
+  - [x] Serialized single-node write lock and transactional hardening for multi-step writes
+  - [x] Internal duckdbex client boundary for later first-party package extraction
 - [x] Typed external relational sources
   - [x] Unified `relation` DSL naming
   - [x] `Favn.Source` DSL for external relations
