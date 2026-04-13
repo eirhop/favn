@@ -202,8 +202,13 @@ defmodule Favn do
         end
       end
 
+  SQL assets support both inline `query do ... end` and file-backed
+  `query file: "..."` query definitions.
+
   The current SQL implementation keeps `~SQL` as the one SQL body language across
-  `query` and reusable `defsql` definitions. SQL authoring now includes one `@name`
+  inline `query` and inline reusable `defsql` definitions, while file-backed SQL
+  forms are loaded at compile time and normalized into the same compiled SQL source
+  and template IR model. SQL authoring now includes one `@name`
   placeholder model for SQL inputs, expression and relation SQL macros, direct asset
   references in relation position, and compile-time normalization into a dedicated SQL
   IR. Runtime helper APIs are available through `render/2`, `preview/2`, `explain/2`,

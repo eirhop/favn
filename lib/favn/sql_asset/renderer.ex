@@ -124,7 +124,8 @@ defmodule Favn.SQLAsset.Renderer do
       local_args: %{},
       definition_catalog: definition_catalog,
       stack: [],
-      cache: %{}
+      cache: %{},
+      current_file: Map.get(definition.raw_asset || %{}, :sql_file, definition.asset.file)
     }
   end
 
@@ -177,6 +178,7 @@ defmodule Favn.SQLAsset.Renderer do
            asset_ref: env.asset_ref,
            span: span,
            line: span.start_line,
+           file: env.current_file,
            message: "failed to resolve local defsql argument @#{index}",
            stack: env.stack
          }}
@@ -190,7 +192,8 @@ defmodule Favn.SQLAsset.Renderer do
            env
            |> Map.put(:local_args, local_arg_map(arg_fragments))
            |> Map.put(:stack, [stack_frame(call, definition) | env.stack])
-           |> Map.put(:cache, next_env.cache),
+           |> Map.put(:cache, next_env.cache)
+           |> Map.put(:current_file, definition.file),
          {:ok, %Fragment{} = expanded, callee_env_after} <-
            render_nodes(definition.template.nodes, callee_env) do
       {:ok, expanded, %{env | cache: callee_env_after.cache}}
@@ -208,6 +211,7 @@ defmodule Favn.SQLAsset.Renderer do
            "failed to expand SQL definition #{call.definition.name}/#{call.definition.arity}",
          span: call.span,
          line: call.span.start_line,
+         file: env.current_file,
          stack: env.stack,
          cause: error
        }}
@@ -237,6 +241,7 @@ defmodule Favn.SQLAsset.Renderer do
            asset_ref: env.asset_ref,
            span: span,
            line: span.start_line,
+           file: env.current_file,
            message: "failed to find SQL definition #{name}/#{arity} during render",
            stack: env.stack,
            details: %{name: name, arity: arity}
@@ -294,14 +299,20 @@ defmodule Favn.SQLAsset.Renderer do
 
       :error ->
         with {:ok, relation_ref} <-
-               resolve_deferred_module(module, env.asset_ref, asset_ref.span, env.stack),
+               resolve_deferred_module(
+                 module,
+                 env.asset_ref,
+                 asset_ref.span,
+                 env.stack,
+                 env.current_file
+               ),
              :ok <- ensure_same_connection(asset_ref, relation_ref, env) do
           {:ok, relation_ref, %{env | cache: Map.put(env.cache, module, relation_ref)}}
         end
     end
   end
 
-  defp resolve_deferred_module(module, asset_ref, span, stack) do
+  defp resolve_deferred_module(module, asset_ref, span, stack, current_file) do
     case Code.ensure_compiled(module) do
       {:module, _compiled} ->
         case Compiler.compile_module_assets(module) do
@@ -316,6 +327,7 @@ defmodule Favn.SQLAsset.Renderer do
                asset_ref: asset_ref,
                span: span,
                line: span.start_line,
+               file: current_file,
                message:
                  "SQL asset reference #{inspect(module)} resolved, but it does not have a relation",
                stack: stack,
@@ -330,6 +342,7 @@ defmodule Favn.SQLAsset.Renderer do
                asset_ref: asset_ref,
                span: span,
                line: span.start_line,
+               file: current_file,
                message:
                  "invalid SQL asset reference #{inspect(module)}; expected a compiled single-asset module",
                stack: stack,
@@ -344,6 +357,7 @@ defmodule Favn.SQLAsset.Renderer do
                asset_ref: asset_ref,
                span: span,
                line: span.start_line,
+               file: current_file,
                message:
                  "SQL asset reference #{inspect(module)} could not be resolved at render time",
                stack: stack,
@@ -359,6 +373,7 @@ defmodule Favn.SQLAsset.Renderer do
            asset_ref: asset_ref,
            span: span,
            line: span.start_line,
+           file: current_file,
            message: "SQL asset reference #{inspect(module)} could not be resolved at render time",
            stack: stack,
            details: %{module: module}
@@ -386,6 +401,7 @@ defmodule Favn.SQLAsset.Renderer do
        asset_ref: env.asset_ref,
        span: span,
        line: span.start_line,
+       file: env.current_file,
        message:
          "SQL asset reference #{inspect(module)} resolves to connection #{inspect(relation_ref.connection)}, expected #{inspect(env.root_connection)}",
        stack: env.stack,
@@ -446,6 +462,7 @@ defmodule Favn.SQLAsset.Renderer do
        asset_ref: env.asset_ref,
        span: span,
        line: span.start_line,
+       file: env.current_file,
        message: "missing runtime SQL input :#{name} for #{inspect(env.asset_ref)}",
        stack: env.stack,
        details: %{name: name}
@@ -460,6 +477,7 @@ defmodule Favn.SQLAsset.Renderer do
        asset_ref: env.asset_ref,
        span: span,
        line: span.start_line,
+       file: env.current_file,
        message: "missing SQL param :#{name} for #{inspect(env.asset_ref)}",
        stack: env.stack,
        details: %{name: name}

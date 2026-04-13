@@ -152,6 +152,58 @@ defmodule Favn.SQLAssetTest do
     assert asset.ref == {asset_module, :asset}
   end
 
+  test "supports file-backed query bodies" do
+    root = Module.concat(__MODULE__, "FileBacked#{System.unique_integer([:positive])}")
+    asset_module = Module.concat(root, Asset)
+    fixture = write_sql_fixture!("sql_asset_query.sql", "select @country as country")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(asset_module)} do
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
+        use Favn.SQLAsset
+
+        @materialized :view
+
+        query file: #{inspect(fixture.relative)}
+      end
+      """,
+      fixture.owner_file
+    )
+
+    assert {:ok, %Definition{} = definition} = SQLAssetCompiler.fetch_definition(asset_module)
+    assert definition.sql == "select @country as country"
+    assert String.ends_with?(definition.raw_asset.sql_file, "sql_asset_query.sql")
+    assert definition.raw_asset.sql_line == 1
+    assert definition.template.span.start_line == 1
+  end
+
+  test "reports SQL file diagnostics for file-backed query bodies" do
+    root = Module.concat(__MODULE__, "BadFileBacked#{System.unique_integer([:positive])}")
+    asset_module = Module.concat(root, Asset)
+    fixture = write_sql_fixture!("sql_asset_bad_query.sql", "select @1bad")
+
+    error =
+      assert_raise CompileError, fn ->
+        Code.compile_string(
+          """
+          defmodule #{inspect(asset_module)} do
+            use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
+            use Favn.SQLAsset
+
+            @materialized :view
+
+            query file: #{inspect(fixture.relative)}
+          end
+          """,
+          fixture.owner_file
+        )
+      end
+
+    assert String.ends_with?(to_string(error.file), "sql_asset_bad_query.sql")
+    assert error.line == 1
+  end
+
   test "rejects deferred incremental strategy :merge at compile time" do
     assert_raise CompileError, ~r/incremental strategy :merge is not supported in Phase 4b/, fn ->
       compile_sql_asset_module("""
@@ -379,5 +431,21 @@ defmodule Favn.SQLAssetTest do
     |> String.trim_trailing()
     |> String.split("\n")
     |> Enum.map_join("\n", &(padding <> &1))
+  end
+
+  defp write_sql_fixture!(file_name, body) do
+    uniq = "sql_asset_#{System.unique_integer([:positive])}"
+    base = Path.join(File.cwd!(), "tmp/favn_test_#{uniq}")
+    owner_dir = Path.join(base, "lib/my_app")
+    sql_dir = Path.join(base, "sql")
+
+    File.mkdir_p!(owner_dir)
+    File.mkdir_p!(sql_dir)
+
+    owner_file = Path.join(owner_dir, "asset.ex")
+    sql_file = Path.join(sql_dir, file_name)
+    File.write!(sql_file, body)
+
+    %{owner_file: owner_file, relative: "../../sql/#{file_name}"}
   end
 end

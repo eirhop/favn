@@ -23,7 +23,7 @@
 
 - Plain Elixir functions become assets with metadata and dependencies.
 - Preferred single-asset authoring uses one module with `use Favn.Asset` and `def asset(ctx)`.
-- SQL assets can be authored as one module with `use Favn.SQLAsset`, `query do ... end`, and a real `~SQL""" ... """` sigil.
+- SQL assets can be authored as one module with `use Favn.SQLAsset`, `query do ... end` or `query file: "..."`, and a real `~SQL""" ... """` sigil.
 - Assets can optionally own warehouse relations through `@relation`.
 - Dependency graphs are discovered automatically from asset definitions.
 - Runs are planned deterministically and executed in dependency order.
@@ -111,10 +111,12 @@ Phase 4a runtime integration now includes:
 
 Favn SQL uses a real `~SQL` sigil as the single SQL body language.
 
-SQL assets declare their main query with `query do ... end`.
-Reusable SQL uses `defsql ... do ... end` through `Favn.SQL`.
+SQL assets declare their main query with `query do ... end` or `query file: "..."`.
+Reusable SQL uses `defsql ... do ... end` or `defsql ..., file: "..."` through `Favn.SQL`.
 
 Both asset queries and reusable SQL macros use the same `~SQL` body syntax and the same `@name` placeholder syntax for injected values.
+
+File-backed SQL is loaded at compile time only, tracked as an external compile resource, and compiled into the same SQL template IR as inline SQL.
 
 Implemented now:
 

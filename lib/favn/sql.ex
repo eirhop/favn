@@ -9,6 +9,7 @@ defmodule Favn.SQL do
 
     * `use Favn.SQL`
     * `defsql ... do ... end`
+    * `defsql ..., file: "..."`
     * `~SQL\""" ... \"""`
   """
 
@@ -17,9 +18,13 @@ defmodule Favn.SQL do
   alias Favn.RelationRef
   alias Favn.SQL.Definition
   alias Favn.SQL.Definition.Param
-  alias Favn.SQL.{Error, Result, Session, WritePlan}
+  alias Favn.SQL.Error
   alias Favn.SQL.RelationRef, as: SQLRelationRef
+  alias Favn.SQL.Result
+  alias Favn.SQL.Session
+  alias Favn.SQL.Source
   alias Favn.SQL.Template
+  alias Favn.SQL.WritePlan
 
   @type opts :: keyword()
 
@@ -76,7 +81,35 @@ defmodule Favn.SQL do
       arity: arity,
       sql: sql,
       file: normalize_file(__CALLER__.file),
-      line: __CALLER__.line
+      line: __CALLER__.line,
+      sql_file: normalize_file(__CALLER__.file),
+      sql_line: __CALLER__.line
+    }
+
+    quote bind_quoted: [raw: Macro.escape(raw)] do
+      @favn_sql_raw_definitions raw
+      :ok
+    end
+  end
+
+  defmacro defsql({name, _meta, args_ast}, file: path)
+           when is_atom(name) and (is_list(args_ast) or is_nil(args_ast)) and is_binary(path) do
+    args = normalize_defsql_args!(args_ast || [], __CALLER__)
+    validate_reserved_arg_names!(args, __CALLER__)
+    arity = length(args)
+
+    source = Source.load_file!(__CALLER__, path, owner: "defsql")
+
+    raw = %{
+      module: __CALLER__.module,
+      name: name,
+      args: args,
+      arity: arity,
+      sql: source.sql,
+      file: normalize_file(__CALLER__.file),
+      line: __CALLER__.line,
+      sql_file: source.sql_file,
+      sql_line: source.sql_line
     }
 
     quote bind_quoted: [raw: Macro.escape(raw)] do
@@ -90,6 +123,22 @@ defmodule Favn.SQL do
       __CALLER__.file,
       __CALLER__.line,
       "defsql expects a function-style head, for example defsql my_macro(arg) do ... end"
+    )
+  end
+
+  defmacro defsql(_head, file: _path) do
+    compile_error!(
+      __CALLER__.file,
+      __CALLER__.line,
+      "defsql expects a function-style head, for example defsql my_macro(arg), file: \"sql/my_macro.sql\""
+    )
+  end
+
+  defmacro defsql(_head, opts) do
+    compile_error!(
+      __CALLER__.file,
+      __CALLER__.line,
+      "defsql expects either a do block or file: \"path/to/query.sql\", got: #{Macro.to_string(opts)}"
     )
   end
 
@@ -439,8 +488,10 @@ defmodule Favn.SQL do
           shape: if(inferred_root_kind == :query, do: :relation, else: :expression),
           sql: raw.sql,
           template: nil,
-          file: raw.file,
-          line: raw.line
+          file: raw.sql_file,
+          line: raw.sql_line,
+          declared_file: raw.file,
+          declared_line: raw.line
         }
       end)
 
@@ -533,9 +584,12 @@ defmodule Favn.SQL do
         :ok
 
       {{name, arity}, [definition | _rest]} ->
+        file = definition.declared_file || definition.file
+        line = definition.declared_line || definition.line
+
         compile_error!(
-          definition.file,
-          definition.line,
+          file,
+          line,
           "duplicate defsql #{name}/#{arity}; each defsql name/arity must be unique per module"
         )
     end)
@@ -550,10 +604,13 @@ defmodule Favn.SQL do
 
       {{name, arity}, definitions} ->
         providers = definitions |> Enum.map(&inspect(&1.module)) |> Enum.sort() |> Enum.join(", ")
+        first = hd(definitions)
+        file = first.declared_file || first.file
+        line = first.declared_line || first.line
 
         compile_error!(
-          hd(definitions).file,
-          hd(definitions).line,
+          file,
+          line,
           "duplicate visible defsql #{name}/#{arity} for #{inspect(owner_module)}; conflicting providers: #{providers}"
         )
     end)

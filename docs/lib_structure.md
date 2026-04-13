@@ -74,6 +74,7 @@ lib/
     │   ├── relation_ref.ex
     │   ├── result.ex
     │   ├── session.ex
+    │   ├── source.ex
     │   ├── template.ex
     │   ├── write_plan.ex
     │   └── adapter/

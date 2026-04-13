@@ -15,8 +15,32 @@ defmodule Favn.SQL.Definition do
     @type t :: %__MODULE__{name: atom(), index: non_neg_integer()}
   end
 
-  @enforce_keys [:module, :name, :arity, :params, :shape, :sql, :template, :file, :line]
-  defstruct [:module, :name, :arity, :params, :shape, :sql, :template, :file, :line]
+  @enforce_keys [
+    :module,
+    :name,
+    :arity,
+    :params,
+    :shape,
+    :sql,
+    :template,
+    :file,
+    :line,
+    :declared_file,
+    :declared_line
+  ]
+  defstruct [
+    :module,
+    :name,
+    :arity,
+    :params,
+    :shape,
+    :sql,
+    :template,
+    :file,
+    :line,
+    :declared_file,
+    :declared_line
+  ]
 
   @type t :: %__MODULE__{
           module: module(),
@@ -27,7 +51,9 @@ defmodule Favn.SQL.Definition do
           sql: String.t(),
           template: Template.t(),
           file: String.t(),
-          line: pos_integer()
+          line: pos_integer(),
+          declared_file: String.t(),
+          declared_line: pos_integer()
         }
 
   @spec key(t()) :: {atom(), non_neg_integer()}
