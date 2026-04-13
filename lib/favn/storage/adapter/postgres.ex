@@ -21,9 +21,9 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage.Postgres.Migrations
   alias Favn.Storage.Postgres.Repo
-  alias Favn.Storage.Postgres.RunSerializer
   alias Favn.Storage.Postgres.Supervisor, as: PostgresSupervisor
   alias Favn.Storage.Postgres.TermJSON
+  alias Favn.Storage.RunSerializer
   alias Favn.Storage.RunWriteSemantics
   alias Favn.Storage.SnapshotHash
   alias Favn.Window.Key

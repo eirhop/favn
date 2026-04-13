@@ -3,7 +3,7 @@ defmodule Favn.PostgresRunSerializerTest do
 
   alias Favn.Run
   alias Favn.Run.AssetResult
-  alias Favn.Storage.Postgres.RunSerializer
+  alias Favn.Storage.RunSerializer
   alias Favn.Window.Key
 
   test "snapshot_from_run/1 and run_from_snapshot/1 round-trip run structs" do

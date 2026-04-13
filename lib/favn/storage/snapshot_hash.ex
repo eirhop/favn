@@ -2,7 +2,7 @@ defmodule Favn.Storage.SnapshotHash do
   @moduledoc false
 
   alias Favn.Run
-  alias Favn.Storage.Postgres.RunSerializer
+  alias Favn.Storage.RunSerializer
 
   @spec for_run(Run.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def for_run(%Run{} = run, opts \\ []) do

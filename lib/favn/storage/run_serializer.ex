@@ -1,4 +1,4 @@
-defmodule Favn.Storage.Postgres.RunSerializer do
+defmodule Favn.Storage.RunSerializer do
   @moduledoc false
 
   alias Favn.Run
