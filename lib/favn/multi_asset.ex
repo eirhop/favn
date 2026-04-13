@@ -50,6 +50,43 @@ defmodule Favn.MultiAsset do
   - use at most one `defaults do ... end` block
   - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` directly above each declared asset
 
+  ## Supported attributes and blocks
+
+  Per generated asset you can use:
+
+  - `@doc`
+  - `@meta`
+  - `@depends`
+  - `@window`
+  - `@relation`
+  - `asset :name do ... end`
+
+  `defaults do ... end` currently supports:
+
+  - `meta ...`
+  - `window Favn.Window.*(...)`
+  - `rest do ... end`
+
+  `asset :name do ... end` currently supports:
+
+  - `rest do ... end`
+
+  `rest` currently supports these entries:
+
+  - `path "/path"`: request path or endpoint path
+  - `data_path "items"`: field path containing extracted records
+  - `params %{...}` or keyword list: static request params
+  - `primary_key "id"`: identifier field for downstream extraction logic
+  - `paginator kind, opts`: paginator config map with added `:kind`
+  - `incremental opts`: incremental extraction config, defaults `kind: :cursor`
+  - `method :get` or `"GET"`: request method
+  - `extra %{...}` or keyword list: adapter-specific extra config
+
+  `@depends` supports:
+
+  - `Other.SingleAssetModule`
+  - `{OtherModule, :asset_name}`
+
   ## What gets compiled
 
   Each declaration becomes one canonical `%Favn.Asset{}` with:
@@ -162,6 +199,12 @@ defmodule Favn.MultiAsset do
   Defaults are merged with per-asset declarations. In v0.4 this block supports
   `meta`, `window`, and `rest`.
 
+  Supported entries:
+
+  - `meta owner: ..., category: ..., tags: ...`
+  - `window Favn.Window.daily(...)`
+  - `rest do ... end`
+
   ## Example
 
       defaults do
@@ -202,6 +245,8 @@ defmodule Favn.MultiAsset do
 
   Attach standard asset attributes such as `@doc`, `@meta`, `@depends`,
   `@window`, and `@relation` immediately above the declaration.
+
+  The asset block currently supports only `rest do ... end`.
 
   ## Example
 

@@ -26,6 +26,20 @@ defmodule Favn.Namespace do
         use Favn.Namespace, relation: [schema: "sales"]
       end
 
+  ## Supported options
+
+  `use Favn.Namespace` accepts:
+
+  - `relation: [connection: ..., catalog: ..., schema: ...]`
+
+  Supported relation keys:
+
+  - `connection`: atom
+  - `catalog`: string or atom
+  - `schema`: string or atom
+
+  Only `relation:` is supported at the top level.
+
   ## See also
 
   - `Favn.Asset`

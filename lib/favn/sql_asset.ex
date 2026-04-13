@@ -45,6 +45,34 @@ defmodule Favn.SQLAsset do
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for file-backed SQL loaded at compile time
 
+  ## Supported attributes
+
+  - `@doc`: asset documentation
+  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `@depends`: repeatable dependency declaration
+  - `@window`: one `Favn.Window.*` spec
+  - `@relation`: optional owned relation declaration
+  - `@materialized`: required SQL materialization strategy
+
+  `@depends` supports:
+
+  - `Other.SingleAssetModule`
+  - `{Other.MultiAssetModule, :asset_name}`
+
+  `@materialized` currently supports:
+
+  - `:table`
+  - `:view`
+  - `{:incremental, strategy: :append}`
+  - `{:incremental, strategy: :delete_insert, window_column: :column_name}`
+
+  Incremental notes:
+
+  - incremental materialization requires `@window`
+  - `:append` does not accept `:window_column`
+  - `:delete_insert` requires `:window_column`
+  - `:merge`, `:replace`, and `unique_key` are not supported in v0.4
+
   ## What gets compiled
 
   The DSL keeps both authored SQL and normalized SQL IR so Favn can validate
@@ -147,6 +175,11 @@ defmodule Favn.SQLAsset do
 
   Use either an inline `~SQL` body or `file: "..."`. Each module may declare
   exactly one query.
+
+  Supported forms:
+
+  - `query do ... end`
+  - `query file: "path/to/query.sql"`
 
   ## Examples
 

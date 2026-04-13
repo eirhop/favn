@@ -18,6 +18,16 @@ defmodule Favn.Triggers.Schedules do
       end
 
   Pipelines can then reference `{MyApp.Schedules, :daily}`.
+
+  ## Supported options
+
+  `schedule/2` accepts:
+
+  - `cron`: required 5-field cron expression
+  - `timezone`: optional IANA timezone string
+  - `missed`: `:skip | :one | :all`, defaults to `:skip`
+  - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
+  - `active`: boolean, defaults to `true`
   """
 
   alias Favn.Triggers.Schedule
@@ -37,6 +47,15 @@ defmodule Favn.Triggers.Schedules do
 
   @doc """
   Declares one named schedule.
+
+  ## Example
+
+      schedule :hourly,
+        cron: "0 * * * *",
+        timezone: "Etc/UTC",
+        missed: :skip,
+        overlap: :forbid,
+        active: true
   """
   defmacro schedule(name, opts) do
     quote bind_quoted: [name: name, opts: opts] do

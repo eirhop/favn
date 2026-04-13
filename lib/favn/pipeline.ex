@@ -23,6 +23,54 @@ defmodule Favn.Pipeline do
         end
       end
 
+  ## Supported clauses
+
+  A pipeline block supports these clauses:
+
+  - `asset ref_or_module`: add one target asset
+  - `assets refs_or_modules`: add many target assets
+  - `select do ... end`: additive selectors using `asset`, `tag`, `category`, and `module`
+  - `deps :all | :none`: include upstream dependencies or not
+  - `config map_or_keyword`: runtime pipeline config exposed through pipeline context
+  - `meta map_or_keyword`: descriptive metadata for operators and tooling
+  - `schedule {Module, :name}`: reference a named schedule
+  - `schedule cron: ..., ...`: declare an inline schedule
+  - `window atom`: attach a named pipeline window
+  - `source atom`: attach a named pipeline source
+  - `outputs [atom, ...]`: attach named outputs
+
+  ## Schedule options
+
+  Inline `schedule` supports:
+
+  - `cron`: required 5-field cron expression
+  - `timezone`: optional IANA timezone string
+  - `missed`: `:skip | :one | :all`, defaults to `:skip`
+  - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
+  - `active`: boolean, defaults to `true`
+
+  ## Full example
+
+      defmodule MyApp.Pipelines.DailySales do
+        use Favn.Pipeline
+
+        pipeline :daily_sales do
+          select do
+            module MyApp.Gold.Sales
+            tag :daily
+            category :sales
+          end
+
+          deps :all
+          config requested_by: "scheduler", priority: :normal
+          meta owner: "analytics", purpose: :daily_refresh
+          schedule cron: "0 2 * * *", timezone: "Europe/Oslo", missed: :one
+          window :daily
+          source :scheduler
+          outputs [:warehouse, :metrics]
+        end
+      end
+
   ## Authoring notes
 
   - declare exactly one `pipeline :name do ... end`
@@ -64,6 +112,8 @@ defmodule Favn.Pipeline do
 
   @doc """
   Declares the pipeline name and body for a pipeline module.
+
+  Each module may declare exactly one pipeline block.
   """
   defmacro pipeline(name, do: block) when is_atom(name) do
     if Module.get_attribute(__CALLER__.module, :favn_pipeline_declared) do
@@ -82,6 +132,15 @@ defmodule Favn.Pipeline do
 
   @doc """
   Chooses whether pipeline runs include upstream dependencies.
+
+  Supported values:
+
+  - `:all`: include upstream dependencies
+  - `:none`: run only the selected targets
+
+  ## Example
+
+      deps :all
   """
   defmacro deps(mode) do
     quote bind_quoted: [mode: mode] do
@@ -94,6 +153,14 @@ defmodule Favn.Pipeline do
 
   @doc """
   Attaches pipeline-level config metadata as a map or keyword list.
+
+  `config` is intended for runtime-facing values that assets or orchestration
+  code may read from pipeline context.
+
+  ## Examples
+
+      config requested_by: "scheduler", priority: :high
+      config %{requested_by: "operator", dry_run: true}
   """
   defmacro config(opts) do
     quote bind_quoted: [opts: opts] do
@@ -106,6 +173,14 @@ defmodule Favn.Pipeline do
 
   @doc """
   Attaches pipeline metadata as a map or keyword list.
+
+  `meta` is intended for descriptive or classification data rather than runtime
+  control fields.
+
+  ## Examples
+
+      meta owner: "analytics", purpose: :daily_refresh
+      meta %{team: "data-platform", tier: :gold}
   """
   defmacro meta(opts) do
     quote bind_quoted: [opts: opts] do
@@ -118,6 +193,29 @@ defmodule Favn.Pipeline do
 
   @doc """
   Attaches a schedule reference or an inline schedule definition.
+
+  Supported forms:
+
+  - `{Module, :name}` for a named schedule from `Favn.Triggers.Schedules`
+  - keyword options for an inline schedule
+
+  Inline options:
+
+  - `cron` required
+  - `timezone` optional
+  - `missed` optional, defaults to `:skip`
+  - `overlap` optional, defaults to `:forbid`
+  - `active` optional, defaults to `true`
+
+  ## Examples
+
+      schedule {MyApp.Schedules, :daily}
+
+      schedule cron: "0 2 * * *",
+               timezone: "Europe/Oslo",
+               missed: :one,
+               overlap: :queue_one,
+               active: true
   """
   defmacro schedule(value) do
     quote bind_quoted: [value: value] do
@@ -129,6 +227,12 @@ defmodule Favn.Pipeline do
 
   @doc """
   Declares the named pipeline window to use at runtime.
+
+  The value must be an atom understood by your runtime or surrounding app.
+
+  ## Example
+
+      window :daily
   """
   defmacro window(name) do
     quote bind_quoted: [name: name] do
@@ -141,6 +245,12 @@ defmodule Favn.Pipeline do
 
   @doc """
   Declares the named pipeline source.
+
+  The value must be an atom understood by your runtime or surrounding app.
+
+  ## Example
+
+      source :scheduler
   """
   defmacro source(name) do
     quote bind_quoted: [name: name] do
@@ -153,6 +263,12 @@ defmodule Favn.Pipeline do
 
   @doc """
   Declares named pipeline outputs.
+
+  The value must be a list of atoms.
+
+  ## Example
+
+      outputs [:warehouse, :metrics]
   """
   defmacro outputs(value) do
     quote bind_quoted: [value: value] do
@@ -165,6 +281,16 @@ defmodule Favn.Pipeline do
 
   @doc """
   Adds one asset ref or single-asset module to the pipeline selection.
+
+  Supported values:
+
+  - `{Module, :asset_name}`
+  - `SingleAssetModule` for modules compiled as `{Module, :asset}`
+
+  ## Examples
+
+      asset {MyApp.Raw.Shopify, :orders}
+      asset MyApp.Gold.Sales.FctOrders
   """
   defmacro asset(ref) do
     quote bind_quoted: [ref: ref] do
@@ -182,6 +308,13 @@ defmodule Favn.Pipeline do
 
   @doc """
   Adds many asset refs or single-asset modules to the pipeline selection.
+
+  ## Example
+
+      assets [
+        {MyApp.Raw.Shopify, :orders},
+        MyApp.Gold.Sales.FctOrders
+      ]
   """
   defmacro assets(refs) do
     quote bind_quoted: [refs: refs] do
@@ -202,6 +335,21 @@ defmodule Favn.Pipeline do
 
   @doc """
   Declares additive selectors such as `asset`, `tag`, `category`, or `module`.
+
+  Supported selector forms inside the block:
+
+  - `asset ref_or_module`
+  - `tag atom_or_string`
+  - `category atom_or_string`
+  - `module Some.Namespace`
+
+  ## Example
+
+      select do
+        module MyApp.Gold.Sales
+        tag :daily
+        category :sales
+      end
   """
   defmacro select(do: block) do
     selectors = __extract_selectors__(block)

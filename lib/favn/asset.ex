@@ -42,6 +42,24 @@ defmodule Favn.Asset do
   - repeat `@depends` for multiple upstream dependencies
   - use module shorthand in `@depends` for another single-asset module
 
+  ## Supported attributes
+
+  - `@doc`: asset documentation shown in compiled docs and metadata
+  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `@depends`: repeatable dependency declaration
+  - `@window`: one `Favn.Window.*` spec
+  - `@relation`: optional owned relation declaration
+
+  `@depends` supports:
+
+  - `Other.SingleAssetModule`
+  - `{Other.MultiAssetModule, :asset_name}`
+
+  `@relation` supports:
+
+  - `true` to infer from module name plus namespace defaults
+  - keyword or map relation overrides such as `connection`, `catalog`, and `schema`
+
   ## What gets compiled
 
   The DSL compiles into one canonical `%Favn.Asset{}` with:

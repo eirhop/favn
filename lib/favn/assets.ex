@@ -32,6 +32,20 @@ defmodule Favn.Assets do
   - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` to that same function
   - use `:asset_name` for same-module dependencies and `{Module, :asset_name}` across modules
 
+  ## Supported attributes
+
+  - `@asset`: `true` or a display-name string
+  - `@doc`: per-asset documentation
+  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `@depends`: repeatable dependency declaration
+  - `@window`: one `Favn.Window.*` spec
+  - `@relation`: `true` or a keyword/map relation override
+
+  `@depends` supports:
+
+  - `:same_module_asset_name`
+  - `{OtherModule, :asset_name}`
+
   ## What gets compiled
 
   Every marked function becomes one canonical `%Favn.Asset{}` with ref

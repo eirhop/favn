@@ -27,6 +27,17 @@ defmodule Favn.Source do
   - declare exactly one `@relation`
   - optionally add `@doc` and `@meta`
 
+  ## Supported attributes
+
+  - `@doc`: source documentation
+  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `@relation`: required relation declaration
+
+  `@relation` supports:
+
+  - `true` to infer from module name plus namespace defaults
+  - keyword or map relation overrides such as `connection`, `catalog`, and `schema`
+
   ## What gets compiled
 
   A source compiles to one canonical `%Favn.Asset{}` with `type: :source` and no

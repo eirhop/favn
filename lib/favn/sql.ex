@@ -39,6 +39,13 @@ defmodule Favn.SQL do
   - non-reserved `@name` placeholders are explicit SQL inputs
   - `defsql` can be inline or file-backed
 
+  ## Supported public entrypoints
+
+  - `use Favn.SQL`: enables `defsql` and `~SQL`
+  - `defsql name(args) do ... end`: inline reusable SQL definition
+  - `defsql name(args), file: "..."`: file-backed reusable SQL definition
+  - `~SQL\""" ... \"""`: literal SQL body language
+
   ## Public vs internal boundary
 
   `Favn.SQL` is public. Lower-level modules such as `Favn.SQL.Template` and the
@@ -124,6 +131,11 @@ defmodule Favn.SQL do
   SQL definitions.
 
   Use a function-style head so arguments become named SQL inputs.
+
+  Supported forms:
+
+  - `defsql name(args) do ... end`
+  - `defsql name(args), file: "path/to/query.sql"`
 
   ## Examples
 

@@ -28,6 +28,25 @@ defmodule Favn.Connection do
   The adapter module should implement the SQL adapter contract used by your
   runtime.
 
+  ## Definition fields
+
+  `definition/0` returns `%Favn.Connection.Definition{}` with these public
+  fields:
+
+  - `name`: connection name used by assets and runtime lookup
+  - `adapter`: backend adapter module
+  - `config_schema`: runtime config schema entries
+  - `doc`: optional connection documentation
+  - `metadata`: optional descriptive metadata
+
+  Each `config_schema` entry supports:
+
+  - `key`: required config key name
+  - `required`: boolean, defaults to optional when omitted
+  - `default`: optional default value
+  - `secret`: boolean for redaction-sensitive values
+  - `type`: one of `:string`, `:atom`, `:boolean`, `:integer`, `:float`, `:path`, `:module`, `{:in, values}`, or `{:custom, fun}`
+
   ## See also
 
   - `Favn.AgentGuide`
