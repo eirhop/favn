@@ -143,8 +143,8 @@ defmodule Favn do
   DuckDB runtime hardening now keeps table-create semantics aligned across SQL
   and appender-backed write paths, wraps multi-step write flows in explicit
   transactions, and normalizes failure semantics into `%Favn.SQL.Error{}`.
-  Single-node runtime writes are serialized per connection name while
-  concurrent reads remain allowed.
+  DuckDB runtime follows single-process optimistic concurrency semantics, with
+  conflict-style failures surfaced as retryable normalized errors.
 
 
   ## New v0.2 DSL contract

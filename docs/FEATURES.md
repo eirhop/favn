@@ -161,7 +161,8 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 - [x] DuckDB adapter hardening for runtime execution
   - [x] Explicit DuckDB runtime ownership/cleanup rules for db/conn/result/appender handles
   - [x] DuckDB error normalization and rollback-failure surfacing via `%Favn.SQL.Error{}`
-  - [x] Serialized single-node write lock and transactional hardening for multi-step writes
+  - [x] Transactional hardening for multi-step writes aligned with DuckDB transaction semantics
+  - [x] Concurrency semantics aligned with DuckDB optimistic conflict behavior (no blanket write lock)
   - [x] Internal duckdbex client boundary for later first-party package extraction
 - [x] Typed external relational sources
   - [x] Unified `relation` DSL naming

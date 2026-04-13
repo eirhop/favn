@@ -10,7 +10,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
-  alias Favn.SQL.Adapter.DuckDB.{Client, ErrorMapper, WriteLock}
+  alias Favn.SQL.Adapter.DuckDB.{Client, ErrorMapper}
   alias Favn.SQL.{Capabilities, Column, Error, Relation, Result, WritePlan}
 
   defmodule Conn do
@@ -284,34 +284,25 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @spec transaction(Conn.t(), (Conn.t() -> {:ok, term()} | {:error, Error.t()}), opts()) ::
           {:ok, term()} | {:error, Error.t()}
   def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
-    _ = tx_rollback(conn)
+    case tx_begin(conn) do
+      :ok ->
+        run_transaction(conn, fun)
 
-    with :ok <- tx_begin(conn),
-         {:ok, value} <- fun.(conn),
-         :ok <- tx_commit(conn) do
-      {:ok, value}
-    else
       {:error, %Error{} = error} ->
-        finalize_transaction_failure(conn, error)
-
-      {:error, reason} ->
-        error = normalize_error(:transaction, conn.connection, reason)
-        finalize_transaction_failure(conn, error)
+        {:error, error}
     end
   end
 
   @impl true
   @spec materialize(Conn.t(), WritePlan.t(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   def materialize(%Conn{} = conn, %WritePlan{} = plan, opts) do
-    WriteLock.with_lock(conn.connection, fn ->
-      rows = appender_rows(plan, opts)
+    rows = appender_rows(plan, opts)
 
-      if plan.materialization == :table and rows != [] do
-        appender_materialize(conn, plan, rows)
-      else
-        run_plan_materialization(conn, plan, opts)
-      end
-    end)
+    if plan.materialization == :table and rows != [] do
+      appender_materialize(conn, plan, rows)
+    else
+      run_plan_materialization(conn, plan, opts)
+    end
   end
 
   defp run_plan_materialization(%Conn{} = conn, %WritePlan{transactional?: true} = plan, opts) do
@@ -467,15 +458,25 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   defp tx_begin(%Conn{conn_ref: conn_ref, client: client} = conn) do
     case client.begin_transaction(conn_ref) do
-      :ok -> :ok
-      {:error, reason} -> {:error, normalize_error(:transaction, conn.connection, reason)}
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         normalize_error(:transaction, conn.connection, reason)
+         |> transaction_stage_error(:begin)}
     end
   end
 
   defp tx_commit(%Conn{conn_ref: conn_ref, client: client} = conn) do
     case client.commit(conn_ref) do
-      :ok -> :ok
-      {:error, reason} -> {:error, normalize_error(:transaction, conn.connection, reason)}
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         normalize_error(:transaction, conn.connection, reason)
+         |> transaction_stage_error(:commit)}
     end
   end
 
@@ -485,11 +486,62 @@ defmodule Favn.SQL.Adapter.DuckDB do
     error -> {:error, error}
   end
 
+  defp run_transaction(%Conn{} = conn, fun) do
+    case fun.(conn) do
+      {:ok, value} ->
+        case tx_commit(conn) do
+          :ok -> {:ok, value}
+          {:error, %Error{} = error} -> finalize_transaction_failure(conn, error)
+        end
+
+      {:error, %Error{} = error} ->
+        finalize_transaction_failure(conn, transaction_stage_error(error, :body))
+
+      {:error, reason} ->
+        error =
+          normalize_error(:transaction, conn.connection, reason)
+          |> transaction_stage_error(:body)
+
+        finalize_transaction_failure(conn, error)
+
+      other ->
+        error =
+          normalize_error(:transaction, conn.connection, {:invalid_transaction_result, other})
+          |> transaction_stage_error(:body)
+
+        finalize_transaction_failure(conn, error)
+    end
+  rescue
+    error ->
+      raised =
+        %Error{
+          type: :execution_error,
+          message: "transaction body raised exception",
+          retryable?: false,
+          adapter: __MODULE__,
+          operation: :transaction,
+          connection: conn.connection,
+          details: %{
+            classification: :execution,
+            transaction_stage: :body,
+            exception: Exception.format(:error, error, __STACKTRACE__)
+          },
+          cause: error
+        }
+
+      finalize_transaction_failure(conn, raised)
+  end
+
   defp finalize_transaction_failure(%Conn{} = conn, %Error{} = error) do
     case tx_rollback(conn) do
       :ok -> {:error, error}
       {:error, reason} -> {:error, ErrorMapper.rollback_failure(error, reason)}
     end
+  end
+
+  defp transaction_stage_error(%Error{} = error, stage) do
+    details = Map.put(error.details || %{}, :transaction_stage, stage)
+    %Error{error | details: details}
   end
 
   defp create_view_statement(target, %WritePlan{replace_existing?: true, select_sql: sql}),

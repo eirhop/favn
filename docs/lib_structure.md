@@ -81,7 +81,6 @@ lib/
     │       └── duckdb/
     │           ├── client.ex
     │           ├── error_mapper.ex
-    │           ├── write_lock.ex
     │           └── client/
     │               └── duckdbex.ex
     ├── sql_asset/

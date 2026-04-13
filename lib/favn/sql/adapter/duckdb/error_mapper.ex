@@ -32,21 +32,26 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
         classification: :execution,
         transaction_stage: :rollback,
         rollback_reason: inspect(rollback_reason),
-        original_message: previous.message,
-        original_retryable?: previous.retryable?
-      }
+        original_error: %{
+          type: previous.type,
+          message: previous.message,
+          retryable?: previous.retryable?,
+          operation: previous.operation,
+          details: previous.details
+        }
+      },
+      cause: previous
     }
   end
 
   defp classification(:connect, :invalid_database), do: :invalid_config
   defp classification(:connect, _), do: :connection
   defp classification(:ping, _), do: :connection
+  defp classification(_operation, {:error, reason}), do: classification(:query, reason)
   defp classification(_operation, reason) when reason in [:busy, :locked], do: :conflict
 
-  defp classification(_operation, reason)
-       when is_binary(reason) and
-              reason == "Transaction conflict: cannot update a table that has been altered!" do
-    :conflict
+  defp classification(_operation, reason) when is_binary(reason) do
+    if String.contains?(String.downcase(reason), "conflict"), do: :conflict, else: :execution
   end
 
   defp classification(_operation, _reason), do: :execution
@@ -62,8 +67,10 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
 
   defp retryable_reason?(reason) when reason in [:busy, :locked], do: true
 
-  defp retryable_reason?("Transaction conflict: cannot update a table that has been altered!"),
-    do: true
+  defp retryable_reason?({:error, reason}), do: retryable_reason?(reason)
+
+  defp retryable_reason?(reason) when is_binary(reason),
+    do: String.contains?(String.downcase(reason), "conflict")
 
   defp retryable_reason?(_), do: false
 end

@@ -360,12 +360,11 @@ The internal SQL runtime contract now includes:
 - `Favn.SQL.Adapter.DuckDB` as the first internal DuckDB runtime adapter backed by `duckdbex`
 - DuckDB appender-backed table writes now preserve normal table create semantics, run inside explicit transactions, and close/release appender handles on all paths
 - DuckDB runtime errors are normalized to `%Favn.SQL.Error{}` with retryability metadata and rollback-failure surfacing
-- DuckDB write execution is serialized per connection name on a single Favn node to reduce write-conflict churn
 
 DuckDB runtime constraints in v0.4:
 
 - single-node operation is the supported model
-- concurrent reads are allowed, while writes are serialized per connection inside Favn
+- concurrent reads and writes are supported within a single process, with optimistic conflict handling
 - external concurrent writers can still conflict; those conflicts surface as normalized retryable execution errors
 - `duckdbex` is an internal implementation detail and is kept replaceable for later extraction to a first-party package (planned direction: `favn_duckdb`)
 
