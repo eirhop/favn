@@ -5,7 +5,8 @@ defmodule Favn.SQLAsset do
   `Favn.SQLAsset` compiles one SQL-authored module into one canonical
   `%Favn.Asset{}` with ref `{Module, :asset}`.
 
-  SQL bodies are authored with `query do ... end` and a real `~SQL` sigil.
+  SQL bodies are authored with `query do ... end` or `query file: "..."`.
+  Inline SQL uses a real `~SQL` sigil.
   SQL compilation keeps the authored SQL source and a normalized SQL template IR
   so reusable SQL definitions and relation references can be validated at compile time.
   """
@@ -16,6 +17,7 @@ defmodule Favn.SQLAsset do
   alias Favn.RelationRef
   alias Favn.SQL
   alias Favn.SQL.Definition, as: SQLDefinition
+  alias Favn.SQL.Source
   alias Favn.SQL.Template
   alias Favn.SQLAsset.Definition
   alias Favn.SQLAsset.Materialization
@@ -95,12 +97,49 @@ defmodule Favn.SQLAsset do
       module: __CALLER__.module,
       file: normalize_file(__CALLER__.file),
       line: __CALLER__.line,
+      sql_file: normalize_file(__CALLER__.file),
+      sql_line: __CALLER__.line,
       sql: sql
     })
 
     quote do
       :ok
     end
+  end
+
+  defmacro query(file: path) when is_binary(path) do
+    raw_definition = Module.get_attribute(__CALLER__.module, :favn_sql_asset_raw)
+
+    if raw_definition do
+      compile_error!(
+        __CALLER__.file,
+        __CALLER__.line,
+        "Favn.SQLAsset modules can define only one query body"
+      )
+    end
+
+    source = Source.load_file!(__CALLER__, path, owner: "query")
+
+    Module.put_attribute(__CALLER__.module, :favn_sql_asset_raw, %{
+      module: __CALLER__.module,
+      file: normalize_file(__CALLER__.file),
+      line: __CALLER__.line,
+      sql_file: source.sql_file,
+      sql_line: source.sql_line,
+      sql: source.sql
+    })
+
+    quote do
+      :ok
+    end
+  end
+
+  defmacro query(opts) do
+    compile_error!(
+      __CALLER__.file,
+      __CALLER__.line,
+      "query expects either a do block or file: \"path/to/query.sql\", got: #{Macro.to_string(opts)}"
+    )
   end
 
   @doc false
@@ -170,8 +209,8 @@ defmodule Favn.SQLAsset do
     template =
       Template.compile!(raw_definition.sql,
         known_definitions: known_definitions,
-        file: raw_definition.file,
-        line: raw_definition.line,
+        file: raw_definition.sql_file,
+        line: raw_definition.sql_line,
         module: raw_definition.module,
         scope: :query,
         local_args: [],
@@ -258,7 +297,7 @@ defmodule Favn.SQLAsset do
     compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @window attributes are not allowed; use at most one @window before query do ... end"
+      "multiple @window attributes are not allowed; use at most one @window before query"
     )
   end
 
@@ -291,7 +330,7 @@ defmodule Favn.SQLAsset do
     compile_error!(
       raw_definition.file,
       raw_definition.line,
-      "multiple @materialized attributes are not allowed; use exactly one @materialized before query do ... end"
+      "multiple @materialized attributes are not allowed; use exactly one @materialized before query"
     )
   end
 
@@ -442,7 +481,7 @@ defmodule Favn.SQLAsset do
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window/@relation/@materialized on #{kind} #{name}/#{arity} requires query do ... end immediately below those attributes"
+        "@depends/@meta/@window/@relation/@materialized on #{kind} #{name}/#{arity} requires query immediately below those attributes"
       )
     else
       :ok

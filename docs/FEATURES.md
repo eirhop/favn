@@ -190,7 +190,11 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] explicit runtime guard for unsupported incremental strategies such as `:merge` and current `:replace`
   - [x] window-aware incremental execution and explicit lookback handling
 - [ ] Multi-asset SQL modules
-- [ ] SQL file support
+- [x] SQL file support
+  - [x] `query file: "..."` for SQL asset main queries
+  - [x] `defsql ..., file: "..."` for reusable SQL definitions
+  - [x] compile-time-only file loading with project-local path validation
+  - [x] `.sql` file diagnostics and Mix recompilation via external resource tracking
 - [x] Phase 5 relation-based SQL inference
   - [x] dependency inference from typed SQL relation references
   - [x] SQL asset dependency planning on the shared window-aware runtime model
