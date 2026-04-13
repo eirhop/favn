@@ -113,6 +113,7 @@ lib/
     │   ├── run_serializer.ex
     │   ├── run_write_semantics.ex
     │   ├── snapshot_hash.ex
+    │   ├── term_json.ex
     │   ├── adapter.ex
     │   ├── adapter/
     │   │   ├── memory.ex
@@ -124,7 +125,6 @@ lib/
     │   │   │   └── create_foundation.ex
     │   │   ├── repo.ex
     │   │   ├── supervisor.ex
-    │   │   └── term_json.ex
     │   └── sqlite/
     │       ├── migrations.ex
     │       ├── migrations/

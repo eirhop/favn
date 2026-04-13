@@ -2,7 +2,7 @@ defmodule Favn.Storage.RunSerializer do
   @moduledoc false
 
   alias Favn.Run
-  alias Favn.Storage.Postgres.TermJSON
+  alias Favn.Storage.TermJSON
 
   @snapshot_version 1
 

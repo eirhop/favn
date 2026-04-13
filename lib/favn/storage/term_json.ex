@@ -1,4 +1,4 @@
-defmodule Favn.Storage.Postgres.TermJSON do
+defmodule Favn.Storage.TermJSON do
   @moduledoc false
 
   @spec encode(term()) :: map()
