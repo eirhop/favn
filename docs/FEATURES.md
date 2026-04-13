@@ -189,7 +189,6 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] first safe incremental strategies: `:append` and `:delete_insert`
   - [x] explicit runtime guard for unsupported incremental strategies such as `:merge` and current `:replace`
   - [x] window-aware incremental execution and explicit lookback handling
-- [ ] Multi-asset SQL modules
 - [x] Generated multi-asset Elixir DSL for repetitive extraction assets (`Favn.MultiAsset`)
 - [x] SQL file support
   - [x] `query file: "..."` for SQL asset main queries
