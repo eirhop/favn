@@ -86,8 +86,9 @@ Add `pipeline_modules`, `connections`, `scheduler`, `storage_adapter`, and `stor
 
 Put this in `AGENTS.md`:
 
-```text
+```markdown
 When working in this repository, always start by reading the moduledoc for Favn.AgentGuide.
+Read it through terminal with following command: `mix run -e '{:docs_v1, _, _, _, mod_docs, _, _} = Code.fetch_docs(Favn.AgentGuide); IO.puts(mod_docs["en"])'`
 ```
 
 ## Read Next

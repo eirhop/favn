@@ -12,7 +12,7 @@ The most important file is `docs/FEATURES.md`. We will use this file to document
 - Always start by reading `/lib/favn.ex` and `readme.md` to get overview of project, code interface and progress
 - Keep status of roadmap features and task list always up to date in `docs/FEATURES.md`. 
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
-- Always keep user documentation up to date in `/lib/favn.ex` and `README.md`.
+- Always keep user documentation up to date in `/lib/favn.ex` and `README.md`. But do not bloat it with uncessary information. Only user relevant information on features they will use and need to be informed about. Follow best practices
 - when creating new files, please update `docs/lib_structure.md` or `docs/test_structure.md`
 - Before starting a new coding session - always:
     - Identify new coding session through that chat history is empty

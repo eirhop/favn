@@ -205,6 +205,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] unmanaged external relation warnings and ambiguous ownership errors
   - [x] follow-up hardening: nested/subquery `WITH` CTE alias exclusion tests for relation inference
 - [x] Documentation refactor for public DSL discoverability and AI-agent routing
+- [x] Registered source/external dependency model (typed relation identities)
 
 ---
 
@@ -219,7 +220,6 @@ Goal: make single-node production usage reliable and inspectable.
 - [ ] Concurrency controls
 - [ ] Run deduplication / run keys
 - [ ] Improved failure recovery
-- [x] Registered source/external dependency model (typed relation identities)
 - [ ] Materialization history tracking
 - [ ] Asset and window state inspection
 - [ ] Asset dependency provenance and relation-lineage inspection APIs
