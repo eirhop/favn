@@ -217,6 +217,22 @@ defmodule Favn.SQLDuckDBAdapterHardeningTest do
            end)
   end
 
+  test "commit failure preserves commit-stage error and rolls back" do
+    Application.put_env(:favn, :commit_mode, :error)
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:error,
+            %Error{
+              operation: :transaction,
+              details: %{transaction_stage: :commit}
+            }} = DuckDB.transaction(conn, fn _ -> {:ok, :ok} end, [])
+
+    assert Enum.any?(events(), fn
+             {:rollback, _conn_ref} -> true
+             _ -> false
+           end)
+  end
+
   test "rollback failure keeps original transaction failure context" do
     Application.put_env(:favn, :rollback_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
