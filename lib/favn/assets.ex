@@ -178,6 +178,7 @@ defmodule Favn.Assets do
     asset = %Asset{
       module: raw_asset.module,
       name: raw_asset.name,
+      entrypoint: raw_asset.name,
       ref: Ref.new(raw_asset.module, raw_asset.name),
       arity: raw_asset.arity,
       doc: raw_asset.doc,
@@ -186,6 +187,7 @@ defmodule Favn.Assets do
       title: title,
       meta: meta,
       depends_on: depends_on,
+      config: %{},
       window_spec: window_spec
     }
 

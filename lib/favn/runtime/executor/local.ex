@@ -39,7 +39,9 @@ defmodule Favn.Runtime.Executor.Local do
   end
 
   defp invoke(asset, %Context{} = ctx) do
-    case apply(asset.module, asset.name, [ctx]) do
+    entrypoint = asset.entrypoint || asset.name
+
+    case apply(asset.module, entrypoint, [ctx]) do
       :ok ->
         {:ok, %{}}
 

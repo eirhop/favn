@@ -23,6 +23,7 @@
 
 - Plain Elixir functions become assets with metadata and dependencies.
 - Preferred single-asset authoring uses one module with `use Favn.Asset` and `def asset(ctx)`.
+- Advanced repetitive extraction authoring uses `use Favn.MultiAsset` with `asset :name do ... end` declarations and one shared `def asset(ctx)`.
 - SQL assets can be authored as one module with `use Favn.SQLAsset`, `query do ... end` or `query file: "..."`, and a real `~SQL""" ... """` sigil.
 - Assets can optionally own warehouse relations through `@relation`.
 - Dependency graphs are discovered automatically from asset definitions.
@@ -57,6 +58,41 @@ end
 - `@relation`
 
 Single-asset modules compile to one canonical `%Favn.Asset{}` with ref `{Module, :asset}`.
+
+## Advanced generated Elixir DSL
+
+`Favn.MultiAsset` is an advanced Elixir DSL for repetitive extraction assets.
+One module declares many generated assets with familiar metadata attributes while sharing one runtime `asset/1` function.
+
+```elixir
+defmodule MyApp.Raw.Shopify do
+  use Favn.MultiAsset
+
+  defaults do
+    meta owner: "data-platform", category: :shopify, tags: [:raw]
+
+    rest do
+      primary_key "id"
+      paginator :cursor, cursor_path: "links.next"
+      incremental cursor: "updated_at", start_param: "updated_at_min"
+      extra page_size: 250
+    end
+  end
+
+  @doc "Extract orders"
+  @relation true
+  asset :orders do
+    rest do
+      path "/orders.json"
+      data_path "orders"
+    end
+  end
+
+  def asset(ctx), do: MyApp.Shopify.Client.extract(ctx.asset.config, ctx)
+end
+```
+
+Generated assets compile into canonical `%Favn.Asset{}` refs like `{MyApp.Raw.Shopify, :orders}` and expose merged runtime config through `ctx.asset.config`.
 
 ## Preferred single-asset SQL DSL
 
@@ -301,7 +337,7 @@ config :favn,
 
 Key settings:
 
-- `asset_modules`: modules that define assets with `use Favn.Asset`, `use Favn.SQLAsset`, or `use Favn.Assets`.
+- `asset_modules`: modules that define assets with `use Favn.Asset`, `use Favn.MultiAsset`, `use Favn.SQLAsset`, or `use Favn.Assets`.
 - `pipeline_modules`: pipeline modules discovered by the scheduler runtime.
 - `:pubsub_name`: PubSub server name used for run event broadcasting.
 - `:scheduler`: trigger scheduler runtime options (`enabled`, `default_timezone`, `tick_ms`). `enabled` defaults to `true`; `tick_ms` defaults to `15_000`.

@@ -11,6 +11,7 @@ test/
 ├── favn_test.exs
 ├── freshness_test.exs
 ├── graph_index_test.exs
+├── multi_asset_test.exs
 ├── pipeline_sqlite_smoke_test.exs
 ├── pipeline_test.exs
 ├── planner_test.exs

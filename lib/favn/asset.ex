@@ -115,6 +115,7 @@ defmodule Favn.Asset do
   @type t :: %__MODULE__{
           module: module(),
           name: atom(),
+          entrypoint: atom() | nil,
           ref: Ref.t(),
           arity: non_neg_integer(),
           type: :elixir | :sql | :source,
@@ -125,6 +126,7 @@ defmodule Favn.Asset do
           meta: map(),
           depends_on: [Ref.t()],
           dependencies: [Dependency.t()],
+          config: map(),
           window_spec: Spec.t() | nil,
           relation: RelationRef.t() | nil,
           materialization: Favn.SQLAsset.Materialization.t() | nil,
@@ -140,6 +142,7 @@ defmodule Favn.Asset do
   defstruct [
     :module,
     :name,
+    :entrypoint,
     :ref,
     :arity,
     :title,
@@ -150,6 +153,7 @@ defmodule Favn.Asset do
     meta: %{},
     depends_on: [],
     dependencies: [],
+    config: %{},
     window_spec: nil,
     relation: nil,
     materialization: nil,
@@ -172,6 +176,8 @@ defmodule Favn.Asset do
   def validate!(%__MODULE__{} = asset) do
     meta = normalize_meta!(asset.meta)
     validate_depends_on!(asset.depends_on)
+    validate_entrypoint!(asset.entrypoint)
+    validate_config!(asset.config)
     validate_window_spec!(asset.window_spec)
     validate_relation!(asset.relation)
     validate_type!(asset.type)
@@ -257,6 +263,19 @@ defmodule Favn.Asset do
           "asset depends_on must be a list of Favn.Ref values, got: #{inspect(depends_on)}"
   end
 
+  defp validate_entrypoint!(entrypoint) when is_atom(entrypoint) or is_nil(entrypoint), do: :ok
+
+  defp validate_entrypoint!(entrypoint) do
+    raise ArgumentError,
+          "asset entrypoint must be an atom or nil, got: #{inspect(entrypoint)}"
+  end
+
+  defp validate_config!(config) when is_map(config), do: :ok
+
+  defp validate_config!(config) do
+    raise ArgumentError, "asset config must be a map, got: #{inspect(config)}"
+  end
+
   defp validate_window_spec!(nil), do: :ok
 
   defp validate_window_spec!(%Spec{} = spec) do
@@ -336,6 +355,7 @@ defmodule Favn.Asset do
     asset = %__MODULE__{
       module: raw_asset.module,
       name: :asset,
+      entrypoint: :asset,
       ref: Ref.new(raw_asset.module, :asset),
       arity: 1,
       type: :elixir,
@@ -345,6 +365,7 @@ defmodule Favn.Asset do
       line: raw_asset.line,
       meta: meta,
       depends_on: depends_on,
+      config: %{},
       window_spec: window_spec
     }
 
