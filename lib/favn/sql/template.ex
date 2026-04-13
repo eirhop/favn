@@ -227,12 +227,7 @@ defmodule Favn.SQL.Template do
       statement_kind: top_level_statement_kind(root_kind),
       scope: scope,
       root_kind: root_kind,
-      cte_names: MapSet.new(),
-      cte_active?: false,
-      cte_expect_alias?: false,
-      cte_waiting_query?: false,
-      cte_query_depth: nil,
-      cte_ready_for_next?: false
+      cte_scopes: []
     }
 
     {nodes, end_state} = parse_nodes(String.to_charlist(sql), parser_state, [])
@@ -452,6 +447,7 @@ defmodule Favn.SQL.Template do
       |> Map.put(:relation_entry?, false)
       |> Map.put(:join_prefix, nil)
       |> maybe_exit_cte_query(state)
+      |> pop_expired_cte_scopes()
 
     parse_nodes(rest, next_state, [text_node(")", state.position, next_state.position) | acc])
   end
@@ -463,12 +459,7 @@ defmodule Favn.SQL.Template do
       |> Map.put(:relation_entry?, false)
       |> Map.put(:join_prefix, nil)
       |> Map.put(:statement_kind, top_level_statement_kind(state.root_kind))
-      |> Map.put(:cte_names, MapSet.new())
-      |> Map.put(:cte_active?, false)
-      |> Map.put(:cte_expect_alias?, false)
-      |> Map.put(:cte_waiting_query?, false)
-      |> Map.put(:cte_query_depth, nil)
-      |> Map.put(:cte_ready_for_next?, false)
+      |> Map.put(:cte_scopes, [])
 
     parse_nodes(rest, next_state, [text_node(";", state.position, next_state.position) | acc])
   end
@@ -897,12 +888,16 @@ defmodule Favn.SQL.Template do
     state.statement_kind not in [:update, :merge] and
       state.relation_entry? and
       String.match?(word, ~r/^[a-z_][A-Za-z0-9_]*$/) and
-      not cte_name?(state, word) and
+      not visible_cte_name?(state, word) and
       peek_nonspace_char(tail) != ?(
   end
 
-  defp cte_name?(state, word) do
-    MapSet.member?(state.cte_names, String.downcase(word))
+  defp visible_cte_name?(state, word) do
+    alias_name = String.downcase(word)
+
+    Enum.any?(state.cte_scopes, fn scope ->
+      MapSet.member?(scope.names, alias_name)
+    end)
   end
 
   defp call_candidate?(word, tail, state) do
@@ -1209,95 +1204,116 @@ defmodule Favn.SQL.Template do
   end
 
   defp maybe_finalize_cte_after_query_identifier(state) do
-    if state.cte_ready_for_next? and state.paren_depth == 0 and not state.cte_expect_alias? do
-      state
-      |> Map.put(:cte_active?, false)
-      |> Map.put(:cte_waiting_query?, false)
-      |> Map.put(:cte_query_depth, nil)
-      |> Map.put(:cte_ready_for_next?, false)
-    else
-      state
-    end
+    update_top_cte_scope(state, fn scope ->
+      if scope.active? and scope.ready_for_next? and state.paren_depth == scope.boundary_depth and
+           not scope.expect_alias? do
+        %{
+          scope
+          | active?: false,
+            waiting_query?: false,
+            query_depth: nil,
+            ready_for_next?: false
+        }
+      else
+        scope
+      end
+    end)
   end
 
-  defp transition_cte_identifier(%{paren_depth: 0} = state, "with") do
-    state
-    |> Map.put(:cte_names, MapSet.new())
-    |> Map.put(:cte_active?, true)
-    |> Map.put(:cte_expect_alias?, true)
-    |> Map.put(:cte_waiting_query?, false)
-    |> Map.put(:cte_query_depth, nil)
-    |> Map.put(:cte_ready_for_next?, false)
+  defp transition_cte_identifier(state, "with"), do: push_cte_scope(state, state.paren_depth)
+
+  defp transition_cte_identifier(state, word) do
+    update_top_cte_scope(state, fn scope ->
+      cond do
+        scope.active? and scope.expect_alias? and state.paren_depth == scope.boundary_depth and
+            word == "recursive" ->
+          scope
+
+        scope.active? and scope.expect_alias? and state.paren_depth == scope.boundary_depth ->
+          %{scope | names: MapSet.put(scope.names, word), expect_alias?: false}
+
+        scope.active? and not scope.expect_alias? and state.paren_depth == scope.boundary_depth and
+            word == "as" ->
+          %{scope | waiting_query?: true}
+
+        true ->
+          scope
+      end
+    end)
   end
-
-  defp transition_cte_identifier(
-         %{cte_active?: true, cte_expect_alias?: true, paren_depth: 0} = state,
-         "recursive"
-       ),
-       do: state
-
-  defp transition_cte_identifier(
-         %{cte_active?: true, cte_expect_alias?: true, paren_depth: 0} = state,
-         alias_name
-       ) do
-    state
-    |> Map.put(:cte_names, MapSet.put(state.cte_names, alias_name))
-    |> Map.put(:cte_expect_alias?, false)
-  end
-
-  defp transition_cte_identifier(
-         %{cte_active?: true, cte_expect_alias?: false, paren_depth: 0} = state,
-         "as"
-       ) do
-    Map.put(state, :cte_waiting_query?, true)
-  end
-
-  defp transition_cte_identifier(state, _word), do: state
 
   defp maybe_enter_cte_query(state) do
-    if state.cte_active? and state.cte_waiting_query? and state.paren_depth > 0 and
-         is_nil(state.cte_query_depth) do
-      state
-      |> Map.put(:cte_query_depth, state.paren_depth)
-      |> Map.put(:cte_waiting_query?, false)
-      |> Map.put(:cte_ready_for_next?, false)
-    else
-      state
-    end
+    update_top_cte_scope(state, fn scope ->
+      if scope.active? and scope.waiting_query? and state.paren_depth > scope.boundary_depth and
+           is_nil(scope.query_depth) do
+        %{scope | query_depth: state.paren_depth, waiting_query?: false, ready_for_next?: false}
+      else
+        scope
+      end
+    end)
   end
 
   defp maybe_exit_cte_query(state, previous_state) do
-    if state.cte_active? and not is_nil(previous_state.cte_query_depth) and
-         previous_state.paren_depth == previous_state.cte_query_depth do
-      state
-      |> Map.put(:cte_query_depth, nil)
-      |> Map.put(:cte_ready_for_next?, true)
-    else
-      state
-    end
+    update_top_cte_scope(state, fn scope ->
+      if scope.active? and not is_nil(scope.query_depth) and
+           previous_state.paren_depth == scope.query_depth do
+        %{scope | query_depth: nil, ready_for_next?: true}
+      else
+        scope
+      end
+    end)
   end
 
   defp maybe_continue_cte_sequence_after_comma(state) do
-    if state.cte_active? and state.cte_ready_for_next? and state.paren_depth == 0 do
-      state
-      |> Map.put(:cte_expect_alias?, true)
-      |> Map.put(:cte_ready_for_next?, false)
-    else
-      state
-    end
+    update_top_cte_scope(state, fn scope ->
+      if scope.active? and scope.ready_for_next? and state.paren_depth == scope.boundary_depth do
+        %{scope | expect_alias?: true, ready_for_next?: false}
+      else
+        scope
+      end
+    end)
   end
 
   defp maybe_close_cte_sequence(state, char) do
-    if state.cte_active? and state.cte_ready_for_next? and state.paren_depth == 0 and
-         char not in [32, 9, 10, 13] do
-      state
-      |> Map.put(:cte_active?, false)
-      |> Map.put(:cte_waiting_query?, false)
-      |> Map.put(:cte_query_depth, nil)
-      |> Map.put(:cte_ready_for_next?, false)
-    else
-      state
+    update_top_cte_scope(state, fn scope ->
+      if scope.active? and scope.ready_for_next? and state.paren_depth == scope.boundary_depth and
+           char not in [32, 9, 10, 13] do
+        %{
+          scope
+          | active?: false,
+            waiting_query?: false,
+            query_depth: nil,
+            ready_for_next?: false
+        }
+      else
+        scope
+      end
+    end)
+  end
+
+  defp push_cte_scope(state, boundary_depth) do
+    scope = %{
+      boundary_depth: boundary_depth,
+      names: MapSet.new(),
+      active?: true,
+      expect_alias?: true,
+      waiting_query?: false,
+      query_depth: nil,
+      ready_for_next?: false
+    }
+
+    %{state | cte_scopes: [scope | state.cte_scopes]}
+  end
+
+  defp update_top_cte_scope(state, fun) do
+    case state.cte_scopes do
+      [scope | rest] -> %{state | cte_scopes: [fun.(scope) | rest]}
+      [] -> state
     end
+  end
+
+  defp pop_expired_cte_scopes(state) do
+    %{state | cte_scopes: Enum.reject(state.cte_scopes, &(&1.boundary_depth > state.paren_depth))}
   end
 
   defp top_level_statement_kind(:query), do: :query

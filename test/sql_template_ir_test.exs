@@ -371,6 +371,89 @@ defmodule Favn.SQLTemplateIRTest do
              Template.asset_refs(template)
   end
 
+  test "excludes nested derived-table CTE aliases from relation refs" do
+    template =
+      Template.compile!(
+        """
+        select *
+        from (
+          with local_orders as (
+            select * from silver.sales.orders
+          )
+          select * from local_orders
+        ) as derived
+        join silver.sales.customers c on true
+        """,
+        file: "test/sql_template_ir_test.exs",
+        line: 1
+      )
+
+    assert Enum.map(Template.relation_refs(template), & &1.raw) == [
+             "silver.sales.orders",
+             "silver.sales.customers"
+           ]
+  end
+
+  test "excludes nested exists and in CTE aliases from relation refs" do
+    template =
+      Template.compile!(
+        """
+        select *
+        from silver.sales.orders o
+        where exists (
+          with recursive seeded as (
+            select * from silver.sales.events
+          ),
+          linked as (
+            select * from seeded
+          )
+          select 1 from linked
+        )
+        and o.customer_id in (
+          with ids as (
+            select customer_id from silver.sales.customers
+          )
+          select customer_id from ids
+        )
+        """,
+        file: "test/sql_template_ir_test.exs",
+        line: 1
+      )
+
+    assert Enum.map(Template.relation_refs(template), & &1.raw) == [
+             "silver.sales.orders",
+             "silver.sales.events",
+             "silver.sales.customers"
+           ]
+  end
+
+  test "keeps lexical CTE shadowing local while resuming outer relation inference" do
+    template =
+      Template.compile!(
+        """
+        with orders as (
+          select 1 as id
+        )
+        select *
+        from orders
+        where exists (
+          with orders as (
+            select * from silver.sales.orders
+          )
+          select 1 from orders
+        )
+        join sales.orders as external_orders on true
+        """,
+        file: "test/sql_template_ir_test.exs",
+        line: 1
+      )
+
+    assert Enum.map(Template.relation_refs(template), & &1.raw) == [
+             "silver.sales.orders",
+             "sales.orders"
+           ]
+  end
+
   test "treats semicolon inside parentheses as ordinary text" do
     template =
       Template.compile!(

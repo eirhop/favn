@@ -140,6 +140,7 @@ Implemented in Phase 5:
 - relation-based dependency inference from typed SQL relation references
 - additive merge of explicit + inferred dependencies with provenance metadata
 - relation ownership diagnostics (unmanaged warnings, ambiguous ownership errors)
+- lexical CTE alias exclusion for relation inference across top-level and nested subqueries
 
 Planned later:
 
