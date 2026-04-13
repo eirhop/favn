@@ -96,6 +96,7 @@ defmodule Favn.Asset do
   alias Favn.Asset.Dependency
   alias Favn.Asset.RelationInput
   alias Favn.Diagnostic
+  alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Ref
   alias Favn.RelationRef
   alias Favn.SQLAsset.Materialization
@@ -124,14 +125,18 @@ defmodule Favn.Asset do
         capture_single_asset_definition!(env)
 
       {:def, :asset, _other_arity} ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           env.file,
           env.line,
           "Favn.Asset requires exactly one public asset/1 function"
         )
 
       {:defp, :asset, _arity} ->
-        compile_error!(env.file, env.line, "Favn.Asset requires a public def asset(ctx)")
+        DSLCompiler.compile_error!(
+          env.file,
+          env.line,
+          "Favn.Asset requires a public def asset(ctx)"
+        )
 
       {kind, _name, _arity} when kind in [:def, :defp] ->
         validate_no_stray_asset_attributes!(env, kind, name, arity)
@@ -146,7 +151,7 @@ defmodule Favn.Asset do
     raw_asset = Module.get_attribute(env.module, :favn_single_asset_raw)
 
     if is_nil(raw_asset) do
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "Favn.Asset modules must define exactly one public asset/1 function"
@@ -163,7 +168,7 @@ defmodule Favn.Asset do
         :ok
 
       _ ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           env.file,
           env.line,
           "@depends/@meta/@window/@relation must be attached to def asset(ctx)"
@@ -388,7 +393,7 @@ defmodule Favn.Asset do
 
   defp capture_single_asset_definition!(env) do
     if Module.get_attribute(env.module, :favn_single_asset_raw) do
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "Favn.Asset modules can define only one asset/1 function"
@@ -410,8 +415,8 @@ defmodule Favn.Asset do
       module: env.module,
       name: :asset,
       arity: 1,
-      doc: normalize_doc(Module.get_attribute(env.module, :doc)),
-      file: normalize_file(env.file),
+      doc: DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc)),
+      file: DSLCompiler.normalize_file(env.file),
       line: env.line,
       depends: depends,
       meta: meta,
@@ -446,17 +451,17 @@ defmodule Favn.Asset do
       validate!(asset)
     rescue
       error in ArgumentError ->
-        compile_error!(raw_asset.file, raw_asset.line, error.message)
+        DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
     end
   end
 
   defp normalize_single_asset_depends!(depends, raw_asset) do
     Enum.map(depends, fn
       module when is_atom(module) ->
-        if module_atom?(module) do
+        if DSLCompiler.module_atom?(module) do
           Ref.new(module, :asset)
         else
-          compile_error!(
+          DSLCompiler.compile_error!(
             raw_asset.file,
             raw_asset.line,
             "invalid @depends entry #{inspect(module)}; expected Module or {Module, :asset_name}"
@@ -464,10 +469,10 @@ defmodule Favn.Asset do
         end
 
       {module, name} when is_atom(module) and is_atom(name) ->
-        if module_atom?(module) do
+        if DSLCompiler.module_atom?(module) do
           Ref.new(module, name)
         else
-          compile_error!(
+          DSLCompiler.compile_error!(
             raw_asset.file,
             raw_asset.line,
             "invalid @depends entry #{inspect({module, name})}; expected Module or {Module, :asset_name}"
@@ -475,7 +480,7 @@ defmodule Favn.Asset do
         end
 
       dependency ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           raw_asset.file,
           raw_asset.line,
           "invalid @depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
@@ -486,14 +491,15 @@ defmodule Favn.Asset do
   defp normalize_single_asset_meta!(meta, raw_asset) do
     normalize_meta!(meta)
   rescue
-    error in ArgumentError -> compile_error!(raw_asset.file, raw_asset.line, error.message)
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
   defp normalize_single_asset_window!([], _raw_asset), do: nil
   defp normalize_single_asset_window!([%Spec{} = spec], _raw_asset), do: spec
 
   defp normalize_single_asset_window!([_a, _b | _rest], raw_asset) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       raw_asset.file,
       raw_asset.line,
       "multiple @window attributes are not allowed; use at most one @window for def asset(ctx)"
@@ -501,7 +507,7 @@ defmodule Favn.Asset do
   end
 
   defp normalize_single_asset_window!(value, raw_asset) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       raw_asset.file,
       raw_asset.line,
       "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
@@ -511,13 +517,12 @@ defmodule Favn.Asset do
   defp validate_relation_attr!([], _env), do: :ok
 
   defp validate_relation_attr!([relation], env) do
-    valid? =
-      relation == true or (is_list(relation) and Keyword.keyword?(relation)) or is_map(relation)
+    valid? = DSLCompiler.valid_relation_attr_value?(relation)
 
     if valid? do
       :ok
     else
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "invalid @relation value #{inspect(relation)}; expected true, a keyword list, or a map"
@@ -526,7 +531,7 @@ defmodule Favn.Asset do
   end
 
   defp validate_relation_attr!([_a, _b | _rest], env) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       env.file,
       env.line,
       "multiple @relation attributes are not allowed; use at most one @relation for def asset(ctx)"
@@ -545,7 +550,7 @@ defmodule Favn.Asset do
       Module.delete_attribute(env.module, :window)
       Module.delete_attribute(env.module, :relation)
 
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "@depends/@meta/@window/@relation on #{kind} #{name}/#{arity} requires def asset(ctx) immediately below those attributes"
@@ -553,27 +558,5 @@ defmodule Favn.Asset do
     else
       :ok
     end
-  end
-
-  defp normalize_doc({_line, false}), do: nil
-  defp normalize_doc({_line, doc}) when is_binary(doc), do: doc
-  defp normalize_doc(false), do: nil
-  defp normalize_doc(doc) when is_binary(doc), do: doc
-  defp normalize_doc(_), do: nil
-
-  defp normalize_file(file) do
-    file
-    |> to_string()
-    |> Path.relative_to_cwd()
-  end
-
-  defp compile_error!(file, line, description) do
-    raise CompileError, file: file, line: line, description: description
-  end
-
-  defp module_atom?(module) when is_atom(module) do
-    module
-    |> Atom.to_string()
-    |> String.starts_with?("Elixir.")
   end
 end

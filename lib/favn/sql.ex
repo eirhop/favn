@@ -62,6 +62,7 @@ defmodule Favn.SQL do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
+  alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.RelationRef
   alias Favn.SQL.Definition
   alias Favn.SQL.Definition.Param
@@ -104,13 +105,17 @@ defmodule Favn.SQL do
   """
   defmacro sigil_SQL({:<<>>, _meta, parts}, modifiers) when is_list(modifiers) do
     if modifiers != [] do
-      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
+      DSLCompiler.compile_error!(
+        __CALLER__.file,
+        __CALLER__.line,
+        "~SQL sigil does not support modifiers"
+      )
     end
 
     if Enum.all?(parts, &is_binary/1) do
       Enum.join(parts)
     else
-      compile_error!(
+      DSLCompiler.compile_error!(
         __CALLER__.file,
         __CALLER__.line,
         "~SQL sigil does not support interpolation"
@@ -120,9 +125,17 @@ defmodule Favn.SQL do
 
   defmacro sigil_SQL(_body, modifiers) do
     if modifiers != [] do
-      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
+      DSLCompiler.compile_error!(
+        __CALLER__.file,
+        __CALLER__.line,
+        "~SQL sigil does not support modifiers"
+      )
     else
-      compile_error!(__CALLER__.file, __CALLER__.line, "~SQL body must be a literal string")
+      DSLCompiler.compile_error!(
+        __CALLER__.file,
+        __CALLER__.line,
+        "~SQL body must be a literal string"
+      )
     end
   end
 
@@ -162,9 +175,9 @@ defmodule Favn.SQL do
       args: args,
       arity: arity,
       sql: sql,
-      file: normalize_file(__CALLER__.file),
+      file: DSLCompiler.normalize_file(__CALLER__.file),
       line: __CALLER__.line,
-      sql_file: normalize_file(__CALLER__.file),
+      sql_file: DSLCompiler.normalize_file(__CALLER__.file),
       sql_line: __CALLER__.line
     }
 
@@ -188,7 +201,7 @@ defmodule Favn.SQL do
       args: args,
       arity: arity,
       sql: source.sql,
-      file: normalize_file(__CALLER__.file),
+      file: DSLCompiler.normalize_file(__CALLER__.file),
       line: __CALLER__.line,
       sql_file: source.sql_file,
       sql_line: source.sql_line
@@ -201,7 +214,7 @@ defmodule Favn.SQL do
   end
 
   defmacro defsql(_head, do: _body) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       __CALLER__.file,
       __CALLER__.line,
       "defsql expects a function-style head, for example defsql my_macro(arg) do ... end"
@@ -209,7 +222,7 @@ defmodule Favn.SQL do
   end
 
   defmacro defsql(_head, file: _path) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       __CALLER__.file,
       __CALLER__.line,
       "defsql expects a function-style head, for example defsql my_macro(arg), file: \"sql/my_macro.sql\""
@@ -217,7 +230,7 @@ defmodule Favn.SQL do
   end
 
   defmacro defsql(_head, opts) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       __CALLER__.file,
       __CALLER__.line,
       "defsql expects either a do block or file: \"path/to/query.sql\", got: #{Macro.to_string(opts)}"
@@ -610,7 +623,7 @@ defmodule Favn.SQL do
           if function_exported?(module, :__favn_sql_definitions__, 0) do
             module.__favn_sql_definitions__()
           else
-            compile_error!(
+            DSLCompiler.compile_error!(
               "nofile",
               1,
               "imported SQL provider #{inspect(module)} does not define reusable SQL"
@@ -618,7 +631,7 @@ defmodule Favn.SQL do
           end
 
         {:error, _reason} ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             "nofile",
             1,
             "imported SQL provider #{inspect(module)} could not be resolved"
@@ -636,7 +649,7 @@ defmodule Favn.SQL do
         name
 
       other ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           env.file,
           env.line,
           "defsql arguments must be plain variable names, got: #{Macro.to_string(other)}"
@@ -649,7 +662,7 @@ defmodule Favn.SQL do
 
     Enum.each(args, fn arg ->
       if MapSet.member?(reserved, arg) do
-        compile_error!(
+        DSLCompiler.compile_error!(
           env.file,
           env.line,
           "defsql argument @#{arg} is reserved for runtime SQL inputs"
@@ -669,7 +682,7 @@ defmodule Favn.SQL do
         file = definition.declared_file || definition.file
         line = definition.declared_line || definition.line
 
-        compile_error!(
+        DSLCompiler.compile_error!(
           file,
           line,
           "duplicate defsql #{name}/#{arity}; each defsql name/arity must be unique per module"
@@ -690,7 +703,7 @@ defmodule Favn.SQL do
         file = first.declared_file || first.file
         line = first.declared_line || first.line
 
-        compile_error!(
+        DSLCompiler.compile_error!(
           file,
           line,
           "duplicate visible defsql #{name}/#{arity} for #{inspect(owner_module)}; conflicting providers: #{providers}"
@@ -713,7 +726,7 @@ defmodule Favn.SQL do
         Enum.reverse([key | stack])
         |> Enum.map_join(" -> ", fn {name, arity} -> "#{name}/#{arity}" end)
 
-      compile_error!(
+      DSLCompiler.compile_error!(
         definition.file,
         definition.line,
         "cyclic defsql definitions detected: #{path}"
@@ -739,34 +752,24 @@ defmodule Favn.SQL do
         extract_sigil_sql!(parts_ast, modifiers, env, error_message)
 
       _ ->
-        compile_error!(env.file, env.line, error_message)
+        DSLCompiler.compile_error!(env.file, env.line, error_message)
     end
   end
 
   defp extract_sigil_sql!(_parts_ast, modifiers, env, _error_message) when modifiers != [] do
-    compile_error!(env.file, env.line, "~SQL sigil does not support modifiers")
+    DSLCompiler.compile_error!(env.file, env.line, "~SQL sigil does not support modifiers")
   end
 
   defp extract_sigil_sql!({:<<>>, _meta, parts}, [], env, _error_message) do
     if Enum.all?(parts, &is_binary/1) do
       Enum.join(parts)
     else
-      compile_error!(env.file, env.line, "~SQL sigil does not support interpolation")
+      DSLCompiler.compile_error!(env.file, env.line, "~SQL sigil does not support interpolation")
     end
   end
 
   defp extract_sigil_sql!(_parts_ast, [], env, error_message) do
-    compile_error!(env.file, env.line, error_message)
-  end
-
-  defp normalize_file(file) do
-    file
-    |> to_string()
-    |> Path.relative_to_cwd()
-  end
-
-  defp compile_error!(file, line, description) do
-    raise CompileError, file: file, line: line, description: description
+    DSLCompiler.compile_error!(env.file, env.line, error_message)
   end
 
   defp run_statements(session, statements, opts) do

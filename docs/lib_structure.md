@@ -10,6 +10,8 @@ lib/
     ├── agent_guide.ex
     ├── asset.ex
     ├── diagnostic.ex
+    ├── dsl/
+    │   └── compiler.ex
     ├── assets.ex
     ├── namespace.ex
     ├── multi_asset.ex

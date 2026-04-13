@@ -116,6 +116,7 @@ defmodule Favn.MultiAsset do
 
   alias Favn.Asset
   alias Favn.Asset.RelationResolver
+  alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Namespace
   alias Favn.Ref
   alias Favn.Window.Spec
@@ -171,14 +172,14 @@ defmodule Favn.MultiAsset do
           end
 
         {:def, :asset, _other_arity} ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             env.file,
             env.line,
             "Favn.MultiAsset requires exactly one public asset/1 function"
           )
 
         {:defp, :asset, _arity} ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             env.file,
             env.line,
             "Favn.MultiAsset requires a public def asset(ctx)"
@@ -222,7 +223,7 @@ defmodule Favn.MultiAsset do
     current = Module.get_attribute(__CALLER__.module, :favn_multi_asset_defaults_raw)
 
     if current do
-      compile_error!(
+      DSLCompiler.compile_error!(
         __CALLER__.file,
         __CALLER__.line,
         "multiple defaults blocks are not allowed; use at most one defaults do ... end"
@@ -262,7 +263,7 @@ defmodule Favn.MultiAsset do
   """
   defmacro asset(name, do: block) do
     if not is_atom(name) do
-      compile_error!(
+      DSLCompiler.compile_error!(
         __CALLER__.file,
         __CALLER__.line,
         "asset name must be an atom, got: #{Macro.to_string(name)}"
@@ -273,7 +274,7 @@ defmodule Favn.MultiAsset do
 
     raw_decl = %{
       name: name,
-      file: normalize_file(__CALLER__.file),
+      file: DSLCompiler.normalize_file(__CALLER__.file),
       line: __CALLER__.line,
       rest: asset_rest
     }
@@ -295,7 +296,7 @@ defmodule Favn.MultiAsset do
     runtime_count = Module.get_attribute(env.module, :favn_multi_asset_runtime_count) || 0
 
     if runtime_count != 1 do
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "Favn.MultiAsset modules must define exactly one public asset/1 function"
@@ -310,7 +311,7 @@ defmodule Favn.MultiAsset do
       |> Enum.reverse()
 
     if raw_assets == [] do
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "Favn.MultiAsset modules must declare at least one asset :name do ... end"
@@ -353,11 +354,11 @@ defmodule Favn.MultiAsset do
   defp capture_generated_asset_definition!(env, decl_fun) do
     decl = fetch_decl!(env.module, decl_fun, env)
 
-    depends = env.module |> fetch_accum_attribute(:depends) |> Enum.reverse()
+    depends = env.module |> DSLCompiler.fetch_accum_attribute(:depends) |> Enum.reverse()
     meta = Module.get_attribute(env.module, :meta)
-    window = env.module |> fetch_accum_attribute(:window) |> Enum.reverse()
-    relation = env.module |> fetch_accum_attribute(:relation) |> Enum.reverse()
-    doc = normalize_doc(Module.get_attribute(env.module, :doc))
+    window = env.module |> DSLCompiler.fetch_accum_attribute(:window) |> Enum.reverse()
+    relation = env.module |> DSLCompiler.fetch_accum_attribute(:relation) |> Enum.reverse()
+    doc = DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc))
 
     validate_relation_attr!(relation, env)
 
@@ -406,7 +407,11 @@ defmodule Favn.MultiAsset do
         decl
 
       nil ->
-        compile_error!(env.file, env.line, "internal error: missing declaration for #{decl_fun}")
+        DSLCompiler.compile_error!(
+          env.file,
+          env.line,
+          "internal error: missing declaration for #{decl_fun}"
+        )
     end
   end
 
@@ -419,7 +424,7 @@ defmodule Favn.MultiAsset do
           :ok
 
         [first | _rest] ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             first.file,
             first.line,
             "duplicate asset name #{inspect(name)}; asset names must be unique within a module"
@@ -454,7 +459,7 @@ defmodule Favn.MultiAsset do
       Asset.validate!(asset)
     rescue
       error in ArgumentError ->
-        compile_error!(raw_asset.file, raw_asset.line, error.message)
+        DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
     end
   end
 
@@ -471,7 +476,7 @@ defmodule Favn.MultiAsset do
 
           {:rest, _meta, [[do: rest_block]]} ->
             if rest_count > 0 do
-              compile_error!(
+              DSLCompiler.compile_error!(
                 env.file,
                 env.line,
                 "multiple rest blocks are not allowed inside defaults"
@@ -481,7 +486,7 @@ defmodule Favn.MultiAsset do
             {meta, window_spec, normalize_rest_block!(rest_block, env), rest_count + 1}
 
           other ->
-            compile_error!(
+            DSLCompiler.compile_error!(
               env.file,
               env.line,
               "defaults only supports meta, window, and rest blocks; got: #{Macro.to_string(other)}"
@@ -500,7 +505,7 @@ defmodule Favn.MultiAsset do
         case expression do
           {:rest, _meta, [[do: rest_block]]} ->
             if rest_count > 0 do
-              compile_error!(
+              DSLCompiler.compile_error!(
                 env.file,
                 env.line,
                 "multiple rest blocks are not allowed inside asset #{inspect(name)}"
@@ -510,7 +515,7 @@ defmodule Favn.MultiAsset do
             {normalize_rest_block!(rest_block, env), rest_count + 1}
 
           other ->
-            compile_error!(
+            DSLCompiler.compile_error!(
               env.file,
               env.line,
               "asset blocks only support rest do ... end in v0.4; got: #{Macro.to_string(other)}"
@@ -562,7 +567,7 @@ defmodule Favn.MultiAsset do
           kind = eval_quoted!(kind_ast, env)
 
           if not is_atom(kind) do
-            compile_error!(
+            DSLCompiler.compile_error!(
               env.file,
               env.line,
               "rest.paginator kind must be an atom, got: #{inspect(kind)}"
@@ -581,7 +586,7 @@ defmodule Favn.MultiAsset do
           value = eval_quoted!(value_ast, env)
 
           if not (is_atom(value) or is_binary(value)) do
-            compile_error!(
+            DSLCompiler.compile_error!(
               env.file,
               env.line,
               "rest.method must be an atom or string, got: #{inspect(value)}"
@@ -599,7 +604,7 @@ defmodule Favn.MultiAsset do
           )
 
         other ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             env.file,
             env.line,
             "rest only supports path, data_path, params, primary_key, paginator, incremental, method, and extra; got: #{Macro.to_string(other)}"
@@ -610,7 +615,11 @@ defmodule Favn.MultiAsset do
 
   defp put_unique_rest_slot!(acc, key, value, env) do
     if Map.has_key?(acc, key) do
-      compile_error!(env.file, env.line, "multiple rest.#{key} entries are not allowed")
+      DSLCompiler.compile_error!(
+        env.file,
+        env.line,
+        "multiple rest.#{key} entries are not allowed"
+      )
     end
 
     Map.put(acc, key, value)
@@ -619,8 +628,8 @@ defmodule Favn.MultiAsset do
   defp normalize_depends!(depends, raw_asset) do
     Enum.map(depends, fn
       name when is_atom(name) ->
-        if module_atom?(name) do
-          compile_error!(
+        if DSLCompiler.module_atom?(name) do
+          DSLCompiler.compile_error!(
             raw_asset.file,
             raw_asset.line,
             "invalid @depends entry #{inspect(name)}; expected :asset_name or {Module, :asset_name}; module shorthand is not supported in Favn.MultiAsset"
@@ -633,7 +642,7 @@ defmodule Favn.MultiAsset do
         Ref.new(module, name)
 
       dependency ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           raw_asset.file,
           raw_asset.line,
           "invalid @depends entry #{inspect(dependency)}; expected :asset_name or {Module, :asset_name}"
@@ -660,7 +669,7 @@ defmodule Favn.MultiAsset do
     end)
   rescue
     error in ArgumentError ->
-      compile_error!(env.file, env.line, error.message)
+      DSLCompiler.compile_error!(env.file, env.line, error.message)
   end
 
   defp fetch_raw_relation(module, name) do
@@ -681,7 +690,7 @@ defmodule Favn.MultiAsset do
     assets
   rescue
     error in ArgumentError ->
-      compile_error!(env.file, env.line, error.message)
+      DSLCompiler.compile_error!(env.file, env.line, error.message)
   end
 
   defp normalize_meta!(meta, _env) when is_nil(meta), do: %{}
@@ -690,14 +699,14 @@ defmodule Favn.MultiAsset do
     Asset.normalize_meta!(meta)
   rescue
     error in ArgumentError ->
-      compile_error!(env.file, env.line, error.message)
+      DSLCompiler.compile_error!(env.file, env.line, error.message)
   end
 
   defp normalize_window!([], _env), do: nil
   defp normalize_window!([%Spec{} = spec], _env), do: spec
 
   defp normalize_window!([_a, _b | _rest], env) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       env.file,
       env.line,
       "multiple @window attributes are not allowed; use at most one @window per asset declaration"
@@ -705,7 +714,7 @@ defmodule Favn.MultiAsset do
   end
 
   defp normalize_window!(value, env) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       env.file,
       env.line,
       "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
@@ -715,7 +724,7 @@ defmodule Favn.MultiAsset do
   defp normalize_window_value!(%Spec{} = spec, _env), do: spec
 
   defp normalize_window_value!(value, env) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       env.file,
       env.line,
       "invalid defaults window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
@@ -725,13 +734,12 @@ defmodule Favn.MultiAsset do
   defp validate_relation_attr!([], _env), do: :ok
 
   defp validate_relation_attr!([relation], env) do
-    valid? =
-      relation == true or (is_list(relation) and Keyword.keyword?(relation)) or is_map(relation)
+    valid? = DSLCompiler.valid_relation_attr_value?(relation)
 
     if valid? do
       :ok
     else
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "invalid @relation value #{inspect(relation)}; expected true, a keyword list, or a map"
@@ -740,7 +748,7 @@ defmodule Favn.MultiAsset do
   end
 
   defp validate_relation_attr!([_a, _b | _rest], env) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       env.file,
       env.line,
       "multiple @relation attributes are not allowed; use at most one @relation per asset declaration"
@@ -748,11 +756,11 @@ defmodule Favn.MultiAsset do
   end
 
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
-    depends = fetch_accum_attribute(env.module, :depends)
+    depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
-    window = fetch_accum_attribute(env.module, :window)
-    relation = fetch_accum_attribute(env.module, :relation)
-    doc = normalize_doc(Module.get_attribute(env.module, :doc))
+    window = DSLCompiler.fetch_accum_attribute(env.module, :window)
+    relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
+    doc = DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc))
 
     if depends != [] or not is_nil(meta) or window != [] or relation != [] or not is_nil(doc) do
       Module.delete_attribute(env.module, :depends)
@@ -761,7 +769,7 @@ defmodule Favn.MultiAsset do
       Module.delete_attribute(env.module, :relation)
       clear_doc!(env.module, env.line)
 
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "@doc/@depends/@meta/@window/@relation on #{kind} #{name}/#{arity} requires asset :name do immediately below those attributes"
@@ -772,10 +780,10 @@ defmodule Favn.MultiAsset do
   end
 
   defp ensure_no_pending_attributes!(env) do
-    depends = fetch_accum_attribute(env.module, :depends)
+    depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
-    window = fetch_accum_attribute(env.module, :window)
-    relation = fetch_accum_attribute(env.module, :relation)
+    window = DSLCompiler.fetch_accum_attribute(env.module, :window)
+    relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
     pending_doc? = pending_doc?(env.module)
 
     if depends != [] or not is_nil(meta) or window != [] or relation != [] or pending_doc? do
@@ -785,7 +793,7 @@ defmodule Favn.MultiAsset do
       Module.delete_attribute(env.module, :relation)
       clear_doc!(env.module, env.line)
 
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "@doc/@meta/@depends/@window/@relation must be attached to an immediately following asset :name do"
@@ -843,7 +851,7 @@ defmodule Favn.MultiAsset do
     if Keyword.keyword?(value) do
       Map.new(value)
     else
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "#{label} must be a keyword list or map, got: #{inspect(value)}"
@@ -854,7 +862,7 @@ defmodule Favn.MultiAsset do
   defp normalize_map_like!(value, _label, _env) when is_map(value), do: value
 
   defp normalize_map_like!(value, label, env) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       env.file,
       env.line,
       "#{label} must be a keyword list or map, got: #{inspect(value)}"
@@ -864,7 +872,7 @@ defmodule Favn.MultiAsset do
   defp normalize_binary!(value, _field, _env) when is_binary(value), do: value
 
   defp normalize_binary!(value, field, env) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       env.file,
       env.line,
       "rest.#{field} must be a string, got: #{inspect(value)}"
@@ -876,43 +884,14 @@ defmodule Favn.MultiAsset do
     value
   rescue
     error in [CompileError, SyntaxError, ArgumentError] ->
-      compile_error!(env.file, env.line, Exception.message(error))
+      DSLCompiler.compile_error!(env.file, env.line, Exception.message(error))
   end
 
   defp block_expressions({:__block__, _meta, expressions}), do: expressions
   defp block_expressions(nil), do: []
   defp block_expressions(expression), do: [expression]
 
-  defp fetch_accum_attribute(module, attribute) do
-    case Module.get_attribute(module, attribute) do
-      nil -> []
-      value when is_list(value) -> value
-    end
-  end
-
-  defp normalize_doc({_line, false}), do: nil
-  defp normalize_doc({_line, doc}) when is_binary(doc), do: doc
-  defp normalize_doc(false), do: nil
-  defp normalize_doc(doc) when is_binary(doc), do: doc
-  defp normalize_doc(_), do: nil
-
-  defp normalize_file(file) do
-    file
-    |> to_string()
-    |> Path.relative_to_cwd()
-  end
-
-  defp compile_error!(file, line, description) do
-    raise CompileError, file: file, line: line, description: description
-  end
-
   defp clear_doc!(module, line) do
     Module.put_attribute(module, :doc, {line, false})
-  end
-
-  defp module_atom?(module) when is_atom(module) do
-    module
-    |> Atom.to_string()
-    |> String.starts_with?("Elixir.")
   end
 end

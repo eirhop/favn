@@ -104,6 +104,7 @@ defmodule Favn.SQLAsset do
 
   alias Favn.Asset
   alias Favn.Asset.RelationResolver
+  alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Namespace
   alias Favn.Ref
   alias Favn.RelationRef
@@ -156,7 +157,7 @@ defmodule Favn.SQLAsset do
     else
       case {kind, name, arity} do
         {kind, :asset, _arity} when kind in [:def, :defp] ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             env.file,
             env.line,
             "Favn.SQLAsset reserves asset/1 and generates it automatically"
@@ -197,7 +198,7 @@ defmodule Favn.SQLAsset do
     raw_definition = Module.get_attribute(__CALLER__.module, :favn_sql_asset_raw)
 
     if raw_definition do
-      compile_error!(
+      DSLCompiler.compile_error!(
         __CALLER__.file,
         __CALLER__.line,
         "Favn.SQLAsset modules can define only one query body"
@@ -208,9 +209,9 @@ defmodule Favn.SQLAsset do
 
     Module.put_attribute(__CALLER__.module, :favn_sql_asset_raw, %{
       module: __CALLER__.module,
-      file: normalize_file(__CALLER__.file),
+      file: DSLCompiler.normalize_file(__CALLER__.file),
       line: __CALLER__.line,
-      sql_file: normalize_file(__CALLER__.file),
+      sql_file: DSLCompiler.normalize_file(__CALLER__.file),
       sql_line: __CALLER__.line,
       sql: sql
     })
@@ -224,7 +225,7 @@ defmodule Favn.SQLAsset do
     raw_definition = Module.get_attribute(__CALLER__.module, :favn_sql_asset_raw)
 
     if raw_definition do
-      compile_error!(
+      DSLCompiler.compile_error!(
         __CALLER__.file,
         __CALLER__.line,
         "Favn.SQLAsset modules can define only one query body"
@@ -235,7 +236,7 @@ defmodule Favn.SQLAsset do
 
     Module.put_attribute(__CALLER__.module, :favn_sql_asset_raw, %{
       module: __CALLER__.module,
-      file: normalize_file(__CALLER__.file),
+      file: DSLCompiler.normalize_file(__CALLER__.file),
       line: __CALLER__.line,
       sql_file: source.sql_file,
       sql_line: source.sql_line,
@@ -248,7 +249,7 @@ defmodule Favn.SQLAsset do
   end
 
   defmacro query(opts) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       __CALLER__.file,
       __CALLER__.line,
       "query expects either a do block or file: \"path/to/query.sql\", got: #{Macro.to_string(opts)}"
@@ -260,7 +261,7 @@ defmodule Favn.SQLAsset do
     base_definition = Module.get_attribute(env.module, :favn_sql_asset_raw)
 
     if is_nil(base_definition) do
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "Favn.SQLAsset modules must define exactly one query body"
@@ -269,18 +270,27 @@ defmodule Favn.SQLAsset do
 
     raw_definition =
       base_definition
-      |> Map.put(:doc, normalize_doc(Module.get_attribute(env.module, :doc)))
-      |> Map.put(:depends, env.module |> fetch_accum_attribute(:depends) |> Enum.reverse())
+      |> Map.put(:doc, DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc)))
+      |> Map.put(
+        :depends,
+        env.module |> DSLCompiler.fetch_accum_attribute(:depends) |> Enum.reverse()
+      )
       |> Map.put(:meta, Module.get_attribute(env.module, :meta))
-      |> Map.put(:window, env.module |> fetch_accum_attribute(:window) |> Enum.reverse())
-      |> Map.put(:relation, env.module |> fetch_accum_attribute(:relation) |> Enum.reverse())
+      |> Map.put(
+        :window,
+        env.module |> DSLCompiler.fetch_accum_attribute(:window) |> Enum.reverse()
+      )
+      |> Map.put(
+        :relation,
+        env.module |> DSLCompiler.fetch_accum_attribute(:relation) |> Enum.reverse()
+      )
       |> Map.put(
         :materialized,
-        env.module |> fetch_accum_attribute(:materialized) |> Enum.reverse()
+        env.module |> DSLCompiler.fetch_accum_attribute(:materialized) |> Enum.reverse()
       )
       |> Map.put(
         :sql_imports,
-        env.module |> fetch_accum_attribute(:favn_sql_imports) |> Enum.reverse()
+        env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_imports) |> Enum.reverse()
       )
 
     definition = build_definition!(raw_definition)
@@ -374,7 +384,7 @@ defmodule Favn.SQLAsset do
       definition
     rescue
       error in ArgumentError ->
-        compile_error!(raw_definition.file, raw_definition.line, error.message)
+        DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
     end
   end
 
@@ -384,10 +394,10 @@ defmodule Favn.SQLAsset do
         Ref.new(module, :asset)
 
       {module, name} when is_atom(module) and is_atom(name) ->
-        if module_atom?(module) do
+        if DSLCompiler.module_atom?(module) do
           Ref.new(module, name)
         else
-          compile_error!(
+          DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
             "invalid @depends entry #{inspect({module, name})}; expected Module or {Module, :asset_name}"
@@ -395,7 +405,7 @@ defmodule Favn.SQLAsset do
         end
 
       dependency ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
           "invalid @depends entry #{inspect(dependency)}; expected Module or {Module, :asset_name}"
@@ -407,14 +417,14 @@ defmodule Favn.SQLAsset do
     Asset.normalize_meta!(meta)
   rescue
     error in ArgumentError ->
-      compile_error!(raw_definition.file, raw_definition.line, error.message)
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
   defp normalize_window!([], _raw_definition), do: nil
   defp normalize_window!([%Spec{} = spec], _raw_definition), do: spec
 
   defp normalize_window!([_a, _b | _rest], raw_definition) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
       "multiple @window attributes are not allowed; use at most one @window before query"
@@ -422,7 +432,7 @@ defmodule Favn.SQLAsset do
   end
 
   defp normalize_window!(value, raw_definition) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
       "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
@@ -435,11 +445,11 @@ defmodule Favn.SQLAsset do
     |> validate_incremental_materialized!(window_spec, raw_definition)
   rescue
     error in ArgumentError ->
-      compile_error!(raw_definition.file, raw_definition.line, error.message)
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
   defp normalize_materialized!([], _window_spec, raw_definition) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
       "Favn.SQLAsset requires one @materialized attribute"
@@ -447,7 +457,7 @@ defmodule Favn.SQLAsset do
   end
 
   defp normalize_materialized!([_a, _b | _rest], _window_spec, raw_definition) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
       "multiple @materialized attributes are not allowed; use exactly one @materialized before query"
@@ -462,7 +472,7 @@ defmodule Favn.SQLAsset do
     strategy = Keyword.fetch!(opts, :strategy)
 
     if is_nil(window_spec) do
-      compile_error!(
+      DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
         "incremental SQL materialization requires @window"
@@ -470,7 +480,7 @@ defmodule Favn.SQLAsset do
     end
 
     if Keyword.has_key?(opts, :unique_key) do
-      compile_error!(
+      DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
         "incremental materialization unique_key is reserved for future :merge semantics and is not supported in Phase 4b"
@@ -480,7 +490,7 @@ defmodule Favn.SQLAsset do
     case strategy do
       :append ->
         if Keyword.has_key?(opts, :window_column) do
-          compile_error!(
+          DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
             "incremental :append does not accept :window_column"
@@ -493,7 +503,7 @@ defmodule Favn.SQLAsset do
             :ok
 
           :error ->
-            compile_error!(
+            DSLCompiler.compile_error!(
               raw_definition.file,
               raw_definition.line,
               "incremental :delete_insert requires :window_column"
@@ -501,14 +511,14 @@ defmodule Favn.SQLAsset do
         end
 
       :merge ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
           "incremental strategy :merge is not supported in Phase 4b"
         )
 
       :replace ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
           "incremental strategy :replace is not supported in Phase 4b"
@@ -536,7 +546,7 @@ defmodule Favn.SQLAsset do
           if Keyword.keyword?(attrs) do
             Map.new(attrs)
           else
-            compile_error!(
+            DSLCompiler.compile_error!(
               raw_definition.file,
               raw_definition.line,
               "invalid @relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
@@ -547,14 +557,14 @@ defmodule Favn.SQLAsset do
           attrs
 
         [_a, _b | _rest] ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
             "multiple @relation attributes are not allowed; use at most one @relation before query do ... end"
           )
 
         [other] ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
             "invalid @relation value #{inspect(other)}; expected true, a keyword list, or a map"
@@ -566,11 +576,11 @@ defmodule Favn.SQLAsset do
     |> ensure_sql_relation!(raw_definition)
   rescue
     error in ArgumentError ->
-      compile_error!(raw_definition.file, raw_definition.line, error.message)
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
   defp ensure_sql_relation!(%RelationRef{connection: nil}, raw_definition) do
-    compile_error!(
+    DSLCompiler.compile_error!(
       raw_definition.file,
       raw_definition.line,
       "SQL assets require a connection through Favn.Namespace or @relation"
@@ -581,11 +591,11 @@ defmodule Favn.SQLAsset do
     do: relation_ref
 
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
-    depends = fetch_accum_attribute(env.module, :depends)
+    depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
     meta = Module.get_attribute(env.module, :meta)
-    window = fetch_accum_attribute(env.module, :window)
-    relation = fetch_accum_attribute(env.module, :relation)
-    materialized = fetch_accum_attribute(env.module, :materialized)
+    window = DSLCompiler.fetch_accum_attribute(env.module, :window)
+    relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
+    materialized = DSLCompiler.fetch_accum_attribute(env.module, :materialized)
 
     if depends != [] or not is_nil(meta) or window != [] or relation != [] or materialized != [] do
       Module.delete_attribute(env.module, :depends)
@@ -594,7 +604,7 @@ defmodule Favn.SQLAsset do
       Module.delete_attribute(env.module, :relation)
       Module.delete_attribute(env.module, :materialized)
 
-      compile_error!(
+      DSLCompiler.compile_error!(
         env.file,
         env.line,
         "@depends/@meta/@window/@relation/@materialized on #{kind} #{name}/#{arity} requires query immediately below those attributes"
@@ -618,7 +628,7 @@ defmodule Favn.SQLAsset do
           if function_exported?(module, :__favn_sql_definitions__, 0) do
             module.__favn_sql_definitions__()
           else
-            compile_error!(
+            DSLCompiler.compile_error!(
               raw_definition.file,
               raw_definition.line,
               "imported SQL provider #{inspect(module)} does not define reusable SQL"
@@ -626,7 +636,7 @@ defmodule Favn.SQLAsset do
           end
 
         {:error, _reason} ->
-          compile_error!(
+          DSLCompiler.compile_error!(
             raw_definition.file,
             raw_definition.line,
             "imported SQL provider #{inspect(module)} could not be resolved"
@@ -644,47 +654,19 @@ defmodule Favn.SQLAsset do
       {{name, arity}, definitions} ->
         providers = definitions |> Enum.map(&inspect(&1.module)) |> Enum.sort() |> Enum.join(", ")
 
-        compile_error!(
+        DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
           "duplicate visible defsql #{name}/#{arity}; conflicting providers: #{providers}"
         )
 
       {other, _definitions} ->
-        compile_error!(
+        DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
           "invalid SQL definition import #{inspect(other)}"
         )
     end)
     |> Map.new()
-  end
-
-  defp normalize_doc({_line, false}), do: nil
-  defp normalize_doc({_line, doc}) when is_binary(doc), do: doc
-  defp normalize_doc(false), do: nil
-  defp normalize_doc(doc) when is_binary(doc), do: doc
-  defp normalize_doc(_), do: nil
-
-  defp fetch_accum_attribute(module, attribute) do
-    module
-    |> Module.get_attribute(attribute)
-    |> List.wrap()
-  end
-
-  defp normalize_file(file) do
-    file
-    |> to_string()
-    |> Path.relative_to_cwd()
-  end
-
-  defp compile_error!(file, line, description) do
-    raise CompileError, file: file, line: line, description: description
-  end
-
-  defp module_atom?(module) when is_atom(module) do
-    module
-    |> Atom.to_string()
-    |> String.starts_with?("Elixir.")
   end
 end
