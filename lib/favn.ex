@@ -257,6 +257,7 @@ defmodule Favn do
   alias Favn.Assets.Planner
   alias Favn.Assets.Registry
   alias Favn.Backfill
+  alias Favn.Connection.Info
   alias Favn.Connection.NotFoundError
   alias Favn.Connection.Registry, as: ConnectionRegistry
   alias Favn.Connection.Sanitizer
@@ -450,23 +451,14 @@ defmodule Favn do
   @typedoc """
   Public redacted connection inspection payload.
   """
-  @type connection_info :: %{
-          name: atom(),
-          adapter: module(),
-          module: module(),
-          config: map(),
-          required_keys: [atom()],
-          secret_fields: [atom()],
-          schema_keys: [atom()],
-          metadata: map()
-        }
+  @type connection_info :: Info.t()
 
   @doc """
   List all registered connections with secrets redacted.
 
   Returns:
 
-    * list of maps with stable connection metadata and redacted config
+    * list of `%Favn.Connection.Info{}` with stable connection metadata and redacted config
   """
   @spec list_connections() :: [connection_info()]
   def list_connections do

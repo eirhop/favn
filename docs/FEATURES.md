@@ -11,6 +11,7 @@ Favn is an asset-first orchestrator for ETL/ELT workloads.
 - [x] Credo strict cleanup across runtime, storage, docs, fixtures, and tests
 - [x] Shared relation resolver extracted for `Favn.Assets.Compiler`, `Favn.MultiAsset`, and `Favn.SQLAsset`
 - [x] Shared compile-time DSL helper foundation extracted to `Favn.DSL.Compiler` (`Favn.Asset`, `Favn.MultiAsset`, `Favn.SQLAsset`, `Favn.SQL`)
+- [x] Canonical public connection inspection payload extracted to `Favn.Connection.Info`
 
 Near-term priority is a practical path to real usage:
 

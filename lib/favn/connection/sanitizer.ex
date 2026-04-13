@@ -1,27 +1,17 @@
 defmodule Favn.Connection.Sanitizer do
   @moduledoc false
 
+  alias Favn.Connection.Info
   alias Favn.Connection.Resolved
 
-  @type connection_info :: %{
-          name: atom(),
-          adapter: module(),
-          module: module(),
-          config: map(),
-          required_keys: [atom()],
-          secret_fields: [atom()],
-          schema_keys: [atom()],
-          metadata: map()
-        }
-
-  @spec redact(Resolved.t()) :: connection_info()
+  @spec redact(Resolved.t()) :: Info.t()
   def redact(%Resolved{} = resolved) do
     redacted_config =
       Enum.reduce(resolved.secret_fields, resolved.config, fn key, acc ->
         if Map.has_key?(acc, key), do: Map.put(acc, key, :redacted), else: acc
       end)
 
-    %{
+    %Info{
       name: resolved.name,
       adapter: resolved.adapter,
       module: resolved.module,
