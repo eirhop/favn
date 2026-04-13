@@ -10,38 +10,45 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
-  alias Favn.SQL.Adapter.DuckDB.Client
+  alias Favn.SQL.Adapter.DuckDB.{Client, ErrorMapper}
   alias Favn.SQL.{Capabilities, Column, Error, Relation, Result, WritePlan}
 
   defmodule Conn do
     @moduledoc false
 
-    @enforce_keys [:db_ref, :conn_ref]
-    defstruct [:db_ref, :conn_ref]
+    @enforce_keys [:db_ref, :conn_ref, :connection, :client]
+    defstruct [:db_ref, :conn_ref, :connection, :client]
 
-    @type t :: %__MODULE__{db_ref: reference(), conn_ref: reference()}
+    @type t :: %__MODULE__{
+            db_ref: reference(),
+            conn_ref: reference(),
+            connection: atom() | nil,
+            client: module()
+          }
   end
 
   @type opts :: keyword()
 
   @impl true
   @spec connect(Resolved.t(), opts()) :: {:ok, Conn.t()} | {:error, Error.t()}
-  def connect(%Resolved{config: config} = resolved, _opts) do
-    with {:ok, db_ref} <- Client.open(Map.get(config, :database)),
-         {:ok, conn_ref} <- create_connection(db_ref) do
-      {:ok, %Conn{db_ref: db_ref, conn_ref: conn_ref}}
+  def connect(%Resolved{config: config} = resolved, opts) do
+    client = resolve_client(opts)
+
+    with {:ok, db_ref} <- client.open(Map.get(config, :database)),
+         {:ok, conn_ref} <- create_connection(client, db_ref) do
+      {:ok, %Conn{db_ref: db_ref, conn_ref: conn_ref, connection: resolved.name, client: client}}
     else
       {:error, reason} -> {:error, normalize_error(:connect, resolved.name, reason)}
     end
   end
 
-  defp create_connection(db_ref) do
-    case Client.connection(db_ref) do
+  defp create_connection(client, db_ref) do
+    case client.connection(db_ref) do
       {:ok, conn_ref} ->
         {:ok, conn_ref}
 
       {:error, reason} ->
-        _ = safe_release(db_ref)
+        _ = safe_release(client, db_ref)
         {:error, reason}
     end
   end
@@ -49,8 +56,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @impl true
   @spec disconnect(Conn.t(), opts()) :: :ok
   def disconnect(%Conn{} = conn, _opts) do
-    _ = safe_release(conn.conn_ref)
-    _ = safe_release(conn.db_ref)
+    _ = safe_release(conn, conn.conn_ref)
+    _ = safe_release(conn, conn.db_ref)
     :ok
   end
 
@@ -97,19 +104,26 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp run_and_fetch(%Conn{} = conn, statement, opts, kind) do
     params = Keyword.get(opts, :params, [])
 
-    with {:ok, result_ref} <- run_query(conn, statement, params),
-         {:ok, rows, columns} <- fetch_rows(result_ref) do
-      {:ok,
-       %Result{
-         kind: kind,
-         command: IO.iodata_to_binary(statement),
-         rows_affected: nil,
-         rows: rows,
-         columns: columns,
-         metadata: %{}
-       }}
-    else
-      {:error, reason} -> {:error, normalize_error(kind, nil, reason)}
+    case run_query(conn, statement, params) do
+      {:ok, result_ref} ->
+        case fetch_rows(conn, result_ref) do
+          {:ok, rows, columns} ->
+            {:ok,
+             %Result{
+               kind: kind,
+               command: IO.iodata_to_binary(statement),
+               rows_affected: nil,
+               rows: rows,
+               columns: columns,
+               metadata: %{}
+             }}
+
+          {:error, reason} ->
+            {:error, normalize_error(kind, conn.connection, reason)}
+        end
+
+      {:error, reason} ->
+        {:error, normalize_error(kind, conn.connection, reason)}
     end
   end
 
@@ -206,11 +220,11 @@ defmodule Favn.SQL.Adapter.DuckDB do
   def ping(%Conn{} = conn, _opts) do
     case run_query(conn, "SELECT 1", []) do
       {:ok, result_ref} ->
-        _ = safe_release(result_ref)
+        _ = safe_release(conn, result_ref)
         :ok
 
       {:error, reason} ->
-        {:error, normalize_error(:ping, nil, reason)}
+        {:error, normalize_error(:ping, conn.connection, reason)}
     end
   end
 
@@ -270,18 +284,12 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @spec transaction(Conn.t(), (Conn.t() -> {:ok, term()} | {:error, Error.t()}), opts()) ::
           {:ok, term()} | {:error, Error.t()}
   def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
-    with :ok <- tx_begin(conn),
-         {:ok, value} <- fun.(conn),
-         :ok <- tx_commit(conn) do
-      {:ok, value}
-    else
-      {:error, %Error{} = error} ->
-        _ = tx_rollback(conn)
-        {:error, error}
+    case tx_begin(conn) do
+      :ok ->
+        run_transaction(conn, fun)
 
-      {:error, reason} ->
-        _ = tx_rollback(conn)
-        {:error, normalize_error(:transaction, nil, reason)}
+      {:error, %Error{} = error} ->
+        {:error, error}
     end
   end
 
@@ -306,8 +314,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
       {:ok, result} ->
         {:ok, result}
 
-      {:error, reason} ->
-        {:error, normalize_error(:materialize, nil, reason)}
+      {:error, %Error{} = error} ->
+        {:error, materialize_error(error, conn)}
     end
   end
 
@@ -344,21 +352,29 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp appender_materialize(%Conn{} = conn, %WritePlan{} = plan, rows) do
-    with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, []),
-         {:ok, pre, post} <- split_materialization_statements(plan, statements),
-         {:ok, _} <- execute_statements(conn, pre),
-         {:ok, _} <- execute(conn, appender_table_statement(plan), []),
-         :ok <- append_rows(conn, plan.target, rows),
-         {:ok, _} <- execute_statements(conn, post) do
-      {:ok,
-       %Result{
-         kind: :materialize,
-         command: "appender",
-         rows_affected: length(rows),
-         metadata: %{strategy: :appender}
-       }}
-    else
-      {:error, reason} -> {:error, normalize_error(:materialize, nil, reason)}
+    transaction(
+      conn,
+      fn tx_conn ->
+        with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, []),
+             {:ok, pre, post} <- split_materialization_statements(plan, statements),
+             {:ok, _} <- execute_statements(tx_conn, pre),
+             {:ok, _} <- execute(tx_conn, appender_table_statement(plan), []),
+             :ok <- append_rows(tx_conn, plan.target, rows),
+             {:ok, _} <- execute_statements(tx_conn, post) do
+          {:ok,
+           %Result{
+             kind: :materialize,
+             command: "appender",
+             rows_affected: length(rows),
+             metadata: %{strategy: :appender}
+           }}
+        end
+      end,
+      []
+    )
+    |> case do
+      {:ok, result} -> {:ok, result}
+      {:error, %Error{} = error} -> {:error, materialize_error(error, conn)}
     end
   end
 
@@ -398,26 +414,26 @@ defmodule Favn.SQL.Adapter.DuckDB do
     |> List.wrap()
   end
 
-  defp run_query(%Conn{conn_ref: conn_ref}, statement, params) do
-    Client.query(conn_ref, IO.iodata_to_binary(statement), params)
+  defp run_query(%Conn{conn_ref: conn_ref, client: client}, statement, params) do
+    client.query(conn_ref, IO.iodata_to_binary(statement), params)
   end
 
-  defp fetch_rows(result_ref) do
+  defp fetch_rows(%Conn{} = conn, result_ref) do
     columns =
-      case Client.columns(result_ref) do
+      case conn.client.columns(result_ref) do
         cols when is_list(cols) -> Enum.map(cols, &to_string/1)
         _ -> []
       end
 
     rows =
-      case Client.fetch_all(result_ref) do
+      case conn.client.fetch_all(result_ref) do
         rows when is_list(rows) -> Enum.map(rows, &normalize_row(&1, columns))
         other -> other
       end
 
-    _ = safe_release(result_ref)
-
     if is_list(rows), do: {:ok, rows, columns}, else: {:error, rows}
+  after
+    _ = safe_release(conn, result_ref)
   end
 
   defp normalize_row(row, _columns) when is_map(row) do
@@ -440,25 +456,92 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   defp normalize_row(other, _columns), do: %{"value" => other}
 
-  defp tx_begin(%Conn{conn_ref: conn_ref}) do
-    case Client.begin_transaction(conn_ref) do
-      :ok -> :ok
-      {:error, reason} -> {:error, normalize_error(:transaction, nil, reason)}
+  defp tx_begin(%Conn{conn_ref: conn_ref, client: client} = conn) do
+    case client.begin_transaction(conn_ref) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         normalize_error(:transaction, conn.connection, reason)
+         |> transaction_stage_error(:begin)}
     end
   end
 
-  defp tx_commit(%Conn{conn_ref: conn_ref}) do
-    case Client.commit(conn_ref) do
-      :ok -> :ok
-      {:error, reason} -> {:error, normalize_error(:transaction, nil, reason)}
+  defp tx_commit(%Conn{conn_ref: conn_ref, client: client} = conn) do
+    case client.commit(conn_ref) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         normalize_error(:transaction, conn.connection, reason)
+         |> transaction_stage_error(:commit)}
     end
   end
 
-  defp tx_rollback(%Conn{conn_ref: conn_ref}) do
-    case Client.rollback(conn_ref) do
-      :ok -> :ok
-      {:error, _reason} -> :ok
+  defp tx_rollback(%Conn{conn_ref: conn_ref, client: client}) do
+    client.rollback(conn_ref)
+  rescue
+    error -> {:error, error}
+  end
+
+  defp run_transaction(%Conn{} = conn, fun) do
+    case fun.(conn) do
+      {:ok, value} ->
+        case tx_commit(conn) do
+          :ok -> {:ok, value}
+          {:error, %Error{} = error} -> finalize_transaction_failure(conn, error)
+        end
+
+      {:error, %Error{} = error} ->
+        finalize_transaction_failure(conn, transaction_stage_error(error, :body))
+
+      {:error, reason} ->
+        error =
+          normalize_error(:transaction, conn.connection, reason)
+          |> transaction_stage_error(:body)
+
+        finalize_transaction_failure(conn, error)
+
+      other ->
+        error =
+          normalize_error(:transaction, conn.connection, {:invalid_transaction_result, other})
+          |> transaction_stage_error(:body)
+
+        finalize_transaction_failure(conn, error)
     end
+  rescue
+    error ->
+      raised =
+        %Error{
+          type: :execution_error,
+          message: "transaction body raised exception",
+          retryable?: false,
+          adapter: __MODULE__,
+          operation: :transaction,
+          connection: conn.connection,
+          details: %{
+            classification: :execution,
+            transaction_stage: :body,
+            exception: Exception.format(:error, error, __STACKTRACE__)
+          },
+          cause: error
+        }
+
+      finalize_transaction_failure(conn, raised)
+  end
+
+  defp finalize_transaction_failure(%Conn{} = conn, %Error{} = error) do
+    case tx_rollback(conn) do
+      :ok -> {:error, error}
+      {:error, reason} -> {:error, ErrorMapper.rollback_failure(error, reason)}
+    end
+  end
+
+  defp transaction_stage_error(%Error{} = error, stage) do
+    details = Map.put(error.details || %{}, :transaction_stage, stage)
+    %Error{error | details: details}
   end
 
   defp create_view_statement(target, %WritePlan{replace_existing?: true, select_sql: sql}),
@@ -538,16 +621,20 @@ defmodule Favn.SQL.Adapter.DuckDB do
     |> to_string()
   end
 
-  defp open_appender(%Conn{conn_ref: conn_ref}, %Relation{name: name, schema: schema}) do
-    Client.appender(conn_ref, name, schema)
+  defp open_appender(%Conn{conn_ref: conn_ref, client: client}, %Relation{
+         name: name,
+         schema: schema
+       }) do
+    client.appender(conn_ref, name, schema)
   end
 
   defp append_rows(%Conn{} = conn, %Relation{} = target, rows) do
     with {:ok, appender} <- open_appender(conn, target) do
       result =
-        with :ok <- Client.appender_add_rows(appender, rows), do: Client.appender_flush(appender)
+        with :ok <- conn.client.appender_add_rows(appender, rows),
+             do: conn.client.appender_flush(appender)
 
-      case {result, close_appender(appender)} do
+      case {result, close_appender(conn, appender)} do
         {:ok, :ok} -> :ok
         {{:error, reason}, _close_result} -> {:error, reason}
         {:ok, {:error, reason}} -> {:error, reason}
@@ -555,18 +642,18 @@ defmodule Favn.SQL.Adapter.DuckDB do
     end
   end
 
-  defp close_appender(appender) do
-    case Client.appender_close(appender) do
+  defp close_appender(%Conn{} = conn, appender) do
+    case conn.client.appender_close(appender) do
       :ok ->
         :ok
 
       {:error, reason} ->
-        _ = safe_release(appender)
+        _ = safe_release(conn, appender)
         {:error, reason}
     end
   rescue
     _ ->
-      _ = safe_release(appender)
+      _ = safe_release(conn, appender)
       {:error, :appender_close_failed}
   end
 
@@ -631,44 +718,28 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp quote_ident(identifier), do: ["\"", String.replace(identifier, "\"", "\"\""), "\""]
   defp quote_literal(value), do: ["'", String.replace(value, "'", "''"), "'"]
 
-  defp safe_release(resource) do
-    _ = Client.release(resource)
+  defp safe_release(%Conn{client: client}, resource), do: safe_release(client, resource)
+
+  defp safe_release(client, resource) do
+    _ = client.release(resource)
     :ok
   rescue
     _ -> :ok
   end
 
-  defp normalize_error(operation, connection, reason) do
-    %Error{
-      type: error_type(operation, reason),
-      message: error_message(reason),
-      retryable?: retryable_reason?(reason),
-      adapter: __MODULE__,
-      operation: operation,
-      connection: connection,
-      details: %{reason: reason}
-    }
+  defp resolve_client(opts) do
+    candidate = Keyword.get(opts, :duckdb_client, Client.default())
+
+    if is_atom(candidate), do: candidate, else: Client.default()
   end
 
-  defp error_type(:connect, :invalid_database), do: :invalid_config
-  defp error_type(:connect, _), do: :connection_error
-  defp error_type(:ping, _), do: :connection_error
-  defp error_type(:transaction, _), do: :execution_error
+  defp materialize_error(%Error{} = error, %Conn{} = conn) do
+    error
+    |> Map.put(:operation, :materialize)
+    |> Map.put(:connection, error.connection || conn.connection)
+  end
 
-  defp error_type(_, reason) when reason in [:invalid_argument, :syntax_error],
-    do: :execution_error
-
-  defp error_type(_, {:error, _}), do: :execution_error
-  defp error_type(_, _), do: :execution_error
-
-  defp error_message(reason) when is_binary(reason), do: reason
-  defp error_message({:error, message}) when is_binary(message), do: message
-  defp error_message(_), do: "duckdb operation failed"
-
-  defp retryable_reason?(reason) when reason in [:busy, :locked], do: true
-
-  defp retryable_reason?("Transaction conflict: cannot update a table that has been altered!"),
-    do: true
-
-  defp retryable_reason?(_), do: false
+  defp normalize_error(operation, connection, reason) do
+    ErrorMapper.normalize(operation, connection, reason)
+  end
 end

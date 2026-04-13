@@ -79,7 +79,10 @@ lib/
     │   └── adapter/
     │       ├── duckdb.ex
     │       └── duckdb/
-    │           └── client.ex
+    │           ├── client.ex
+    │           ├── error_mapper.ex
+    │           └── client/
+    │               └── duckdbex.ex
     ├── sql_asset/
     │   ├── compiler.ex
     │   ├── definition.ex
