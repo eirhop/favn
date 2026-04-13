@@ -209,7 +209,9 @@ defmodule Favn do
   IR. Runtime helper APIs are available through `render/2`, `preview/2`, `explain/2`,
   and `materialize/2`. SQL relation references discovered from the typed SQL IR are
   now also used to infer additive asset dependencies through the registry ownership
-  index, with diagnostics retained on canonical asset metadata.
+  index, with diagnostics retained on canonical asset metadata. CTE aliases declared
+  with `WITH` are excluded lexically from relation inference, including nested
+  subquery scopes.
 
   Compact multi-asset style uses `Favn.Assets`:
 

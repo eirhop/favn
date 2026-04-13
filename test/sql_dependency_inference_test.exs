@@ -305,6 +305,142 @@ defmodule Favn.SQLDependencyInferenceTest do
     assert diagnostic.code == :cross_connection_direct_asset_ref
   end
 
+  test "ignores nested CTE aliases while inferring relation dependencies" do
+    root = Module.concat(__MODULE__, "NestedCTE#{System.unique_integer([:positive])}")
+    raw_orders = Module.concat(root, RawOrders)
+    customers = Module.concat(root, Customers)
+    consumer = Module.concat(root, Consumer)
+
+    compile_elixir_asset!(raw_orders, "raw_orders")
+    compile_elixir_asset!(customers, "customers")
+
+    compile_sql_asset!(
+      consumer,
+      """
+      with raw_orders as (
+        select * from silver.sales.raw_orders
+      )
+      select *
+      from raw_orders
+      join (
+        with customers as (
+          select * from silver.sales.customers
+        )
+        select * from customers
+      ) nested_customers on true
+      """
+    )
+
+    :ok =
+      Favn.TestSetup.setup_asset_modules([raw_orders, customers, consumer], reload_graph?: true)
+
+    assert {:ok, asset} = Favn.get_asset(consumer)
+
+    assert asset.depends_on == [{customers, :asset}, {raw_orders, :asset}]
+
+    refute Enum.any?(asset.diagnostics, fn diagnostic ->
+             diagnostic.code == :unmanaged_relation_reference
+           end)
+  end
+
+  test "ignores multi-CTE sibling aliases in end-to-end dependency inference" do
+    root = Module.concat(__MODULE__, "SiblingCTE#{System.unique_integer([:positive])}")
+    raw_orders = Module.concat(root, RawOrders)
+    consumer = Module.concat(root, Consumer)
+
+    compile_elixir_asset!(raw_orders, "raw_orders")
+
+    compile_sql_asset!(
+      consumer,
+      """
+      with a as (
+        select * from silver.sales.raw_orders
+      ),
+      b as (
+        select * from a
+      )
+      select * from b
+      """
+    )
+
+    :ok = Favn.TestSetup.setup_asset_modules([raw_orders, consumer], reload_graph?: true)
+
+    assert {:ok, asset} = Favn.get_asset(consumer)
+    assert asset.depends_on == [{raw_orders, :asset}]
+
+    refute Enum.any?(asset.diagnostics, fn diagnostic ->
+             diagnostic.code == :unmanaged_relation_reference
+           end)
+  end
+
+  test "ignores CTE aliases inside nested defsql relation chain" do
+    root = Module.concat(__MODULE__, "NestedDefsqlCTE#{System.unique_integer([:positive])}")
+    sql_module = Module.concat(root, SQL)
+    raw_orders = Module.concat(root, RawOrders)
+    customers = Module.concat(root, Customers)
+    consumer = Module.concat(root, Consumer)
+
+    compile_elixir_asset!(raw_orders, "raw_orders")
+    compile_elixir_asset!(customers, "customers")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(sql_module)} do
+        use Favn.SQL
+
+        defsql filtered_orders(start_at) do
+          ~SQL[
+          with scoped_orders as (
+            select * from silver.sales.raw_orders
+          )
+          select *
+          from scoped_orders
+          where inserted_at >= @start_at
+            and exists (
+            with scoped_customers as (
+              select customer_id from silver.sales.customers
+            )
+            select 1 from scoped_customers
+          )
+          ]
+        end
+
+        defsql wrapped_orders(start_at) do
+          ~SQL[select * from filtered_orders(@start_at)]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(consumer)} do
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
+        use Favn.SQLAsset
+        use #{inspect(sql_module)}
+
+        @materialized :view
+
+        query do
+          ~SQL[select * from wrapped_orders(@window_start)]
+        end
+      end
+      """,
+      "test/dynamic_sql_dependency_inference_test.exs"
+    )
+
+    :ok =
+      Favn.TestSetup.setup_asset_modules([raw_orders, customers, consumer], reload_graph?: true)
+
+    assert {:ok, asset} = Favn.get_asset(consumer)
+    assert asset.depends_on == [{customers, :asset}, {raw_orders, :asset}]
+
+    refute Enum.any?(asset.diagnostics, fn diagnostic ->
+             diagnostic.code == :unmanaged_relation_reference
+           end)
+  end
+
   defp compile_elixir_asset!(module, table_name) do
     Code.compile_string(
       """
