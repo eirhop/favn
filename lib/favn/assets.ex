@@ -1,23 +1,47 @@
 defmodule Favn.Assets do
   @moduledoc """
-  Compile-time DSL for authoring Favn assets inside a module.
+  Compact multi-asset function DSL.
 
-  `use Favn.Assets` lets a module mark public functions with `@asset` so Favn
-  can capture canonical `%Favn.Asset{}` metadata for later introspection.
+  `Favn.Assets` lets one module expose multiple public functions as assets using
+  `@asset`. It is still supported, but for new single-asset modules prefer
+  `Favn.Asset`, and for repetitive generated modules prefer `Favn.MultiAsset`.
 
-  This module is intentionally focused on compile-time authoring behavior:
+  ## When to use it
 
-    * collecting metadata from `@asset`
-    * enforcing authoring rules
-    * normalizing DSL-friendly dependency declarations
-    * emitting `__favn_assets__/0` for later runtime inspection
+  Use this module when several closely related assets belong in one module and a
+  function-per-asset style is still the clearest choice.
 
-  Asset authoring contract:
+  ## Minimal example
 
-    * asset functions must have arity 1 and accept one runtime context argument
-    * use repeatable `@depends` attributes for dependencies
-    * use `@meta` for non-execution metadata
-    * use optional `@window Favn.Window.daily()` to define asset windowing
+      defmodule MyApp.SalesETL do
+        use Favn.Assets
+
+        @asset true
+        @doc "Extract raw orders"
+        def extract_orders(_ctx), do: :ok
+
+        @asset true
+        @doc "Build daily sales"
+        @depends :extract_orders
+        def daily_sales(_ctx), do: :ok
+      end
+
+  ## Authoring contract
+
+  - each `@asset` must be followed immediately by one public function with arity 1
+  - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` to that same function
+  - use `:asset_name` for same-module dependencies and `{Module, :asset_name}` across modules
+
+  ## What gets compiled
+
+  Every marked function becomes one canonical `%Favn.Asset{}` with ref
+  `{Module, :function_name}`.
+
+  ## See also
+
+  - `Favn.AgentGuide`
+  - `Favn.Asset`
+  - `Favn.MultiAsset`
   """
 
   alias Favn.Asset

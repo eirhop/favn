@@ -1,14 +1,77 @@
 defmodule Favn.SQLAsset do
   @moduledoc """
-  Preferred single-module SQL asset DSL.
+  Preferred single-asset SQL DSL.
 
-  `Favn.SQLAsset` compiles one SQL-authored module into one canonical
-  `%Favn.Asset{}` with ref `{Module, :asset}`.
+  Use this module when one module should define one SQL asset. Like
+  `Favn.Asset`, it compiles to one canonical `%Favn.Asset{}` with ref
+  `{Module, :asset}`, but the authored body comes from `query/1` instead of a
+  handwritten `asset/1` function.
 
-  SQL bodies are authored with `query do ... end` or `query file: "..."`.
-  Inline SQL uses a real `~SQL` sigil.
-  SQL compilation keeps the authored SQL source and a normalized SQL template IR
-  so reusable SQL definitions and relation references can be validated at compile time.
+  ## When to use it
+
+  Use `Favn.SQLAsset` when:
+
+  - the asset body is primarily SQL
+  - you want Favn-aware relation references, placeholders, and reusable SQL
+  - you want the SQL asset to participate in the same dependency and runtime model as Elixir assets
+
+  ## Minimal example
+
+      defmodule MyApp.Gold.Sales.FctOrders do
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
+        use Favn.SQLAsset
+
+        @doc "Build the gold orders fact table"
+        @meta owner: "analytics", category: :sales, tags: [:gold]
+        @depends MyApp.Silver.Sales.StgOrders
+        @window Favn.Window.daily(lookback: 1)
+        @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
+
+        query do
+          ~SQL\"""
+          select *
+          from MyApp.Silver.Sales.StgOrders
+          where order_date >= @window_start
+            and order_date < @window_end
+          \"""
+        end
+      end
+
+  ## Authoring contract
+
+  - define exactly one `query/1` declaration
+  - declare exactly one `@materialized`
+  - attach `@doc`, `@meta`, `@depends`, `@window`, `@materialized`, and optional `@relation` before `query`
+  - use `~SQL` for inline SQL bodies
+  - use `query file: "..."` for file-backed SQL loaded at compile time
+
+  ## What gets compiled
+
+  The DSL keeps both authored SQL and normalized SQL IR so Favn can validate
+  reusable SQL definitions, placeholders, and typed relation usage at compile
+  time. The final public output is still one canonical `%Favn.Asset{}` plus
+  SQL-specific definition metadata used by rendering and execution.
+
+  ## Runtime context notes
+
+  The generated `asset/1` calls into the SQL runtime automatically. Runtime
+  inputs such as window bounds and explicit `params` are resolved during render
+  and execution, not inside user-authored Elixir code.
+
+  ## Common mistakes
+
+  - defining more than one query
+  - forgetting `@materialized`
+  - using interpolation inside `~SQL`
+  - using invalid `@depends`, `@window`, or `@relation` values
+  - expecting `asset/1` to be user-defined in a `Favn.SQLAsset` module
+
+  ## See also
+
+  - `Favn.AgentGuide`
+  - `Favn.SQL`
+  - `Favn.Window`
+  - `Favn.Connection`
   """
 
   alias Favn.Asset
@@ -79,7 +142,23 @@ defmodule Favn.SQLAsset do
     end
   end
 
-  @doc false
+  @doc """
+  Declares the SQL body for a `Favn.SQLAsset`.
+
+  Use either an inline `~SQL` body or `file: "..."`. Each module may declare
+  exactly one query.
+
+  ## Examples
+
+      query do
+        ~SQL\"""
+        select *
+        from MyApp.Raw.Sales.Orders
+        \"""
+      end
+
+      query file: "sql/fct_orders.sql"
+  """
   defmacro query(do: body) do
     raw_definition = Module.get_attribute(__CALLER__.module, :favn_sql_asset_raw)
 

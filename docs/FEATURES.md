@@ -2,7 +2,7 @@
 
 ## Current Version
 
-**Current release: v0.3.0**
+**Current release: v0.4.0**
 
 ## Current Focus
 
@@ -109,7 +109,7 @@ Goal: make Favn usable for scheduled and windowed asset execution.
 
 ## v0.4.0 — SQL Foundation and DuckDB
 
-**Status: Planned**
+**Status: Released**
 
 Goal: first complete SQL workflow on top of the shared runtime window model.
 
@@ -201,6 +201,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
   - [x] additive explicit + inferred dependency merge with provenance metadata
   - [x] unmanaged external relation warnings and ambiguous ownership errors
   - [x] follow-up hardening: nested/subquery `WITH` CTE alias exclusion tests for relation inference
+- [x] Documentation refactor for public DSL discoverability and AI-agent routing
 
 ---
 

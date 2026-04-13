@@ -15,6 +15,7 @@ test/
 ├── pipeline_sqlite_smoke_test.exs
 ├── pipeline_test.exs
 ├── planner_test.exs
+├── public_docs_test.exs
 ├── ref_test.exs
 ├── runner_test.exs
 ├── runtime_projector_test.exs

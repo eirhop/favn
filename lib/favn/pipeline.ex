@@ -1,12 +1,39 @@
 defmodule Favn.Pipeline do
   @moduledoc """
-  Tiny code-defined DSL for pipeline composition.
+  Public DSL for pipeline composition.
 
-  This DSL defines orchestration composition only. Dependency planning is still
-  delegated to the existing asset dependency planner.
+  Pipelines select assets and attach orchestration configuration without
+  redefining dependency logic. Favn still derives execution order from the asset
+  graph.
 
-  Selector semantics in `select do ... end` are additive (union-based): each
-  selector contributes refs, then refs are deduplicated and sorted.
+  ## When to use it
+
+  Use `Favn.Pipeline` when you want a named operational unit such as a daily
+  run, a scheduled sync, or a curated asset subset.
+
+  ## Minimal example
+
+      defmodule MyApp.Pipelines.DailySales do
+        use Favn.Pipeline
+
+        pipeline :daily_sales do
+          asset MyApp.Gold.Sales.FctOrders
+          deps :all
+          schedule cron: "0 2 * * *", timezone: "Etc/UTC"
+        end
+      end
+
+  ## Authoring notes
+
+  - declare exactly one `pipeline :name do ... end`
+  - use either shorthand selection (`asset`, `assets`) or `select do ... end`
+  - selector semantics are additive and deduplicated
+
+  ## See also
+
+  - `Favn`
+  - `Favn.Window`
+  - `Favn.Triggers.Schedules`
   """
 
   alias Favn.Pipeline.Definition
@@ -35,6 +62,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Declares the pipeline name and body for a pipeline module.
+  """
   defmacro pipeline(name, do: block) when is_atom(name) do
     if Module.get_attribute(__CALLER__.module, :favn_pipeline_declared) do
       raise ArgumentError, "pipeline can only be declared once per module"
@@ -50,6 +80,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Chooses whether pipeline runs include upstream dependencies.
+  """
   defmacro deps(mode) do
     quote bind_quoted: [mode: mode] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "deps")
@@ -59,6 +92,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Attaches pipeline-level config metadata as a map or keyword list.
+  """
   defmacro config(opts) do
     quote bind_quoted: [opts: opts] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "config")
@@ -68,6 +104,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Attaches pipeline metadata as a map or keyword list.
+  """
   defmacro meta(opts) do
     quote bind_quoted: [opts: opts] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "meta")
@@ -77,6 +116,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Attaches a schedule reference or an inline schedule definition.
+  """
   defmacro schedule(value) do
     quote bind_quoted: [value: value] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "schedule")
@@ -85,6 +127,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Declares the named pipeline window to use at runtime.
+  """
   defmacro window(name) do
     quote bind_quoted: [name: name] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "window")
@@ -94,6 +139,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Declares the named pipeline source.
+  """
   defmacro source(name) do
     quote bind_quoted: [name: name] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "source")
@@ -103,6 +151,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Declares named pipeline outputs.
+  """
   defmacro outputs(value) do
     quote bind_quoted: [value: value] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "outputs")
@@ -112,6 +163,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Adds one asset ref or single-asset module to the pipeline selection.
+  """
   defmacro asset(ref) do
     quote bind_quoted: [ref: ref] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "asset")
@@ -126,6 +180,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Adds many asset refs or single-asset modules to the pipeline selection.
+  """
   defmacro assets(refs) do
     quote bind_quoted: [refs: refs] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "assets")
@@ -143,6 +200,9 @@ defmodule Favn.Pipeline do
     end
   end
 
+  @doc """
+  Declares additive selectors such as `asset`, `tag`, `category`, or `module`.
+  """
   defmacro select(do: block) do
     selectors = __extract_selectors__(block)
 

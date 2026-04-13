@@ -1,16 +1,56 @@
 defmodule Favn.SQL do
   @moduledoc """
-  SQL runtime facade and reusable SQL authoring DSL.
+  Reusable SQL authoring DSL plus the public SQL runtime facade.
 
-  Compiler/discovery and planner flows should remain independent from SQL sessions.
-  Runtime SQL session APIs in this module start from `%Favn.Connection.Resolved{}`.
+  This module serves two related jobs:
 
-  The same module also exposes SQL authoring macros:
+  - define reusable SQL with `defsql`
+  - open SQL sessions and execute backend operations from resolved connections
 
-    * `use Favn.SQL`
-    * `defsql ... do ... end`
-    * `defsql ..., file: "..."`
-    * `~SQL\""" ... \"""`
+  Read this module after `Favn.SQLAsset` when you need reusable SQL, the `~SQL`
+  sigil, or direct SQL helper/runtime APIs.
+
+  ## When to use it
+
+  Use `Favn.SQL` when:
+
+  - a SQL asset needs reusable SQL definitions
+  - you want the canonical `~SQL` body language
+  - you need direct SQL runtime access from `%Favn.Connection.Resolved{}` or a named connection
+
+  ## Minimal example
+
+      defmodule MyApp.SQL.Common do
+        use Favn.SQL
+
+        defsql by_status(status) do
+          ~SQL\"""
+          select *
+          from raw.sales.orders
+          where status = @status
+          \"""
+        end
+      end
+
+  ## Authoring notes
+
+  - `~SQL` only accepts literal strings
+  - interpolation is intentionally rejected
+  - non-reserved `@name` placeholders are explicit SQL inputs
+  - `defsql` can be inline or file-backed
+
+  ## Public vs internal boundary
+
+  `Favn.SQL` is public. Lower-level modules such as `Favn.SQL.Template` and the
+  adapter internals are implementation details unless another public moduledoc
+  explicitly routes you there.
+
+  ## See also
+
+  - `Favn.AgentGuide`
+  - `Favn.SQLAsset`
+  - `Favn.Connection`
+  - `Favn`
   """
 
   alias Favn.Connection.Registry
@@ -41,7 +81,20 @@ defmodule Favn.SQL do
     end
   end
 
-  @doc false
+  @doc """
+  Canonical SQL sigil for Favn SQL authoring.
+
+  The body must be a literal string. Interpolation and sigil modifiers are not
+  supported.
+
+  ## Example
+
+      ~SQL\"""
+      select *
+      from raw.sales.orders
+      where status = @status
+      \"""
+  """
   defmacro sigil_SQL({:<<>>, _meta, parts}, modifiers) when is_list(modifiers) do
     if modifiers != [] do
       compile_error!(__CALLER__.file, __CALLER__.line, "~SQL sigil does not support modifiers")
@@ -66,7 +119,24 @@ defmodule Favn.SQL do
     end
   end
 
-  @doc false
+  @doc """
+  Defines reusable SQL that can be referenced from SQL assets or other reusable
+  SQL definitions.
+
+  Use a function-style head so arguments become named SQL inputs.
+
+  ## Examples
+
+      defsql recent_orders(limit) do
+        ~SQL\"""
+        select *
+        from raw.sales.orders
+        limit @limit
+        \"""
+      end
+
+      defsql recent_orders(limit), file: "sql/recent_orders.sql"
+  """
   defmacro defsql({name, _meta, args_ast}, do: body)
            when is_atom(name) and (is_list(args_ast) or is_nil(args_ast)) do
     args = normalize_defsql_args!(args_ast || [], __CALLER__)

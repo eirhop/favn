@@ -1,23 +1,78 @@
 defmodule Favn.Asset do
   @moduledoc """
-  Canonical asset metadata captured from an authored Favn asset.
+  Preferred single-asset Elixir DSL and the canonical `%Favn.Asset{}` struct.
 
-  `Favn.Asset` is the normalized shape used by the rest of Favn for
-  introspection, dependency resolution, and execution planning.
+  Use this module when one module should define exactly one executable Elixir
+  asset. That asset is always declared as `def asset(ctx)` and compiles to the
+  canonical ref `{Module, :asset}`.
 
-  It also provides the preferred single-asset Elixir DSL:
+  ## When to use it
+
+  Use `Favn.Asset` when:
+
+  - one module should represent one asset
+  - the runtime logic is normal Elixir code
+  - you want the clearest public authoring surface for humans and AI agents
+
+  Use `Favn.MultiAsset` for repetitive generated assets, and `Favn.SQLAsset`
+  when the primary body is SQL.
+
+  ## Minimal example
 
       defmodule MyApp.Raw.Sales.Orders do
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
         use Favn.Asset
 
         @doc "Extract raw orders"
         @meta owner: "data-platform", category: :sales, tags: [:raw]
+        @depends MyApp.Raw.Sales.Customers
+        @window Favn.Window.daily()
         @relation true
-        def asset(ctx), do: :ok
+        def asset(ctx) do
+          _asset = ctx.asset
+          _window = ctx.window
+          :ok
+        end
       end
 
-  This module owns validation of the final canonical asset shape after the DSL
-  has normalized authoring-friendly input into runtime-ready values.
+  ## Authoring contract
+
+  - define exactly one public `asset/1`
+  - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` directly above `def asset(ctx)`
+  - repeat `@depends` for multiple upstream dependencies
+  - use module shorthand in `@depends` for another single-asset module
+
+  ## What gets compiled
+
+  The DSL compiles into one canonical `%Favn.Asset{}` with:
+
+  - `ref: {Module, :asset}`
+  - `type: :elixir`
+  - normalized metadata and dependency refs
+  - optional window and relation ownership metadata
+
+  ## Runtime context notes
+
+  `ctx` is a `Favn.Run.Context`. In practice, authors most often read:
+
+  - `ctx.asset` for canonical asset metadata
+  - `ctx.asset.config` for compiled config when present
+  - `ctx.asset.relation` for owned relation identity
+  - `ctx.window` for resolved runtime windows on windowed assets
+
+  ## Common mistakes
+
+  - defining more than one `asset/1`
+  - attaching DSL attributes to another function
+  - using an invalid `@depends` shape
+  - declaring multiple `@window` or `@relation` attributes
+
+  ## See also
+
+  - `Favn.AgentGuide`
+  - `Favn.SQLAsset`
+  - `Favn.MultiAsset`
+  - `Favn.Namespace`
   """
 
   alias Favn.Asset.Dependency

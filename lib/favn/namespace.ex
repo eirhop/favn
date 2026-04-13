@@ -1,22 +1,36 @@
 defmodule Favn.Namespace do
   @moduledoc """
-  Namespace config carrier for inherited asset relation defaults.
+  Public helper for inherited relation defaults.
 
-  Supports grouped `relation: [connection: ..., catalog: ..., schema: ...]` for relation defaults.
+  Use `Favn.Namespace` to declare relation defaults once on parent modules, then
+  let `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, `Favn.Assets`, and
+  `Favn.Source` inherit them.
 
-  Example:
+  ## When to use it
 
-      defmodule MyApp do
+  Use this module when many assets share the same `connection`, `catalog`, or
+  `schema` and you want those values derived from module nesting instead of
+  repeated in every asset.
+
+  ## Example
+
+      defmodule MyApp.Warehouse do
         use Favn.Namespace, relation: [connection: :warehouse]
       end
 
-      defmodule MyApp.Raw do
+      defmodule MyApp.Warehouse.Raw do
         use Favn.Namespace, relation: [catalog: "raw"]
       end
 
-      defmodule MyApp.Raw.Stripe do
-        use Favn.Namespace, relation: [schema: "stripe"]
+      defmodule MyApp.Warehouse.Raw.Sales do
+        use Favn.Namespace, relation: [schema: "sales"]
       end
+
+  ## See also
+
+  - `Favn.Asset`
+  - `Favn.SQLAsset`
+  - `Favn.Source`
   """
 
   @supported_keys [:connection, :catalog, :schema]

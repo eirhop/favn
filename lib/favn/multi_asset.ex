@@ -1,10 +1,80 @@
 defmodule Favn.MultiAsset do
   @moduledoc """
-  Advanced Elixir DSL for compiling one module into many canonical assets.
+  Advanced Elixir DSL for compiling one module into many generated assets.
 
-  `Favn.MultiAsset` keeps the shared `%Favn.Asset{}` model and runtime contract,
-  while allowing repetitive extraction patterns to share one `asset/1` runtime
-  entrypoint and per-asset compile-time config.
+  Use this module when many assets share the same runtime implementation but
+  differ by declarative config. Each declared `asset :name do ... end` compiles
+  to its own canonical `%Favn.Asset{}` while the module keeps one shared public
+  `asset/1` runtime function.
+
+  ## When to use it
+
+  Use `Favn.MultiAsset` when:
+
+  - you are generating many similar extraction assets
+  - the runtime implementation is shared
+  - per-asset differences are mostly config, metadata, relation ownership, or dependencies
+
+  ## Minimal example
+
+      defmodule MyApp.Raw.Shopify do
+        use Favn.MultiAsset
+
+        defaults do
+          meta owner: "data-platform", category: :shopify, tags: [:raw]
+
+          rest do
+            primary_key "id"
+            paginator :cursor, cursor_path: "links.next"
+          end
+        end
+
+        @doc "Extract orders"
+        @relation true
+        asset :orders do
+          rest do
+            path "/orders.json"
+            data_path "orders"
+          end
+        end
+
+        def asset(ctx) do
+          MyApp.Shopify.Client.extract(ctx.asset.config, ctx)
+        end
+      end
+
+  ## Authoring contract
+
+  - define exactly one public `asset/1` runtime function
+  - define at least one `asset :name do ... end` declaration
+  - use at most one `defaults do ... end` block
+  - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` directly above each declared asset
+
+  ## What gets compiled
+
+  Each declaration becomes one canonical `%Favn.Asset{}` with:
+
+  - `ref: {Module, :name}`
+  - `entrypoint: :asset`
+  - merged defaults plus per-asset config in `ctx.asset.config`
+
+  ## Runtime context notes
+
+  The shared runtime usually reads `ctx.asset.config` to decide what to extract.
+  Relation ownership, metadata, and window specs remain per generated asset.
+
+  ## Common mistakes
+
+  - forgetting the shared `asset/1` runtime function
+  - declaring multiple `defaults` blocks
+  - using duplicate asset names
+  - expecting asset blocks to support arbitrary clauses beyond the current DSL
+
+  ## See also
+
+  - `Favn.AgentGuide`
+  - `Favn.Asset`
+  - `Favn.Namespace`
   """
 
   alias Favn.Asset
@@ -86,7 +156,23 @@ defmodule Favn.MultiAsset do
     end
   end
 
-  @doc false
+  @doc """
+  Declares defaults shared by every generated asset in the module.
+
+  Defaults are merged with per-asset declarations. In v0.4 this block supports
+  `meta`, `window`, and `rest`.
+
+  ## Example
+
+      defaults do
+        meta owner: "data-platform", category: :shopify, tags: [:raw]
+
+        rest do
+          primary_key "id"
+          paginator :cursor, cursor_path: "links.next"
+        end
+      end
+  """
   defmacro defaults(do: block) do
     ensure_no_pending_attributes!(__CALLER__)
 
@@ -111,6 +197,24 @@ defmodule Favn.MultiAsset do
     end
   end
 
+  @doc """
+  Declares one generated asset inside a `Favn.MultiAsset` module.
+
+  Attach standard asset attributes such as `@doc`, `@meta`, `@depends`,
+  `@window`, and `@relation` immediately above the declaration.
+
+  ## Example
+
+      @doc "Extract orders"
+      @depends MyApp.Raw.Shopify.Customers
+      @relation true
+      asset :orders do
+        rest do
+          path "/orders.json"
+          data_path "orders"
+        end
+      end
+  """
   defmacro asset(name, do: block) do
     if not is_atom(name) do
       compile_error!(

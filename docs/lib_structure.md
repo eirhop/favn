@@ -7,6 +7,7 @@ lib/
 ├── favn.ex
 └── favn/
     ├── application.ex
+    ├── agent_guide.ex
     ├── asset.ex
     ├── diagnostic.ex
     ├── assets.ex

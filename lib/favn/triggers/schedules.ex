@@ -1,8 +1,11 @@
 defmodule Favn.Triggers.Schedules do
   @moduledoc """
-  Reusable named schedule trigger definitions.
+  Public DSL for reusable named schedules.
 
-  Modules can declare repeated top-level `schedule/2` clauses:
+  Use this module when multiple pipelines should share stable schedule
+  definitions by reference.
+
+  ## Example
 
       defmodule MyApp.Schedules do
         use Favn.Triggers.Schedules
@@ -13,6 +16,8 @@ defmodule Favn.Triggers.Schedules do
           missed: :skip,
           overlap: :forbid
       end
+
+  Pipelines can then reference `{MyApp.Schedules, :daily}`.
   """
 
   alias Favn.Triggers.Schedule
@@ -30,6 +35,9 @@ defmodule Favn.Triggers.Schedules do
     end
   end
 
+  @doc """
+  Declares one named schedule.
+  """
   defmacro schedule(name, opts) do
     quote bind_quoted: [name: name, opts: opts] do
       unless is_atom(name) do
