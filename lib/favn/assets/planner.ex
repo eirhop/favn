@@ -54,7 +54,7 @@ defmodule Favn.Assets.Planner do
          target_refs: target_refs,
          target_node_keys: build_target_node_keys(target_refs, graph.ref_nodes),
          dependencies: dependencies,
-         nodes: build_nodes(graph, stage_map),
+         nodes: build_nodes(graph, stage_map, projected_index.assets_by_ref),
          topo_order: projected_index.topo_order,
          stages: build_stages(projected_index, ref_stage_map),
          node_stages: build_node_stages(graph, stage_map, projected_index.topo_rank)
@@ -313,19 +313,24 @@ defmodule Favn.Assets.Planner do
     end)
   end
 
-  defp build_nodes(graph, stage_map) do
+  defp build_nodes(graph, stage_map, assets_by_ref) do
     graph.nodes
     |> Enum.sort_by(&node_key_sort_key(&1.node_key))
     |> Enum.reduce(%{}, fn node, acc ->
+      asset = Map.fetch!(assets_by_ref, node.ref)
+
       full_node =
         Map.merge(node, %{
           stage: Map.fetch!(stage_map, node.node_key),
-          action: :run
+          action: node_action(asset)
         })
 
       Map.put(acc, full_node.node_key, full_node)
     end)
   end
+
+  defp node_action(%{type: :source}), do: :observe
+  defp node_action(_asset), do: :run
 
   defp build_stages(index, stage_map) do
     index.topo_order

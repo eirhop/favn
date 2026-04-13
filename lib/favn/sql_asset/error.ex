@@ -26,7 +26,7 @@ defmodule Favn.SQLAsset.Error do
           | :missing_runtime_input
           | :missing_query_param
           | :unresolved_asset_ref
-          | :invalid_produced_relation
+          | :invalid_relation
           | :cross_connection_asset_ref
           | :defsql_expansion_failed
           | :binding_failure

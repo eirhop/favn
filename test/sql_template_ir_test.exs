@@ -168,10 +168,10 @@ defmodule Favn.SQLTemplateIRTest do
     Code.compile_string(
       """
       defmodule #{inspect(raw_orders)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end
@@ -273,7 +273,7 @@ defmodule Favn.SQLTemplateIRTest do
       Code.compile_string(
         """
         defmodule #{inspect(asset_module)} do
-          use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+          use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
           use Favn.SQLAsset
           use #{inspect(sql_a)}
           use #{inspect(sql_b)}
@@ -393,10 +393,10 @@ defmodule Favn.SQLTemplateIRTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end

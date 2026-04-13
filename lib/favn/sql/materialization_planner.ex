@@ -130,9 +130,9 @@ defmodule Favn.SQL.MaterializationPlanner do
   defp target_exists?(%Session{} = session, %Render{} = render) do
     ref =
       RelationRef.new!(%{
-        catalog: render.produced_relation.catalog,
-        schema: render.produced_relation.schema,
-        name: render.produced_relation.name
+        catalog: render.relation.catalog,
+        schema: render.relation.schema,
+        name: render.relation.name
       })
 
     case SQL.get_relation(session, ref) do
@@ -179,9 +179,9 @@ defmodule Favn.SQL.MaterializationPlanner do
 
     ref =
       RelationRef.new!(%{
-        catalog: render.produced_relation.catalog,
-        schema: render.produced_relation.schema,
-        name: render.produced_relation.name
+        catalog: render.relation.catalog,
+        schema: render.relation.schema,
+        name: render.relation.name
       })
 
     with {:ok, columns} <- SQL.columns(session, ref),
@@ -250,9 +250,9 @@ defmodule Favn.SQL.MaterializationPlanner do
 
   defp relation(%Render{} = render, type) do
     %Favn.SQL.Relation{
-      catalog: render.produced_relation.catalog,
-      schema: render.produced_relation.schema,
-      name: render.produced_relation.name,
+      catalog: render.relation.catalog,
+      schema: render.relation.schema,
+      name: render.relation.name,
       type: type,
       metadata: %{}
     }

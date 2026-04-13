@@ -35,7 +35,7 @@ defmodule Favn.Runtime.Coordinator do
   def handle_cast(:start_run, %{state: state} = data) do
     with {:ok, state} <- apply_run_transition(state, :start),
          {:ok, state} <- maybe_schedule_timeout(state),
-         {:ok, state} <- emit_step_ready_for_sources(state),
+         {:ok, state} <- emit_initial_ready_steps(state),
          {:ok, state} <- dispatch_ready_work(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
       {:noreply, %{data | state: state}}
@@ -200,12 +200,39 @@ defmodule Favn.Runtime.Coordinator do
     with {:ok, state} <- apply_step_transition(state, &StepTransitions.start_step(&1, node_key)),
          step <- Map.fetch!(state.steps, node_key),
          {:ok, asset} <- Favn.Assets.Registry.get_asset(step.ref),
-         {:ok, handle} <- start_executor_step(state, node_key, asset) do
-      {:ok, put_execution_handle(state, node_key, handle)}
+         node <- Map.fetch!(state.plan.nodes, node_key),
+         {:ok, state} <- start_node_execution(state, node_key, node, asset) do
+      {:ok, state}
     else
       {:error, reason} ->
         normalized = %{kind: :error, reason: reason, stacktrace: [], class: :executor_error}
         handle_step_error(state, node_key, normalized)
+    end
+  end
+
+  defp start_node_execution(
+         %State{} = state,
+         node_key,
+         %{action: :observe},
+         %Favn.Asset{} = asset
+       ) do
+    complete_step_transition(
+      state,
+      fn next_state ->
+        StepTransitions.complete_success(next_state, node_key, %{
+          observed: true,
+          relation: asset.relation
+        })
+      end,
+      :observe,
+      node_key,
+      :success
+    )
+  end
+
+  defp start_node_execution(%State{} = state, node_key, %{action: :run}, %Favn.Asset{} = asset) do
+    with {:ok, handle} <- start_executor_step(state, node_key, asset) do
+      {:ok, put_execution_handle(state, node_key, handle)}
     end
   end
 
@@ -646,19 +673,19 @@ defmodule Favn.Runtime.Coordinator do
     end
   end
 
-  defp emit_step_ready_for_sources(%State{} = state) do
-    source_keys =
+  defp emit_initial_ready_steps(%State{} = state) do
+    ready_keys =
       state.steps
       |> Enum.filter(fn {_node_key, step} -> step.status == :ready end)
       |> Enum.map(&elem(&1, 0))
       |> Enum.sort()
 
     events =
-      Enum.map(source_keys, fn node_key ->
+      Enum.map(ready_keys, fn node_key ->
         {:step_ready, node_key}
       end)
 
-    emit_events(%{state | ready_queue: source_keys}, events)
+    emit_events(%{state | ready_queue: ready_keys}, events)
   end
 
   defp emit_events(%State{} = state, events) when is_list(events) do
@@ -792,7 +819,7 @@ defmodule Favn.Runtime.Coordinator do
       run_id: state.run_id,
       target_refs: state.target_refs,
       current_ref: step.ref,
-      asset: %{ref: step.ref, produces: asset.produces},
+      asset: %{ref: step.ref, relation: asset.relation},
       params: state.params,
       window: step.runtime_window,
       pipeline: state.pipeline_context,

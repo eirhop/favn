@@ -188,12 +188,12 @@ defmodule Favn.SQLTemplateAssetRefTest do
                  end
   end
 
-  test "raises for compiled single-asset module without produced relation" do
-    no_produces = Module.concat(__MODULE__, "NoProduces#{System.unique_integer([:positive])}")
+  test "raises for compiled single-asset module without relation" do
+    no_relation = Module.concat(__MODULE__, "NoRelation#{System.unique_integer([:positive])}")
 
     Code.compile_string(
       """
-      defmodule #{inspect(no_produces)} do
+      defmodule #{inspect(no_relation)} do
         use Favn.Asset
 
         def asset(_ctx), do: :ok
@@ -203,10 +203,10 @@ defmodule Favn.SQLTemplateAssetRefTest do
     )
 
     assert_raise CompileError,
-                 ~r/does not resolve to a produced relation/,
+                 ~r/does not resolve to a relation/,
                  fn ->
                    Template.compile!(
-                     "select * from #{inspect(no_produces)}",
+                     "select * from #{inspect(no_relation)}",
                      file: "test/sql_template_asset_ref_test.exs",
                      line: 1
                    )
@@ -230,10 +230,10 @@ defmodule Favn.SQLTemplateAssetRefTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end

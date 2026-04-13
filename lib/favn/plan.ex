@@ -17,7 +17,7 @@ defmodule Favn.Plan do
   @typedoc """
   Execution action for one planned node.
   """
-  @type action :: :run
+  @type action :: :run | :observe
 
   @typedoc """
   One planned node keyed by canonical ref.

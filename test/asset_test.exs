@@ -19,7 +19,7 @@ defmodule Favn.AssetTest do
     assert asset.title == nil
     assert asset.depends_on == []
     assert asset.doc == nil
-    assert asset.produces == nil
+    assert asset.relation == nil
   end
 
   test "stores the canonical metadata shape" do
@@ -34,7 +34,7 @@ defmodule Favn.AssetTest do
       title: "Fact Sales",
       meta: %{owner: "analytics", category: :finance, tags: [:warehouse, "finance"]},
       depends_on: [Ref.new(Example.Assets, :normalize_orders)],
-      produces: %RelationRef{
+      relation: %RelationRef{
         connection: :warehouse,
         catalog: "gold",
         schema: "sales",
@@ -53,7 +53,7 @@ defmodule Favn.AssetTest do
     assert asset.meta == %{owner: "analytics", category: :finance, tags: [:warehouse, "finance"]}
     assert asset.depends_on == [{Example.Assets, :normalize_orders}]
 
-    assert asset.produces == %RelationRef{
+    assert asset.relation == %RelationRef{
              connection: :warehouse,
              catalog: "gold",
              schema: "sales",
@@ -73,22 +73,22 @@ defmodule Favn.AssetTest do
       title: "Fact Sales",
       meta: %{owner: "analytics", category: :finance, tags: [:warehouse, "finance"]},
       depends_on: [Ref.new(Example.Assets, :normalize_orders)],
-      produces: %RelationRef{name: "fact_sales"}
+      relation: %RelationRef{name: "fact_sales"}
     }
 
     assert Asset.validate!(asset) == asset
   end
 
-  test "validate!/1 rejects invalid produces values" do
-    assert_raise ArgumentError, ~r/asset produces must be a Favn\.RelationRef or nil/, fn ->
+  test "validate!/1 rejects invalid relation values" do
+    assert_raise ArgumentError, ~r/asset relation must be a Favn\.RelationRef or nil/, fn ->
       Asset.validate!(%Asset{
         module: Example.Assets,
-        name: :bad_produces,
-        ref: Ref.new(Example.Assets, :bad_produces),
+        name: :bad_relation,
+        ref: Ref.new(Example.Assets, :bad_relation),
         arity: 0,
         file: "lib/example/assets.ex",
         line: 10,
-        produces: %{name: "bad"}
+        relation: %{name: "bad"}
       })
     end
   end

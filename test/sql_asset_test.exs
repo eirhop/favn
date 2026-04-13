@@ -23,17 +23,17 @@ defmodule Favn.SQLAssetTest do
     asset_module = Module.concat(sales, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(root)} do\n  use Favn.Namespace, connection: :warehouse\nend",
+      "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend",
       "test/dynamic_sql_asset_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(gold)} do\n  use Favn.Namespace, catalog: :gold\nend",
+      "defmodule #{inspect(gold)} do\n  use Favn.Namespace, relation: [catalog: :gold]\nend",
       "test/dynamic_sql_asset_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, schema: :sales\nend",
+      "defmodule #{inspect(sales)} do\n  use Favn.Namespace, relation: [schema: :sales]\nend",
       "test/dynamic_sql_asset_test.exs"
     )
 
@@ -68,7 +68,7 @@ defmodule Favn.SQLAssetTest do
 
     assert asset.window_spec == %Favn.Window.Spec{kind: :day, lookback: 2, timezone: "Etc/UTC"}
 
-    assert asset.produces == %Favn.RelationRef{
+    assert asset.relation == %Favn.RelationRef{
              connection: :warehouse,
              catalog: "gold",
              schema: "sales",
@@ -80,7 +80,7 @@ defmodule Favn.SQLAssetTest do
     assert definition.materialization == asset.materialization
   end
 
-  test "supports explicit depends and produces overrides for SQL assets" do
+  test "supports explicit depends and relation overrides for SQL assets" do
     upstream = Module.concat(__MODULE__, "Upstream#{System.unique_integer([:positive])}")
     asset_module = Module.concat(__MODULE__, "SqlDepends#{System.unique_integer([:positive])}")
 
@@ -98,12 +98,12 @@ defmodule Favn.SQLAssetTest do
     Code.compile_string(
       """
       defmodule #{inspect(asset_module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :silver, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :silver, schema: :sales]
         use Favn.SQLAsset
 
         @depends #{inspect(upstream)}
         @materialized :table
-        @produces schema: :mart, table: :fact_orders
+        @relation schema: :mart, table: :fact_orders
         query do
           ~SQL[select * from silver.sales.stg_orders]
         end
@@ -116,7 +116,7 @@ defmodule Favn.SQLAssetTest do
 
     assert asset.depends_on == [{upstream, :asset}]
 
-    assert asset.produces == %Favn.RelationRef{
+    assert asset.relation == %Favn.RelationRef{
              connection: :warehouse,
              catalog: "silver",
              schema: "mart",
@@ -130,7 +130,7 @@ defmodule Favn.SQLAssetTest do
     Code.compile_string(
       """
       defmodule #{inspect(asset_module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
 
         @doc "Facade SQL asset"
@@ -155,7 +155,7 @@ defmodule Favn.SQLAssetTest do
   test "rejects deferred incremental strategy :merge at compile time" do
     assert_raise CompileError, ~r/incremental strategy :merge is not supported in Phase 4b/, fn ->
       compile_sql_asset_module("""
-      use Favn.Namespace, connection: :warehouse
+      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
       @window Favn.Window.daily()
@@ -173,7 +173,7 @@ defmodule Favn.SQLAssetTest do
                  ~r/incremental materialization unique_key is reserved for future :merge semantics/,
                  fn ->
                    compile_sql_asset_module("""
-                   use Favn.Namespace, connection: :warehouse
+                   use Favn.Namespace, relation: [connection: :warehouse]
                    use Favn.SQLAsset
 
                    @window Favn.Window.daily()
@@ -189,7 +189,7 @@ defmodule Favn.SQLAssetTest do
   test "rejects delete_insert without window_column" do
     assert_raise CompileError, ~r/incremental :delete_insert requires :window_column/, fn ->
       compile_sql_asset_module("""
-      use Favn.Namespace, connection: :warehouse
+      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
       @window Favn.Window.daily()
@@ -205,7 +205,7 @@ defmodule Favn.SQLAssetTest do
   test "rejects incremental materialization without @window" do
     assert_raise CompileError, ~r/incremental SQL materialization requires @window/, fn ->
       compile_sql_asset_module("""
-      use Favn.Namespace, connection: :warehouse
+      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
       @materialized {:incremental, strategy: :append}
@@ -220,7 +220,7 @@ defmodule Favn.SQLAssetTest do
   test "rejects missing materialized attribute" do
     assert_raise CompileError, ~r/Favn\.SQLAsset requires one @materialized attribute/, fn ->
       compile_sql_asset_module("""
-      use Favn.Namespace, connection: :warehouse
+      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
       query do
@@ -232,7 +232,7 @@ defmodule Favn.SQLAssetTest do
 
   test "rejects missing connection for produced SQL relation" do
     assert_raise CompileError,
-                 ~r/SQL assets require a connection through Favn\.Namespace or @produces/,
+                 ~r/SQL assets require a connection through Favn\.Namespace or @relation/,
                  fn ->
                    compile_sql_asset_module("""
                    use Favn.SQLAsset
@@ -252,7 +252,7 @@ defmodule Favn.SQLAssetTest do
 
       Code.compile_string(
         "defmodule #{inspect(module_name)} do\n" <>
-          "  use Favn.Namespace, connection: :warehouse\n" <>
+          "  use Favn.Namespace, relation: [connection: :warehouse]\n" <>
           "  use Favn.SQLAsset\n\n" <>
           "  @materialized :view\n" <>
           "  query do\n" <>
@@ -267,7 +267,7 @@ defmodule Favn.SQLAssetTest do
   test "rejects plain string query bodies" do
     assert_raise CompileError, ~r/query body must contain a ~SQL literal/, fn ->
       compile_sql_asset_module("""
-      use Favn.Namespace, connection: :warehouse
+      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
       @materialized :view
@@ -285,7 +285,7 @@ defmodule Favn.SQLAssetTest do
     Code.compile_string(
       """
       defmodule #{inspect(asset_module)} do
-        use Favn.Namespace, connection: :warehouse
+        use Favn.Namespace, relation: [connection: :warehouse]
         use Favn.SQLAsset
 
         @depends #{inspect(Favn.AssetsTest.Upstream)}
@@ -306,15 +306,15 @@ defmodule Favn.SQLAssetTest do
     assert message =~ "single-asset module"
   end
 
-  test "rejects multiple produces attributes with a controlled compile error" do
-    assert_raise CompileError, ~r/multiple @produces attributes are not allowed/, fn ->
+  test "rejects multiple relation attributes with a controlled compile error" do
+    assert_raise CompileError, ~r/multiple @relation attributes are not allowed/, fn ->
       compile_sql_asset_module("""
-      use Favn.Namespace, connection: :warehouse
+      use Favn.Namespace, relation: [connection: :warehouse]
       use Favn.SQLAsset
 
       @materialized :view
-      @produces true
-      @produces name: :orders
+      @relation true
+      @relation name: :orders
 
       query do
         ~SQL[select 1]
@@ -330,7 +330,7 @@ defmodule Favn.SQLAssetTest do
     Code.compile_string(
       """
       defmodule #{inspect(asset_module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
 
         @depends #{inspect(upstream)}

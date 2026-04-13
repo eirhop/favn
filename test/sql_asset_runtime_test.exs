@@ -347,9 +347,12 @@ defmodule Favn.SQLAssetRuntimeTest do
   end
 
   test "incremental append bootstraps when target relation does not exist" do
-    %{asset: asset_module} = compile_incremental_runtime_modules!(:append)
+    %{asset: asset_module, source: source_module} = compile_incremental_runtime_modules!(:append)
 
-    assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+    assert :ok =
+             Favn.TestSetup.setup_asset_modules([source_module, asset_module],
+               reload_graph?: true
+             )
 
     assert {:ok, output} =
              Favn.materialize(asset_module,
@@ -371,11 +374,15 @@ defmodule Favn.SQLAssetRuntimeTest do
   end
 
   test "incremental delete_insert uses transaction and window delete scope" do
-    %{asset: asset_module} = compile_incremental_runtime_modules!(:delete_insert)
+    %{asset: asset_module, source: source_module} =
+      compile_incremental_runtime_modules!(:delete_insert)
 
     Application.put_env(:favn, :sql_asset_runtime_target_exists, true)
 
-    assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+    assert :ok =
+             Favn.TestSetup.setup_asset_modules([source_module, asset_module],
+               reload_graph?: true
+             )
 
     assert {:ok, output} =
              Favn.materialize(asset_module,
@@ -408,11 +415,14 @@ defmodule Favn.SQLAssetRuntimeTest do
   end
 
   test "incremental lookback widens query input window params" do
-    %{asset: asset_module} = compile_incremental_runtime_modules!(:append)
+    %{asset: asset_module, source: source_module} = compile_incremental_runtime_modules!(:append)
 
     Application.put_env(:favn, :sql_asset_runtime_target_exists, true)
 
-    assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+    assert :ok =
+             Favn.TestSetup.setup_asset_modules([source_module, asset_module],
+               reload_graph?: true
+             )
 
     assert {:ok, output} =
              Favn.materialize(asset_module,
@@ -437,9 +447,12 @@ defmodule Favn.SQLAssetRuntimeTest do
   end
 
   test "incremental materialize requires runtime window struct" do
-    %{asset: asset_module} = compile_incremental_runtime_modules!(:append)
+    %{asset: asset_module, source: source_module} = compile_incremental_runtime_modules!(:append)
 
-    assert :ok = Favn.TestSetup.setup_asset_modules([asset_module], reload_graph?: true)
+    assert :ok =
+             Favn.TestSetup.setup_asset_modules([source_module, asset_module],
+               reload_graph?: true
+             )
 
     assert {:error, %SQLAssetError{type: :materialization_planning_failed}} =
              Favn.materialize(asset_module,
@@ -518,12 +531,12 @@ defmodule Favn.SQLAssetRuntimeTest do
     asset_module = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :raw, schema: :sales\nend",
+      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :raw, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
@@ -533,7 +546,7 @@ defmodule Favn.SQLAssetRuntimeTest do
         use Favn.Namespace
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end
@@ -590,12 +603,12 @@ defmodule Favn.SQLAssetRuntimeTest do
     cross_asset = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(other_namespace)} do\n  use Favn.Namespace, connection: :other_connection, catalog: :raw, schema: :sales\nend",
+      "defmodule #{inspect(other_namespace)} do\n  use Favn.Namespace, relation: [connection: :other_connection, catalog: :raw, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
@@ -605,7 +618,7 @@ defmodule Favn.SQLAssetRuntimeTest do
         use Favn.Namespace
         use Favn.Asset
 
-        @produces true
+        @relation true
         def asset(_ctx), do: :ok
       end
       """,
@@ -643,12 +656,12 @@ defmodule Favn.SQLAssetRuntimeTest do
     asset_module = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :raw, schema: :sales\nend",
+      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :raw, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
@@ -701,7 +714,7 @@ defmodule Favn.SQLAssetRuntimeTest do
         use Favn.Namespace
         use Favn.Asset
 
-        @produces true
+        @relation true
 
         def asset(_ctx), do: :ok
       end
@@ -714,11 +727,30 @@ defmodule Favn.SQLAssetRuntimeTest do
 
   defp compile_incremental_runtime_modules!(strategy) do
     root = Module.concat(__MODULE__, "Incremental#{System.unique_integer([:positive])}")
+    raw_namespace = Module.concat([root, Raw, Sales])
     gold_namespace = Module.concat([root, Gold, Sales])
+    raw_orders = Module.concat(raw_namespace, Orders)
     asset_module = Module.concat(gold_namespace, FctOrders)
 
     Code.compile_string(
-      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, connection: :sql_asset_runtime, catalog: :gold, schema: :sales\nend",
+      "defmodule #{inspect(raw_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :raw, schema: :sales]\nend",
+      "test/dynamic_sql_asset_runtime_test.exs"
+    )
+
+    Code.compile_string(
+      "defmodule #{inspect(gold_namespace)} do\n  use Favn.Namespace, relation: [connection: :sql_asset_runtime, catalog: :gold, schema: :sales]\nend",
+      "test/dynamic_sql_asset_runtime_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(raw_orders)} do
+        use Favn.Namespace
+        use Favn.Source
+
+        @relation true
+      end
+      """,
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
@@ -750,7 +782,7 @@ defmodule Favn.SQLAssetRuntimeTest do
       "test/dynamic_sql_asset_runtime_test.exs"
     )
 
-    %{asset: asset_module}
+    %{asset: asset_module, source: raw_orders}
   end
 
   defp runtime_window(start_at, end_at) do

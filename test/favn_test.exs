@@ -143,11 +143,11 @@ defmodule FavnTest do
     Code.compile_string(
       """
       defmodule #{inspect(owner_a)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
         use Favn.Assets
 
         @asset true
-        @produces true
+        @relation true
         def orders(_ctx), do: :ok
       end
       """,
@@ -157,11 +157,11 @@ defmodule FavnTest do
     Code.compile_string(
       """
       defmodule #{inspect(owner_b)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
         use Favn.Assets
 
         @asset true
-        @produces name: :orders
+        @relation name: :orders
         def duplicate_orders(_ctx), do: :ok
       end
       """,

@@ -43,7 +43,7 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(fct_orders)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
 
         @depends #{inspect(raw_orders)}
@@ -94,7 +94,7 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(consumer)} do
-        use Favn.Namespace, connection: :warehouse
+        use Favn.Namespace, relation: [connection: :warehouse]
         use Favn.SQLAsset
 
         @materialized :view
@@ -153,7 +153,7 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(consumer)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
         use #{inspect(sql_module)}
 
@@ -201,7 +201,7 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(consumer)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
         use #{inspect(sql_module)}
 
@@ -245,7 +245,7 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(consumer)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
         use #{inspect(sql_module)}
 
@@ -273,10 +273,10 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(upstream)} do
-        use Favn.Namespace, connection: :other, catalog: :silver, schema: :sales
+        use Favn.Namespace, relation: [connection: :other, catalog: :silver, schema: :sales]
         use Favn.Asset
 
-        @produces true
+        @relation true
         def asset(_ctx), do: :ok
       end
       """,
@@ -286,7 +286,7 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(consumer)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
 
         @materialized :view
@@ -309,10 +309,10 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :silver, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :silver, schema: :sales]
         use Favn.Asset
 
-        @produces name: #{inspect(table_name)}
+        @relation name: #{inspect(table_name)}
         def asset(_ctx), do: :ok
       end
       """,
@@ -324,10 +324,10 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :silver, schema: #{inspect(schema_name)}
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :silver, schema: #{inspect(schema_name)}]
         use Favn.Asset
 
-        @produces name: #{inspect(table_name)}
+        @relation name: #{inspect(table_name)}
         def asset(_ctx), do: :ok
       end
       """,
@@ -339,7 +339,7 @@ defmodule Favn.SQLDependencyInferenceTest do
     Code.compile_string(
       """
       defmodule #{inspect(module)} do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
 
         @materialized :view

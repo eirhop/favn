@@ -41,17 +41,17 @@ defmodule Favn do
     * documentation
     * metadata (`owner`, `category`, `tags`)
     * dependency references
-    * optional produced relation ownership
+    * optional relation ownership
     * source file and line
 
   This keeps the workflow definition close to the business logic while still allowing Favn to
   introspect and orchestrate the workflow later.
 
   Asset modules can also inherit relation defaults from `Favn.Namespace` and declare owned
-  relations with `@produces`. Produced relation ownership is distinct from `@depends`:
+  relations with `@relation`. Relation ownership is distinct from `@depends`:
 
       defmodule MyApp.Warehouse.Raw.Sales do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
       end
 
       defmodule MyApp.Warehouse.Raw.Sales.Assets do
@@ -59,9 +59,9 @@ defmodule Favn do
         use Favn.Assets
 
         @asset true
-        @produces true
+        @relation true
         def orders(ctx) do
-          ctx.asset.produces
+          ctx.asset.relation
           :ok
         end
       end
@@ -172,19 +172,19 @@ defmodule Favn do
   Preferred one-module-per-asset style uses `Favn.Asset`:
 
       defmodule MyApp.Raw.Sales.Orders do
-        use Favn.Namespace, connection: :warehouse, catalog: :raw, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :raw, schema: :sales]
         use Favn.Asset
 
         @doc "Extract raw orders"
         @meta owner: "data-platform", category: :sales, tags: [:raw]
-        @produces true
+        @relation true
         def asset(ctx), do: :ok
       end
 
   Preferred one-module-per-asset SQL style uses `Favn.SQLAsset`:
 
       defmodule MyApp.Gold.Sales.FctOrders do
-        use Favn.Namespace, connection: :warehouse, catalog: :gold, schema: :sales
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: :gold, schema: :sales]
         use Favn.SQLAsset
 
         @doc "Build the gold fact table for orders"

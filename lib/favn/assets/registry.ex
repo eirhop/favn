@@ -169,10 +169,10 @@ defmodule Favn.Assets.Registry do
     end
   end
 
-  defp ensure_unique_relation_owner(_catalog, %Asset{produces: nil}), do: :ok
+  defp ensure_unique_relation_owner(_catalog, %Asset{relation: nil}), do: :ok
 
   defp ensure_unique_relation_owner(catalog, %Asset{
-         produces: %RelationRef{} = relation_ref,
+         relation: %RelationRef{} = relation_ref,
          ref: ref
        }) do
     case Map.fetch(catalog.relation_owners, relation_ref) do
@@ -184,10 +184,10 @@ defmodule Favn.Assets.Registry do
     end
   end
 
-  defp put_relation_owner(relation_owners, %Asset{produces: nil}), do: relation_owners
+  defp put_relation_owner(relation_owners, %Asset{relation: nil}), do: relation_owners
 
   defp put_relation_owner(relation_owners, %Asset{
-         produces: %RelationRef{} = relation_ref,
+         relation: %RelationRef{} = relation_ref,
          ref: ref
        }) do
     Map.put(relation_owners, relation_ref, ref)

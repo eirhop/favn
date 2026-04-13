@@ -127,13 +127,13 @@ defmodule Favn.SQL.Template do
 
   defmodule AssetRef do
     @moduledoc false
-    @enforce_keys [:module, :asset_ref, :produced_relation, :resolution, :span]
-    defstruct [:module, :asset_ref, :produced_relation, :resolution, :span]
+    @enforce_keys [:module, :asset_ref, :relation, :resolution, :span]
+    defstruct [:module, :asset_ref, :relation, :resolution, :span]
 
     @type t :: %__MODULE__{
             module: module(),
             asset_ref: {module(), :asset},
-            produced_relation: RelationRef.t() | nil,
+            relation: RelationRef.t() | nil,
             resolution: :resolved | :deferred,
             span: Favn.SQL.Template.Span.t()
           }
@@ -851,13 +851,13 @@ defmodule Favn.SQL.Template do
   end
 
   defp build_asset_ref(module, state, next_state) do
-    {resolution, produced_relation} =
+    {resolution, relation} =
       resolve_asset_reference(module, state.file, state.position.line, state.module)
 
     %AssetRef{
       module: module,
       asset_ref: {module, :asset},
-      produced_relation: produced_relation,
+      relation: relation,
       resolution: resolution,
       span: span(state.position, next_state.position)
     }
@@ -967,14 +967,14 @@ defmodule Favn.SQL.Template do
   defp validate_compiled_asset_module!(module, file, line) do
     if function_exported?(module, :__favn_single_asset__, 0) and module.__favn_single_asset__() do
       case Compiler.compile_module_assets(module) do
-        {:ok, [%{produces: %RelationRef{} = produces}]} ->
-          {:resolved, produces}
+        {:ok, [%{relation: %RelationRef{} = relation}]} ->
+          {:resolved, relation}
 
-        {:ok, [%{produces: nil}]} ->
+        {:ok, [%{relation: nil}]} ->
           compile_error!(
             file,
             line,
-            "SQL asset reference #{inspect(module)} does not resolve to a produced relation"
+            "SQL asset reference #{inspect(module)} does not resolve to a relation"
           )
 
         {:ok, [_asset | _rest]} ->

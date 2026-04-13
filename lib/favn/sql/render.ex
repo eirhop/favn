@@ -50,11 +50,11 @@ defmodule Favn.SQL.Render do
   alias Favn.SQL.Params
   alias Favn.Window.Runtime
 
-  @enforce_keys [:asset_ref, :connection, :produced_relation, :materialization, :sql, :params]
+  @enforce_keys [:asset_ref, :connection, :relation, :materialization, :sql, :params]
   defstruct [
     :asset_ref,
     :connection,
-    :produced_relation,
+    :relation,
     :materialization,
     :sql,
     :params,
@@ -66,7 +66,7 @@ defmodule Favn.SQL.Render do
   @type t :: %__MODULE__{
           asset_ref: Favn.asset_ref(),
           connection: atom(),
-          produced_relation: RelationRef.t(),
+          relation: RelationRef.t(),
           materialization: Favn.SQLAsset.Materialization.t(),
           sql: String.t(),
           params: Params.t(),

@@ -10,7 +10,7 @@ defmodule Favn.Run.Context do
           run_id: String.t(),
           target_refs: [Ref.t()],
           current_ref: Ref.t(),
-          asset: %{ref: Ref.t(), produces: Favn.RelationRef.t() | nil},
+          asset: %{ref: Ref.t(), relation: Favn.RelationRef.t() | nil},
           params: map(),
           window: Runtime.t() | nil,
           pipeline: map() | nil,
