@@ -22,14 +22,16 @@ defmodule Favn.Scheduler.Storage do
     end
   end
 
-  @spec get_state(module()) :: {:ok, State.t() | nil} | {:error, error()}
-  def get_state(pipeline_module) when is_atom(pipeline_module) do
+  @spec get_state(module(), atom() | nil) :: {:ok, State.t() | nil} | {:error, error()}
+  def get_state(pipeline_module, schedule_id \\ nil)
+
+  def get_state(pipeline_module, schedule_id) when is_atom(pipeline_module) do
     adapter = Storage.adapter_module()
 
     with :ok <- Storage.validate_adapter(adapter),
          result <-
            safe_adapter_call(adapter, fn value, opts ->
-             value.get_scheduler_state(pipeline_module, opts)
+             value.get_scheduler_state(pipeline_module, schedule_id, opts)
            end) do
       normalize_get_state_result(result)
     end

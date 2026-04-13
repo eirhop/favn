@@ -17,7 +17,6 @@ defmodule Favn.MixProject do
       package: package(),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      elixir: "~> 1.19",
       preferred_envs: [coverage: :test],
       coverage: [tool: ExCoveralls, threshold: 80]
     ]
@@ -38,6 +37,7 @@ defmodule Favn.MixProject do
       {:ecto, "~> 3.13.5"},
       {:ecto_sql, "~> 3.13.4"},
       {:ecto_sqlite3, "~> 0.22.0"},
+      {:postgrex, "~> 0.22"},
       {:duckdbex, "~> 0.3.21"},
       {:phoenix_pubsub, "~> 2.2.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

@@ -12,9 +12,13 @@ test/
 ├── freshness_test.exs
 ├── graph_index_test.exs
 ├── multi_asset_test.exs
+├── memory_storage_semantics_test.exs
 ├── pipeline_sqlite_smoke_test.exs
 ├── pipeline_test.exs
 ├── planner_test.exs
+├── postgres_run_serializer_test.exs
+├── postgres_storage_integration_test.exs
+├── postgres_storage_adapter_test.exs
 ├── public_docs_test.exs
 ├── ref_test.exs
 ├── runner_test.exs

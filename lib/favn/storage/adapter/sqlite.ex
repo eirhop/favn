@@ -9,8 +9,9 @@ defmodule Favn.Storage.Adapter.SQLite do
     * `:busy_timeout` - sqlite busy timeout in milliseconds (default: `5_000`)
 
   The adapter stores full `%Favn.Run{}` snapshots as Erlang binaries while also
-  indexing common run list fields (`id`, `status`, timestamps) for deterministic
-  querying.
+  indexing common run list fields plus run-write conflict fields
+  (`event_seq`, `snapshot_hash`) for deterministic querying and monotonic
+  write semantics.
   """
 
   @behaviour Favn.Storage.Adapter
@@ -18,6 +19,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias Ecto.Adapters.SQL
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
+  alias Favn.Storage.RunWriteSemantics
+  alias Favn.Storage.SnapshotHash
   alias Favn.Storage.SQLite.Repo
   alias Favn.Storage.SQLite.Supervisor, as: SQLiteSupervisor
   alias Favn.Window.Key
@@ -44,13 +47,18 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def put_run(%Run{} = run, opts) do
     with {:ok, _repo_config} <- repo_config(opts),
-         :ok <- ensure_repo_started() do
+         :ok <- ensure_repo_started(),
+         {:ok, snapshot_hash} <- SnapshotHash.for_run(run, allow_fallback_term: true) do
       now_us = DateTime.utc_now() |> DateTime.to_unix(:microsecond)
+
+      existing_sql = "SELECT event_seq, snapshot_hash FROM runs WHERE id = ?1 LIMIT 1"
 
       sql = """
       INSERT INTO runs (
         id,
         status,
+        event_seq,
+        snapshot_hash,
         started_at,
         finished_at,
         inserted_at_us,
@@ -58,9 +66,11 @@ defmodule Favn.Storage.Adapter.SQLite do
         updated_seq,
         run_blob
       )
-      VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
+        event_seq = excluded.event_seq,
+        snapshot_hash = excluded.snapshot_hash,
         started_at = excluded.started_at,
         finished_at = excluded.finished_at,
         updated_at_us = excluded.updated_at_us,
@@ -107,31 +117,23 @@ defmodule Favn.Storage.Adapter.SQLite do
         last_run_id = excluded.last_run_id,
         finished_at = excluded.finished_at,
         updated_at_us = excluded.updated_at_us
+      WHERE window_latest_results.updated_at_us < excluded.updated_at_us
       """
+
+      write_context = %{
+        now_us: now_us,
+        run_upsert_sql: sql,
+        updated_seq_sql: updated_seq_sql,
+        delete_node_results_sql: delete_node_results_sql,
+        insert_node_result_sql: insert_node_result_sql,
+        upsert_latest_window_sql: upsert_latest_window_sql
+      }
 
       case Repo.transact(
              fn ->
-               with {:ok, %{rows: [[updated_seq]]}} <-
-                      SQL.query(Repo, updated_seq_sql, ["run_write_order"]),
-                    params <- [
-                      run.id,
-                      Atom.to_string(run.status),
-                      datetime_to_iso(run.started_at),
-                      datetime_to_iso(run.finished_at),
-                      now_us,
-                      updated_seq,
-                      :erlang.term_to_binary(run)
-                    ],
-                    {:ok, _} <- SQL.query(Repo, sql, params),
-                    {:ok, _} <- SQL.query(Repo, delete_node_results_sql, [run.id]),
-                    :ok <-
-                      persist_node_results(
-                        run,
-                        updated_seq,
-                        insert_node_result_sql,
-                        upsert_latest_window_sql
-                      ) do
-                 {:ok, :ok}
+               with {:ok, %{rows: rows}} <- SQL.query(Repo, existing_sql, [run.id]),
+                    decision <- existing_run_decision(rows, run.event_seq, snapshot_hash) do
+                 persist_write_decision(decision, run, snapshot_hash, write_context)
                else
                  {:error, reason} -> Repo.rollback(reason)
                end
@@ -142,6 +144,44 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:error, reason} -> {:error, reason}
       end
     end
+  end
+
+  defp persist_write_decision(:idempotent, _run, _snapshot_hash, _context) do
+    {:ok, :ok}
+  end
+
+  defp persist_write_decision(decision, %Run{} = run, snapshot_hash, context)
+       when decision in [:insert, :replace] do
+    with {:ok, %{rows: [[updated_seq]]}} <-
+           SQL.query(Repo, context.updated_seq_sql, ["run_write_order"]),
+         params <- [
+           run.id,
+           Atom.to_string(run.status),
+           run.event_seq,
+           snapshot_hash,
+           datetime_to_iso(run.started_at),
+           datetime_to_iso(run.finished_at),
+           context.now_us,
+           updated_seq,
+           :erlang.term_to_binary(run)
+         ],
+         {:ok, _} <- SQL.query(Repo, context.run_upsert_sql, params),
+         {:ok, _} <- SQL.query(Repo, context.delete_node_results_sql, [run.id]),
+         :ok <-
+           persist_node_results(
+             run,
+             updated_seq,
+             context.insert_node_result_sql,
+             context.upsert_latest_window_sql
+           ) do
+      {:ok, :ok}
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp persist_write_decision({:error, reason}, _run, _snapshot_hash, _context) do
+    Repo.rollback(reason)
   end
 
   @impl true
@@ -257,20 +297,53 @@ defmodule Favn.Storage.Adapter.SQLite do
     run
     |> node_result_rows()
     |> Enum.reduce_while(:ok, fn row, :ok ->
-      with {:ok, _} <- SQL.query(Repo, insert_sql, row.insert_params),
-           {:ok, _} <- SQL.query(Repo, upsert_latest_sql, row.latest_params.(updated_at_us)) do
-        {:cont, :ok}
-      else
-        {:error, reason} -> {:halt, {:error, reason}}
+      case SQL.query(Repo, insert_sql, row.insert_params) do
+        {:ok, _} ->
+          case row.latest_params do
+            nil ->
+              {:cont, :ok}
+
+            latest_params when is_function(latest_params, 1) ->
+              case SQL.query(Repo, upsert_latest_sql, latest_params.(updated_at_us)) do
+                {:ok, _} -> {:cont, :ok}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
+          end
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
       end
     end)
   end
 
+  defp existing_run_decision([], _incoming_event_seq, _incoming_hash), do: :insert
+
+  defp existing_run_decision([[stored_event_seq, stored_hash]], incoming_event_seq, incoming_hash) do
+    RunWriteSemantics.decide(stored_event_seq, stored_hash, incoming_event_seq, incoming_hash)
+  end
+
   defp node_result_rows(%Run{} = run) do
-    Enum.map(run.node_results || %{}, fn
+    Enum.map(run.node_results, fn
       {{{ref_module, ref_name}, window_key} = node_key, result} ->
         encoded_window_key = encode_window_key(window_key)
         status = result.status |> to_string()
+
+        latest_params =
+          if status == "ok" and is_struct(result.finished_at, DateTime) do
+            fn updated_at_us ->
+              [
+                Atom.to_string(ref_module),
+                Atom.to_string(ref_name),
+                encoded_window_key,
+                status,
+                run.id,
+                datetime_to_iso(result.finished_at),
+                updated_at_us
+              ]
+            end
+          else
+            nil
+          end
 
         %{
           insert_params: [
@@ -285,17 +358,7 @@ defmodule Favn.Storage.Adapter.SQLite do
             result.max_attempts || 1,
             :erlang.term_to_binary(%{node_key: node_key, result: result})
           ],
-          latest_params: fn updated_at_us ->
-            [
-              Atom.to_string(ref_module),
-              Atom.to_string(ref_name),
-              encoded_window_key,
-              status,
-              run.id,
-              datetime_to_iso(result.finished_at),
-              updated_at_us
-            ]
-          end
+          latest_params: latest_params
         }
     end)
   end
@@ -304,18 +367,14 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp encode_window_key(key) when is_map(key), do: Key.encode(key)
 
   @impl true
-  def get_scheduler_state(pipeline_module, opts)
-      when is_atom(pipeline_module) and is_list(opts) do
+  def get_scheduler_state(pipeline_module, schedule_id, opts)
+      when is_atom(pipeline_module) and (is_atom(schedule_id) or is_nil(schedule_id)) and
+             is_list(opts) do
     with {:ok, _repo_config} <- repo_config(opts),
          :ok <- ensure_repo_started() do
-      sql = """
-      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
-      FROM scheduler_states
-      WHERE pipeline_module = ?1
-      LIMIT 1
-      """
+      {sql, params} = scheduler_state_query(pipeline_module, schedule_id)
 
-      case SQL.query(Repo, sql, [Atom.to_string(pipeline_module)]) do
+      case SQL.query(Repo, sql, params) do
         {:ok, %{rows: []}} ->
           {:ok, nil}
 
@@ -326,6 +385,33 @@ defmodule Favn.Storage.Adapter.SQLite do
           {:error, reason}
       end
     end
+  end
+
+  defp scheduler_state_query(pipeline_module, nil) do
+    # Compatibility fallback only. Scheduler runtime paths use explicit
+    # schedule_id values and should not rely on newest-row fallback.
+    {
+      """
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      FROM scheduler_states
+      WHERE pipeline_module = ?1
+      ORDER BY updated_at DESC
+      LIMIT 1
+      """,
+      [Atom.to_string(pipeline_module)]
+    }
+  end
+
+  defp scheduler_state_query(pipeline_module, schedule_id) when is_atom(schedule_id) do
+    {
+      """
+      SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
+      FROM scheduler_states
+      WHERE pipeline_module = ?1 AND schedule_id = ?2
+      LIMIT 1
+      """,
+      [Atom.to_string(pipeline_module), Atom.to_string(schedule_id)]
+    }
   end
 
   @impl true
@@ -344,8 +430,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         queued_due_at,
         updated_at
       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-      ON CONFLICT(pipeline_module) DO UPDATE SET
-        schedule_id = excluded.schedule_id,
+      ON CONFLICT(pipeline_module, schedule_id) DO UPDATE SET
         schedule_fingerprint = excluded.schedule_fingerprint,
         last_evaluated_at = excluded.last_evaluated_at,
         last_due_at = excluded.last_due_at,
@@ -357,7 +442,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       params = [
         Atom.to_string(state.pipeline_module),
-        if(is_atom(state.schedule_id), do: Atom.to_string(state.schedule_id), else: nil),
+        encode_schedule_id(state.schedule_id),
         state.schedule_fingerprint,
         datetime_to_iso(state.last_evaluated_at),
         datetime_to_iso(state.last_due_at),
@@ -398,12 +483,19 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp parse_schedule_id(nil), do: nil
+  # `__default__` keeps nullable schedule_id compatibility while preserving a
+  # non-null composite storage key.
+  defp parse_schedule_id("__default__"), do: nil
 
   defp parse_schedule_id(value) when is_binary(value) do
     String.to_existing_atom(value)
   rescue
     ArgumentError -> nil
   end
+
+  # `nil` schedule_id maps to `__default__` for storage identity.
+  defp encode_schedule_id(nil), do: "__default__"
+  defp encode_schedule_id(value) when is_atom(value), do: Atom.to_string(value)
 
   defp iso_to_datetime(nil), do: nil
 

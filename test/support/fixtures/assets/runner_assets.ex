@@ -270,7 +270,7 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def put_scheduler_state(_state, _opts), do: :ok
 
   @impl true
-  def get_scheduler_state(_pipeline_module, _opts), do: {:ok, nil}
+  def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: {:ok, nil}
 
   def reset!, do: :persistent_term.put(@counter_key, 0)
 end

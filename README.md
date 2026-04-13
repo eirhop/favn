@@ -82,6 +82,25 @@ config :favn,
 
 Add `pipeline_modules`, `connections`, `scheduler`, `storage_adapter`, and `storage_adapter_opts` as your app grows.
 
+PostgreSQL storage adapter example:
+
+```elixir
+config :favn,
+  storage_adapter: Favn.Storage.Adapter.Postgres,
+  storage_adapter_opts: [
+    repo_mode: :managed,
+    repo_config: [
+      hostname: "localhost",
+      port: 5432,
+      database: "favn",
+      username: "postgres",
+      password: "postgres",
+      pool_size: 10
+    ],
+    migration_mode: :manual
+  ]
+```
+
 ## AI Agent Start Point
 
 Put this in `AGENTS.md`:

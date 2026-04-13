@@ -110,10 +110,21 @@ lib/
     │   └── supervisor.ex
     ├── storage.ex
     ├── storage/
+    │   ├── run_serializer.ex
+    │   ├── run_write_semantics.ex
+    │   ├── snapshot_hash.ex
+    │   ├── term_json.ex
     │   ├── adapter.ex
     │   ├── adapter/
     │   │   ├── memory.ex
+    │   │   ├── postgres.ex
     │   │   └── sqlite.ex
+    │   ├── postgres/
+    │   │   ├── migrations.ex
+    │   │   ├── migrations/
+    │   │   │   └── create_foundation.ex
+    │   │   ├── repo.ex
+    │   │   ├── supervisor.ex
     │   └── sqlite/
     │       ├── migrations.ex
     │       ├── migrations/

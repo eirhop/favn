@@ -14,6 +14,8 @@ defmodule Favn.Storage.Adapter.Memory do
 
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
+  alias Favn.Storage.RunWriteSemantics
+  alias Favn.Storage.SnapshotHash
 
   @table_name __MODULE__.Table
   @scheduler_table __MODULE__.SchedulerTable
@@ -53,26 +55,82 @@ defmodule Favn.Storage.Adapter.Memory do
   @impl true
   @spec put_run(Run.t(), keyword()) :: :ok | {:error, term()}
   def put_run(%Run{} = run, _opts) do
-    inserted_seq =
+    with {:ok, incoming_hash} <- SnapshotHash.for_run(run, allow_fallback_term: true) do
       case :ets.lookup(@table_name, run.id) do
-        [{_id, _stored_run, existing_inserted_seq, _existing_updated_seq}] ->
-          existing_inserted_seq
-
         [] ->
-          System.unique_integer([:monotonic, :positive])
-      end
+          inserted_seq = System.unique_integer([:monotonic, :positive])
+          updated_seq = System.unique_integer([:monotonic, :positive])
 
-    updated_seq = System.unique_integer([:monotonic, :positive])
-    true = :ets.insert(@table_name, {run.id, run, inserted_seq, updated_seq})
-    :ok
+          true =
+            :ets.insert(
+              @table_name,
+              {run.id, run, inserted_seq, updated_seq, run.event_seq, incoming_hash}
+            )
+
+          :ok
+
+        [stored] ->
+          handle_existing_run(stored, run, incoming_hash)
+      end
+    end
   rescue
     error -> {:error, error}
+  end
+
+  defp handle_existing_run(
+         {_id, _stored_run, inserted_seq, _updated_seq, stored_event_seq, stored_hash},
+         %Run{} = incoming_run,
+         incoming_hash
+       ) do
+    case RunWriteSemantics.decide(
+           stored_event_seq,
+           stored_hash,
+           incoming_run.event_seq,
+           incoming_hash
+         ) do
+      :replace ->
+        updated_seq = System.unique_integer([:monotonic, :positive])
+
+        true =
+          :ets.insert(
+            @table_name,
+            {incoming_run.id, incoming_run, inserted_seq, updated_seq, incoming_run.event_seq,
+             incoming_hash}
+          )
+
+        :ok
+
+      :idempotent ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+
+      :insert ->
+        :ok
+    end
+  end
+
+  defp handle_existing_run(
+         {_id, %Run{} = stored_run, inserted_seq, updated_seq},
+         %Run{} = incoming_run,
+         incoming_hash
+       ) do
+    with {:ok, stored_hash} <- SnapshotHash.for_run(stored_run, allow_fallback_term: true) do
+      handle_existing_run(
+        {incoming_run.id, stored_run, inserted_seq, updated_seq, stored_run.event_seq,
+         stored_hash},
+        incoming_run,
+        incoming_hash
+      )
+    end
   end
 
   @impl true
   @spec get_run(Favn.run_id(), keyword()) :: {:ok, Run.t()} | {:error, :not_found | term()}
   def get_run(run_id, _opts) do
     case :ets.lookup(@table_name, run_id) do
+      [{^run_id, run, _inserted_seq, _updated_seq, _event_seq, _snapshot_hash}] -> {:ok, run}
       [{^run_id, run, _inserted_seq, _updated_seq}] -> {:ok, run}
       [] -> {:error, :not_found}
     end
@@ -89,7 +147,10 @@ defmodule Favn.Storage.Adapter.Memory do
     runs =
       @table_name
       |> :ets.tab2list()
-      |> Enum.map(fn {_id, run, _inserted_seq, updated_seq} -> {run, updated_seq} end)
+      |> Enum.map(fn
+        {_id, run, _inserted_seq, updated_seq, _event_seq, _snapshot_hash} -> {run, updated_seq}
+        {_id, run, _inserted_seq, updated_seq} -> {run, updated_seq}
+      end)
       |> maybe_filter_status(status)
       |> Enum.sort_by(&sort_key/1, :desc)
       |> Enum.map(&elem(&1, 0))
@@ -116,19 +177,34 @@ defmodule Favn.Storage.Adapter.Memory do
   @impl true
   @spec put_scheduler_state(SchedulerState.t(), keyword()) :: :ok | {:error, term()}
   def put_scheduler_state(%SchedulerState{} = state, _opts) do
-    true = :ets.insert(@scheduler_table, {state.pipeline_module, state})
+    key = {state.pipeline_module, state.schedule_id}
+    true = :ets.insert(@scheduler_table, {key, state})
     :ok
   rescue
     error -> {:error, error}
   end
 
   @impl true
-  @spec get_scheduler_state(module(), keyword()) ::
+  @spec get_scheduler_state(module(), atom() | nil, keyword()) ::
           {:ok, SchedulerState.t() | nil} | {:error, term()}
-  def get_scheduler_state(pipeline_module, _opts) when is_atom(pipeline_module) do
-    case :ets.lookup(@scheduler_table, pipeline_module) do
-      [{^pipeline_module, %SchedulerState{} = state}] -> {:ok, state}
-      [] -> {:ok, nil}
+  def get_scheduler_state(pipeline_module, schedule_id, _opts) when is_atom(pipeline_module) do
+    key = {pipeline_module, schedule_id}
+
+    case :ets.lookup(@scheduler_table, key) do
+      [{^key, %SchedulerState{} = state}] ->
+        {:ok, state}
+
+      [] when is_nil(schedule_id) ->
+        @scheduler_table
+        |> :ets.tab2list()
+        |> Enum.find_value(fn
+          {{^pipeline_module, _stored_schedule_id}, %SchedulerState{} = state} -> state
+          _ -> nil
+        end)
+        |> then(&{:ok, &1})
+
+      [] ->
+        {:ok, nil}
     end
   rescue
     error -> {:error, error}

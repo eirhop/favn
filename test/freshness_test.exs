@@ -86,7 +86,11 @@ defmodule Favn.FreshnessTest do
     assert {:ok, run} = Favn.await_run(run_id)
     [first_key | _] = run.plan.target_node_keys
 
-    latest = run |> Map.put(:node_results, %{first_key => run.node_results[first_key]})
+    latest =
+      run
+      |> Map.put(:node_results, %{first_key => run.node_results[first_key]})
+      |> Map.update!(:event_seq, &(&1 + 1))
+
     assert :ok = Favn.Storage.put_run(latest)
 
     assert {:ok, missing} = Favn.missing_asset_windows({FreshnessAssets, :daily}, range)
