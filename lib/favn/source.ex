@@ -1,22 +1,53 @@
 defmodule Favn.Source do
   @moduledoc """
-  External relational source DSL for declaring upstream data relations.
+  Public DSL for external upstream relations that Favn can reason about but not run.
 
-  Represents a relation in an external data warehouse that Favn can read from
-  and reason about, but does not materialize or execute.
+  Use `Favn.Source` for warehouse objects that participate in lineage and SQL
+  dependency inference but are not executed as materializing assets.
+
+  ## When to use it
+
+  Use this module when a relation is external to Favn-managed execution but you
+  still want it to be explicit and typed in the catalog.
+
+  ## Minimal example
 
       defmodule MyApp.Raw.Stripe.Charges do
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "stripe"]
         use Favn.Source
 
+        @doc "External raw Stripe charges table"
+        @meta owner: "data-platform", category: :payments, tags: [:raw]
         @relation true
       end
 
-  The `@relation` attribute is required and follows the same inference rules as `Favn.Asset`.
+  ## Authoring contract
 
-  Supported attributes:
-  - `@doc` - documentation
-  - `@meta` - metadata such as owner, category, tags
-  - `@relation` - the external relation identity (required)
+  - define no user functions
+  - declare exactly one `@relation`
+  - optionally add `@doc` and `@meta`
+
+  ## Supported attributes
+
+  - `@doc`: source documentation
+  - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
+  - `@relation`: required relation declaration
+
+  `@relation` supports:
+
+  - `true` to infer from module name plus namespace defaults
+  - keyword or map relation overrides such as `connection`, `catalog`, and `schema`
+
+  ## What gets compiled
+
+  A source compiles to one canonical `%Favn.Asset{}` with `type: :source` and no
+  executable entrypoint.
+
+  ## See also
+
+  - `Favn.AgentGuide`
+  - `Favn.SQLAsset`
+  - `Favn.Namespace`
   """
 
   alias Favn.Asset
