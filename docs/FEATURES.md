@@ -218,6 +218,11 @@ Goal: make single-node production usage reliable and inspectable.
 - [ ] Better rerun and replay ergonomics
 - [ ] Stronger test coverage for runtime, scheduler, windowing, and SQL execution
 - [ ] Operator-facing graph and run inspection foundation
+- [ ] DuckLake connection and snapshot foundation
+  - [ ] DuckLake catalog attach support (metadata/data path)
+  - [ ] Snapshot-aware execution (pin runs to snapshot or timestamp)
+  - [ ] Snapshot metadata exposed in runtime and provenance
+  - [ ] Basic snapshot introspection APIs
 
 ---
 
@@ -238,6 +243,11 @@ Goal: stable, ergonomic, production-usable orchestration for Elixir and SQL asse
 - [ ] Strong single-node production story
 - [ ] Built-in storage options: memory, SQLite, Postgres
 - [ ] Clear documentation and graph-oriented developer experience
+- [ ] DuckLake advanced capabilities
+  - [ ] Change-feed and row-lineage support (`rowid`, snapshot diffs)
+  - [ ] Schema-evolution-aware runtime behavior
+  - [ ] Optional macro publishing from `defsql`
+  - [ ] Maintenance operations (snapshot cleanup, compaction helpers)
 
 ---
 
