@@ -343,6 +343,36 @@ defmodule Favn.SQLDependencyInferenceTest do
            end)
   end
 
+  test "ignores multi-CTE sibling aliases in end-to-end dependency inference" do
+    root = Module.concat(__MODULE__, "SiblingCTE#{System.unique_integer([:positive])}")
+    raw_orders = Module.concat(root, RawOrders)
+    consumer = Module.concat(root, Consumer)
+
+    compile_elixir_asset!(raw_orders, "raw_orders")
+
+    compile_sql_asset!(
+      consumer,
+      """
+      with a as (
+        select * from silver.sales.raw_orders
+      ),
+      b as (
+        select * from a
+      )
+      select * from b
+      """
+    )
+
+    :ok = Favn.TestSetup.setup_asset_modules([raw_orders, consumer], reload_graph?: true)
+
+    assert {:ok, asset} = Favn.get_asset(consumer)
+    assert asset.depends_on == [{raw_orders, :asset}]
+
+    refute Enum.any?(asset.diagnostics, fn diagnostic ->
+             diagnostic.code == :unmanaged_relation_reference
+           end)
+  end
+
   test "ignores CTE aliases inside nested defsql relation chain" do
     root = Module.concat(__MODULE__, "NestedDefsqlCTE#{System.unique_integer([:positive])}")
     sql_module = Module.concat(root, SQL)
