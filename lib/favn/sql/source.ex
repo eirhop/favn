@@ -29,6 +29,8 @@ defmodule Favn.SQL.Source do
       )
     end
 
+    reject_symlink_path!(resolved_path, project_root, env, owner)
+
     if Path.extname(resolved_path) != ".sql" do
       compile_error!(
         env.file,
@@ -57,6 +59,53 @@ defmodule Favn.SQL.Source do
       sql_file: normalize_file(resolved_path),
       sql_line: 1
     }
+  end
+
+  defp reject_symlink_path!(resolved_path, project_root, env, owner) do
+    relative = Path.relative_to(resolved_path, project_root)
+
+    segments =
+      if relative == "." do
+        []
+      else
+        String.split(relative, "/", trim: true)
+      end
+
+    project_root
+    |> path_prefixes(segments)
+    |> Enum.each(fn path ->
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :symlink}} ->
+          compile_error!(
+            env.file,
+            env.line,
+            "#{owner} file path must not traverse symlinks, got: #{inspect(path)}"
+          )
+
+        {:ok, _stat} ->
+          :ok
+
+        {:error, :enoent} ->
+          :ok
+
+        {:error, reason} ->
+          compile_error!(
+            env.file,
+            env.line,
+            "failed to inspect #{owner} file path #{inspect(path)}: #{:file.format_error(reason)}"
+          )
+      end
+    end)
+  end
+
+  defp path_prefixes(base, segments) do
+    {paths, _current} =
+      Enum.reduce(segments, {[base], base}, fn segment, {acc, current} ->
+        next = Path.join(current, segment)
+        {[next | acc], next}
+      end)
+
+    Enum.reverse(paths)
   end
 
   defp within_project_root?(path, root) do

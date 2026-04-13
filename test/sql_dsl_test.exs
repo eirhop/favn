@@ -431,6 +431,39 @@ defmodule Favn.SQLDSLTest do
     end
   end
 
+  test "rejects symlinked SQL files that resolve outside project root" do
+    unique = System.unique_integer([:positive])
+    module_name = Module.concat(__MODULE__, "SymlinkEscape#{unique}")
+    base = Path.join(File.cwd!(), "tmp/favn_test_symlink_escape_#{unique}")
+    owner_dir = Path.join(base, "lib/my_app")
+    sql_dir = Path.join(base, "sql")
+    owner_file = Path.join(owner_dir, "sql_provider.ex")
+    outside_file = Path.join(System.tmp_dir!(), "favn_outside_sql_#{unique}.sql")
+    symlink_file = Path.join(sql_dir, "outside.sql")
+
+    File.mkdir_p!(owner_dir)
+    File.mkdir_p!(sql_dir)
+    File.write!(outside_file, "select @amount_cents")
+    File.ln_s!(outside_file, symlink_file)
+
+    on_exit(fn ->
+      _ = File.rm(outside_file)
+    end)
+
+    assert_raise CompileError, ~r/must not traverse symlinks/, fn ->
+      Code.compile_string(
+        """
+        defmodule #{inspect(module_name)} do
+          use Favn.SQL
+
+          defsql bad(amount_cents), file: "../../sql/outside.sql"
+        end
+        """,
+        owner_file
+      )
+    end
+  end
+
   defp write_sql_fixture!(file_name, body, root_key \\ nil) do
     key = root_key || "sql_dsl_#{System.unique_integer([:positive])}"
     base = Path.join(File.cwd!(), "tmp/favn_test_#{key}")
