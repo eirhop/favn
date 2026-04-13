@@ -84,7 +84,7 @@ defmodule Favn.MultiAsset do
 
   `@depends` supports:
 
-  - `Other.SingleAssetModule`
+  - `:same_module_asset_name`
   - `{OtherModule, :asset_name}`
 
   ## What gets compiled
@@ -248,10 +248,10 @@ defmodule Favn.MultiAsset do
 
   The asset block currently supports only `rest do ... end`.
 
-  ## Example
+      ## Example
 
       @doc "Extract orders"
-      @depends MyApp.Raw.Shopify.Customers
+      @depends {MyApp.Raw.Shopify, :customers}
       @relation true
       asset :orders do
         rest do
