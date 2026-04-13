@@ -263,6 +263,7 @@ defmodule Favn do
   alias Favn.Pipeline.Resolver
   alias Favn.Runtime.Engine
   alias Favn.Runtime.Events
+  alias Favn.SQLAsset.Error, as: SQLAssetError
   alias Favn.Submission
 
   @doc """
