@@ -17,13 +17,16 @@ defmodule Favn.Connection do
         def definition do
           %Favn.Connection.Definition{
             name: :warehouse,
-            adapter: Favn.SQL.Adapter.DuckDB,
+            adapter: MyApp.WarehouseAdapter,
             config_schema: [
               %{key: :database, required: true, type: :path}
             ]
           }
         end
       end
+
+  The adapter module should implement the SQL adapter contract used by your
+  runtime.
 
   ## See also
 

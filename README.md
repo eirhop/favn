@@ -51,7 +51,7 @@ config :favn,
 
 ```elixir
 Favn.list_assets()
-{:ok, run_id} = Favn.run_asset(MyApp.Raw.Sales.Orders)
+{:ok, run_id} = Favn.run_asset({MyApp.Raw.Sales.Orders, :asset})
 {:ok, run} = Favn.await_run(run_id)
 ```
 

@@ -32,13 +32,13 @@ defmodule Favn do
   ## Inspect assets
 
       Favn.list_assets()
-      Favn.list_assets(MyApp.Raw)
+      Favn.list_assets(MyApp.Raw.Sales.Orders)
       Favn.get_asset(MyApp.Raw.Sales.Orders)
       Favn.get_asset({MyApp.Raw.Shopify, :orders})
 
   ## Run and await
 
-      {:ok, run_id} = Favn.run_asset(MyApp.Raw.Sales.Orders)
+      {:ok, run_id} = Favn.run_asset({MyApp.Raw.Sales.Orders, :asset})
       {:ok, run} = Favn.await_run(run_id)
 
       {:ok, run_id} =
