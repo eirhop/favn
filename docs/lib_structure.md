@@ -11,6 +11,7 @@ lib/
     ├── diagnostic.ex
     ├── assets.ex
     ├── namespace.ex
+    ├── multi_asset.ex
     ├── relation_ref.ex
     ├── assets/
     │   ├── compiler.ex

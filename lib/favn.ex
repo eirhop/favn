@@ -31,6 +31,7 @@ defmodule Favn do
   Assets can be authored with:
 
     * `use Favn.Asset` (preferred single-asset module DSL)
+    * `use Favn.MultiAsset` (advanced generated multi-asset Elixir DSL)
     * `use Favn.Assets` (compact multi-asset module DSL)
 
   At compile time,
@@ -218,7 +219,35 @@ defmodule Favn do
   with `WITH` are excluded lexically from relation inference, including nested
   subquery scopes.
 
-  Compact multi-asset style uses `Favn.Assets`:
+  Advanced generated multi-asset extraction style uses `Favn.MultiAsset`:
+
+      defmodule MyApp.Raw.Shopify do
+        use Favn.MultiAsset
+
+        defaults do
+          meta owner: "data-platform", category: :shopify, tags: [:raw]
+
+          rest do
+            primary_key "id"
+            paginator :cursor, cursor_path: "links.next"
+          end
+        end
+
+        @doc "Extract orders"
+        @relation true
+        asset :orders do
+          rest do
+            path "/orders.json"
+            data_path "orders"
+          end
+        end
+
+        def asset(ctx) do
+          MyApp.Shopify.Client.extract(ctx.asset.config, ctx)
+        end
+      end
+
+  Compact multi-asset function style uses `Favn.Assets`:
 
   A simplified example:
 
@@ -308,7 +337,7 @@ defmodule Favn do
   A consumer application typically sets Favn up in four steps:
 
     1. add `:favn` as a dependency in `mix.exs`
-    2. define one or more asset modules with `use Favn.Asset` and/or `use Favn.Assets`
+    2. define one or more asset modules with `use Favn.Asset`, `use Favn.MultiAsset`, and/or `use Favn.Assets`
     3. register those modules under `config :favn, asset_modules: [...]`
     4. start the host application normally
 

@@ -223,6 +223,7 @@ defmodule Favn.SQLAsset do
     asset = %Asset{
       module: raw_definition.module,
       name: :asset,
+      entrypoint: :asset,
       ref: Ref.new(raw_definition.module, :asset),
       arity: 1,
       type: :sql,
@@ -232,6 +233,7 @@ defmodule Favn.SQLAsset do
       line: raw_definition.line,
       meta: meta,
       depends_on: depends_on,
+      config: %{},
       relation_inputs: relation_inputs,
       window_spec: window_spec,
       relation: relation,

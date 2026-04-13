@@ -65,6 +65,7 @@ defmodule Favn.Source do
     asset = %Asset{
       module: env.module,
       name: :asset,
+      entrypoint: nil,
       ref: Ref.new(env.module, :asset),
       arity: 0,
       type: :source,
@@ -75,6 +76,7 @@ defmodule Favn.Source do
       meta: meta || %{},
       depends_on: [],
       dependencies: [],
+      config: %{},
       window_spec: nil,
       relation: nil,
       materialization: nil,

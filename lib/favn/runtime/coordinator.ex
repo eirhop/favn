@@ -819,7 +819,7 @@ defmodule Favn.Runtime.Coordinator do
       run_id: state.run_id,
       target_refs: state.target_refs,
       current_ref: step.ref,
-      asset: %{ref: step.ref, relation: asset.relation},
+      asset: %{ref: step.ref, relation: asset.relation, config: asset.config},
       params: state.params,
       window: step.runtime_window,
       pipeline: state.pipeline_context,
