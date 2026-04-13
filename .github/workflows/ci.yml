@@ -19,10 +19,10 @@ jobs:
           elixir-version: '1.19.5'
           otp-version: '28.4.2'
 
-      - name: Install Hex
-        env:
-          MIX_ENV: test
-        run: mix archive.install github hexpm/hex branch latest --force
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
 
       - name: Fetch dependencies
         env:
