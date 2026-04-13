@@ -4,6 +4,7 @@ defmodule Favn.ConnectionTest do
   alias Favn.Connection.ConfigError
   alias Favn.Connection.Definition
   alias Favn.Connection.Error
+  alias Favn.Connection.Info
   alias Favn.Connection.Loader
   alias Favn.Connection.NotFoundError
   alias Favn.Connection.Resolved
@@ -204,11 +205,12 @@ defmodule Favn.ConnectionTest do
     assert Favn.connection_registered?(:warehouse)
 
     assert {:ok, connection} = Favn.get_connection(:warehouse)
+    assert %Info{} = connection
     assert connection.config.password == :redacted
     assert connection.config.database == "/tmp/db"
 
-    assert [%{name: :warehouse}] = Favn.list_connections()
-    assert %{name: :warehouse} = Favn.get_connection!(:warehouse)
+    assert [%Info{name: :warehouse}] = Favn.list_connections()
+    assert %Info{name: :warehouse} = Favn.get_connection!(:warehouse)
     assert {:error, :not_found} = Favn.get_connection(:missing)
     assert_raise NotFoundError, fn -> Favn.get_connection!(:missing) end
   end

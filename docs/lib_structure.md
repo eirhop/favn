@@ -31,6 +31,7 @@ lib/
     ├── connection/
     │   ├── definition.ex
     │   ├── error.ex
+    │   ├── info.ex
     │   ├── loader.ex
     │   ├── registry.ex
     │   ├── resolved.ex

@@ -53,6 +53,10 @@ config :favn,
 Favn.list_assets()
 {:ok, run_id} = Favn.run_asset({MyApp.Raw.Sales.Orders, :asset})
 {:ok, run} = Favn.await_run(run_id)
+
+# Operator-facing connection inspection is redacted:
+[%Favn.Connection.Info{} = conn] = Favn.list_connections()
+{:ok, %Favn.Connection.Info{} = warehouse} = Favn.get_connection(:warehouse)
 ```
 
 ## Install And Configure
