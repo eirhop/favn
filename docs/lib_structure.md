@@ -113,7 +113,16 @@ lib/
     │   ├── adapter.ex
     │   ├── adapter/
     │   │   ├── memory.ex
+    │   │   ├── postgres.ex
     │   │   └── sqlite.ex
+    │   ├── postgres/
+    │   │   ├── migrations.ex
+    │   │   ├── migrations/
+    │   │   │   └── create_foundation.ex
+    │   │   ├── repo.ex
+    │   │   ├── run_serializer.ex
+    │   │   ├── supervisor.ex
+    │   │   └── term_json.ex
     │   └── sqlite/
     │       ├── migrations.ex
     │       ├── migrations/

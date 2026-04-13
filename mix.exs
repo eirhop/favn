@@ -35,9 +35,11 @@ defmodule Favn.MixProject do
   defp deps do
     [
       {:telemetry, "~> 1.3.0"},
+      {:jason, "~> 1.4"},
       {:ecto, "~> 3.13.5"},
       {:ecto_sql, "~> 3.13.4"},
       {:ecto_sqlite3, "~> 0.22.0"},
+      {:postgrex, "~> 0.21"},
       {:duckdbex, "~> 0.3.21"},
       {:phoenix_pubsub, "~> 2.2.0"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

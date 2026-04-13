@@ -74,7 +74,8 @@ defmodule Favn do
         pipeline_modules: [MyApp.Pipelines.DailySales]
 
   Add `connections`, `scheduler`, `storage_adapter`, and `storage_adapter_opts`
-  as needed by your runtime.
+  as needed by your runtime. For production persistence, use
+  `Favn.Storage.Adapter.Postgres`.
   """
 
   @typedoc """

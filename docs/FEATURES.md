@@ -215,7 +215,8 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 
 Goal: make single-node production usage reliable and inspectable.
 
-- [ ] Postgres storage adapter
+- [x] PostgreSQL storage foundation architecture plan (`docs/POSTGRES_STORAGE_FOUNDATION_PLAN.md`)
+- [x] PostgreSQL storage adapter implementation
 - [ ] Queueing and admission control
 - [ ] Concurrency controls
 - [ ] Run deduplication / run keys
