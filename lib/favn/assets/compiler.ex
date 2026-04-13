@@ -8,8 +8,8 @@ defmodule Favn.Assets.Compiler do
   """
 
   alias Favn.Asset
+  alias Favn.Asset.RelationResolver
   alias Favn.Namespace
-  alias Favn.RelationRef
 
   @callback compile_assets(module()) :: {:ok, [Asset.t()]} | {:error, term()}
 
@@ -139,7 +139,7 @@ defmodule Favn.Assets.Compiler do
 
     try do
       assets = Enum.map(assets, &resolve_relation(&1, defaults))
-      ensure_unique_relation_owners!(assets)
+      :ok = RelationResolver.ensure_unique_relation_owners!(assets)
       {:ok, assets}
     rescue
       error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
@@ -147,35 +147,15 @@ defmodule Favn.Assets.Compiler do
   end
 
   defp resolve_relation(%Asset{} = asset, defaults) do
-    inferred_name = inferred_relation_name(asset)
+    inferred_name = RelationResolver.inferred_relation_name_for_asset(asset)
 
     relation =
       case fetch_raw_relation(asset.module, asset.name) do
         nil ->
           asset.relation
 
-        true ->
-          RelationRef.new!(Map.put(defaults, :name, inferred_name))
-
-        attrs when is_list(attrs) ->
-          if Keyword.keyword?(attrs) do
-            attrs
-            |> Map.new()
-            |> merge_relation_attrs(defaults, inferred_name)
-            |> RelationRef.new!()
-          else
-            raise ArgumentError,
-                  "invalid @relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
-          end
-
-        attrs when is_map(attrs) ->
-          attrs
-          |> merge_relation_attrs(defaults, inferred_name)
-          |> RelationRef.new!()
-
-        other ->
-          raise ArgumentError,
-                "invalid @relation value #{inspect(other)}; expected true, a keyword list, or a map"
+        authored_value ->
+          RelationResolver.resolve_explicit_relation!(authored_value, defaults, inferred_name)
       end
 
     %{asset | relation: relation}
@@ -193,55 +173,4 @@ defmodule Favn.Assets.Compiler do
       _ -> nil
     end
   end
-
-  defp merge_relation_attrs(attrs, defaults, asset_name) when is_map(attrs) do
-    attrs =
-      if has_explicit_name?(attrs) do
-        attrs
-      else
-        Map.put(attrs, :name, asset_name)
-      end
-
-    defaults
-    |> maybe_drop_default_key(attrs, [:catalog], [:database, "database"])
-    |> maybe_drop_default_key(attrs, [:name], [:table, "table", :name, "name"])
-    |> Map.merge(attrs)
-  end
-
-  defp has_explicit_name?(attrs) do
-    Enum.any?([:name, "name", :table, "table"], &Map.has_key?(attrs, &1))
-  end
-
-  defp maybe_drop_default_key(defaults, attrs, canonical_keys, authored_keys) do
-    if Enum.any?(authored_keys, &Map.has_key?(attrs, &1)) do
-      Enum.reduce(canonical_keys, defaults, &Map.delete(&2, &1))
-    else
-      defaults
-    end
-  end
-
-  defp ensure_unique_relation_owners!(assets) do
-    assets
-    |> Enum.reject(&is_nil(&1.relation))
-    |> Enum.group_by(& &1.relation)
-    |> Enum.each(fn {relation_ref, owners} ->
-      case owners do
-        [_single] -> :ok
-        _many -> raise ArgumentError, "duplicate relation #{inspect(relation_ref)}"
-      end
-    end)
-  end
-
-  defp inferred_relation_name(%Asset{module: module, name: :asset}) do
-    if function_exported?(module, :__favn_single_asset__, 0) do
-      module
-      |> Module.split()
-      |> List.last()
-      |> Macro.underscore()
-    else
-      :asset
-    end
-  end
-
-  defp inferred_relation_name(%Asset{name: name}), do: name
 end

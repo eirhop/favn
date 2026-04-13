@@ -115,9 +115,9 @@ defmodule Favn.MultiAsset do
   """
 
   alias Favn.Asset
+  alias Favn.Asset.RelationResolver
   alias Favn.Namespace
   alias Favn.Ref
-  alias Favn.RelationRef
   alias Favn.Window.Spec
 
   @doc false
@@ -652,34 +652,8 @@ defmodule Favn.MultiAsset do
           nil ->
             asset.relation
 
-          true ->
-            RelationRef.new!(Map.put(defaults, :name, inferred_name))
-
-          attrs when is_list(attrs) ->
-            if Keyword.keyword?(attrs) do
-              attrs
-              |> Map.new()
-              |> merge_relation_attrs(defaults, inferred_name)
-              |> RelationRef.new!()
-            else
-              compile_error!(
-                env.file,
-                env.line,
-                "invalid @relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
-              )
-            end
-
-          attrs when is_map(attrs) ->
-            attrs
-            |> merge_relation_attrs(defaults, inferred_name)
-            |> RelationRef.new!()
-
-          other ->
-            compile_error!(
-              env.file,
-              env.line,
-              "invalid @relation value #{inspect(other)}; expected true, a keyword list, or a map"
-            )
+          authored_value ->
+            RelationResolver.resolve_explicit_relation!(authored_value, defaults, inferred_name)
         end
 
       %{asset | relation: relation}
@@ -701,47 +675,13 @@ defmodule Favn.MultiAsset do
     end
   end
 
-  defp merge_relation_attrs(attrs, defaults, asset_name) when is_map(attrs) do
-    attrs =
-      if has_explicit_name?(attrs) do
-        attrs
-      else
-        Map.put(attrs, :name, asset_name)
-      end
-
-    defaults
-    |> maybe_drop_default_key(attrs, [:catalog], [:database, "database"])
-    |> maybe_drop_default_key(attrs, [:name], [:table, "table", :name, "name"])
-    |> Map.merge(attrs)
-  end
-
-  defp has_explicit_name?(attrs) do
-    Enum.any?([:name, "name", :table, "table"], &Map.has_key?(attrs, &1))
-  end
-
-  defp maybe_drop_default_key(defaults, attrs, canonical_keys, authored_keys) do
-    if Enum.any?(authored_keys, &Map.has_key?(attrs, &1)) do
-      Enum.reduce(canonical_keys, defaults, &Map.delete(&2, &1))
-    else
-      defaults
-    end
-  end
-
   defp ensure_unique_relation_owners!(assets, env) do
-    assets
-    |> Enum.reject(&is_nil(&1.relation))
-    |> Enum.group_by(& &1.relation)
-    |> Enum.each(fn {relation_ref, owners} ->
-      case owners do
-        [_single] ->
-          :ok
-
-        _many ->
-          compile_error!(env.file, env.line, "duplicate relation #{inspect(relation_ref)}")
-      end
-    end)
+    :ok = RelationResolver.ensure_unique_relation_owners!(assets)
 
     assets
+  rescue
+    error in ArgumentError ->
+      compile_error!(env.file, env.line, error.message)
   end
 
   defp normalize_meta!(meta, _env) when is_nil(meta), do: %{}
