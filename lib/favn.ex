@@ -256,16 +256,14 @@ defmodule Favn do
   alias Favn.Assets.GraphIndex
   alias Favn.Assets.Planner
   alias Favn.Assets.Registry
+  alias Favn.Backfill
   alias Favn.Connection.NotFoundError
   alias Favn.Connection.Registry, as: ConnectionRegistry
   alias Favn.Connection.Sanitizer
   alias Favn.Pipeline.Resolver
   alias Favn.Runtime.Engine
   alias Favn.Runtime.Events
-  alias Favn.SQLAsset.Error, as: SQLAssetError
-  alias Favn.SQLAsset.Input, as: SQLAssetInput
-  alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
-  alias Favn.Window.Anchor
+  alias Favn.Submission
 
   @doc """
   List all registered assets.
@@ -405,10 +403,7 @@ defmodule Favn do
   @spec render(sql_asset_input(), sql_helper_opts()) ::
           {:ok, Favn.SQL.Render.t()} | {:error, SQLAssetError.t()}
   def render(asset_input, opts \\ []) when is_list(opts) do
-    case SQLAssetInput.normalize(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.render(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
-    end
+    Submission.render(asset_input, opts)
   end
 
   @doc """
@@ -420,10 +415,7 @@ defmodule Favn do
   @spec preview(sql_asset_input(), sql_preview_opts()) ::
           {:ok, Favn.SQL.Preview.t()} | {:error, SQLAssetError.t()}
   def preview(asset_input, opts \\ []) when is_list(opts) do
-    case SQLAssetInput.normalize(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.preview(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
-    end
+    Submission.preview(asset_input, opts)
   end
 
   @doc """
@@ -432,10 +424,7 @@ defmodule Favn do
   @spec explain(sql_asset_input(), sql_explain_opts()) ::
           {:ok, Favn.SQL.Explain.t()} | {:error, SQLAssetError.t()}
   def explain(asset_input, opts \\ []) when is_list(opts) do
-    case SQLAssetInput.normalize(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.explain(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
-    end
+    Submission.explain(asset_input, opts)
   end
 
   @doc """
@@ -444,10 +433,7 @@ defmodule Favn do
   @spec materialize(sql_asset_input(), sql_helper_opts()) ::
           {:ok, Favn.SQL.MaterializationResult.t()} | {:error, SQLAssetError.t()}
   def materialize(asset_input, opts \\ []) when is_list(opts) do
-    case SQLAssetInput.normalize(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.materialize(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
-    end
+    Submission.materialize(asset_input, opts)
   end
 
   @typedoc """
@@ -792,12 +778,7 @@ defmodule Favn do
   @spec run_asset(asset_ref(), run_opts()) :: {:ok, run_id()} | {:error, term()}
   def run_asset({module, name}, opts \\ [])
       when is_atom(module) and is_atom(name) and is_list(opts) do
-    opts =
-      opts
-      |> Keyword.put_new(:_submit_kind, :asset)
-      |> Keyword.put_new(:_submit_ref, {module, name})
-      |> normalize_pipeline_context_opt()
-
+    opts = Submission.shape_run_opts({module, name}, opts, :asset)
     Engine.submit_run({module, name}, opts)
   end
 
@@ -828,15 +809,18 @@ defmodule Favn do
       when is_atom(pipeline_module) and is_list(opts) do
     with {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
          {:ok, resolution} <- Resolver.resolve(definition, opts) do
-      run_opts =
-        opts
-        |> Keyword.put(:dependencies, resolution.dependencies)
-        |> Keyword.put(:pipeline_context, resolution.pipeline_ctx)
-        |> Keyword.put(:_submit_kind, :pipeline)
-        |> Keyword.put(:_submit_ref, pipeline_module)
-        |> normalize_pipeline_context_opt()
+      shaped_opts =
+        Submission.shape_run_opts(
+          pipeline_module,
+          Keyword.put(
+            Keyword.put(opts, :dependencies, resolution.dependencies),
+            :pipeline_context,
+            resolution.pipeline_ctx
+          ),
+          :pipeline
+        )
 
-      Engine.submit_run(resolution.target_refs, run_opts)
+      Engine.submit_run(resolution.target_refs, shaped_opts)
     end
   end
 
@@ -853,7 +837,7 @@ defmodule Favn do
       when is_atom(module) and is_atom(name) and is_list(opts) do
     dependencies = Keyword.get(opts, :dependencies, :all)
 
-    with {:ok, range, anchor_ranges} <- fetch_backfill_range(opts),
+    with {:ok, range, anchor_ranges} <- Backfill.fetch_range(opts),
          {:ok, plan} <-
            Favn.plan_asset_run({module, name},
              dependencies: dependencies,
@@ -861,13 +845,13 @@ defmodule Favn do
            ) do
       run_opts =
         opts
-        |> drop_backfill_range_opt()
+        |> Backfill.drop_range_opt()
         |> Keyword.put(:dependencies, dependencies)
         |> Keyword.put(:_plan_override, plan)
         |> Keyword.put(:_submit_kind, :backfill_asset)
         |> Keyword.put(:_submit_ref, {module, name})
         |> Keyword.put(:_backfill, %{range: range, anchor_ranges: anchor_ranges})
-        |> normalize_pipeline_context_opt()
+        |> Submission.normalize_pipeline_context()
 
       Engine.submit_run({module, name}, run_opts)
     end
@@ -883,7 +867,7 @@ defmodule Favn do
           {:ok, run_id()} | {:error, term()}
   def backfill_pipeline(pipeline_module, opts \\ [])
       when is_atom(pipeline_module) and is_list(opts) do
-    with {:ok, range, anchor_ranges} <- fetch_backfill_range(opts),
+    with {:ok, range, anchor_ranges} <- Backfill.fetch_range(opts),
          {:ok, definition} <- Favn.Pipeline.fetch(pipeline_module),
          {:ok, resolution} <- Resolver.resolve(definition, opts),
          {:ok, plan} <-
@@ -892,57 +876,22 @@ defmodule Favn do
              anchor_ranges: [range]
            ) do
       pipeline_context =
-        resolution.pipeline_ctx
-        |> Map.put(:run_kind, :pipeline_backfill)
-        |> Map.put(:backfill_range, range)
-        |> Map.put(:anchor_ranges, anchor_ranges)
+        Backfill.build_pipeline_context(resolution.pipeline_ctx, range, anchor_ranges)
 
       run_opts =
         opts
-        |> drop_backfill_range_opt()
+        |> Backfill.drop_range_opt()
         |> Keyword.put(:dependencies, resolution.dependencies)
         |> Keyword.put(:pipeline_context, pipeline_context)
         |> Keyword.put(:_plan_override, plan)
         |> Keyword.put(:_submit_kind, :backfill_pipeline)
         |> Keyword.put(:_submit_ref, pipeline_module)
         |> Keyword.put(:_backfill, %{range: range, anchor_ranges: anchor_ranges})
-        |> normalize_pipeline_context_opt()
+        |> Submission.normalize_pipeline_context()
 
       Engine.submit_run(resolution.target_refs, run_opts)
     end
   end
-
-  defp normalize_pipeline_context_opt(opts) when is_list(opts) do
-    case Keyword.fetch(opts, :pipeline_context) do
-      :error ->
-        opts
-
-      {:ok, context} ->
-        opts |> Keyword.delete(:pipeline_context) |> Keyword.put(:_pipeline_context, context)
-    end
-  end
-
-  defp fetch_backfill_range(opts) when is_list(opts) do
-    case Keyword.fetch(opts, :range) do
-      {:ok, %{kind: kind, start_at: %DateTime{} = start_at, end_at: %DateTime{} = end_at} = range} ->
-        timezone = Map.get(range, :timezone, "Etc/UTC")
-        normalized = %{kind: kind, start_at: start_at, end_at: end_at, timezone: timezone}
-
-        case Anchor.expand_range(kind, start_at, end_at, timezone: timezone) do
-          {:ok, [_ | _] = anchor_ranges} -> {:ok, normalized, anchor_ranges}
-          {:ok, []} -> {:error, :empty_backfill_range}
-          {:error, _} = error -> error
-        end
-
-      {:ok, _invalid} ->
-        {:error, :invalid_backfill_range}
-
-      :error ->
-        {:error, :backfill_range_required}
-    end
-  end
-
-  defp drop_backfill_range_opt(opts) when is_list(opts), do: Keyword.delete(opts, :range)
 
   @doc """
   Evaluate freshness policy for one asset/window against persisted node results.
