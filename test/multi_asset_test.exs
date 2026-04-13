@@ -2,7 +2,6 @@ defmodule Favn.MultiAssetTest do
   use ExUnit.Case, async: false
 
   alias Favn.Asset
-  alias Favn.Assets.Compiler
   alias Favn.RelationRef
   alias Favn.Run.Context
   alias Favn.Runtime.Executor.Local
@@ -127,7 +126,7 @@ defmodule Favn.MultiAssetTest do
              mod == module_name
            end)
 
-    assert {:ok, [orders, customers]} = Compiler.compile_module_assets(module_name)
+    [orders, customers] = module_name.__favn_assets__()
 
     assert orders.relation == %RelationRef{
              connection: :warehouse,
@@ -353,6 +352,65 @@ defmodule Favn.MultiAssetTest do
       def asset(_ctx), do: :ok
       """)
     end
+
+    assert_raise CompileError,
+                 ~r/module shorthand is not supported in Favn.MultiAsset/,
+                 fn ->
+                   compile_test_module("""
+                   use Favn.MultiAsset
+
+                   @depends #{inspect(Favn.AssetsTest.Upstream)}
+                   asset :orders do
+                     rest do
+                       path "/orders.json"
+                       data_path "orders"
+                     end
+                   end
+
+                   def asset(_ctx), do: :ok
+                   """)
+                 end
+
+    assert_raise CompileError,
+                 ~r/requires asset :name do immediately below/,
+                 fn ->
+                   compile_test_module("""
+                   use Favn.MultiAsset
+
+                   @doc "should-not-attach"
+                   defaults do
+                     meta owner: "x"
+                   end
+
+                   asset :orders do
+                     rest do
+                       path "/orders.json"
+                       data_path "orders"
+                     end
+                   end
+
+                   def asset(_ctx), do: :ok
+                   """)
+                 end
+
+    assert_raise CompileError,
+                 ~r/requires asset :name do immediately below/,
+                 fn ->
+                   compile_test_module("""
+                   use Favn.MultiAsset
+
+                   asset :orders do
+                     rest do
+                       path "/orders.json"
+                       data_path "orders"
+                     end
+                   end
+
+                   @meta owner: "late"
+
+                   def asset(_ctx), do: :ok
+                   """)
+                 end
   end
 
   defp compile_test_module(module_body) do

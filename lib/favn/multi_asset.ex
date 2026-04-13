@@ -8,7 +8,9 @@ defmodule Favn.MultiAsset do
   """
 
   alias Favn.Asset
+  alias Favn.Namespace
   alias Favn.Ref
+  alias Favn.RelationRef
   alias Favn.Window.Spec
 
   @doc false
@@ -51,6 +53,7 @@ defmodule Favn.MultiAsset do
     else
       case {kind, name, arity} do
         {:def, :asset, 1} ->
+          validate_no_stray_asset_attributes!(env, kind, name, arity)
           increment_runtime_count!(env)
 
         {:defp, name, 1} when name != :asset ->
@@ -85,6 +88,8 @@ defmodule Favn.MultiAsset do
 
   @doc false
   defmacro defaults(do: block) do
+    ensure_no_pending_attributes!(__CALLER__)
+
     current = Module.get_attribute(__CALLER__.module, :favn_multi_asset_defaults_raw)
 
     if current do
@@ -98,7 +103,10 @@ defmodule Favn.MultiAsset do
     defaults = normalize_defaults_block!(block, __CALLER__)
     Module.put_attribute(__CALLER__.module, :favn_multi_asset_defaults_raw, defaults)
 
+    marker_fun = defaults_marker_fun_name(__CALLER__.line)
+
     quote do
+      defp unquote(marker_fun)(), do: :ok
       :ok
     end
   end
@@ -145,6 +153,8 @@ defmodule Favn.MultiAsset do
       )
     end
 
+    ensure_no_pending_attributes!(env)
+
     raw_assets =
       env.module
       |> Module.get_attribute(:favn_multi_assets_raw)
@@ -159,7 +169,8 @@ defmodule Favn.MultiAsset do
     end
 
     _ = validate_unique_names!(raw_assets)
-    assets = Enum.map(raw_assets, &build_asset!/1)
+    assets = raw_assets |> Enum.map(&build_asset!/1) |> resolve_relations!(env.module, env)
+    _ = ensure_unique_relation_owners!(assets, env)
 
     Module.put_attribute(env.module, :favn_multi_asset_generating, true)
 
@@ -186,6 +197,9 @@ defmodule Favn.MultiAsset do
 
   defp decl_fun_name(name) when is_atom(name),
     do: String.to_atom("__favn_multi_asset_decl__#{name}")
+
+  defp defaults_marker_fun_name(line),
+    do: String.to_atom("__favn_multi_asset_defaults_marker__#{line}")
 
   defp capture_generated_asset_definition!(env, decl_fun) do
     decl = fetch_decl!(env.module, decl_fun, env)
@@ -456,7 +470,15 @@ defmodule Favn.MultiAsset do
   defp normalize_depends!(depends, raw_asset) do
     Enum.map(depends, fn
       name when is_atom(name) ->
-        Ref.new(raw_asset.module, name)
+        if module_atom?(name) do
+          compile_error!(
+            raw_asset.file,
+            raw_asset.line,
+            "invalid @depends entry #{inspect(name)}; expected :asset_name or {Module, :asset_name}; module shorthand is not supported in Favn.MultiAsset"
+          )
+        else
+          Ref.new(raw_asset.module, name)
+        end
 
       {module, name} when is_atom(module) and is_atom(name) ->
         Ref.new(module, name)
@@ -468,6 +490,109 @@ defmodule Favn.MultiAsset do
           "invalid @depends entry #{inspect(dependency)}; expected :asset_name or {Module, :asset_name}"
         )
     end)
+  end
+
+  defp resolve_relations!(assets, module, env) do
+    defaults = Namespace.resolve_relation(module)
+
+    Enum.map(assets, fn %Asset{} = asset ->
+      inferred_name = asset.name
+
+      relation =
+        case fetch_raw_relation(module, asset.name) do
+          nil ->
+            asset.relation
+
+          true ->
+            RelationRef.new!(Map.put(defaults, :name, inferred_name))
+
+          attrs when is_list(attrs) ->
+            if Keyword.keyword?(attrs) do
+              attrs
+              |> Map.new()
+              |> merge_relation_attrs(defaults, inferred_name)
+              |> RelationRef.new!()
+            else
+              compile_error!(
+                env.file,
+                env.line,
+                "invalid @relation value #{inspect(attrs)}; expected true, a keyword list, or a map"
+              )
+            end
+
+          attrs when is_map(attrs) ->
+            attrs
+            |> merge_relation_attrs(defaults, inferred_name)
+            |> RelationRef.new!()
+
+          other ->
+            compile_error!(
+              env.file,
+              env.line,
+              "invalid @relation value #{inspect(other)}; expected true, a keyword list, or a map"
+            )
+        end
+
+      %{asset | relation: relation}
+    end)
+  rescue
+    error in ArgumentError ->
+      compile_error!(env.file, env.line, error.message)
+  end
+
+  defp fetch_raw_relation(module, name) do
+    with entries when is_list(entries) <- Module.get_attribute(module, :favn_multi_assets_raw),
+         %{relation: relation} <- Enum.find(entries, &(&1.name == name)) do
+      case relation do
+        [] -> nil
+        [value] -> value
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp merge_relation_attrs(attrs, defaults, asset_name) when is_map(attrs) do
+    attrs =
+      if has_explicit_name?(attrs) do
+        attrs
+      else
+        Map.put(attrs, :name, asset_name)
+      end
+
+    defaults
+    |> maybe_drop_default_key(attrs, [:catalog], [:database, "database"])
+    |> maybe_drop_default_key(attrs, [:name], [:table, "table", :name, "name"])
+    |> Map.merge(attrs)
+  end
+
+  defp has_explicit_name?(attrs) do
+    Enum.any?([:name, "name", :table, "table"], &Map.has_key?(attrs, &1))
+  end
+
+  defp maybe_drop_default_key(defaults, attrs, canonical_keys, authored_keys) do
+    if Enum.any?(authored_keys, &Map.has_key?(attrs, &1)) do
+      Enum.reduce(canonical_keys, defaults, &Map.delete(&2, &1))
+    else
+      defaults
+    end
+  end
+
+  defp ensure_unique_relation_owners!(assets, env) do
+    assets
+    |> Enum.reject(&is_nil(&1.relation))
+    |> Enum.group_by(& &1.relation)
+    |> Enum.each(fn {relation_ref, owners} ->
+      case owners do
+        [_single] ->
+          :ok
+
+        _many ->
+          compile_error!(env.file, env.line, "duplicate relation #{inspect(relation_ref)}")
+      end
+    end)
+
+    assets
   end
 
   defp normalize_meta!(meta, _env) when is_nil(meta), do: %{}
@@ -554,6 +679,39 @@ defmodule Favn.MultiAsset do
       )
     else
       :ok
+    end
+  end
+
+  defp ensure_no_pending_attributes!(env) do
+    depends = fetch_accum_attribute(env.module, :depends)
+    meta = Module.get_attribute(env.module, :meta)
+    window = fetch_accum_attribute(env.module, :window)
+    relation = fetch_accum_attribute(env.module, :relation)
+    pending_doc? = pending_doc?(env.module)
+
+    if depends != [] or not is_nil(meta) or window != [] or relation != [] or pending_doc? do
+      Module.delete_attribute(env.module, :depends)
+      Module.delete_attribute(env.module, :meta)
+      Module.delete_attribute(env.module, :window)
+      Module.delete_attribute(env.module, :relation)
+      clear_doc!(env.module, env.line)
+
+      compile_error!(
+        env.file,
+        env.line,
+        "@doc/@meta/@depends/@window/@relation must be attached to an immediately following asset :name do"
+      )
+    else
+      :ok
+    end
+  end
+
+  defp pending_doc?(module) do
+    case Module.get_attribute(module, :doc) do
+      nil -> false
+      false -> false
+      {_line, false} -> false
+      _ -> true
     end
   end
 
@@ -661,5 +819,11 @@ defmodule Favn.MultiAsset do
 
   defp clear_doc!(module, line) do
     Module.put_attribute(module, :doc, {line, false})
+  end
+
+  defp module_atom?(module) when is_atom(module) do
+    module
+    |> Atom.to_string()
+    |> String.starts_with?("Elixir.")
   end
 end
