@@ -131,6 +131,8 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp scheduler_cursor_query(pipeline_module, nil) do
+    # Compatibility fallback only. Runtime scheduler paths pass explicit
+    # schedule_id values and should not rely on "latest row" selection.
     {
       """
       SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at,
@@ -161,6 +163,9 @@ defmodule Favn.Storage.Adapter.Postgres do
   def put_scheduler_state(%SchedulerState{} = state, opts) when is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          :ok <- ensure_schema_ready(repo) do
+      # `version` is forward-looking groundwork for future compare-and-set
+      # semantics. v0.5 increments version but does not yet enforce expected
+      # version writes.
       sql = """
       INSERT INTO favn_scheduler_cursors (
         pipeline_module,
@@ -583,6 +588,8 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp parse_schedule_id(nil), do: nil
+  # `__default__` keeps nullable schedule_id compatibility while preserving a
+  # non-null composite storage key.
   defp parse_schedule_id("__default__"), do: nil
 
   defp parse_schedule_id(value) when is_binary(value) do
@@ -591,6 +598,7 @@ defmodule Favn.Storage.Adapter.Postgres do
     ArgumentError -> nil
   end
 
+  # `nil` schedule_id maps to `__default__` for storage identity.
   defp encode_schedule_id(nil), do: "__default__"
   defp encode_schedule_id(value) when is_atom(value), do: Atom.to_string(value)
 
@@ -604,8 +612,13 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp snapshot_hash(snapshot) do
+    # Snapshot hash is used for run write idempotency and conflict detection.
+    # `write_seq` is ordering-only and intentionally not gap-free.
+    # `snapshot_json` is a reconstruction/read-model cache, while relational
+    # columns remain the primary durability/query contract.
     snapshot
-    |> Jason.encode!()
+    |> JSON.encode_to_iodata!()
+    |> IO.iodata_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
@@ -649,6 +662,12 @@ defmodule Favn.Storage.Adapter.Postgres do
 
       repo.__adapter__() != Ecto.Adapters.Postgres ->
         {:error, :postgres_external_repo_must_use_postgres}
+
+      not (function_exported?(repo, :transact, 1) or function_exported?(repo, :transact, 2)) ->
+        {:error, :postgres_external_repo_missing_transact}
+
+      not function_exported?(repo, :rollback, 1) ->
+        {:error, :postgres_external_repo_missing_rollback}
 
       true ->
         {:ok, repo}

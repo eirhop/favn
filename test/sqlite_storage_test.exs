@@ -158,6 +158,34 @@ defmodule Favn.SQLiteStorageTest do
     assert fetched.in_flight_run_id == state.in_flight_run_id
   end
 
+  test "persists scheduler states for multiple schedule ids in same pipeline" do
+    pipeline = Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline
+
+    first = %SchedulerState{
+      pipeline_module: pipeline,
+      schedule_id: :daily,
+      schedule_fingerprint: "daily-v1"
+    }
+
+    second = %SchedulerState{
+      pipeline_module: pipeline,
+      schedule_id: :hourly,
+      schedule_fingerprint: "hourly-v1"
+    }
+
+    assert :ok = Favn.Scheduler.Storage.put_state(first)
+    assert :ok = Favn.Scheduler.Storage.put_state(second)
+
+    assert {:ok, %SchedulerState{schedule_id: :daily}} =
+             Favn.Scheduler.Storage.get_state(pipeline, :daily)
+
+    assert {:ok, %SchedulerState{schedule_id: :hourly}} =
+             Favn.Scheduler.Storage.get_state(pipeline, :hourly)
+
+    assert {:ok, %SchedulerState{schedule_id: :hourly}} =
+             Favn.Scheduler.Storage.get_state(pipeline)
+  end
+
   test "malformed scheduler datetime columns are treated as nil" do
     assert {:ok, _} =
              SQL.query(

@@ -55,7 +55,7 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
 
     create table(:scheduler_states, primary_key: false) do
       add(:pipeline_module, :text, primary_key: true)
-      add(:schedule_id, :text)
+      add(:schedule_id, :text, primary_key: true)
       add(:schedule_fingerprint, :text)
       add(:last_evaluated_at, :utc_datetime)
       add(:last_due_at, :utc_datetime)

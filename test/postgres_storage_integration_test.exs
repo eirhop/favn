@@ -4,6 +4,8 @@ defmodule Favn.PostgresStorageIntegrationTest do
   alias Ecto.Adapters.SQL
   alias Favn.Run
   alias Favn.Run.AssetResult
+  alias Favn.Scheduler.State, as: SchedulerState
+  alias Favn.Scheduler.Storage, as: SchedulerStorage
   alias Favn.Storage
   alias Favn.Storage.Adapter.Postgres
   alias Favn.Storage.Postgres.Migrations
@@ -86,6 +88,80 @@ defmodule Favn.PostgresStorageIntegrationTest do
 
       assert {:ok, runs} = Storage.list_runs()
       assert Enum.map(runs, & &1.id) == ["pg-int-4", "pg-int-3"]
+    else
+      assert true
+    end
+  end
+
+  test "manual readiness fails when migration version row is missing", ctx do
+    if ctx[:pg_enabled?] do
+      assert true == Migrations.schema_ready?(Repo)
+
+      assert {:ok, _} = SQL.query(Repo, "DELETE FROM schema_migrations", [])
+
+      assert false == Migrations.schema_ready?(Repo)
+
+      :ok = Migrations.migrate!(Repo)
+      assert true == Migrations.schema_ready?(Repo)
+    else
+      assert true
+    end
+  end
+
+  test "scheduler cursors support multiple schedule ids per pipeline", ctx do
+    if ctx[:pg_enabled?] do
+      pipeline = Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline
+
+      first = %SchedulerState{
+        pipeline_module: pipeline,
+        schedule_id: :daily,
+        schedule_fingerprint: "daily-v1",
+        updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      }
+
+      second = %SchedulerState{
+        pipeline_module: pipeline,
+        schedule_id: :hourly,
+        schedule_fingerprint: "hourly-v1",
+        updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      }
+
+      assert :ok = SchedulerStorage.put_state(first)
+      assert :ok = SchedulerStorage.put_state(second)
+
+      assert {:ok, %SchedulerState{schedule_id: :daily}} =
+               SchedulerStorage.get_state(pipeline, :daily)
+
+      assert {:ok, %SchedulerState{schedule_id: :hourly}} =
+               SchedulerStorage.get_state(pipeline, :hourly)
+    else
+      assert true
+    end
+  end
+
+  test "nil schedule_id fallback returns latest cursor for pipeline", ctx do
+    if ctx[:pg_enabled?] do
+      pipeline = Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline
+
+      first = %SchedulerState{
+        pipeline_module: pipeline,
+        schedule_id: :daily,
+        schedule_fingerprint: "daily-v1",
+        updated_at:
+          DateTime.add(DateTime.utc_now(), -60, :second) |> DateTime.truncate(:microsecond)
+      }
+
+      second = %SchedulerState{
+        pipeline_module: pipeline,
+        schedule_id: :hourly,
+        schedule_fingerprint: "hourly-v1",
+        updated_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      }
+
+      assert :ok = SchedulerStorage.put_state(first)
+      assert :ok = SchedulerStorage.put_state(second)
+
+      assert {:ok, %SchedulerState{schedule_id: :hourly}} = SchedulerStorage.get_state(pipeline)
     else
       assert true
     end

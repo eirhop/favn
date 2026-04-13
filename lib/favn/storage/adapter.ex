@@ -12,9 +12,14 @@ defmodule Favn.Storage.Adapter do
   ## Required invariants
 
     * Run IDs are treated as globally unique identifiers.
-    * `put_run/2` is idempotent for the same run ID.
+    * run writes are monotonic by `run.event_seq` for a given run ID:
+      * higher `event_seq` replaces prior persisted state
+      * same `event_seq` + same snapshot hash is idempotent success
+      * same `event_seq` + different snapshot hash returns
+        `{:error, :conflicting_snapshot}`
+      * lower `event_seq` returns `{:error, :stale_write}`
     * scheduler state read/write callbacks accept `%Favn.Scheduler.State{}`
-      and are keyed by pipeline module.
+      and are keyed by `{pipeline_module, schedule_id}`.
     * `list_runs/2` returns deterministic newest-first ordering by latest persisted write.
     * Adapters should return `{:error, :not_found}` for missing run IDs.
 

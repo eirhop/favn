@@ -325,6 +325,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp scheduler_state_query(pipeline_module, nil) do
+    # Compatibility fallback only. Scheduler runtime paths use explicit
+    # schedule_id values and should not rely on newest-row fallback.
     {
       """
       SELECT schedule_id, schedule_fingerprint, last_evaluated_at, last_due_at, last_submitted_due_at, in_flight_run_id, queued_due_at, updated_at
@@ -365,8 +367,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         queued_due_at,
         updated_at
       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-      ON CONFLICT(pipeline_module) DO UPDATE SET
-        schedule_id = excluded.schedule_id,
+      ON CONFLICT(pipeline_module, schedule_id) DO UPDATE SET
         schedule_fingerprint = excluded.schedule_fingerprint,
         last_evaluated_at = excluded.last_evaluated_at,
         last_due_at = excluded.last_due_at,
@@ -378,7 +379,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       params = [
         Atom.to_string(state.pipeline_module),
-        if(is_atom(state.schedule_id), do: Atom.to_string(state.schedule_id), else: nil),
+        encode_schedule_id(state.schedule_id),
         state.schedule_fingerprint,
         datetime_to_iso(state.last_evaluated_at),
         datetime_to_iso(state.last_due_at),
@@ -419,12 +420,19 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp parse_schedule_id(nil), do: nil
+  # `__default__` keeps nullable schedule_id compatibility while preserving a
+  # non-null composite storage key.
+  defp parse_schedule_id("__default__"), do: nil
 
   defp parse_schedule_id(value) when is_binary(value) do
     String.to_existing_atom(value)
   rescue
     ArgumentError -> nil
   end
+
+  # `nil` schedule_id maps to `__default__` for storage identity.
+  defp encode_schedule_id(nil), do: "__default__"
+  defp encode_schedule_id(value) when is_atom(value), do: Atom.to_string(value)
 
   defp iso_to_datetime(nil), do: nil
 
