@@ -6,6 +6,8 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
     create table(:runs, primary_key: false) do
       add(:id, :text, primary_key: true)
       add(:status, :text, null: false)
+      add(:event_seq, :bigint, null: false)
+      add(:snapshot_hash, :text, null: false)
       add(:started_at, :utc_datetime)
       add(:finished_at, :utc_datetime)
       add(:inserted_at_us, :bigint, null: false)

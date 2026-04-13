@@ -3,10 +3,12 @@ defmodule Favn.SQLiteStorageTest do
 
   alias Ecto.Adapters.SQL
   alias Favn.Run
+  alias Favn.Run.AssetResult
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
   alias Favn.Storage.SQLite.Migrations
   alias Favn.Storage.SQLite.Repo
+  alias Favn.Window.Key
 
   setup do
     state = Favn.TestSetup.capture_state()
@@ -128,11 +130,131 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, initial_runs} = Storage.list_runs()
     assert Enum.map(initial_runs, & &1.id) == ["run-b", "run-a"]
 
-    updated_first = %{first | status: :ok, finished_at: base_started_at}
+    updated_first = %{
+      first
+      | status: :ok,
+        finished_at: base_started_at,
+        event_seq: first.event_seq + 1
+    }
+
     assert :ok = Storage.put_run(updated_first)
 
     assert {:ok, reordered_runs} = Storage.list_runs()
     assert Enum.map(reordered_runs, & &1.id) == ["run-a", "run-b"]
+  end
+
+  test "same-seq same-hash write is idempotent" do
+    run =
+      sample_run("sqlite-idempotent", :running, DateTime.utc_now(),
+        event_seq: 1,
+        params: %{payload: 1}
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, %{rows: [[first_seq]]}} =
+             SQL.query(Repo, "SELECT updated_seq FROM runs WHERE id = ?1", [run.id])
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, %{rows: [[second_seq]]}} =
+             SQL.query(Repo, "SELECT updated_seq FROM runs WHERE id = ?1", [run.id])
+
+    assert first_seq == second_seq
+  end
+
+  test "same-seq different-hash write returns conflicting snapshot" do
+    run =
+      sample_run("sqlite-conflict", :running, DateTime.utc_now(),
+        event_seq: 1,
+        params: %{payload: 1}
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    conflict =
+      sample_run("sqlite-conflict", :running, DateTime.utc_now(),
+        event_seq: 1,
+        params: %{payload: 2}
+      )
+
+    assert {:error, {:store_error, :conflicting_snapshot}} = Storage.put_run(conflict)
+  end
+
+  test "lower-seq write returns stale write" do
+    newer =
+      sample_run("sqlite-stale", :running, DateTime.utc_now(),
+        event_seq: 2,
+        params: %{payload: 2}
+      )
+
+    assert :ok = Storage.put_run(newer)
+
+    older =
+      sample_run("sqlite-stale", :running, DateTime.utc_now(),
+        event_seq: 1,
+        params: %{payload: 1}
+      )
+
+    assert {:error, {:store_error, :stale_write}} = Storage.put_run(older)
+  end
+
+  test "higher-seq write updates run" do
+    first =
+      sample_run("sqlite-higher", :running, DateTime.utc_now(),
+        event_seq: 1,
+        params: %{payload: 1}
+      )
+
+    second =
+      sample_run("sqlite-higher", :running, DateTime.utc_now(),
+        event_seq: 2,
+        params: %{payload: 2}
+      )
+
+    assert :ok = Storage.put_run(first)
+    assert :ok = Storage.put_run(second)
+    assert {:ok, fetched} = Storage.get_run("sqlite-higher")
+    assert fetched.event_seq == 2
+    assert fetched.params == %{payload: 2}
+  end
+
+  test "latest window state advances only on successful node results" do
+    ref = {Favn.SQLiteStorageTest, :daily}
+
+    key =
+      Key.new!(
+        :day,
+        DateTime.from_naive!(~N[2026-04-13 00:00:00], "Etc/UTC"),
+        "Etc/UTC"
+      )
+
+    success = node_result(ref, :ok)
+    failed = node_result(ref, :error)
+
+    run_ok =
+      sample_run("sqlite-latest-1", :ok, DateTime.utc_now(),
+        event_seq: 1,
+        node_results: %{{ref, key} => success}
+      )
+
+    run_error =
+      sample_run("sqlite-latest-2", :error, DateTime.utc_now(),
+        event_seq: 1,
+        node_results: %{{ref, key} => failed}
+      )
+
+    assert :ok = Storage.put_run(run_ok)
+    assert :ok = Storage.put_run(run_error)
+
+    assert {:ok, %{rows: rows}} =
+             SQL.query(
+               Repo,
+               "SELECT status, last_run_id FROM window_latest_results WHERE ref_module = ?1 AND ref_name = ?2 AND window_key = ?3",
+               [Atom.to_string(elem(ref, 0)), Atom.to_string(elem(ref, 1)), Key.encode(key)]
+             )
+
+    assert rows == [["ok", "sqlite-latest-1"]]
   end
 
   test "persists and fetches scheduler state rows" do
@@ -226,17 +348,43 @@ defmodule Favn.SQLiteStorageTest do
     assert fetched.updated_at == nil
   end
 
-  defp sample_run(id, status, started_at \\ DateTime.utc_now()) do
+  defp sample_run(id, status, started_at \\ DateTime.utc_now(), opts \\ []) do
     now = DateTime.truncate(started_at, :second)
+
+    event_seq = Keyword.get(opts, :event_seq, 0)
+    params = Keyword.get(opts, :params, %{})
+    node_results = Keyword.get(opts, :node_results, %{})
+    asset_results = Keyword.get(opts, :asset_results, %{})
 
     %Run{
       id: id,
       target_refs: [],
       plan: nil,
       status: status,
-      event_seq: 0,
+      submit_kind: :asset,
+      replay_mode: :none,
+      event_seq: event_seq,
       started_at: now,
-      finished_at: if(status in [:ok, :error, :cancelled, :timed_out], do: now, else: nil)
+      finished_at: if(status in [:ok, :error, :cancelled, :timed_out], do: now, else: nil),
+      params: params,
+      retry_policy: %{max_attempts: 1, delay_ms: 0, retry_on: []},
+      node_results: node_results,
+      asset_results: asset_results
+    }
+  end
+
+  defp node_result(ref, status) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    %AssetResult{
+      ref: ref,
+      stage: 0,
+      status: status,
+      started_at: now,
+      finished_at: now,
+      duration_ms: 0,
+      attempt_count: 1,
+      max_attempts: 1
     }
   end
 end

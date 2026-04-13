@@ -24,6 +24,8 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias Favn.Storage.Postgres.RunSerializer
   alias Favn.Storage.Postgres.Supervisor, as: PostgresSupervisor
   alias Favn.Storage.Postgres.TermJSON
+  alias Favn.Storage.RunWriteSemantics
+  alias Favn.Storage.SnapshotHash
   alias Favn.Window.Key
 
   @impl true
@@ -64,25 +66,13 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   @impl true
   def put_run(%Run{} = run, opts) do
-    with {:ok, snapshot} <- safe_snapshot_from_run(run),
-         {:ok, snapshot_hash} <- safe_snapshot_hash(snapshot),
+    with {:ok, snapshot} <- SnapshotHash.snapshot_for_run(run),
+         snapshot_hash <- SnapshotHash.from_snapshot(snapshot),
          {:ok, repo} <- resolve_repo(opts),
          :ok <- ensure_schema_ready(repo),
          {:ok, write_seq} <- next_write_seq(repo) do
       persist_run_transaction(repo, run, snapshot, snapshot_hash, write_seq)
     end
-  end
-
-  defp safe_snapshot_from_run(%Run{} = run) do
-    {:ok, RunSerializer.snapshot_from_run(run)}
-  rescue
-    error -> {:error, {:serialization_failed, error}}
-  end
-
-  defp safe_snapshot_hash(snapshot) do
-    {:ok, snapshot_hash(snapshot)}
-  rescue
-    error -> {:error, {:snapshot_hash_failed, error}}
   end
 
   @impl true
@@ -403,17 +393,8 @@ defmodule Favn.Storage.Adapter.Postgres do
     sql = "SELECT event_seq, snapshot_hash FROM favn_runs WHERE id = $1 LIMIT 1"
 
     case SQL.query(repo, sql, [run_id]) do
-      {:ok, %{rows: [[^event_seq, ^snapshot_hash]]}} ->
-        :idempotent
-
-      {:ok, %{rows: [[^event_seq, _existing_hash]]}} ->
-        {:error, :conflicting_snapshot}
-
-      {:ok, %{rows: [[stored_seq, _existing_hash]]}} when stored_seq > event_seq ->
-        {:error, :stale_write}
-
-      {:ok, %{rows: [[_stored_seq, _existing_hash]]}} ->
-        {:error, :stale_write}
+      {:ok, %{rows: [[stored_seq, stored_hash]]}} ->
+        RunWriteSemantics.decide(stored_seq, stored_hash, event_seq, snapshot_hash)
 
       {:ok, %{rows: []}} ->
         {:error, :stale_write}
@@ -609,18 +590,6 @@ defmodule Favn.Storage.Adapter.Postgres do
       {:ok, %{rows: [[value]]}} -> {:ok, value}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp snapshot_hash(snapshot) do
-    # Snapshot hash is used for run write idempotency and conflict detection.
-    # `write_seq` is ordering-only and intentionally not gap-free.
-    # `snapshot_json` is a reconstruction/read-model cache, while relational
-    # columns remain the primary durability/query contract.
-    snapshot
-    |> JSON.encode_to_iodata!()
-    |> IO.iodata_to_binary()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
   end
 
   defp resolve_repo(opts) do
