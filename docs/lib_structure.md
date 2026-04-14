@@ -1,11 +1,33 @@
-# Library Folder Structure (`lib/`)
+# Library Folder Structure (`apps/*/lib`)
 
-This document maps the current `lib/` layout for the Favn core library.
+This document maps the umbrella library layout after the v0.5 Phase 1 scaffold.
 
 ```text
-lib/
-├── favn.ex
-└── favn/
+apps/
+├── favn/lib/
+│   └── favn.ex
+├── favn_core/lib/
+│   └── favn_core.ex
+├── favn_runner/lib/
+│   ├── favn_runner.ex
+│   └── favn_runner/application.ex
+├── favn_orchestrator/lib/
+│   ├── favn_orchestrator.ex
+│   └── favn_orchestrator/application.ex
+├── favn_view/lib/
+│   ├── favn_view.ex
+│   └── favn_view/application.ex
+├── favn_storage_postgres/lib/
+│   └── favn_storage_postgres.ex
+├── favn_storage_sqlite/lib/
+│   └── favn_storage_sqlite.ex
+├── favn_duckdb/lib/
+│   └── favn_duckdb.ex
+├── favn_test_support/lib/
+│   └── favn_test_support.ex
+└── favn_legacy/lib/
+    ├── favn.ex
+    └── favn/
     ├── application.ex
     ├── agent_guide.ex
     ├── asset.ex
@@ -135,10 +157,10 @@ lib/
     ├── triggers/
     │   ├── schedule.ex
     │   └── schedules.ex
-    └── window/
-        ├── anchor.ex
-        ├── key.ex
-        ├── runtime.ex
-        ├── spec.ex
-        └── validate.ex
+        └── window/
+            ├── anchor.ex
+            ├── key.ex
+            ├── runtime.ex
+            ├── spec.ex
+            └── validate.ex
 ```

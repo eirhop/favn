@@ -11,11 +11,12 @@ It favors normal Elixir modules, explicit metadata, and dependency-driven execut
 
 ## Status
 
-Favn `v0.4.0` is complete.
+Favn `v0.5.0` refactor is in progress.
 
 - Private development project
 - Breaking changes are still allowed before `v1.0`
-- SQL assets, connections, schedules, pipelines, and windowing are available
+- v0.4 runtime remains available in `apps/favn_legacy` during migration
+- Refactor roadmap and architecture decisions are tracked in `docs/REFACTOR.md`
 
 ## Choose Your DSL
 

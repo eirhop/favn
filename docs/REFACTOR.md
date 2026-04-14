@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned
+Phase 1 complete, Phase 2 next
 
 ## Summary
 
@@ -70,26 +70,121 @@ The umbrella should stay intentionally small.
 - `favn`
   - the single dependency user business projects add
   - owns public DSL and user-facing integration surface
-  - may depend internally on core/compiler/runtime glue
+  - compiles manifests from user business code
+  - depends on `favn_core`, but not on runtime product apps directly
 
 ### Internal runtime apps
 - `favn_core`
-  - internal domain/compiler/manifest foundation
+  - internal DSL/compiler/manifest foundation and shared boundary contracts
 - `favn_runner`
-  - runner runtime and execution protocol
+  - lightweight runtime wrapper around user business code execution
+  - loads pinned manifests, executes assets, and emits execution results/events
 - `favn_orchestrator`
-  - control plane, scheduling, run lifecycle, manifest storage integration
+  - control plane and product API boundary
+  - owns scheduling, run lifecycle, manifests, event history, and storage contracts
 - `favn_view`
-  - Phoenix/LiveView UI and external API
+  - Phoenix/LiveView UI
+  - reads and writes through orchestrator APIs only
 
 ### Adapter/plugin apps
 - `favn_storage_postgres`
+  - orchestrator storage adapter
 - `favn_storage_sqlite`
+  - orchestrator storage adapter
 - `favn_duckdb`
+  - runner-side execution plugin
 
 ### Internal support apps
 - `favn_test_support`
 - `favn_legacy` (temporary during migration)
+
+## Phase 0 decisions
+
+The following decisions are the Phase 0 deliverable answers and are treated as locked unless a later refactor decision explicitly replaces them.
+
+### Old v0.5 roadmap replacement
+
+- The previous `docs/FEATURES.md` v0.5 section about hardening the current single-app runtime is replaced by this refactor roadmap.
+- Already-completed prerequisites from the old roadmap remain valid history.
+- Not-yet-completed old roadmap items are deferred until after the new boundaries exist, unless one becomes necessary to unblock the refactor itself.
+
+### Locked umbrella app list
+
+The target app structure above is the locked Phase 0 umbrella app list:
+
+- public package: `favn`
+- internal runtime apps: `favn_core`, `favn_runner`, `favn_orchestrator`, `favn_view`
+- adapter/plugin apps: `favn_storage_postgres`, `favn_storage_sqlite`, `favn_duckdb`
+- internal support apps: `favn_test_support`, `favn_legacy`
+
+No additional umbrella apps should be introduced during early migration unless the boundary cannot be expressed cleanly with this set.
+
+### Allowed dependency directions between apps
+
+Allowed compile-time dependency directions for the umbrella:
+
+- `favn -> favn_core`
+- `favn_orchestrator -> favn_core`
+- `favn_runner -> favn_core`
+- `favn_view -> favn_orchestrator`
+- `favn_storage_postgres -> favn_orchestrator`
+- `favn_storage_sqlite -> favn_orchestrator`
+- `favn_duckdb -> favn_runner`
+- `favn_test_support -> any internal app`, but only in test/dev support paths
+
+Locked dependency rules:
+
+1. `favn_core` must stay at the bottom of the graph and must not depend on any other umbrella app.
+2. `favn` is the public authoring package and must not depend on `favn_runner`, `favn_orchestrator`, `favn_view`, storage adapters, plugins, or `favn_legacy`.
+3. `favn_core` should contain only DSL/compiler/manifest concerns plus truly shared boundary contracts, not scheduler, storage, or UI behavior.
+4. `favn_orchestrator` is the system of record and must own manifests, schedules, runs, event history, operator APIs, and storage contracts.
+5. `favn_orchestrator` must not depend on `favn_runner` implementation details; any runner protocol contract shared across runtimes belongs in `favn_core`.
+6. `favn_runner` is execution-only and must not depend on `favn_orchestrator`, storage adapters, or `favn_view`.
+7. `favn_runner` should execute pinned manifest work, invoke runner-side plugins, and emit execution results/events back to orchestrator.
+8. `favn_view` must depend on `favn_orchestrator` APIs only and must not depend directly on `favn_core`, `favn_runner`, storage adapters, plugins, or user business code.
+9. Storage apps depend only on `favn_orchestrator`; storage is a control-plane concern.
+10. Runner plugins depend only on `favn_runner`; execution plugins are a runner concern.
+11. No production app may depend on `favn_test_support`.
+12. No new app may depend on `favn_legacy`.
+
+### Packaging rule for `favn_runner`
+
+- `favn_runner` is part of product packaging, but not part of the user project's public dependency surface.
+- In local dev and single-node packaging, the runner runtime will still be bundled together with the user's business code.
+- In split deployment, the runner image/payload is built with user business code plus the internal runner runtime.
+- The key distinction is packaging versus authoring dependency: users package runner runtime artifacts, but they should not add `favn_runner` as a normal public Mix dependency to author assets.
+
+### Locked migration rules
+
+During v0.5 refactor:
+
+1. Do not refactor the old monolith in place.
+2. Move code by bounded vertical slice, not random file copying.
+3. Each moved slice must bring or recreate its tests.
+4. `favn_legacy` is reference-only except for emergency fixes.
+5. New architecture decisions override old roadmap assumptions.
+6. Public docs and examples must move with the new source of truth as slices are migrated.
+7. New feature work should land in the new architecture unless it is a blocker-level fix for legacy behavior.
+
+### Legacy deletion criteria
+
+Legacy code may be deleted only when all relevant criteria below are true.
+
+Per module or slice:
+
+1. A clearly named owner app exists in the umbrella.
+2. The replacement code covers the supported behavior of the legacy slice.
+3. Tests for that behavior live in the new owner app and pass there.
+4. Public docs, examples, and typespec references point to the new source of truth.
+5. No supported runtime path still loads or dispatches through the legacy implementation.
+
+For larger subsystems and `favn_legacy` itself:
+
+1. CI no longer needs the legacy code for compile, test, or runtime execution.
+2. `mix favn.dev`, packaging flows, and supported deployment modes run through the new architecture.
+3. Orchestrator, runner, storage, and view boundaries are exercised without the legacy runtime path.
+4. `favn_legacy` is at most an optional regression reference and not a required dependency of any supported flow.
+5. The repository docs describe the new architecture as the only active product shape.
 
 ## Publication strategy
 
@@ -109,7 +204,7 @@ The umbrella should stay intentionally small.
 - `favn_legacy`
 
 Rationale:
-users should not need to understand or depend directly on internal product boundaries. Only the user-facing library and optional execution plugins should be public initially.
+users should not need to understand or depend directly on internal product boundaries. The public authoring contract is `favn`; runtime apps remain internal product artifacts even when they are packaged into runnable images.
 
 ## Supported deployment modes
 
@@ -154,6 +249,7 @@ This remains the target production contract even if same-node/simple modes are s
 2. **Runner protocol is the product boundary**
    - same-node execution may exist internally
    - but orchestration must target a runner contract, not direct local module invocation
+   - the runner should stay lightweight and focused on business-code execution
 
 3. **View is internet-facing, orchestrator and runners are private by default**
    - avoid collapsing back into one exposed runtime
@@ -161,10 +257,13 @@ This remains the target production contract even if same-node/simple modes are s
 4. **One user dependency**
    - user business projects should depend on `favn`, not on internal apps directly
 
-5. **Minimal app count**
+5. **Orchestrator is the control-plane center**
+   - operator APIs, run state, scheduling, manifests, and persistence belong there
+
+6. **Minimal app count**
    - split only where there is a real deployment, dependency, or ownership boundary
 
-6. **Legacy monolith is reference-only during migration**
+7. **Legacy monolith is reference-only during migration**
    - no major new feature work there
    - use it to preserve behavior and compare outputs
 
@@ -178,17 +277,17 @@ This remains the target production contract even if same-node/simple modes are s
 Stop feature drift on the old architecture and establish the new direction.
 
 ### Deliverables
-- mark old v0.5 roadmap as replaced
-- add this roadmap to the repo
-- define umbrella app list
-- define allowed dependency directions between apps
-- define migration rules
-- define deletion criteria for legacy code
+- [x] mark old v0.5 roadmap as replaced
+- [x] add this roadmap to the repo
+- [x] define umbrella app list
+- [x] define allowed dependency directions between apps
+- [x] define migration rules
+- [x] define deletion criteria for legacy code
 
 ### Exit criteria
-- app list is locked
-- dependency rules are locked
-- refactor is the official v0.5 direction
+- [x] app list is locked
+- [x] dependency rules are locked
+- [x] refactor is the official v0.5 direction
 
 ---
 
@@ -198,25 +297,25 @@ Stop feature drift on the old architecture and establish the new direction.
 Create a safe structure for AI-assisted migration without refactoring in place.
 
 ### Deliverables
-- create umbrella root
-- scaffold:
-  - `favn`
-  - `favn_core`
-  - `favn_runner`
-  - `favn_orchestrator`
-  - `favn_view`
-  - `favn_storage_postgres`
-  - `favn_storage_sqlite`
-  - `favn_duckdb`
-  - `favn_test_support`
-  - `favn_legacy`
-- move current monolith code into `favn_legacy`
-- treat `favn_legacy` as read-only reference
+- [x] create umbrella root
+- [x] scaffold:
+  - [x] `favn`
+  - [x] `favn_core`
+  - [x] `favn_runner`
+  - [x] `favn_orchestrator`
+  - [x] `favn_view`
+  - [x] `favn_storage_postgres`
+  - [x] `favn_storage_sqlite`
+  - [x] `favn_duckdb`
+  - [x] `favn_test_support`
+  - [x] `favn_legacy`
+- [x] move current monolith code into `favn_legacy`
+- [x] treat `favn_legacy` as read-only reference
 
 ### Exit criteria
-- umbrella compiles
-- legacy app remains runnable as reference
-- no new work happens in root `/lib` and `/test`
+- [x] umbrella compiles
+- [x] legacy app remains runnable as reference
+- [x] no new work happens in root `/lib` and `/test`
 
 ---
 
@@ -408,16 +507,6 @@ Retire the old monolith safely.
 - all supported flows run on the new architecture
 - docs describe the new product shape
 - legacy app is no longer required for build/test/runtime
-
-## Migration rules
-
-During v0.5 refactor:
-
-1. Do not refactor the old monolith in place.
-2. Move code by bounded vertical slice, not random file copying.
-3. Each moved slice must bring or recreate its tests.
-4. `favn_legacy` is reference-only except for emergency fixes.
-5. New architecture decisions override old roadmap assumptions.
 
 ## Suggested work order inside the codebase
 
