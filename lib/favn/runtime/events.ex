@@ -13,6 +13,7 @@ defmodule Favn.Runtime.Events do
   @typedoc "Run lifecycle event type."
   @type event_type ::
           :run_created
+          | :run_admitted
           | :run_started
           | :run_cancel_requested
           | :run_cancelled

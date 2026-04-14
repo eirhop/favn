@@ -44,6 +44,7 @@ defmodule Favn.Runtime.Telemetry do
   end
 
   defp event_name_for(:run_started, _attrs), do: [:favn, :runtime, :run, :start]
+  defp event_name_for(:run_admitted, _attrs), do: [:favn, :runtime, :run, :admitted]
   defp event_name_for(:run_finished, _attrs), do: [:favn, :runtime, :run, :stop]
   defp event_name_for(:run_failed, _attrs), do: [:favn, :runtime, :run, :exception]
   defp event_name_for(:step_started, _attrs), do: [:favn, :runtime, :step, :start]

@@ -264,6 +264,12 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
   @impl true
+  def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+  @impl true
+  def allocate_queue_seq(_opts), do: {:ok, 1}
+
+  @impl true
   def scheduler_child_spec(_opts), do: :none
 
   @impl true

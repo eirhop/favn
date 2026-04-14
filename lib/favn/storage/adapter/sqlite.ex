@@ -59,6 +59,9 @@ defmodule Favn.Storage.Adapter.SQLite do
         status,
         event_seq,
         snapshot_hash,
+        queued_at,
+        admitted_at,
+        queue_seq,
         started_at,
         finished_at,
         inserted_at_us,
@@ -66,11 +69,14 @@ defmodule Favn.Storage.Adapter.SQLite do
         updated_seq,
         run_blob
       )
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         event_seq = excluded.event_seq,
         snapshot_hash = excluded.snapshot_hash,
+        queued_at = excluded.queued_at,
+        admitted_at = excluded.admitted_at,
+        queue_seq = excluded.queue_seq,
         started_at = excluded.started_at,
         finished_at = excluded.finished_at,
         updated_at_us = excluded.updated_at_us,
@@ -159,6 +165,9 @@ defmodule Favn.Storage.Adapter.SQLite do
            Atom.to_string(run.status),
            run.event_seq,
            snapshot_hash,
+           datetime_to_iso(run.queued_at),
+           datetime_to_iso(run.admitted_at),
+           run.queue_seq,
            datetime_to_iso(run.started_at),
            datetime_to_iso(run.finished_at),
            context.now_us,
@@ -223,6 +232,67 @@ defmodule Favn.Storage.Adapter.SQLite do
 
         {:error, reason} ->
           {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_queued_runs(opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
+    with {:ok, _repo_config} <- repo_config(adapter_opts),
+         :ok <- ensure_repo_started() do
+      limit = Keyword.get(opts, :limit)
+
+      {sql, params} = build_list_queued_query(limit)
+
+      case SQL.query(Repo, sql, params) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.reduce_while({:ok, []}, fn [blob], {:ok, acc} ->
+            case deserialize_run(blob) do
+              {:ok, run} -> {:cont, {:ok, [run | acc]}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+          |> case do
+            {:ok, runs} -> {:ok, Enum.reverse(runs)}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp build_list_queued_query(nil) do
+    {
+      "SELECT run_blob FROM runs WHERE status = ?1 ORDER BY queue_seq ASC, id ASC",
+      ["queued"]
+    }
+  end
+
+  defp build_list_queued_query(limit) do
+    {
+      "SELECT run_blob FROM runs WHERE status = ?1 ORDER BY queue_seq ASC, id ASC LIMIT ?2",
+      ["queued", limit]
+    }
+  end
+
+  @impl true
+  def allocate_queue_seq(adapter_opts) when is_list(adapter_opts) do
+    with {:ok, _repo_config} <- repo_config(adapter_opts),
+         :ok <- ensure_repo_started() do
+      sql = """
+      INSERT INTO favn_counters (name, value)
+      VALUES (?1, 1)
+      ON CONFLICT(name) DO UPDATE SET value = value + 1
+      RETURNING value
+      """
+
+      case SQL.query(Repo, sql, ["run_queue_seq"]) do
+        {:ok, %{rows: [[value]]}} when is_integer(value) and value > 0 -> {:ok, value}
+        {:ok, _} -> {:error, :invalid_queue_seq}
+        {:error, reason} -> {:error, reason}
       end
     end
   end

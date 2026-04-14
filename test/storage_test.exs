@@ -22,6 +22,12 @@ defmodule Favn.StorageTest do
     def list_runs(_opts, _adapter_opts), do: {:error, :list_failed}
 
     @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
+
+    @impl true
     def scheduler_child_spec(_opts), do: :none
 
     @impl true
@@ -45,6 +51,12 @@ defmodule Favn.StorageTest do
 
     @impl true
     def list_runs(_opts, _adapter_opts), do: {:error, {:store_error, :already_normalized}}
+
+    @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
 
     @impl true
     def scheduler_child_spec(_opts), do: :none
@@ -71,6 +83,12 @@ defmodule Favn.StorageTest do
 
     @impl true
     def list_runs(_opts, _adapter_opts), do: {:error, :invalid_opts}
+
+    @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
 
     @impl true
     def scheduler_child_spec(_opts), do: :none
@@ -101,6 +119,12 @@ defmodule Favn.StorageTest do
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
     @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
+
+    @impl true
     def put_scheduler_state(_state, _opts), do: :ok
 
     @impl true
@@ -126,6 +150,12 @@ defmodule Favn.StorageTest do
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
     @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
+
+    @impl true
     def put_scheduler_state(_state, _opts), do: raise("scheduler boom")
 
     @impl true
@@ -149,6 +179,12 @@ defmodule Favn.StorageTest do
 
     @impl true
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
 
     @impl true
     def put_scheduler_state(_state, _opts), do: :ok
@@ -197,6 +233,12 @@ defmodule Favn.StorageTest do
 
     assert {:error, :invalid_opts} = Storage.list_runs(status: :pending)
     assert {:error, :invalid_opts} = Storage.list_runs(limit: 0)
+  end
+
+  test "list_runs/1 accepts :queued status filter" do
+    Application.put_env(:favn, :storage_adapter, RawErrorStore)
+
+    assert {:error, {:store_error, :list_failed}} = Storage.list_runs(status: :queued)
   end
 
   test "scheduler child_specs normalize malformed adapter responses" do

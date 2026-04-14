@@ -9,7 +9,7 @@ defmodule Favn.Run do
   alias Favn.Ref
   alias Favn.Run.AssetResult
 
-  @type status :: :running | :ok | :error | :cancelled | :timed_out
+  @type status :: :queued | :running | :ok | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -23,7 +23,10 @@ defmodule Favn.Run do
           timeout_ms: pos_integer() | nil,
           status: status(),
           event_seq: non_neg_integer(),
-          started_at: DateTime.t(),
+          queued_at: DateTime.t() | nil,
+          admitted_at: DateTime.t() | nil,
+          queue_seq: pos_integer() | nil,
+          started_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
           params: map(),
           retry_policy: map(),
@@ -44,6 +47,9 @@ defmodule Favn.Run do
     :id,
     :target_refs,
     :plan,
+    :queued_at,
+    :admitted_at,
+    :queue_seq,
     :started_at,
     status: :running,
     event_seq: 0,

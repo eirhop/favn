@@ -1,3 +1,4 @@
+# credo:disable-for-this-file Credo.Check.Warning.StructFieldAmount
 defmodule Favn.Runtime.State do
   @moduledoc """
   Internal run-scoped runtime state owned by the coordinator.
@@ -8,7 +9,8 @@ defmodule Favn.Runtime.State do
   alias Favn.Runtime.StepState
 
   @type run_status ::
-          :pending
+          :queued
+          | :pending
           | :running
           | :cancelling
           | :cancelled
@@ -39,6 +41,9 @@ defmodule Favn.Runtime.State do
           max_concurrency: pos_integer(),
           admission_open?: boolean(),
           event_seq: non_neg_integer(),
+          queued_at: DateTime.t() | nil,
+          admitted_at: DateTime.t() | nil,
+          queue_seq: pos_integer() | nil,
           started_at: DateTime.t() | nil,
           finished_at: DateTime.t() | nil,
           cancel_requested_at: DateTime.t() | nil,
@@ -76,6 +81,9 @@ defmodule Favn.Runtime.State do
     max_concurrency: 1,
     admission_open?: true,
     event_seq: 0,
+    queued_at: nil,
+    admitted_at: nil,
+    queue_seq: nil,
     started_at: nil,
     finished_at: nil,
     cancel_requested_at: nil,

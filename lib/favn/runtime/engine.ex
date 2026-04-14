@@ -45,7 +45,7 @@ defmodule Favn.Runtime.Engine do
 
   defp do_await_run(run_id, start_ms, timeout, poll_interval_ms) do
     case Favn.Storage.get_run(run_id) do
-      {:ok, %Favn.Run{status: :running}} ->
+      {:ok, %Favn.Run{status: status}} when status in [:queued, :running] ->
         if timed_out?(start_ms, timeout) do
           {:error, :timeout}
         else

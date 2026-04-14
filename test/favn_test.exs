@@ -58,6 +58,12 @@ defmodule FavnTest do
     def list_runs(_opts, _adapter_opts), do: {:error, :list_failed}
 
     @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
+
+    @impl true
     def scheduler_child_spec(_opts), do: :none
 
     @impl true
@@ -311,5 +317,7 @@ defmodule FavnTest do
     assert {:error, {:store_error, :read_failed}} = Favn.get_run("run-1")
     assert {:error, {:store_error, :list_failed}} = Favn.list_runs()
     assert {:error, :invalid_opts} = Favn.list_runs(status: :pending)
+    assert {:ok, []} = Favn.list_queued_runs()
+    assert {:error, :invalid_opts} = Favn.list_queued_runs(limit: 0)
   end
 end

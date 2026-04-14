@@ -53,6 +53,10 @@ defmodule Favn.Storage.Adapter do
 
   @callback list_runs(list_opts(), adapter_opts()) :: {:ok, [Run.t()]} | {:error, error()}
 
+  @callback list_queued_runs(keyword(), adapter_opts()) :: {:ok, [Run.t()]} | {:error, error()}
+
+  @callback allocate_queue_seq(adapter_opts()) :: {:ok, pos_integer()} | {:error, error()}
+
   @callback put_scheduler_state(SchedulerState.t(), adapter_opts()) :: :ok | {:error, error()}
 
   @callback get_scheduler_state(module(), atom() | nil, adapter_opts()) ::

@@ -54,6 +54,10 @@ Favn.list_assets()
 {:ok, run_id} = Favn.run_asset({MyApp.Raw.Sales.Orders, :asset})
 {:ok, run} = Favn.await_run(run_id)
 
+# queued run inspection
+{:ok, queued_runs} = Favn.list_runs(status: :queued)
+{:ok, queue_entries} = Favn.list_queued_runs()
+
 # Operator-facing connection inspection is redacted:
 [%Favn.Connection.Info{} = conn] = Favn.list_connections()
 {:ok, %Favn.Connection.Info{} = warehouse} = Favn.get_connection(:warehouse)

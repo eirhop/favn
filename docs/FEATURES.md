@@ -218,6 +218,11 @@ Goal: make single-node production usage reliable and inspectable.
 - [x] PostgreSQL storage foundation architecture plan (`docs/POSTGRES_STORAGE_FOUNDATION_PLAN.md`)
 - [x] PostgreSQL storage adapter implementation
 - [ ] Queueing and admission control
+  - [x] Introduce queued run lifecycle (`:queued`, `queued_at`, `admitted_at`, `queue_seq`)
+  - [x] Add single-node FIFO admission gate with global `runtime_max_active_runs`
+  - [x] Add queued-run cancellation path and queued-run restore on runtime boot
+  - [x] Add `run_admitted` lifecycle event and queue inspection API (`list_queued_runs/1`)
+  - [ ] Finish runtime/docs/test hardening pass for queue/admission behavior
 - [ ] Concurrency controls
 - [ ] Run deduplication / run keys
 - [ ] Improved failure recovery

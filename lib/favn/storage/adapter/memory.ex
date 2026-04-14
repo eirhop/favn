@@ -161,6 +161,35 @@ defmodule Favn.Storage.Adapter.Memory do
     error -> {:error, error}
   end
 
+  @impl true
+  @spec list_queued_runs(keyword(), keyword()) :: {:ok, [Run.t()]} | {:error, term()}
+  def list_queued_runs(opts, _adapter_opts) when is_list(opts) do
+    limit = Keyword.get(opts, :limit)
+
+    runs =
+      @table_name
+      |> :ets.tab2list()
+      |> Enum.map(fn
+        {_id, run, _inserted_seq, _updated_seq, _event_seq, _snapshot_hash} -> run
+        {_id, run, _inserted_seq, _updated_seq} -> run
+      end)
+      |> Enum.filter(&(&1.status == :queued))
+      |> Enum.sort_by(fn run -> {run.queue_seq || 0, run.id} end, :asc)
+      |> maybe_limit(limit)
+
+    {:ok, runs}
+  rescue
+    error -> {:error, error}
+  end
+
+  @impl true
+  @spec allocate_queue_seq(keyword()) :: {:ok, pos_integer()} | {:error, term()}
+  def allocate_queue_seq(_opts) do
+    {:ok, System.unique_integer([:monotonic, :positive])}
+  rescue
+    error -> {:error, error}
+  end
+
   defp maybe_filter_status(runs, nil), do: runs
 
   defp maybe_filter_status(runs, status) do

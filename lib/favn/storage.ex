@@ -66,7 +66,7 @@ defmodule Favn.Storage do
 
   Supported filters:
 
-    * `:status` - one of `:running | :ok | :error | :cancelled | :timed_out`
+    * `:status` - one of `:queued | :running | :ok | :error | :cancelled | :timed_out`
     * `:limit` - positive integer max result count
   """
   @spec list_runs(Favn.list_runs_opts()) :: {:ok, [Run.t()]} | {:error, error()}
@@ -76,6 +76,28 @@ defmodule Favn.Storage do
         adapter.list_runs(opts, adapter_opts)
       end)
     end
+  end
+
+  @doc false
+  @spec list_queued_runs(keyword()) :: {:ok, [Run.t()]} | {:error, error()}
+  def list_queued_runs(opts \\ []) when is_list(opts) do
+    limit = Keyword.get(opts, :limit)
+
+    if is_nil(limit) or (is_integer(limit) and limit > 0) do
+      adapter_call(:list_queued_runs, %{run_id: :all}, fn adapter, adapter_opts ->
+        adapter.list_queued_runs(opts, adapter_opts)
+      end)
+    else
+      {:error, :invalid_opts}
+    end
+  end
+
+  @doc false
+  @spec allocate_queue_seq() :: {:ok, pos_integer()} | {:error, error()}
+  def allocate_queue_seq do
+    adapter_call(:allocate_queue_seq, %{run_id: :queue_seq}, fn adapter, adapter_opts ->
+      adapter.allocate_queue_seq(adapter_opts)
+    end)
   end
 
   @doc """
@@ -110,6 +132,8 @@ defmodule Favn.Storage do
       {:put_run, 2},
       {:get_run, 2},
       {:list_runs, 2},
+      {:list_queued_runs, 2},
+      {:allocate_queue_seq, 1},
       {:put_scheduler_state, 2},
       {:get_scheduler_state, 3}
     ]
@@ -130,7 +154,8 @@ defmodule Favn.Storage do
     limit = Keyword.get(opts, :limit)
 
     cond do
-      not is_nil(status) and status not in [:running, :ok, :error, :cancelled, :timed_out] ->
+      not is_nil(status) and
+          status not in [:queued, :running, :ok, :error, :cancelled, :timed_out] ->
         {:error, :invalid_opts}
 
       not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->

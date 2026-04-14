@@ -8,6 +8,9 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
       add(:status, :text, null: false)
       add(:event_seq, :bigint, null: false)
       add(:snapshot_hash, :text, null: false)
+      add(:queued_at, :utc_datetime)
+      add(:admitted_at, :utc_datetime)
+      add(:queue_seq, :bigint)
       add(:started_at, :utc_datetime)
       add(:finished_at, :utc_datetime)
       add(:inserted_at_us, :bigint, null: false)
@@ -17,6 +20,7 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
     end
 
     create(index(:runs, [:status]))
+    create(index(:runs, [:status, :queue_seq, :id]))
     create(index(:runs, [:updated_seq, :updated_at_us, :id]))
 
     create table(:favn_counters, primary_key: false) do
@@ -70,6 +74,12 @@ defmodule Favn.Storage.SQLite.Migrations.CreateRuns do
     execute("""
     INSERT INTO favn_counters (name, value)
     VALUES ('run_write_order', 0)
+    ON CONFLICT(name) DO NOTHING
+    """)
+
+    execute("""
+    INSERT INTO favn_counters (name, value)
+    VALUES ('run_queue_seq', 0)
     ON CONFLICT(name) DO NOTHING
     """)
   end

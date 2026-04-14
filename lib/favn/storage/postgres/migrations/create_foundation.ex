@@ -4,6 +4,7 @@ defmodule Favn.Storage.Postgres.Migrations.CreateFoundation do
 
   def up do
     execute("CREATE SEQUENCE IF NOT EXISTS favn_run_write_seq")
+    execute("CREATE SEQUENCE IF NOT EXISTS favn_run_queue_seq")
 
     create table(:favn_runs, primary_key: false) do
       add(:id, :text, primary_key: true)
@@ -12,7 +13,10 @@ defmodule Favn.Storage.Postgres.Migrations.CreateFoundation do
       add(:replay_mode, :text, null: false)
       add(:event_seq, :bigint, null: false)
       add(:write_seq, :bigint, null: false)
-      add(:started_at, :utc_datetime_usec, null: false)
+      add(:queued_at, :utc_datetime_usec)
+      add(:admitted_at, :utc_datetime_usec)
+      add(:queue_seq, :bigint)
+      add(:started_at, :utc_datetime_usec)
       add(:finished_at, :utc_datetime_usec)
       add(:max_concurrency, :integer, null: false)
       add(:timeout_ms, :integer)
@@ -38,7 +42,7 @@ defmodule Favn.Storage.Postgres.Migrations.CreateFoundation do
     end
 
     execute(
-      "ALTER TABLE favn_runs ADD CONSTRAINT favn_runs_status_check CHECK (status IN ('running', 'ok', 'error', 'cancelled', 'timed_out'))"
+      "ALTER TABLE favn_runs ADD CONSTRAINT favn_runs_status_check CHECK (status IN ('queued', 'running', 'ok', 'error', 'cancelled', 'timed_out'))"
     )
 
     execute(
@@ -50,7 +54,9 @@ defmodule Favn.Storage.Postgres.Migrations.CreateFoundation do
     )
 
     create(unique_index(:favn_runs, [:write_seq]))
+    create(unique_index(:favn_runs, [:queue_seq]))
     create(index(:favn_runs, [:status, :write_seq]))
+    create(index(:favn_runs, [:status, :queue_seq]))
     create(index(:favn_runs, [:root_run_id, :write_seq]))
     create(index(:favn_runs, [:parent_run_id, :write_seq]))
     create(index(:favn_runs, [:rerun_of_run_id, :write_seq]))
@@ -129,6 +135,7 @@ defmodule Favn.Storage.Postgres.Migrations.CreateFoundation do
     drop(table(:favn_asset_window_latest))
     drop(table(:favn_run_nodes))
     drop(table(:favn_runs))
+    execute("DROP SEQUENCE IF EXISTS favn_run_queue_seq")
     execute("DROP SEQUENCE IF EXISTS favn_run_write_seq")
   end
 end

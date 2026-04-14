@@ -105,6 +105,48 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
+  def list_queued_runs(opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
+    with {:ok, repo} <- resolve_repo(adapter_opts),
+         :ok <- ensure_schema_ready(repo) do
+      limit = Keyword.get(opts, :limit)
+      {sql, params} = build_list_queued_query(limit)
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: rows}} -> decode_list_rows(rows)
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp build_list_queued_query(nil) do
+    {
+      "SELECT snapshot_json FROM favn_runs WHERE status = 'queued' ORDER BY queue_seq ASC, id ASC",
+      []
+    }
+  end
+
+  defp build_list_queued_query(limit) do
+    {
+      "SELECT snapshot_json FROM favn_runs WHERE status = 'queued' ORDER BY queue_seq ASC, id ASC LIMIT $1",
+      [limit]
+    }
+  end
+
+  @impl true
+  def allocate_queue_seq(opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         :ok <- ensure_schema_ready(repo) do
+      sql = "SELECT nextval('favn_run_queue_seq')"
+
+      case SQL.query(repo, sql, []) do
+        {:ok, %{rows: [[value]]}} when is_integer(value) and value > 0 -> {:ok, value}
+        {:ok, _} -> {:error, :invalid_queue_seq}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
   def get_scheduler_state(pipeline_module, schedule_id, opts)
       when is_atom(pipeline_module) and (is_atom(schedule_id) or is_nil(schedule_id)) and
              is_list(opts) do
@@ -258,6 +300,9 @@ defmodule Favn.Storage.Adapter.Postgres do
       event_seq,
       write_seq,
       started_at,
+      queued_at,
+      admitted_at,
+      queue_seq,
       finished_at,
       max_concurrency,
       timeout_ms,
@@ -285,7 +330,8 @@ defmodule Favn.Storage.Adapter.Postgres do
     VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-      $21, $22, $23, $24, $25, $26, $27, $28, $29, $29
+      $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+      $31, $32, $32
     )
     ON CONFLICT(id) DO UPDATE SET
       status = EXCLUDED.status,
@@ -294,6 +340,9 @@ defmodule Favn.Storage.Adapter.Postgres do
       event_seq = EXCLUDED.event_seq,
       write_seq = EXCLUDED.write_seq,
       started_at = EXCLUDED.started_at,
+      queued_at = EXCLUDED.queued_at,
+      admitted_at = EXCLUDED.admitted_at,
+      queue_seq = EXCLUDED.queue_seq,
       finished_at = EXCLUDED.finished_at,
       max_concurrency = EXCLUDED.max_concurrency,
       timeout_ms = EXCLUDED.timeout_ms,
@@ -330,6 +379,9 @@ defmodule Favn.Storage.Adapter.Postgres do
       run.event_seq,
       write_seq,
       run.started_at,
+      run.queued_at,
+      run.admitted_at,
+      run.queue_seq,
       run.finished_at,
       run.max_concurrency,
       run.timeout_ms,

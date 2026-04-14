@@ -54,6 +54,7 @@ defmodule Favn do
       Favn.get_run(run_id)
       Favn.list_runs()
       Favn.list_runs(status: :running)
+      Favn.list_queued_runs()
 
   ## SQL helpers
 
@@ -115,9 +116,23 @@ defmodule Favn do
   Filter options for `list_runs/1`.
   """
   @type list_runs_opts :: [
-          status: :running | :ok | :error | :cancelled | :timed_out,
+          status: :queued | :running | :ok | :error | :cancelled | :timed_out,
           limit: pos_integer()
         ]
+
+  @typedoc """
+  Filter options for `list_queued_runs/1`.
+  """
+  @type list_queued_runs_opts :: [limit: pos_integer()]
+
+  @typedoc """
+  Queue inspection entry with computed operator-facing metadata.
+  """
+  @type queued_run_entry :: %{
+          required(:run) => Favn.Run.t(),
+          required(:queue_position) => pos_integer(),
+          required(:queued_for_ms) => non_neg_integer()
+        }
 
   @typedoc """
   Run retrieval/listing errors returned by storage-backed APIs.
@@ -733,7 +748,7 @@ defmodule Favn do
         (passed through as provided; unlike `run_pipeline/2`, no schedule normalization
         is applied to manually injected `pipeline_context`)
       * `max_concurrency: pos_integer()` (default from runtime config, fallback `1`)
-      * `timeout_ms: pos_integer()` timeout counted from run start
+      * `timeout_ms: pos_integer()` timeout counted from admitted run start
       * `retry: false | true | keyword() | map()` (default from app config, fallback disabled)
         * `max_attempts: pos_integer()` (includes first attempt)
         * `delay_ms: non_neg_integer()` (fixed delay between attempts)
@@ -747,6 +762,7 @@ defmodule Favn do
   Runtime semantics:
 
     * returns immediately with a generated `run_id`
+    * accepted submissions may be admitted immediately or placed in durable queue
     * orchestration is owned by supervised runtime processes
     * independent ready steps may execute in parallel up to `max_concurrency`
     * retries are evaluated per-step and re-admitted under the same bounded concurrency
@@ -914,6 +930,7 @@ defmodule Favn do
 
   Returns:
 
+    * `{:ok, :cancelled}` when a queued run is cancelled before admission
     * `{:ok, :cancelling}` when cancellation request is accepted
     * `{:ok, :cancelled}` when run is already cancelled
     * `{:ok, :already_terminal}` when run already reached a non-cancel terminal status
@@ -977,6 +994,7 @@ defmodule Favn do
   Returns:
 
     * `{:ok, %Favn.Run{status: :ok}}` on successful completion
+    * queued runs continue polling until they are admitted and terminalized
     * `{:error, %Favn.Run{status: :cancelled}}` when cancellation completes
     * `{:error, %Favn.Run{status: :error}}` when the run fails
     * `{:error, %Favn.Run{status: :timed_out}}` when the run times out
@@ -1019,7 +1037,7 @@ defmodule Favn do
 
   Accepted options:
 
-    * `status: :running | :ok | :error | :cancelled | :timed_out`
+    * `status: :queued | :running | :ok | :error | :cancelled | :timed_out`
     * `limit: positive_integer()`
 
   Deterministic behavior:
@@ -1045,6 +1063,44 @@ defmodule Favn do
   @spec list_runs(list_runs_opts()) :: {:ok, [Favn.Run.t()]} | {:error, run_error()}
   def list_runs(opts \\ []) when is_list(opts) do
     Favn.Storage.list_runs(opts)
+  end
+
+  @doc """
+  List queued runs with queue position and queue age metadata.
+
+  Accepted options:
+
+    * `limit: positive_integer()`
+
+  Deterministic behavior:
+
+    * rows are returned in admission order (`queue_position` ascending)
+
+  Returns:
+
+    * `{:ok, [%{run: %Favn.Run{}, queue_position: pos_integer(), queued_for_ms: non_neg_integer()}]}`
+    * `{:error, :invalid_opts}` for unsupported filters
+    * `{:error, {:store_error, reason}}` for storage adapter/internal failures
+  """
+  @spec list_queued_runs(list_queued_runs_opts()) ::
+          {:ok, [queued_run_entry()]} | {:error, run_error()}
+  def list_queued_runs(opts \\ []) when is_list(opts) do
+    with {:ok, runs} <- Favn.Storage.list_queued_runs(opts) do
+      now = DateTime.utc_now()
+
+      entries =
+        runs
+        |> Enum.with_index(1)
+        |> Enum.map(fn {run, index} ->
+          %{
+            run: run,
+            queue_position: index,
+            queued_for_ms: queued_for_ms(run.queued_at, now)
+          }
+        end)
+
+      {:ok, entries}
+    end
   end
 
   @doc """
@@ -1097,4 +1153,9 @@ defmodule Favn do
   def unsubscribe_run(run_id) do
     Events.unsubscribe_run(run_id)
   end
+
+  defp queued_for_ms(%DateTime{} = queued_at, %DateTime{} = now),
+    do: max(DateTime.diff(now, queued_at, :millisecond), 0)
+
+  defp queued_for_ms(_, _), do: 0
 end

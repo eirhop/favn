@@ -20,6 +20,12 @@ defmodule Favn.RuntimeTelemetryTest do
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
     @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
+
+    @impl true
     def scheduler_child_spec(_opts), do: :none
 
     @impl true
@@ -45,6 +51,7 @@ defmodule Favn.RuntimeTelemetryTest do
 
     events = [
       [:favn, :runtime, :run, :created],
+      [:favn, :runtime, :run, :admitted],
       [:favn, :runtime, :run, :start],
       [:favn, :runtime, :run, :stop],
       [:favn, :runtime, :run, :exception],
@@ -93,6 +100,7 @@ defmodule Favn.RuntimeTelemetryTest do
     events = telemetry_events_for(run_id)
 
     assert_count(events, [:favn, :runtime, :run, :created], 1)
+    assert_count(events, [:favn, :runtime, :run, :admitted], 1)
     assert_count(events, [:favn, :runtime, :run, :start], 1)
     assert_count(events, [:favn, :runtime, :run, :stop], 1)
     assert has_event?(events, [:favn, :runtime, :step, :ready], fn _m, md -> is_tuple(md.ref) end)

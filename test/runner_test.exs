@@ -66,6 +66,12 @@ defmodule Favn.RunnerTest do
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
     @impl true
+    def list_queued_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def allocate_queue_seq(_opts), do: {:ok, 1}
+
+    @impl true
     def scheduler_child_spec(_opts), do: :none
 
     @impl true
@@ -218,7 +224,7 @@ defmodule Favn.RunnerTest do
              {RunnerAssets, :transform}
            ]
 
-    assert run.event_seq == 12
+    assert run.event_seq == 13
   end
 
   test "supports dependencies: :none target-only runs" do
@@ -239,7 +245,7 @@ defmodule Favn.RunnerTest do
              {:invalid_return_shape, {:ok, :bad_shape},
               expected: ":ok | {:ok, map()} | {:error, reason}"}
 
-    assert run.event_seq == 9
+    assert run.event_seq == 10
   end
 
   test "captures raised exceptions with stacktrace details" do
@@ -310,6 +316,37 @@ defmodule Favn.RunnerTest do
 
     assert {:ok, limited_runs} = Favn.list_runs(limit: 1)
     assert Enum.map(limited_runs, & &1.id) == Enum.take(all_run_ids, 1)
+  end
+
+  test "queues excess submissions and supports queued cancellation" do
+    Application.put_env(:favn, :runtime_max_active_runs, 1)
+
+    assert {:ok, running_run_id} = Favn.run_asset({RunnerAssets, :slow_asset})
+    assert {:ok, queued_run_id} = Favn.run_asset({RunnerAssets, :final})
+
+    assert_eventually(fn ->
+      case Favn.get_run(queued_run_id) do
+        {:ok, %Favn.Run{status: :queued, queued_at: %DateTime{}, queue_seq: queue_seq}} ->
+          is_integer(queue_seq) and queue_seq > 0
+
+        _ ->
+          false
+      end
+    end)
+
+    assert {:ok, queued_runs} = Favn.list_runs(status: :queued)
+    assert queued_run_id in Enum.map(queued_runs, & &1.id)
+
+    assert {:ok, queue_entries} = Favn.list_queued_runs()
+
+    assert Enum.any?(queue_entries, fn entry ->
+             entry.run.id == queued_run_id and entry.queue_position >= 1 and
+               is_integer(entry.queued_for_ms)
+           end)
+
+    assert {:ok, :cancelled} = Favn.cancel_run(queued_run_id)
+    assert {:error, %Favn.Run{status: :cancelled}} = Favn.await_run(queued_run_id)
+    assert {:ok, %Favn.Run{status: :ok}} = Favn.await_run(running_run_id)
   end
 
   test "returns :not_found for missing runs" do

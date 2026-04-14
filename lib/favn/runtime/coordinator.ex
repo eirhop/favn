@@ -38,7 +38,7 @@ defmodule Favn.Runtime.Coordinator do
          {:ok, state} <- emit_initial_ready_steps(state),
          {:ok, state} <- dispatch_ready_work(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
-      {:noreply, %{data | state: state}}
+      reply_after_progress(data, state)
     else
       {:error, reason} ->
         {:stop, reason, data}
@@ -49,7 +49,7 @@ defmodule Favn.Runtime.Coordinator do
   def handle_cast({:cancel_run, reason}, %{state: state} = data) when is_map(reason) do
     with {:ok, state} <- request_cancellation(state, reason),
          {:ok, state} <- maybe_finalize_terminal(state) do
-      {:noreply, %{data | state: state}}
+      reply_after_progress(data, state)
     else
       {:error, reason} -> {:stop, reason, data}
     end
@@ -60,7 +60,7 @@ defmodule Favn.Runtime.Coordinator do
     with {:ok, state} <- handle_step_result(state, exec_ref, ref, result),
          {:ok, state} <- dispatch_ready_work(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
-      {:noreply, %{data | state: state}}
+      reply_after_progress(data, state)
     else
       {:error, {:invalid_step_transition, status, event}} ->
         Logger.warning(
@@ -80,7 +80,7 @@ defmodule Favn.Runtime.Coordinator do
          {:ok, state} <- maybe_make_retry_ready(state, ref, attempt),
          {:ok, state} <- dispatch_ready_work(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
-      {:noreply, %{data | state: state}}
+      reply_after_progress(data, state)
     else
       {:error, reason} -> {:stop, reason, data}
     end
@@ -90,7 +90,7 @@ defmodule Favn.Runtime.Coordinator do
   def handle_info(:run_deadline_reached, %{state: state} = data) do
     with {:ok, state} <- request_timeout(state),
          {:ok, state} <- maybe_finalize_terminal(state) do
-      {:noreply, %{data | state: state}}
+      reply_after_progress(data, state)
     else
       {:error, reason} -> {:stop, reason, data}
     end
@@ -113,7 +113,7 @@ defmodule Favn.Runtime.Coordinator do
                    ),
                  {:ok, state} <- dispatch_ready_work(state),
                  {:ok, state} <- maybe_finalize_terminal(state) do
-              {:noreply, %{data | state: state}}
+              reply_after_progress(data, state)
             else
               {:error, reason} -> {:stop, reason, data}
             end
@@ -765,6 +765,12 @@ defmodule Favn.Runtime.Coordinator do
 
     data =
       case event_name do
+        :run_started ->
+          %{}
+          |> maybe_put_data(:queued_at, state.queued_at)
+          |> maybe_put_data(:admitted_at, state.admitted_at)
+          |> maybe_put_data(:queue_wait_ms, queue_wait_ms(state))
+
         :run_finished ->
           %{duration_ms: run_duration_ms}
 
@@ -795,6 +801,32 @@ defmodule Favn.Runtime.Coordinator do
 
     {event_name, %{entity: :run, status: state.run_status, data: data}}
   end
+
+  defp maybe_put_data(data, _key, nil), do: data
+  defp maybe_put_data(data, key, value), do: Map.put(data, key, value)
+
+  defp reply_after_progress(data, %State{} = state) do
+    if terminal_state?(state) do
+      {:stop, :normal, %{data | state: state}}
+    else
+      {:noreply, %{data | state: state}}
+    end
+  end
+
+  defp terminal_state?(%State{} = state) do
+    state.run_status in [:success, :failed, :cancelled, :timed_out] and
+      map_size(state.inflight_execs) == 0 and
+      not retries_pending?(state)
+  end
+
+  defp queue_wait_ms(%State{
+         queued_at: %DateTime{} = queued_at,
+         admitted_at: %DateTime{} = admitted_at
+       }) do
+    max(DateTime.diff(admitted_at, queued_at, :millisecond), 0)
+  end
+
+  defp queue_wait_ms(_state), do: nil
 
   defp payload_with_error_metadata(payload, error) do
     payload

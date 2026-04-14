@@ -48,7 +48,26 @@ defmodule Favn.Runtime.Manager do
   def rerun_run(_run_id, _opts), do: {:error, :invalid_run_id}
 
   @impl true
-  def init(_opts), do: {:ok, %{run_monitors: %{}, run_pids: %{}}}
+  def init(_opts) do
+    max_active_runs =
+      Application.get_env(:favn, :runtime_max_active_runs, 1)
+      |> normalize_max_active_runs()
+
+    {:ok,
+     %{
+       run_monitors: %{},
+       run_pids: %{},
+       queue_ids: [],
+       queued_runs: %{},
+       max_active_runs: max_active_runs
+     }, {:continue, :restore_queue}}
+  end
+
+  @impl true
+  def handle_continue(:restore_queue, state) do
+    next_state = restore_queued_runs(state)
+    {:noreply, maybe_admit_runs(next_state)}
+  end
 
   @impl true
   def handle_call({:submit_run, target_refs, opts}, _from, state) do
@@ -73,35 +92,38 @@ defmodule Favn.Runtime.Manager do
 
   @impl true
   def handle_call({:cancel_run, run_id}, _from, state) do
-    reply =
+    {reply, next_state} =
       case Favn.Storage.get_run(run_id) do
+        {:ok, %{status: :queued} = run} ->
+          cancel_queued_run(run, state)
+
         {:ok, %{status: :cancelled}} ->
-          {:ok, :cancelled}
+          {{:ok, :cancelled}, state}
 
         {:ok, %{status: :running, terminal_reason: %{kind: :timed_out}}} ->
-          {:error, :timeout_in_progress}
+          {{:error, :timeout_in_progress}, state}
 
         {:ok, %{status: :running}} ->
           case Map.fetch(state.run_pids, run_id) do
             {:ok, pid} ->
               GenServer.cast(pid, {:cancel_run, %{requested_by: :api}})
-              {:ok, :cancelling}
+              {{:ok, :cancelling}, state}
 
             :error ->
-              {:error, :coordinator_unavailable}
+              {{:error, :coordinator_unavailable}, state}
           end
 
         {:ok, _run} ->
-          {:ok, :already_terminal}
+          {{:ok, :already_terminal}, state}
 
         {:error, :not_found} ->
-          {:error, :not_found}
+          {{:error, :not_found}, state}
 
         {:error, reason} ->
-          {:error, reason}
+          {{:error, reason}, state}
       end
 
-    {:reply, reply, state}
+    {:reply, reply, maybe_admit_runs(next_state)}
   end
 
   defp do_submit_run(target_refs, opts, state) do
@@ -118,35 +140,29 @@ defmodule Favn.Runtime.Manager do
          :ok <- validate_timeout_ms(timeout_ms),
          {:ok, retry_policy} <- validate_retry_policy(retry_policy),
          {:ok, plan} <- resolve_plan(target_refs, dependencies, opts),
-         runtime_state <-
-           build_runtime_state(
-             plan,
-             params,
-             pipeline_context,
-             max_concurrency,
-             timeout_ms,
-             retry_policy,
-             opts
-           ),
-         {:ok, pid} <- start_run_coordinator(runtime_state) do
-      with :ok <- persist_initial_snapshot(runtime_state),
-           :ok <- emit_run_created(runtime_state),
-           :ok <- kickoff_run(pid) do
-        ref = Process.monitor(pid)
+         {:ok, queue_seq} <- Favn.Storage.allocate_queue_seq() do
+      queued_run =
+        build_queued_run(
+          plan,
+          params,
+          pipeline_context,
+          max_concurrency,
+          timeout_ms,
+          retry_policy,
+          queue_seq,
+          opts
+        )
 
+      with :ok <- persist_queued_run(queued_run),
+           :ok <- emit_run_created(queued_run) do
         next_state =
           state
-          |> put_in([:run_monitors, ref], runtime_state.run_id)
-          |> put_in([:run_pids, runtime_state.run_id], pid)
+          |> enqueue_run(queued_run)
+          |> maybe_admit_runs()
 
-        {{:ok, runtime_state.run_id}, next_state}
+        {{:ok, queued_run.id}, next_state}
       else
         {:error, reason} ->
-          _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
-          {{:error, reason}, state}
-
-        {:start_failed_after_spawn, ^pid, reason} ->
-          _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
           {{:error, reason}, state}
       end
     else
@@ -164,16 +180,18 @@ defmodule Favn.Runtime.Manager do
       maybe_finalize_crashed_run(run_id, reason)
     end
 
-    {:noreply, %{state | run_monitors: remaining, run_pids: run_pids}}
+    next_state = %{state | run_monitors: remaining, run_pids: run_pids}
+    {:noreply, maybe_admit_runs(next_state)}
   end
 
-  defp build_runtime_state(
+  defp build_queued_run(
          plan,
          params,
          pipeline_context,
          max_concurrency,
          timeout_ms,
          retry_policy,
+         queue_seq,
          opts
        ) do
     submit_kind = Keyword.get(opts, :_submit_kind, :asset)
@@ -186,27 +204,48 @@ defmodule Favn.Runtime.Manager do
     lineage_depth = Keyword.get(opts, :_lineage_depth, 0)
     operator_reason = Keyword.get(opts, :_operator_reason)
 
-    %State{
-      run_id: new_run_id(),
+    now = DateTime.utc_now()
+    run_id = new_run_id()
+    resume_successful_steps = Keyword.get(opts, :_resume_successful_steps, %{})
+
+    root_run_id =
+      case root_run_id do
+        nil -> run_id
+        value -> value
+      end
+
+    asset_results = build_asset_results_from_node_results(resume_successful_steps)
+
+    %Favn.Run{
+      id: run_id,
       target_refs: plan.target_refs,
-      target_node_keys: plan.target_node_keys,
       plan: plan,
-      params: params,
+      pipeline: public_pipeline(pipeline_context),
       pipeline_context: pipeline_context,
-      max_concurrency: max_concurrency,
-      timeout_ms: timeout_ms,
-      retry_policy: retry_policy,
       submit_kind: submit_kind,
       submit_ref: submit_ref,
-      replay_mode: replay_mode,
       backfill: backfill,
+      max_concurrency: max_concurrency,
+      timeout_ms: timeout_ms,
+      status: :queued,
+      event_seq: 0,
+      queued_at: now,
+      admitted_at: nil,
+      queue_seq: queue_seq,
+      started_at: nil,
+      finished_at: nil,
+      params: params,
+      retry_policy: retry_policy,
+      replay_mode: replay_mode,
       rerun_of_run_id: rerun_of_run_id,
       parent_run_id: parent_run_id,
       root_run_id: root_run_id,
       lineage_depth: lineage_depth,
       operator_reason: operator_reason,
-      event_seq: 1,
-      steps: build_steps(plan, retry_policy, Keyword.get(opts, :_resume_successful_steps, %{}))
+      asset_results: asset_results,
+      node_results: resume_successful_steps,
+      error: nil,
+      terminal_reason: nil
     }
   end
 
@@ -289,30 +328,295 @@ defmodule Favn.Runtime.Manager do
     end
   end
 
-  defp emit_run_created(%State{} = runtime_state) do
+  defp persist_queued_run(%Favn.Run{} = queued_run) do
+    case Favn.Storage.put_run(queued_run) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:storage_persist_failed, reason}}
+    end
+  end
+
+  defp emit_run_created(%Favn.Run{} = run) do
     _ =
       Telemetry.emit_runtime_event(:run_created, %{
-        run_id: runtime_state.run_id,
+        run_id: run.id,
         seq: 1,
         entity: :run,
-        status: runtime_state.run_status,
-        data: %{}
+        status: :queued,
+        data: %{
+          submit_kind: run.submit_kind,
+          replay_mode: run.replay_mode,
+          rerun_of_run_id: run.rerun_of_run_id,
+          parent_run_id: run.parent_run_id,
+          root_run_id: run.root_run_id,
+          queued_at: run.queued_at,
+          queue_seq: run.queue_seq,
+          initial_status: :queued
+        }
       })
 
-    Events.publish_run_event(runtime_state.run_id, :run_created, %{
+    Events.publish_run_event(run.id, :run_created, %{
       seq: 1,
       entity: :run,
-      status: runtime_state.run_status,
+      status: :queued,
       data: %{
-        submit_kind: runtime_state.submit_kind,
-        replay_mode: runtime_state.replay_mode,
-        rerun_of_run_id: runtime_state.rerun_of_run_id,
-        parent_run_id: runtime_state.parent_run_id,
-        root_run_id: runtime_state.root_run_id
+        submit_kind: run.submit_kind,
+        replay_mode: run.replay_mode,
+        rerun_of_run_id: run.rerun_of_run_id,
+        parent_run_id: run.parent_run_id,
+        root_run_id: run.root_run_id,
+        queued_at: run.queued_at,
+        queue_seq: run.queue_seq,
+        initial_status: :queued
       }
     })
 
     :ok
+  end
+
+  defp build_runtime_state_from_run(%Favn.Run{} = run) do
+    %State{
+      run_id: run.id,
+      target_refs: run.target_refs,
+      target_node_keys: run.plan.target_node_keys,
+      plan: run.plan,
+      params: run.params,
+      pipeline_context: run.pipeline_context,
+      max_concurrency: run.max_concurrency,
+      timeout_ms: run.timeout_ms,
+      retry_policy: run.retry_policy,
+      submit_kind: run.submit_kind,
+      submit_ref: run.submit_ref,
+      replay_mode: run.replay_mode,
+      backfill: run.backfill,
+      rerun_of_run_id: run.rerun_of_run_id,
+      parent_run_id: run.parent_run_id,
+      root_run_id: run.root_run_id,
+      lineage_depth: run.lineage_depth,
+      operator_reason: run.operator_reason,
+      event_seq: max(run.event_seq, 1),
+      queued_at: run.queued_at,
+      admitted_at: run.admitted_at,
+      queue_seq: run.queue_seq,
+      steps: build_steps(run.plan, run.retry_policy, resume_successful_steps_from_run(run))
+    }
+  end
+
+  defp build_asset_results_from_node_results(node_results) do
+    node_results
+    |> Enum.group_by(fn {{{module, name}, _window_key}, _result} -> {module, name} end)
+    |> Enum.reduce(%{}, fn {ref, grouped}, acc ->
+      {_node_key, result} =
+        Enum.max_by(grouped, fn {node_key, result} ->
+          {result.attempt_count || 0, inspect(node_key)}
+        end)
+
+      Map.put(acc, ref, result)
+    end)
+  end
+
+  defp resume_successful_steps_from_run(%Favn.Run{} = run) do
+    Enum.reduce(run.node_results, %{}, fn {node_key, result}, acc ->
+      if result.status == :ok do
+        Map.put(acc, node_key, result)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp public_pipeline(nil), do: nil
+
+  defp public_pipeline(pipeline_context) when is_map(pipeline_context) do
+    %{
+      id: Map.get(pipeline_context, :id),
+      name: Map.get(pipeline_context, :name),
+      run_kind: Map.get(pipeline_context, :run_kind),
+      resolved_refs: Map.get(pipeline_context, :resolved_refs, []),
+      deps: Map.get(pipeline_context, :deps),
+      trigger: Map.get(pipeline_context, :trigger),
+      schedule: Map.get(pipeline_context, :schedule),
+      window: Map.get(pipeline_context, :window),
+      anchor_window: Map.get(pipeline_context, :anchor_window),
+      backfill_range: Map.get(pipeline_context, :backfill_range),
+      anchor_ranges: Map.get(pipeline_context, :anchor_ranges, []),
+      source: Map.get(pipeline_context, :source),
+      outputs: Map.get(pipeline_context, :outputs, [])
+    }
+  end
+
+  defp restore_queued_runs(state) do
+    case Favn.Storage.list_queued_runs() do
+      {:ok, runs} ->
+        Enum.reduce(runs, state, fn run, acc -> enqueue_run(acc, run) end)
+
+      {:error, _reason} ->
+        state
+    end
+  end
+
+  defp enqueue_run(state, %Favn.Run{} = run) do
+    %{
+      state
+      | queue_ids: state.queue_ids ++ [run.id],
+        queued_runs: Map.put(state.queued_runs, run.id, run)
+    }
+  end
+
+  defp maybe_admit_runs(state) do
+    admit_runs(state, length(state.queue_ids))
+  end
+
+  defp admit_runs(state, 0), do: state
+
+  defp admit_runs(state, attempts_left) when attempts_left > 0 do
+    cond do
+      map_size(state.run_pids) >= state.max_active_runs ->
+        state
+
+      state.queue_ids == [] ->
+        state
+
+      true ->
+        case admit_next_run_once(state) do
+          {:ok, next_state} -> admit_runs(next_state, attempts_left - 1)
+          {:error, next_state} -> admit_runs(next_state, attempts_left - 1)
+        end
+    end
+  end
+
+  defp admit_next_run_once(%{queue_ids: [run_id | rest]} = state) do
+    case Map.pop(state.queued_runs, run_id) do
+      {nil, queued_runs} ->
+        {:ok, %{state | queue_ids: rest, queued_runs: queued_runs}}
+
+      {%Favn.Run{} = run, queued_runs} ->
+        base_state = %{state | queue_ids: rest, queued_runs: queued_runs}
+
+        case admit_run(run, base_state) do
+          {:ok, next_state} ->
+            {:ok, next_state}
+
+          {:error, _reason} ->
+            requeued_state = enqueue_run(base_state, run)
+            {:error, requeued_state}
+        end
+    end
+  end
+
+  defp admit_next_run_once(state), do: {:ok, state}
+
+  defp admit_run(%Favn.Run{} = run, state) do
+    admitted_at = DateTime.utc_now()
+    runtime_state = build_runtime_state_from_run(%{run | admitted_at: admitted_at})
+    runtime_state = %{runtime_state | event_seq: runtime_state.event_seq + 1}
+
+    with {:ok, pid} <- start_run_coordinator(runtime_state) do
+      with :ok <- emit_run_admitted(runtime_state),
+           :ok <- persist_initial_snapshot(runtime_state),
+           :ok <- kickoff_run(pid) do
+        ref = Process.monitor(pid)
+
+        next_state =
+          state
+          |> put_in([:run_monitors, ref], runtime_state.run_id)
+          |> put_in([:run_pids, runtime_state.run_id], pid)
+
+        {:ok, next_state}
+      else
+        {:error, reason} ->
+          _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
+          {:error, reason}
+
+        {:start_failed_after_spawn, ^pid, reason} ->
+          _ = DynamicSupervisor.terminate_child(Favn.Runtime.RunSupervisor, pid)
+          {:error, reason}
+      end
+    end
+  end
+
+  defp cancel_queued_run(%Favn.Run{} = run, state) do
+    requested_at = DateTime.utc_now()
+    next_seq = max(run.event_seq, 1) + 1
+
+    cancelled =
+      %{run | status: :cancelled, event_seq: next_seq, finished_at: requested_at}
+      |> Map.put(:terminal_reason, %{
+        kind: :cancelled,
+        source_status: :queued,
+        requested_at: requested_at,
+        finished_at: requested_at
+      })
+
+    case Favn.Storage.put_run(cancelled) do
+      :ok ->
+        _ =
+          Telemetry.emit_runtime_event(:run_cancelled, %{
+            run_id: run.id,
+            seq: next_seq,
+            entity: :run,
+            status: :cancelled,
+            data: %{terminal_reason: cancelled.terminal_reason}
+          })
+
+        _ =
+          Events.publish_run_event(run.id, :run_cancelled, %{
+            seq: next_seq,
+            entity: :run,
+            status: :cancelled,
+            data: %{terminal_reason: cancelled.terminal_reason}
+          })
+
+        {{:ok, :cancelled}, remove_from_queue(state, run.id)}
+
+      {:error, reason} ->
+        {{:error, reason}, state}
+    end
+  end
+
+  defp emit_run_admitted(%State{} = runtime_state) do
+    queue_wait_ms = queue_wait_ms(runtime_state.queued_at, runtime_state.admitted_at)
+
+    _ =
+      Telemetry.emit_runtime_event(:run_admitted, %{
+        run_id: runtime_state.run_id,
+        seq: runtime_state.event_seq,
+        entity: :run,
+        status: runtime_state.run_status,
+        data: %{
+          queued_at: runtime_state.queued_at,
+          admitted_at: runtime_state.admitted_at,
+          queue_seq: runtime_state.queue_seq,
+          queue_wait_ms: queue_wait_ms
+        }
+      })
+
+    _ =
+      Events.publish_run_event(runtime_state.run_id, :run_admitted, %{
+        seq: runtime_state.event_seq,
+        entity: :run,
+        status: runtime_state.run_status,
+        data: %{
+          queued_at: runtime_state.queued_at,
+          admitted_at: runtime_state.admitted_at,
+          queue_seq: runtime_state.queue_seq,
+          queue_wait_ms: queue_wait_ms
+        }
+      })
+
+    :ok
+  end
+
+  defp queue_wait_ms(%DateTime{} = queued_at, %DateTime{} = admitted_at),
+    do: max(DateTime.diff(admitted_at, queued_at, :millisecond), 0)
+
+  defp queue_wait_ms(_, _), do: nil
+
+  defp remove_from_queue(state, run_id) do
+    %{
+      state
+      | queue_ids: Enum.reject(state.queue_ids, &(&1 == run_id)),
+        queued_runs: Map.delete(state.queued_runs, run_id)
+    }
   end
 
   defp kickoff_run(pid) when is_pid(pid) do
@@ -390,6 +694,7 @@ defmodule Favn.Runtime.Manager do
        when status in [:ok, :error, :cancelled, :timed_out],
        do: :ok
 
+  defp ensure_terminal(%Favn.Run{status: :queued}), do: {:error, :run_not_terminal}
   defp ensure_terminal(%Favn.Run{status: :running}), do: {:error, :run_not_terminal}
 
   defp normalize_rerun_mode(opts) do
@@ -500,6 +805,8 @@ defmodule Favn.Runtime.Manager do
     max(DateTime.diff(finished_at, started_at, :millisecond), 0)
   end
 
+  defp run_duration_ms(_run), do: nil
+
   defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
   defp validate_max_concurrency(_), do: {:error, :invalid_max_concurrency}
 
@@ -510,6 +817,9 @@ defmodule Favn.Runtime.Manager do
   defp resolve_max_concurrency(opts) do
     Keyword.get(opts, :max_concurrency, Application.get_env(:favn, :runtime_max_concurrency, 1))
   end
+
+  defp normalize_max_active_runs(value) when is_integer(value) and value > 0, do: value
+  defp normalize_max_active_runs(_), do: 1
 
   defp resolve_retry_policy(opts) do
     configured = Application.get_env(:favn, :runtime_retry, false)

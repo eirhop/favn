@@ -22,6 +22,9 @@ defmodule Favn.Runtime.Projector do
       timeout_ms: state.timeout_ms,
       status: public_status(state.run_status),
       event_seq: state.event_seq,
+      queued_at: state.queued_at,
+      admitted_at: state.admitted_at,
+      queue_seq: state.queue_seq,
       started_at: state.started_at,
       finished_at: state.finished_at,
       params: state.params,
@@ -59,6 +62,7 @@ defmodule Favn.Runtime.Projector do
     }
   end
 
+  defp public_status(:queued), do: :queued
   defp public_status(:pending), do: :running
   defp public_status(status) when status in [:running, :cancelling, :timing_out], do: :running
   defp public_status(:success), do: :ok
