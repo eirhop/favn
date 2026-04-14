@@ -65,8 +65,13 @@ defmodule Favn.Runtime.Manager do
 
   @impl true
   def handle_continue(:restore_queue, state) do
-    next_state = restore_queued_runs(state)
-    {:noreply, maybe_admit_runs(next_state)}
+    case restore_queued_runs(state) do
+      {:ok, restored_state} ->
+        {:noreply, maybe_admit_runs(restored_state)}
+
+      {:error, reason} ->
+        {:stop, {:queue_restore_failed, reason}, state}
+    end
   end
 
   @impl true
@@ -447,10 +452,11 @@ defmodule Favn.Runtime.Manager do
   defp restore_queued_runs(state) do
     case Favn.Storage.list_queued_runs() do
       {:ok, runs} ->
-        Enum.reduce(runs, state, fn run, acc -> enqueue_run(acc, run) end)
+        restored = Enum.reduce(runs, state, fn run, acc -> enqueue_run(acc, run) end)
+        {:ok, restored}
 
-      {:error, _reason} ->
-        state
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -479,26 +485,28 @@ defmodule Favn.Runtime.Manager do
       true ->
         case admit_next_run_once(state) do
           {:ok, next_state} -> admit_runs(next_state, attempts_left - 1)
-          {:error, next_state} -> admit_runs(next_state, attempts_left - 1)
+          {:halt, next_state} -> next_state
         end
     end
   end
 
   defp admit_next_run_once(%{queue_ids: [run_id | rest]} = state) do
-    case Map.pop(state.queued_runs, run_id) do
-      {nil, queued_runs} ->
-        {:ok, %{state | queue_ids: rest, queued_runs: queued_runs}}
+    case Map.fetch(state.queued_runs, run_id) do
+      :error ->
+        {:ok, %{state | queue_ids: rest}}
 
-      {%Favn.Run{} = run, queued_runs} ->
-        base_state = %{state | queue_ids: rest, queued_runs: queued_runs}
-
-        case admit_run(run, base_state) do
+      {:ok, %Favn.Run{} = run} ->
+        case admit_run(run, state) do
           {:ok, next_state} ->
-            {:ok, next_state}
+            {:ok,
+             %{
+               next_state
+               | queue_ids: rest,
+                 queued_runs: Map.delete(next_state.queued_runs, run_id)
+             }}
 
           {:error, _reason} ->
-            requeued_state = enqueue_run(base_state, run)
-            {:error, requeued_state}
+            {:halt, state}
         end
     end
   end
@@ -511,8 +519,8 @@ defmodule Favn.Runtime.Manager do
     runtime_state = %{runtime_state | event_seq: runtime_state.event_seq + 1}
 
     with {:ok, pid} <- start_run_coordinator(runtime_state) do
-      with :ok <- emit_run_admitted(runtime_state),
-           :ok <- persist_initial_snapshot(runtime_state),
+      with :ok <- persist_initial_snapshot(runtime_state),
+           :ok <- emit_run_admitted(runtime_state),
            :ok <- kickoff_run(pid) do
         ref = Process.monitor(pid)
 
