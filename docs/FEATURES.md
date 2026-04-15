@@ -314,6 +314,7 @@ Deferred until after the refactor unless needed to establish the new boundaries:
 - [ ] Better rerun and replay ergonomics
 - [ ] Stronger test coverage for runtime, scheduler, windowing, and SQL execution
 - [ ] Operator-facing graph and run inspection foundation
+- [ ] Collapse duplicated low-level storage behaviours (`Favn.Storage.Adapter` and `FavnOrchestrator.Storage.Adapter`) into one authoritative contract
 - [ ] DuckLake connection and snapshot foundation
 - [ ] Advanced multi-node scheduling and resource-aware placement
 

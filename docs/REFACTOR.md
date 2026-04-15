@@ -470,6 +470,10 @@ In `favn_orchestrator`:
 ### Status
 Implemented.
 
+Follow-up cleanup to keep on the roadmap, but not required to merge Phase 5:
+
+- collapse the duplicated low-level storage behaviours `Favn.Storage.Adapter` and `FavnOrchestrator.Storage.Adapter` into one authoritative contract to avoid future drift
+
 ---
 
 ## Phase 6 — Add storage adapters
