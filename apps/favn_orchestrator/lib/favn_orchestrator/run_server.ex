@@ -27,27 +27,35 @@ defmodule FavnOrchestrator.RunServer do
   @impl true
   def handle_continue(:execute, %{run_state: run_state, version: version} = state) do
     running = RunState.transition(run_state, status: :running)
-    :ok = Projector.persist_snapshot_with_event(running, :run_started, %{status: running.status})
 
-    terminal = execute_plan(running, version)
+    case persist_run_step(running, :run_started, %{status: running.status}) do
+      :ok ->
+        terminal = execute_plan(running, version)
 
-    if externally_cancelled?(terminal.id) do
-      {:stop, :normal, %{state | run_state: terminal}}
-    else
-      terminal_event_type = terminal_event_type(terminal)
+        if externally_cancelled?(terminal.id) do
+          {:stop, :normal, %{state | run_state: terminal}}
+        else
+          terminal_event_type = terminal_event_type(terminal)
 
-      finalized =
-        RunState.transition(terminal,
-          metadata: Map.put(terminal.metadata, :terminal_event_type, terminal_event_type)
-        )
+          finalized =
+            RunState.transition(terminal,
+              metadata: Map.put(terminal.metadata, :terminal_event_type, terminal_event_type)
+            )
 
-      :ok =
-        Projector.persist_snapshot_with_event(finalized, terminal_event_type, %{
-          status: finalized.status,
-          error: finalized.error
-        })
+          case persist_run_step(finalized, terminal_event_type, %{
+                 status: finalized.status,
+                 error: finalized.error
+               }) do
+            :ok ->
+              {:stop, :normal, %{state | run_state: finalized}}
 
-      {:stop, :normal, %{state | run_state: finalized}}
+            {:error, :external_cancel} ->
+              {:stop, :normal, %{state | run_state: cancelled_snapshot(finalized)}}
+          end
+        end
+
+      {:error, :external_cancel} ->
+        {:stop, :normal, %{state | run_state: cancelled_snapshot(running)}}
     end
   end
 
@@ -179,45 +187,50 @@ defmodule FavnOrchestrator.RunServer do
          runner_opts,
          acc_results
        ) do
-    with {:ok, run_after_submit, entries} <-
-           submit_stage_entries(
-             run_state,
-             version,
-             stage,
-             refs,
-             attempt,
-             runner_client,
-             runner_opts
-           ),
-         awaited <- await_stage_entries(entries, run_state.timeout_ms, runner_client, runner_opts),
-         {:ok, next_run, next_acc_results, retry_refs} <-
-           process_stage_attempt_results(
-             run_after_submit,
-             awaited,
-             stage,
-             attempt,
-             acc_results,
-             runner_client,
-             runner_opts
-           ) do
-      if retry_refs == [] do
-        {:ok, next_run, next_acc_results}
-      else
-        run_after_schedule =
-          Enum.reduce(retry_refs, next_run, fn ref, current ->
-            schedule_retry_for_ref(current, ref, stage, attempt)
-          end)
+    if externally_cancelled?(run_state.id) do
+      {:error, cancelled_snapshot(run_state), acc_results}
+    else
+      with {:ok, run_after_submit, entries} <-
+             submit_stage_entries(
+               run_state,
+               version,
+               stage,
+               refs,
+               attempt,
+               runner_client,
+               runner_opts
+             ),
+           awaited <-
+             await_stage_entries(entries, run_state.timeout_ms, runner_client, runner_opts),
+           {:ok, next_run, next_acc_results, retry_refs} <-
+             process_stage_attempt_results(
+               run_after_submit,
+               awaited,
+               stage,
+               attempt,
+               acc_results,
+               runner_client,
+               runner_opts
+             ) do
+        if retry_refs == [] do
+          {:ok, next_run, next_acc_results}
+        else
+          run_after_schedule =
+            Enum.reduce(retry_refs, next_run, fn ref, current ->
+              schedule_retry_for_ref(current, ref, stage, attempt)
+            end)
 
-        run_stage_attempt(
-          run_after_schedule,
-          version,
-          stage,
-          retry_refs,
-          attempt + 1,
-          runner_client,
-          runner_opts,
-          next_acc_results
-        )
+          run_stage_attempt(
+            run_after_schedule,
+            version,
+            stage,
+            retry_refs,
+            attempt + 1,
+            runner_client,
+            runner_opts,
+            next_acc_results
+          )
+        end
       end
     end
   end
@@ -239,17 +252,29 @@ defmodule FavnOrchestrator.RunServer do
         {:ok, execution_id} ->
           updated_run = with_inflight_execution(current_run, execution_id, work.metadata)
 
-          :ok =
-            Projector.persist_snapshot_with_event(updated_run, :step_started, %{
-              asset_ref: asset_ref,
-              runner_execution_id: execution_id,
-              stage: stage,
-              attempt: attempt,
-              max_attempts: current_run.max_attempts
-            })
+          case persist_run_step(updated_run, :step_started, %{
+                 asset_ref: asset_ref,
+                 runner_execution_id: execution_id,
+                 stage: stage,
+                 attempt: attempt,
+                 max_attempts: current_run.max_attempts
+               }) do
+            :ok ->
+              entry = %{asset_ref: asset_ref, execution_id: execution_id, stage: stage}
+              {:cont, {:ok, updated_run, acc ++ [entry]}}
 
-          entry = %{asset_ref: asset_ref, execution_id: execution_id, stage: stage}
-          {:cont, {:ok, updated_run, acc ++ [entry]}}
+            {:error, :external_cancel} ->
+              cancelled =
+                cancel_execution_ids(
+                  updated_run,
+                  [execution_id],
+                  %{kind: :external_cancel, asset_ref: asset_ref, stage: stage, attempt: attempt},
+                  runner_client,
+                  runner_opts
+                )
+
+              {:halt, {:error, cancelled_snapshot(cancelled), []}}
+          end
 
         {:error, reason} ->
           cancelled =
@@ -268,16 +293,19 @@ defmodule FavnOrchestrator.RunServer do
               runner_execution_id: nil
             )
 
-          :ok =
-            Projector.persist_snapshot_with_event(failed, :step_failed, %{
-              asset_ref: asset_ref,
-              error: reason,
-              stage: stage,
-              attempt: attempt,
-              max_attempts: current_run.max_attempts
-            })
+          case persist_run_step(failed, :step_failed, %{
+                 asset_ref: asset_ref,
+                 error: reason,
+                 stage: stage,
+                 attempt: attempt,
+                 max_attempts: current_run.max_attempts
+               }) do
+            :ok ->
+              {:halt, {:error, failed, []}}
 
-          {:halt, {:error, failed, []}}
+            {:error, :external_cancel} ->
+              {:halt, {:error, cancelled_snapshot(failed), []}}
+          end
       end
     end)
     |> case do
@@ -501,19 +529,21 @@ defmodule FavnOrchestrator.RunServer do
         metadata: Map.merge(run_state.metadata, %{retrying: true, next_attempt: attempt + 1})
       )
 
-    :ok =
-      Projector.persist_snapshot_with_event(retrying, :step_retry_scheduled, %{
-        asset_ref: asset_ref,
-        stage: stage,
-        attempt: attempt,
-        max_attempts: run_state.max_attempts,
-        next_attempt: attempt + 1,
-        retry_backoff_ms: run_state.retry_backoff_ms
-      })
+    case persist_run_step(retrying, :step_retry_scheduled, %{
+           asset_ref: asset_ref,
+           stage: stage,
+           attempt: attempt,
+           max_attempts: run_state.max_attempts,
+           next_attempt: attempt + 1,
+           retry_backoff_ms: run_state.retry_backoff_ms
+         }) do
+      :ok ->
+        if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
+        retrying
 
-    if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
-
-    retrying
+      {:error, :external_cancel} ->
+        cancelled_snapshot(retrying)
+    end
   end
 
   defp stage_work(%RunState{} = run_state, %Version{} = version, asset_ref, stage, attempt) do
@@ -665,7 +695,7 @@ defmodule FavnOrchestrator.RunServer do
         params: run_state.params,
         trigger: run_state.trigger,
         metadata:
-          Map.merge(run_state.metadata, %{
+          Map.merge(work_metadata(run_state.metadata), %{
             attempt: attempt,
             max_attempts: max_attempts,
             stage: stage,
@@ -682,117 +712,39 @@ defmodule FavnOrchestrator.RunServer do
             metadata: work.metadata
           )
 
-        :ok =
-          Projector.persist_snapshot_with_event(running_with_execution, :step_started, %{
-            asset_ref: asset_ref,
-            runner_execution_id: execution_id,
-            stage: stage,
-            attempt: attempt,
-            max_attempts: max_attempts
-          })
+        case persist_run_step(running_with_execution, :step_started, %{
+               asset_ref: asset_ref,
+               runner_execution_id: execution_id,
+               stage: stage,
+               attempt: attempt,
+               max_attempts: max_attempts
+             }) do
+          :ok ->
+            await_sequential_result(
+              running_with_execution,
+              version,
+              asset_ref,
+              %{
+                stage: stage,
+                attempt: attempt,
+                execution_id: execution_id,
+                max_attempts: max_attempts
+              },
+              runner_client,
+              runner_opts
+            )
 
-        case runner_client.await_result(execution_id, run_state.timeout_ms, runner_opts) do
-          {:ok, %RunnerResult{} = result} ->
-            step_finished =
-              RunState.transition(running_with_execution,
-                status: map_runner_status(result.status),
-                runner_execution_id: nil,
-                error: result.error,
-                metadata: merge_runner_metadata(running_with_execution.metadata, result.metadata)
-              )
-
-            {event_type, retryable?} = step_outcome(step_finished.status)
-
-            case persist_run_step(step_finished, event_type, %{
-                   asset_ref: asset_ref,
-                   result_status: result.status,
-                   error: result.error,
-                   stage: stage,
-                   attempt: attempt,
-                   max_attempts: max_attempts
-                 }) do
-              :ok ->
-                maybe_retry_step(
-                  step_finished,
-                  version,
-                  asset_ref,
-                  stage,
-                  attempt,
-                  retryable?,
-                  result.asset_results
-                )
-
-              {:error, :external_cancel} ->
-                cancelled_state(running_with_execution)
-            end
-
-          {:error, :timeout} ->
+          {:error, :external_cancel} ->
             cancelled =
               cancel_execution_ids(
                 running_with_execution,
                 [execution_id],
-                %{kind: :await_timeout, asset_ref: asset_ref, stage: stage, attempt: attempt},
+                %{kind: :external_cancel, asset_ref: asset_ref, stage: stage, attempt: attempt},
                 runner_client,
                 runner_opts
               )
 
-            timeout_state =
-              RunState.transition(cancelled,
-                status: :timed_out,
-                runner_execution_id: nil,
-                error: :timeout
-              )
-
-            case persist_run_step(timeout_state, :step_timed_out, %{
-                   asset_ref: asset_ref,
-                   error: :timeout,
-                   stage: stage,
-                   attempt: attempt,
-                   max_attempts: max_attempts
-                 }) do
-              :ok ->
-                maybe_retry_step(timeout_state, version, asset_ref, stage, attempt, true, [])
-
-              {:error, :external_cancel} ->
-                cancelled_state(running_with_execution)
-            end
-
-          {:error, reason} ->
-            cancelled =
-              cancel_execution_ids(
-                running_with_execution,
-                [execution_id],
-                %{
-                  kind: :await_error,
-                  asset_ref: asset_ref,
-                  stage: stage,
-                  attempt: attempt,
-                  error: reason
-                },
-                runner_client,
-                runner_opts
-              )
-
-            failed =
-              RunState.transition(cancelled,
-                status: :error,
-                runner_execution_id: nil,
-                error: reason
-              )
-
-            case persist_run_step(failed, :step_failed, %{
-                   asset_ref: asset_ref,
-                   error: reason,
-                   stage: stage,
-                   attempt: attempt,
-                   max_attempts: max_attempts
-                 }) do
-              :ok ->
-                maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
-
-              {:error, :external_cancel} ->
-                cancelled_state(running_with_execution)
-            end
+            {:error, cancelled_snapshot(cancelled), []}
         end
       else
         {:error, reason} ->
@@ -803,17 +755,135 @@ defmodule FavnOrchestrator.RunServer do
               error: reason
             )
 
-          :ok =
-            Projector.persist_snapshot_with_event(failed, :step_failed, %{
+          case persist_run_step(failed, :step_failed, %{
+                 asset_ref: asset_ref,
+                 error: reason,
+                 stage: stage,
+                 attempt: attempt,
+                 max_attempts: max_attempts
+               }) do
+            :ok -> maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
+            {:error, :external_cancel} -> cancelled_state(failed)
+          end
+      end
+    end
+  end
+
+  defp await_sequential_result(
+         %RunState{} = running_with_execution,
+         %Version{} = version,
+         asset_ref,
+         %{
+           stage: stage,
+           attempt: attempt,
+           execution_id: execution_id,
+           max_attempts: max_attempts
+         },
+         runner_client,
+         runner_opts
+       ) do
+    case runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts) do
+      {:ok, %RunnerResult{} = result} ->
+        step_finished =
+          RunState.transition(running_with_execution,
+            status: map_runner_status(result.status),
+            runner_execution_id: nil,
+            error: result.error,
+            metadata: merge_runner_metadata(running_with_execution.metadata, result.metadata)
+          )
+
+        {event_type, retryable?} = step_outcome(step_finished.status)
+
+        case persist_run_step(step_finished, event_type, %{
+               asset_ref: asset_ref,
+               result_status: result.status,
+               error: result.error,
+               stage: stage,
+               attempt: attempt,
+               max_attempts: max_attempts
+             }) do
+          :ok ->
+            maybe_retry_step(
+              step_finished,
+              version,
+              asset_ref,
+              stage,
+              attempt,
+              retryable?,
+              result.asset_results
+            )
+
+          {:error, :external_cancel} ->
+            cancelled_state(running_with_execution)
+        end
+
+      {:error, :timeout} ->
+        cancelled =
+          cancel_execution_ids(
+            running_with_execution,
+            [execution_id],
+            %{kind: :await_timeout, asset_ref: asset_ref, stage: stage, attempt: attempt},
+            runner_client,
+            runner_opts
+          )
+
+        timeout_state =
+          RunState.transition(cancelled,
+            status: :timed_out,
+            runner_execution_id: nil,
+            error: :timeout
+          )
+
+        case persist_run_step(timeout_state, :step_timed_out, %{
+               asset_ref: asset_ref,
+               error: :timeout,
+               stage: stage,
+               attempt: attempt,
+               max_attempts: max_attempts
+             }) do
+          :ok ->
+            maybe_retry_step(timeout_state, version, asset_ref, stage, attempt, true, [])
+
+          {:error, :external_cancel} ->
+            cancelled_state(running_with_execution)
+        end
+
+      {:error, reason} ->
+        cancelled =
+          cancel_execution_ids(
+            running_with_execution,
+            [execution_id],
+            %{
+              kind: :await_error,
               asset_ref: asset_ref,
-              error: reason,
               stage: stage,
               attempt: attempt,
-              max_attempts: max_attempts
-            })
+              error: reason
+            },
+            runner_client,
+            runner_opts
+          )
 
-          maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
-      end
+        failed =
+          RunState.transition(cancelled,
+            status: :error,
+            runner_execution_id: nil,
+            error: reason
+          )
+
+        case persist_run_step(failed, :step_failed, %{
+               asset_ref: asset_ref,
+               error: reason,
+               stage: stage,
+               attempt: attempt,
+               max_attempts: max_attempts
+             }) do
+          :ok ->
+            maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
+
+          {:error, :external_cancel} ->
+            cancelled_state(running_with_execution)
+        end
     end
   end
 
@@ -955,6 +1025,13 @@ defmodule FavnOrchestrator.RunServer do
   defp return_external_cancel(%RunState{} = run_state, step_results) do
     case cancelled_state(run_state) do
       {:error, cancelled, _} -> {cancelled, :error, step_results}
+    end
+  end
+
+  defp cancelled_snapshot(%RunState{} = run_state) do
+    case Storage.get_run(run_state.id) do
+      {:ok, %RunState{status: :cancelled} = cancelled} -> cancelled
+      _other -> cancelled_terminal(run_state, [])
     end
   end
 

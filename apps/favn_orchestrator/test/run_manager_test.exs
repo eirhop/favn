@@ -410,6 +410,74 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientRetryMetadataLeakStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      submit_log = Keyword.fetch!(opts, :submit_log)
+      Agent.update(submit_log, fn values -> [work.metadata | values] end)
+      {:ok, execution_id(work)}
+    end
+
+    @impl true
+    def await_result(execution_id, _timeout, opts) do
+      attempt_counter = Keyword.fetch!(opts, :attempt_counter)
+      attempt = Agent.get_and_update(attempt_counter, fn value -> {value + 1, value + 1} end)
+
+      if attempt == 1 do
+        {:ok,
+         %RunnerResult{
+           status: :error,
+           error: :transient_failure,
+           asset_results: [asset_result(execution_id, :error, :transient_failure)],
+           metadata: %{runner_key: :attempt_one}
+         }}
+      else
+        {:ok,
+         %RunnerResult{
+           status: :ok,
+           asset_results: [asset_result(execution_id, :ok, nil)],
+           metadata: %{runner_key: :attempt_two}
+         }}
+      end
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    defp asset_result(execution_id, status, error) do
+      ref = execution_ref(execution_id)
+
+      %Favn.Run.AssetResult{
+        ref: ref,
+        stage: 0,
+        status: status,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: error,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -543,6 +611,51 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert rerun.metadata[:pipeline_context] == source_run.pipeline_context
     assert rerun.metadata[:pipeline_submit_ref] == MyApp.Pipelines.Daily
     assert rerun.metadata[:runner_metadata] == %{runner_key: :runner_value}
+  end
+
+  test "sequential retries do not resend prior runner metadata back to the runner" do
+    version = manifest_version("mv_retry_runner_metadata")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_retry_runner_metadata")
+
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    {:ok, attempt_counter} = Agent.start_link(fn -> 0 end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if Process.alive?(submit_log) do
+        Agent.stop(submit_log)
+      end
+
+      if Process.alive?(attempt_counter) do
+        Agent.stop(attempt_counter)
+      end
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRetryMetadataLeakStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_log: submit_log,
+      attempt_counter: attempt_counter
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               max_attempts: 2,
+               retry_backoff_ms: 0
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :ok
+
+    [first_submit, second_submit] = submit_log |> Agent.get(&Enum.reverse(&1))
+    refute Map.has_key?(first_submit, :runner_metadata)
+    refute Map.has_key?(second_submit, :runner_metadata)
   end
 
   test "cancels multi-target pipeline run and forwards all in-flight execution ids" do
