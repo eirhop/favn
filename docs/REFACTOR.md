@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 3 implemented, Phase 4 core execution boundary implemented (remaining cleanup in progress)
+Phase 3 implemented, Phase 4 core execution boundary implemented (remaining cleanup in progress), and Phase 5 orchestrator boundary implemented
 
 ## Summary
 
@@ -446,6 +446,11 @@ In `favn_runner`:
 ### Goal
 Make orchestrator the control plane operating on persisted state and runner protocol.
 
+Detailed implementation planning for this phase lives in:
+
+- `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md`
+- `docs/refactor/PHASE_5_TODO.md`
+
 ### Deliverables
 In `favn_orchestrator`:
 
@@ -461,6 +466,9 @@ In `favn_orchestrator`:
 - orchestrator no longer depends on runtime user-module discovery for normal operation
 - orchestrator can create and track runs against manifest versions
 - orchestrator communicates with runner through the new boundary
+
+### Status
+Implemented.
 
 ---
 

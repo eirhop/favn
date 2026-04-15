@@ -1,6 +1,6 @@
 defmodule Favn.Scheduler.State do
   @moduledoc """
-  Persisted runtime scheduler state for one scheduled pipeline stream.
+  Persisted scheduler cursor state for one scheduled pipeline stream.
   """
 
   @type t :: %__MODULE__{

@@ -1,20 +1,33 @@
 defmodule FavnOrchestrator.Application do
-  # See https://hexdocs.pm/elixir/Application.html
-  # for more information on OTP Applications
   @moduledoc false
 
   use Application
 
+  alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
+  alias FavnOrchestrator.Storage
+
   @impl true
   def start(_type, _args) do
-    children = [
-      # Starts a worker by calling: FavnOrchestrator.Worker.start_link(arg)
-      # {FavnOrchestrator.Worker, arg}
-    ]
+    with {:ok, storage_children} <- Storage.child_specs() do
+      children =
+        storage_children ++
+          [
+            {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
+            {RunManager, []}
+          ] ++ scheduler_children()
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: FavnOrchestrator.Supervisor]
-    Supervisor.start_link(children, opts)
+      Supervisor.start_link(children, strategy: :one_for_one, name: FavnOrchestrator.Supervisor)
+    end
+  end
+
+  defp scheduler_children do
+    scheduler_opts = Application.get_env(:favn_orchestrator, :scheduler, [])
+
+    if Keyword.get(scheduler_opts, :enabled, false) do
+      [{SchedulerRuntime, scheduler_opts}]
+    else
+      []
+    end
   end
 end

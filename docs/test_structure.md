@@ -83,3 +83,16 @@ Notes:
   - `apps/favn_runner/test/worker_test.exs`
   - `apps/favn_runner/test/execution/sql_asset_test.exs`
   - `apps/favn_runner/test/favn_runner_test.exs` for same-node manifest registration + runner execution flow
+- Initial Phase 5 core-planning tests now include:
+  - `apps/favn_core/test/contracts/runner_client_test.exs`
+  - `apps/favn_core/test/manifest/index_test.exs`
+  - `apps/favn_core/test/manifest/pipeline_resolver_test.exs`
+- Initial Phase 5 orchestrator runtime tests now include:
+  - `apps/favn_orchestrator/test/storage/memory_adapter_test.exs`
+  - `apps/favn_orchestrator/test/manifest_store_test.exs`
+  - `apps/favn_orchestrator/test/run_manager_test.exs`
+  - `apps/favn_orchestrator/test/run_server_test.exs`
+  - `apps/favn_orchestrator/test/scheduler/runtime_test.exs`
+- Public facade runtime delegation tests now include:
+  - `apps/favn/test/runtime_facade_test.exs`
+  - coverage for scheduler runtime wrapper availability semantics in `apps/favn/test/runtime_facade_test.exs`

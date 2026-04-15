@@ -1,0 +1,39 @@
+defmodule FavnOrchestrator.ManifestStoreTest do
+  use ExUnit.Case, async: false
+
+  alias Favn.Manifest
+  alias Favn.Manifest.Version
+  alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.Storage.Adapter.Memory
+
+  setup do
+    Memory.reset()
+    :ok
+  end
+
+  test "registers, lists, fetches, and activates manifests" do
+    version_a = manifest_version("mv_a", {MyApp.AssetA, :asset})
+    version_b = manifest_version("mv_b", {MyApp.AssetB, :asset})
+
+    assert :ok = ManifestStore.register_manifest(version_a)
+    assert :ok = ManifestStore.register_manifest(version_b)
+
+    assert {:ok, versions} = ManifestStore.list_manifests()
+    assert Enum.map(versions, & &1.manifest_version_id) == ["mv_a", "mv_b"]
+
+    assert {:ok, fetched} = ManifestStore.get_manifest("mv_a")
+    assert fetched.content_hash == version_a.content_hash
+
+    assert :ok = ManifestStore.set_active_manifest("mv_b")
+    assert {:ok, "mv_b"} = ManifestStore.get_active_manifest()
+  end
+
+  defp manifest_version(manifest_version_id, ref) do
+    manifest = %Manifest{
+      assets: [%Favn.Manifest.Asset{ref: ref, module: elem(ref, 0), name: elem(ref, 1)}]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+end

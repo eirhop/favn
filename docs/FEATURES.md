@@ -265,7 +265,23 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] SQL runtime ownership slice moved from `favn_legacy` to `favn_runner` (`Favn.SQLAsset.Runtime`, `Favn.SQL.RuntimeBridge`, and required `Favn.SQL.*` runtime modules)
   - [ ] enable manifest-pinned SQL asset execution in runner (currently rejected until SQL payload is carried by manifest/core contract)
   - [x] runtime SQL bridge paths now fail deterministically with `{:error, :runtime_not_available}` when runner runtime is not started, and return normalized `%Favn.SQL.Error{}` values for invalid config/session inputs when runner runtime is started
-- [ ] Phase 5: build the orchestrator boundary in `favn_orchestrator`
+- [x] Phase 5: build the orchestrator boundary in `favn_orchestrator`
+  - [x] planning docs created: `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md`
+  - [x] implementation checklist created: `docs/refactor/PHASE_5_TODO.md`
+  - [x] architecture direction documented: active manifest selection, manifest-native planning, orchestrator-owned storage/events/scheduler state, and a shared runner-client contract
+  - [x] first implementation slice landed in `favn_core`: shared `Favn.Contracts.RunnerClient` plus manifest-native `Favn.Manifest.Index` and `Favn.Manifest.PipelineResolver` with focused tests
+  - [x] second implementation slice landed in `favn_orchestrator`: in-memory storage adapter boundary, manifest registration/activation APIs, and run manager/server skeleton for explicit manifest-pinned asset-run submission through the runner client
+  - [x] run admission now builds `%Favn.Plan{}` from persisted manifest index data, and orchestrator-owned run/step event projection is covered by run manager/server tests
+  - [x] orchestrator-owned retry and timeout policy baseline is active in run-server transitions (`step_retry_scheduled`, `step_timed_out`, terminal run events) with test coverage
+  - [x] orchestrator-owned cancellation flow is active with `cancel_run/2`, persisted cancellation events, and forwarding to `RunnerClient.cancel_work/3` for in-flight executions
+  - [x] rerun flow is active and manifest-pinned: `rerun/2` uses the source run manifest version (with mismatch guard), preserving lineage fields in run snapshots
+  - [x] public `Favn` facade now delegates runtime read/control helpers (`get_run`, `list_runs`, `rerun`, `cancel_run`) to orchestrator with deterministic `{:error, :runtime_not_available}` behavior when orchestrator runtime is not started
+  - [x] public `Favn.run_pipeline/2` now submits through orchestrator runtime (`submit_pipeline_run`) instead of legacy runtime manager delegation
+  - [x] orchestrator pipeline submission now supports multi-target plans in one run, including stage-parallel execution for pipeline stages (`node_stages`) and multi-execution cancellation forwarding
+  - [x] orchestrator run reads now project to the public `%Favn.Run{}` model with terminal asset-result aggregation per ref, while `list_run_events/1` exposes operator event history
+  - [x] initial orchestrator scheduler runtime is active in `FavnOrchestrator.Scheduler.Runtime`, deriving entries from the active persisted manifest and persisting scheduler cursors through orchestrator storage
+  - [x] preserved public contracts `Favn.Run`, `Favn.Scheduler.State`, and `Favn.Scheduler` are now owned by orchestrator-side files rather than `favn_legacy`; `Favn` exposes scheduler runtime wrappers too
+  - [x] preserved public `Favn.Storage` contract is now owned by orchestrator-side files, and the scheduler matrix now covers overlap policies, missed-occurrence behavior, and window anchor propagation
 - [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
 - [ ] Phase 7: move DuckDB into `favn_duckdb`
 - [ ] Phase 8: add `favn_view`
@@ -279,6 +295,8 @@ Detailed migration planning for the current refactor slices lives in:
 - `docs/refactor/PHASE_3_TODO.md`
 - `docs/refactor/PHASE_4_RUNNER_BOUNDARY_PLAN.md`
 - `docs/refactor/PHASE_4_TODO.md`
+- `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md`
+- `docs/refactor/PHASE_5_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 
