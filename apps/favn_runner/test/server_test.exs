@@ -1,6 +1,7 @@
 defmodule FavnRunner.ServerTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -25,6 +26,43 @@ defmodule FavnRunner.ServerTest do
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
     assert :ok = FavnRunner.cancel_work(execution_id, %{reason: :operator_cancel})
+    assert {:ok, result} = FavnRunner.await_result(execution_id, 2_000)
+    assert result.status == :cancelled
+  end
+
+  test "late runner_result does not overwrite a cancelled terminal result" do
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version)
+
+    work =
+      %RunnerWork{
+        run_id: unique_id("run"),
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {FavnRunner.ServerTest.SlowAsset, :asset}
+      }
+
+    assert {:ok, execution_id} = FavnRunner.submit_work(work)
+    assert :ok = FavnRunner.cancel_work(execution_id, %{reason: :operator_cancel})
+
+    send(FavnRunner.Server, {
+      :runner_result,
+      execution_id,
+      %RunnerResult{
+        run_id: work.run_id,
+        manifest_version_id: work.manifest_version_id,
+        manifest_content_hash: work.manifest_content_hash,
+        status: :ok,
+        asset_results: [],
+        error: nil,
+        metadata: %{}
+      }
+    })
+
     assert {:ok, result} = FavnRunner.await_result(execution_id, 2_000)
     assert result.status == :cancelled
   end

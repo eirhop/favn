@@ -21,7 +21,7 @@ The current implementation aligns with the main architecture recommendations in 
 - same-node execution crosses the runner boundary
 - `Favn.Run.Context` and `Favn.Run.AssetResult` moved into `favn_core`
 - runner-side `Favn.Connection.*` runtime modules moved into `favn_runner`
-- runner-side `Favn.SQLAsset.Runtime` and required `Favn.SQL.*` runtime modules moved into `favn_runner`
+- runner-side `Favn.SQLAsset.Runtime` and required `Favn.SQL.*` runtime modules moved into `favn_runner` (manifest-pinned SQL execution remains intentionally disabled until SQL payload is carried by manifest/core contract)
 
 Authoritative completion tracking for this phase lives in `docs/refactor/PHASE_4_TODO.md`.
 

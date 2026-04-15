@@ -170,9 +170,15 @@ defmodule FavnRunner.Server do
   end
 
   def handle_info({:runner_result, execution_id, %RunnerResult{} = result}, state) do
-    case Map.has_key?(state.executions, execution_id) do
-      true -> {:noreply, finalize_execution(state, execution_id, result)}
-      false -> {:noreply, state}
+    case Map.fetch(state.executions, execution_id) do
+      {:ok, %{status: :running}} ->
+        {:noreply, finalize_execution(state, execution_id, result)}
+
+      {:ok, %{status: :completed}} ->
+        {:noreply, state}
+
+      :error ->
+        {:noreply, state}
     end
   end
 

@@ -10,8 +10,6 @@ defmodule FavnRunner.Worker do
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.Context
-  alias Favn.SQLAsset.Error, as: SQLAssetError
-  alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
   alias FavnRunner.EventSink
 
@@ -58,7 +56,7 @@ defmodule FavnRunner.Worker do
           execute_elixir_asset(asset, ContextBuilder.build(work, asset, execution_id))
 
         :sql ->
-          execute_sql_asset(asset, ContextBuilder.build(work, asset, execution_id))
+          {:error, sql_manifest_execution_not_supported()}
 
         _ ->
           {:error, %{kind: :error, reason: {:unsupported_asset_type, asset.type}, stacktrace: []}}
@@ -95,28 +93,6 @@ defmodule FavnRunner.Worker do
 
   defp execute_source_asset(%Asset{} = asset),
     do: {:ok, %{observed: true, relation: asset.relation}}
-
-  defp execute_sql_asset(%Asset{module: module}, %Context{} = context) when is_atom(module) do
-    case SQLAssetRuntime.run(module, context) do
-      {:ok, meta} when is_map(meta) ->
-        {:ok, meta}
-
-      {:error, %SQLAssetError{} = error} ->
-        {:error, %{kind: :error, reason: error, stacktrace: []}}
-    end
-  rescue
-    error ->
-      {:error,
-       %{
-         kind: :error,
-         reason: error,
-         stacktrace: __STACKTRACE__,
-         message: Exception.message(error)
-       }}
-  catch
-    :throw, reason -> {:error, %{kind: :throw, reason: reason, stacktrace: __STACKTRACE__}}
-    :exit, reason -> {:error, %{kind: :exit, reason: reason, stacktrace: __STACKTRACE__}}
-  end
 
   defp execute_elixir_asset(%Asset{} = asset, %Context{} = context) do
     entrypoint = asset.execution[:entrypoint] || asset.name || :asset
@@ -226,5 +202,15 @@ defmodule FavnRunner.Worker do
     }
 
     EventSink.emit(server, execution_id, event)
+  end
+
+  defp sql_manifest_execution_not_supported do
+    %{
+      kind: :error,
+      reason: :sql_manifest_execution_not_supported,
+      stacktrace: [],
+      message:
+        "SQL asset execution is disabled in runner until manifest-carried SQL payload is available"
+    }
   end
 end

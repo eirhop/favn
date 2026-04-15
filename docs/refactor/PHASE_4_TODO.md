@@ -66,7 +66,7 @@ Current implementation status: core Phase 4 runner execution boundary is impleme
 - [x] Move `Favn.SQLAsset.Runtime` out of legacy into the runner owner app.
 - [x] Move the smallest backend-neutral SQL runtime module set required for SQL asset execution.
 - [x] Keep plugin extraction out of scope; do not introduce a `favn_legacy` dependency.
-- [x] Ensure SQL assets execute through the runner boundary, not through legacy coordinator paths.
+- [ ] Enable manifest-pinned SQL asset execution through the runner boundary (currently intentionally rejected until manifest-carried SQL payload is added).
 - [x] Keep public direct SQL helper API expansion out of scope unless needed to support runner execution.
 
 ## Tests

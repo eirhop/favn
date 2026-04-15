@@ -74,20 +74,35 @@ defmodule Favn.DSLCompilerTest do
     assert asset.type == :sql
   end
 
-  test "runtime sql bridge now fails with normalized sql errors" do
-    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :connect}} =
-             Favn.SQL.connect(:warehouse)
+  test "runtime sql paths fail safely when runtime is unavailable or inputs are invalid" do
+    assert match?({:error, :runtime_not_available}, Favn.SQL.connect(:warehouse)) or
+             match?(
+               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :connect}},
+               Favn.SQL.connect(:warehouse)
+             )
 
-    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
-             Favn.SQL.query(:session, "select 1")
+    assert match?({:error, :runtime_not_available}, Favn.SQL.query(:session, "select 1")) or
+             match?(
+               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
+               Favn.SQL.query(:session, "select 1")
+             )
 
-    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
-             Favn.SQL.materialize(:session, :plan)
+    assert match?({:error, :runtime_not_available}, Favn.SQL.materialize(:session, :plan)) or
+             match?(
+               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
+               Favn.SQL.materialize(:session, :plan)
+             )
 
-    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
-             Favn.SQL.get_relation(:session, :relation)
+    assert match?({:error, :runtime_not_available}, Favn.SQL.get_relation(:session, :relation)) or
+             match?(
+               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
+               Favn.SQL.get_relation(:session, :relation)
+             )
 
-    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
-             Favn.SQL.columns(:session, :relation)
+    assert match?({:error, :runtime_not_available}, Favn.SQL.columns(:session, :relation)) or
+             match?(
+               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
+               Favn.SQL.columns(:session, :relation)
+             )
   end
 end

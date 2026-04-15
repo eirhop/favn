@@ -8,11 +8,12 @@ defmodule Favn.SQL.RuntimeBridge do
   alias Favn.SQL.Session
   alias Favn.SQL.WritePlan
 
-  @spec connect(atom(), keyword()) :: {:ok, Session.t()} | {:error, Error.t()}
+  @spec connect(atom(), keyword()) :: {:ok, Session.t()} | {:error, term()}
   def connect(connection, opts \\ [])
 
   def connect(connection, opts) when is_atom(connection) and is_list(opts) do
-    with {:ok, %Resolved{} = resolved} <- fetch_connection(connection),
+    with :ok <- ensure_runtime_started(),
+         {:ok, %Resolved{} = resolved} <- fetch_connection(connection),
          {:ok, conn} <- resolved.adapter.connect(resolved, opts),
          {:ok, capabilities} <- resolved.adapter.capabilities(resolved, opts) do
       {:ok,
@@ -37,49 +38,88 @@ defmodule Favn.SQL.RuntimeBridge do
 
   def disconnect(_session), do: :ok
 
-  @spec query(Session.t(), iodata(), keyword()) :: {:ok, term()} | {:error, Error.t()}
+  @spec query(Session.t(), iodata(), keyword()) :: {:ok, term()} | {:error, term()}
   def query(%Session{adapter: adapter, conn: conn}, statement, opts) when is_list(opts) do
-    adapter.query(conn, statement, opts)
+    with :ok <- ensure_runtime_started() do
+      adapter.query(conn, statement, opts)
+    end
   rescue
     error -> {:error, normalize_runtime_error(:query, error)}
+  catch
+    :exit, _ -> {:error, runtime_not_started_error()}
   end
 
-  def query(_session, _statement, _opts), do: {:error, invalid_session_error()}
+  def query(_session, _statement, _opts) do
+    if runtime_started?(),
+      do: {:error, invalid_session_error()},
+      else: {:error, runtime_not_started_error()}
+  end
 
-  @spec materialize(Session.t(), WritePlan.t(), keyword()) :: {:ok, term()} | {:error, Error.t()}
+  @spec materialize(Session.t(), WritePlan.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def materialize(%Session{adapter: adapter, conn: conn}, %WritePlan{} = write_plan, opts)
       when is_list(opts) do
-    adapter.materialize(conn, write_plan, opts)
+    with :ok <- ensure_runtime_started() do
+      adapter.materialize(conn, write_plan, opts)
+    end
   rescue
     error -> {:error, normalize_runtime_error(:materialize, error)}
+  catch
+    :exit, _ -> {:error, runtime_not_started_error()}
   end
 
-  def materialize(_session, _write_plan, _opts), do: {:error, invalid_session_error()}
+  def materialize(_session, _write_plan, _opts) do
+    if runtime_started?(),
+      do: {:error, invalid_session_error()},
+      else: {:error, runtime_not_started_error()}
+  end
 
-  @spec get_relation(Session.t(), RelationRef.t()) :: {:ok, term()} | {:error, Error.t()}
+  @spec get_relation(Session.t(), RelationRef.t()) :: {:ok, term()} | {:error, term()}
   def get_relation(%Session{adapter: adapter, conn: conn}, %RelationRef{} = relation_ref) do
-    adapter.relation(conn, relation_ref, [])
+    with :ok <- ensure_runtime_started() do
+      adapter.relation(conn, relation_ref, [])
+    end
   rescue
     error -> {:error, normalize_runtime_error(:get_relation, error)}
+  catch
+    :exit, _ -> {:error, runtime_not_started_error()}
   end
 
-  def get_relation(_session, _relation_ref), do: {:error, invalid_session_error()}
+  def get_relation(_session, _relation_ref) do
+    if runtime_started?(),
+      do: {:error, invalid_session_error()},
+      else: {:error, runtime_not_started_error()}
+  end
 
-  @spec columns(Session.t(), RelationRef.t()) :: {:ok, [term()]} | {:error, Error.t()}
+  @spec columns(Session.t(), RelationRef.t()) :: {:ok, [term()]} | {:error, term()}
   def columns(%Session{adapter: adapter, conn: conn}, %RelationRef{} = relation_ref) do
-    adapter.columns(conn, relation_ref, [])
+    with :ok <- ensure_runtime_started() do
+      adapter.columns(conn, relation_ref, [])
+    end
   rescue
     error -> {:error, normalize_runtime_error(:columns, error)}
+  catch
+    :exit, _ -> {:error, runtime_not_started_error()}
   end
 
-  def columns(_session, _relation_ref), do: {:error, invalid_session_error()}
+  def columns(_session, _relation_ref) do
+    if runtime_started?(),
+      do: {:error, invalid_session_error()},
+      else: {:error, runtime_not_started_error()}
+  end
 
   defp fetch_connection(connection) do
     case Registry.fetch(connection, registry_name: FavnRunner.ConnectionRegistry) do
       {:ok, %Resolved{} = resolved} -> {:ok, resolved}
       :error -> {:error, invalid_connection_error(connection)}
     end
+  catch
+    :exit, _ -> {:error, runtime_not_started_error()}
   end
+
+  defp ensure_runtime_started,
+    do: if(runtime_started?(), do: :ok, else: {:error, runtime_not_started_error()})
+
+  defp runtime_started?, do: Process.whereis(FavnRunner.ConnectionRegistry) != nil
 
   defp invalid_connection_error(connection) do
     %Error{
@@ -93,6 +133,8 @@ defmodule Favn.SQL.RuntimeBridge do
   defp invalid_session_error do
     %Error{type: :invalid_config, message: "invalid SQL session", operation: :session}
   end
+
+  defp runtime_not_started_error, do: :runtime_not_available
 
   defp normalize_runtime_error(operation, reason) do
     %Error{

@@ -262,8 +262,9 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] `Favn.Run.Context` and `Favn.Run.AssetResult` moved from `favn_legacy` to `favn_core`
   - [x] elixir and source assets now execute through `favn_runner` contract APIs (`register_manifest/1`, `submit_work/2`, `await_result/2`, `run/2`)
   - [x] runner-side connection runtime ownership moved from `favn_legacy` to `favn_runner` (`Favn.Connection.Loader/Registry/Resolved/Validator/Error/Sanitizer/Info`)
-  - [x] SQL runtime execution slice moved from `favn_legacy` to `favn_runner` (`Favn.SQLAsset.Runtime`, `Favn.SQL.RuntimeBridge`, and required `Favn.SQL.*` runtime modules)
-  - [x] runtime SQL bridge paths now return normalized `%Favn.SQL.Error{}` values when runtime bridge code is present but configuration/session inputs are invalid
+  - [x] SQL runtime ownership slice moved from `favn_legacy` to `favn_runner` (`Favn.SQLAsset.Runtime`, `Favn.SQL.RuntimeBridge`, and required `Favn.SQL.*` runtime modules)
+  - [ ] enable manifest-pinned SQL asset execution in runner (currently rejected until SQL payload is carried by manifest/core contract)
+  - [x] runtime SQL bridge paths now fail deterministically with `{:error, :runtime_not_available}` when runner runtime is not started, and return normalized `%Favn.SQL.Error{}` values for invalid config/session inputs when runner runtime is started
 - [ ] Phase 5: build the orchestrator boundary in `favn_orchestrator`
 - [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
 - [ ] Phase 7: move DuckDB into `favn_duckdb`
