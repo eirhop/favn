@@ -5,7 +5,35 @@ This document maps the umbrella library layout after v0.5 Phase 1.
 ```text
 apps/
 ├── favn/lib/
-│   └── favn.ex
+│   ├── favn.ex
+│   └── favn/
+│       ├── public_scaffold.ex
+│       ├── asset.ex
+│       ├── assets.ex
+│       ├── connection.ex
+│       ├── diagnostic.ex
+│       ├── manifest.ex
+│       ├── multi_asset.ex
+│       ├── namespace.ex
+│       ├── pipeline.ex
+│       ├── plan.ex
+│       ├── ref.ex
+│       ├── relation_ref.ex
+│       ├── source.ex
+│       ├── sql.ex
+│       ├── sql_asset.ex
+│       ├── timezone.ex
+│       ├── window.ex
+│       ├── asset/
+│       ├── assets/
+│       ├── connection/
+│       ├── dsl/
+│       ├── manifest/
+│       ├── pipeline/
+│       ├── sql/
+│       ├── sql_asset/
+│       ├── triggers/
+│       └── window/
 ├── favn_core/lib/
 │   └── favn_core.ex
 ├── favn_runner/lib/
@@ -63,4 +91,8 @@ apps/
 Notes:
 
 - `favn_legacy` is the active v0.4 reference runtime during migration.
-- New runtime/DSL ownership should move from `favn_legacy` to owner apps by bounded slice in later phases.
+- Phase 2 migration currently establishes public DSL/facade ownership under `favn`.
+- Runtime execution APIs remain legacy-owned while compile-time/manifest foundations are migrated.
+- Some compiler/manifest/planning implementation currently lives under `favn` as a transitional ownership-transfer layout.
+- Intended steady-state ownership remains: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane, and `favn_view` via orchestrator APIs only.
+- New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.

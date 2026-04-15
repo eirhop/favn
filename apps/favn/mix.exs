@@ -24,7 +24,8 @@ defmodule Favn.MixProject do
 
   defp deps do
     [
-      {:favn_core, in_umbrella: true}
+      {:favn_core, in_umbrella: true},
+      {:favn_test_support, in_umbrella: true, only: :test}
     ]
   end
 end

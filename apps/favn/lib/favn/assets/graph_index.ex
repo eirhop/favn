@@ -2,10 +2,9 @@ defmodule Favn.Assets.GraphIndex do
   @moduledoc """
   Global dependency graph index for configured Favn assets.
 
-  `Favn.Assets.GraphIndex` builds a read-only directed acyclic graph (DAG) from the
-  canonical asset catalog loaded by `Favn.Assets.Registry`. The index is computed
-  during application startup and cached in `:persistent_term` for fast,
-  repeated read access.
+  `Favn.Assets.GraphIndex` builds a read-only directed acyclic graph (DAG) from
+  canonical compiled assets. The index can be cached in `:persistent_term` for
+  fast repeated read access.
 
   The graph is intended to support:
 
@@ -21,6 +20,7 @@ defmodule Favn.Assets.GraphIndex do
   """
 
   alias Favn.Asset
+  alias Favn.Assets.Compiler
   alias Favn.Ref
 
   @index_key {__MODULE__, :index}
@@ -45,7 +45,7 @@ defmodule Favn.Assets.GraphIndex do
           {:missing_dependency, Ref.t(), Ref.t()}
           | {:cycle, [Ref.t()]}
           | :invalid_opts
-          | Favn.Assets.Registry.error()
+          | {:asset_compile_failed, module(), term()}
 
   @typedoc """
   Direction used when selecting related assets or subgraphs.
@@ -87,11 +87,25 @@ defmodule Favn.Assets.GraphIndex do
   end
 
   @doc """
-  Build and cache the dependency index from the current registry catalog.
+  Build and cache the dependency index from configured asset modules.
   """
   @spec load() :: :ok | {:error, error()}
   def load do
-    with {:ok, assets} <- Favn.Assets.Registry.list_assets(),
+    modules = Application.get_env(:favn, :asset_modules, [])
+
+    with {:ok, assets} <- compile_assets(modules),
+         {:ok, %__MODULE__{} = index} <- build_index(assets) do
+      :persistent_term.put(@index_key, index)
+      :ok
+    end
+  end
+
+  @doc """
+  Build and cache the dependency index from explicit modules.
+  """
+  @spec load([module()]) :: :ok | {:error, error()}
+  def load(modules) when is_list(modules) do
+    with {:ok, assets} <- compile_assets(modules),
          {:ok, %__MODULE__{} = index} <- build_index(assets) do
       :persistent_term.put(@index_key, index)
       :ok
@@ -365,6 +379,20 @@ defmodule Favn.Assets.GraphIndex do
   defp load_and_fetch_index do
     with :ok <- load() do
       {:ok, :persistent_term.get(@index_key)}
+    end
+  end
+
+  defp compile_assets(modules) when is_list(modules) do
+    modules
+    |> Enum.reduce_while({:ok, []}, fn module, {:ok, acc} ->
+      case Compiler.compile_module_assets(module) do
+        {:ok, assets} -> {:cont, {:ok, assets ++ acc}}
+        {:error, reason} -> {:halt, {:error, {:asset_compile_failed, module, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, assets} -> {:ok, assets |> Enum.uniq_by(& &1.ref) |> Enum.sort_by(& &1.ref)}
+      {:error, _} = error -> error
     end
   end
 
