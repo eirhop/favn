@@ -1,0 +1,86 @@
+defmodule Favn.StorageFacadeTest do
+  use ExUnit.Case, async: false
+
+  alias Favn.Run
+  alias Favn.Storage
+  alias FavnOrchestrator.Storage, as: OrchestratorStorage
+  alias FavnOrchestrator.Storage.Adapter.Memory
+
+  defmodule LegacyShapeAdapterStub do
+    @behaviour Favn.Storage.Adapter
+
+    @impl true
+    def child_spec(_opts), do: :none
+
+    @impl true
+    def scheduler_child_spec(_opts), do: :none
+
+    @impl true
+    def put_run(_run, _opts), do: :ok
+
+    @impl true
+    def get_run(_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def put_scheduler_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_scheduler_state(_module, _schedule_id, _opts), do: {:ok, nil}
+  end
+
+  setup do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    Memory.reset()
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+      Memory.reset()
+    end)
+
+    :ok
+  end
+
+  test "validates adapters against orchestrator storage contract" do
+    assert {:error, {:store_error, {:invalid_storage_adapter, LegacyShapeAdapterStub}}} =
+             Storage.validate_adapter(LegacyShapeAdapterStub)
+  end
+
+  test "reads and writes runs through orchestrator storage facade" do
+    now = DateTime.utc_now()
+
+    run =
+      %Run{
+        id: "run_storage_facade",
+        manifest_version_id: "mv_storage_facade",
+        manifest_content_hash: "hash_storage_facade",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}],
+        submit_kind: :asset,
+        status: :running,
+        started_at: now,
+        event_seq: 1
+      }
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, projected} = Storage.get_run("run_storage_facade")
+    assert projected.id == "run_storage_facade"
+    assert projected.asset_ref == {MyApp.Assets.Gold, :asset}
+
+    assert {:ok, run_state} = OrchestratorStorage.get_run("run_storage_facade")
+    assert run_state.id == "run_storage_facade"
+    assert run_state.manifest_version_id == "mv_storage_facade"
+  end
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+end

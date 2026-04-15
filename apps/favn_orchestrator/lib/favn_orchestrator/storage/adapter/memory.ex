@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   @behaviour FavnOrchestrator.Storage.Adapter
 
   alias Favn.Manifest.Version
+  alias Favn.Scheduler.State, as: SchedulerState
   alias FavnOrchestrator.RunState
 
   @type state :: %{
@@ -38,6 +39,15 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
        restart: :permanent,
        shutdown: 5000
      }}
+  end
+
+  @spec scheduler_child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
+  def scheduler_child_spec(opts \\ []) when is_list(opts) do
+    if Process.whereis(__MODULE__) do
+      :none
+    else
+      child_spec(opts)
+    end
   end
 
   @impl true
@@ -104,11 +114,23 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
-  def put_scheduler_state({pipeline_module, schedule_id} = key, scheduler_state, opts \\ [])
+  def put_scheduler_state({pipeline_module, schedule_id} = key, scheduler_state, opts)
       when is_atom(pipeline_module) and is_map(scheduler_state) and is_list(opts) do
     _ = schedule_id
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:put_scheduler_state, key, scheduler_state})
+  end
+
+  @spec put_scheduler_state(SchedulerState.t(), keyword()) :: :ok | {:error, term()}
+  def put_scheduler_state(%SchedulerState{} = scheduler_state, opts) when is_list(opts) do
+    key = {scheduler_state.pipeline_module, scheduler_state.schedule_id}
+
+    payload =
+      scheduler_state
+      |> Map.from_struct()
+      |> Map.drop([:pipeline_module, :schedule_id])
+
+    put_scheduler_state(key, payload, opts)
   end
 
   @impl true
@@ -117,6 +139,26 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     _ = schedule_id
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:get_scheduler_state, key})
+  end
+
+  @spec get_scheduler_state(module(), atom() | nil, keyword()) ::
+          {:ok, SchedulerState.t() | nil} | {:error, term()}
+  def get_scheduler_state(pipeline_module, schedule_id, opts)
+      when is_atom(pipeline_module) and is_list(opts) do
+    case get_scheduler_state({pipeline_module, schedule_id}, opts) do
+      {:ok, nil} ->
+        {:ok, nil}
+
+      {:ok, state} when is_map(state) ->
+        {:ok,
+         struct(
+           SchedulerState,
+           Map.merge(state, %{pipeline_module: pipeline_module, schedule_id: schedule_id})
+         )}
+
+      other ->
+        other
+    end
   end
 
   @impl true

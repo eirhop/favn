@@ -54,6 +54,18 @@ defmodule FavnOrchestrator.RunServer do
   defp execute_plan(%RunState{submit_kind: :pipeline} = run_state, %Version{} = version),
     do: execute_pipeline_parallel_once(run_state, version)
 
+  defp execute_plan(
+         %RunState{submit_kind: :rerun, metadata: metadata} = run_state,
+         %Version{} = version
+       )
+       when is_map(metadata) do
+    if Map.get(metadata, :replay_submit_kind) == :pipeline do
+      execute_pipeline_parallel_once(run_state, version)
+    else
+      execute_plan_sequential(run_state, version)
+    end
+  end
+
   defp execute_plan(%RunState{} = run_state, %Version{} = version),
     do: execute_plan_sequential(run_state, version)
 
@@ -179,7 +191,15 @@ defmodule FavnOrchestrator.RunServer do
            ),
          awaited <- await_stage_entries(entries, run_state.timeout_ms, runner_client, runner_opts),
          {:ok, next_run, next_acc_results, retry_refs} <-
-           process_stage_attempt_results(run_after_submit, awaited, stage, attempt, acc_results) do
+           process_stage_attempt_results(
+             run_after_submit,
+             awaited,
+             stage,
+             attempt,
+             acc_results,
+             runner_client,
+             runner_opts
+           ) do
       if retry_refs == [] do
         {:ok, next_run, next_acc_results}
       else
@@ -232,10 +252,17 @@ defmodule FavnOrchestrator.RunServer do
           {:cont, {:ok, updated_run, acc ++ [entry]}}
 
         {:error, reason} ->
-          failed = clear_inflight_execution(current_run, nil)
+          cancelled =
+            cancel_execution_ids(
+              current_run,
+              Enum.map(acc, & &1.execution_id),
+              %{kind: :submit_failure, asset_ref: asset_ref, error: reason},
+              runner_client,
+              runner_opts
+            )
 
           failed =
-            RunState.transition(failed,
+            RunState.transition(cancelled,
               status: :error,
               error: reason,
               runner_execution_id: nil
@@ -284,17 +311,36 @@ defmodule FavnOrchestrator.RunServer do
          awaited,
          stage,
          attempt,
-         acc_results
+         acc_results,
+         runner_client,
+         runner_opts
        ) do
     awaited
     |> Enum.reduce_while({:ok, run_state, acc_results, []}, fn {entry, await_result},
                                                                {:ok, current_run, current_results,
                                                                 retry_refs} ->
       if externally_cancelled?(current_run.id) do
-        {:halt, {:error, cancelled_terminal(current_run, current_results), current_results}}
+        cancelled =
+          cancel_execution_ids(
+            current_run,
+            inflight_ids_from_metadata(current_run),
+            %{kind: :external_cancel},
+            runner_client,
+            runner_opts
+          )
+
+        {:halt, {:error, cancelled_terminal(cancelled, current_results), current_results}}
       else
         {next_run, outcome, step_results} =
-          process_one_stage_attempt_result(current_run, entry, await_result, stage, attempt)
+          process_one_stage_attempt_result(
+            current_run,
+            entry,
+            await_result,
+            stage,
+            attempt,
+            runner_client,
+            runner_opts
+          )
 
         next_results = current_results ++ step_results
 
@@ -321,7 +367,9 @@ defmodule FavnOrchestrator.RunServer do
          %{asset_ref: asset_ref, execution_id: execution_id},
          {:ok, %RunnerResult{} = result},
          stage,
-         attempt
+         attempt,
+         _runner_client,
+         _runner_opts
        ) do
     cleared = clear_inflight_execution(run_state, execution_id)
     step_status = map_runner_status(result.status)
@@ -358,9 +406,18 @@ defmodule FavnOrchestrator.RunServer do
          %{asset_ref: asset_ref, execution_id: execution_id},
          {:error, :timeout},
          stage,
-         attempt
+         attempt,
+         runner_client,
+         runner_opts
        ) do
-    cleared = clear_inflight_execution(run_state, execution_id)
+    cleared =
+      cancel_execution_ids(
+        run_state,
+        [execution_id],
+        %{kind: :await_timeout, asset_ref: asset_ref, stage: stage, attempt: attempt},
+        runner_client,
+        runner_opts
+      )
 
     step_state =
       RunState.transition(cleared,
@@ -388,9 +445,24 @@ defmodule FavnOrchestrator.RunServer do
          %{asset_ref: asset_ref, execution_id: execution_id},
          {:error, reason},
          stage,
-         attempt
+         attempt,
+         runner_client,
+         runner_opts
        ) do
-    cleared = clear_inflight_execution(run_state, execution_id)
+    cleared =
+      cancel_execution_ids(
+        run_state,
+        [execution_id],
+        %{
+          kind: :await_error,
+          asset_ref: asset_ref,
+          stage: stage,
+          attempt: attempt,
+          error: reason
+        },
+        runner_client,
+        runner_opts
+      )
 
     step_state =
       RunState.transition(cleared,
@@ -482,6 +554,43 @@ defmodule FavnOrchestrator.RunServer do
     snapshot_update(run_state, metadata: metadata, runner_execution_id: next_execution_id)
   end
 
+  defp clear_inflight_executions(%RunState{} = run_state, execution_ids)
+       when is_list(execution_ids) do
+    rejected = MapSet.new(execution_ids)
+
+    ids =
+      run_state
+      |> inflight_ids_from_metadata()
+      |> Enum.reject(&MapSet.member?(rejected, &1))
+
+    metadata = Map.put(run_state.metadata, :in_flight_execution_ids, ids)
+    next_execution_id = List.first(ids)
+
+    snapshot_update(run_state, metadata: metadata, runner_execution_id: next_execution_id)
+  end
+
+  defp cancel_execution_ids(
+         %RunState{} = run_state,
+         execution_ids,
+         reason,
+         runner_client,
+         runner_opts
+       )
+       when is_list(execution_ids) do
+    unique_ids = execution_ids |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    Enum.each(unique_ids, fn execution_id ->
+      _ =
+        runner_client.cancel_work(
+          execution_id,
+          %{run_id: run_state.id, reason: reason, requested_at: DateTime.utc_now()},
+          runner_opts
+        )
+    end)
+
+    clear_inflight_executions(run_state, unique_ids)
+  end
+
   defp inflight_ids_from_metadata(%RunState{} = run_state) do
     case Map.get(run_state.metadata, :in_flight_execution_ids, []) do
       ids when is_list(ids) -> ids
@@ -559,71 +668,117 @@ defmodule FavnOrchestrator.RunServer do
 
       with :ok <- validate_runner_client(runner_client),
            :ok <- runner_client.register_manifest(version, runner_opts),
-           {:ok, execution_id} <- runner_client.submit_work(work, runner_opts),
-           running_with_execution <-
-             RunState.transition(run_state,
-               runner_execution_id: execution_id,
-               metadata: work.metadata
-             ),
-           :ok <-
-             Projector.persist_snapshot_with_event(running_with_execution, :step_started, %{
-               asset_ref: asset_ref,
-               runner_execution_id: execution_id,
-               stage: stage,
-               attempt: attempt,
-               max_attempts: max_attempts
-             }),
-           {:ok, %RunnerResult{} = result} <-
-             runner_client.await_result(execution_id, run_state.timeout_ms, runner_opts) do
-        step_finished =
-          RunState.transition(running_with_execution,
-            status: map_runner_status(result.status),
-            runner_execution_id: nil,
-            error: result.error,
-            metadata: result.metadata || %{}
+           {:ok, execution_id} <- runner_client.submit_work(work, runner_opts) do
+        running_with_execution =
+          RunState.transition(run_state,
+            runner_execution_id: execution_id,
+            metadata: work.metadata
           )
 
-        {event_type, retryable?} = step_outcome(step_finished.status)
-
         :ok =
-          Projector.persist_snapshot_with_event(step_finished, event_type, %{
+          Projector.persist_snapshot_with_event(running_with_execution, :step_started, %{
             asset_ref: asset_ref,
-            result_status: result.status,
-            error: result.error,
+            runner_execution_id: execution_id,
             stage: stage,
             attempt: attempt,
             max_attempts: max_attempts
           })
 
-        maybe_retry_step(
-          step_finished,
-          version,
-          asset_ref,
-          stage,
-          attempt,
-          retryable?,
-          result.asset_results
-        )
-      else
-        {:error, :timeout} ->
-          timeout_state =
-            RunState.transition(run_state,
-              status: :timed_out,
-              runner_execution_id: nil,
-              error: :timeout
+        case runner_client.await_result(execution_id, run_state.timeout_ms, runner_opts) do
+          {:ok, %RunnerResult{} = result} ->
+            step_finished =
+              RunState.transition(running_with_execution,
+                status: map_runner_status(result.status),
+                runner_execution_id: nil,
+                error: result.error,
+                metadata: result.metadata || %{}
+              )
+
+            {event_type, retryable?} = step_outcome(step_finished.status)
+
+            :ok =
+              Projector.persist_snapshot_with_event(step_finished, event_type, %{
+                asset_ref: asset_ref,
+                result_status: result.status,
+                error: result.error,
+                stage: stage,
+                attempt: attempt,
+                max_attempts: max_attempts
+              })
+
+            maybe_retry_step(
+              step_finished,
+              version,
+              asset_ref,
+              stage,
+              attempt,
+              retryable?,
+              result.asset_results
             )
 
-          :ok =
-            Projector.persist_snapshot_with_event(timeout_state, :step_timed_out, %{
-              asset_ref: asset_ref,
-              error: :timeout,
-              stage: stage,
-              attempt: attempt,
-              max_attempts: max_attempts
-            })
+          {:error, :timeout} ->
+            cancelled =
+              cancel_execution_ids(
+                running_with_execution,
+                [execution_id],
+                %{kind: :await_timeout, asset_ref: asset_ref, stage: stage, attempt: attempt},
+                runner_client,
+                runner_opts
+              )
 
-          maybe_retry_step(timeout_state, version, asset_ref, stage, attempt, true, [])
+            timeout_state =
+              RunState.transition(cancelled,
+                status: :timed_out,
+                runner_execution_id: nil,
+                error: :timeout
+              )
 
+            :ok =
+              Projector.persist_snapshot_with_event(timeout_state, :step_timed_out, %{
+                asset_ref: asset_ref,
+                error: :timeout,
+                stage: stage,
+                attempt: attempt,
+                max_attempts: max_attempts
+              })
+
+            maybe_retry_step(timeout_state, version, asset_ref, stage, attempt, true, [])
+
+          {:error, reason} ->
+            cancelled =
+              cancel_execution_ids(
+                running_with_execution,
+                [execution_id],
+                %{
+                  kind: :await_error,
+                  asset_ref: asset_ref,
+                  stage: stage,
+                  attempt: attempt,
+                  error: reason
+                },
+                runner_client,
+                runner_opts
+              )
+
+            failed =
+              RunState.transition(cancelled,
+                status: :error,
+                runner_execution_id: nil,
+                error: reason
+              )
+
+            :ok =
+              Projector.persist_snapshot_with_event(failed, :step_failed, %{
+                asset_ref: asset_ref,
+                error: reason,
+                stage: stage,
+                attempt: attempt,
+                max_attempts: max_attempts
+              })
+
+            maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
+        end
+      else
         {:error, reason} ->
           failed =
             RunState.transition(run_state,

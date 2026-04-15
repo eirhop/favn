@@ -273,6 +273,92 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientTimeoutCancelableStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, execution_id(work)}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :timeout}
+
+    @impl true
+    def cancel_work(execution_id, reason, opts) do
+      cancel_log = Keyword.fetch!(opts, :cancel_log)
+      Agent.update(cancel_log, fn values -> [{execution_id, reason} | values] end)
+      :ok
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+  end
+
+  defmodule RunnerClientPartialSubmitStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts) do
+      if work.asset_ref == {MyApp.Assets.Silver, :asset} do
+        {:error, :submit_failed}
+      else
+        {:ok, execution_id(work)}
+      end
+    end
+
+    @impl true
+    def await_result(execution_id, _timeout, _opts) do
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(execution_id, :ok)],
+         metadata: %{stub: :partial_submit}
+       }}
+    end
+
+    @impl true
+    def cancel_work(execution_id, reason, opts) do
+      cancel_log = Keyword.fetch!(opts, :cancel_log)
+      Agent.update(cancel_log, fn values -> [{execution_id, reason} | values] end)
+      :ok
+    end
+
+    defp asset_result(execution_id, status) do
+      ref = execution_ref(execution_id)
+
+      %Favn.Run.AssetResult{
+        ref: ref,
+        stage: 0,
+        status: status,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: nil,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -500,6 +586,74 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Enum.count(events, &(&1.event_type == :step_started)) == 2
   end
 
+  test "cancels timed-out execution before retry/terminal transition" do
+    version = manifest_version("mv_timeout_cancel")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_timeout_cancel")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if Process.alive?(cancel_log) do
+        Agent.stop(cancel_log)
+      end
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientTimeoutCancelableStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, max_attempts: 1)
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :timed_out
+
+    forwarded = Agent.get(cancel_log, & &1)
+    assert length(forwarded) == 1
+  end
+
+  test "cancels already-submitted work when stage submit fails" do
+    version = manifest_version("mv_partial_submit_cancel")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_partial_submit_cancel")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if Process.alive?(cancel_log) do
+        Agent.stop(cancel_log)
+      end
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientPartialSubmitStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run([
+               {MyApp.Assets.Raw, :asset},
+               {MyApp.Assets.Silver, :asset}
+             ])
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :error
+    assert run.error == :submit_failed
+
+    forwarded = Agent.get(cancel_log, & &1)
+    assert forwarded != []
+  end
+
   test "cancels in-flight run and forwards cancel to runner" do
     version = manifest_version("mv_cancel")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -574,6 +728,29 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert rerun.parent_run_id == source_run_id
     assert rerun.root_run_id == source_run_id
     assert rerun.lineage_depth == source_run.lineage_depth + 1
+  end
+
+  test "pipeline rerun replays original target selection" do
+    version = manifest_version("mv_rerun_pipeline_replay")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_rerun_pipeline_replay")
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_pipeline_run([
+               {MyApp.Assets.Raw, :asset},
+               {MyApp.Assets.Silver, :asset}
+             ])
+
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+    assert source_run.status == :ok
+    assert source_run.target_refs == [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}]
+
+    assert {:ok, rerun_id} = FavnOrchestrator.rerun(source_run_id)
+    assert {:ok, rerun} = await_terminal_run(rerun_id)
+
+    assert rerun.status == :ok
+    assert rerun.target_refs == source_run.target_refs
+    assert length(rerun.result.asset_results) == 2
   end
 
   test "rerun rejects manifest override mismatch" do

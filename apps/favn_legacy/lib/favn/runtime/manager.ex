@@ -78,7 +78,7 @@ defmodule Favn.Runtime.Manager do
         {:ok, %{status: :cancelled}} ->
           {:ok, :cancelled}
 
-        {:ok, %{status: :running, terminal_reason: %{kind: :timed_out}}} ->
+        {:ok, %{terminal_reason: %{status: :timed_out}}} ->
           {:error, :timeout_in_progress}
 
         {:ok, %{status: :running}} ->

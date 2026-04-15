@@ -4,8 +4,12 @@ defmodule Favn.Storage do
   """
 
   alias Favn.Run
+  alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage, as: OrchestratorStorage
+  alias FavnOrchestrator.Storage.Adapter.Memory, as: MemoryAdapter
 
-  @default_adapter Favn.Storage.Adapter.Memory
+  @default_adapter MemoryAdapter
 
   @type error :: :not_found | :invalid_opts | {:store_error, term()}
 
@@ -13,65 +17,116 @@ defmodule Favn.Storage do
   def child_specs do
     adapter = adapter_module()
 
-    with :ok <- validate_adapter(adapter),
-         child_spec_result <- adapter.child_spec(adapter_opts()),
-         {:ok, child_spec} <- normalize_child_spec_result(child_spec_result) do
-      {:ok, maybe_child_to_list(child_spec)}
-    else
-      {:error, {:store_error, _reason}} = error -> error
-      {:error, reason} -> {:error, {:store_error, reason}}
+    with :ok <- validate_adapter(adapter) do
+      if adapter_started?(adapter) do
+        {:ok, []}
+      else
+        OrchestratorStorage.child_specs()
+        |> normalize_result()
+      end
     end
   end
 
   @spec put_run(Run.t()) :: :ok | {:error, error()}
   def put_run(%Run{} = run) do
-    adapter_call(fn adapter, opts -> adapter.put_run(run, opts) end)
+    with {:ok, run_state} <- to_run_state(run),
+         :ok <- OrchestratorStorage.put_run(run_state) do
+      :ok
+    else
+      {:error, reason} -> normalize_error(reason)
+    end
   end
 
-  @spec get_run(term()) :: {:ok, Run.t()} | {:error, error()}
-  def get_run(run_id) do
-    adapter_call(fn adapter, opts -> adapter.get_run(run_id, opts) end)
+  @spec get_run(term()) :: {:ok, term()} | {:error, error()}
+  def get_run(run_id) when is_binary(run_id) do
+    case OrchestratorStorage.get_run(run_id) do
+      {:ok, run_state} -> {:ok, Projector.project_run(run_state)}
+      {:error, reason} -> normalize_error(reason)
+    end
   end
 
-  @spec list_runs(Favn.list_runs_opts()) :: {:ok, [Run.t()]} | {:error, error()}
+  def get_run(_run_id), do: {:error, :invalid_opts}
+
+  @spec list_runs(Favn.list_runs_opts()) :: {:ok, [term()]} | {:error, error()}
   def list_runs(opts \\ []) when is_list(opts) do
-    with :ok <- validate_list_opts(opts) do
-      adapter_call(fn adapter, adapter_opts -> adapter.list_runs(opts, adapter_opts) end)
+    with :ok <- validate_list_opts(opts),
+         {:ok, run_states} <- OrchestratorStorage.list_runs(opts) do
+      {:ok, Projector.project_runs(run_states)}
+    else
+      {:error, reason} -> normalize_error(reason)
     end
   end
 
   @spec adapter_module() :: module()
   def adapter_module do
-    Application.get_env(:favn, :storage_adapter, @default_adapter)
+    Application.get_env(:favn_orchestrator, :storage_adapter, @default_adapter)
   end
 
   @spec adapter_opts() :: keyword()
   def adapter_opts do
-    Application.get_env(:favn, :storage_adapter_opts, [])
+    Application.get_env(:favn_orchestrator, :storage_adapter_opts, [])
   end
 
   @spec validate_adapter(module()) :: :ok | {:error, error()}
   def validate_adapter(adapter) when is_atom(adapter) do
-    required_callbacks = [
-      {:child_spec, 1},
-      {:scheduler_child_spec, 1},
-      {:put_run, 2},
-      {:get_run, 2},
-      {:list_runs, 2},
-      {:put_scheduler_state, 2},
-      {:get_scheduler_state, 3}
-    ]
-
-    with {:module, ^adapter} <- Code.ensure_loaded(adapter),
-         true <-
-           Enum.all?(required_callbacks, fn {name, arity} ->
-             function_exported?(adapter, name, arity)
-           end) do
-      :ok
-    else
-      _ -> {:error, {:store_error, {:invalid_storage_adapter, adapter}}}
+    case OrchestratorStorage.validate_adapter(adapter) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:store_error, reason}}
     end
   end
+
+  def validate_adapter(_adapter), do: {:error, {:store_error, :invalid_storage_adapter}}
+
+  defp to_run_state(%Run{} = run) do
+    with :ok <- validate_run_identity(run.id, run.manifest_version_id, run.manifest_content_hash),
+         :ok <- validate_asset_ref(run.asset_ref) do
+      now = DateTime.utc_now()
+
+      run_state =
+        %RunState{
+          id: run.id,
+          manifest_version_id: run.manifest_version_id,
+          manifest_content_hash: run.manifest_content_hash,
+          asset_ref: run.asset_ref,
+          target_refs: normalize_refs(run.target_refs),
+          plan: run.plan,
+          status: normalize_status(run.status),
+          event_seq: normalize_event_seq(run.event_seq),
+          params: normalize_map(run.params),
+          trigger: normalize_map(run.trigger),
+          metadata: normalize_map(run.metadata),
+          submit_kind: normalize_submit_kind(run.submit_kind),
+          rerun_of_run_id: normalize_optional_string(run.rerun_of_run_id),
+          parent_run_id: normalize_optional_string(run.parent_run_id),
+          root_run_id: normalize_optional_string(run.root_run_id),
+          lineage_depth: normalize_non_neg_int(run.lineage_depth, 0),
+          max_attempts: normalize_max_attempts(run.retry_policy),
+          retry_backoff_ms: normalize_non_neg_int(run.retry_backoff_ms, 0),
+          timeout_ms: normalize_positive_int(run.timeout_ms, 5_000),
+          runner_execution_id: normalize_optional_string(run.runner_execution_id),
+          result: run.result,
+          error: run.error,
+          inserted_at: run.started_at || now,
+          updated_at: run.finished_at || now
+        }
+        |> RunState.with_snapshot_hash()
+
+      {:ok, run_state}
+    end
+  end
+
+  defp validate_run_identity(id, manifest_version_id, manifest_content_hash)
+       when is_binary(id) and id != "" and is_binary(manifest_version_id) and
+              manifest_version_id != "" and is_binary(manifest_content_hash) and
+              manifest_content_hash != "" do
+    :ok
+  end
+
+  defp validate_run_identity(_id, _manifest_version_id, _manifest_content_hash),
+    do: {:error, :invalid_opts}
+
+  defp validate_asset_ref({module, name}) when is_atom(module) and is_atom(name), do: :ok
+  defp validate_asset_ref(_asset_ref), do: {:error, :invalid_opts}
 
   defp validate_list_opts(opts) do
     status = Keyword.get(opts, :status)
@@ -89,37 +144,60 @@ defmodule Favn.Storage do
     end
   end
 
-  defp adapter_call(fun) when is_function(fun, 2) do
-    adapter = adapter_module()
+  defp normalize_result({:ok, _value} = ok), do: ok
+  defp normalize_result({:error, reason}), do: normalize_error(reason)
 
-    case validate_adapter(adapter) do
-      :ok -> safe_adapter_call(adapter, fun)
-      {:error, reason} -> {:error, reason}
+  defp adapter_started?(adapter) when is_atom(adapter) do
+    Process.whereis(adapter) != nil
+  end
+
+  defp normalize_error(:not_found), do: {:error, :not_found}
+  defp normalize_error(:invalid_opts), do: {:error, :invalid_opts}
+  defp normalize_error({:store_error, _reason} = error), do: {:error, error}
+  defp normalize_error(reason), do: {:error, {:store_error, reason}}
+
+  defp normalize_status(:ok), do: :ok
+  defp normalize_status(:error), do: :error
+  defp normalize_status(:cancelled), do: :cancelled
+  defp normalize_status(:timed_out), do: :timed_out
+  defp normalize_status(_status), do: :running
+
+  defp normalize_event_seq(value) when is_integer(value) and value > 0, do: value
+  defp normalize_event_seq(_value), do: 1
+
+  defp normalize_submit_kind(:pipeline), do: :pipeline
+  defp normalize_submit_kind(:rerun), do: :rerun
+  defp normalize_submit_kind(_submit_kind), do: :manual
+
+  defp normalize_map(value) when is_map(value), do: value
+  defp normalize_map(_value), do: %{}
+
+  defp normalize_refs(value) when is_list(value) do
+    value
+    |> Enum.filter(fn
+      {module, name} when is_atom(module) and is_atom(name) -> true
+      _other -> false
+    end)
+    |> Enum.uniq()
+  end
+
+  defp normalize_refs(_value), do: []
+
+  defp normalize_optional_string(value) when is_binary(value) and value != "", do: value
+  defp normalize_optional_string(_value), do: nil
+
+  defp normalize_non_neg_int(value, _default) when is_integer(value) and value >= 0, do: value
+  defp normalize_non_neg_int(_value, default), do: default
+
+  defp normalize_positive_int(value, _default) when is_integer(value) and value > 0, do: value
+  defp normalize_positive_int(_value, default), do: default
+
+  defp normalize_max_attempts(retry_policy) when is_map(retry_policy) do
+    case Map.get(retry_policy, :max_attempts) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> 1
     end
   end
 
-  defp safe_adapter_call(adapter, fun) do
-    adapter
-    |> fun.(adapter_opts())
-    |> normalize_result()
-  rescue
-    error -> {:error, {:store_error, {:raised, error}}}
-  catch
-    :throw, reason -> {:error, {:store_error, {:thrown, reason}}}
-    :exit, reason -> {:error, {:store_error, {:exited, reason}}}
-  end
-
-  defp normalize_result(:ok), do: :ok
-  defp normalize_result({:ok, _value} = ok), do: ok
-  defp normalize_result({:error, :not_found}), do: {:error, :not_found}
-  defp normalize_result({:error, :invalid_opts}), do: {:error, :invalid_opts}
-  defp normalize_result({:error, {:store_error, _reason}} = error), do: error
-  defp normalize_result({:error, reason}), do: {:error, {:store_error, reason}}
-
-  defp maybe_child_to_list(:none), do: []
-  defp maybe_child_to_list(value), do: [value]
-  defp normalize_child_spec_result(:none), do: {:ok, :none}
-  defp normalize_child_spec_result({:ok, child_spec}), do: {:ok, child_spec}
-  defp normalize_child_spec_result({:error, reason}), do: {:error, reason}
-  defp normalize_child_spec_result(other), do: {:error, {:invalid_child_spec_response, other}}
+  defp normalize_max_attempts(_retry_policy), do: 1
 end

@@ -381,6 +381,7 @@ defmodule FavnOrchestrator.RunManager do
     max_attempts = Keyword.get(opts, :max_attempts, source_run.max_attempts)
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, source_run.retry_backoff_ms)
     timeout_ms = Keyword.get(opts, :timeout_ms, source_run.timeout_ms)
+    {rerun_asset_ref, rerun_targets, rerun_dependencies} = replay_selection(source_run)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
@@ -388,26 +389,43 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
          :ok <- validate_timeout_ms(timeout_ms),
+         :ok <- validate_dependencies(rerun_dependencies),
          :ok <- validate_rerun_manifest_pin(opts, source_run),
          {:ok, version} <- ManifestStore.get_manifest(source_run.manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
-         {:ok, _asset} <- Index.fetch_asset(index, source_run.asset_ref),
+         {:ok, _asset} <- Index.fetch_asset(index, rerun_asset_ref),
+         :ok <- ensure_assets_exist(index, rerun_targets),
          {:ok, plan} <-
-           Planner.plan(source_run.asset_ref, graph_index: index.graph_index, dependencies: :all) do
+           Planner.plan(rerun_targets,
+             graph_index: index.graph_index,
+             dependencies: rerun_dependencies
+           ) do
       rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
       root_run_id = source_run.root_run_id || source_run.id
+      metadata_with_source = Map.put(metadata, :source_run_id, source_run.id)
+
+      metadata_with_replay =
+        if source_run.submit_kind == :pipeline do
+          Map.merge(metadata_with_source, %{
+            replay_submit_kind: :pipeline,
+            pipeline_target_refs: rerun_targets,
+            pipeline_dependencies: rerun_dependencies
+          })
+        else
+          metadata_with_source
+        end
 
       run_state =
         RunState.new(
           id: run_id,
           manifest_version_id: source_run.manifest_version_id,
           manifest_content_hash: source_run.manifest_content_hash,
-          asset_ref: source_run.asset_ref,
+          asset_ref: rerun_asset_ref,
           target_refs: plan.target_refs,
           plan: plan,
           params: params,
           trigger: trigger,
-          metadata: Map.merge(metadata, %{source_run_id: source_run.id}),
+          metadata: metadata_with_replay,
           submit_kind: :rerun,
           rerun_of_run_id: rerun_of_run_id,
           parent_run_id: source_run.id,
@@ -421,6 +439,28 @@ defmodule FavnOrchestrator.RunManager do
       {:ok, run_state, version}
     end
   end
+
+  defp replay_selection(%RunState{submit_kind: :pipeline} = source_run) do
+    replay_targets =
+      case Map.get(source_run.metadata, :pipeline_target_refs) do
+        targets when is_list(targets) and targets != [] -> targets
+        _other -> source_run.target_refs
+      end
+
+    replay_asset_ref = List.first(replay_targets) || source_run.asset_ref
+
+    replay_dependencies =
+      normalize_dependencies(Map.get(source_run.metadata, :pipeline_dependencies))
+
+    {replay_asset_ref, replay_targets, replay_dependencies}
+  end
+
+  defp replay_selection(%RunState{} = source_run) do
+    {source_run.asset_ref, [source_run.asset_ref], :all}
+  end
+
+  defp normalize_dependencies(:none), do: :none
+  defp normalize_dependencies(_value), do: :all
 
   defp resolve_manifest_version_id(opts) when is_list(opts) do
     case Keyword.get(opts, :manifest_version_id) do

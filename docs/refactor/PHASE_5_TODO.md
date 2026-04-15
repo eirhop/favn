@@ -20,6 +20,7 @@ Phase 5 implementation is complete. This checklist records the delivered orchest
 - [x] Move `Favn.Scheduler.State` contract ownership out of `favn_legacy` and serve it from orchestrator-owned files.
 - [x] Keep `Favn.Scheduler` as a preserved `Favn.*` facade under the orchestrator owner app.
 - [x] Keep `Favn.Storage` as a preserved `Favn.*` facade under the orchestrator owner app.
+- [x] Align `Favn.Storage` adapter validation/defaults with `FavnOrchestrator.Storage` contract shape rather than legacy adapter callback assumptions.
 
 ## Orchestrator App Skeleton
 
@@ -66,6 +67,8 @@ Phase 5 implementation is complete. This checklist records the delivered orchest
 - [x] Recreate run cancellation handling in orchestrator ownership.
 - [x] Forward cancellation to in-flight runner executions.
 - [x] Keep retries and reruns pinned to the source run's manifest version by default.
+- [x] On timeout and partial stage-submit failures, best-effort cancel in-flight runner execution IDs before continuing retries or terminal transitions.
+- [x] Replay pipeline reruns from the original pipeline target selection/dependency mode rather than collapsing to a single `asset_ref`.
 
 ## Pipeline And Scheduler Support
 
