@@ -19,7 +19,7 @@ defmodule Favn.Submission do
   def render(asset_input, opts \\ []) do
     case normalize_input(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.render(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -27,7 +27,7 @@ defmodule Favn.Submission do
   def preview(asset_input, opts \\ []) do
     case normalize_input(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.preview(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -35,7 +35,7 @@ defmodule Favn.Submission do
   def explain(asset_input, opts \\ []) do
     case normalize_input(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.explain(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
+      {:error, error} -> {:error, error}
     end
   end
 
@@ -44,7 +44,7 @@ defmodule Favn.Submission do
   def materialize(asset_input, opts \\ []) do
     case normalize_input(asset_input) do
       {:ok, asset} -> SQLAssetRuntime.materialize(asset, opts)
-      {:error, %SQLAssetError{} = error} -> {:error, error}
+      {:error, error} -> {:error, error}
     end
   end
 

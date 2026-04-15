@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 2 in progress, Phase 3 implemented
+Phase 3 implemented, Phase 4 core execution boundary implemented (remaining cleanup in progress)
 
 ## Summary
 
@@ -418,6 +418,11 @@ Phase 3 implementation rule:
 
 ### Goal
 Separate execution from orchestration.
+
+Detailed implementation planning for this phase lives in:
+
+- `docs/refactor/PHASE_4_RUNNER_BOUNDARY_PLAN.md`
+- `docs/refactor/PHASE_4_TODO.md`
 
 ### Deliverables
 In `favn_runner`:

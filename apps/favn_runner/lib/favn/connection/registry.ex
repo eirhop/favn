@@ -12,29 +12,32 @@ defmodule Favn.Connection.Registry do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @spec list() :: [Resolved.t()]
-  def list do
-    GenServer.call(__MODULE__, :list)
+  @spec list(keyword()) :: [Resolved.t()]
+  def list(opts \\ []) when is_list(opts) do
+    GenServer.call(registry_name(opts), :list)
   end
 
-  @spec fetch(atom()) :: {:ok, Resolved.t()} | :error
-  def fetch(name) when is_atom(name) do
-    GenServer.call(__MODULE__, {:fetch, name})
+  @spec fetch(atom(), keyword()) :: {:ok, Resolved.t()} | :error
+  def fetch(name, opts \\ []) when is_atom(name) and is_list(opts) do
+    GenServer.call(registry_name(opts), {:fetch, name})
   end
 
-  @spec registered?(atom()) :: boolean()
-  def registered?(name) when is_atom(name) do
-    match?({:ok, _}, fetch(name))
+  @spec registered?(atom(), keyword()) :: boolean()
+  def registered?(name, opts \\ []) when is_atom(name) and is_list(opts) do
+    match?({:ok, _}, fetch(name, opts))
   end
 
   @doc false
-  @spec reload(%{atom() => Resolved.t()}) :: :ok
-  def reload(connections) when is_map(connections) do
-    GenServer.call(__MODULE__, {:reload, connections})
+  @spec reload(%{atom() => Resolved.t()}, keyword()) :: :ok
+  def reload(connections, opts \\ []) when is_map(connections) and is_list(opts) do
+    GenServer.call(registry_name(opts), {:reload, connections})
   end
+
+  defp registry_name(opts), do: Keyword.get(opts, :registry_name, __MODULE__)
 
   @impl true
   def init(opts) do

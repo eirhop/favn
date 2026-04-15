@@ -129,4 +129,17 @@ Notes:
   - `contracts/runner_event.ex`
 - Intended steady-state ownership remains: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane, and `favn_view` via orchestrator APIs only.
 - Phase 3 populated `apps/favn_core/lib/favn/` with canonical manifest schema/versioning, serializer/hash/compatibility logic, graph/planning helpers, SQL helper internals, and shared runner/orchestrator contract structs.
+- Phase 4 implementation grew `apps/favn_runner/lib/favn_runner/` around a small execution-owned set of modules such as a runner server, manifest store/resolver, worker supervision, and context builder.
+- Phase 4 implementation moved `Favn.Run.Context` and `Favn.Run.AssetResult` out of `favn_legacy` into `apps/favn_core/lib/favn/run/`, while runner-owned connection and SQL runtime modules moved into `apps/favn_runner/lib/favn/` under preserved `Favn.*` names.
+- Initial Phase 4 implementation now includes:
+  - `apps/favn_core/lib/favn/run/context.ex`
+  - `apps/favn_core/lib/favn/run/asset_result.ex`
+  - `apps/favn_runner/lib/favn_runner/server.ex`
+  - `apps/favn_runner/lib/favn_runner/manifest_store.ex`
+  - `apps/favn_runner/lib/favn_runner/manifest_resolver.ex`
+  - `apps/favn_runner/lib/favn_runner/context_builder.ex`
+  - `apps/favn_runner/lib/favn_runner/worker.ex`
+  - `apps/favn_runner/lib/favn_runner/event_sink.ex`
+- Connection runtime ownership moved to runner-owned files under `apps/favn_runner/lib/favn/connection/`.
+- SQL runtime execution ownership moved to runner-owned files under `apps/favn_runner/lib/favn/sql/` and `apps/favn_runner/lib/favn/sql_asset/` including `Favn.SQL.RuntimeBridge`.
 - New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.
