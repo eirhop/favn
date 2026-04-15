@@ -6,21 +6,24 @@
 
 ## Current Focus
 
-Favn is an asset-first orchestrator for ETL/ELT workloads.
+Favn `v0.5.0` is now a refactor release, not a hardening pass on the current monolith.
 
-- [x] Credo strict cleanup across runtime, storage, docs, fixtures, and tests
-- [x] Shared relation resolver extracted for `Favn.Assets.Compiler`, `Favn.MultiAsset`, and `Favn.SQLAsset`
-- [x] Shared compile-time DSL helper foundation extracted to `Favn.DSL.Compiler` (`Favn.Asset`, `Favn.MultiAsset`, `Favn.SQLAsset`, `Favn.SQL`)
-- [x] Canonical public connection inspection payload extracted to `Favn.Connection.Info`
+- [x] v0.5 roadmap replaced with the umbrella refactor plan in `docs/REFACTOR.md`
+- [x] Phase 0 umbrella app list defined
+- [x] Phase 0 dependency direction rules defined
+- [x] Phase 0 app responsibilities narrowed around authoring/core, orchestrator, runner, and view boundaries
+- [x] Phase 0 migration rules and legacy deletion criteria defined
 
-Near-term priority is a practical path to real usage:
+Near-term priority is to execute the refactor in the locked migration order:
 
-- working pipelines
-- working scheduler trigger
-- runtime windowing and backfills
-- reusable connection and adapter foundations
-- SQL assets with materializations, dependencies, and windowing
-- DuckDB as the first SQL backend
+- umbrella creation and legacy isolation
+- public DSL/domain/compiler extraction into `favn` and `favn_core`
+- manifest generation and manifest version pinning
+- separate runner boundary
+- separate orchestrator boundary
+- storage adapters for memory, SQLite, and Postgres
+- DuckDB as the first optional runner plugin
+- separate view runtime and local developer tooling
 
 ## Terminology
 
@@ -209,14 +212,37 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 
 ---
 
-## v0.5.0 — Hardening and Production Readiness
+## v0.5.0 — Umbrella Refactor
 
-**Status: Planned**
+**Status: In Progress**
 
-Goal: make single-node production usage reliable and inspectable.
+Goal: turn Favn into a manifest-first product with separate authoring, runner, orchestrator, and view boundaries.
+
+Pre-refactor groundwork already completed in the legacy runtime and to be carried forward during migration:
 
 - [x] PostgreSQL storage foundation architecture plan (`docs/POSTGRES_STORAGE_FOUNDATION_PLAN.md`)
 - [x] PostgreSQL storage adapter implementation
+
+- [x] Phase 0: freeze and reframe
+  - [x] old v0.5 roadmap marked as replaced
+  - [x] umbrella app list locked
+  - [x] dependency direction rules locked
+  - [x] app role boundaries locked (`favn_core` compiler/manifest, orchestrator-owned storage/APIs, runner-owned execution plugins, view-through-orchestrator)
+  - [x] migration rules locked
+  - [x] legacy deletion criteria defined
+- [x] Phase 1: create umbrella and isolate `favn_legacy`
+- [ ] Phase 2: move public DSL and domain/compiler foundation into `favn` and `favn_core`
+- [ ] Phase 3: implement manifest schema and manifest version pinning
+- [ ] Phase 4: build the runner boundary in `favn_runner`
+- [ ] Phase 5: build the orchestrator boundary in `favn_orchestrator`
+- [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
+- [ ] Phase 7: move DuckDB into `favn_duckdb`
+- [ ] Phase 8: add `favn_view`
+- [ ] Phase 9: ship developer tooling and packaging flows
+- [ ] Phase 10: cut over and delete legacy runtime paths
+
+Deferred until after the refactor unless needed to establish the new boundaries:
+
 - [ ] Queueing and admission control
 - [ ] Concurrency controls
 - [ ] Run deduplication / run keys
@@ -228,10 +254,7 @@ Goal: make single-node production usage reliable and inspectable.
 - [ ] Stronger test coverage for runtime, scheduler, windowing, and SQL execution
 - [ ] Operator-facing graph and run inspection foundation
 - [ ] DuckLake connection and snapshot foundation
-  - [ ] DuckLake catalog attach support (metadata/data path)
-  - [ ] Snapshot-aware execution (pin runs to snapshot or timestamp)
-  - [ ] Snapshot metadata exposed in runtime and provenance
-  - [ ] Basic snapshot introspection APIs
+- [ ] Advanced multi-node scheduling and resource-aware placement
 
 ---
 
@@ -239,7 +262,7 @@ Goal: make single-node production usage reliable and inspectable.
 
 **Status: Planned**
 
-Goal: stable, ergonomic, production-usable orchestration for Elixir and SQL assets.
+Goal: stable, ergonomic, production-usable orchestration on top of the refactored product architecture.
 
 - [ ] Stable asset authoring model
 - [ ] Stable pipeline authoring model
@@ -249,7 +272,8 @@ Goal: stable, ergonomic, production-usable orchestration for Elixir and SQL asse
 - [ ] Stable SQL asset authoring model
 - [ ] Stable materialization model
 - [ ] Stable dependency-driven execution for Elixir and SQL assets
-- [ ] Strong single-node production story
+- [ ] Stable single-node packaging
+- [ ] Stable split deployment packaging
 - [ ] Built-in storage options: memory, SQLite, Postgres
 - [ ] Clear documentation and graph-oriented developer experience
 - [ ] DuckLake advanced capabilities
@@ -269,5 +293,4 @@ Later, but not part of the immediate priority:
 - [ ] API trigger
 - [ ] Distributed multi-node execution
 - [ ] Resource-aware scheduling
-- [ ] `favn_view`
 - [ ] `favn_demo`

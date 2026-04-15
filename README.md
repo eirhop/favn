@@ -1,121 +1,29 @@
-<div align="center">
-  <img src="docs/images/favn-logo-transparent.png" alt="Favn logo" width="300" />
-  <p><strong>Asset-first orchestration for Elixir</strong></p>
-  <p>Define assets close to the business logic. Let Favn discover dependencies, plan runs, and execute deterministic workflows.</p>
-</div>
-
-## What Favn Is
-
-Favn is an Elixir library for defining, inspecting, and orchestrating data assets.
-It favors normal Elixir modules, explicit metadata, and dependency-driven execution over large framework-specific abstractions.
+# Favn
 
 ## Status
 
-Favn `v0.4.0` is complete.
+Favn `v0.5.0` refactor is in progress.
 
-- Private development project
-- Breaking changes are still allowed before `v1.0`
-- SQL assets, connections, schedules, pipelines, and windowing are available
+- umbrella structure is scaffolded under `apps/`
+- `apps/favn_legacy` contains the active v0.4 reference runtime during migration
+- `apps/favn` is only a Phase 1 scaffold and is not yet the migrated public API
+- Phase 0/1 contracts and migration rules are tracked in `docs/REFACTOR.md`
 
-## Choose Your DSL
+## Phase 1 Reality
 
-- `Favn.Asset`: preferred single-asset Elixir DSL
-- `Favn.SQLAsset`: preferred single-asset SQL DSL
-- `Favn.MultiAsset`: repetitive extraction assets with shared runtime logic
-- `Favn.Assets`: compact multi-asset function DSL; still supported, but use `Favn.Asset` for new single-asset modules
+- the old `Favn.*` runtime behavior currently comes from `apps/favn_legacy`
+- examples using `Favn.*` runtime APIs are legacy-reference examples for migration comparison
+- those examples are not yet the new Phase 1 source of truth for the migrated architecture
 
-## Quickstart
+## Scope For This Branch Of Development
 
-```elixir
-defmodule MyApp.Raw.Sales.Orders do
-  use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
-  use Favn.Asset
+- structural refactor preparation only
+- no Phase 2 runtime/DSL migration work merged into new owner apps yet
+- breaking changes remain allowed before `v1.0`
 
-  @doc "Extract raw orders"
-  @meta owner: "data-platform", category: :sales, tags: [:raw]
-  @relation true
-  def asset(ctx) do
-    _target = ctx.asset.relation
-    :ok
-  end
-end
-```
+## Documentation Pointers
 
-```elixir
-# config/config.exs
-import Config
-
-config :favn,
-  asset_modules: [MyApp.Raw.Sales.Orders]
-```
-
-```elixir
-Favn.list_assets()
-{:ok, run_id} = Favn.run_asset({MyApp.Raw.Sales.Orders, :asset})
-{:ok, run} = Favn.await_run(run_id)
-
-# Operator-facing connection inspection is redacted:
-[%Favn.Connection.Info{} = conn] = Favn.list_connections()
-{:ok, %Favn.Connection.Info{} = warehouse} = Favn.get_connection(:warehouse)
-```
-
-## Install And Configure
-
-Favn is currently installed from Git:
-
-```elixir
-defp deps do
-  [
-    {:favn, git: "https://github.com/eirhop/favn.git", tag: "v0.4.0"}
-  ]
-end
-```
-
-Minimal config:
-
-```elixir
-import Config
-
-config :favn,
-  asset_modules: [MyApp.Raw.Sales.Orders]
-```
-
-Add `pipeline_modules`, `connections`, `scheduler`, `storage_adapter`, and `storage_adapter_opts` as your app grows.
-
-PostgreSQL storage adapter example:
-
-```elixir
-config :favn,
-  storage_adapter: Favn.Storage.Adapter.Postgres,
-  storage_adapter_opts: [
-    repo_mode: :managed,
-    repo_config: [
-      hostname: "localhost",
-      port: 5432,
-      database: "favn",
-      username: "postgres",
-      password: "postgres",
-      pool_size: 10
-    ],
-    migration_mode: :manual
-  ]
-```
-
-## AI Agent Start Point
-
-Put this in `AGENTS.md`:
-
-```markdown
-When working in this repository, always start by reading the moduledoc for Favn.AgentGuide.
-Read it through terminal with following command: `mix run -e '{:docs_v1, _, _, _, mod_docs, _, _} = Code.fetch_docs(Favn.AgentGuide); IO.puts(mod_docs["en"])'`
-```
-
-## Read Next
-
-- `Favn`: public runtime and operator API facade
-- `Favn.AgentGuide`: routing guide for AI agents and new contributors
-- `Favn.Asset`: single-asset Elixir authoring
-- `Favn.SQLAsset`: single-asset SQL authoring
-- `Favn.MultiAsset`: repetitive extraction authoring
-- `Favn.Pipeline`: pipeline composition
-- `docs/FEATURES.md`: roadmap and feature status
+- `docs/REFACTOR.md` - locked architecture boundaries, migration rules, phase plan
+- `docs/FEATURES.md` - roadmap status
+- `docs/lib_structure.md` - umbrella library layout
+- `docs/test_structure.md` - umbrella test layout
