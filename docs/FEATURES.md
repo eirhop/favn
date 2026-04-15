@@ -236,7 +236,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] user business code can compile against `favn` for migrated authoring/manifest paths
   - [x] compile-time DSL usage through `favn` is established
   - [x] initial manifest generation foundation exists without starting runtime services
-  - [x] unsupported migrated runtime SQL paths fail deterministically with `{:error, :runtime_not_available}`
+  - [x] phase-2 baseline established deterministic fallback behavior for unavailable runtime SQL bridges (`{:error, :runtime_not_available}`)
   - [x] canonical domain/compiler foundation physically re-centered into `favn_core`
   - [x] post-Phase-2 re-thinning: move internal-only compiler/manifest/planning machinery back into `favn_core` while keeping `favn` as thin public surface
   - [ ] remove temporary migration seams once runner/runtime boundary ownership is finalized
@@ -255,6 +255,15 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] shared runner/orchestrator contract DTOs introduced in `favn_core`
   - [x] contract lock tests added before Phase 4 runner implementation
 - [ ] Phase 4: build the runner boundary in `favn_runner`
+  - [x] planning docs created: `docs/refactor/PHASE_4_RUNNER_BOUNDARY_PLAN.md`
+  - [x] implementation checklist created: `docs/refactor/PHASE_4_TODO.md`
+  - [x] architecture direction documented: registered pinned manifest versions, runner protocol server, runner-owned context/result contracts, same-node execution through the runner seam
+  - [x] first executable runner slice landed: `FavnRunner.Server` + worker supervision + in-memory `ManifestStore` + manifest/asset resolution
+  - [x] `Favn.Run.Context` and `Favn.Run.AssetResult` moved from `favn_legacy` to `favn_core`
+  - [x] elixir and source assets now execute through `favn_runner` contract APIs (`register_manifest/1`, `submit_work/2`, `await_result/2`, `run/2`)
+  - [x] runner-side connection runtime ownership moved from `favn_legacy` to `favn_runner` (`Favn.Connection.Loader/Registry/Resolved/Validator/Error/Sanitizer/Info`)
+  - [x] SQL runtime execution slice moved from `favn_legacy` to `favn_runner` (`Favn.SQLAsset.Runtime`, `Favn.SQL.RuntimeBridge`, and required `Favn.SQL.*` runtime modules)
+  - [x] runtime SQL bridge paths now return normalized `%Favn.SQL.Error{}` values when runtime bridge code is present but configuration/session inputs are invalid
 - [ ] Phase 5: build the orchestrator boundary in `favn_orchestrator`
 - [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
 - [ ] Phase 7: move DuckDB into `favn_duckdb`
@@ -267,6 +276,8 @@ Detailed migration planning for the current refactor slices lives in:
 - `docs/refactor/PHASE_2_MIGRATION_PLAN.md`
 - `docs/refactor/PHASE_3_MANIFEST_VERSIONING_PLAN.md`
 - `docs/refactor/PHASE_3_TODO.md`
+- `docs/refactor/PHASE_4_RUNNER_BOUNDARY_PLAN.md`
+- `docs/refactor/PHASE_4_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 

@@ -1,18 +1,64 @@
 defmodule FavnRunner do
   @moduledoc """
-  Documentation for `FavnRunner`.
+  Runner boundary facade for manifest-pinned execution.
   """
+
+  alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerWork
+  alias Favn.Manifest.Version
+  alias FavnRunner.Server
+
+  @type execution_id :: String.t()
 
   @doc """
-  Hello world.
+  Registers one pinned manifest version in the runner.
+  """
+  @spec register_manifest(Version.t()) :: :ok | {:error, term()}
+  def register_manifest(%Version{} = version), do: Server.register_manifest(version)
 
-  ## Examples
+  @doc """
+  Submits one manifest-pinned work request for asynchronous execution.
+  """
+  @spec submit_work(RunnerWork.t(), keyword()) :: {:ok, execution_id()} | {:error, term()}
+  def submit_work(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
+    Server.submit_work(work, opts)
+  end
 
-      iex> FavnRunner.hello()
-      :world
+  @doc """
+  Waits for one execution result.
+  """
+  @spec await_result(execution_id(), timeout()) :: {:ok, RunnerResult.t()} | {:error, term()}
+  def await_result(execution_id, timeout \\ 5_000)
+
+  def await_result(execution_id, timeout)
+      when is_binary(execution_id) and is_integer(timeout) and timeout > 0 do
+    Server.await_result(execution_id, timeout)
+  end
+
+  def await_result(_execution_id, _timeout), do: {:error, :invalid_await_args}
+
+  @doc """
+  Cancels one in-flight execution.
+  """
+  @spec cancel_work(execution_id(), map()) :: :ok | {:error, term()}
+  def cancel_work(execution_id, reason \\ %{})
+
+  def cancel_work(execution_id, reason) when is_binary(execution_id) and is_map(reason) do
+    Server.cancel_work(execution_id, reason)
+  end
+
+  def cancel_work(_execution_id, _reason), do: {:error, :invalid_cancel_args}
+
+  @doc """
+  Runs one work request synchronously through the same runner server boundary.
 
   """
-  def hello do
-    :world
+  @spec run(RunnerWork.t(), keyword()) :: {:ok, RunnerResult.t()} | {:error, term()}
+  def run(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    with {:ok, execution_id} <- submit_work(work, opts) do
+      await_result(execution_id, timeout)
+    end
   end
 end

@@ -74,11 +74,20 @@ defmodule Favn.DSLCompilerTest do
     assert asset.type == :sql
   end
 
-  test "phase 2 runtime sql paths fail deterministically" do
-    assert {:error, :runtime_not_available} = Favn.SQL.connect(:warehouse)
-    assert {:error, :runtime_not_available} = Favn.SQL.query(:session, "select 1")
-    assert {:error, :runtime_not_available} = Favn.SQL.materialize(:session, :plan)
-    assert {:error, :runtime_not_available} = Favn.SQL.get_relation(:session, :relation)
-    assert {:error, :runtime_not_available} = Favn.SQL.columns(:session, :relation)
+  test "runtime sql bridge now fails with normalized sql errors" do
+    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :connect}} =
+             Favn.SQL.connect(:warehouse)
+
+    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
+             Favn.SQL.query(:session, "select 1")
+
+    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
+             Favn.SQL.materialize(:session, :plan)
+
+    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
+             Favn.SQL.get_relation(:session, :relation)
+
+    assert {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}} =
+             Favn.SQL.columns(:session, :relation)
   end
 end

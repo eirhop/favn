@@ -224,7 +224,12 @@ defmodule Favn.SQL do
 
   @doc false
   @spec disconnect(term()) :: :ok
-  def disconnect(_session), do: :ok
+  def disconnect(session) do
+    case runtime_bridge_call(:disconnect, [session]) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
 
   @doc false
   @spec get_relation(term(), term()) :: {:ok, term() | nil} | {:error, term()}
@@ -244,7 +249,12 @@ defmodule Favn.SQL do
     if function_exported?(bridge, function_name, length(args)) do
       apply(bridge, function_name, args)
     else
-      {:error, :runtime_not_available}
+      with {:module, ^bridge} <- Code.ensure_loaded(bridge),
+           true <- function_exported?(bridge, function_name, length(args)) do
+        apply(bridge, function_name, args)
+      else
+        _ -> {:error, :runtime_not_available}
+      end
     end
   end
 

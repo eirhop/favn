@@ -72,3 +72,14 @@ Notes:
 - `apps/favn_core/test/manifest/` now includes `build_test.exs` and `graph_test.exs` in addition to serializer/version/identity/compatibility coverage.
 - `apps/favn_core/test/contracts/contract_lock_test.exs` now locks runner contract key shapes before Phase 4 runner work.
 - Boundary-leak cleanup coverage now includes `apps/favn_core/test/boundary_explicit_inputs_test.exs` and `apps/favn/test/boundary_defaults_test.exs`.
+- Phase 4 grew `apps/favn_runner/test/` around manifest registration, manifest resolution, worker execution, connection runtime ownership, SQL asset execution, and same-node runner integration.
+- Phase 4 also added `apps/favn_core/test/run/` for the shared `Favn.Run.Context` and `Favn.Run.AssetResult` contracts after moving them out of legacy.
+- Initial Phase 4 tests now include:
+  - `apps/favn_core/test/run/context_test.exs`
+  - `apps/favn_core/test/run/asset_result_test.exs`
+  - `apps/favn_runner/test/manifest_store_test.exs`
+  - `apps/favn_runner/test/manifest_resolver_test.exs`
+  - `apps/favn_runner/test/server_test.exs`
+  - `apps/favn_runner/test/worker_test.exs`
+  - `apps/favn_runner/test/execution/sql_asset_test.exs`
+  - `apps/favn_runner/test/favn_runner_test.exs` for same-node manifest registration + runner execution flow
