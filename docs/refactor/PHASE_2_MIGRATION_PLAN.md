@@ -4,6 +4,8 @@
 
 Planned on branch `feature/phase-2-migration-plan`.
 
+Implementation note: current branch prioritizes public namespace ownership in `favn` for Phase 2. Runtime execution remains legacy-owned, and unsupported runtime paths in migrated SQL APIs fail deterministically with `{:error, :runtime_not_available}`.
+
 ## Goal
 
 Make user business modules compile against `favn`, build a manifest from authored modules without starting runtime services, and move the stable authoring/domain surface out of `favn_legacy` before runner/orchestrator work begins.

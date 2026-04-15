@@ -5,12 +5,9 @@ This document maps the umbrella library layout after v0.5 Phase 1.
 ```text
 apps/
 ├── favn/lib/
-│   └── favn/
-│       └── public_scaffold.ex
-├── favn_core/lib/
 │   ├── favn.ex
-│   ├── favn_core.ex
 │   └── favn/
+│       ├── public_scaffold.ex
 │       ├── asset.ex
 │       ├── assets.ex
 │       ├── connection.ex
@@ -37,6 +34,8 @@ apps/
 │       ├── sql_asset/
 │       ├── triggers/
 │       └── window/
+├── favn_core/lib/
+│   └── favn_core.ex
 ├── favn_runner/lib/
 │   ├── favn_runner.ex
 │   └── favn_runner/application.ex
@@ -92,5 +91,6 @@ apps/
 Notes:
 
 - `favn_legacy` is the active v0.4 reference runtime during migration.
-- Phase 2 migration currently moves DSL/domain/compiler foundations into `favn_core` first, with `favn` acting as the public package wrapper.
+- Phase 2 migration currently establishes public DSL/facade ownership under `favn`.
+- Runtime execution APIs remain legacy-owned while compile-time/manifest foundations are migrated.
 - New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.

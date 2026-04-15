@@ -35,7 +35,7 @@ defmodule FavnLegacy.MixProject do
 
   defp deps do
     [
-      {:favn_core, in_umbrella: true},
+      {:favn, in_umbrella: true},
       {:telemetry, "~> 1.3.0"},
       {:ecto, "~> 3.13.5"},
       {:ecto_sql, "~> 3.13.4"},

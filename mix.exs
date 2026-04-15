@@ -18,15 +18,15 @@ defmodule FavnUmbrella.MixProject do
   defp aliases do
     [
       test: [
-        "do --app favn_test_support test",
-        "do --app favn_core test",
-        "do --app favn test",
-        "do --app favn_runner test",
-        "do --app favn_orchestrator test",
-        "do --app favn_view test",
-        "do --app favn_storage_postgres test",
-        "do --app favn_storage_sqlite test",
-        "do --app favn_duckdb test"
+        "cmd --app favn_test_support mix test",
+        "cmd --app favn_core mix test",
+        "cmd --app favn mix test",
+        "cmd --app favn_runner mix test",
+        "cmd --app favn_orchestrator mix test",
+        "cmd --app favn_view mix test",
+        "cmd --app favn_storage_postgres mix test",
+        "cmd --app favn_storage_sqlite mix test",
+        "cmd --app favn_duckdb mix test"
       ]
     ]
   end

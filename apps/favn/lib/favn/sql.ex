@@ -206,32 +206,20 @@ defmodule Favn.SQL do
 
   @doc false
   @spec connect(term(), opts()) :: {:ok, term()} | {:error, term()}
-  def connect(_connection, _opts \\ []) do
-    if runtime_bridge_enabled?() do
-      {:ok, %{bridge: :phase_2}}
-    else
-      {:error, :runtime_not_available}
-    end
+  def connect(connection, opts \\ []) do
+    runtime_bridge_call(:connect, [connection, opts])
   end
 
   @doc false
   @spec query(term(), iodata(), opts()) :: {:ok, term()} | {:error, term()}
-  def query(_session, _statement, _opts \\ []) do
-    if runtime_bridge_enabled?() do
-      {:ok, runtime_result(:query)}
-    else
-      {:error, :runtime_not_available}
-    end
+  def query(session, statement, opts \\ []) do
+    runtime_bridge_call(:query, [session, statement, opts])
   end
 
   @doc false
   @spec materialize(term(), term(), opts()) :: {:ok, term()} | {:error, term()}
-  def materialize(_session, _write_plan, _opts \\ []) do
-    if runtime_bridge_enabled?() do
-      {:ok, runtime_result(:materialize)}
-    else
-      {:error, :runtime_not_available}
-    end
+  def materialize(session, write_plan, opts \\ []) do
+    runtime_bridge_call(:materialize, [session, write_plan, opts])
   end
 
   @doc false
@@ -240,44 +228,23 @@ defmodule Favn.SQL do
 
   @doc false
   @spec get_relation(term(), term()) :: {:ok, term() | nil} | {:error, term()}
-  def get_relation(_session, _relation) do
-    if runtime_bridge_enabled?() do
-      if rem(System.unique_integer([:positive]), 2) == 0 do
-        {:ok, nil}
-      else
-        {:ok, %{name: "placeholder_relation"}}
-      end
-    else
-      {:error, :runtime_not_available}
-    end
+  def get_relation(session, relation) do
+    runtime_bridge_call(:get_relation, [session, relation])
   end
 
   @doc false
   @spec columns(term(), term()) :: {:ok, [term()]} | {:error, term()}
-  def columns(_session, _relation) do
-    if runtime_bridge_enabled?() do
-      if rem(System.unique_integer([:positive]), 2) == 0 do
-        {:ok, []}
-      else
-        {:ok, [%{name: "window_column"}]}
-      end
+  def columns(session, relation) do
+    runtime_bridge_call(:columns, [session, relation])
+  end
+
+  defp runtime_bridge_call(function_name, args) do
+    bridge = Module.concat(Favn.SQL, RuntimeBridge)
+
+    if function_exported?(bridge, function_name, length(args)) do
+      apply(bridge, function_name, args)
     else
       {:error, :runtime_not_available}
-    end
-  end
-
-  defp runtime_bridge_enabled? do
-    System.get_env("FAVN_PHASE2_RUNTIME_BRIDGE") == "1" or
-      rem(System.unique_integer([:positive]), 2) == 0
-  end
-
-  defp runtime_result(command) do
-    result_module = Module.concat(Favn.SQL, Result)
-
-    if Code.ensure_loaded?(result_module) and function_exported?(result_module, :__struct__, 0) do
-      struct(result_module, rows: [], columns: [], rows_affected: 0, command: command)
-    else
-      %{rows: [], columns: [], rows_affected: 0, command: command}
     end
   end
 
