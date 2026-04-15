@@ -88,12 +88,23 @@ Notes:
   - `apps/favn_core/test/manifest/index_test.exs`
   - `apps/favn_core/test/manifest/pipeline_resolver_test.exs`
 - Initial Phase 5 orchestrator runtime tests now include:
+  - `apps/favn_orchestrator/test/integration/storage_adapter_contract_test.exs`
+  - `apps/favn_orchestrator/test/storage/manifest_codec_test.exs`
+  - `apps/favn_orchestrator/test/storage/run_state_codec_test.exs`
+  - `apps/favn_orchestrator/test/storage/run_event_codec_test.exs`
+  - `apps/favn_orchestrator/test/storage/scheduler_state_codec_test.exs`
   - `apps/favn_orchestrator/test/storage/memory_adapter_test.exs`
+  - `apps/favn_orchestrator/test/storage/write_semantics_test.exs`
   - `apps/favn_orchestrator/test/storage_facade_test.exs`
   - `apps/favn_orchestrator/test/manifest_store_test.exs`
   - `apps/favn_orchestrator/test/run_manager_test.exs`
   - `apps/favn_orchestrator/test/run_server_test.exs`
   - `apps/favn_orchestrator/test/scheduler/runtime_test.exs`
+- Initial Phase 6 SQLite adapter tests now include:
+  - `apps/favn_storage_sqlite/test/adapter_test.exs`
+- Initial Phase 6 Postgres adapter tests now include:
+  - `apps/favn_storage_postgres/test/adapter_test.exs`
+  - `apps/favn_storage_postgres/test/integration/adapter_live_test.exs` (opt-in via `FAVN_POSTGRES_TEST_URL`)
 - Public facade runtime delegation tests now include:
   - `apps/favn/test/runtime_facade_test.exs`
   - coverage for scheduler runtime wrapper availability semantics in `apps/favn/test/runtime_facade_test.exs`

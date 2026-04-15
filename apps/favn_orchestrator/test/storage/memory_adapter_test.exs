@@ -44,6 +44,33 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
     assert {:error, :conflicting_snapshot} = Storage.put_run(conflict)
   end
 
+  test "normalizes and validates run events" do
+    event = %{sequence: 1, event_type: :run_started, occurred_at: DateTime.utc_now()}
+
+    assert :ok = Storage.append_run_event("run_1", event)
+    assert {:ok, [stored]} = Storage.list_run_events("run_1")
+    assert stored.run_id == "run_1"
+    assert stored.sequence == 1
+
+    assert {:error, {:invalid_run_event_field, :sequence, 0}} =
+             Storage.append_run_event("run_1", %{sequence: 0, event_type: :run_started})
+
+    assert {:error, :conflicting_event_sequence} =
+             Storage.append_run_event("run_1", %{sequence: 1, event_type: :run_updated})
+  end
+
+  test "validates scheduler state payload" do
+    key = {MyApp.Pipeline, :daily}
+    now = DateTime.utc_now()
+
+    assert :ok = Storage.put_scheduler_state(key, %{last_due_at: now, version: 1})
+    assert {:ok, stored} = Storage.get_scheduler_state(key)
+    assert stored.last_due_at == now
+
+    assert {:error, {:invalid_scheduler_field, :last_due_at, "bad"}} =
+             Storage.put_scheduler_state(key, %{last_due_at: "bad", version: 2})
+  end
+
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
       assets: [

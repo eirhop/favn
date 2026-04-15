@@ -5,7 +5,7 @@ defmodule FavnStoragePostgres.MixProject do
     [
       app: :favn_storage_postgres,
       version: "0.5.0-dev",
-      description: "Internal Postgres storage adapter scaffold for orchestrator",
+      description: "Postgres storage adapter for orchestrator runtime state",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -18,13 +18,15 @@ defmodule FavnStoragePostgres.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :ecto_sql]
     ]
   end
 
   defp deps do
     [
-      {:favn_orchestrator, in_umbrella: true}
+      {:favn_orchestrator, in_umbrella: true},
+      {:ecto_sql, "~> 3.13.4"},
+      {:postgrex, "~> 0.22"}
     ]
   end
 end

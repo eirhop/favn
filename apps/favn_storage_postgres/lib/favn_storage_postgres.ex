@@ -1,18 +1,5 @@
 defmodule FavnStoragePostgres do
   @moduledoc """
-  Documentation for `FavnStoragePostgres`.
+  Postgres storage adapter app for orchestrator control-plane persistence.
   """
-
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> FavnStoragePostgres.hello()
-      :world
-
-  """
-  def hello do
-    :world
-  end
 end

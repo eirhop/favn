@@ -22,7 +22,9 @@ Favn `v0.5.0` refactor is in progress.
 
 ## Current Focus
 
-- finish remaining Phase 4 cleanup and begin Phase 6 storage-adapter extraction
+- execute Phase 6 storage-adapter extraction for SQLite and Postgres
+- finish the small Phase 5 storage-boundary cleanup needed for real extracted adapters
+- bundle the remaining SQL manifest-execution and temporary seam cleanup work into Phase 7 alongside `favn_duckdb`
 - keep `favn` as the public DSL/facade package
 - re-center internal compiler / manifest / planning / shared-contract machinery into `favn_core`
 - use the now-locked manifest/version/runner contracts to migrate remaining control-plane behavior into `favn_orchestrator`
@@ -41,3 +43,59 @@ Favn `v0.5.0` refactor is in progress.
 - `docs/refactor/PHASE_4_TODO.md` - Phase 4 implementation checklist
 - `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md` - Phase 5 orchestrator architecture plan
 - `docs/refactor/PHASE_5_TODO.md` - Phase 5 implementation checklist
+- `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md` - Phase 6 storage adapter architecture plan
+- `docs/refactor/PHASE_6_TODO.md` - Phase 6 implementation checklist
+
+## Storage Adapter Verification Notes
+
+- SQLite adapter coverage runs in normal `mix test` execution.
+- Postgres live integration coverage is opt-in via `FAVN_POSTGRES_TEST_URL`:
+  - `mix test apps/favn_storage_postgres/test/integration/adapter_live_test.exs`
+
+## Storage Adapter Configuration
+
+Current extracted adapter module names during migration:
+
+- SQLite: `FavnStorageSqlite.Adapter`
+- Postgres: `FavnStoragePostgres.Adapter`
+
+SQLite local-dev persistence example:
+
+```elixir
+config :favn_orchestrator,
+  storage_adapter: FavnStorageSqlite.Adapter,
+  storage_adapter_opts: [
+    database: ".favn/dev.sqlite3",
+    migration_mode: :auto,
+    pool_size: 1
+  ]
+```
+
+Postgres managed mode example:
+
+```elixir
+config :favn_orchestrator,
+  storage_adapter: FavnStoragePostgres.Adapter,
+  storage_adapter_opts: [
+    repo_mode: :managed,
+    repo_config: [
+      hostname: "localhost",
+      database: "favn",
+      username: "postgres",
+      password: "postgres"
+    ],
+    migration_mode: :manual
+  ]
+```
+
+Postgres external mode example:
+
+```elixir
+config :favn_orchestrator,
+  storage_adapter: FavnStoragePostgres.Adapter,
+  storage_adapter_opts: [
+    repo_mode: :external,
+    repo: MyApp.Repo,
+    migration_mode: :manual
+  ]
+```

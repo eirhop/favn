@@ -18,12 +18,8 @@ defmodule Favn.Storage do
     adapter = adapter_module()
 
     with :ok <- validate_adapter(adapter) do
-      if adapter_started?(adapter) do
-        {:ok, []}
-      else
-        OrchestratorStorage.child_specs()
-        |> normalize_result()
-      end
+      OrchestratorStorage.child_specs()
+      |> normalize_result()
     end
   end
 
@@ -146,10 +142,6 @@ defmodule Favn.Storage do
 
   defp normalize_result({:ok, _value} = ok), do: ok
   defp normalize_result({:error, reason}), do: normalize_error(reason)
-
-  defp adapter_started?(adapter) when is_atom(adapter) do
-    Process.whereis(adapter) != nil
-  end
 
   defp normalize_error(:not_found), do: {:error, :not_found}
   defp normalize_error(:invalid_opts), do: {:error, :invalid_opts}

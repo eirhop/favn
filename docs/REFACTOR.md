@@ -481,11 +481,20 @@ Phase 5 cleanup completed after initial implementation:
 ### Goal
 Support realistic persistence modes without polluting core apps.
 
+Detailed implementation planning for this phase lives in:
+
+- `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md`
+- `docs/refactor/PHASE_6_TODO.md`
+
 ### Deliverables
 - `favn_storage_sqlite`
 - `favn_storage_postgres`
 
 Postgres should carry forward the production-oriented transactional/persistence model already being designed, but applied to the new orchestrator architecture rather than the old monolith. :contentReference[oaicite:7]{index=7}
+
+Phase 6 should begin with a small storage-boundary cleanup inherited from Phase 5 so the extracted adapter apps can own lifecycle and shared serialization semantics cleanly.
+
+The remaining SQL payload / manifest-pinned SQL execution work and the final temporary seam removal in `favn` should move with Phase 7, where DuckDB/plugin extraction and runner-side SQL ownership are already the main concern.
 
 ### Exit criteria
 - `mix favn.dev` works with memory by default
@@ -504,6 +513,12 @@ Prove the optional execution plugin model.
 - DuckDB runtime execution through runner plugin integration
 - plugin loading/configuration path through `favn`
 - initial public plugin packaging strategy
+
+Phase 7 should also absorb the remaining older carried-forward SQL follow-ups:
+
+- carry SQL asset execution payload in the manifest/core contract
+- enable manifest-pinned SQL asset execution in `favn_runner`
+- remove temporary migration/runtime seams in `favn` once the runner SQL path is fully manifest-backed
 
 ### Exit criteria
 - DuckDB is no longer mixed into the core/orchestrator boundary
