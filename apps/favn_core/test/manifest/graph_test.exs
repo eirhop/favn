@@ -36,4 +36,8 @@ defmodule Favn.Manifest.GraphTest do
 
     assert {:error, {:cycle, [{MyApp.A, :asset}, {MyApp.B, :asset}]}} = Graph.build(assets)
   end
+
+  test "returns tagged invalid input errors" do
+    assert {:error, {:invalid_assets_input, :invalid}} = Graph.build(:invalid)
+  end
 end

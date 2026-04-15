@@ -7,7 +7,8 @@ defmodule Favn.Manifest.Compatibility do
   @current_runner_contract_version 1
 
   @type error ::
-          {:missing_manifest_field, :schema_version | :runner_contract_version}
+          {:invalid_manifest_input, term()}
+          | {:missing_manifest_field, :schema_version | :runner_contract_version}
           | {:unsupported_schema_version, term(), pos_integer()}
           | {:unsupported_runner_contract_version, term(), pos_integer()}
 
@@ -17,7 +18,7 @@ defmodule Favn.Manifest.Compatibility do
   @spec current_runner_contract_version() :: pos_integer()
   def current_runner_contract_version, do: @current_runner_contract_version
 
-  @spec validate_manifest(map() | struct()) :: :ok | {:error, error()}
+  @spec validate_manifest(term()) :: :ok | {:error, error()}
   def validate_manifest(manifest) when is_map(manifest) or is_struct(manifest) do
     with {:ok, schema_version} <- read_required_field(manifest, :schema_version),
          {:ok, runner_contract_version} <-
@@ -26,6 +27,8 @@ defmodule Favn.Manifest.Compatibility do
       validate_runner_contract_version(runner_contract_version)
     end
   end
+
+  def validate_manifest(other), do: {:error, {:invalid_manifest_input, other}}
 
   @spec validate_schema_version(term()) :: :ok | {:error, error()}
   def validate_schema_version(@current_schema_version), do: :ok

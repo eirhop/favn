@@ -37,7 +37,7 @@ defmodule Favn.TestSetup do
     :ok = Registry.reload()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = GraphIndex.reload()
+      :ok = GraphIndex.reload(modules)
     end
 
     :ok
@@ -98,13 +98,17 @@ defmodule Favn.TestSetup do
     :ok = Registry.reload()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = GraphIndex.reload()
+      :ok = GraphIndex.reload(current_asset_modules())
     end
 
     :ok
   end
 
   defp restore_registry({:error, _reason}, _opts), do: :ok
+
+  defp current_asset_modules do
+    Application.get_env(:favn, :asset_modules, [])
+  end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
   defp restore_env(key, value), do: Application.put_env(:favn, key, value)

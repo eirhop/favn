@@ -58,6 +58,7 @@ Phase 3 implementation scope is complete. Remaining unchecked items are intentio
 - [x] Thin `apps/favn/lib/favn.ex` so it delegates build/version/serialization work to `favn_core`.
 - [x] Keep public DSL entrypoints in `apps/favn/lib/favn/*.ex` and point them at core-owned structs/helpers.
 - [x] Remove duplicate ownership so `Favn.*` internal modules do not compile from both apps at once.
+- [x] Remove remaining core boundary leaks so planner/graph/resolver run on explicit inputs rather than `:favn` app-config/facade callbacks.
 - [x] Leave runtime execution, scheduling, and storage files untouched for later phases.
 
 ## Shared Contracts For Later Runtime Split
@@ -82,6 +83,8 @@ Phase 3 implementation scope is complete. Remaining unchecked items are intentio
 - [x] Keep `apps/favn/test` focused on public facade/DSL tests only.
 - [x] Keep runtime, scheduler, storage, and SQL execution tests in `apps/favn_legacy/test` for now.
 - [x] Lock contract tests before starting Phase 4 runner implementation.
+- [x] Add explicit-input boundary tests for planner/resolver in `apps/favn_core/test`.
+- [x] Add public-facade default assembly tests in `apps/favn/test`.
 
 ## Docs Updates
 
