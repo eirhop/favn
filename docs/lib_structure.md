@@ -137,7 +137,6 @@ Notes:
   - `manifest/pipeline_resolver.ex`
 - Initial Phase 5 orchestrator runtime slice added control-plane modules in `apps/favn_orchestrator/lib/favn_orchestrator/`:
   - `storage.ex`
-  - `storage/adapter.ex`
   - `storage/adapter/memory.ex`
   - `manifest_store.ex`
   - `run_state.ex`
@@ -155,6 +154,7 @@ Notes:
   - `storage/adapter.ex`
   - `scheduler.ex`
   - `scheduler/state.ex`
+- `apps/favn_orchestrator/lib/favn/storage/adapter.ex` is now the single authoritative low-level storage adapter behaviour used by both `Favn.Storage` and `FavnOrchestrator.Storage`.
 - Initial Phase 4 implementation now includes:
   - `apps/favn_core/lib/favn/run/context.ex`
   - `apps/favn_core/lib/favn/run/asset_result.ex`

@@ -21,6 +21,7 @@ Phase 5 implementation is complete. This checklist records the delivered orchest
 - [x] Keep `Favn.Scheduler` as a preserved `Favn.*` facade under the orchestrator owner app.
 - [x] Keep `Favn.Storage` as a preserved `Favn.*` facade under the orchestrator owner app.
 - [x] Align `Favn.Storage` adapter validation/defaults and `Favn.Storage.Adapter` behaviour with `FavnOrchestrator.Storage` contract shape rather than legacy adapter callback assumptions.
+- [x] Collapse the duplicate `FavnOrchestrator.Storage.Adapter` behaviour into the single authoritative `Favn.Storage.Adapter` contract before Phase 6 plugin extraction.
 
 ## Orchestrator App Skeleton
 

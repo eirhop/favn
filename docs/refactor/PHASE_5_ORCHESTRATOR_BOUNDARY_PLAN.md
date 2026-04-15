@@ -191,7 +191,7 @@ Phase 5 needs a new storage boundary in `favn_orchestrator`, with one in-memory 
 
 Recommended behaviour:
 
-- `FavnOrchestrator.Storage.Adapter`
+- one authoritative low-level storage adapter contract, now served as `Favn.Storage.Adapter`
 
 Recommended callback groups:
 
@@ -401,6 +401,7 @@ Recommended Phase 5 work order:
 1. Add `Favn.Contracts.RunnerClient` plus manifest-native planning helpers in `favn_core`.
 2. Move `Favn.Run` and `Favn.Scheduler.State` into orchestrator ownership.
 3. Build the orchestrator storage adapter contract and in-memory adapter.
+   The later cleanup should leave only one authoritative low-level behaviour rather than parallel public/internal variants.
 4. Implement manifest persistence plus active-manifest selection.
 5. Implement manual asset-run submission and run snapshot persistence.
 6. Implement pipeline-run resolution from persisted manifest data.

@@ -103,15 +103,29 @@ defmodule FavnOrchestrator.Projector do
     Enum.into(asset_results, %{}, fn {ref, %AssetResult{} = result} -> {{ref, nil}, result} end)
   end
 
-  defp project_pipeline(%RunState{submit_kind: :pipeline} = run_state) do
-    %{
-      target_refs: run_state.target_refs,
-      submit_ref: Map.get(run_state.metadata, :pipeline_submit_ref),
-      context: Map.get(run_state.metadata, :pipeline_context)
-    }
-  end
+  defp project_pipeline(%RunState{} = run_state) do
+    metadata = run_state.metadata
+    submit_ref = Map.get(metadata, :pipeline_submit_ref)
 
-  defp project_pipeline(_run_state), do: nil
+    case Map.get(metadata, :pipeline_context) do
+      context when is_map(context) ->
+        context
+        |> public_pipeline()
+        |> maybe_put_submit_ref(submit_ref)
+
+      _other ->
+        if pipeline_origin?(run_state) do
+          %{
+            resolved_refs: run_state.target_refs,
+            deps: Map.get(metadata, :pipeline_dependencies),
+            trigger: run_state.trigger
+          }
+          |> maybe_put_submit_ref(submit_ref)
+        else
+          nil
+        end
+    end
+  end
 
   defp project_submit_kind(:manual), do: :asset
   defp project_submit_kind(:pipeline), do: :pipeline
@@ -126,7 +140,15 @@ defmodule FavnOrchestrator.Projector do
 
   defp project_max_concurrency(_plan), do: 1
 
-  defp project_replay_mode(%RunState{submit_kind: :rerun}), do: :exact_replay
+  defp project_replay_mode(%RunState{submit_kind: :rerun, metadata: metadata})
+       when is_map(metadata) do
+    case Map.get(metadata, :replay_mode) do
+      :resume_from_failure -> :resume_from_failure
+      :exact_replay -> :exact_replay
+      _other -> :exact_replay
+    end
+  end
+
   defp project_replay_mode(_run_state), do: :none
 
   defp project_operator_reason(%RunState{status: :cancelled, error: {:cancelled, reason}}),
@@ -191,5 +213,36 @@ defmodule FavnOrchestrator.Projector do
       max_attempts: 1,
       attempts: []
     }
+  end
+
+  defp public_pipeline(pipeline_context) when is_map(pipeline_context) do
+    %{
+      id: Map.get(pipeline_context, :id),
+      name: Map.get(pipeline_context, :name),
+      run_kind: Map.get(pipeline_context, :run_kind),
+      resolved_refs: Map.get(pipeline_context, :resolved_refs, []),
+      deps: Map.get(pipeline_context, :deps),
+      trigger: Map.get(pipeline_context, :trigger),
+      schedule: Map.get(pipeline_context, :schedule),
+      window: Map.get(pipeline_context, :window),
+      anchor_window: Map.get(pipeline_context, :anchor_window),
+      backfill_range: Map.get(pipeline_context, :backfill_range),
+      anchor_ranges: Map.get(pipeline_context, :anchor_ranges, []),
+      source: Map.get(pipeline_context, :source),
+      outputs: Map.get(pipeline_context, :outputs, [])
+    }
+  end
+
+  defp maybe_put_submit_ref(pipeline, nil), do: pipeline
+  defp maybe_put_submit_ref(pipeline, submit_ref), do: Map.put(pipeline, :submit_ref, submit_ref)
+
+  defp pipeline_origin?(%RunState{submit_kind: :pipeline}), do: true
+
+  defp pipeline_origin?(%RunState{metadata: metadata}) when is_map(metadata) do
+    Map.get(metadata, :replay_submit_kind) == :pipeline or
+      is_map(Map.get(metadata, :pipeline_context)) or
+      is_atom(Map.get(metadata, :pipeline_submit_ref)) or
+      (is_list(Map.get(metadata, :pipeline_target_refs)) and
+         Map.get(metadata, :pipeline_target_refs) != [])
   end
 end

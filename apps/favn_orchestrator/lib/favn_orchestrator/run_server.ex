@@ -379,26 +379,29 @@ defmodule FavnOrchestrator.RunServer do
       RunState.transition(cleared,
         status: step_status,
         error: result.error,
-        metadata: result.metadata || %{},
+        metadata: merge_runner_metadata(cleared.metadata, result.metadata),
         runner_execution_id: nil
       )
 
-    :ok =
-      Projector.persist_snapshot_with_event(step_state, event_type, %{
-        asset_ref: asset_ref,
-        result_status: result.status,
-        error: result.error,
-        stage: stage,
-        attempt: attempt,
-        max_attempts: run_state.max_attempts
-      })
+    case persist_run_step(step_state, event_type, %{
+           asset_ref: asset_ref,
+           result_status: result.status,
+           error: result.error,
+           stage: stage,
+           attempt: attempt,
+           max_attempts: run_state.max_attempts
+         }) do
+      :ok ->
+        outcome =
+          if retryable? and attempt < run_state.max_attempts,
+            do: :retry,
+            else: if(retryable?, do: :error, else: :ok)
 
-    outcome =
-      if retryable? and attempt < run_state.max_attempts,
-        do: :retry,
-        else: if(retryable?, do: :error, else: :ok)
+        {step_state, outcome, normalize_results(result.asset_results)}
 
-    {step_state, outcome, normalize_results(result.asset_results)}
+      {:error, :external_cancel} ->
+        return_external_cancel(run_state, normalize_results(result.asset_results))
+    end
   end
 
   defp process_one_stage_attempt_result(
@@ -426,18 +429,20 @@ defmodule FavnOrchestrator.RunServer do
         runner_execution_id: nil
       )
 
-    :ok =
-      Projector.persist_snapshot_with_event(step_state, :step_timed_out, %{
-        asset_ref: asset_ref,
-        error: :timeout,
-        stage: stage,
-        attempt: attempt,
-        max_attempts: run_state.max_attempts
-      })
+    case persist_run_step(step_state, :step_timed_out, %{
+           asset_ref: asset_ref,
+           error: :timeout,
+           stage: stage,
+           attempt: attempt,
+           max_attempts: run_state.max_attempts
+         }) do
+      :ok ->
+        outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
+        {step_state, outcome, []}
 
-    outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
-
-    {step_state, outcome, []}
+      {:error, :external_cancel} ->
+        return_external_cancel(run_state, [])
+    end
   end
 
   defp process_one_stage_attempt_result(
@@ -471,18 +476,20 @@ defmodule FavnOrchestrator.RunServer do
         runner_execution_id: nil
       )
 
-    :ok =
-      Projector.persist_snapshot_with_event(step_state, :step_failed, %{
-        asset_ref: asset_ref,
-        error: reason,
-        stage: stage,
-        attempt: attempt,
-        max_attempts: run_state.max_attempts
-      })
+    case persist_run_step(step_state, :step_failed, %{
+           asset_ref: asset_ref,
+           error: reason,
+           stage: stage,
+           attempt: attempt,
+           max_attempts: run_state.max_attempts
+         }) do
+      :ok ->
+        outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
+        {step_state, outcome, []}
 
-    outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
-
-    {step_state, outcome, []}
+      {:error, :external_cancel} ->
+        return_external_cancel(run_state, [])
+    end
   end
 
   defp schedule_retry_for_ref(%RunState{} = run_state, asset_ref, stage, attempt) do
@@ -519,7 +526,7 @@ defmodule FavnOrchestrator.RunServer do
       params: run_state.params,
       trigger: run_state.trigger,
       metadata:
-        Map.merge(run_state.metadata, %{
+        Map.merge(work_metadata(run_state.metadata), %{
           attempt: attempt,
           max_attempts: run_state.max_attempts,
           stage: stage,
@@ -691,30 +698,33 @@ defmodule FavnOrchestrator.RunServer do
                 status: map_runner_status(result.status),
                 runner_execution_id: nil,
                 error: result.error,
-                metadata: result.metadata || %{}
+                metadata: merge_runner_metadata(running_with_execution.metadata, result.metadata)
               )
 
             {event_type, retryable?} = step_outcome(step_finished.status)
 
-            :ok =
-              Projector.persist_snapshot_with_event(step_finished, event_type, %{
-                asset_ref: asset_ref,
-                result_status: result.status,
-                error: result.error,
-                stage: stage,
-                attempt: attempt,
-                max_attempts: max_attempts
-              })
+            case persist_run_step(step_finished, event_type, %{
+                   asset_ref: asset_ref,
+                   result_status: result.status,
+                   error: result.error,
+                   stage: stage,
+                   attempt: attempt,
+                   max_attempts: max_attempts
+                 }) do
+              :ok ->
+                maybe_retry_step(
+                  step_finished,
+                  version,
+                  asset_ref,
+                  stage,
+                  attempt,
+                  retryable?,
+                  result.asset_results
+                )
 
-            maybe_retry_step(
-              step_finished,
-              version,
-              asset_ref,
-              stage,
-              attempt,
-              retryable?,
-              result.asset_results
-            )
+              {:error, :external_cancel} ->
+                cancelled_state(running_with_execution)
+            end
 
           {:error, :timeout} ->
             cancelled =
@@ -733,16 +743,19 @@ defmodule FavnOrchestrator.RunServer do
                 error: :timeout
               )
 
-            :ok =
-              Projector.persist_snapshot_with_event(timeout_state, :step_timed_out, %{
-                asset_ref: asset_ref,
-                error: :timeout,
-                stage: stage,
-                attempt: attempt,
-                max_attempts: max_attempts
-              })
+            case persist_run_step(timeout_state, :step_timed_out, %{
+                   asset_ref: asset_ref,
+                   error: :timeout,
+                   stage: stage,
+                   attempt: attempt,
+                   max_attempts: max_attempts
+                 }) do
+              :ok ->
+                maybe_retry_step(timeout_state, version, asset_ref, stage, attempt, true, [])
 
-            maybe_retry_step(timeout_state, version, asset_ref, stage, attempt, true, [])
+              {:error, :external_cancel} ->
+                cancelled_state(running_with_execution)
+            end
 
           {:error, reason} ->
             cancelled =
@@ -767,16 +780,19 @@ defmodule FavnOrchestrator.RunServer do
                 error: reason
               )
 
-            :ok =
-              Projector.persist_snapshot_with_event(failed, :step_failed, %{
-                asset_ref: asset_ref,
-                error: reason,
-                stage: stage,
-                attempt: attempt,
-                max_attempts: max_attempts
-              })
+            case persist_run_step(failed, :step_failed, %{
+                   asset_ref: asset_ref,
+                   error: reason,
+                   stage: stage,
+                   attempt: attempt,
+                   max_attempts: max_attempts
+                 }) do
+              :ok ->
+                maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
 
-            maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
+              {:error, :external_cancel} ->
+                cancelled_state(running_with_execution)
+            end
         end
       else
         {:error, reason} ->
@@ -823,30 +839,37 @@ defmodule FavnOrchestrator.RunServer do
          retryable,
          step_results
        ) do
-    if retryable and attempt < run_state.max_attempts do
-      retrying =
-        RunState.transition(run_state,
-          status: :running,
-          error: nil,
-          runner_execution_id: nil,
-          metadata: Map.merge(run_state.metadata, %{retrying: true, next_attempt: attempt + 1})
-        )
-
-      :ok =
-        Projector.persist_snapshot_with_event(retrying, :step_retry_scheduled, %{
-          asset_ref: asset_ref,
-          stage: stage,
-          attempt: attempt,
-          max_attempts: run_state.max_attempts,
-          next_attempt: attempt + 1,
-          retry_backoff_ms: run_state.retry_backoff_ms
-        })
-
-      if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
-
-      execute_ref_with_retry(retrying, version, asset_ref, stage, attempt + 1)
+    if externally_cancelled?(run_state.id) do
+      cancelled_state(run_state)
     else
-      {:error, run_state, normalize_results(step_results)}
+      if retryable and attempt < run_state.max_attempts do
+        retrying =
+          RunState.transition(run_state,
+            status: :running,
+            error: nil,
+            runner_execution_id: nil,
+            metadata: Map.merge(run_state.metadata, %{retrying: true, next_attempt: attempt + 1})
+          )
+
+        case persist_run_step(retrying, :step_retry_scheduled, %{
+               asset_ref: asset_ref,
+               stage: stage,
+               attempt: attempt,
+               max_attempts: run_state.max_attempts,
+               next_attempt: attempt + 1,
+               retry_backoff_ms: run_state.retry_backoff_ms
+             }) do
+          :ok ->
+            if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
+
+            execute_ref_with_retry(retrying, version, asset_ref, stage, attempt + 1)
+
+          {:error, :external_cancel} ->
+            cancelled_state(run_state)
+        end
+      else
+        {:error, run_state, normalize_results(step_results)}
+      end
     end
   end
 
@@ -895,6 +918,45 @@ defmodule FavnOrchestrator.RunServer do
 
   defp normalize_results(results) when is_list(results), do: results
   defp normalize_results(_other), do: []
+
+  defp persist_run_step(%RunState{} = run_state, event_type, data) do
+    case Projector.persist_snapshot_with_event(run_state, event_type, data) do
+      :ok ->
+        :ok
+
+      {:error, reason} when reason in [:stale_write, :conflicting_snapshot] ->
+        if externally_cancelled?(run_state.id) do
+          {:error, :external_cancel}
+        else
+          raise "unexpected run snapshot conflict: #{inspect(reason)}"
+        end
+
+      {:error, reason} ->
+        raise "failed to persist run snapshot: #{inspect(reason)}"
+    end
+  end
+
+  defp merge_runner_metadata(run_metadata, runner_metadata)
+       when is_map(run_metadata) and is_map(runner_metadata) do
+    if map_size(runner_metadata) == 0 do
+      run_metadata
+    else
+      Map.put(run_metadata, :runner_metadata, runner_metadata)
+    end
+  end
+
+  defp merge_runner_metadata(run_metadata, _runner_metadata) when is_map(run_metadata),
+    do: run_metadata
+
+  defp work_metadata(metadata) when is_map(metadata) do
+    Map.delete(metadata, :runner_metadata)
+  end
+
+  defp return_external_cancel(%RunState{} = run_state, step_results) do
+    case cancelled_state(run_state) do
+      {:error, cancelled, _} -> {cancelled, :error, step_results}
+    end
+  end
 
   defp snapshot_update(%RunState{} = run_state, attrs) when is_list(attrs) do
     run_state

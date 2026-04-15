@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Storage do
   """
 
   alias Favn.Manifest.Version
+  alias Favn.Storage.Adapter, as: StorageAdapter
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -95,27 +96,10 @@ defmodule FavnOrchestrator.Storage do
 
   @spec validate_adapter(module()) :: :ok | {:error, term()}
   def validate_adapter(adapter) when is_atom(adapter) do
-    required_callbacks = [
-      {:child_spec, 1},
-      {:put_manifest_version, 2},
-      {:get_manifest_version, 2},
-      {:list_manifest_versions, 1},
-      {:set_active_manifest_version, 2},
-      {:get_active_manifest_version, 1},
-      {:put_run, 2},
-      {:get_run, 2},
-      {:list_runs, 2},
-      {:append_run_event, 3},
-      {:list_run_events, 2},
-      {:put_scheduler_state, 3},
-      {:get_scheduler_state, 2}
-    ]
-
     with {:module, ^adapter} <- Code.ensure_loaded(adapter),
+         callbacks <- StorageAdapter.behaviour_info(:callbacks),
          true <-
-           Enum.all?(required_callbacks, fn {name, arity} ->
-             function_exported?(adapter, name, arity)
-           end) do
+           Enum.all?(callbacks, fn {name, arity} -> function_exported?(adapter, name, arity) end) do
       :ok
     else
       _ -> {:error, {:invalid_storage_adapter, adapter}}

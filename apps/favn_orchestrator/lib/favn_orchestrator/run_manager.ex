@@ -405,14 +405,15 @@ defmodule FavnOrchestrator.RunManager do
       metadata_with_source = Map.put(metadata, :source_run_id, source_run.id)
 
       metadata_with_replay =
-        if source_run.submit_kind == :pipeline do
+        if pipeline_origin?(source_run) do
           Map.merge(metadata_with_source, %{
             replay_submit_kind: :pipeline,
+            replay_mode: :exact_replay,
             pipeline_target_refs: rerun_targets,
             pipeline_dependencies: rerun_dependencies
           })
         else
-          metadata_with_source
+          Map.put(metadata_with_source, :replay_mode, :exact_replay)
         end
 
       run_state =
@@ -440,23 +441,33 @@ defmodule FavnOrchestrator.RunManager do
     end
   end
 
-  defp replay_selection(%RunState{submit_kind: :pipeline} = source_run) do
-    replay_targets =
-      case Map.get(source_run.metadata, :pipeline_target_refs) do
-        targets when is_list(targets) and targets != [] -> targets
-        _other -> source_run.target_refs
-      end
+  defp replay_selection(%RunState{} = source_run) do
+    if pipeline_origin?(source_run) do
+      replay_targets =
+        case Map.get(source_run.metadata, :pipeline_target_refs) do
+          targets when is_list(targets) and targets != [] -> targets
+          _other -> source_run.target_refs
+        end
 
-    replay_asset_ref = List.first(replay_targets) || source_run.asset_ref
+      replay_asset_ref = List.first(replay_targets) || source_run.asset_ref
 
-    replay_dependencies =
-      normalize_dependencies(Map.get(source_run.metadata, :pipeline_dependencies))
+      replay_dependencies =
+        normalize_dependencies(Map.get(source_run.metadata, :pipeline_dependencies))
 
-    {replay_asset_ref, replay_targets, replay_dependencies}
+      {replay_asset_ref, replay_targets, replay_dependencies}
+    else
+      {source_run.asset_ref, [source_run.asset_ref], :all}
+    end
   end
 
-  defp replay_selection(%RunState{} = source_run) do
-    {source_run.asset_ref, [source_run.asset_ref], :all}
+  defp pipeline_origin?(%RunState{submit_kind: :pipeline}), do: true
+
+  defp pipeline_origin?(%RunState{metadata: metadata}) when is_map(metadata) do
+    Map.get(metadata, :replay_submit_kind) == :pipeline or
+      is_map(Map.get(metadata, :pipeline_context)) or
+      is_atom(Map.get(metadata, :pipeline_submit_ref)) or
+      (is_list(Map.get(metadata, :pipeline_target_refs)) and
+         Map.get(metadata, :pipeline_target_refs) != [])
   end
 
   defp normalize_dependencies(:none), do: :none

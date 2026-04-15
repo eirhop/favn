@@ -274,7 +274,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] run admission now builds `%Favn.Plan{}` from persisted manifest index data, and orchestrator-owned run/step event projection is covered by run manager/server tests
   - [x] orchestrator-owned retry and timeout policy baseline is active in run-server transitions (`step_retry_scheduled`, `step_timed_out`, terminal run events) with test coverage
   - [x] orchestrator-owned cancellation flow is active with `cancel_run/2`, persisted cancellation events, and forwarding to `RunnerClient.cancel_work/3` for in-flight executions
-  - [x] rerun flow is active and manifest-pinned: `rerun/2` uses the source run manifest version (with mismatch guard), preserving lineage fields in run snapshots
+  - [x] rerun flow is active, exact-replay, and manifest-pinned: `rerun/2` uses the source run manifest version (with mismatch guard), preserving lineage fields in run snapshots
   - [x] rerun replay now preserves original pipeline target selection/dependency mode for pipeline-origin runs instead of collapsing to a single source asset
   - [x] public `Favn` facade now delegates runtime read/control helpers (`get_run`, `list_runs`, `rerun`, `cancel_run`) to orchestrator with deterministic `{:error, :runtime_not_available}` behavior when orchestrator runtime is not started
   - [x] public `Favn.run_pipeline/2` now submits through orchestrator runtime (`submit_pipeline_run`) instead of legacy runtime manager delegation
@@ -284,7 +284,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] initial orchestrator scheduler runtime is active in `FavnOrchestrator.Scheduler.Runtime`, deriving entries from the active persisted manifest and persisting scheduler cursors through orchestrator storage
   - [x] preserved public contracts `Favn.Run`, `Favn.Scheduler.State`, and `Favn.Scheduler` are now owned by orchestrator-side files rather than `favn_legacy`; `Favn` exposes scheduler runtime wrappers too
   - [x] preserved public `Favn.Storage` contract is now owned by orchestrator-side files, and the scheduler matrix now covers overlap policies, missed-occurrence behavior, and window anchor propagation
-  - [x] `Favn.Storage` adapter validation/defaults and `Favn.Storage.Adapter` behaviour now align with the orchestrator storage contract shape (no legacy adapter callback assumptions)
+  - [x] `Favn.Storage` adapter validation/defaults and `Favn.Storage.Adapter` behaviour now align with the orchestrator storage contract shape (no legacy adapter callback assumptions), and the duplicate `FavnOrchestrator.Storage.Adapter` contract has been collapsed away before Phase 6 plugin extraction
   - [x] manual pipeline submission now resolves from persisted manifest pipeline descriptors in orchestrator, with projector coverage and same-node orchestrator-to-runner integration coverage added
 - [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
 - [ ] Phase 7: move DuckDB into `favn_duckdb`
@@ -314,7 +314,6 @@ Deferred until after the refactor unless needed to establish the new boundaries:
 - [ ] Better rerun and replay ergonomics
 - [ ] Stronger test coverage for runtime, scheduler, windowing, and SQL execution
 - [ ] Operator-facing graph and run inspection foundation
-- [ ] Collapse duplicated low-level storage behaviours (`Favn.Storage.Adapter` and `FavnOrchestrator.Storage.Adapter`) into one authoritative contract
 - [ ] DuckLake connection and snapshot foundation
 - [ ] Advanced multi-node scheduling and resource-aware placement
 

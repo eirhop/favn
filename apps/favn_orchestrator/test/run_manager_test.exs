@@ -359,6 +359,57 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientMetadataStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, execution_id(work)}
+
+    @impl true
+    def await_result(execution_id, _timeout, _opts) do
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(execution_id, :ok)],
+         metadata: %{runner_key: :runner_value}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    defp asset_result(execution_id, status) do
+      ref = execution_ref(execution_id)
+
+      %Favn.Run.AssetResult{
+        ref: ref,
+        stage: 0,
+        status: status,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: nil,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -455,6 +506,43 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.status == :ok
     assert run.submit_kind == :pipeline
     assert run.target_refs == [{MyApp.Assets.Gold, :asset}]
+  end
+
+  test "preserves orchestrator metadata and namespaces runner metadata on success paths" do
+    version = manifest_version("mv_metadata_preserve")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_metadata_preserve")
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientMetadataStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    assert {:ok, source_run_id} = FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily)
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+
+    assert source_run.metadata[:pipeline_context] == source_run.pipeline_context
+    assert source_run.metadata[:pipeline_target_refs] == source_run.target_refs
+    assert source_run.metadata[:pipeline_dependencies] == :all
+    assert source_run.metadata[:pipeline_submit_ref] == MyApp.Pipelines.Daily
+    assert source_run.metadata[:runner_metadata] == %{runner_key: :runner_value}
+    refute Map.has_key?(source_run.metadata, :runner_key)
+
+    assert {:ok, rerun_id} = FavnOrchestrator.rerun(source_run_id)
+    assert {:ok, rerun} = await_terminal_run(rerun_id)
+
+    assert rerun.metadata[:source_run_id] == source_run_id
+    assert rerun.metadata[:replay_submit_kind] == :pipeline
+    assert rerun.metadata[:replay_mode] == :exact_replay
+    assert rerun.metadata[:pipeline_context] == source_run.pipeline_context
+    assert rerun.metadata[:pipeline_submit_ref] == MyApp.Pipelines.Daily
+    assert rerun.metadata[:runner_metadata] == %{runner_key: :runner_value}
   end
 
   test "cancels multi-target pipeline run and forwards all in-flight execution ids" do
@@ -751,6 +839,80 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert rerun.status == :ok
     assert rerun.target_refs == source_run.target_refs
     assert length(rerun.result.asset_results) == 2
+  end
+
+  test "pipeline-origin rerun keeps public pipeline projection and exact replay mode" do
+    version = manifest_version("mv_pipeline_rerun_projection")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_rerun_projection")
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientMetadataStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    assert {:ok, source_run_id} = FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily)
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+
+    assert {:ok, rerun_id} = FavnOrchestrator.rerun(source_run_id)
+    assert {:ok, rerun} = await_terminal_run(rerun_id)
+
+    assert rerun.submit_kind == :rerun
+    assert rerun.replay_mode == :exact_replay
+    assert rerun.submit_ref == MyApp.Pipelines.Daily
+    assert rerun.pipeline_context == source_run.pipeline_context
+    assert rerun.pipeline != nil
+    assert rerun.pipeline[:submit_ref] == MyApp.Pipelines.Daily
+  end
+
+  test "external cancel does not crash run server on stale write after await_result" do
+    version = manifest_version("mv_cancel_stale_write")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_cancel_stale_write")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if Process.alive?(cancel_log) do
+        Agent.stop(cancel_log)
+      end
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      block_ms: 250
+    )
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, _in_flight_run} = await_inflight_run(run_id)
+
+    run_pid = :sys.get_state(FavnOrchestrator.RunManager).run_pids[run_id]
+    ref = Process.monitor(run_pid)
+
+    assert :ok =
+             FavnOrchestrator.cancel_run(run_id, %{
+               requested_by: :operator,
+               reason: :manual_cancel
+             })
+
+    assert_receive {:DOWN, ^ref, :process, ^run_pid, :normal}, 1_000
+
+    assert {:ok, cancelled} = await_cancelled_run(run_id)
+    assert cancelled.status == :cancelled
   end
 
   test "rerun rejects manifest override mismatch" do

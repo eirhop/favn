@@ -79,9 +79,13 @@ defmodule Favn.StorageFacadeTest do
 
   test "validates adapters that implement the public orchestrator-backed behaviour" do
     assert :ok = Storage.validate_adapter(ExactShapeAdapterStub)
+    assert :ok = OrchestratorStorage.validate_adapter(ExactShapeAdapterStub)
 
     assert {:error, {:store_error, {:invalid_storage_adapter, LegacyShapeAdapterStub}}} =
              Storage.validate_adapter(LegacyShapeAdapterStub)
+
+    assert {:error, {:invalid_storage_adapter, LegacyShapeAdapterStub}} =
+             OrchestratorStorage.validate_adapter(LegacyShapeAdapterStub)
   end
 
   test "reads and writes runs through orchestrator storage facade" do
