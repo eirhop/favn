@@ -3,6 +3,7 @@ defmodule Favn.Manifest.VersionTest do
 
   alias Favn.Manifest.Build
   alias Favn.Manifest.Compatibility
+  alias Favn.Manifest.Identity
   alias Favn.Manifest.Version
 
   test "builds pinned manifest version with id and content hash" do
@@ -39,6 +40,17 @@ defmodule Favn.Manifest.VersionTest do
     assert version.manifest == canonical_manifest
     assert is_map(version.manifest)
     refute Map.has_key?(version.manifest, :manifest)
+  end
+
+  test "build input uses canonical payload hash invariant" do
+    canonical_manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
+    build = Build.new(canonical_manifest, diagnostics: [%{message: "warn"}])
+
+    assert {:ok, %Version{} = version} =
+             Version.new(build, manifest_version_id: "mv_test_build_hash")
+
+    assert {:ok, manifest_hash} = Identity.hash_manifest(build.manifest)
+    assert version.content_hash == manifest_hash
   end
 
   test "envelope versions are derived from manifest payload" do
