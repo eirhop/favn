@@ -1,21 +1,22 @@
-# FavnStoragePostgres
+# `apps/favn_storage_postgres`
 
-**TODO: Add description**
+Purpose:
 
-## Installation
+- internal Postgres storage adapter for orchestrator persistence
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `favn_storage_postgres` to your list of dependencies in `mix.exs`:
+Visibility:
 
-```elixir
-def deps do
-  [
-    {:favn_storage_postgres, "~> 0.1.0"}
-  ]
-end
-```
+- internal
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/favn_storage_postgres>.
+Allowed dependencies in Phase 1:
 
+- `favn_orchestrator`
+
+Must not depend on in Phase 1:
+
+- `favn_core`, `favn_runner`, `favn_view`
+- `favn_legacy`
+
+Current status:
+
+- scaffold-only, not implemented yet

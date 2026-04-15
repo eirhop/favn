@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.MixProject do
     [
       app: :favn_orchestrator,
       version: "0.5.0-dev",
+      description: "Internal orchestrator runtime scaffold for v0.5 migration",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -15,7 +16,6 @@ defmodule FavnOrchestrator.MixProject do
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
       extra_applications: [:logger],

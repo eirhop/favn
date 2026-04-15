@@ -1,21 +1,23 @@
-# FavnOrchestrator
+# `apps/favn_orchestrator`
 
-**TODO: Add description**
+Purpose:
 
-## Installation
+- internal control-plane runtime and API boundary
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `favn_orchestrator` to your list of dependencies in `mix.exs`:
+Visibility:
 
-```elixir
-def deps do
-  [
-    {:favn_orchestrator, "~> 0.1.0"}
-  ]
-end
-```
+- internal
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/favn_orchestrator>.
+Allowed dependencies in Phase 1:
 
+- `favn_core`
+
+Must not depend on in Phase 1:
+
+- `favn_runner` implementation
+- `favn_view`
+- `favn_legacy`
+
+Current status:
+
+- scaffold-only, not implemented yet

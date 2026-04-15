@@ -1,21 +1,23 @@
-# FavnRunner
+# `apps/favn_runner`
 
-**TODO: Add description**
+Purpose:
 
-## Installation
+- internal execution runtime boundary for business-code asset execution
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `favn_runner` to your list of dependencies in `mix.exs`:
+Visibility:
 
-```elixir
-def deps do
-  [
-    {:favn_runner, "~> 0.1.0"}
-  ]
-end
-```
+- internal
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/favn_runner>.
+Allowed dependencies in Phase 1:
 
+- `favn_core`
+
+Must not depend on in Phase 1:
+
+- `favn_orchestrator`, `favn_view`
+- `favn_storage_postgres`, `favn_storage_sqlite`
+- `favn_legacy`
+
+Current status:
+
+- scaffold-only, not implemented yet

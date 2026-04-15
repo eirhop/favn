@@ -1,21 +1,21 @@
-# FavnCore
+# `apps/favn_core`
 
-**TODO: Add description**
+Purpose:
 
-## Installation
+- internal foundation for DSL/compiler/manifest contracts shared across runtimes
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `favn_core` to your list of dependencies in `mix.exs`:
+Visibility:
 
-```elixir
-def deps do
-  [
-    {:favn_core, "~> 0.1.0"}
-  ]
-end
-```
+- internal
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/favn_core>.
+Allowed dependencies in Phase 1:
 
+- none (bottom of the umbrella graph)
+
+Must not depend on in Phase 1:
+
+- any other umbrella app
+
+Current status:
+
+- scaffold-only, not implemented yet

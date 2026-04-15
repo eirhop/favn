@@ -166,6 +166,15 @@ During v0.5 refactor:
 6. Public docs and examples must move with the new source of truth as slices are migrated.
 7. New feature work should land in the new architecture unless it is a blocker-level fix for legacy behavior.
 
+### Namespace ownership handoff (Phase 1 -> Phase 2)
+
+To prevent `Favn.*` collisions during migration:
+
+1. During Phase 1 scaffold/isolation, `favn_legacy` is allowed to keep the active `Favn.*` namespace.
+2. When a bounded slice is migrated, ownership of that `Favn.*` namespace must move to the new owner app.
+3. A migrated module must not continue compiling from both `favn_legacy` and the new owner app at the same time.
+4. Migration PRs must make the ownership transfer explicit in docs/tests so later slices do not reintroduce duplicate namespace providers.
+
 ### Legacy deletion criteria
 
 Legacy code may be deleted only when all relevant criteria below are true.

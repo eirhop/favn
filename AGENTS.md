@@ -3,16 +3,17 @@
 ## Project overview
 
 Favn is an Elixir library for defining and orchestrating business-oriented data assets.
-This repository currently focuses on the **core Favn library**.
-The main api interface for library is found in `/lib/favn.ex`. This file contains extensive documentation and main interface functions and documentation should be continuously updated as we progress. 
+This repository is in a v0.5 umbrella refactor.
+During Phase 1, the active v0.4 reference runtime lives in `apps/favn_legacy/lib/favn.ex`.
+The new public app scaffold is `apps/favn/lib/favn.ex` but it is not yet the migrated runtime API source of truth.
 The most important file is `docs/FEATURES.md`. We will use this file to document our progress and roadmap.
 
 **Important rules**
 - Favn is currently in private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
-- Always start by reading `/lib/favn.ex` and `readme.md` to get overview of project, code interface and progress
+- Always start by reading `README.md`, `docs/REFACTOR.md`, and then `apps/favn_legacy/lib/favn.ex` for current active runtime behavior
 - Keep status of roadmap features and task list always up to date in `docs/FEATURES.md`. 
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
-- Always keep user documentation up to date in `/lib/favn.ex` and `README.md`. But do not bloat it with uncessary information. Only user relevant information on features they will use and need to be informed about. Follow best practices
+- Always keep user documentation up to date in the current source-of-truth location and `README.md`. During Phase 1 this is primarily `apps/favn_legacy/lib/favn.ex`.
 - when creating new files, please update `docs/lib_structure.md` or `docs/test_structure.md`
 - Before starting a new coding session - always:
     - Identify new coding session through that chat history is empty

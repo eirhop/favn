@@ -5,6 +5,7 @@ defmodule FavnTestSupport.MixProject do
     [
       app: :favn_test_support,
       version: "0.5.0-dev",
+      description: "Internal shared test-support scaffold for umbrella apps",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -15,7 +16,6 @@ defmodule FavnTestSupport.MixProject do
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
       extra_applications: [:logger]

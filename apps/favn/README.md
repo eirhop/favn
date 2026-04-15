@@ -1,21 +1,23 @@
-# Favn
+# `apps/favn`
 
-**TODO: Add description**
+Purpose:
 
-## Installation
+- public user-facing package for Favn authoring and integration
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `favn` to your list of dependencies in `mix.exs`:
+Visibility:
 
-```elixir
-def deps do
-  [
-    {:favn, "~> 0.1.0"}
-  ]
-end
-```
+- public package
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/favn>.
+Allowed dependencies in Phase 1:
 
+- `favn_core`
+
+Must not depend on in Phase 1:
+
+- `favn_runner`, `favn_orchestrator`, `favn_view`
+- `favn_storage_postgres`, `favn_storage_sqlite`, `favn_duckdb`
+- `favn_legacy`
+
+Current status:
+
+- scaffold-only, not implemented yet as migrated public API

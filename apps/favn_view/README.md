@@ -1,21 +1,23 @@
-# FavnView
+# `apps/favn_view`
 
-**TODO: Add description**
+Purpose:
 
-## Installation
+- internal UI runtime that interacts through orchestrator APIs
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `favn_view` to your list of dependencies in `mix.exs`:
+Visibility:
 
-```elixir
-def deps do
-  [
-    {:favn_view, "~> 0.1.0"}
-  ]
-end
-```
+- internal
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/favn_view>.
+Allowed dependencies in Phase 1:
 
+- `favn_orchestrator`
+
+Must not depend on in Phase 1:
+
+- `favn_core`, `favn_runner`
+- storage adapters and plugins
+- `favn_legacy`
+
+Current status:
+
+- scaffold-only, not implemented yet

@@ -1,21 +1,21 @@
-# FavnLegacy
+# `apps/favn_legacy`
 
-**TODO: Add description**
+Purpose:
 
-## Installation
+- active v0.4 monolith runtime kept as migration reference during v0.5 refactor
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `favn_legacy` to your list of dependencies in `mix.exs`:
+Visibility:
 
-```elixir
-def deps do
-  [
-    {:favn_legacy, "~> 0.1.0"}
-  ]
-end
-```
+- internal migration-reference app
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/favn_legacy>.
+Allowed dependencies in Phase 1:
 
+- existing v0.4 runtime dependencies needed to keep reference behavior runnable
+
+Must not depend on in Phase 1:
+
+- new umbrella apps as implementation dependencies
+
+Current status:
+
+- active legacy reference, read-only except emergency fixes
