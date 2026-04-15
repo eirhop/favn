@@ -36,7 +36,9 @@ defmodule Favn.Assets.Planner do
           dependencies: dependencies_mode(),
           anchor_window: Anchor.t() | nil,
           anchor_windows: [Anchor.t()],
-          anchor_ranges: [backfill_anchor_range()]
+          anchor_ranges: [backfill_anchor_range()],
+          graph_index: GraphIndex.t() | nil,
+          asset_modules: [module()]
         ]
 
   @spec plan(Ref.t() | [Ref.t()], plan_opts()) :: {:ok, Plan.t()} | {:error, term()}
@@ -45,12 +47,14 @@ defmodule Favn.Assets.Planner do
     anchor_window = Keyword.get(opts, :anchor_window)
     anchor_windows = Keyword.get(opts, :anchor_windows, [])
     anchor_ranges = Keyword.get(opts, :anchor_ranges, [])
+    graph_index = Keyword.get(opts, :graph_index)
+    asset_modules = Keyword.get(opts, :asset_modules)
 
     with {:ok, target_refs} <- normalize_targets(targets),
          :ok <- validate_opts(opts),
          :ok <- validate_dependencies_mode(dependencies),
          {:ok, anchors} <- normalize_anchors(anchor_window, anchor_windows, anchor_ranges),
-         {:ok, index} <- load_graph_index(),
+         {:ok, index} <- resolve_graph_index(graph_index, asset_modules),
          :ok <- validate_target_refs(index, target_refs),
          {:ok, refs} <- selected_refs(index, target_refs, dependencies),
          {:ok, projected_index} <- projected_index(index, refs),
@@ -96,7 +100,9 @@ defmodule Favn.Assets.Planner do
         :dependencies,
         :anchor_window,
         :anchor_windows,
-        :anchor_ranges
+        :anchor_ranges,
+        :graph_index,
+        :asset_modules
       ])
 
   defp validate_dependencies_mode(:all), do: :ok
@@ -154,10 +160,14 @@ defmodule Favn.Assets.Planner do
 
   defp anchor_sort_key(%Anchor{key: key}), do: Key.encode(key)
 
-  defp load_graph_index do
-    modules = Application.get_env(:favn, :asset_modules, [])
-    GraphIndex.index_for_modules(modules)
-  end
+  defp resolve_graph_index(%GraphIndex{} = index, _asset_modules), do: {:ok, index}
+
+  defp resolve_graph_index(nil, modules) when is_list(modules),
+    do: GraphIndex.index_for_modules(modules)
+
+  defp resolve_graph_index(nil, nil), do: {:error, :missing_graph_index_input}
+  defp resolve_graph_index(nil, _other), do: {:error, :invalid_asset_modules}
+  defp resolve_graph_index(_other, _asset_modules), do: {:error, :invalid_graph_index}
 
   defp validate_target_refs(index, refs) do
     case Enum.find(refs, &(not Map.has_key?(index.assets_by_ref, &1))) do

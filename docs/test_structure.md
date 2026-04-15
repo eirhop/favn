@@ -71,3 +71,4 @@ Notes:
 - Initial Phase 3 tests now exist under `apps/favn_core/test/manifest/` and `apps/favn_core/test/contracts/`.
 - `apps/favn_core/test/manifest/` now includes `build_test.exs` and `graph_test.exs` in addition to serializer/version/identity/compatibility coverage.
 - `apps/favn_core/test/contracts/contract_lock_test.exs` now locks runner contract key shapes before Phase 4 runner work.
+- Boundary-leak cleanup coverage now includes `apps/favn_core/test/boundary_explicit_inputs_test.exs` and `apps/favn/test/boundary_defaults_test.exs`.

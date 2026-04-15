@@ -1,6 +1,6 @@
 defmodule Favn.Assets.GraphIndex do
   @moduledoc """
-  Global dependency graph index for configured Favn assets.
+  Cached dependency graph index for compiled Favn assets.
 
   `Favn.Assets.GraphIndex` builds a read-only directed acyclic graph (DAG) from
   canonical compiled assets. The index can be cached in `:persistent_term` for
@@ -42,6 +42,8 @@ defmodule Favn.Assets.GraphIndex do
   @type error ::
           {:missing_dependency, Ref.t(), Ref.t()}
           | {:cycle, [Ref.t()]}
+          | :asset_modules_required
+          | :index_not_loaded
           | :invalid_opts
           | {:asset_compile_failed, module(), term()}
 
@@ -79,23 +81,20 @@ defmodule Favn.Assets.GraphIndex do
   @spec get() :: {:ok, t()} | {:error, error()}
   def get do
     case :persistent_term.get(@index_key, :undefined) do
-      :undefined -> load_and_fetch_index()
+      :undefined -> {:error, :index_not_loaded}
       %__MODULE__{} = index -> {:ok, index}
     end
   end
 
   @doc """
-  Build and cache the dependency index from configured asset modules.
+  Transitional legacy wrapper.
+
+  Prefer `load/1` with explicit module lists from the public facade.
   """
+  @deprecated "use load/1 with explicit asset modules"
   @spec load() :: :ok | {:error, error()}
   def load do
-    modules = Application.get_env(:favn, :asset_modules, [])
-
-    with {:ok, assets} <- compile_assets(modules),
-         {:ok, %__MODULE__{} = index} <- build_index(assets) do
-      :persistent_term.put(@index_key, index)
-      :ok
-    end
+    {:error, :asset_modules_required}
   end
 
   @doc """
@@ -113,6 +112,10 @@ defmodule Favn.Assets.GraphIndex do
   @doc false
   @spec reload() :: :ok | {:error, error()}
   def reload, do: load()
+
+  @doc false
+  @spec reload([module()]) :: :ok | {:error, error()}
+  def reload(modules), do: load(modules)
 
   @doc """
   Return the immediate upstream dependencies for an asset.
@@ -382,12 +385,6 @@ defmodule Favn.Assets.GraphIndex do
         true -> compare_refs(left.ref, right.ref)
       end
     end)
-  end
-
-  defp load_and_fetch_index do
-    with :ok <- load() do
-      {:ok, :persistent_term.get(@index_key)}
-    end
   end
 
   defp compile_assets(modules) when is_list(modules) do

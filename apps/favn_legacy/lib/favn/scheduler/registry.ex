@@ -6,6 +6,7 @@ defmodule Favn.Scheduler.Registry do
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
   alias Favn.Triggers.Schedule
+  alias Favn.Triggers.Schedules
 
   @type scheduled_pipeline :: %{
           module: module(),
@@ -39,7 +40,11 @@ defmodule Favn.Scheduler.Registry do
   defp discover_module(pipeline_module, assets)
        when is_atom(pipeline_module) and is_list(assets) do
     with {:ok, definition} <- Pipeline.fetch(pipeline_module),
-         {:ok, resolution} <- Resolver.resolve(definition, assets: assets),
+         {:ok, resolution} <-
+           Resolver.resolve(definition,
+             assets: assets,
+             schedule_lookup: &Schedules.fetch/2
+           ),
          {:ok, schedule} <- resolve_schedule(resolution.pipeline_ctx.schedule),
          :ok <- validate_window_for_schedule(definition.window, schedule) do
       case schedule do

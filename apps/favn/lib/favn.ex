@@ -19,6 +19,7 @@ defmodule Favn do
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
   alias Favn.Runtime.Manager
+  alias Favn.Triggers.Schedules, as: PipelineSchedules
 
   @type asset_ref :: Favn.Ref.t()
   @type asset :: Asset.t()
@@ -177,16 +178,36 @@ defmodule Favn do
   @spec plan_asset_run(asset_ref() | [asset_ref()], keyword()) ::
           {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_asset_run(target_refs, opts \\ []) do
+    opts = Keyword.put_new(opts, :asset_modules, Application.get_env(:favn, :asset_modules, []))
     Planner.plan(target_refs, opts)
   end
+
+  @doc false
+  @spec resolve_pipeline(module(), keyword()) ::
+          {:ok, Favn.Pipeline.Resolution.t()} | {:error, term()}
+  def resolve_pipeline(pipeline_module, opts \\ [])
+
+  def resolve_pipeline(pipeline_module, opts)
+      when is_atom(pipeline_module) and is_list(opts) do
+    with {:ok, pipeline} <- Pipeline.fetch(pipeline_module),
+         {:ok, assets} <- list_assets() do
+      Resolver.resolve(
+        pipeline,
+        opts
+        |> Keyword.put_new(:assets, assets)
+        |> Keyword.put_new(:schedule_lookup, &PipelineSchedules.fetch/2)
+      )
+    end
+  end
+
+  def resolve_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
 
   @doc false
   @spec run_pipeline(module(), keyword()) :: {:ok, term()} | {:error, term()}
   def run_pipeline(pipeline_module, opts \\ [])
 
   def run_pipeline(pipeline_module, opts) when is_atom(pipeline_module) and is_list(opts) do
-    with {:ok, pipeline} <- Pipeline.fetch(pipeline_module),
-         {:ok, resolution} <- Resolver.resolve(pipeline, opts),
+    with {:ok, resolution} <- resolve_pipeline(pipeline_module, opts),
          manager when is_atom(manager) <- Manager,
          true <- function_exported?(manager, :submit_run, 2) do
       submit_opts =

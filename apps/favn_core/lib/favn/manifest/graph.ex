@@ -16,11 +16,14 @@ defmodule Favn.Manifest.Graph do
           topo_order: [ref()]
         }
 
-  @type error :: {:missing_dependency, ref(), ref()} | {:cycle, [ref()]}
+  @type error ::
+          {:missing_dependency, ref(), ref()}
+          | {:cycle, [ref()]}
+          | {:invalid_assets_input, term()}
 
   defstruct nodes: [], edges: [], topo_order: []
 
-  @spec build([map()]) :: {:ok, t()} | {:error, error()}
+  @spec build(term()) :: {:ok, t()} | {:error, error()}
   def build(assets) when is_list(assets) do
     nodes =
       assets
@@ -41,7 +44,7 @@ defmodule Favn.Manifest.Graph do
     end
   end
 
-  def build(_invalid), do: {:error, {:cycle, []}}
+  def build(invalid), do: {:error, {:invalid_assets_input, invalid}}
 
   defp validate_dependencies(assets, node_set) do
     assets

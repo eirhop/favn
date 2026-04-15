@@ -9,14 +9,16 @@ defmodule Favn.Pipeline.Resolver do
   alias Favn.Pipeline.Definition
   alias Favn.Pipeline.Resolution
   alias Favn.Triggers.Schedule
-  alias Favn.Triggers.Schedules
   alias Favn.Window.Anchor
+
+  @type schedule_lookup :: (module(), atom() -> {:ok, Schedule.unresolved_t()} | {:error, term()})
 
   @type resolve_opts :: [
           params: map(),
           trigger: map(),
           anchor_window: Anchor.t() | nil,
-          assets: [map()]
+          assets: [map()],
+          schedule_lookup: schedule_lookup() | nil
         ]
 
   @spec resolve(Definition.t(), resolve_opts()) :: {:ok, Resolution.t()} | {:error, term()}
@@ -25,14 +27,17 @@ defmodule Favn.Pipeline.Resolver do
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
     assets_opt = Keyword.get(opts, :assets)
+    schedule_lookup = Keyword.get(opts, :schedule_lookup)
     default_timezone = Schedule.default_timezone()
 
     with :ok <- validate_definition(definition),
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_anchor_window(anchor_window),
+         :ok <- validate_schedule_lookup(schedule_lookup),
          :ok <- validate_assets_opt(assets_opt),
-         {:ok, schedule} <- resolve_schedule(definition.schedule, default_timezone),
+         {:ok, schedule} <-
+           resolve_schedule(definition.schedule, default_timezone, schedule_lookup),
          {:ok, assets} <- resolve_assets(assets_opt),
          {:ok, target_refs} <- resolve_selectors(definition, assets) do
       pipeline_ctx = %{
@@ -120,27 +125,37 @@ defmodule Favn.Pipeline.Resolver do
 
   defp validate_anchor_window(other), do: {:error, {:invalid_anchor_window, other}}
 
-  defp validate_assets_opt(nil), do: :ok
+  defp validate_schedule_lookup(nil), do: :ok
+  defp validate_schedule_lookup(fun) when is_function(fun, 2), do: :ok
+  defp validate_schedule_lookup(other), do: {:error, {:invalid_schedule_lookup, other}}
+
+  defp validate_assets_opt(nil), do: {:error, :missing_assets}
   defp validate_assets_opt(values) when is_list(values), do: :ok
   defp validate_assets_opt(other), do: {:error, {:invalid_assets_opt, other}}
 
-  defp resolve_assets(nil), do: list_assets()
+  defp resolve_assets(nil), do: {:error, :missing_assets}
   defp resolve_assets(values), do: {:ok, values}
 
-  defp resolve_schedule(nil, _default_timezone), do: {:ok, nil}
+  defp resolve_schedule(nil, _default_timezone, _lookup), do: {:ok, nil}
 
-  defp resolve_schedule({:inline, %Schedule{} = schedule}, default_timezone) do
+  defp resolve_schedule({:inline, %Schedule{} = schedule}, default_timezone, _lookup) do
     Schedule.apply_default_timezone(schedule, default_timezone)
   end
 
-  defp resolve_schedule({:ref, {module, name}}, default_timezone)
+  defp resolve_schedule({:ref, {module, name}}, _default_timezone, nil)
        when is_atom(module) and is_atom(name) do
-    with {:ok, schedule} <- fetch_schedule(module, name) do
+    {:error, :missing_schedule_lookup}
+  end
+
+  defp resolve_schedule({:ref, {module, name}}, default_timezone, schedule_lookup)
+       when is_atom(module) and is_atom(name) do
+    with {:ok, schedule} <- schedule_lookup.(module, name) do
       Schedule.apply_default_timezone(schedule, default_timezone)
     end
   end
 
-  defp resolve_schedule(value, _default_timezone), do: {:error, {:invalid_schedule, value}}
+  defp resolve_schedule(value, _default_timezone, _lookup),
+    do: {:error, {:invalid_schedule, value}}
 
   defp resolve_selectors(%Definition{selectors: selectors}, assets) do
     assets_by_ref = Map.new(assets, &{&1.ref, &1})
@@ -165,13 +180,15 @@ defmodule Favn.Pipeline.Resolver do
   end
 
   defp selector_refs({:module, mod}, assets, _assets_by_ref) do
-    if asset_module?(mod) do
-      {:ok,
-       assets
-       |> Enum.filter(&(&1.module == mod))
-       |> Enum.map(& &1.ref)}
-    else
+    refs =
+      assets
+      |> Enum.filter(&(&1.module == mod))
+      |> Enum.map(& &1.ref)
+
+    if refs == [] do
       {:error, :not_asset_module}
+    else
+      {:ok, refs}
     end
   end
 
@@ -187,49 +204,21 @@ defmodule Favn.Pipeline.Resolver do
   defp selector_refs({:category, value}, assets, _assets_by_ref) do
     refs =
       assets
-      |> Enum.filter(fn asset -> Map.get(asset.meta, :category) == value end)
+      |> Enum.filter(fn asset ->
+        asset
+        |> Map.get(:meta, %{})
+        |> Map.get(:category)
+        |> Kernel.==(value)
+      end)
       |> Enum.map(& &1.ref)
 
     {:ok, refs}
   end
 
   defp tags_from_meta(asset) do
-    case Map.get(asset.meta, :tags, []) do
+    case Map.get(Map.get(asset, :meta, %{}), :tags, []) do
       values when is_list(values) -> values
       _ -> []
-    end
-  end
-
-  defp list_assets do
-    facade_module = Module.concat([Favn])
-
-    with {:module, ^facade_module} <- Code.ensure_loaded(facade_module),
-         true <- function_exported?(facade_module, :list_assets, 0) do
-      facade_module.list_assets()
-    else
-      _ -> {:error, :runtime_not_available}
-    end
-  end
-
-  defp asset_module?(module) when is_atom(module) do
-    facade_module = Module.concat([Favn])
-
-    with {:module, ^facade_module} <- Code.ensure_loaded(facade_module),
-         true <- function_exported?(facade_module, :asset_module?, 1) do
-      facade_module.asset_module?(module)
-    else
-      _ -> false
-    end
-  end
-
-  defp fetch_schedule(module, name) when is_atom(module) and is_atom(name) do
-    schedules_module = Module.concat([Favn, Triggers, Schedules])
-
-    with {:module, ^schedules_module} <- Code.ensure_loaded(schedules_module),
-         true <- function_exported?(schedules_module, :fetch, 2) do
-      schedules_module.fetch(module, name)
-    else
-      _ -> {:error, :schedule_not_found}
     end
   end
 end
