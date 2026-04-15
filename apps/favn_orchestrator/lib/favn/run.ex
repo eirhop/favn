@@ -1,9 +1,6 @@
 defmodule Favn.Run do
   @moduledoc """
-  Canonical in-memory representation of one Favn run.
-
-  The runtime engine projects coordinator-owned runtime state into this public
-  struct for callers and storage adapters.
+  Canonical public representation of one Favn run.
   """
 
   alias Favn.Ref
@@ -13,6 +10,9 @@ defmodule Favn.Run do
 
   @type t :: %__MODULE__{
           id: String.t(),
+          manifest_version_id: String.t() | nil,
+          manifest_content_hash: String.t() | nil,
+          asset_ref: Ref.t() | nil,
           target_refs: [Ref.t()],
           plan: Favn.Plan.t() | nil,
           pipeline: map() | nil,
@@ -21,11 +21,16 @@ defmodule Favn.Run do
           submit_ref: term() | nil,
           max_concurrency: pos_integer(),
           timeout_ms: pos_integer() | nil,
+          retry_backoff_ms: non_neg_integer(),
           status: status(),
           event_seq: non_neg_integer(),
           started_at: DateTime.t(),
           finished_at: DateTime.t() | nil,
           params: map(),
+          trigger: map(),
+          metadata: map(),
+          result: map() | nil,
+          runner_execution_id: String.t() | nil,
           retry_policy: map(),
           replay_mode: :none | :resume_from_failure | :exact_replay,
           backfill: map() | nil,
@@ -42,6 +47,9 @@ defmodule Favn.Run do
 
   defstruct [
     :id,
+    :manifest_version_id,
+    :manifest_content_hash,
+    :asset_ref,
     :target_refs,
     :plan,
     :started_at,
@@ -49,9 +57,14 @@ defmodule Favn.Run do
     event_seq: 0,
     finished_at: nil,
     params: %{},
+    trigger: %{},
+    metadata: %{},
+    result: nil,
+    runner_execution_id: nil,
     retry_policy: %{},
     max_concurrency: 1,
     timeout_ms: nil,
+    retry_backoff_ms: 0,
     asset_results: %{},
     node_results: %{},
     error: nil,

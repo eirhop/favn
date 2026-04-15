@@ -131,6 +131,30 @@ Notes:
 - Phase 3 populated `apps/favn_core/lib/favn/` with canonical manifest schema/versioning, serializer/hash/compatibility logic, graph/planning helpers, SQL helper internals, and shared runner/orchestrator contract structs.
 - Phase 4 implementation grew `apps/favn_runner/lib/favn_runner/` around a small execution-owned set of modules such as a runner server, manifest store/resolver, worker supervision, and context builder.
 - Phase 4 implementation moved `Favn.Run.Context` and `Favn.Run.AssetResult` out of `favn_legacy` into `apps/favn_core/lib/favn/run/`, while runner-owned connection and SQL runtime modules moved into `apps/favn_runner/lib/favn/` under preserved `Favn.*` names.
+- Initial Phase 5 implementation added manifest-native orchestrator planning helpers and shared runner-client behaviour in `apps/favn_core/lib/favn/`:
+  - `contracts/runner_client.ex`
+  - `manifest/index.ex`
+  - `manifest/pipeline_resolver.ex`
+- Initial Phase 5 orchestrator runtime slice added control-plane modules in `apps/favn_orchestrator/lib/favn_orchestrator/`:
+  - `storage.ex`
+  - `storage/adapter/memory.ex`
+  - `manifest_store.ex`
+  - `run_state.ex`
+  - `projector.ex`
+  - `run_manager.ex`
+  - `run_server.ex`
+- Phase 5 scheduler/runtime expansion added:
+  - `scheduler/cron.ex`
+  - `scheduler/manifest_entries.ex`
+  - `scheduler/runtime.ex`
+- Public run projection is now served through orchestrator-backed reads using the existing `%Favn.Run{}` contract.
+- Preserved public contracts now owned from `apps/favn_orchestrator/lib/favn/` include:
+  - `run.ex`
+  - `storage.ex`
+  - `storage/adapter.ex`
+  - `scheduler.ex`
+  - `scheduler/state.ex`
+- `apps/favn_orchestrator/lib/favn/storage/adapter.ex` is now the single authoritative low-level storage adapter behaviour used by both `Favn.Storage` and `FavnOrchestrator.Storage`.
 - Initial Phase 4 implementation now includes:
   - `apps/favn_core/lib/favn/run/context.ex`
   - `apps/favn_core/lib/favn/run/asset_result.ex`

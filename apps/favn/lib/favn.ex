@@ -18,7 +18,6 @@ defmodule Favn do
   alias Favn.Manifest.Version
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
-  alias Favn.Runtime.Manager
   alias Favn.Triggers.Schedules, as: PipelineSchedules
 
   @type asset_ref :: Favn.Ref.t()
@@ -216,21 +215,7 @@ defmodule Favn do
   def run_pipeline(pipeline_module, opts \\ [])
 
   def run_pipeline(pipeline_module, opts) when is_atom(pipeline_module) and is_list(opts) do
-    with {:ok, resolution} <- resolve_pipeline(pipeline_module, opts),
-         manager when is_atom(manager) <- Manager,
-         true <- function_exported?(manager, :submit_run, 2) do
-      submit_opts =
-        opts
-        |> Keyword.put_new(:dependencies, resolution.dependencies)
-        |> Keyword.put(:_pipeline_context, resolution.pipeline_ctx)
-        |> Keyword.put(:_submit_kind, :pipeline)
-        |> Keyword.put(:_submit_ref, pipeline_module)
-
-      manager.submit_run(resolution.target_refs, submit_opts)
-    else
-      false -> {:error, :runtime_not_available}
-      {:error, _reason} = error -> error
-    end
+    orchestrator_runtime_call(:submit_pipeline_run, [pipeline_module, opts])
   end
 
   def run_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
@@ -238,24 +223,110 @@ defmodule Favn do
   @doc false
   @spec get_run(term()) :: {:ok, term()} | {:error, term()}
   def get_run(run_id) do
-    storage = Module.concat(Favn, Storage)
-
-    if function_exported?(storage, :get_run, 1) do
-      storage.get_run(run_id)
-    else
-      {:error, :runtime_not_available}
-    end
+    orchestrator_runtime_call(:get_run, [run_id])
   end
 
   @doc false
   @spec list_runs(keyword()) :: {:ok, [term()]} | {:error, term()}
   def list_runs(opts \\ []) do
-    storage = Module.concat(Favn, Storage)
+    orchestrator_runtime_call(:list_runs, [opts])
+  end
 
-    if function_exported?(storage, :list_runs, 1) do
-      storage.list_runs(opts)
+  @doc false
+  @spec list_run_events(run_id()) :: {:ok, [map()]} | {:error, term()}
+  def list_run_events(run_id) do
+    orchestrator_runtime_call(:list_run_events, [run_id])
+  end
+
+  @doc false
+  @spec rerun(run_id(), keyword()) :: {:ok, run_id()} | {:error, term()}
+  def rerun(run_id, opts \\ []) when is_list(opts) do
+    orchestrator_runtime_call(:rerun, [run_id, opts])
+  end
+
+  @doc false
+  @spec cancel_run(run_id(), map()) :: :ok | {:error, term()}
+  def cancel_run(run_id, reason \\ %{}) when is_map(reason) do
+    orchestrator_runtime_call(:cancel_run, [run_id, reason])
+  end
+
+  @doc false
+  @spec reload_scheduler() :: :ok | {:error, term()}
+  def reload_scheduler do
+    scheduler_runtime_call(:reload)
+  end
+
+  @doc false
+  @spec tick_scheduler() :: :ok | {:error, term()}
+  def tick_scheduler do
+    scheduler_runtime_call(:tick)
+  end
+
+  @doc false
+  @spec list_scheduled_pipelines() :: [map()] | {:error, term()}
+  def list_scheduled_pipelines do
+    scheduler_runtime_call(:list_scheduled_pipelines)
+  end
+
+  defp orchestrator_runtime_call(function_name, args)
+       when is_atom(function_name) and is_list(args) do
+    orchestrator = FavnOrchestrator
+
+    with {:module, ^orchestrator} <- Code.ensure_loaded(orchestrator),
+         arity <- length(args),
+         true <- function_exported?(orchestrator, function_name, arity) do
+      try do
+        orchestrator
+        |> apply(function_name, args)
+        |> normalize_orchestrator_result()
+      rescue
+        UndefinedFunctionError ->
+          {:error, :runtime_not_available}
+      catch
+        :exit, {:noproc, _detail} ->
+          {:error, :runtime_not_available}
+
+        :exit, {:normal, _detail} ->
+          {:error, :runtime_not_available}
+
+        :exit, reason ->
+          {:error, {:runtime_call_exited, reason}}
+      end
     else
-      {:error, :runtime_not_available}
+      _ -> {:error, :runtime_not_available}
+    end
+  end
+
+  defp normalize_orchestrator_result({:error, {:exited, {:noproc, _detail}}}),
+    do: {:error, :runtime_not_available}
+
+  defp normalize_orchestrator_result({:error, {:exited, {:normal, _detail}}}),
+    do: {:error, :runtime_not_available}
+
+  defp normalize_orchestrator_result(other), do: other
+
+  defp scheduler_runtime_call(function_name) when is_atom(function_name) do
+    scheduler = Favn.Scheduler
+
+    with {:module, ^scheduler} <- Code.ensure_loaded(scheduler),
+         true <- function_exported?(scheduler, function_name, 0) do
+      try do
+        apply(scheduler, function_name, [])
+      rescue
+        UndefinedFunctionError ->
+          {:error, :runtime_not_available}
+      catch
+        :exit, {:noproc, _detail} ->
+          {:error, :runtime_not_available}
+
+        :exit, {:normal, _detail} ->
+          {:error, :runtime_not_available}
+
+        :exit, reason ->
+          {:error, {:runtime_call_exited, reason}}
+      end
+    else
+      _ -> {:error, :runtime_not_available}
     end
   end
 end

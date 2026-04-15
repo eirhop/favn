@@ -3,6 +3,8 @@ defmodule FavnRunner do
   Runner boundary facade for manifest-pinned execution.
   """
 
+  @behaviour Favn.Contracts.RunnerClient
+
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -13,8 +15,11 @@ defmodule FavnRunner do
   @doc """
   Registers one pinned manifest version in the runner.
   """
-  @spec register_manifest(Version.t()) :: :ok | {:error, term()}
-  def register_manifest(%Version{} = version), do: Server.register_manifest(version)
+  @spec register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}
+  def register_manifest(version, opts \\ [])
+
+  def register_manifest(%Version{} = version, opts) when is_list(opts),
+    do: Server.register_manifest(version)
 
   @doc """
   Submits one manifest-pinned work request for asynchronous execution.
@@ -27,38 +32,39 @@ defmodule FavnRunner do
   @doc """
   Waits for one execution result.
   """
-  @spec await_result(execution_id(), timeout()) :: {:ok, RunnerResult.t()} | {:error, term()}
-  def await_result(execution_id, timeout \\ 5_000)
+  @spec await_result(execution_id(), timeout(), keyword()) ::
+          {:ok, RunnerResult.t()} | {:error, term()}
+  def await_result(execution_id, timeout \\ 5_000, opts \\ [])
 
-  def await_result(execution_id, timeout)
-      when is_binary(execution_id) and is_integer(timeout) and timeout > 0 do
+  def await_result(execution_id, timeout, opts)
+      when is_binary(execution_id) and is_integer(timeout) and timeout > 0 and is_list(opts) do
     Server.await_result(execution_id, timeout)
   end
 
-  def await_result(_execution_id, _timeout), do: {:error, :invalid_await_args}
+  def await_result(_execution_id, _timeout, _opts), do: {:error, :invalid_await_args}
 
   @doc """
   Cancels one in-flight execution.
   """
-  @spec cancel_work(execution_id(), map()) :: :ok | {:error, term()}
-  def cancel_work(execution_id, reason \\ %{})
+  @spec cancel_work(execution_id(), map(), keyword()) :: :ok | {:error, term()}
+  def cancel_work(execution_id, reason \\ %{}, opts \\ [])
 
-  def cancel_work(execution_id, reason) when is_binary(execution_id) and is_map(reason) do
+  def cancel_work(execution_id, reason, opts)
+      when is_binary(execution_id) and is_map(reason) and is_list(opts) do
     Server.cancel_work(execution_id, reason)
   end
 
-  def cancel_work(_execution_id, _reason), do: {:error, :invalid_cancel_args}
+  def cancel_work(_execution_id, _reason, _opts), do: {:error, :invalid_cancel_args}
 
   @doc """
   Runs one work request synchronously through the same runner server boundary.
-
   """
   @spec run(RunnerWork.t(), keyword()) :: {:ok, RunnerResult.t()} | {:error, term()}
   def run(%RunnerWork{} = work, opts \\ []) when is_list(opts) do
     timeout = Keyword.get(opts, :timeout, 5_000)
 
     with {:ok, execution_id} <- submit_work(work, opts) do
-      await_result(execution_id, timeout)
+      await_result(execution_id, timeout, opts)
     end
   end
 end

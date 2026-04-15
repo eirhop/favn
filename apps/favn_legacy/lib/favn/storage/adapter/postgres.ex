@@ -14,8 +14,6 @@ defmodule Favn.Storage.Adapter.Postgres do
   reconstruction.
   """
 
-  @behaviour Favn.Storage.Adapter
-
   alias Ecto.Adapters.SQL
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
@@ -28,7 +26,6 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias Favn.Storage.TermJSON
   alias Favn.Window.Key
 
-  @impl true
   def child_spec(opts) when is_list(opts) do
     case Keyword.get(opts, :repo_mode, :managed) do
       :managed ->
@@ -61,10 +58,8 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  @impl true
   def scheduler_child_spec(_opts), do: :none
 
-  @impl true
   def put_run(%Run{} = run, opts) do
     with {:ok, snapshot} <- SnapshotHash.snapshot_for_run(run),
          snapshot_hash <- SnapshotHash.from_snapshot(snapshot),
@@ -75,7 +70,6 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  @impl true
   def get_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          :ok <- ensure_schema_ready(repo) do
@@ -89,7 +83,6 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  @impl true
   def list_runs(opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
     with {:ok, repo} <- resolve_repo(adapter_opts),
          :ok <- ensure_schema_ready(repo) do
@@ -104,7 +97,6 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  @impl true
   def get_scheduler_state(pipeline_module, schedule_id, opts)
       when is_atom(pipeline_module) and (is_atom(schedule_id) or is_nil(schedule_id)) and
              is_list(opts) do
@@ -149,7 +141,6 @@ defmodule Favn.Storage.Adapter.Postgres do
     }
   end
 
-  @impl true
   def put_scheduler_state(%SchedulerState{} = state, opts) when is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          :ok <- ensure_schema_ready(repo) do

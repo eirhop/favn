@@ -14,7 +14,7 @@ Favn `v0.5.0` refactor is in progress.
 ## Current Refactor Reality
 
 - the public `Favn.*` authoring DSL now compiles from `apps/favn`
-- runtime scheduling, storage, and most operator paths still come from `apps/favn_legacy`
+- orchestrator-owned runtime scheduling, run tracking, rerun/cancel flows, and public runtime contracts now live in `apps/favn_orchestrator`
 - canonical manifest schema/versioning, serializer/hash identity, compatibility checks, and shared runner contracts are now implemented in `favn_core`
 - initial runner boundary execution now exists in `favn_runner` for manifest registration plus Elixir/source asset execution through runner contracts
 - runner-owned connection runtime and SQL execution runtime slices are now hosted in `apps/favn_runner/lib/favn/connection/**`, `apps/favn_runner/lib/favn/sql/**`, and `apps/favn_runner/lib/favn/sql_asset/**`
@@ -22,10 +22,10 @@ Favn `v0.5.0` refactor is in progress.
 
 ## Current Focus
 
-- finish Phase 4 cleanup and prepare Phase 5 orchestrator-boundary implementation
+- finish remaining Phase 4 cleanup and begin Phase 6 storage-adapter extraction
 - keep `favn` as the public DSL/facade package
 - re-center internal compiler / manifest / planning / shared-contract machinery into `favn_core`
-- define canonical manifest schema, version identity, hashing, and compatibility before runner/orchestrator implementation
+- use the now-locked manifest/version/runner contracts to migrate remaining control-plane behavior into `favn_orchestrator`
 - breaking changes remain allowed before `v1.0`
 
 ## Documentation Pointers
@@ -39,3 +39,5 @@ Favn `v0.5.0` refactor is in progress.
 - `docs/refactor/PHASE_3_TODO.md` - Phase 3 implementation checklist
 - `docs/refactor/PHASE_4_RUNNER_BOUNDARY_PLAN.md` - Phase 4 runner architecture plan
 - `docs/refactor/PHASE_4_TODO.md` - Phase 4 implementation checklist
+- `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md` - Phase 5 orchestrator architecture plan
+- `docs/refactor/PHASE_5_TODO.md` - Phase 5 implementation checklist

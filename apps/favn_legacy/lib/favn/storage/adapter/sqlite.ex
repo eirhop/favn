@@ -14,8 +14,6 @@ defmodule Favn.Storage.Adapter.SQLite do
   write semantics.
   """
 
-  @behaviour Favn.Storage.Adapter
-
   alias Ecto.Adapters.SQL
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
@@ -25,7 +23,6 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias Favn.Storage.SQLite.Supervisor, as: SQLiteSupervisor
   alias Favn.Window.Key
 
-  @impl true
   def child_spec(opts) when is_list(opts) do
     with {:ok, repo_config} <- repo_config(opts) do
       child =
@@ -41,10 +38,8 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  @impl true
   def scheduler_child_spec(_opts), do: :none
 
-  @impl true
   def put_run(%Run{} = run, opts) do
     with {:ok, _repo_config} <- repo_config(opts),
          :ok <- ensure_repo_started(),
@@ -184,7 +179,6 @@ defmodule Favn.Storage.Adapter.SQLite do
     Repo.rollback(reason)
   end
 
-  @impl true
   def get_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     with {:ok, _repo_config} <- repo_config(opts),
          :ok <- ensure_repo_started() do
@@ -198,7 +192,6 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  @impl true
   def list_runs(opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
     with {:ok, _repo_config} <- repo_config(adapter_opts),
          :ok <- ensure_repo_started() do
@@ -366,7 +359,6 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp encode_window_key(nil), do: "__nil__"
   defp encode_window_key(key) when is_map(key), do: Key.encode(key)
 
-  @impl true
   def get_scheduler_state(pipeline_module, schedule_id, opts)
       when is_atom(pipeline_module) and (is_atom(schedule_id) or is_nil(schedule_id)) and
              is_list(opts) do
@@ -414,7 +406,6 @@ defmodule Favn.Storage.Adapter.SQLite do
     }
   end
 
-  @impl true
   def put_scheduler_state(%SchedulerState{} = state, opts) when is_list(opts) do
     with {:ok, _repo_config} <- repo_config(opts),
          :ok <- ensure_repo_started() do
