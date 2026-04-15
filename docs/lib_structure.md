@@ -93,4 +93,6 @@ Notes:
 - `favn_legacy` is the active v0.4 reference runtime during migration.
 - Phase 2 migration currently establishes public DSL/facade ownership under `favn`.
 - Runtime execution APIs remain legacy-owned while compile-time/manifest foundations are migrated.
+- Some compiler/manifest/planning implementation currently lives under `favn` as a transitional ownership-transfer layout.
+- Intended steady-state ownership remains: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane, and `favn_view` via orchestrator APIs only.
 - New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.

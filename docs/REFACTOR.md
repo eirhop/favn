@@ -66,6 +66,23 @@ The following are explicitly out of scope for the first refactor phase unless re
 
 The umbrella should stay intentionally small.
 
+## Target steady-state architecture (explicit)
+
+This is the intended end-state product boundary and should drive all Phase 3+
+decisions:
+
+- `favn`: public authoring dependency (public DSL + public facade)
+- `favn_core`: internal shared compiler/manifest/planning/contracts layer
+- `favn_runner`: execution/runtime boundary
+- `favn_orchestrator`: control plane and system of record (persisted manifests, scheduling, run lifecycle)
+- `favn_view`: UI/API integration through orchestrator APIs only
+
+Critical runtime rule:
+
+- orchestrator and runner must operate on persisted manifest data and pinned manifest versions
+- orchestrator must not discover/load user business modules at runtime
+- runner executes pinned manifest-backed work, not ad hoc runtime module discovery
+
 ### Public-facing package
 - `favn`
   - the single dependency user business projects add
@@ -351,6 +368,12 @@ Move into `favn_core` and/or `favn`:
 - shared cross-app migration fixtures in `favn_test_support` where needed to verify moved slices
 
 `favn` becomes the public facade package that user projects depend on.
+
+Transitional layout note:
+
+- Phase 2 first guarantees namespace ownership and public API placement in `favn`
+- some compiler/manifest/planning implementation may temporarily live under `favn` during this ownership transfer
+- this is not the intended final architecture; after Phase 2 stabilization, internal-only implementation should be re-thinned back into `favn_core` while keeping `favn` as a thin public surface
 
 ### Exit criteria
 - user business code can compile against `favn`

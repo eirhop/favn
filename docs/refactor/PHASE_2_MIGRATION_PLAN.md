@@ -6,6 +6,22 @@ Planned on branch `feature/phase-2-migration-plan`.
 
 Implementation note: current branch prioritizes public namespace ownership in `favn` for Phase 2. Runtime execution remains legacy-owned, and unsupported runtime paths in migrated SQL APIs fail deterministically with `{:error, :runtime_not_available}`.
 
+## Implementation Status / Transitional Layout
+
+- Phase 2 currently establishes public namespace ownership under `favn`.
+- Some internal compiler/manifest/planning implementation now lives under `favn` as a transitional migration layout.
+- This is not the intended steady-state architecture.
+
+Intended steady-state ownership remains:
+
+- `favn`: public DSL + public facade
+- `favn_core`: internal compiler/manifest/planning/contracts
+- `favn_runner`: execution/runtime boundary
+- `favn_orchestrator`: persisted manifests, scheduling, run lifecycle, control plane APIs
+- `favn_view`: UI/API through orchestrator only
+
+Orchestrator and runner must operate on persisted manifest data and pinned manifest versions, not runtime user-module discovery.
+
 ## Goal
 
 Make user business modules compile against `favn`, build a manifest from authored modules without starting runtime services, and move the stable authoring/domain surface out of `favn_legacy` before runner/orchestrator work begins.
@@ -54,6 +70,18 @@ Move into `favn_core` and/or `favn`:
 - owner apps such as `favn_core` and `favn` may depend on `favn_test_support` only with `only: :test`
 - fixtures used by only one app should remain in that app's local `test/support`
 - `favn_test_support` must stay dependency-light so low-level apps can use it without creating umbrella dependency cycles
+
+## SQL Runtime Bridge Status
+
+- `Favn.SQL.RuntimeBridge` is a temporary migration seam to keep unsupported runtime paths deterministic during ownership transfer.
+- It is not a final runtime ownership decision.
+- It should move to the final runtime owner boundary (`favn_runner`/runtime layer) or be removed when the runtime boundary is fully established.
+
+## Planned Follow-up After Phase 2 Stabilization
+
+- re-thin `favn` so internal-only compiler/manifest/planning machinery moves back into `favn_core`
+- keep `favn` as the thin public package surface over internal compiler/manifest logic
+- remove temporary migration seams (including SQL runtime bridge placement) once runner/runtime ownership is finalized
 
 ## File Strategy
 

@@ -237,6 +237,8 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [ ] manifest model and generation foundation established without runtime coupling
   - [ ] user business code compiles against `favn`
   - [ ] unit tests for DSL/compiler/domain run in the new apps
+  - [ ] post-Phase-2 re-thinning: move internal-only compiler/manifest/planning machinery back into `favn_core` while keeping `favn` as thin public surface
+  - [ ] remove temporary migration seams (including SQL runtime bridge placement) once runner/runtime boundary ownership is finalized
 - [ ] Phase 3: implement persisted manifest schema and manifest version pinning
 - [ ] Phase 4: build the runner boundary in `favn_runner`
 - [ ] Phase 5: build the orchestrator boundary in `favn_orchestrator`
