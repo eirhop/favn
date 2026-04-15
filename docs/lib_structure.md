@@ -1,6 +1,6 @@
 # Library Folder Structure (`apps/*/lib`)
 
-This document maps the umbrella library layout after v0.5 Phase 1.
+This document maps the umbrella library layout during the Phase 2 -> Phase 3 transition.
 
 ```text
 apps/
@@ -11,31 +11,18 @@ apps/
 │       ├── asset.ex
 │       ├── assets.ex
 │       ├── connection.ex
-│       ├── diagnostic.ex
-│       ├── manifest.ex
 │       ├── multi_asset.ex
 │       ├── namespace.ex
 │       ├── pipeline.ex
-│       ├── plan.ex
-│       ├── ref.ex
-│       ├── relation_ref.ex
 │       ├── source.ex
 │       ├── sql.ex
 │       ├── sql_asset.ex
-│       ├── timezone.ex
 │       ├── window.ex
-│       ├── asset/
-│       ├── assets/
-│       ├── connection/
-│       ├── dsl/
-│       ├── manifest/
-│       ├── pipeline/
-│       ├── sql/
-│       ├── sql_asset/
 │       ├── triggers/
-│       └── window/
+│       └── (public DSL entrypoints only)
 ├── favn_core/lib/
-│   └── favn_core.ex
+│   ├── favn_core.ex
+│   └── favn/
 ├── favn_runner/lib/
 │   ├── favn_runner.ex
 │   └── favn_runner/application.ex
@@ -93,6 +80,53 @@ Notes:
 - `favn_legacy` is the active v0.4 reference runtime during migration.
 - Phase 2 migration currently establishes public DSL/facade ownership under `favn`.
 - Runtime execution APIs remain legacy-owned while compile-time/manifest foundations are migrated.
-- Some compiler/manifest/planning implementation currently lives under `favn` as a transitional ownership-transfer layout.
+- Internal compiler/manifest/planning/shared contracts are now re-centered into `apps/favn_core/lib/favn/`.
+- Phase 3 modules now owned in `apps/favn_core/lib/favn/` include:
+  - `manifest.ex`
+  - `ref.ex`
+  - `relation_ref.ex`
+  - `timezone.ex`
+  - `diagnostic.ex`
+  - `asset/dependency.ex`
+  - `asset/relation_input.ex`
+  - `asset/relation_resolver.ex`
+  - `assets/graph_index.ex`
+  - `assets/planner.ex`
+  - `assets/compiler.ex`
+  - `assets/dependency_inference.ex`
+  - `dsl/compiler.ex`
+  - `connection/definition.ex`
+  - `pipeline/definition.ex`
+  - `pipeline/resolver.ex`
+  - `pipeline/resolution.ex`
+  - `plan.ex`
+  - `sql/definition.ex`
+  - `sql/source.ex`
+  - `sql/template.ex`
+  - `sql_asset/definition.ex`
+  - `sql_asset/compiler.ex`
+  - `sql_asset/materialization.ex`
+  - `sql_asset/relation_usage.ex`
+  - `window/spec.ex`
+  - `window/anchor.ex`
+  - `window/runtime.ex`
+  - `window/key.ex`
+  - `window/validate.ex`
+  - `triggers/schedule.ex`
+  - `manifest/build.ex`
+  - `manifest/asset.ex`
+  - `manifest/pipeline.ex`
+  - `manifest/schedule.ex`
+  - `manifest/catalog.ex`
+  - `manifest/generator.ex`
+  - `manifest/graph.ex`
+  - `manifest/serializer.ex`
+  - `manifest/identity.ex`
+  - `manifest/compatibility.ex`
+  - `manifest/version.ex`
+  - `contracts/runner_work.ex`
+  - `contracts/runner_result.ex`
+  - `contracts/runner_event.ex`
 - Intended steady-state ownership remains: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane, and `favn_view` via orchestrator APIs only.
+- Phase 3 populated `apps/favn_core/lib/favn/` with canonical manifest schema/versioning, serializer/hash/compatibility logic, graph/planning helpers, SQL helper internals, and shared runner/orchestrator contract structs.
 - New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.

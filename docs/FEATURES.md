@@ -232,14 +232,28 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] legacy deletion criteria defined
 - [x] Phase 1: create umbrella and isolate `favn_legacy`
 - [ ] Phase 2: move public DSL and domain/compiler foundation into `favn` and `favn_core`, including manifest model/generation foundations
-  - [ ] public DSL entrypoints moved into `favn`
-  - [ ] canonical domain/compiler foundation moved into `favn_core`
-  - [ ] manifest model and generation foundation established without runtime coupling
-  - [ ] user business code compiles against `favn`
-  - [ ] unit tests for DSL/compiler/domain run in the new apps
-  - [ ] post-Phase-2 re-thinning: move internal-only compiler/manifest/planning machinery back into `favn_core` while keeping `favn` as thin public surface
-  - [ ] remove temporary migration seams (including SQL runtime bridge placement) once runner/runtime boundary ownership is finalized
-- [ ] Phase 3: implement persisted manifest schema and manifest version pinning
+  - [x] public `Favn.*` namespace ownership established under `apps/favn/lib`
+  - [x] user business code can compile against `favn` for migrated authoring/manifest paths
+  - [x] compile-time DSL usage through `favn` is established
+  - [x] initial manifest generation foundation exists without starting runtime services
+  - [x] unsupported migrated runtime SQL paths fail deterministically with `{:error, :runtime_not_available}`
+  - [x] canonical domain/compiler foundation physically re-centered into `favn_core`
+  - [x] post-Phase-2 re-thinning: move internal-only compiler/manifest/planning machinery back into `favn_core` while keeping `favn` as thin public surface
+  - [ ] remove temporary migration seams once runner/runtime boundary ownership is finalized
+- [x] Phase 3: implement persisted manifest schema and manifest version pinning
+  - [x] planning docs created: `docs/refactor/PHASE_3_MANIFEST_VERSIONING_PLAN.md`
+  - [x] implementation checklist created: `docs/refactor/PHASE_3_TODO.md`
+  - [x] initial `favn_core` Phase 3 foundation modules added (`manifest/build`, `manifest/serializer`, `manifest/identity`, `manifest/compatibility`, `manifest/version`, runner contracts)
+  - [x] first ownership re-centering slice completed for pure value objects (`Favn.Ref`, `Favn.RelationRef`, `Favn.Timezone`, `Favn.Diagnostic`) from `favn` to `favn_core`
+  - [x] second ownership re-centering slice completed for window and schedule internals (`Favn.Window.*` structs/helpers and `Favn.Triggers.Schedule`) from `favn` to `favn_core`
+  - [x] third ownership re-centering slice completed for asset/compiler/connection internals (`Favn.Asset.Dependency`, `Favn.Asset.RelationInput`, `Favn.Asset.RelationResolver`, `Favn.DSL.Compiler`, `Favn.Connection.Definition`) from `favn` to `favn_core`
+  - [x] canonical runtime manifest schema locked
+  - [x] manifest build output split from canonical persisted manifest payload
+  - [x] manifest version id/hash strategy implemented
+  - [x] canonical serializer and hashing implemented
+  - [x] manifest/runner compatibility validation implemented
+  - [x] shared runner/orchestrator contract DTOs introduced in `favn_core`
+  - [x] contract lock tests added before Phase 4 runner implementation
 - [ ] Phase 4: build the runner boundary in `favn_runner`
 - [ ] Phase 5: build the orchestrator boundary in `favn_orchestrator`
 - [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
@@ -248,7 +262,11 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
 - [ ] Phase 9: ship developer tooling and packaging flows
 - [ ] Phase 10: cut over and delete legacy runtime paths
 
-Detailed migration planning for this phase lives in `docs/refactor/PHASE_2_MIGRATION_PLAN.md`.
+Detailed migration planning for the current refactor slices lives in:
+
+- `docs/refactor/PHASE_2_MIGRATION_PLAN.md`
+- `docs/refactor/PHASE_3_MANIFEST_VERSIONING_PLAN.md`
+- `docs/refactor/PHASE_3_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 
