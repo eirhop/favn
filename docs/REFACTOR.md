@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 1 complete, Phase 2 next
+Phase 2 in progress, Phase 3 implemented
 
 ## Summary
 
@@ -388,12 +388,24 @@ Transitional layout note:
 ### Goal
 Make manifest versioning the source of truth for orchestration.
 
+Detailed implementation planning for this phase lives in:
+
+- `docs/refactor/PHASE_3_MANIFEST_VERSIONING_PLAN.md`
+- `docs/refactor/PHASE_3_TODO.md`
+
 ### Deliverables
 - canonical manifest schema
 - version identity strategy
 - manifest persistence contract for orchestrator
 - run pinning to manifest version
 - compatibility checks between manifest and runner runtime
+
+Phase 3 implementation rule:
+
+- keep `favn` as the public DSL/facade package
+- move or re-center internal compiler / manifest / graph / shared-contract machinery into `favn_core`
+- define a canonical serialized manifest payload separate from compile/build diagnostics and timestamps
+- lock manifest hashing and compatibility rules before building runner/orchestrator runtime behavior
 
 ### Exit criteria
 - a run can be created against a specific manifest version

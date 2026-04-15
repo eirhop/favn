@@ -24,6 +24,7 @@ defmodule FavnCore.MixProject do
 
   defp deps do
     [
+      {:jason, "~> 1.4"},
       {:favn_test_support, in_umbrella: true, only: :test}
     ]
   end

@@ -10,7 +10,12 @@ defmodule Favn do
   alias Favn.Assets.Compiler
   alias Favn.Assets.Planner
   alias Favn.Manifest
+  alias Favn.Manifest.Build
+  alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Generator
+  alias Favn.Manifest.Identity
+  alias Favn.Manifest.Serializer
+  alias Favn.Manifest.Version
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
   alias Favn.Runtime.Manager
@@ -121,7 +126,52 @@ defmodule Favn do
   Generates a manifest from explicit modules or app config.
   """
   @spec generate_manifest(manifest_opts()) :: {:ok, Manifest.t()} | {:error, term()}
-  def generate_manifest(opts \\ []) when is_list(opts), do: Generator.generate(opts)
+  def generate_manifest(opts \\ []) when is_list(opts),
+    do: opts |> with_default_manifest_modules() |> Generator.generate()
+
+  @doc """
+  Generates a manifest build output with build-only metadata separated from
+  canonical runtime payload data.
+  """
+  @spec build_manifest(manifest_opts()) :: {:ok, Build.t()} | {:error, term()}
+  def build_manifest(opts \\ []) when is_list(opts) do
+    opts
+    |> with_default_manifest_modules()
+    |> Generator.build()
+  end
+
+  @doc """
+  Serializes a canonical manifest payload to stable JSON bytes.
+  """
+  @spec serialize_manifest(map() | struct()) :: {:ok, binary()} | {:error, term()}
+  def serialize_manifest(manifest), do: Serializer.encode_manifest(manifest)
+
+  @doc """
+  Computes the content hash for a canonical manifest payload.
+  """
+  @spec hash_manifest(map() | struct()) :: {:ok, String.t()} | {:error, term()}
+  def hash_manifest(manifest), do: Identity.hash_manifest(manifest)
+
+  @doc """
+  Validates manifest schema and runner contract compatibility.
+  """
+  @spec validate_manifest_compatibility(map() | struct()) :: :ok | {:error, term()}
+  def validate_manifest_compatibility(manifest), do: Compatibility.validate_manifest(manifest)
+
+  @doc """
+  Pins a manifest into an immutable manifest-version envelope.
+  """
+  @spec pin_manifest_version(map() | struct(), keyword()) :: {:ok, Version.t()} | {:error, term()}
+  def pin_manifest_version(manifest, opts \\ []) when is_list(opts) do
+    Version.new(manifest, opts)
+  end
+
+  defp with_default_manifest_modules(opts) when is_list(opts) do
+    opts
+    |> Keyword.put_new(:asset_modules, Application.get_env(:favn, :asset_modules, []))
+    |> Keyword.put_new(:pipeline_modules, Application.get_env(:favn, :pipeline_modules, []))
+    |> Keyword.put_new(:schedule_modules, Application.get_env(:favn, :schedule_modules, []))
+  end
 
   @doc false
   @spec plan_asset_run(asset_ref() | [asset_ref()], keyword()) ::

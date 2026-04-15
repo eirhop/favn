@@ -36,10 +36,12 @@ defmodule Favn.Manifest.GeneratorTest do
                schedule_modules: [TestSchedules]
              )
 
-    assert manifest.version == 1
+    assert manifest.schema_version == 1
+    assert manifest.runner_contract_version == 1
     assert length(manifest.assets) == 1
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1
+    assert manifest.graph.nodes == [{TestAsset, :asset}]
 
     [asset] = manifest.assets
     assert asset.ref == {TestAsset, :asset}
@@ -58,5 +60,36 @@ defmodule Favn.Manifest.GeneratorTest do
 
     assert {:ok, fetched} = Favn.get_asset(TestAsset)
     assert fetched.ref == {TestAsset, :asset}
+  end
+
+  test "builds, hashes, validates, and pins manifest versions" do
+    assert {:ok, build} =
+             Favn.build_manifest(
+               asset_modules: [TestAsset],
+               pipeline_modules: [TestPipeline],
+               schedule_modules: [TestSchedules]
+             )
+
+    assert is_map(build.manifest)
+    assert is_struct(build.manifest, Favn.Manifest)
+
+    assert {:ok, _json} = Favn.serialize_manifest(build)
+    assert {:ok, hash} = Favn.hash_manifest(build)
+    assert byte_size(hash) == 64
+
+    assert :ok =
+             Favn.validate_manifest_compatibility(%{
+               schema_version: 1,
+               runner_contract_version: 1
+             })
+
+    assert {:ok, version} =
+             Favn.pin_manifest_version(build,
+               manifest_version_id: "mv_test_facade_001",
+               inserted_at: ~U[2026-01-01 00:00:00Z]
+             )
+
+    assert version.manifest_version_id == "mv_test_facade_001"
+    assert version.content_hash == hash
   end
 end

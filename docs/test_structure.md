@@ -1,6 +1,6 @@
 # Test Folder Structure (`apps/*/test`)
 
-This document maps the umbrella test layout after v0.5 Phase 1.
+This document maps the umbrella test layout during the Phase 2 -> Phase 3 transition.
 
 ```text
 apps/
@@ -11,6 +11,11 @@ apps/
 │   └── test_helper.exs
 ├── favn_core/test/
 │   ├── favn_core_test.exs
+│   ├── value_objects_test.exs
+│   ├── window_schedule_test.exs
+│   ├── asset_and_dsl_test.exs
+│   ├── manifest/
+│   ├── contracts/
 │   └── test_helper.exs
 ├── favn_runner/test/
 │   ├── favn_runner_test.exs
@@ -61,3 +66,8 @@ Notes:
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures used during migration.
 - Umbrella apps may depend on `favn_test_support` only with `only: :test`.
 - Fixtures used by only one app should stay in that app's local `test/support` directory.
+- Phase 3 should grow `apps/favn_core/test` with manifest schema, manifest versioning, serializer, compatibility, graph, and shared contract tests.
+- `apps/favn/test` should stay focused on public DSL/facade coverage once internal compiler/manifest tests move down into `favn_core`.
+- Initial Phase 3 tests now exist under `apps/favn_core/test/manifest/` and `apps/favn_core/test/contracts/`.
+- `apps/favn_core/test/manifest/` now includes `build_test.exs` and `graph_test.exs` in addition to serializer/version/identity/compatibility coverage.
+- `apps/favn_core/test/contracts/contract_lock_test.exs` now locks runner contract key shapes before Phase 4 runner work.

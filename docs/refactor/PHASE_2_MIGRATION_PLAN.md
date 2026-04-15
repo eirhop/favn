@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned on branch `feature/phase-2-migration-plan`.
+Implemented as the current transitional baseline. Follow-up cleanup and manifest/versioning lock-in move to Phase 3 on branch `feature/phase-3-manifest-versioning-plan`.
 
 Implementation note: current branch prioritizes public namespace ownership in `favn` for Phase 2. Runtime execution remains legacy-owned, and unsupported runtime paths in migrated SQL APIs fail deterministically with `{:error, :runtime_not_available}`.
 
@@ -82,6 +82,11 @@ Move into `favn_core` and/or `favn`:
 - re-thin `favn` so internal-only compiler/manifest/planning machinery moves back into `favn_core`
 - keep `favn` as the thin public package surface over internal compiler/manifest logic
 - remove temporary migration seams (including SQL runtime bridge placement) once runner/runtime ownership is finalized
+
+Detailed Phase 3 implementation planning for that follow-up now lives in:
+
+- `docs/refactor/PHASE_3_MANIFEST_VERSIONING_PLAN.md`
+- `docs/refactor/PHASE_3_TODO.md`
 
 ## File Strategy
 
