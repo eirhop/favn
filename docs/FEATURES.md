@@ -282,6 +282,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] initial orchestrator scheduler runtime is active in `FavnOrchestrator.Scheduler.Runtime`, deriving entries from the active persisted manifest and persisting scheduler cursors through orchestrator storage
   - [x] preserved public contracts `Favn.Run`, `Favn.Scheduler.State`, and `Favn.Scheduler` are now owned by orchestrator-side files rather than `favn_legacy`; `Favn` exposes scheduler runtime wrappers too
   - [x] preserved public `Favn.Storage` contract is now owned by orchestrator-side files, and the scheduler matrix now covers overlap policies, missed-occurrence behavior, and window anchor propagation
+  - [x] manual pipeline submission now resolves from persisted manifest pipeline descriptors in orchestrator, with projector coverage and same-node orchestrator-to-runner integration coverage added
 - [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
 - [ ] Phase 7: move DuckDB into `favn_duckdb`
 - [ ] Phase 8: add `favn_view`
