@@ -9,6 +9,7 @@ apps/
 │   └── test_helper.exs
 ├── favn_core/test/
 │   ├── favn_core_test.exs
+│   ├── manifest_generator_test.exs
 │   └── test_helper.exs
 ├── favn_runner/test/
 │   ├── favn_runner_test.exs
@@ -53,3 +54,6 @@ Notes:
 
 - Most runtime coverage remains in `apps/favn_legacy/test` until slices are migrated.
 - Each migrated slice must move or recreate tests in the new owner app without dual-compiling namespace owners.
+- `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures used during migration.
+- Umbrella apps may depend on `favn_test_support` only with `only: :test`.
+- Fixtures used by only one app should stay in that app's local `test/support` directory.

@@ -130,7 +130,7 @@ Allowed compile-time dependency directions for the umbrella:
 - `favn_storage_postgres -> favn_orchestrator`
 - `favn_storage_sqlite -> favn_orchestrator`
 - `favn_duckdb -> favn_runner`
-- `favn_test_support -> any internal app`, but only in test/dev support paths
+- `any umbrella app -> favn_test_support`, but only with `only: :test`
 
 Locked dependency rules:
 
@@ -145,7 +145,11 @@ Locked dependency rules:
 9. Storage apps depend only on `favn_orchestrator`; storage is a control-plane concern.
 10. Runner plugins depend only on `favn_runner`; execution plugins are a runner concern.
 11. No production app may depend on `favn_test_support`.
-12. No new app may depend on `favn_legacy`.
+12. Any umbrella app may depend on `favn_test_support` only as a test-only dependency.
+13. `favn_test_support` should hold only cross-app test fixtures, helpers, builders, and file fixtures.
+14. App-specific fixtures should stay in `apps/<app>/test/support`.
+15. `favn_test_support` must stay dependency-light and must not take umbrella-app dependencies that would prevent low-level apps such as `favn_core` from using it in tests.
+16. No new app may depend on `favn_legacy`.
 
 ### Packaging rule for `favn_runner`
 
@@ -165,6 +169,8 @@ During v0.5 refactor:
 5. New architecture decisions override old roadmap assumptions.
 6. Public docs and examples must move with the new source of truth as slices are migrated.
 7. New feature work should land in the new architecture unless it is a blocker-level fix for legacy behavior.
+8. Shared test fixtures needed across owner apps should move into `favn_test_support` and be consumed via test-only dependencies.
+9. Fixtures used by only one app should remain local under that app's `test/support`.
 
 ### Namespace ownership handoff (Phase 1 -> Phase 2)
 
@@ -342,6 +348,7 @@ Move into `favn_core` and/or `favn`:
 - graph/dependency planning
 - compile-time metadata capture
 - manifest data model and manifest generation
+- shared cross-app migration fixtures in `favn_test_support` where needed to verify moved slices
 
 `favn` becomes the public facade package that user projects depend on.
 
@@ -349,6 +356,7 @@ Move into `favn_core` and/or `favn`:
 - user business code can compile against `favn`
 - manifest can be generated from user modules without orchestrator/runtime coupling
 - unit tests for DSL/compiler/domain run under the new apps
+- any cross-app fixtures required by migrated tests are available through `favn_test_support` test-only dependencies
 
 ---
 

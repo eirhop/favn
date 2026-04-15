@@ -115,7 +115,6 @@ defmodule Favn.SQLAsset do
   alias Favn.SQLAsset.Definition
   alias Favn.SQLAsset.Materialization
   alias Favn.SQLAsset.RelationUsage
-  alias Favn.SQLAsset.Runtime
   alias Favn.Window.Spec
 
   @doc false
@@ -313,8 +312,8 @@ defmodule Favn.SQLAsset do
       def __favn_single_asset__, do: true
 
       @doc false
-      @spec asset(Favn.Run.Context.t()) :: Favn.Asset.return_value()
-      def asset(ctx), do: Runtime.run(__MODULE__, ctx)
+      @spec asset(map()) :: Favn.Asset.return_value()
+      def asset(_ctx), do: {:error, :runtime_not_available}
     end
   end
 

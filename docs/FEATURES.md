@@ -231,8 +231,13 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] migration rules locked
   - [x] legacy deletion criteria defined
 - [x] Phase 1: create umbrella and isolate `favn_legacy`
-- [ ] Phase 2: move public DSL and domain/compiler foundation into `favn` and `favn_core`
-- [ ] Phase 3: implement manifest schema and manifest version pinning
+- [ ] Phase 2: move public DSL and domain/compiler foundation into `favn` and `favn_core`, including manifest model/generation foundations
+  - [ ] public DSL entrypoints moved into `favn`
+  - [ ] canonical domain/compiler foundation moved into `favn_core`
+  - [ ] manifest model and generation foundation established without runtime coupling
+  - [ ] user business code compiles against `favn`
+  - [ ] unit tests for DSL/compiler/domain run in the new apps
+- [ ] Phase 3: implement persisted manifest schema and manifest version pinning
 - [ ] Phase 4: build the runner boundary in `favn_runner`
 - [ ] Phase 5: build the orchestrator boundary in `favn_orchestrator`
 - [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
@@ -240,6 +245,8 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
 - [ ] Phase 8: add `favn_view`
 - [ ] Phase 9: ship developer tooling and packaging flows
 - [ ] Phase 10: cut over and delete legacy runtime paths
+
+Detailed migration planning for this phase lives in `docs/refactor/PHASE_2_MIGRATION_PLAN.md`.
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 
