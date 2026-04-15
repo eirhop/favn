@@ -3,6 +3,7 @@ defmodule Favn.Manifest.Version do
   Immutable pinned manifest version envelope.
   """
 
+  alias Favn.Manifest.Build
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Identity
 
@@ -28,8 +29,6 @@ defmodule Favn.Manifest.Version do
 
   @type opt ::
           {:manifest_version_id, String.t()}
-          | {:schema_version, pos_integer()}
-          | {:runner_contract_version, pos_integer()}
           | {:serialization_format, String.t()}
           | {:inserted_at, DateTime.t()}
           | {:hash_algorithm, :sha256}
@@ -37,25 +36,25 @@ defmodule Favn.Manifest.Version do
   @type error ::
           {:invalid_manifest_version_id, term()}
           | {:invalid_serialization_format, term()}
+          | {:unknown_opt, atom()}
           | Favn.Manifest.Compatibility.error()
           | Favn.Manifest.Identity.error()
 
   @spec new(map() | struct(), [opt()]) :: {:ok, t()} | {:error, error()}
   def new(manifest, opts \\ []) when is_list(opts) do
-    schema_version = Keyword.get(opts, :schema_version, Compatibility.current_schema_version())
-
-    runner_contract_version =
-      Keyword.get(opts, :runner_contract_version, Compatibility.current_runner_contract_version())
-
+    canonical_manifest = canonical_manifest(manifest)
     manifest_version_id = Keyword.get(opts, :manifest_version_id, default_manifest_version_id())
     serialization_format = Keyword.get(opts, :serialization_format, "json-v1")
 
-    with :ok <- Compatibility.validate_schema_version(schema_version),
-         :ok <- Compatibility.validate_runner_contract_version(runner_contract_version),
+    with :ok <- validate_opts(opts),
+         :ok <- Compatibility.validate_manifest(canonical_manifest),
+         {:ok, schema_version} <- read_field(canonical_manifest, :schema_version),
+         {:ok, runner_contract_version} <-
+           read_field(canonical_manifest, :runner_contract_version),
          :ok <- validate_manifest_version_id(manifest_version_id),
          :ok <- validate_serialization_format(serialization_format),
          {:ok, content_hash} <-
-           Identity.hash_manifest(manifest,
+           Identity.hash_manifest(canonical_manifest,
              algorithm: Keyword.get(opts, :hash_algorithm, :sha256)
            ) do
       {:ok,
@@ -65,9 +64,32 @@ defmodule Favn.Manifest.Version do
          schema_version: schema_version,
          runner_contract_version: runner_contract_version,
          serialization_format: serialization_format,
-         manifest: manifest,
+         manifest: canonical_manifest,
          inserted_at: Keyword.get(opts, :inserted_at)
        }}
+    end
+  end
+
+  defp canonical_manifest(%Build{manifest: manifest}), do: manifest
+  defp canonical_manifest(manifest), do: manifest
+
+  defp read_field(value, field) do
+    atom_key = field
+    string_key = Atom.to_string(field)
+
+    cond do
+      Map.has_key?(value, atom_key) -> {:ok, Map.get(value, atom_key)}
+      Map.has_key?(value, string_key) -> {:ok, Map.get(value, string_key)}
+      true -> {:error, {:missing_manifest_field, field}}
+    end
+  end
+
+  defp validate_opts(opts) do
+    allowed = [:manifest_version_id, :serialization_format, :inserted_at, :hash_algorithm]
+
+    case Enum.find(opts, fn {key, _value} -> key not in allowed end) do
+      nil -> :ok
+      {key, _value} -> {:error, {:unknown_opt, key}}
     end
   end
 

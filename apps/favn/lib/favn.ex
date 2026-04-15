@@ -126,7 +126,8 @@ defmodule Favn do
   Generates a manifest from explicit modules or app config.
   """
   @spec generate_manifest(manifest_opts()) :: {:ok, Manifest.t()} | {:error, term()}
-  def generate_manifest(opts \\ []) when is_list(opts), do: Generator.generate(opts)
+  def generate_manifest(opts \\ []) when is_list(opts),
+    do: opts |> with_default_manifest_modules() |> Generator.generate()
 
   @doc """
   Generates a manifest build output with build-only metadata separated from
@@ -134,7 +135,9 @@ defmodule Favn do
   """
   @spec build_manifest(manifest_opts()) :: {:ok, Build.t()} | {:error, term()}
   def build_manifest(opts \\ []) when is_list(opts) do
-    Generator.build(opts)
+    opts
+    |> with_default_manifest_modules()
+    |> Generator.build()
   end
 
   @doc """
@@ -161,6 +164,13 @@ defmodule Favn do
   @spec pin_manifest_version(map() | struct(), keyword()) :: {:ok, Version.t()} | {:error, term()}
   def pin_manifest_version(manifest, opts \\ []) when is_list(opts) do
     Version.new(manifest, opts)
+  end
+
+  defp with_default_manifest_modules(opts) when is_list(opts) do
+    opts
+    |> Keyword.put_new(:asset_modules, Application.get_env(:favn, :asset_modules, []))
+    |> Keyword.put_new(:pipeline_modules, Application.get_env(:favn, :pipeline_modules, []))
+    |> Keyword.put_new(:schedule_modules, Application.get_env(:favn, :schedule_modules, []))
   end
 
   @doc false

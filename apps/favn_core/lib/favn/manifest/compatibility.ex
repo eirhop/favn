@@ -7,7 +7,8 @@ defmodule Favn.Manifest.Compatibility do
   @current_runner_contract_version 1
 
   @type error ::
-          {:unsupported_schema_version, term(), pos_integer()}
+          {:missing_manifest_field, :schema_version | :runner_contract_version}
+          | {:unsupported_schema_version, term(), pos_integer()}
           | {:unsupported_runner_contract_version, term(), pos_integer()}
 
   @spec current_schema_version() :: pos_integer()
@@ -18,12 +19,10 @@ defmodule Favn.Manifest.Compatibility do
 
   @spec validate_manifest(map() | struct()) :: :ok | {:error, error()}
   def validate_manifest(manifest) when is_map(manifest) or is_struct(manifest) do
-    schema_version = read_field(manifest, :schema_version, @current_schema_version)
-
-    runner_contract_version =
-      read_field(manifest, :runner_contract_version, @current_runner_contract_version)
-
-    with :ok <- validate_schema_version(schema_version) do
+    with {:ok, schema_version} <- read_required_field(manifest, :schema_version),
+         {:ok, runner_contract_version} <-
+           read_required_field(manifest, :runner_contract_version),
+         :ok <- validate_schema_version(schema_version) do
       validate_runner_contract_version(runner_contract_version)
     end
   end
@@ -40,14 +39,14 @@ defmodule Favn.Manifest.Compatibility do
   def validate_runner_contract_version(other),
     do: {:error, {:unsupported_runner_contract_version, other, @current_runner_contract_version}}
 
-  defp read_field(value, field, default) do
+  defp read_required_field(value, field) do
     atom_key = field
     string_key = Atom.to_string(field)
 
     cond do
-      Map.has_key?(value, atom_key) -> Map.get(value, atom_key)
-      Map.has_key?(value, string_key) -> Map.get(value, string_key)
-      true -> default
+      Map.has_key?(value, atom_key) -> {:ok, Map.get(value, atom_key)}
+      Map.has_key?(value, string_key) -> {:ok, Map.get(value, string_key)}
+      true -> {:error, {:missing_manifest_field, field}}
     end
   end
 end

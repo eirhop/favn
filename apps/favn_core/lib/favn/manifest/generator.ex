@@ -83,7 +83,7 @@ defmodule Favn.Manifest.Generator do
   end
 
   defp resolve_modules(opts, key) do
-    Keyword.get(opts, key, Application.get_env(:favn, key, []))
+    Keyword.get(opts, key, [])
   end
 
   defp validate_opts(opts) do
@@ -118,7 +118,7 @@ defmodule Favn.Manifest.Generator do
   defp compile_pipelines(modules) when is_list(modules) do
     modules
     |> Enum.reduce_while({:ok, []}, fn module, {:ok, acc} ->
-      case fetch_pipeline(module) do
+      case fetch_pipeline_definition(module) do
         {:ok, definition} -> {:cont, {:ok, [definition | acc]}}
         {:error, reason} -> {:halt, {:error, {:pipeline_compile_failed, module, reason}}}
       end
@@ -186,18 +186,15 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
-  defp fetch_pipeline(module) when is_atom(module) do
-    pipeline_module = Module.concat(Favn, Pipeline)
-
-    if function_exported?(pipeline_module, :fetch, 1) do
-      pipeline_module.fetch(module)
+  defp fetch_pipeline_definition(module) when is_atom(module) do
+    with true <- function_exported?(module, :__favn_pipeline__, 0),
+         definition <- module.__favn_pipeline__(),
+         true <- is_struct(definition, Favn.Pipeline.Definition) do
+      {:ok, definition}
     else
-      with {:module, ^pipeline_module} <- Code.ensure_loaded(pipeline_module),
-           true <- function_exported?(pipeline_module, :fetch, 1) do
-        pipeline_module.fetch(module)
-      else
-        _ -> {:error, :pipeline_not_available}
-      end
+      _ -> {:error, :not_pipeline_module}
     end
+  rescue
+    _ -> {:error, :pipeline_not_defined}
   end
 end

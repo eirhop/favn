@@ -1,6 +1,7 @@
 defmodule Favn.Manifest.VersionTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Manifest.Build
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Version
 
@@ -23,9 +24,39 @@ defmodule Favn.Manifest.VersionTest do
   end
 
   test "fails when schema version is unsupported" do
-    manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
+    manifest = %{schema_version: 2, runner_contract_version: 1, assets: []}
 
     assert {:error, {:unsupported_schema_version, 2, 1}} =
-             Version.new(manifest, schema_version: 2)
+             Version.new(manifest)
+  end
+
+  test "pins canonical manifest payload when input is build" do
+    canonical_manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
+    build = Build.new(canonical_manifest, diagnostics: [%{message: "warn"}])
+
+    assert {:ok, %Version{} = version} = Version.new(build, manifest_version_id: "mv_test_build")
+
+    assert version.manifest == canonical_manifest
+    assert is_map(version.manifest)
+    refute Map.has_key?(version.manifest, :manifest)
+  end
+
+  test "envelope versions are derived from manifest payload" do
+    manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
+
+    assert {:ok, %Version{} = version} =
+             Version.new(manifest,
+               manifest_version_id: "mv_test_versions"
+             )
+
+    assert version.schema_version == manifest.schema_version
+    assert version.runner_contract_version == manifest.runner_contract_version
+  end
+
+  test "rejects version override options" do
+    manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
+
+    assert {:error, {:unknown_opt, :schema_version}} =
+             Version.new(manifest, schema_version: 1)
   end
 end
