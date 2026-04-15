@@ -3,7 +3,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   use GenServer
 
-  @behaviour FavnOrchestrator.Storage.Adapter
+  @behaviour Favn.Storage.Adapter
 
   alias Favn.Manifest.Version
   alias Favn.Scheduler.State, as: SchedulerState

@@ -6,17 +6,29 @@ defmodule Favn.StorageFacadeTest do
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
-  defmodule LegacyShapeAdapterStub do
+  defmodule ExactShapeAdapterStub do
     @behaviour Favn.Storage.Adapter
 
     @impl true
     def child_spec(_opts), do: :none
 
     @impl true
-    def scheduler_child_spec(_opts), do: :none
+    def put_manifest_version(_version, _opts), do: :ok
 
     @impl true
-    def put_run(_run, _opts), do: :ok
+    def get_manifest_version(_manifest_version_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_manifest_versions(_opts), do: {:ok, []}
+
+    @impl true
+    def set_active_manifest_version(_manifest_version_id, _opts), do: :ok
+
+    @impl true
+    def get_active_manifest_version(_opts), do: {:error, :not_found}
+
+    @impl true
+    def put_run(_run_state, _opts), do: :ok
 
     @impl true
     def get_run(_run_id, _opts), do: {:error, :not_found}
@@ -25,9 +37,25 @@ defmodule Favn.StorageFacadeTest do
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
     @impl true
-    def put_scheduler_state(_state, _opts), do: :ok
+    def append_run_event(_run_id, _event, _opts), do: :ok
 
     @impl true
+    def list_run_events(_run_id, _opts), do: {:ok, []}
+
+    @impl true
+    def put_scheduler_state(_key, _state, _opts), do: :ok
+
+    @impl true
+    def get_scheduler_state(_key, _opts), do: {:ok, nil}
+  end
+
+  defmodule LegacyShapeAdapterStub do
+    def child_spec(_opts), do: :none
+    def scheduler_child_spec(_opts), do: :none
+    def put_run(_run, _opts), do: :ok
+    def get_run(_run_id, _opts), do: {:error, :not_found}
+    def list_runs(_opts, _adapter_opts), do: {:ok, []}
+    def put_scheduler_state(_state, _opts), do: :ok
     def get_scheduler_state(_module, _schedule_id, _opts), do: {:ok, nil}
   end
 
@@ -49,7 +77,9 @@ defmodule Favn.StorageFacadeTest do
     :ok
   end
 
-  test "validates adapters against orchestrator storage contract" do
+  test "validates adapters that implement the public orchestrator-backed behaviour" do
+    assert :ok = Storage.validate_adapter(ExactShapeAdapterStub)
+
     assert {:error, {:store_error, {:invalid_storage_adapter, LegacyShapeAdapterStub}}} =
              Storage.validate_adapter(LegacyShapeAdapterStub)
   end

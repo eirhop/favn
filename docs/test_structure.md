@@ -89,6 +89,7 @@ Notes:
   - `apps/favn_core/test/manifest/pipeline_resolver_test.exs`
 - Initial Phase 5 orchestrator runtime tests now include:
   - `apps/favn_orchestrator/test/storage/memory_adapter_test.exs`
+  - `apps/favn_orchestrator/test/storage_facade_test.exs`
   - `apps/favn_orchestrator/test/manifest_store_test.exs`
   - `apps/favn_orchestrator/test/run_manager_test.exs`
   - `apps/favn_orchestrator/test/run_server_test.exs`

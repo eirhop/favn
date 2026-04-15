@@ -10,7 +10,6 @@ defmodule Favn.Storage.Adapter.Memory do
   """
 
   use GenServer
-  @behaviour Favn.Storage.Adapter
 
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
@@ -20,7 +19,6 @@ defmodule Favn.Storage.Adapter.Memory do
   @table_name __MODULE__.Table
   @scheduler_table __MODULE__.SchedulerTable
 
-  @impl true
   @spec child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
   def child_spec(opts \\ []) do
     {:ok,
@@ -33,7 +31,6 @@ defmodule Favn.Storage.Adapter.Memory do
      }}
   end
 
-  @impl true
   @spec scheduler_child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
   def scheduler_child_spec(_opts), do: :none
 
@@ -42,7 +39,6 @@ defmodule Favn.Storage.Adapter.Memory do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   end
 
-  @impl true
   def init(state) do
     _table = :ets.new(@table_name, [:set, :named_table, :public, read_concurrency: true])
 
@@ -52,7 +48,6 @@ defmodule Favn.Storage.Adapter.Memory do
     {:ok, state}
   end
 
-  @impl true
   @spec put_run(Run.t(), keyword()) :: :ok | {:error, term()}
   def put_run(%Run{} = run, _opts) do
     with {:ok, incoming_hash} <- SnapshotHash.for_run(run, allow_fallback_term: true) do
@@ -126,7 +121,6 @@ defmodule Favn.Storage.Adapter.Memory do
     end
   end
 
-  @impl true
   @spec get_run(Favn.run_id(), keyword()) :: {:ok, Run.t()} | {:error, :not_found | term()}
   def get_run(run_id, _opts) do
     case :ets.lookup(@table_name, run_id) do
@@ -138,7 +132,6 @@ defmodule Favn.Storage.Adapter.Memory do
     error -> {:error, error}
   end
 
-  @impl true
   @spec list_runs(Favn.list_runs_opts(), keyword()) :: {:ok, [Run.t()]} | {:error, term()}
   def list_runs(opts, _adapter_opts) when is_list(opts) do
     status = Keyword.get(opts, :status)
@@ -174,7 +167,6 @@ defmodule Favn.Storage.Adapter.Memory do
     {updated_seq, run.id}
   end
 
-  @impl true
   @spec put_scheduler_state(SchedulerState.t(), keyword()) :: :ok | {:error, term()}
   def put_scheduler_state(%SchedulerState{} = state, _opts) do
     key = {state.pipeline_module, state.schedule_id}
@@ -184,7 +176,6 @@ defmodule Favn.Storage.Adapter.Memory do
     error -> {:error, error}
   end
 
-  @impl true
   @spec get_scheduler_state(module(), atom() | nil, keyword()) ::
           {:ok, SchedulerState.t() | nil} | {:error, term()}
   def get_scheduler_state(pipeline_module, schedule_id, _opts) when is_atom(pipeline_module) do
