@@ -11,7 +11,8 @@ The most important file is `docs/FEATURES.md`. We will use this file to document
 **Important rules**
 - Favn is currently in private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
 - Always start by reading `README.md`, `docs/REFACTOR.md`, and `docs/FEATURES.md`. To get context of state of repo.
-- Keep status of roadmap features and task list always up to date in `docs/FEATURES.md`. 
+- If you know you need to read the whole file use a large limit >2000 so you do not need to do multiple tool calls. 
+- Keep status of roadmap features up to date in `docs/FEATURES.md`. If you need a task list with details, create a separate file for that and link to it from FEATURES.md. 
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
 - Always keep user documentation up to date in the current source-of-truth location and `README.md`. During Phase 1 this is primarily `apps/favn_legacy/lib/favn.ex`.
 - when creating new files, please update `docs/lib_structure.md` or `docs/test_structure.md`
