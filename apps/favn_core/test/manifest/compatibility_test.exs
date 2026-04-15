@@ -35,4 +35,9 @@ defmodule Favn.Manifest.CompatibilityTest do
     assert {:error, {:missing_manifest_field, :runner_contract_version}} =
              Compatibility.validate_manifest(manifest)
   end
+
+  test "rejects non-map compatibility input with tagged error" do
+    assert {:error, {:invalid_manifest_input, :invalid}} =
+             Compatibility.validate_manifest(:invalid)
+  end
 end

@@ -29,10 +29,11 @@ defmodule Favn.Application do
   def start(_type, _args) do
     adapter = Favn.Storage.adapter_module()
     pubsub_name = Application.get_env(:favn, :pubsub_name, Favn.PubSub)
+    asset_modules = Application.get_env(:favn, :asset_modules, [])
     pubsub_child = {Phoenix.PubSub, name: pubsub_name}
 
     with :ok <- Registry.load(),
-         :ok <- GraphIndex.load(),
+         :ok <- GraphIndex.load(asset_modules),
          {:ok, connections} <- load_connections_or_raise(),
          :ok <- Favn.Storage.validate_adapter(adapter),
          {:ok, child_specs} <- Favn.Storage.child_specs() do
