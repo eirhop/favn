@@ -190,17 +190,26 @@ defmodule Favn do
   def resolve_pipeline(pipeline_module, opts)
       when is_atom(pipeline_module) and is_list(opts) do
     with {:ok, pipeline} <- Pipeline.fetch(pipeline_module),
-         {:ok, assets} <- list_assets() do
-      Resolver.resolve(
-        pipeline,
-        opts
-        |> Keyword.put_new(:assets, assets)
-        |> Keyword.put_new(:schedule_lookup, &PipelineSchedules.fetch/2)
-      )
+         {:ok, resolve_opts} <- resolve_pipeline_opts(opts) do
+      Resolver.resolve(pipeline, resolve_opts)
     end
   end
 
   def resolve_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
+
+  defp resolve_pipeline_opts(opts) when is_list(opts) do
+    opts = Keyword.put_new(opts, :schedule_lookup, &PipelineSchedules.fetch/2)
+
+    case Keyword.fetch(opts, :assets) do
+      {:ok, _assets} ->
+        {:ok, opts}
+
+      :error ->
+        with {:ok, assets} <- list_assets() do
+          {:ok, Keyword.put(opts, :assets, assets)}
+        end
+    end
+  end
 
   @doc false
   @spec run_pipeline(module(), keyword()) :: {:ok, term()} | {:error, term()}

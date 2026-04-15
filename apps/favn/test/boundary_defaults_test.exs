@@ -62,4 +62,13 @@ defmodule Favn.BoundaryDefaultsTest do
     assert resolution.target_refs == [{GoldAsset, :asset}]
     assert resolution.pipeline_ctx.schedule.ref == {TestSchedules, :daily}
   end
+
+  test "public pipeline resolve API honors explicit assets override" do
+    assert {:ok, assets} = Favn.list_assets([RawAsset, GoldAsset])
+    Application.put_env(:favn, :asset_modules, [])
+
+    assert {:ok, resolution} = Favn.resolve_pipeline(DailyPipeline, assets: assets)
+    assert resolution.target_refs == [{GoldAsset, :asset}]
+    assert resolution.pipeline_ctx.schedule.ref == {TestSchedules, :daily}
+  end
 end
