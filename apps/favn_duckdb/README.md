@@ -1,23 +1,64 @@
 # `apps/favn_duckdb`
 
-Purpose:
+Runner-side DuckDB execution plugin for Phase 7.
 
-- runner-side DuckDB execution plugin boundary
+## Purpose
 
-Visibility:
+- own DuckDB adapter/runtime code outside `favn_runner`
+- provide one plugin boundary through `FavnRunner.Plugin`
+- support exactly two runtime placements:
+  - `:in_process`
+  - `:separate_process`
 
-- plugin app (planned public plugin package later)
+## Dependency boundary
 
-Allowed dependencies in Phase 1:
+Allowed umbrella dependency direction:
 
-- `favn_runner`
+- `favn_duckdb -> favn_runner`
 
-Must not depend on in Phase 1:
+Must not depend on:
 
-- `favn_orchestrator`, `favn_view`
+- `favn`
+- `favn_orchestrator`
+- `favn_view`
 - storage adapters
 - `favn_legacy`
 
-Current status:
+## Runner plugin configuration
 
-- scaffold-only, not implemented yet
+Configure through generic runner plugin config:
+
+```elixir
+config :favn, :runner_plugins, [
+  {FavnDuckdb, execution_mode: :in_process}
+]
+```
+
+`execution_mode` accepts exactly:
+
+- `:in_process` (default)
+- `:separate_process`
+
+Separate-process mode options:
+
+- `worker_name` (default: `FavnDuckdb.Worker`)
+- `worker_call_timeout` (default: `:infinity`)
+
+Example:
+
+```elixir
+config :favn, :runner_plugins, [
+  {
+    FavnDuckdb,
+    execution_mode: :separate_process,
+    worker_name: FavnDuckdb.Worker,
+    worker_call_timeout: 30_000
+  }
+]
+```
+
+## Notes
+
+- placement is runtime/plugin config only (not manifest or DSL)
+- separate-process mode uses one long-lived worker (no pooling/autoscaling in Phase 7)
+- bulk table writes stay appender-oriented in DuckDB paths

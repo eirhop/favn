@@ -296,13 +296,16 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] initial `favn_storage_postgres` foundation implemented with managed/external repo modes, migration runner/schema checks, and persisted manifests/runs/events/scheduler cursors
   - [x] add opt-in live Postgres integration coverage (`FAVN_POSTGRES_TEST_URL`) and document managed/external wiring
   - [x] later-phase storage follow-ups moved to future roadmap phases so Phase 6 can close cleanly
-- [ ] Phase 7: move DuckDB into `favn_duckdb`
+- [x] Phase 7: move DuckDB into `favn_duckdb`
   - [x] planning docs created: `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md`
   - [x] implementation checklist created: `docs/refactor/PHASE_7_TODO.md`
   - [x] carry SQL asset execution payload in the manifest/core contract
   - [x] enable manifest-pinned SQL asset execution in `favn_runner`
   - [x] add DuckDB placement support with exactly `:in_process | :separate_process`
   - [x] remove temporary migration/runtime seams in `favn` after the manifest-backed runner SQL path lands
+  - [x] preserve in-process appender compatibility semantics for schema-qualified writes
+  - [x] enforce manifest-only deferred asset-ref resolution in manifest-backed runner SQL execution
+  - [x] add explicit separate-process worker call timeout handling (no hidden default 5s call timeout)
 - [ ] Phase 8: add `favn_view`
 - [ ] Phase 9: ship developer tooling and packaging flows
   - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path

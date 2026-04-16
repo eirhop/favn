@@ -22,10 +22,8 @@ Favn `v0.5.0` refactor is in progress.
 
 ## Current Focus
 
-- execute Phase 7 runner/plugin extraction for manifest-backed SQL execution and `favn_duckdb`
-- carry SQL asset execution payload in the manifest/core contract
-- enable manifest-pinned SQL asset execution in `favn_runner`
-- remove temporary migration/runtime seams in `favn` once the runner SQL path is fully manifest-backed
+- complete post-Phase-7 review cleanup and merge readiness
+- move into Phase 8 `favn_view` implementation planning and initial slices
 - keep `favn` as the public DSL/facade package
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
 - keep `favn_orchestrator` as the manifest-pinned control plane and storage owner

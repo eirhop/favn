@@ -9,7 +9,7 @@ This checklist covers the SQL manifest contract, manifest-pinned runner SQL exec
 ## Manifest / Core Contract
 
 - [x] Add a manifest-side SQL execution payload struct in `favn_core`.
-- [ ] Add a manifest-side reusable SQL definition struct in `favn_core`.
+- [x] Reuse existing `Favn.SQL.Definition` for manifest-carried reusable SQL definitions (no new manifest-only definition struct needed).
 - [x] Extend `Favn.Manifest.Asset` so SQL assets carry execution payload.
 - [x] Teach `Favn.Manifest.Generator` to emit SQL payload for `type: :sql` assets.
 - [x] Keep compile-only raw asset metadata out of the canonical manifest payload.
@@ -64,7 +64,7 @@ This checklist covers the SQL manifest contract, manifest-pinned runner SQL exec
 
 - [x] Remove the temporary `{:favn, in_umbrella: true}` dependency from `apps/favn_runner/mix.exs`.
 - [x] Remove the direct `duckdbex` dependency from `apps/favn_runner/mix.exs`.
-- [ ] Verify `favn_runner` depends only on `favn_core` plus runtime-level external deps, with DuckDB coming only through `favn_duckdb`.
+- [x] Verify `favn_runner` depends only on `favn_core`, with DuckDB coming only through `favn_duckdb`.
 - [x] Verify `favn` contains no DuckDB-specific runtime branches or config-handling code.
 
 ## Docs Updates
@@ -74,7 +74,11 @@ This checklist covers the SQL manifest contract, manifest-pinned runner SQL exec
 - [x] Update `docs/FEATURES.md` as Phase 7 planning and implementation slices land.
 - [x] Update `docs/lib_structure.md` for the DuckDB ownership move.
 - [x] Update `docs/test_structure.md` for new `favn_duckdb` and public SQL helper coverage.
-- [ ] Update `apps/favn_duckdb/README.md` with plugin usage/config examples.
+- [x] Update `apps/favn_duckdb/README.md` with plugin usage/config examples.
+
+## Follow-up Notes
+
+- Cancellation-behavior tests remain open because the current runner SQL contract does not expose a separate cancellation boundary for SQL adapter calls.
 
 ## Verification
 

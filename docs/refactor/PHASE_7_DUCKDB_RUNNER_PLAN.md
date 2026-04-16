@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned on branch `feature/phase-7-duckdb-runner`.
+Implemented on branch `feature/phase-7-duckdb-runner`.
 
 Phase 6 intentionally stopped at durable orchestrator persistence and left three SQL/plugin follow-ups for this slice:
 

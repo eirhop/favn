@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 3 implemented, Phase 4 core execution boundary implemented (remaining cleanup in progress), and Phase 5 orchestrator boundary implemented
+Phase 3 through Phase 7 are implemented (with later-phase follow-ups tracked in `docs/FEATURES.md` and per-phase TODO files)
 
 ## Summary
 
