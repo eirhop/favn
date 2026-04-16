@@ -22,8 +22,8 @@ Favn `v0.5.0` refactor is in progress.
 
 ## Current Focus
 
-- keep Phase 8 `favn_view` + orchestrator boundary stable after completion review
-- move toward Phase 9 developer tooling and packaging flows
+- Phase 8 `favn_view` + orchestrator live-event boundary is complete
+- current implementation focus is Phase 9 developer tooling and packaging flows
 - keep `favn` as the public DSL/facade package
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
 - keep `favn_orchestrator` as the manifest-pinned control plane and storage owner

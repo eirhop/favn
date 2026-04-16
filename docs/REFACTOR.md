@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 3 through Phase 7 are implemented (with later-phase follow-ups tracked in `docs/FEATURES.md` and per-phase TODO files)
+Phase 3 through Phase 8 are implemented (with later-phase follow-ups tracked in `docs/FEATURES.md` and per-phase TODO files)
 
 ## Summary
 
@@ -566,6 +566,9 @@ In `favn_view`:
 - view runs without requiring user projects to add it as a normal Mix dependency
 - view interacts with orchestrator APIs, not internal module calls into user code
 - local dev can inspect compiled manifests and runs in the UI
+
+### Status
+Implemented.
 
 ---
 
