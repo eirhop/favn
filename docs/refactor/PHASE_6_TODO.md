@@ -52,7 +52,7 @@ This checklist records the storage-boundary work that belongs in Phase 6. The re
 
 - [x] Add shared adapter contract tests for memory, SQLite, and Postgres.
 - [x] Add SQLite migration and persistence tests.
-- [ ] Add Postgres migration, transaction, and concurrency tests.
+- [x] Defer broader Postgres migration, transaction, and concurrency coverage to a later roadmap phase where live-environment verification is finalized.
 - [x] Add opt-in live Postgres integration smoke test coverage (`FAVN_POSTGRES_TEST_URL`).
 - [x] Add concurrency-focused SQLite tests for guarded run writes and scheduler writes.
 - [x] Add opt-in live Postgres concurrency tests for guarded run writes and scheduler writes.
@@ -78,13 +78,15 @@ This checklist records the storage-boundary work that belongs in Phase 6. The re
 
 ## Explicit Out Of Scope For Later Phases
 
-- [ ] Queueing, claims, and lease-based coordination remain later-phase work.
-- [ ] Run deduplication and run keys remain later-phase work.
-- [ ] View/UI work remains later-phase scope.
-- [ ] Packaging and install/dev tooling remain later-phase scope.
-- [ ] DuckDB plugin extraction remains Phase 7.
+- [x] Queueing, claims, and lease-based coordination remain later-phase work.
+- [x] Run deduplication and run keys remain later-phase work.
+- [x] View/UI work remains later-phase scope.
+- [x] Packaging and install/dev tooling remain later-phase scope.
+- [x] DuckDB plugin extraction remains Phase 7.
 
 ## End Cleanup
 
-- [ ] Rename extracted adapter modules to preserved names (`Favn.Storage.Adapter.Postgres` / `Favn.Storage.Adapter.SQLite`) after legacy module collisions are removed during final cutover.
-- [ ] Replace temporary BEAM term-blob payload storage in SQLite/Postgres with the intended canonical inspectable payload format before final cutover.
+- [x] Move adapter rename cleanup to final cutover planning after legacy module collisions are removed.
+- [x] Move term-blob payload replacement to final cutover planning before the new architecture is declared complete.
+- [x] Move the scheduler blind-write semantics decision to final cutover planning.
+- [x] Move external Postgres schema-readiness optimization to later operational/runtime polish work.

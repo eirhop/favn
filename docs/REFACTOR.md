@@ -501,6 +501,16 @@ The remaining SQL payload / manifest-pinned SQL execution work and the final tem
 - `mix favn.dev --sqlite` works with persistent local state
 - orchestrator can run with Postgres adapter for production-oriented setups
 
+### Status
+Implemented.
+
+Phase 6 closed with the extracted storage foundations complete, shared adapter contract coverage in place, and atomic SQL-side storage invariants enforced for the current contract.
+
+The remaining storage-related follow-ups were intentionally moved out of Phase 6 because they belong to later phases:
+
+- Phase 9: local-dev `mix favn.dev --sqlite` polish and broader live Postgres verification flows
+- Phase 10: adapter module rename cleanup, temporary term-blob replacement, scheduler blind-write policy decision, and external Postgres readiness optimization during final cutover
+
 ---
 
 ## Phase 7 — Move DuckDB into a runner plugin
@@ -569,6 +579,11 @@ Tooling behavior:
 - Docker/dev-container mode may be added optionally later
 - single-image assembly combines runtime artifacts with user runner payload and manifest
 
+Additional storage follow-ups in this phase:
+
+- finish local-dev integration and polish for the extracted SQLite adapter path behind `mix favn.dev --sqlite`
+- broaden live Postgres migration/transaction/concurrency verification in a production-like test path
+
 ### Exit criteria
 - user can go from `{:favn, ...}` dependency to local UI and orchestration quickly
 - user can package single-node and split deployments without understanding internal app structure
@@ -586,6 +601,13 @@ Retire the old monolith safely.
 - migrate CI to umbrella layout
 - delete root legacy `/lib` and `/test` structure
 - eventually remove `favn_legacy`
+
+Final storage cleanup in this phase:
+
+- rename temporary extracted adapter modules back to preserved `Favn.Storage.Adapter.*` names once legacy collisions are gone
+- replace temporary BEAM term-blob payload storage with the intended canonical inspectable payload format
+- decide whether scheduler writes without explicit versions should remain permissive or move to stricter optimistic semantics
+- replace repeated external Postgres schema-readiness checks with a clearer startup/cached readiness strategy
 
 ### Exit criteria
 - all supported flows run on the new architecture
