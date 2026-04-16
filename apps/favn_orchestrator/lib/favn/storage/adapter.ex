@@ -28,6 +28,7 @@ defmodule Favn.Storage.Adapter do
   @callback put_run(RunState.t(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_run(String.t(), adapter_opts()) :: {:ok, RunState.t()} | {:error, error()}
   @callback list_runs(list_opts(), adapter_opts()) :: {:ok, [RunState.t()]} | {:error, error()}
+  @callback persist_run_transition(RunState.t(), map(), adapter_opts()) :: :ok | {:error, error()}
 
   @callback append_run_event(String.t(), map(), adapter_opts()) :: :ok | {:error, error()}
   @callback list_run_events(String.t(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}

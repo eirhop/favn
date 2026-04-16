@@ -7,10 +7,13 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
     occurred_at = DateTime.utc_now()
 
     event = %{
+      schema_version: 2,
       run_id: "run_event",
       sequence: 2,
       event_type: :run_updated,
+      entity: :step,
       occurred_at: occurred_at,
+      stage: 3,
       status: :running,
       manifest_version_id: "mv_1",
       manifest_content_hash: "hash_1",
@@ -21,6 +24,9 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
     assert {:ok, normalized} = RunEventCodec.normalize("run_event", event)
     assert normalized.sequence == 2
     assert normalized.event_type == :run_updated
+    assert normalized.schema_version == 2
+    assert normalized.entity == :step
+    assert normalized.stage == 3
     assert normalized.occurred_at == occurred_at
     assert normalized.data == %{attempt: 1}
   end

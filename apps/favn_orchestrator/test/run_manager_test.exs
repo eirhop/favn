@@ -530,6 +530,35 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Enum.map(events, & &1.sequence) == [1, 2, 3, 4, 5]
   end
 
+  test "accepted success transitions broadcast on both run and global topics in storage order" do
+    version = manifest_version("mv_pubsub_success")
+    run_id = "run_pubsub_success_#{System.unique_integer([:positive])}"
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = FavnOrchestrator.subscribe_run(run_id)
+    assert :ok = FavnOrchestrator.subscribe_runs()
+
+    assert {:ok, ^run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               run_id: run_id,
+               manifest_version_id: version.manifest_version_id
+             )
+
+    assert {:ok, _run} = await_terminal_run(run_id)
+    assert {:ok, stored_events} = Storage.list_run_events(run_id)
+
+    received = collect_run_events(length(stored_events) * 2)
+
+    assert Enum.frequencies_by(received, & &1.sequence) ==
+             Map.new(stored_events, fn event -> {event.sequence, 2} end)
+
+    assert Enum.sort_by(received, &{&1.sequence, &1.event_type})
+           |> Enum.map(&{&1.sequence, &1.event_type})
+           |> Enum.chunk_every(2)
+           |> Enum.map(&List.first/1) == Enum.map(stored_events, &{&1.sequence, &1.event_type})
+  end
+
   test "uses active manifest when manifest_version_id is not provided" do
     version = manifest_version("mv_active")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -785,6 +814,53 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert Enum.member?(Enum.map(events, & &1.event_type), :step_retry_scheduled)
     assert Enum.count(events, &(&1.event_type == :step_started)) == 2
+    assert Enum.map(events, & &1.sequence) == Enum.to_list(1..length(events))
+  end
+
+  test "retry transitions broadcast on both run and global topics in storage order" do
+    version = manifest_version("mv_retry_pubsub")
+    run_id = "run_retry_pubsub_#{System.unique_integer([:positive])}"
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if Process.alive?(counter) do
+        Agent.stop(counter)
+      end
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, attempt_counter: counter)
+
+    assert :ok = FavnOrchestrator.subscribe_run(run_id)
+    assert :ok = FavnOrchestrator.subscribe_runs()
+
+    assert {:ok, ^run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               run_id: run_id,
+               manifest_version_id: version.manifest_version_id,
+               max_attempts: 2,
+               retry_backoff_ms: 0
+             )
+
+    assert {:ok, _run} = await_terminal_run(run_id)
+    assert {:ok, stored_events} = Storage.list_run_events(run_id)
+
+    received = collect_run_events(length(stored_events) * 2)
+
+    assert Enum.frequencies_by(received, & &1.sequence) ==
+             Map.new(stored_events, fn event -> {event.sequence, 2} end)
+
+    assert Enum.map(stored_events, & &1.sequence) == Enum.to_list(1..length(stored_events))
+    assert Enum.member?(Enum.map(stored_events, & &1.event_type), :step_retry_scheduled)
   end
 
   test "cancels timed-out execution before retry/terminal transition" do
@@ -814,6 +890,11 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:ok, run} = await_terminal_run(run_id)
     assert run.status == :timed_out
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.map(events, & &1.sequence) == Enum.to_list(1..length(events))
+    assert Enum.member?(Enum.map(events, & &1.event_type), :step_timed_out)
+    assert Enum.member?(Enum.map(events, & &1.event_type), :run_timed_out)
 
     forwarded = Agent.get(cancel_log, & &1)
     assert length(forwarded) == 1
@@ -897,6 +978,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, events} = Storage.list_run_events(run_id)
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_cancel_requested)
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_cancelled)
+    assert Enum.map(events, & &1.sequence) == Enum.to_list(1..length(events))
 
     forwarded = Agent.get(cancel_log, & &1)
     assert length(forwarded) == 1
@@ -904,6 +986,57 @@ defmodule FavnOrchestrator.RunManagerTest do
     [{execution_id, reason} | _] = forwarded
     assert execution_id == in_flight_run.runner_execution_id
     assert reason.reason[:reason] == :manual_cancel
+  end
+
+  test "cancel transitions broadcast on both run and global topics" do
+    version = manifest_version("mv_cancel_pubsub")
+    run_id = "run_cancel_pubsub_#{System.unique_integer([:positive])}"
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      if Process.alive?(cancel_log) do
+        Agent.stop(cancel_log)
+      end
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      block_ms: 250
+    )
+
+    assert {:ok, ^run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               run_id: run_id,
+               manifest_version_id: version.manifest_version_id
+             )
+
+    assert {:ok, _in_flight_run} = await_inflight_run(run_id)
+
+    assert :ok = FavnOrchestrator.subscribe_run(run_id)
+    assert :ok = FavnOrchestrator.subscribe_runs()
+
+    assert :ok =
+             FavnOrchestrator.cancel_run(run_id, %{
+               requested_by: :operator,
+               reason: :manual_cancel_pubsub
+             })
+
+    assert {:ok, _cancelled} = await_cancelled_run(run_id)
+
+    received = collect_run_events(4, 1_000)
+    assert Enum.frequencies_by(received, & &1.event_type)[:run_cancel_requested] == 2
+    assert Enum.frequencies_by(received, & &1.event_type)[:run_cancelled] == 2
   end
 
   test "rerun stays pinned to source manifest even when active manifest changes" do
@@ -1096,6 +1229,16 @@ defmodule FavnOrchestrator.RunManagerTest do
   end
 
   defp await_cancelled_run(_run_id, 0), do: {:error, :timeout_waiting_for_cancelled_state}
+
+  defp collect_run_events(count, timeout \\ 2_000) when count > 0 do
+    Enum.map(1..count, fn _index ->
+      receive do
+        {:favn_run_event, event} -> event
+      after
+        timeout -> flunk("expected #{count} pubsub run events")
+      end
+    end)
+  end
 
   defp manifest_version(manifest_version_id) do
     manifest =

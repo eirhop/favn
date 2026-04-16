@@ -549,11 +549,15 @@ Phase 7 should also absorb the remaining older carried-forward SQL follow-ups:
 ### Goal
 Create the UI as a true external boundary.
 
+Detailed implementation planning for this phase lives in:
+
+- `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
+- `docs/refactor/PHASE_8_TODO.md`
+
 ### Deliverables
 In `favn_view`:
 
 - Phoenix/LiveView app
-- auth/session boundary
 - API integration with orchestrator
 - manifest/run inspection UI
 - local dev integration with `mix favn.dev`

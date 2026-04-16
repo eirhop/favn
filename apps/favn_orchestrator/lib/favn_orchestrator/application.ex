@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Application do
       children =
         storage_children ++
           [
+            {Phoenix.PubSub, name: pubsub_name()},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
             {RunManager, []}
           ] ++ scheduler_children()
@@ -29,5 +30,9 @@ defmodule FavnOrchestrator.Application do
     else
       []
     end
+  end
+
+  defp pubsub_name do
+    Application.get_env(:favn_orchestrator, :pubsub_name, FavnOrchestrator.PubSub)
   end
 end

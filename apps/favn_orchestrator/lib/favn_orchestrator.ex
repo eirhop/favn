@@ -4,10 +4,13 @@ defmodule FavnOrchestrator do
   """
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Events
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
+  alias FavnOrchestrator.SchedulerEntry
   alias FavnOrchestrator.Storage
 
   @type run_id :: String.t()
@@ -118,24 +121,104 @@ defmodule FavnOrchestrator do
   @doc """
   Lists persisted run events for one run.
   """
-  @spec list_run_events(run_id()) :: {:ok, [map()]} | {:error, term()}
-  def list_run_events(run_id) when is_binary(run_id), do: Storage.list_run_events(run_id)
+  @spec list_run_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    with {:ok, events} <- Storage.list_run_events(run_id),
+         :ok <- validate_run_event_opts(opts) do
+      {:ok,
+       events
+       |> Enum.map(&RunEvent.from_map/1)
+       |> filter_run_events(opts)
+       |> maybe_limit_run_events(opts)}
+    end
+  end
+
+  @doc """
+  Subscribes the current process to one run-scoped live event stream.
+  """
+  @spec subscribe_run(run_id()) :: :ok | {:error, term()}
+  def subscribe_run(run_id) when is_binary(run_id), do: Events.subscribe_run(run_id)
+  def subscribe_run(_run_id), do: {:error, :invalid_run_id}
+
+  @doc """
+  Unsubscribes the current process from one run-scoped live event stream.
+  """
+  @spec unsubscribe_run(run_id()) :: :ok
+  def unsubscribe_run(run_id) when is_binary(run_id), do: Events.unsubscribe_run(run_id)
+  def unsubscribe_run(_run_id), do: :ok
+
+  @doc """
+  Subscribes the current process to the global runs live event stream.
+  """
+  @spec subscribe_runs() :: :ok | {:error, term()}
+  def subscribe_runs, do: Events.subscribe_runs()
+
+  @doc """
+  Unsubscribes the current process from the global runs live event stream.
+  """
+  @spec unsubscribe_runs() :: :ok
+  def unsubscribe_runs, do: Events.unsubscribe_runs()
 
   @doc """
   Reloads scheduler entries from the active manifest.
   """
   @spec reload_scheduler() :: :ok | {:error, term()}
-  def reload_scheduler, do: SchedulerRuntime.reload()
+  def reload_scheduler do
+    SchedulerRuntime.reload()
+  catch
+    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  end
 
   @doc """
   Forces one scheduler evaluation tick.
   """
   @spec tick_scheduler() :: :ok | {:error, term()}
-  def tick_scheduler, do: SchedulerRuntime.tick()
+  def tick_scheduler do
+    SchedulerRuntime.tick()
+  catch
+    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  end
 
   @doc """
   Lists scheduler runtime entries derived from the active manifest.
   """
-  @spec scheduled_entries() :: [map()] | {:error, term()}
-  def scheduled_entries, do: SchedulerRuntime.scheduled()
+  @spec scheduled_entries() :: [SchedulerEntry.t()] | {:error, term()}
+  def scheduled_entries do
+    SchedulerRuntime.inspect_entries()
+  catch
+    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  end
+
+  defp validate_run_event_opts(opts) do
+    after_sequence = Keyword.get(opts, :after_sequence)
+    limit = Keyword.get(opts, :limit)
+
+    cond do
+      not is_nil(after_sequence) and (not is_integer(after_sequence) or after_sequence < 0) ->
+        {:error, :invalid_opts}
+
+      not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
+        {:error, :invalid_opts}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp filter_run_events(events, opts) do
+    case Keyword.get(opts, :after_sequence) do
+      sequence when is_integer(sequence) and sequence >= 0 ->
+        Enum.filter(events, &(&1.sequence > sequence))
+
+      _ ->
+        events
+    end
+  end
+
+  defp maybe_limit_run_events(events, opts) do
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> Enum.take(events, limit)
+      _ -> events
+    end
+  end
 end

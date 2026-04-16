@@ -51,6 +51,11 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.put_run(run, opts) end)
   end
 
+  @spec persist_run_transition(RunState.t(), map()) :: :ok | {:error, term()}
+  def persist_run_transition(%RunState{} = run, event) when is_map(event) do
+    adapter_call(fn adapter, opts -> adapter.persist_run_transition(run, event, opts) end)
+  end
+
   @spec get_run(String.t()) :: {:ok, RunState.t()} | {:error, term()}
   def get_run(run_id) when is_binary(run_id) do
     adapter_call(fn adapter, opts -> adapter.get_run(run_id, opts) end)

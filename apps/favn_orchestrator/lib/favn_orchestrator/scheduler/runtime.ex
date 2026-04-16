@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.Scheduler.ManifestEntries
+  alias FavnOrchestrator.SchedulerEntry
   alias FavnOrchestrator.Storage
 
   @default_tick_ms 15_000
@@ -22,6 +23,9 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   def reload(server \\ __MODULE__), do: GenServer.call(server, :reload, :infinity)
   def tick(server \\ __MODULE__), do: GenServer.call(server, :tick, :infinity)
   def scheduled(server \\ __MODULE__), do: GenServer.call(server, :scheduled, :infinity)
+
+  def inspect_entries(server \\ __MODULE__),
+    do: GenServer.call(server, :inspect_entries, :infinity)
 
   @impl true
   def init(opts) do
@@ -51,6 +55,17 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   def handle_call(:tick, _from, state), do: {:reply, :ok, evaluate_all(state)}
   def handle_call(:scheduled, _from, state), do: {:reply, Map.values(state.entries), state}
+
+  def handle_call(:inspect_entries, _from, state) do
+    entries =
+      state.entries
+      |> Enum.map(fn {pipeline_module, entry} ->
+        SchedulerEntry.from_runtime(entry, Map.get(state.states, pipeline_module))
+      end)
+      |> Enum.sort_by(&{inspect(&1.pipeline_module), inspect(&1.schedule_id)})
+
+    {:reply, entries, state}
+  end
 
   @impl true
   def handle_info(:tick, state) do

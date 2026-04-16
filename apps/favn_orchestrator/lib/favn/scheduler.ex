@@ -9,6 +9,6 @@ defmodule Favn.Scheduler do
   @spec tick() :: :ok | {:error, term()}
   def tick, do: FavnOrchestrator.tick_scheduler()
 
-  @spec list_scheduled_pipelines() :: [map()] | {:error, term()}
+  @spec list_scheduled_pipelines() :: [FavnOrchestrator.SchedulerEntry.t()] | {:error, term()}
   def list_scheduled_pipelines, do: FavnOrchestrator.scheduled_entries()
 end

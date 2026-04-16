@@ -5,12 +5,14 @@ defmodule FavnOrchestrator.Projector do
 
   alias Favn.Run
   alias Favn.Run.AssetResult
+  alias FavnOrchestrator.Events
+  alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
 
-  @spec run_event(RunState.t(), atom(), map()) :: map()
+  @spec run_event(RunState.t(), atom(), map()) :: RunEvent.t()
   def run_event(%RunState{} = run_state, event_type, data \\ %{}) when is_atom(event_type) do
-    %{
+    RunEvent.from_map(%{
       run_id: run_state.id,
       sequence: run_state.event_seq,
       event_type: event_type,
@@ -20,7 +22,7 @@ defmodule FavnOrchestrator.Projector do
       manifest_content_hash: run_state.manifest_content_hash,
       asset_ref: run_state.asset_ref,
       data: normalize_data(data)
-    }
+    })
   end
 
   @spec persist_snapshot(RunState.t()) :: :ok | {:error, term()}
@@ -29,8 +31,10 @@ defmodule FavnOrchestrator.Projector do
   @spec persist_snapshot_with_event(RunState.t(), atom(), map()) :: :ok | {:error, term()}
   def persist_snapshot_with_event(%RunState{} = run_state, event_type, data \\ %{})
       when is_atom(event_type) do
-    with :ok <- persist_snapshot(run_state) do
-      Storage.append_run_event(run_state.id, run_event(run_state, event_type, data))
+    event = run_event(run_state, event_type, data)
+
+    with :ok <- Storage.persist_run_transition(run_state, RunEvent.to_map(event)) do
+      Events.broadcast_run_event(event)
     end
   end
 

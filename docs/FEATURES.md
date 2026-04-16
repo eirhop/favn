@@ -306,7 +306,14 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] preserve in-process appender compatibility semantics for schema-qualified writes
   - [x] enforce manifest-only deferred asset-ref resolution in manifest-backed runner SQL execution
   - [x] add explicit separate-process worker call timeout handling (no hidden default 5s call timeout)
-- [ ] Phase 8: add `favn_view`
+- [x] Phase 8: add `favn_view`
+  - [x] planning docs created: `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
+  - [x] implementation checklist created: `docs/refactor/PHASE_8_TODO.md`
+  - [x] implement initial Phoenix LiveView prototype slice in `favn_view` (endpoint/router/layouts, dashboard, run list/detail, manifest list/detail, scheduler inspection)
+  - [x] restore orchestrator-owned run live events/subscriptions for view updates (`subscribe_run/1`, `subscribe_runs/0`, typed `%FavnOrchestrator.RunEvent{}`)
+  - [x] introduce explicit orchestrator transition writer and route run lifecycle persistence through authoritative write-then-broadcast path
+  - [x] add presenter shaping layer for stable UI map contracts and presenter contract tests
+  - [x] close Phase 8 implementation/test/docs review and mark the prototype boundary slice complete
 - [ ] Phase 9: ship developer tooling and packaging flows
   - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path
   - [ ] broaden live Postgres migration/transaction/concurrency coverage in a production-like verification path
@@ -329,6 +336,8 @@ Detailed migration planning for the current refactor slices lives in:
 - `docs/refactor/PHASE_6_TODO.md`
 - `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md`
 - `docs/refactor/PHASE_7_TODO.md`
+- `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
+- `docs/refactor/PHASE_8_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 

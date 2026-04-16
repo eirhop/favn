@@ -7,9 +7,9 @@ defmodule FavnOrchestrator.RunServer do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
-  alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.TransitionWriter
 
   @type init_arg :: %{
           required(:run_state) => RunState.t(),
@@ -990,7 +990,7 @@ defmodule FavnOrchestrator.RunServer do
   defp normalize_results(_other), do: []
 
   defp persist_run_step(%RunState{} = run_state, event_type, data) do
-    case Projector.persist_snapshot_with_event(run_state, event_type, data) do
+    case TransitionWriter.persist_transition(run_state, event_type, data) do
       :ok ->
         :ok
 
