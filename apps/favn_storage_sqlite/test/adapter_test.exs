@@ -18,14 +18,18 @@ defmodule FavnStorageSqlite.AdapterTest do
       pool_size: 4
     ]
 
-    if context[:without_started_adapter] != true do
-      maybe_stop_process(FavnStorageSqlite.Repo)
+    supervisor_pid =
+      if context[:without_started_adapter] != true do
+        maybe_stop_process(FavnStorageSqlite.Repo)
 
-      {:ok, supervisor_pid} = FavnStorageSqlite.Supervisor.start_link(opts)
-      on_exit(fn -> maybe_stop_pid(supervisor_pid) end)
-    end
+        {:ok, pid} = FavnStorageSqlite.Supervisor.start_link(opts)
+        pid
+      else
+        nil
+      end
 
     on_exit(fn ->
+      maybe_stop_pid(supervisor_pid)
       File.rm(db_path)
     end)
 
@@ -223,10 +227,15 @@ defmodule FavnStorageSqlite.AdapterTest do
 
   defp maybe_stop_pid(pid) when is_pid(pid) do
     if Process.alive?(pid) do
-      Process.unlink(pid)
-      Process.exit(pid, :shutdown)
+      try do
+        Supervisor.stop(pid, :normal, 5_000)
+      catch
+        :exit, _reason -> :ok
+      end
     else
       :ok
     end
   end
+
+  defp maybe_stop_pid(nil), do: :ok
 end

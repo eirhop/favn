@@ -51,16 +51,22 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
   end
 
   setup do
+    previous_storage_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_storage_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
 
+    Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
     Memory.reset()
 
     on_exit(fn ->
-      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
-      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      restore_env(:favn_orchestrator, :storage_adapter, previous_storage_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_storage_opts)
+      restore_env(:favn_orchestrator, :runner_client, previous_client)
+      restore_env(:favn_orchestrator, :runner_client_opts, previous_opts)
       Memory.reset()
     end)
 
@@ -102,7 +108,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert :ok = Runtime.reload(name)
     assert :ok = Runtime.tick(name)
 
-    assert {:ok, run} = await_run_submission()
+    assert {:ok, run} = await_run_submission(version.manifest_version_id)
     assert run.manifest_version_id == version.manifest_version_id
     assert run.submit_kind == :pipeline
     assert run.trigger[:kind] == :schedule
@@ -243,28 +249,36 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert :ok = Runtime.reload(name)
     assert :ok = Runtime.tick(name)
 
-    assert {:ok, run} = await_run_submission()
+    assert {:ok, run} = await_run_submission(version.manifest_version_id)
     assert run.trigger[:kind] == :schedule
     assert run.metadata[:pipeline_context][:anchor_window].kind == :hour
   end
 
-  defp await_run_submission(attempts \\ 40)
+  defp await_run_submission(manifest_version_id, attempts \\ 40)
 
-  defp await_run_submission(attempts) when attempts > 0 do
+  defp await_run_submission(manifest_version_id, attempts) when attempts > 0 do
     case Storage.list_runs() do
-      {:ok, [run | _rest]} ->
-        {:ok, run}
+      {:ok, runs} when is_list(runs) ->
+        case Enum.find(runs, &(&1.manifest_version_id == manifest_version_id)) do
+          %RunState{} = run ->
+            {:ok, run}
 
-      {:ok, []} ->
+          nil ->
+            Process.sleep(25)
+            await_run_submission(manifest_version_id, attempts - 1)
+        end
+
+      {:ok, _other} ->
         Process.sleep(25)
-        await_run_submission(attempts - 1)
+        await_run_submission(manifest_version_id, attempts - 1)
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  defp await_run_submission(0), do: {:error, :timeout_waiting_for_scheduled_run}
+  defp await_run_submission(_manifest_version_id, 0),
+    do: {:error, :timeout_waiting_for_scheduled_run}
 
   defp unique_runtime_name do
     Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
@@ -356,4 +370,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
   end
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 end
