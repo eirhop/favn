@@ -8,6 +8,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias Favn.Manifest.Version
   alias Favn.Scheduler.State, as: SchedulerState
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.RunEventCodec
+  alias FavnOrchestrator.Storage.RunStateCodec
+  alias FavnOrchestrator.Storage.SchedulerStateCodec
+  alias FavnOrchestrator.Storage.WriteSemantics
 
   @type state :: %{
           manifests: %{required(String.t()) => Version.t()},
@@ -31,19 +35,30 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   @impl true
   def child_spec(opts) when is_list(opts) do
-    {:ok,
-     %{
-       id: __MODULE__,
-       start: {__MODULE__, :start_link, [opts]},
-       type: :worker,
-       restart: :permanent,
-       shutdown: 5000
-     }}
+    runtime_name = runtime_name(opts)
+
+    if runtime_started?(runtime_name) do
+      :none
+    else
+      start_opts =
+        opts
+        |> Keyword.delete(:server)
+        |> Keyword.put(:name, runtime_name)
+
+      {:ok,
+       %{
+         id: {__MODULE__, runtime_name},
+         start: {__MODULE__, :start_link, [start_opts]},
+         type: :worker,
+         restart: :permanent,
+         shutdown: 5000
+       }}
+    end
   end
 
   @spec scheduler_child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
   def scheduler_child_spec(opts \\ []) when is_list(opts) do
-    if Process.whereis(__MODULE__) do
+    if runtime_started?(runtime_name(opts)) do
       :none
     else
       child_spec(opts)
@@ -83,8 +98,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   @impl true
   def put_run(%RunState{} = run, opts \\ []) when is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:put_run, run})
+    with {:ok, normalized} <- RunStateCodec.normalize(run) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:put_run, normalized})
+    end
   end
 
   @impl true
@@ -103,8 +120,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   @impl true
   def append_run_event(run_id, event, opts \\ [])
       when is_binary(run_id) and is_map(event) and is_list(opts) do
-    server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:append_run_event, run_id, event})
+    with {:ok, normalized} <- RunEventCodec.normalize(run_id, event) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:append_run_event, run_id, normalized})
+    end
   end
 
   @impl true
@@ -114,11 +133,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
-  def put_scheduler_state({pipeline_module, schedule_id} = key, scheduler_state, opts)
-      when is_atom(pipeline_module) and is_map(scheduler_state) and is_list(opts) do
-    _ = schedule_id
-    server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:put_scheduler_state, key, scheduler_state})
+  def put_scheduler_state(key, scheduler_state, opts)
+      when is_map(scheduler_state) and is_list(opts) do
+    with {:ok, normalized_key} <- SchedulerStateCodec.normalize_key(key),
+         {:ok, normalized_state} <- SchedulerStateCodec.normalize_state(scheduler_state) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:put_scheduler_state, normalized_key, normalized_state})
+    end
   end
 
   @spec put_scheduler_state(SchedulerState.t(), keyword()) :: :ok | {:error, term()}
@@ -134,11 +155,11 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
-  def get_scheduler_state({pipeline_module, schedule_id} = key, opts \\ [])
-      when is_atom(pipeline_module) and is_list(opts) do
-    _ = schedule_id
-    server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:get_scheduler_state, key})
+  def get_scheduler_state(key, opts \\ []) when is_list(opts) do
+    with {:ok, normalized_key} <- SchedulerStateCodec.normalize_key(key) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:get_scheduler_state, normalized_key})
+    end
   end
 
   @spec get_scheduler_state(module(), atom() | nil, keyword()) ::
@@ -350,7 +371,21 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:get_scheduler_state, key}, _from, state) do
-    {:reply, {:ok, Map.get(state.scheduler_states, key)}, state}
+    value =
+      case Map.get(state.scheduler_states, key) do
+        nil ->
+          nil
+
+        stored when is_map(stored) ->
+          {pipeline_module, schedule_id} = key
+
+          struct(
+            SchedulerState,
+            Map.merge(stored, %{pipeline_module: pipeline_module, schedule_id: schedule_id})
+          )
+      end
+
+    {:reply, {:ok, value}, state}
   end
 
   defp put_run_with_semantics(runs, %RunState{} = incoming) do
@@ -358,17 +393,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       :error ->
         {:ok, Map.put(runs, incoming.id, incoming)}
 
-      {:ok, %RunState{} = existing} when incoming.event_seq > existing.event_seq ->
-        {:ok, Map.put(runs, incoming.id, incoming)}
-
-      {:ok, %RunState{} = existing} when incoming.event_seq < existing.event_seq ->
-        {{:error, :stale_write}, runs}
-
-      {:ok, %RunState{} = existing} when incoming.snapshot_hash == existing.snapshot_hash ->
-        {:ok, runs}
-
-      {:ok, %RunState{}} ->
-        {{:error, :conflicting_snapshot}, runs}
+      {:ok, %RunState{} = existing} ->
+        case WriteSemantics.decide(
+               existing.event_seq,
+               existing.snapshot_hash,
+               incoming.event_seq,
+               incoming.snapshot_hash
+             ) do
+          :replace -> {:ok, Map.put(runs, incoming.id, incoming)}
+          :idempotent -> {:ok, runs}
+          {:error, reason} -> {{:error, reason}, runs}
+        end
     end
     |> normalize_put_run_reply()
   end
@@ -389,4 +424,11 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       _ -> runs
     end
   end
+
+  defp runtime_name(opts) do
+    Keyword.get(opts, :server, Keyword.get(opts, :name, __MODULE__))
+  end
+
+  defp runtime_started?(name) when is_atom(name), do: Process.whereis(name) != nil
+  defp runtime_started?(_name), do: false
 end

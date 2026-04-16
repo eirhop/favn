@@ -1,18 +1,5 @@
 defmodule FavnStorageSqlite do
   @moduledoc """
-  Documentation for `FavnStorageSqlite`.
+  SQLite storage adapter app for orchestrator control-plane persistence.
   """
-
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> FavnStorageSqlite.hello()
-      :world
-
-  """
-  def hello do
-    :world
-  end
 end

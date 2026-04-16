@@ -5,7 +5,7 @@ defmodule FavnStorageSqlite.MixProject do
     [
       app: :favn_storage_sqlite,
       version: "0.5.0-dev",
-      description: "Internal SQLite storage adapter scaffold for orchestrator",
+      description: "SQLite storage adapter for orchestrator runtime state",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -18,13 +18,15 @@ defmodule FavnStorageSqlite.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :ecto_sql]
     ]
   end
 
   defp deps do
     [
-      {:favn_orchestrator, in_umbrella: true}
+      {:favn_orchestrator, in_umbrella: true},
+      {:ecto_sql, "~> 3.13.4"},
+      {:ecto_sqlite3, "~> 0.22.0"}
     ]
   end
 end

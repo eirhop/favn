@@ -59,6 +59,53 @@ defmodule Favn.StorageFacadeTest do
     def get_scheduler_state(_module, _schedule_id, _opts), do: {:ok, nil}
   end
 
+  defmodule ChildSpecProbeAdapterStub do
+    @behaviour Favn.Storage.Adapter
+
+    @impl true
+    def child_spec(opts) do
+      test_pid = Keyword.fetch!(opts, :test_pid)
+      send(test_pid, :child_spec_called)
+      :none
+    end
+
+    @impl true
+    def put_manifest_version(_version, _opts), do: :ok
+
+    @impl true
+    def get_manifest_version(_manifest_version_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_manifest_versions(_opts), do: {:ok, []}
+
+    @impl true
+    def set_active_manifest_version(_manifest_version_id, _opts), do: :ok
+
+    @impl true
+    def get_active_manifest_version(_opts), do: {:error, :not_found}
+
+    @impl true
+    def put_run(_run_state, _opts), do: :ok
+
+    @impl true
+    def get_run(_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def append_run_event(_run_id, _event, _opts), do: :ok
+
+    @impl true
+    def list_run_events(_run_id, _opts), do: {:ok, []}
+
+    @impl true
+    def put_scheduler_state(_key, _state, _opts), do: :ok
+
+    @impl true
+    def get_scheduler_state(_key, _opts), do: {:ok, nil}
+  end
+
   setup do
     previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
     previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
@@ -113,6 +160,14 @@ defmodule Favn.StorageFacadeTest do
     assert {:ok, run_state} = OrchestratorStorage.get_run("run_storage_facade")
     assert run_state.id == "run_storage_facade"
     assert run_state.manifest_version_id == "mv_storage_facade"
+  end
+
+  test "always delegates child spec setup to orchestrator storage" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, ChildSpecProbeAdapterStub)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, test_pid: self())
+
+    assert {:ok, []} = Storage.child_specs()
+    assert_receive :child_spec_called
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)

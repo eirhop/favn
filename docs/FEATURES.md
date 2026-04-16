@@ -286,11 +286,29 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] preserved public `Favn.Storage` contract is now owned by orchestrator-side files, and the scheduler matrix now covers overlap policies, missed-occurrence behavior, and window anchor propagation
   - [x] `Favn.Storage` adapter validation/defaults and `Favn.Storage.Adapter` behaviour now align with the orchestrator storage contract shape (no legacy adapter callback assumptions), and the duplicate `FavnOrchestrator.Storage.Adapter` contract has been collapsed away before Phase 6 plugin extraction
   - [x] manual pipeline submission now resolves from persisted manifest pipeline descriptors in orchestrator, with projector coverage and same-node orchestrator-to-runner integration coverage added
-- [ ] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
+- [x] Phase 6: add `favn_storage_sqlite` and `favn_storage_postgres`
+  - [x] planning docs created: `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md`
+  - [x] implementation checklist created: `docs/refactor/PHASE_6_TODO.md`
+  - [x] Phase 5 carry-over cleanup: remove the memory-specific adapter lifecycle shortcut and re-center shared storage codecs/write semantics into orchestrator ownership
+  - [x] initial `favn_storage_sqlite` foundation implemented with managed repo bootstrap + migrations, adapter contract coverage, and persisted manifests/runs/events/scheduler cursors
+  - [x] shared adapter contract coverage added across memory/sqlite/postgres with opt-in live postgres path
+  - [x] guarded SQL write semantics now enforce atomic run snapshot and scheduler version invariants in SQLite and Postgres, with concurrency-focused SQLite tests and opt-in live Postgres concurrency tests
+  - [x] initial `favn_storage_postgres` foundation implemented with managed/external repo modes, migration runner/schema checks, and persisted manifests/runs/events/scheduler cursors
+  - [x] add opt-in live Postgres integration coverage (`FAVN_POSTGRES_TEST_URL`) and document managed/external wiring
+  - [x] later-phase storage follow-ups moved to future roadmap phases so Phase 6 can close cleanly
 - [ ] Phase 7: move DuckDB into `favn_duckdb`
+  - [ ] carry SQL asset execution payload in the manifest/core contract
+  - [ ] enable manifest-pinned SQL asset execution in `favn_runner`
+  - [ ] remove temporary migration/runtime seams in `favn` after the manifest-backed runner SQL path lands
 - [ ] Phase 8: add `favn_view`
 - [ ] Phase 9: ship developer tooling and packaging flows
+  - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path
+  - [ ] broaden live Postgres migration/transaction/concurrency coverage in a production-like verification path
 - [ ] Phase 10: cut over and delete legacy runtime paths
+  - [ ] rename temporary adapter modules (`FavnStorageSqlite.Adapter`, `FavnStoragePostgres.Adapter`) to preserved `Favn.Storage.Adapter.*` names after legacy module collisions are removed
+  - [ ] replace temporary BEAM term-blob payload storage with the intended canonical inspectable payload format
+  - [ ] decide whether scheduler writes without explicit versions should stay permissive or become stricter optimistic writes
+  - [ ] replace repeated external Postgres schema-readiness checks with a clearer startup/cached readiness strategy
 
 Detailed migration planning for the current refactor slices lives in:
 
@@ -301,6 +319,8 @@ Detailed migration planning for the current refactor slices lives in:
 - `docs/refactor/PHASE_4_TODO.md`
 - `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md`
 - `docs/refactor/PHASE_5_TODO.md`
+- `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md`
+- `docs/refactor/PHASE_6_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 
