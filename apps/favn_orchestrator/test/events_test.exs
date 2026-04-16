@@ -70,6 +70,11 @@ defmodule FavnOrchestrator.EventsTest do
     assert Enum.map(events, & &1.sequence) == [1, 2, 3]
     assert Enum.all?(events, &match?(%RunEvent{}, &1))
 
+    step_event = Enum.find(events, &(&1.event_type == :step_started))
+    assert step_event.entity == :step
+    assert step_event.stage == 0
+    assert step_event.asset_ref == run.asset_ref
+
     assert {:ok, after_first} = FavnOrchestrator.list_run_events(run.id, after_sequence: 1)
     assert Enum.map(after_first, & &1.sequence) == [2, 3]
 
@@ -99,6 +104,17 @@ defmodule FavnOrchestrator.EventsTest do
     assert {:error, :conflicting_snapshot} =
              TransitionWriter.persist_transition(conflicting, :run_failed, %{})
 
+    refute_receive {:favn_run_event, _event}, 100
+  end
+
+  test "idempotent transition writes are not re-broadcast" do
+    run = run_state("run_events_idempotent")
+
+    assert :ok = FavnOrchestrator.subscribe_run(run.id)
+    assert :ok = TransitionWriter.persist_transition(run, :run_created, %{kind: :test})
+    assert_receive {:favn_run_event, %RunEvent{sequence: 1}}
+
+    assert :ok = TransitionWriter.persist_transition(run, :run_created, %{kind: :test})
     refute_receive {:favn_run_event, _event}, 100
   end
 

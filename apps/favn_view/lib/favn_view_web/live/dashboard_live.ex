@@ -2,7 +2,6 @@ defmodule FavnViewWeb.DashboardLive do
   use FavnViewWeb, :live_view
 
   alias FavnView.Manifests
-  alias FavnView.Presenters.ManifestPresenter
   alias FavnView.Presenters.RunPresenter
   alias FavnView.Presenters.SchedulerPresenter
   alias FavnView.Runs
@@ -10,18 +9,18 @@ defmodule FavnViewWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    with {:ok, manifests} <- Manifests.list_manifests(),
+    with {:ok, manifest_targets} <- Manifests.active_manifest_targets(),
          {:ok, runs} <- Runs.list_runs(limit: 20) do
       if connected?(socket), do: _ = Runs.subscribe_runs()
 
       {:ok,
        socket
        |> assign(:page_title, "Dashboard")
-       |> assign(:active_manifest_id, active_manifest_id())
+       |> assign(:active_manifest_id, manifest_targets.manifest_version_id)
        |> assign(:runs, RunPresenter.summaries(runs))
        |> assign(:scheduler_entries, scheduler_entries())
-       |> assign(:asset_options, ManifestPresenter.asset_options(manifests))
-       |> assign(:pipeline_options, ManifestPresenter.pipeline_options(manifests))}
+       |> assign(:asset_options, manifest_targets.assets)
+       |> assign(:pipeline_options, manifest_targets.pipelines)}
     else
       {:error, reason} ->
         {:ok,
@@ -37,27 +36,35 @@ defmodule FavnViewWeb.DashboardLive do
   end
 
   @impl true
-  def handle_event("submit_asset", %{"asset_ref" => encoded_ref}, socket) do
-    with {:ok, asset_ref} <- ManifestPresenter.decode_term(encoded_ref),
-         {:ok, run_id} <- Runs.submit_asset_run(asset_ref) do
-      {:noreply,
-       socket
-       |> put_flash(:info, "asset run submitted: #{run_id}")
-       |> push_navigate(to: ~p"/runs/#{run_id}")}
-    else
+  def handle_event(
+        "submit_asset",
+        %{"asset_target_id" => target_id, "manifest_version_id" => manifest_version_id},
+        socket
+      ) do
+    case Manifests.submit_asset_for_manifest(manifest_version_id, target_id) do
+      {:ok, run_id} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "asset run submitted: #{run_id}")
+         |> push_navigate(to: ~p"/runs/#{run_id}")}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "asset submit failed: #{inspect(reason)}")}
     end
   end
 
-  def handle_event("submit_pipeline", %{"pipeline" => encoded_pipeline}, socket) do
-    with {:ok, pipeline_module} <- ManifestPresenter.decode_term(encoded_pipeline),
-         {:ok, run_id} <- Runs.submit_pipeline_run(pipeline_module) do
-      {:noreply,
-       socket
-       |> put_flash(:info, "pipeline run submitted: #{run_id}")
-       |> push_navigate(to: ~p"/runs/#{run_id}")}
-    else
+  def handle_event(
+        "submit_pipeline",
+        %{"pipeline_target_id" => target_id, "manifest_version_id" => manifest_version_id},
+        socket
+      ) do
+    case Manifests.submit_pipeline_for_manifest(manifest_version_id, target_id) do
+      {:ok, run_id} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "pipeline run submitted: #{run_id}")
+         |> push_navigate(to: ~p"/runs/#{run_id}")}
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "pipeline submit failed: #{inspect(reason)}")}
     end
@@ -78,13 +85,6 @@ defmodule FavnViewWeb.DashboardLive do
     assign(socket, :runs, runs)
   end
 
-  defp active_manifest_id do
-    case Manifests.active_manifest() do
-      {:ok, manifest_id} -> manifest_id
-      _ -> nil
-    end
-  end
-
   defp scheduler_entries do
     case Scheduler.scheduled_entries() do
       entries when is_list(entries) -> SchedulerPresenter.entries(entries)
@@ -103,9 +103,10 @@ defmodule FavnViewWeb.DashboardLive do
         <article style="border: 1px solid #ddd; padding: 1rem;">
           <h2>Submit Asset Run</h2>
           <.form id="asset-submit-form" for={%{}} as={:submit_asset} phx-submit="submit_asset">
-            <select name="asset_ref">
-              <%= for {label, value} <- @asset_options do %>
-                <option value={value}><%= label %></option>
+            <input type="hidden" name="manifest_version_id" value={@active_manifest_id} />
+            <select name="asset_target_id">
+              <%= for option <- @asset_options do %>
+                <option value={option.target_id}><%= option.label %></option>
               <% end %>
             </select>
             <button type="submit">Submit</button>
@@ -115,9 +116,10 @@ defmodule FavnViewWeb.DashboardLive do
         <article style="border: 1px solid #ddd; padding: 1rem;">
           <h2>Submit Pipeline Run</h2>
           <.form id="pipeline-submit-form" for={%{}} as={:submit_pipeline} phx-submit="submit_pipeline">
-            <select name="pipeline">
-              <%= for {label, value} <- @pipeline_options do %>
-                <option value={value}><%= label %></option>
+            <input type="hidden" name="manifest_version_id" value={@active_manifest_id} />
+            <select name="pipeline_target_id">
+              <%= for option <- @pipeline_options do %>
+                <option value={option.target_id}><%= option.label %></option>
               <% end %>
             </select>
             <button type="submit">Submit</button>

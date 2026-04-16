@@ -58,12 +58,7 @@ defmodule FavnViewWeb.Runs.ShowLive do
   def handle_info({:favn_run_event, event}, socket) do
     presented_event = RunPresenter.timeline_event(event)
 
-    events =
-      if Enum.any?(socket.assigns.events, &(&1.sequence == presented_event.sequence)) do
-        socket.assigns.events
-      else
-        socket.assigns.events ++ [presented_event]
-      end
+    events = merge_timeline_event(socket.assigns.events, presented_event)
 
     run =
       case Runs.get_run(socket.assigns.run_id) do
@@ -72,6 +67,13 @@ defmodule FavnViewWeb.Runs.ShowLive do
       end
 
     {:noreply, assign(socket, run: run, events: events)}
+  end
+
+  defp merge_timeline_event(events, presented_event) do
+    events
+    |> Enum.reject(&(&1.sequence == presented_event.sequence))
+    |> Kernel.++([presented_event])
+    |> Enum.sort_by(& &1.sequence)
   end
 
   @impl true
@@ -100,6 +102,7 @@ defmodule FavnViewWeb.Runs.ShowLive do
               <strong>#<%= event.sequence %></strong>
               <span><%= event.label %></span>
               <span>entity=<%= event.entity %></span>
+              <span :if={not is_nil(event.asset_ref)}>asset=<%= inspect(event.asset_ref) %></span>
               <span :if={not is_nil(event.stage)}>stage=<%= event.stage %></span>
               <span>status=<%= event.status %></span>
             </li>

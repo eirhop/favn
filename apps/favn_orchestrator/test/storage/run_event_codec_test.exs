@@ -44,6 +44,19 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
     assert %DateTime{} = normalized.occurred_at
   end
 
+  test "derives top-level asset_ref and stage from event data" do
+    assert {:ok, normalized} =
+             RunEventCodec.normalize("run_step", %{
+               sequence: 2,
+               event_type: :step_started,
+               data: %{asset_ref: {MyApp.Asset, :asset}, stage: 1}
+             })
+
+    assert normalized.entity == :step
+    assert normalized.asset_ref == {MyApp.Asset, :asset}
+    assert normalized.stage == 1
+  end
+
   test "rejects invalid run events" do
     assert {:error, {:invalid_run_event_field, :sequence, 0}} =
              RunEventCodec.normalize("run_1", %{sequence: 0, event_type: :run_started})

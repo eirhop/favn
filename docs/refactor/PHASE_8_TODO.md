@@ -34,6 +34,8 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 - [x] Ensure all run lifecycle transitions produce one canonical operator event per accepted transition.
 - [x] Verify global + run-scoped publication for each accepted transition.
 - [x] Verify external cancel race handling still behaves correctly under new transition writer path.
+- [x] Keep `TransitionWriter` as the only persist-then-broadcast path for run lifecycle transitions.
+- [x] Ensure idempotent transition writes do not re-broadcast duplicate live events.
 
 ## Scheduler and Manifest Snapshot APIs
 
@@ -54,6 +56,7 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 - [x] Add `FavnView.Manifests` thin context wrapping orchestrator manifest APIs.
 - [x] Add `FavnView.Scheduler` thin context wrapping orchestrator scheduler APIs.
 - [x] Add stable presenter helpers for UI-facing map shaping (avoid raw LiveView mapping logic spread).
+- [x] Replace BEAM-term encoded form payloads with orchestrator-owned manifest target DTOs (`target_id` + label).
 
 ## LiveView Screens
 
@@ -68,7 +71,7 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 
 - [x] Wire asset-run submission action.
 - [x] Wire pipeline-run submission action.
-- [x] Wire cancel action on running runs.
+- [x] Wire cancel action on non-terminal runs.
 - [x] Wire rerun action for terminal runs.
 
 ## Orchestrator Tests

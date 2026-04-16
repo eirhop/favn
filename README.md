@@ -107,3 +107,10 @@ config :favn_orchestrator,
     migration_mode: :manual
   ]
 ```
+
+## View Runtime Configuration
+
+When running `favn_view` in non-test environments, configure endpoint secrets with environment variables:
+
+- `FAVN_VIEW_SECRET_KEY_BASE`
+- `FAVN_VIEW_SIGNING_SALT`

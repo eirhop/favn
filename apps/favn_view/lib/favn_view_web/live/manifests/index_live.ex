@@ -6,14 +6,14 @@ defmodule FavnViewWeb.Manifests.IndexLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    case Manifests.list_manifests() do
-      {:ok, manifests} ->
+    case Manifests.list_manifest_summaries() do
+      {:ok, summaries} ->
         active_manifest_id = active_manifest_id()
 
         {:ok,
          socket
          |> assign(:page_title, "Manifests")
-         |> assign(:manifests, ManifestPresenter.summaries(manifests, active_manifest_id))
+         |> assign(:manifests, ManifestPresenter.summaries(summaries, active_manifest_id))
          |> assign(:active_manifest_id, active_manifest_id)}
 
       {:error, reason} ->

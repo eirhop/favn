@@ -6,7 +6,6 @@ defmodule FavnView.PresentersTest do
   alias FavnView.Presenters.ManifestPresenter
   alias FavnView.Presenters.RunPresenter
   alias FavnView.Presenters.SchedulerPresenter
-  alias FavnView.TestFixtures
 
   test "run presenter returns stable run summary keys" do
     run =
@@ -21,7 +20,7 @@ defmodule FavnView.PresentersTest do
 
     assert summary.id == "run_presenter"
     assert summary.status == :pending
-    assert summary.cancel_enabled == false
+    assert summary.cancel_enabled == true
     assert summary.rerun_enabled == false
   end
 
@@ -41,34 +40,40 @@ defmodule FavnView.PresentersTest do
     assert timeline.sequence == 2
     assert timeline.event_type == :run_started
     assert timeline.entity == :run
+    assert timeline.asset_ref == nil
     assert timeline.stage == nil
     assert timeline.status == :running
     assert timeline.label == "Run started"
   end
 
   test "manifest presenter summary and detail are stable" do
-    version = TestFixtures.manifest_version("mv_presenter")
+    summary_payload = %{
+      manifest_version_id: "mv_presenter",
+      content_hash: "hash_presenter",
+      asset_count: 2,
+      pipeline_count: 1,
+      schedule_count: 0
+    }
 
-    summary = ManifestPresenter.summary(version, "mv_presenter")
-    detail = ManifestPresenter.detail(version)
+    summary = ManifestPresenter.summary(summary_payload, "mv_presenter")
+    detail = ManifestPresenter.detail(summary_payload, "mv_presenter")
 
     assert summary.manifest_version_id == "mv_presenter"
     assert summary.active == true
-    assert detail.asset_count >= 1
-    assert detail.pipeline_count >= 1
+    assert detail.asset_count == 2
+    assert detail.pipeline_count == 1
     assert detail.schedule_count == 0
   end
 
-  test "manifest presenter term encoding roundtrip for form options" do
-    version = TestFixtures.manifest_version("mv_presenter")
-    [{_label, encoded} | _rest] = ManifestPresenter.asset_options([version])
+  test "manifest presenter returns stable target option lists" do
+    targets = %{
+      manifest_version_id: "mv_presenter",
+      assets: [%{target_id: "asset:a", label: "{MyApp.Assets.Raw, :asset}"}],
+      pipelines: [%{target_id: "pipeline:a", label: "MyApp.Pipelines.Daily"}]
+    }
 
-    assert {:ok, decoded} = ManifestPresenter.decode_term(encoded)
-    assert decoded == {MyApp.Assets.Gold, :asset} or decoded == {MyApp.Assets.Raw, :asset}
-  end
-
-  test "manifest presenter returns stable error tuple for invalid term payload" do
-    assert {:error, :invalid_term_payload} = ManifestPresenter.decode_term("not-base64")
+    assert ManifestPresenter.asset_options(targets) == targets.assets
+    assert ManifestPresenter.pipeline_options(targets) == targets.pipelines
   end
 
   test "scheduler presenter returns stable entry keys" do

@@ -313,6 +313,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] restore orchestrator-owned run live events/subscriptions for view updates (`subscribe_run/1`, `subscribe_runs/0`, typed `%FavnOrchestrator.RunEvent{}`)
   - [x] introduce explicit orchestrator transition writer and route run lifecycle persistence through authoritative write-then-broadcast path
   - [x] add presenter shaping layer for stable UI map contracts and presenter contract tests
+  - [x] tighten post-review boundary correctness (active-manifest-scoped submit targets, orchestrator-owned manifest DTO selectors, canonical step event identity/order in timeline, idempotent transition no-rebroadcast)
   - [x] close Phase 8 implementation/test/docs review and mark the prototype boundary slice complete
 - [ ] Phase 9: ship developer tooling and packaging flows
   - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path

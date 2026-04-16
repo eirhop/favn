@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
          {:ok, event_type} <- validate_event_type(Map.get(event, :event_type)),
          {:ok, occurred_at} <- normalize_occurred_at(Map.get(event, :occurred_at)),
          {:ok, status} <- normalize_status(Map.get(event, :status)) do
+      data = normalize_data(Map.get(event, :data))
+
       {:ok,
        %{
          schema_version: normalize_schema_version(Map.get(event, :schema_version)),
@@ -19,9 +21,9 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
          status: status,
          manifest_version_id: normalize_optional_binary(Map.get(event, :manifest_version_id)),
          manifest_content_hash: normalize_optional_binary(Map.get(event, :manifest_content_hash)),
-         asset_ref: normalize_asset_ref(Map.get(event, :asset_ref)),
-         stage: normalize_stage(Map.get(event, :stage), Map.get(event, :data)),
-         data: normalize_data(Map.get(event, :data))
+         asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), data),
+         stage: normalize_stage(Map.get(event, :stage), data),
+         data: data
        }}
     end
   end
@@ -72,8 +74,15 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
   defp normalize_optional_binary(value) when is_binary(value) and value != "", do: value
   defp normalize_optional_binary(_value), do: nil
 
-  defp normalize_asset_ref({module, name} = ref) when is_atom(module) and is_atom(name), do: ref
-  defp normalize_asset_ref(_value), do: nil
+  defp normalize_asset_ref({module, name} = ref, _data) when is_atom(module) and is_atom(name),
+    do: ref
+
+  defp normalize_asset_ref(_value, data) when is_map(data) do
+    case Map.get(data, :asset_ref) do
+      {module, name} = ref when is_atom(module) and is_atom(name) -> ref
+      _ -> nil
+    end
+  end
 
   defp normalize_stage(value, _data) when is_integer(value) and value >= 0, do: value
 
@@ -83,8 +92,6 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
       _ -> nil
     end
   end
-
-  defp normalize_stage(_value, _data), do: nil
 
   defp normalize_data(data) when is_map(data), do: data
   defp normalize_data(_value), do: %{}

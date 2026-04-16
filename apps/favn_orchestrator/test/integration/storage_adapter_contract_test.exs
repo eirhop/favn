@@ -131,7 +131,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     }
 
     assert :ok = Storage.persist_run_transition(running, transition_event)
-    assert :ok = Storage.persist_run_transition(running, transition_event)
+    assert :idempotent = Storage.persist_run_transition(running, transition_event)
 
     assert {:ok, run_events} = Storage.list_run_events(run.id)
     persisted_transition = Enum.find(run_events, &(&1.sequence == running.event_seq))

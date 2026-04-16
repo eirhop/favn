@@ -14,8 +14,15 @@ defmodule FavnOrchestrator.TransitionWriter do
       when is_atom(event_type) and is_map(data) do
     event = Projector.run_event(run_state, event_type, data)
 
-    with :ok <- Storage.persist_run_transition(run_state, RunEvent.to_map(event)) do
-      Events.broadcast_run_event(event)
+    case Storage.persist_run_transition(run_state, RunEvent.to_map(event)) do
+      :ok ->
+        Events.broadcast_run_event(event)
+
+      :idempotent ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end

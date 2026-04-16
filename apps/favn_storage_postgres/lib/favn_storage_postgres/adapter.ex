@@ -155,15 +155,20 @@ defmodule FavnStoragePostgres.Adapter do
          {:ok, normalized_event} <- RunEventCodec.normalize(run.id, event),
          :ok <- validate_transition_alignment(normalized_run, normalized_event) do
       repo.transact(fn ->
-        with :ok <- guarded_put_run(repo, normalized_run),
-             :ok <- guarded_append_run_event(repo, run.id, normalized_event) do
-          {:ok, :ok}
-        else
-          {:error, reason} -> repo.rollback(reason)
+        case guarded_put_run(repo, normalized_run) do
+          :ok ->
+            case guarded_append_run_event(repo, run.id, normalized_event) do
+              result when result in [:ok, :idempotent] -> {:ok, result}
+              {:error, reason} -> repo.rollback(reason)
+            end
+
+          {:error, reason} ->
+            repo.rollback(reason)
         end
       end)
       |> case do
         {:ok, :ok} -> :ok
+        {:ok, :idempotent} -> :idempotent
         {:error, reason} -> {:error, reason}
       end
     end
@@ -212,7 +217,11 @@ defmodule FavnStoragePostgres.Adapter do
       when is_binary(run_id) and is_map(event) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          {:ok, normalized} <- RunEventCodec.normalize(run_id, event) do
-      guarded_append_run_event(repo, run_id, normalized)
+      case guarded_append_run_event(repo, run_id, normalized) do
+        :ok -> :ok
+        :idempotent -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -398,7 +407,7 @@ defmodule FavnStoragePostgres.Adapter do
   defp resolve_existing_event_conflict(repo, run_id, event) do
     with {:ok, existing} <- fetch_event_by_sequence(repo, run_id, event.sequence) do
       case existing do
-        ^event -> :ok
+        ^event -> :idempotent
         _ -> {:error, :conflicting_event_sequence}
       end
     end

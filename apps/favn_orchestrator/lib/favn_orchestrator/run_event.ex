@@ -45,7 +45,7 @@ defmodule FavnOrchestrator.RunEvent do
       status: Map.get(event, :status),
       manifest_version_id: Map.get(event, :manifest_version_id),
       manifest_content_hash: Map.get(event, :manifest_content_hash),
-      asset_ref: normalize_asset_ref(Map.get(event, :asset_ref)),
+      asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), Map.get(event, :data)),
       stage: normalize_stage(Map.get(event, :stage), Map.get(event, :data)),
       data: normalize_data(Map.get(event, :data))
     }
@@ -83,8 +83,17 @@ defmodule FavnOrchestrator.RunEvent do
 
   defp normalize_occurred_at(_value), do: DateTime.utc_now()
 
-  defp normalize_asset_ref({module, name} = ref) when is_atom(module) and is_atom(name), do: ref
-  defp normalize_asset_ref(_value), do: nil
+  defp normalize_asset_ref({module, name} = ref, _data) when is_atom(module) and is_atom(name),
+    do: ref
+
+  defp normalize_asset_ref(_value, data) when is_map(data) do
+    case Map.get(data, :asset_ref) do
+      {module, name} = ref when is_atom(module) and is_atom(name) -> ref
+      _ -> nil
+    end
+  end
+
+  defp normalize_asset_ref(_value, _data), do: nil
 
   defp normalize_stage(value, _data) when is_integer(value) and value >= 0, do: value
 

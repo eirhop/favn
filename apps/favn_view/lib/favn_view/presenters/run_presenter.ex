@@ -28,6 +28,7 @@ defmodule FavnView.Presenters.RunPresenter do
       sequence: event.sequence,
       event_type: event.event_type,
       entity: event.entity,
+      asset_ref: event.asset_ref,
       stage: event.stage,
       status: event.status,
       label: event_label(event.event_type)
@@ -42,7 +43,10 @@ defmodule FavnView.Presenters.RunPresenter do
   def timeline(events) when is_list(events), do: Enum.map(events, &timeline_event/1)
 
   @spec cancel_enabled?(map()) :: boolean()
-  def cancel_enabled?(run), do: Map.get(run, :status) == :running
+  def cancel_enabled?(run) do
+    status = Map.get(run, :status)
+    not is_nil(status) and status not in @terminal_statuses
+  end
 
   @spec rerun_enabled?(map()) :: boolean()
   def rerun_enabled?(run), do: Map.get(run, :status) in @terminal_statuses

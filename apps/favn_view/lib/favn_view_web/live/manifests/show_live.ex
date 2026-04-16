@@ -6,9 +6,10 @@ defmodule FavnViewWeb.Manifests.ShowLive do
 
   @impl true
   def mount(%{"manifest_version_id" => manifest_version_id}, _session, socket) do
-    case Manifests.get_manifest(manifest_version_id) do
-      {:ok, version} ->
-        detail = ManifestPresenter.detail(version)
+    case Manifests.get_manifest_summary(manifest_version_id) do
+      {:ok, summary} ->
+        active_manifest_id = active_manifest_id()
+        detail = ManifestPresenter.detail(summary, active_manifest_id)
 
         {:ok,
          socket
@@ -21,6 +22,13 @@ defmodule FavnViewWeb.Manifests.ShowLive do
          |> put_flash(:error, "manifest load failed: #{inspect(reason)}")
          |> assign(:page_title, "Manifest")
          |> assign(:manifest, nil)}
+    end
+  end
+
+  defp active_manifest_id do
+    case Manifests.active_manifest() do
+      {:ok, manifest_id} -> manifest_id
+      _ -> nil
     end
   end
 

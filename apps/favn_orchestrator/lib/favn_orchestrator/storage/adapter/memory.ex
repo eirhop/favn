@@ -283,25 +283,34 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   def handle_call({:put_run, %RunState{} = incoming}, _from, state) do
     {reply, runs} = put_run_with_semantics(state.runs, incoming)
-    {:reply, reply, %{state | runs: runs}}
+
+    normalized_reply = if reply == :idempotent, do: :ok, else: reply
+
+    {:reply, normalized_reply, %{state | runs: runs}}
   end
 
   def handle_call({:persist_run_transition, %RunState{} = run, event}, _from, state) do
     {run_reply, runs} = put_run_with_semantics(state.runs, run)
 
     case run_reply do
-      :ok ->
+      run_write_result when run_write_result in [:ok, :idempotent] ->
         current = Map.get(state.run_events, run.id, [])
 
         case append_event_with_semantics(current, event) do
-          {:ok, next_events} ->
+          {:ok, event_write_result, next_events} ->
             next_state = %{
               state
               | runs: runs,
                 run_events: Map.put(state.run_events, run.id, next_events)
             }
 
-            {:reply, :ok, next_state}
+            result =
+              case {run_write_result, event_write_result} do
+                {:idempotent, :idempotent} -> :idempotent
+                _ -> :ok
+              end
+
+            {:reply, result, next_state}
 
           {:error, reason} ->
             {:reply, {:error, reason}, state}
@@ -428,7 +437,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp put_run_with_semantics(runs, %RunState{} = incoming) do
     case Map.fetch(runs, incoming.id) do
       :error ->
-        {:ok, Map.put(runs, incoming.id, incoming)}
+        {{:ok, :ok}, Map.put(runs, incoming.id, incoming)}
 
       {:ok, %RunState{} = existing} ->
         case WriteSemantics.decide(
@@ -437,15 +446,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
                incoming.event_seq,
                incoming.snapshot_hash
              ) do
-          :replace -> {:ok, Map.put(runs, incoming.id, incoming)}
-          :idempotent -> {:ok, runs}
+          :replace -> {{:ok, :ok}, Map.put(runs, incoming.id, incoming)}
+          :idempotent -> {{:ok, :idempotent}, runs}
           {:error, reason} -> {{:error, reason}, runs}
         end
     end
     |> normalize_put_run_reply()
   end
 
-  defp normalize_put_run_reply({:ok, runs}), do: {:ok, runs}
+  defp normalize_put_run_reply({{:ok, result}, runs}) when result in [:ok, :idempotent],
+    do: {result, runs}
+
   defp normalize_put_run_reply({{:error, reason}, runs}), do: {{:error, reason}, runs}
 
   defp filter_runs(runs, run_opts) do
@@ -480,10 +491,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
     case Enum.find(current_events, &(Map.get(&1, :sequence) == sequence)) do
       nil ->
-        {:ok, Enum.sort_by(current_events ++ [event], &Map.get(&1, :sequence, 0))}
+        {:ok, :ok, Enum.sort_by(current_events ++ [event], &Map.get(&1, :sequence, 0))}
 
       existing when existing == event ->
-        {:ok, current_events}
+        {:ok, :idempotent, current_events}
 
       _existing ->
         {:error, :conflicting_event_sequence}
