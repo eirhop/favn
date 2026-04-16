@@ -45,8 +45,9 @@ defmodule FavnDuckdb.Runtime.SeparateProcess do
   def release(resource), do: call({:release, resource})
 
   defp call(message) do
-    GenServer.call(worker_name(), message)
+    GenServer.call(worker_name(), message, FavnDuckdb.Runtime.worker_call_timeout())
   catch
+    :exit, {:timeout, _detail} -> {:error, :worker_call_timeout}
     :exit, _ -> {:error, :worker_not_available}
   end
 end

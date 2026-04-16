@@ -2,6 +2,7 @@ defmodule FavnDuckdb.Runtime do
   @moduledoc false
 
   @type execution_mode :: :in_process | :separate_process
+  @type worker_call_timeout :: timeout()
 
   @spec client_module() :: module()
   def client_module do
@@ -35,6 +36,20 @@ defmodule FavnDuckdb.Runtime do
     case Keyword.get(opts, :worker_name, FavnDuckdb.Worker) do
       name when is_atom(name) -> name
       _other -> FavnDuckdb.Worker
+    end
+  end
+
+  @spec worker_call_timeout() :: worker_call_timeout()
+  def worker_call_timeout do
+    worker_call_timeout(plugin_opts())
+  end
+
+  @spec worker_call_timeout(keyword()) :: worker_call_timeout()
+  def worker_call_timeout(opts) when is_list(opts) do
+    case Keyword.get(opts, :worker_call_timeout, :infinity) do
+      :infinity -> :infinity
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _other -> :infinity
     end
   end
 

@@ -107,4 +107,9 @@ defmodule Favn.DSLCompilerTest do
                Favn.materialize(SalesSnapshot)
              )
   end
+
+  test "public sql helpers return normalized SQLAsset error for invalid input" do
+    assert {:error, %Favn.SQLAsset.Error{type: :invalid_asset_input, phase: :render}} =
+             Favn.render(:not_a_sql_asset)
+  end
 end

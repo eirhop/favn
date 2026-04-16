@@ -5,7 +5,7 @@ defmodule Favn.SQLAsset.Input do
 
   @type input :: module() | Favn.asset_ref() | Favn.asset()
 
-  @spec normalize(input()) :: {:ok, Favn.asset()} | {:error, map()}
+  @spec normalize(input()) :: {:ok, Favn.asset()} | {:error, map() | struct()}
   def normalize(%Favn.Asset{type: :sql} = asset), do: {:ok, asset}
 
   def normalize(%Favn.Asset{} = asset) do
@@ -65,12 +65,18 @@ defmodule Favn.SQLAsset.Input do
   end
 
   defp error(type, message, asset_ref, details \\ %{}) do
-    %{
+    payload = %{
       type: type,
       phase: :render,
       asset_ref: asset_ref,
       message: message,
       details: details
     }
+
+    if Code.ensure_loaded?(Favn.SQLAsset.Error) do
+      struct(Favn.SQLAsset.Error, payload)
+    else
+      payload
+    end
   end
 end

@@ -326,7 +326,10 @@ defmodule Favn.SQLAsset.Runtime do
        materialization: asset.materialization,
        relation_inputs: asset.relation_inputs || [],
        sql_definitions: payload.sql_definitions,
-       raw_asset: %{manifest_relation_by_module: relation_map(version)}
+       raw_asset: %{
+         manifest_relation_by_module: relation_map(version),
+         deferred_resolution: :manifest_only
+       }
      }}
   end
 
