@@ -108,3 +108,7 @@ Notes:
 - Public facade runtime delegation tests now include:
   - `apps/favn/test/runtime_facade_test.exs`
   - coverage for scheduler runtime wrapper availability semantics in `apps/favn/test/runtime_facade_test.exs`
+- Phase 7 runner/plugin tests now include:
+  - `apps/favn_runner/test/execution/sql_asset_test.exs` for manifest-pinned SQL execution through both `:in_process` and `:separate_process` DuckDB modes
+  - `apps/favn_runner/test/plugin_test.exs` for generic runner plugin config normalization
+  - `apps/favn_duckdb/test/favn_duckdb_test.exs` for DuckDB plugin child specs, separate worker lifecycle behavior, and separate-process client behavior

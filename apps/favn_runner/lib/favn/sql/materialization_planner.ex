@@ -2,10 +2,11 @@ defmodule Favn.SQL.MaterializationPlanner do
   @moduledoc false
 
   alias Favn.RelationRef
-  alias Favn.SQL
-  alias Favn.SQL.{IncrementalWindow, Render, Session, WritePlan}
+  alias Favn.SQL.{IncrementalWindow, Params, Render, RuntimeBridge, Session, WritePlan}
   alias Favn.SQLAsset.{Definition, Error}
   alias Favn.Window.Runtime
+
+  @sql_runtime RuntimeBridge
 
   @spec build(Session.t(), Definition.t(), Render.t()) ::
           {:ok, WritePlan.t()} | {:error, Error.t()}
@@ -135,7 +136,7 @@ defmodule Favn.SQL.MaterializationPlanner do
         name: render.relation.name
       })
 
-    case SQL.get_relation(session, ref) do
+    case @sql_runtime.get_relation(session, ref) do
       {:ok, nil} -> {:ok, false}
       {:ok, _relation} -> {:ok, true}
       {:error, reason} -> planning_error(render, "failed to inspect incremental target", reason)
@@ -184,7 +185,7 @@ defmodule Favn.SQL.MaterializationPlanner do
         name: render.relation.name
       })
 
-    with {:ok, columns} <- SQL.columns(session, ref),
+    with {:ok, columns} <- @sql_runtime.columns(session, ref),
          :ok <- ensure_column_present(Enum.map(columns, & &1.name), column, render, :target) do
       {:ok, :ok}
     else
@@ -213,8 +214,8 @@ defmodule Favn.SQL.MaterializationPlanner do
   defp rendered_columns(%Session{} = session, %Render{} = render) do
     statement = "SELECT * FROM (#{trim_sql(render.sql)}) AS favn_incremental_probe LIMIT 0"
 
-    case SQL.query(session, statement, params: adapter_params(render.params)) do
-      {:ok, %SQL.Result{columns: columns}} ->
+    case @sql_runtime.query(session, statement, params: adapter_params(render.params)) do
+      {:ok, %Favn.SQL.Result{columns: columns}} ->
         {:ok, columns}
 
       {:error, reason} ->
@@ -295,7 +296,7 @@ defmodule Favn.SQL.MaterializationPlanner do
     |> String.trim()
   end
 
-  defp adapter_params(%SQL.Params{} = params), do: SQL.Params.to_adapter_params(params)
+  defp adapter_params(%Params{} = params), do: Params.to_adapter_params(params)
 
   defp normalize_column_name(column) when is_atom(column), do: Atom.to_string(column)
   defp normalize_column_name(column) when is_binary(column), do: column

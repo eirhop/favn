@@ -18,6 +18,16 @@ defmodule Favn.Manifest.GeneratorTest do
     def asset(_ctx), do: :ok
   end
 
+  defmodule TestSQLAsset do
+    use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
+    use Favn.SQLAsset
+
+    @materialized :table
+    query do
+      ~SQL"SELECT 1 AS id"
+    end
+  end
+
   defmodule TestPipeline do
     use Favn.Pipeline
 
@@ -31,20 +41,23 @@ defmodule Favn.Manifest.GeneratorTest do
   test "generates manifest from explicit module lists" do
     assert {:ok, %Manifest{} = manifest} =
              Favn.generate_manifest(
-               asset_modules: [TestAsset],
+               asset_modules: [TestAsset, TestSQLAsset],
                pipeline_modules: [TestPipeline],
                schedule_modules: [TestSchedules]
              )
 
     assert manifest.schema_version == 1
     assert manifest.runner_contract_version == 1
-    assert length(manifest.assets) == 1
+    assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1
-    assert manifest.graph.nodes == [{TestAsset, :asset}]
+    assert manifest.graph.nodes == [{TestAsset, :asset}, {TestSQLAsset, :asset}]
 
-    [asset] = manifest.assets
-    assert asset.ref == {TestAsset, :asset}
+    assert Enum.any?(manifest.assets, &(&1.ref == {TestAsset, :asset}))
+
+    sql_asset = Enum.find(manifest.assets, &(&1.ref == {TestSQLAsset, :asset}))
+    assert sql_asset.type == :sql
+    assert %Favn.Manifest.SQLExecution{} = sql_asset.sql_execution
 
     [pipeline] = manifest.pipelines
     assert pipeline.name == :daily_sales

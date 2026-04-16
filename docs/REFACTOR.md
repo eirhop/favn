@@ -518,9 +518,15 @@ The remaining storage-related follow-ups were intentionally moved out of Phase 6
 ### Goal
 Prove the optional execution plugin model.
 
+Detailed implementation planning for this phase lives in:
+
+- `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md`
+- `docs/refactor/PHASE_7_TODO.md`
+
 ### Deliverables
 - `favn_duckdb` app
 - DuckDB runtime execution through runner plugin integration
+- minimal DuckDB runtime placement support in the plugin path: `:in_process | :separate_process`
 - plugin loading/configuration path through `favn`
 - initial public plugin packaging strategy
 
@@ -534,6 +540,7 @@ Phase 7 should also absorb the remaining older carried-forward SQL follow-ups:
 - DuckDB is no longer mixed into the core/orchestrator boundary
 - a user can depend on `favn` + `favn_duckdb`
 - runner executes SQL/DuckDB functionality through the plugin path
+- DuckDB placement remains runner/plugin runtime config, not manifest schema
 
 ---
 

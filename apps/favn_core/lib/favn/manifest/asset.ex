@@ -6,6 +6,9 @@ defmodule Favn.Manifest.Asset do
   source locations and compiler diagnostics.
   """
 
+  alias Favn.Manifest.SQLExecution
+  alias Favn.SQLAsset.Compiler
+
   @type t :: %__MODULE__{
           ref: {module(), atom()} | nil,
           module: module() | nil,
@@ -21,6 +24,7 @@ defmodule Favn.Manifest.Asset do
           window: map() | struct() | nil,
           materialization: map() | struct() | nil,
           relation_inputs: [map() | struct()],
+          sql_execution: SQLExecution.t() | nil,
           metadata: map()
         }
 
@@ -36,6 +40,7 @@ defmodule Favn.Manifest.Asset do
     window: nil,
     materialization: nil,
     relation_inputs: [],
+    sql_execution: nil,
     metadata: %{}
   ]
 
@@ -53,9 +58,19 @@ defmodule Favn.Manifest.Asset do
       window: Map.get(asset, :window_spec),
       materialization: Map.get(asset, :materialization),
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
+      sql_execution: build_sql_execution(asset),
       metadata: normalize_map(Map.get(asset, :meta, %{}))
     }
   end
+
+  defp build_sql_execution(%{type: :sql, module: module}) when is_atom(module) do
+    case Compiler.fetch_definition(module) do
+      {:ok, definition} -> SQLExecution.from_definition(definition)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp build_sql_execution(_asset), do: nil
 
   defp normalize_depends_on(depends_on) when is_list(depends_on) do
     depends_on

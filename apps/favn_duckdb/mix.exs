@@ -24,7 +24,8 @@ defmodule FavnDuckdb.MixProject do
 
   defp deps do
     [
-      {:favn_runner, in_umbrella: true}
+      {:favn_runner, in_umbrella: true},
+      {:duckdbex, "~> 0.3.21"}
     ]
   end
 end

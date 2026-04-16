@@ -1,9 +1,13 @@
 defmodule Favn.SQLAsset.Runtime do
   @moduledoc false
 
-  alias Favn.Asset
+  alias Favn.Contracts.RunnerWork
+  alias Favn.Manifest.Asset
+  alias Favn.Manifest.SQLExecution
+  alias Favn.Manifest.Version
+  alias Favn.RelationRef
   alias Favn.Run.Context
-  alias Favn.SQL
+  alias Favn.SQL.RuntimeBridge, as: SQLRuntime
 
   alias Favn.SQL.{
     Explain,
@@ -20,28 +24,52 @@ defmodule Favn.SQLAsset.Runtime do
 
   @type opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
 
-  @spec render(Asset.t(), opts()) :: {:ok, Render.t()} | {:error, Error.t()}
+  @spec run_manifest(Asset.t(), Version.t(), RunnerWork.t()) :: {:ok, map()} | {:error, Error.t()}
+  def run_manifest(%Asset{} = asset, %Version{} = version, work) do
+    opts = [
+      params: Map.get(work, :params, %{}),
+      runtime: trigger_runtime(Map.get(work, :trigger, %{}))
+    ]
+
+    with {:ok, %Definition{} = definition} <- manifest_definition(asset, version),
+         {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
+         {:ok, write_plan, result} <- materialize_render(definition, rendered, opts) do
+      {:ok,
+       %{
+         materialized: write_plan.materialization,
+         connection: rendered.connection,
+         rows_affected: result.rows_affected,
+         command: result.command
+       }}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  @spec render(map(), opts()) :: {:ok, Render.t()} | {:error, Error.t()}
   def render(asset, opts \\ [])
 
-  def render(%Asset{type: :sql, module: module}, opts) when is_list(opts) do
+  def render(%{type: :sql, module: module}, opts) when is_atom(module) and is_list(opts) do
     with {:ok, %Definition{} = definition} <- fetch_definition(module),
          {:ok, %Render{} = rendered} <- Renderer.render(definition, opts) do
       {:ok, rendered}
     end
   end
 
-  def render(%Asset{} = asset, _opts) do
+  def render(%{} = asset, _opts) do
+    asset_ref = Map.get(asset, :ref)
+
     {:error,
      %Error{
        type: :not_sql_asset,
        phase: :render,
-       asset_ref: asset.ref,
-       message: "asset #{inspect(asset.ref)} is not a SQL asset"
+       asset_ref: asset_ref,
+       message: "asset #{inspect(asset_ref)} is not a SQL asset"
      }}
   end
 
-  @spec preview(Asset.t(), opts()) :: {:ok, Preview.t()} | {:error, Error.t()}
-  def preview(%Asset{} = asset, opts \\ []) when is_list(opts) do
+  @spec preview(map(), opts()) :: {:ok, Preview.t()} | {:error, Error.t()}
+  def preview(%{} = asset, opts \\ []) when is_list(opts) do
     limit = Keyword.get(opts, :limit, 100)
 
     with :ok <- validate_limit(limit),
@@ -52,8 +80,8 @@ defmodule Favn.SQLAsset.Runtime do
     end
   end
 
-  @spec explain(Asset.t(), opts()) :: {:ok, Explain.t()} | {:error, Error.t()}
-  def explain(%Asset{} = asset, opts \\ []) when is_list(opts) do
+  @spec explain(map(), opts()) :: {:ok, Explain.t()} | {:error, Error.t()}
+  def explain(%{} = asset, opts \\ []) when is_list(opts) do
     analyze? = Keyword.get(opts, :analyze?, false)
 
     with {:ok, %Render{} = rendered} <- render(asset, opts),
@@ -63,8 +91,8 @@ defmodule Favn.SQLAsset.Runtime do
     end
   end
 
-  @spec materialize(Asset.t(), opts()) :: {:ok, MaterializationResult.t()} | {:error, Error.t()}
-  def materialize(%Asset{type: :sql, module: module} = _asset, opts) when is_list(opts) do
+  @spec materialize(map(), opts()) :: {:ok, MaterializationResult.t()} | {:error, Error.t()}
+  def materialize(%{type: :sql, module: module}, opts) when is_atom(module) and is_list(opts) do
     with {:ok, %Definition{} = definition} <- fetch_definition(module),
          {:ok, %Render{} = rendered} <- render_for_materialize(definition, opts),
          {:ok, write_plan, result} <- materialize_render(definition, rendered, opts) do
@@ -72,19 +100,21 @@ defmodule Favn.SQLAsset.Runtime do
     end
   end
 
-  def materialize(%Asset{} = asset, _opts) do
+  def materialize(%{} = asset, _opts) do
+    asset_ref = Map.get(asset, :ref)
+
     {:error,
      %Error{
        type: :not_sql_asset,
        phase: :materialize,
-       asset_ref: asset.ref,
-       message: "asset #{inspect(asset.ref)} is not a SQL asset"
+       asset_ref: asset_ref,
+       message: "asset #{inspect(asset_ref)} is not a SQL asset"
      }}
   end
 
-  @spec run(module(), Context.t()) :: Asset.return_value()
+  @spec run(module(), Context.t()) :: {:ok, map()} | {:error, Error.t()}
   def run(module, %Context{} = ctx) when is_atom(module) do
-    with {:ok, %Definition{asset: %Asset{} = asset}} <- fetch_definition(module),
+    with {:ok, %Definition{asset: asset}} <- fetch_definition(module),
          opts <- run_opts(ctx),
          {:ok, %MaterializationResult{} = output} <- materialize(asset, opts) do
       {:ok,
@@ -146,7 +176,7 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp query_render(%Render{} = rendered, statement, phase, opts) do
     with_session(rendered.connection, opts, fn session ->
-      SQL.query(session, statement, params: adapter_params(rendered.params))
+      SQLRuntime.query(session, statement, params: adapter_params(rendered.params))
     end)
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
@@ -155,7 +185,7 @@ defmodule Favn.SQLAsset.Runtime do
     with_session(rendered.connection, opts, fn session ->
       with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
            {:ok, result} <-
-             SQL.materialize(session, write_plan, params: adapter_params(rendered.params)) do
+             SQLRuntime.materialize(session, write_plan, params: adapter_params(rendered.params)) do
         {:ok, write_plan, result}
       end
     end)
@@ -216,11 +246,11 @@ defmodule Favn.SQLAsset.Runtime do
         _ -> []
       end
 
-    with {:ok, session} <- SQL.connect(connection, timeout_opts) do
+    with {:ok, session} <- SQLRuntime.connect(connection, timeout_opts) do
       try do
         fun.(session)
       after
-        _ = SQL.disconnect(session)
+        _ = SQLRuntime.disconnect(session)
       end
     end
   rescue
@@ -232,7 +262,7 @@ defmodule Favn.SQLAsset.Runtime do
   defp map_sql_result_error({:ok, write_plan, result}, _asset_ref, _phase),
     do: {:ok, write_plan, result}
 
-  defp map_sql_result_error({:error, %SQL.Error{} = error}, asset_ref, phase) do
+  defp map_sql_result_error({:error, %Favn.SQL.Error{} = error}, asset_ref, phase) do
     {:error,
      %Error{
        type: :backend_execution_failed,
@@ -265,4 +295,66 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp adapter_params(%Params{} = params), do: Params.to_adapter_params(params)
+
+  defp manifest_definition(
+         %Asset{type: :sql, sql_execution: %SQLExecution{} = payload} = asset,
+         %Version{} = version
+       ) do
+    asset_stub =
+      struct(Favn.Asset, %{
+        module: asset.module,
+        name: asset.name,
+        entrypoint: :asset,
+        ref: asset.ref,
+        arity: 1,
+        type: :sql,
+        file: "manifest",
+        line: 1,
+        config: asset.config || %{},
+        window_spec: asset.window,
+        relation: asset.relation,
+        materialization: asset.materialization,
+        relation_inputs: asset.relation_inputs || []
+      })
+
+    {:ok,
+     %Definition{
+       module: asset.module,
+       asset: asset_stub,
+       sql: payload.sql,
+       template: payload.template,
+       materialization: asset.materialization,
+       relation_inputs: asset.relation_inputs || [],
+       sql_definitions: payload.sql_definitions,
+       raw_asset: %{manifest_relation_by_module: relation_map(version)}
+     }}
+  end
+
+  defp manifest_definition(%Asset{} = asset, _version) do
+    {:error,
+     %Error{
+       type: :invalid_sql_asset_definition,
+       phase: :runtime,
+       asset_ref: asset.ref,
+       message: "manifest SQL execution payload is missing",
+       details: %{asset_ref: asset.ref}
+     }}
+  end
+
+  defp relation_map(%Version{manifest: %{assets: assets}}) when is_list(assets) do
+    assets
+    |> Enum.reduce(%{}, fn
+      %Asset{module: module, relation: %RelationRef{} = relation}, acc
+      when is_atom(module) ->
+        Map.put(acc, module, relation)
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  defp relation_map(_), do: %{}
+
+  defp trigger_runtime(%{window: %Runtime{} = window}), do: %{window: window}
+  defp trigger_runtime(_), do: %{}
 end

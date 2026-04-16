@@ -125,7 +125,9 @@ defmodule Favn.SQLAsset.Renderer do
       definition_catalog: definition_catalog,
       stack: [],
       cache: %{},
-      current_file: Map.get(definition.raw_asset || %{}, :sql_file, definition.asset.file)
+      current_file: Map.get(definition.raw_asset || %{}, :sql_file, definition.asset.file),
+      manifest_relation_by_module:
+        Map.get(definition.raw_asset || %{}, :manifest_relation_by_module, %{})
     }
   end
 
@@ -304,7 +306,8 @@ defmodule Favn.SQLAsset.Renderer do
                  env.asset_ref,
                  asset_ref.span,
                  env.stack,
-                 env.current_file
+                 env.current_file,
+                 env.manifest_relation_by_module
                ),
              :ok <- ensure_same_connection(asset_ref, relation_ref, env) do
           {:ok, relation_ref, %{env | cache: Map.put(env.cache, module, relation_ref)}}
@@ -312,7 +315,26 @@ defmodule Favn.SQLAsset.Renderer do
     end
   end
 
-  defp resolve_deferred_module(module, asset_ref, span, stack, current_file) do
+  defp resolve_deferred_module(module, asset_ref, span, stack, current_file, relation_map) do
+    case manifest_relation(module, relation_map) do
+      {:ok, relation_ref} ->
+        {:ok, relation_ref}
+
+      :error ->
+        resolve_compiled_module(module, asset_ref, span, stack, current_file)
+    end
+  end
+
+  defp manifest_relation(module, relation_map) when is_map(relation_map) do
+    case Map.fetch(relation_map, module) do
+      {:ok, %RelationRef{} = relation_ref} -> {:ok, relation_ref}
+      _ -> :error
+    end
+  end
+
+  defp manifest_relation(_module, _relation_map), do: :error
+
+  defp resolve_compiled_module(module, asset_ref, span, stack, current_file) do
     case Code.ensure_compiled(module) do
       {:module, _compiled} ->
         case Compiler.compile_module_assets(module) do

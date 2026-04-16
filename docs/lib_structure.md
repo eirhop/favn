@@ -185,4 +185,15 @@ Notes:
   - `apps/favn_runner/lib/favn_runner/event_sink.ex`
 - Connection runtime ownership moved to runner-owned files under `apps/favn_runner/lib/favn/connection/`.
 - SQL runtime execution ownership moved to runner-owned files under `apps/favn_runner/lib/favn/sql/` and `apps/favn_runner/lib/favn/sql_asset/` including `Favn.SQL.RuntimeBridge`.
+- Phase 7 implementation now moves DuckDB ownership into `apps/favn_duckdb/lib/` including:
+  - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb.ex`
+  - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/client.ex`
+  - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/client/duckdbex.ex`
+  - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/error_mapper.ex`
+  - `apps/favn_duckdb/lib/favn_duckdb/runtime.ex`
+  - `apps/favn_duckdb/lib/favn_duckdb/runtime/in_process.ex`
+  - `apps/favn_duckdb/lib/favn_duckdb/runtime/separate_process.ex`
+  - `apps/favn_duckdb/lib/favn_duckdb/worker.ex`
+- `apps/favn_runner/lib/favn_runner/plugin.ex` now owns the minimal generic plugin boundary used to load plugin child specs with plugin-local options.
+- `apps/favn_core/lib/favn/manifest/sql_execution.ex` now carries manifest SQL execution payload for SQL assets.
 - New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.

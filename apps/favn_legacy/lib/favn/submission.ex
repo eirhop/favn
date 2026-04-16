@@ -7,7 +7,7 @@ defmodule Favn.Submission do
   alias Favn.SQLAsset.Input, as: SQLAssetInput
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
 
-  @type input :: module() | Favn.Ref.t() | Favn.Asset.t()
+  @type input :: term()
   @type opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
 
   @spec normalize_input(input()) :: {:ok, Favn.Asset.t()} | {:error, SQLAssetError.t()}
@@ -17,34 +17,30 @@ defmodule Favn.Submission do
 
   @spec render(input(), opts()) :: {:ok, Favn.SQL.Render.t()} | {:error, SQLAssetError.t()}
   def render(asset_input, opts \\ []) do
-    case normalize_input(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.render(asset, opts)
-      {:error, error} -> {:error, error}
+    with {:ok, asset} <- normalize_input(asset_input) do
+      SQLAssetRuntime.render(asset, opts)
     end
   end
 
   @spec preview(input(), keyword()) :: {:ok, Favn.SQL.Preview.t()} | {:error, SQLAssetError.t()}
   def preview(asset_input, opts \\ []) do
-    case normalize_input(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.preview(asset, opts)
-      {:error, error} -> {:error, error}
+    with {:ok, asset} <- normalize_input(asset_input) do
+      SQLAssetRuntime.preview(asset, opts)
     end
   end
 
   @spec explain(input(), keyword()) :: {:ok, Favn.SQL.Explain.t()} | {:error, SQLAssetError.t()}
   def explain(asset_input, opts \\ []) do
-    case normalize_input(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.explain(asset, opts)
-      {:error, error} -> {:error, error}
+    with {:ok, asset} <- normalize_input(asset_input) do
+      SQLAssetRuntime.explain(asset, opts)
     end
   end
 
   @spec materialize(input(), opts()) ::
           {:ok, Favn.SQL.MaterializationResult.t()} | {:error, SQLAssetError.t()}
   def materialize(asset_input, opts \\ []) do
-    case normalize_input(asset_input) do
-      {:ok, asset} -> SQLAssetRuntime.materialize(asset, opts)
-      {:error, error} -> {:error, error}
+    with {:ok, asset} <- normalize_input(asset_input) do
+      SQLAssetRuntime.materialize(asset, opts)
     end
   end
 

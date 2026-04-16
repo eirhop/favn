@@ -22,12 +22,13 @@ Favn `v0.5.0` refactor is in progress.
 
 ## Current Focus
 
-- execute Phase 6 storage-adapter extraction for SQLite and Postgres
-- finish the small Phase 5 storage-boundary cleanup needed for real extracted adapters
-- bundle the remaining SQL manifest-execution and temporary seam cleanup work into Phase 7 alongside `favn_duckdb`
+- execute Phase 7 runner/plugin extraction for manifest-backed SQL execution and `favn_duckdb`
+- carry SQL asset execution payload in the manifest/core contract
+- enable manifest-pinned SQL asset execution in `favn_runner`
+- remove temporary migration/runtime seams in `favn` once the runner SQL path is fully manifest-backed
 - keep `favn` as the public DSL/facade package
-- re-center internal compiler / manifest / planning / shared-contract machinery into `favn_core`
-- use the now-locked manifest/version/runner contracts to migrate remaining control-plane behavior into `favn_orchestrator`
+- keep `favn_core` as the canonical manifest/planning/shared-contract layer
+- keep `favn_orchestrator` as the manifest-pinned control plane and storage owner
 - breaking changes remain allowed before `v1.0`
 
 ## Documentation Pointers
@@ -45,6 +46,8 @@ Favn `v0.5.0` refactor is in progress.
 - `docs/refactor/PHASE_5_TODO.md` - Phase 5 implementation checklist
 - `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md` - Phase 6 storage adapter architecture plan
 - `docs/refactor/PHASE_6_TODO.md` - Phase 6 implementation checklist
+- `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md` - Phase 7 runner/plugin architecture plan
+- `docs/refactor/PHASE_7_TODO.md` - Phase 7 implementation checklist
 
 ## Storage Adapter Verification Notes
 

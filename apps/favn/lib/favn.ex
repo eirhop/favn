@@ -18,6 +18,7 @@ defmodule Favn do
   alias Favn.Manifest.Version
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
+  alias Favn.SQLAsset.Input, as: SQLAssetInput
   alias Favn.Triggers.Schedules, as: PipelineSchedules
 
   @type asset_ref :: Favn.Ref.t()
@@ -221,6 +222,39 @@ defmodule Favn do
   def run_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
 
   @doc false
+  @spec render(module() | asset_ref() | asset(), keyword()) :: {:ok, term()} | {:error, term()}
+  def render(asset_input, opts \\ []) when is_list(opts) do
+    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
+      sql_runtime_call(:render, [asset, opts])
+    end
+  end
+
+  @doc false
+  @spec preview(module() | asset_ref() | asset(), keyword()) :: {:ok, term()} | {:error, term()}
+  def preview(asset_input, opts \\ []) when is_list(opts) do
+    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
+      sql_runtime_call(:preview, [asset, opts])
+    end
+  end
+
+  @doc false
+  @spec explain(module() | asset_ref() | asset(), keyword()) :: {:ok, term()} | {:error, term()}
+  def explain(asset_input, opts \\ []) when is_list(opts) do
+    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
+      sql_runtime_call(:explain, [asset, opts])
+    end
+  end
+
+  @doc false
+  @spec materialize(module() | asset_ref() | asset(), keyword()) ::
+          {:ok, term()} | {:error, term()}
+  def materialize(asset_input, opts \\ []) when is_list(opts) do
+    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
+      sql_runtime_call(:materialize, [asset, opts])
+    end
+  end
+
+  @doc false
   @spec get_run(term()) :: {:ok, term()} | {:error, term()}
   def get_run(run_id) do
     orchestrator_runtime_call(:get_run, [run_id])
@@ -325,6 +359,19 @@ defmodule Favn do
         :exit, reason ->
           {:error, {:runtime_call_exited, reason}}
       end
+    else
+      _ -> {:error, :runtime_not_available}
+    end
+  end
+
+  defp sql_runtime_call(function_name, args)
+       when is_atom(function_name) and is_list(args) do
+    runtime_module = Favn.SQLAsset.Runtime
+
+    with {:module, ^runtime_module} <- Code.ensure_loaded(runtime_module),
+         arity <- length(args),
+         true <- function_exported?(runtime_module, function_name, arity) do
+      apply(runtime_module, function_name, args)
     else
       _ -> {:error, :runtime_not_available}
     end
