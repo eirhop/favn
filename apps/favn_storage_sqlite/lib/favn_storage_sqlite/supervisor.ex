@@ -26,7 +26,7 @@ defmodule FavnStorageSqlite.Supervisor do
   defp bootstrap_storage(repo_name, repo_opts, :auto), do: run_migrations(repo_name, repo_opts)
 
   defp bootstrap_storage(repo_name, repo_opts, :manual) do
-    {:ok, pid} = Repo.start_link(Keyword.put(repo_opts, :name, repo_name))
+    {:ok, pid} = Repo.start_link(Keyword.put(bootstrap_repo_opts(repo_opts), :name, repo_name))
 
     try do
       if Migrations.schema_ready?(repo_name) do
@@ -46,7 +46,7 @@ defmodule FavnStorageSqlite.Supervisor do
   end
 
   defp run_migrations(repo_name, repo_opts) do
-    {:ok, pid} = Repo.start_link(Keyword.put(repo_opts, :name, repo_name))
+    {:ok, pid} = Repo.start_link(Keyword.put(bootstrap_repo_opts(repo_opts), :name, repo_name))
 
     try do
       Migrations.migrate!(repo_name)
@@ -63,5 +63,9 @@ defmodule FavnStorageSqlite.Supervisor do
       pool_size: Keyword.get(opts, :pool_size, 1),
       busy_timeout: Keyword.get(opts, :busy_timeout, 5_000)
     ]
+  end
+
+  defp bootstrap_repo_opts(repo_opts) do
+    Keyword.put(repo_opts, :pool_size, 1)
   end
 end
