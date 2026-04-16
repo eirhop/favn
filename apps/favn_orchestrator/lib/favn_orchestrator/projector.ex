@@ -17,12 +17,13 @@ defmodule FavnOrchestrator.Projector do
       run_id: run_state.id,
       sequence: run_state.event_seq,
       event_type: event_type,
+      entity: event_entity(event_type),
       occurred_at: run_state.updated_at || DateTime.utc_now(),
       status: run_state.status,
       manifest_version_id: run_state.manifest_version_id,
       manifest_content_hash: run_state.manifest_content_hash,
-      asset_ref: event_asset_ref(run_state, normalized_data),
-      stage: event_stage(normalized_data),
+      asset_ref: event_asset_ref(run_state, event_type, normalized_data),
+      stage: event_stage(event_type, normalized_data),
       data: normalized_data
     })
   end
@@ -82,18 +83,35 @@ defmodule FavnOrchestrator.Projector do
   defp normalize_data(data) when is_map(data), do: data
   defp normalize_data(_data), do: %{}
 
-  defp event_asset_ref(%RunState{} = run_state, data) when is_map(data) do
-    case Map.get(data, :asset_ref) do
-      {module, name} = ref when is_atom(module) and is_atom(name) -> ref
-      _ -> run_state.asset_ref
+  defp event_asset_ref(%RunState{} = run_state, event_type, data)
+       when is_atom(event_type) and is_map(data) do
+    if step_event_type?(event_type) do
+      case Map.get(data, :asset_ref) do
+        {module, name} = ref when is_atom(module) and is_atom(name) -> ref
+        _ -> run_state.asset_ref
+      end
+    else
+      nil
     end
   end
 
-  defp event_stage(data) when is_map(data) do
-    case Map.get(data, :stage) do
-      stage when is_integer(stage) and stage >= 0 -> stage
-      _ -> nil
+  defp event_stage(event_type, data) when is_atom(event_type) and is_map(data) do
+    if step_event_type?(event_type) do
+      case Map.get(data, :stage) do
+        stage when is_integer(stage) and stage >= 0 -> stage
+        _ -> nil
+      end
+    else
+      nil
     end
+  end
+
+  defp event_entity(event_type) when is_atom(event_type) do
+    if step_event_type?(event_type), do: :step, else: :run
+  end
+
+  defp step_event_type?(event_type) when is_atom(event_type) do
+    String.starts_with?(Atom.to_string(event_type), "step_")
   end
 
   defp project_asset_results(%RunState{result: %{asset_results: results}})

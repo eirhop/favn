@@ -102,7 +102,9 @@ defmodule FavnViewWeb.Runs.ShowLive do
               <strong>#<%= event.sequence %></strong>
               <span><%= event.label %></span>
               <span>entity=<%= event.entity %></span>
-              <span :if={not is_nil(event.asset_ref)}>asset=<%= inspect(event.asset_ref) %></span>
+              <span :if={event.entity == :step and not is_nil(event.asset_ref)}>
+                asset=<%= inspect(event.asset_ref) %>
+              </span>
               <span :if={not is_nil(event.stage)}>stage=<%= event.stage %></span>
               <span>status=<%= event.status %></span>
             </li>

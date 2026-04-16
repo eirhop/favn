@@ -35,18 +35,21 @@ defmodule FavnOrchestrator.RunEvent do
 
   @spec from_map(map()) :: t()
   def from_map(event) when is_map(event) do
+    event_type = Map.get(event, :event_type)
+    entity = infer_entity(Map.get(event, :entity), event_type)
+
     %__MODULE__{
       schema_version: normalize_schema_version(Map.get(event, :schema_version)),
       run_id: Map.get(event, :run_id),
       sequence: Map.get(event, :sequence),
-      event_type: Map.get(event, :event_type),
-      entity: infer_entity(Map.get(event, :entity), Map.get(event, :event_type)),
+      event_type: event_type,
+      entity: entity,
       occurred_at: normalize_occurred_at(Map.get(event, :occurred_at)),
       status: Map.get(event, :status),
       manifest_version_id: Map.get(event, :manifest_version_id),
       manifest_content_hash: Map.get(event, :manifest_content_hash),
-      asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), Map.get(event, :data)),
-      stage: normalize_stage(Map.get(event, :stage), Map.get(event, :data)),
+      asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), Map.get(event, :data), entity),
+      stage: normalize_stage(Map.get(event, :stage), Map.get(event, :data), entity),
       data: normalize_data(Map.get(event, :data))
     }
   end
@@ -83,28 +86,33 @@ defmodule FavnOrchestrator.RunEvent do
 
   defp normalize_occurred_at(_value), do: DateTime.utc_now()
 
-  defp normalize_asset_ref({module, name} = ref, _data) when is_atom(module) and is_atom(name),
-    do: ref
+  defp normalize_asset_ref(_value, _data, :run), do: nil
 
-  defp normalize_asset_ref(_value, data) when is_map(data) do
+  defp normalize_asset_ref({module, name} = ref, _data, :step)
+       when is_atom(module) and is_atom(name),
+       do: ref
+
+  defp normalize_asset_ref(_value, data, :step) when is_map(data) do
     case Map.get(data, :asset_ref) do
       {module, name} = ref when is_atom(module) and is_atom(name) -> ref
       _ -> nil
     end
   end
 
-  defp normalize_asset_ref(_value, _data), do: nil
+  defp normalize_asset_ref(_value, _data, _entity), do: nil
 
-  defp normalize_stage(value, _data) when is_integer(value) and value >= 0, do: value
+  defp normalize_stage(_value, _data, :run), do: nil
 
-  defp normalize_stage(_value, data) when is_map(data) do
+  defp normalize_stage(value, _data, :step) when is_integer(value) and value >= 0, do: value
+
+  defp normalize_stage(_value, data, :step) when is_map(data) do
     case Map.get(data, :stage) do
       stage when is_integer(stage) and stage >= 0 -> stage
       _ -> nil
     end
   end
 
-  defp normalize_stage(_value, _data), do: nil
+  defp normalize_stage(_value, _data, _entity), do: nil
 
   defp normalize_data(data) when is_map(data), do: data
   defp normalize_data(_value), do: %{}

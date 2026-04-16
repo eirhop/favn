@@ -70,6 +70,11 @@ defmodule FavnOrchestrator.EventsTest do
     assert Enum.map(events, & &1.sequence) == [1, 2, 3]
     assert Enum.all?(events, &match?(%RunEvent{}, &1))
 
+    run_created_event = Enum.find(events, &(&1.event_type == :run_created))
+    assert run_created_event.entity == :run
+    assert run_created_event.asset_ref == nil
+    assert run_created_event.stage == nil
+
     step_event = Enum.find(events, &(&1.event_type == :step_started))
     assert step_event.entity == :step
     assert step_event.stage == 0
