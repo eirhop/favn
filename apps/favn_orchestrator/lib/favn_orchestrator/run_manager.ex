@@ -11,10 +11,10 @@ defmodule FavnOrchestrator.RunManager do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias FavnOrchestrator.ManifestStore
-  alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.TransitionWriter
 
   @type state :: %{
           run_pids: %{required(String.t()) => pid()},
@@ -62,7 +62,7 @@ defmodule FavnOrchestrator.RunManager do
     reply =
       with {:ok, run_state, version} <- build_run_submission(asset_ref, opts),
            :ok <-
-             Projector.persist_snapshot_with_event(run_state, :run_created, %{
+             TransitionWriter.persist_transition(run_state, :run_created, %{
                status: run_state.status,
                submit_kind: :manual
              }),
@@ -91,7 +91,7 @@ defmodule FavnOrchestrator.RunManager do
              opts |> Keyword.put(:metadata, metadata) |> Keyword.put(:_submit_kind, :pipeline),
            {:ok, run_state, version} <- build_pipeline_submission(target_refs, submit_opts),
            :ok <-
-             Projector.persist_snapshot_with_event(run_state, :run_created, %{
+             TransitionWriter.persist_transition(run_state, :run_created, %{
                status: run_state.status,
                submit_kind: :pipeline,
                pipeline_target_refs: target_refs
@@ -117,7 +117,7 @@ defmodule FavnOrchestrator.RunManager do
     reply =
       with {:ok, run_state, version} <- build_pipeline_module_submission(pipeline_module, opts),
            :ok <-
-             Projector.persist_snapshot_with_event(run_state, :run_created, %{
+             TransitionWriter.persist_transition(run_state, :run_created, %{
                status: run_state.status,
                submit_kind: :pipeline,
                pipeline_target_refs: run_state.target_refs,
@@ -145,7 +145,7 @@ defmodule FavnOrchestrator.RunManager do
       with {:ok, source_run} <- Storage.get_run(source_run_id),
            {:ok, run_state, version} <- build_rerun_submission(source_run, opts),
            :ok <-
-             Projector.persist_snapshot_with_event(run_state, :run_created, %{
+             TransitionWriter.persist_transition(run_state, :run_created, %{
                status: run_state.status,
                submit_kind: :rerun,
                rerun_of_run_id: run_state.rerun_of_run_id,
@@ -176,10 +176,10 @@ defmodule FavnOrchestrator.RunManager do
                :ok <- forward_cancel_if_inflight(run, reason),
                {:ok, cancel_requested, cancelled} <- build_cancel_snapshots(run, reason),
                :ok <-
-                 Projector.persist_snapshot_with_event(cancel_requested, :run_cancel_requested, %{
+                 TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
                    reason: reason
                  }) do
-            Projector.persist_snapshot_with_event(cancelled, :run_cancelled, %{reason: reason})
+            TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
           end
 
         {:error, _reason} = error ->

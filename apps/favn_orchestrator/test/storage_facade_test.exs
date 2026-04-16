@@ -37,6 +37,9 @@ defmodule Favn.StorageFacadeTest do
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
     @impl true
+    def persist_run_transition(_run_state, _event, _opts), do: :ok
+
+    @impl true
     def append_run_event(_run_id, _event, _opts), do: :ok
 
     @impl true
@@ -92,6 +95,9 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_runs(_opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
+    def persist_run_transition(_run_state, _event, _opts), do: :ok
 
     @impl true
     def append_run_event(_run_id, _event, _opts), do: :ok

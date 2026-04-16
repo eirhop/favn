@@ -148,6 +148,33 @@ defmodule FavnStoragePostgres.Adapter do
   end
 
   @impl true
+  def persist_run_transition(%RunState{} = run, event, opts)
+      when is_map(event) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, normalized_run} <- RunStateCodec.normalize(run),
+         {:ok, normalized_event} <- RunEventCodec.normalize(run.id, event),
+         :ok <- validate_transition_alignment(normalized_run, normalized_event) do
+      repo.transact(fn ->
+        case guarded_put_run(repo, normalized_run) do
+          :ok ->
+            case guarded_append_run_event(repo, run.id, normalized_event) do
+              result when result in [:ok, :idempotent] -> {:ok, result}
+              {:error, reason} -> repo.rollback(reason)
+            end
+
+          {:error, reason} ->
+            repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:ok, :idempotent} -> :idempotent
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
   def get_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts) do
       sql = "SELECT run_blob FROM favn_runs WHERE run_id = $1 LIMIT 1"
@@ -190,26 +217,10 @@ defmodule FavnStoragePostgres.Adapter do
       when is_binary(run_id) and is_map(event) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          {:ok, normalized} <- RunEventCodec.normalize(run_id, event) do
-      sql =
-        """
-        INSERT INTO favn_run_events (run_id, sequence, occurred_at, event_blob)
-        VALUES ($1, $2, $3, $4)
-        """
-
-      case SQL.query(repo, sql, [
-             run_id,
-             normalized.sequence,
-             normalized.occurred_at,
-             encode_term(normalized)
-           ]) do
-        {:ok, _} ->
-          :ok
-
-        {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} ->
-          {:error, :conflicting_event_sequence}
-
-        {:error, reason} ->
-          {:error, reason}
+      case guarded_append_run_event(repo, run_id, normalized) do
+        :ok -> :ok
+        :idempotent -> :ok
+        {:error, reason} -> {:error, reason}
       end
     end
   end
@@ -370,6 +381,34 @@ defmodule FavnStoragePostgres.Adapter do
 
         nil ->
           {:error, :run_write_not_applied}
+      end
+    end
+  end
+
+  defp guarded_append_run_event(repo, run_id, event) do
+    sql =
+      """
+      INSERT INTO favn_run_events (run_id, sequence, occurred_at, event_blob)
+      VALUES ($1, $2, $3, $4)
+      """
+
+    case SQL.query(repo, sql, [run_id, event.sequence, event.occurred_at, encode_term(event)]) do
+      {:ok, _} ->
+        :ok
+
+      {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} ->
+        resolve_existing_event_conflict(repo, run_id, event)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp resolve_existing_event_conflict(repo, run_id, event) do
+    with {:ok, existing} <- fetch_event_by_sequence(repo, run_id, event.sequence) do
+      case existing do
+        ^event -> :idempotent
+        _ -> {:error, :conflicting_event_sequence}
       end
     end
   end
@@ -566,6 +605,26 @@ defmodule FavnStoragePostgres.Adapter do
     end
   end
 
+  defp fetch_event_by_sequence(repo, run_id, sequence) do
+    sql =
+      "SELECT event_blob FROM favn_run_events WHERE run_id = $1 AND sequence = $2 LIMIT 1"
+
+    case SQL.query(repo, sql, [run_id, sequence]) do
+      {:ok, %{rows: [[blob]]}} ->
+        case decode_term(blob) do
+          {:ok, event} when is_map(event) -> {:ok, event}
+          {:ok, other} -> {:error, {:invalid_event_blob, other}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, %{rows: []}} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp fetch_scheduler_version(repo, {pipeline_module, schedule_id}) do
     sql =
       """
@@ -660,6 +719,14 @@ defmodule FavnStoragePostgres.Adapter do
     else
       {:error, reason} -> {:error, reason}
       other -> {:error, {:invalid_run_blob, other}}
+    end
+  end
+
+  defp validate_transition_alignment(%RunState{} = run, event) when is_map(event) do
+    cond do
+      Map.get(event, :run_id) != run.id -> {:error, :invalid_run_event_run_id}
+      Map.get(event, :sequence) != run.event_seq -> {:error, :invalid_run_event_sequence}
+      true -> :ok
     end
   end
 

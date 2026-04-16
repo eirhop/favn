@@ -4,13 +4,34 @@ defmodule FavnOrchestrator do
   """
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Events
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
+  alias FavnOrchestrator.SchedulerEntry
   alias FavnOrchestrator.Storage
 
   @type run_id :: String.t()
+  @type manifest_summary :: %{
+          required(:manifest_version_id) => String.t(),
+          required(:content_hash) => String.t(),
+          required(:asset_count) => non_neg_integer(),
+          required(:pipeline_count) => non_neg_integer(),
+          required(:schedule_count) => non_neg_integer()
+        }
+
+  @type manifest_target_option :: %{
+          required(:target_id) => String.t(),
+          required(:label) => String.t()
+        }
+
+  @type manifest_targets :: %{
+          required(:manifest_version_id) => String.t(),
+          required(:assets) => [manifest_target_option()],
+          required(:pipelines) => [manifest_target_option()]
+        }
 
   @doc """
   Registers one manifest version in orchestrator storage.
@@ -31,6 +52,83 @@ defmodule FavnOrchestrator do
   """
   @spec list_manifests() :: {:ok, [Version.t()]} | {:error, term()}
   def list_manifests, do: ManifestStore.list_manifests()
+
+  @doc """
+  Lists stable operator-facing manifest summaries.
+  """
+  @spec list_manifest_summaries() :: {:ok, [manifest_summary()]} | {:error, term()}
+  def list_manifest_summaries do
+    with {:ok, versions} <- list_manifests() do
+      {:ok,
+       versions
+       |> Enum.map(&manifest_summary/1)
+       |> Enum.sort_by(& &1.manifest_version_id)}
+    end
+  end
+
+  @doc """
+  Returns one stable operator-facing manifest summary.
+  """
+  @spec get_manifest_summary(String.t()) :: {:ok, manifest_summary()} | {:error, term()}
+  def get_manifest_summary(manifest_version_id) when is_binary(manifest_version_id) do
+    with {:ok, version} <- get_manifest(manifest_version_id) do
+      {:ok, manifest_summary(version)}
+    end
+  end
+
+  @doc """
+  Returns manifest-scoped submit targets for one persisted manifest version.
+  """
+  @spec manifest_targets(String.t()) :: {:ok, manifest_targets()} | {:error, term()}
+  def manifest_targets(manifest_version_id) when is_binary(manifest_version_id) do
+    with {:ok, version} <- get_manifest(manifest_version_id) do
+      {:ok,
+       %{
+         manifest_version_id: manifest_version_id,
+         assets: manifest_asset_targets(version),
+         pipelines: manifest_pipeline_targets(version)
+       }}
+    end
+  end
+
+  @doc """
+  Returns submit targets for the currently active manifest version.
+  """
+  @spec active_manifest_targets() :: {:ok, manifest_targets()} | {:error, term()}
+  def active_manifest_targets do
+    with {:ok, manifest_version_id} <- active_manifest() do
+      manifest_targets(manifest_version_id)
+    end
+  end
+
+  @doc """
+  Submits one asset run by manifest-scoped target id.
+  """
+  @spec submit_asset_run_for_manifest(String.t(), String.t(), keyword()) ::
+          {:ok, run_id()} | {:error, term()}
+  def submit_asset_run_for_manifest(manifest_version_id, target_id, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, asset_ref} <- resolve_asset_target_ref(version, target_id) do
+      submit_asset_run(asset_ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
+    end
+  end
+
+  @doc """
+  Submits one pipeline run by manifest-scoped target id.
+  """
+  @spec submit_pipeline_run_for_manifest(String.t(), String.t(), keyword()) ::
+          {:ok, run_id()} | {:error, term()}
+  def submit_pipeline_run_for_manifest(manifest_version_id, target_id, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id) do
+      submit_pipeline_run(
+        pipeline_module,
+        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      )
+    end
+  end
 
   @doc """
   Sets the active manifest version used by default for new runs.
@@ -118,24 +216,176 @@ defmodule FavnOrchestrator do
   @doc """
   Lists persisted run events for one run.
   """
-  @spec list_run_events(run_id()) :: {:ok, [map()]} | {:error, term()}
-  def list_run_events(run_id) when is_binary(run_id), do: Storage.list_run_events(run_id)
+  @spec list_run_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    with {:ok, events} <- Storage.list_run_events(run_id),
+         :ok <- validate_run_event_opts(opts) do
+      {:ok,
+       events
+       |> Enum.map(&RunEvent.from_map/1)
+       |> filter_run_events(opts)
+       |> maybe_limit_run_events(opts)}
+    end
+  end
+
+  @doc """
+  Subscribes the current process to one run-scoped live event stream.
+  """
+  @spec subscribe_run(run_id()) :: :ok | {:error, term()}
+  def subscribe_run(run_id) when is_binary(run_id), do: Events.subscribe_run(run_id)
+  def subscribe_run(_run_id), do: {:error, :invalid_run_id}
+
+  @doc """
+  Unsubscribes the current process from one run-scoped live event stream.
+  """
+  @spec unsubscribe_run(run_id()) :: :ok
+  def unsubscribe_run(run_id) when is_binary(run_id), do: Events.unsubscribe_run(run_id)
+  def unsubscribe_run(_run_id), do: :ok
+
+  @doc """
+  Subscribes the current process to the global runs live event stream.
+  """
+  @spec subscribe_runs() :: :ok | {:error, term()}
+  def subscribe_runs, do: Events.subscribe_runs()
+
+  @doc """
+  Unsubscribes the current process from the global runs live event stream.
+  """
+  @spec unsubscribe_runs() :: :ok
+  def unsubscribe_runs, do: Events.unsubscribe_runs()
 
   @doc """
   Reloads scheduler entries from the active manifest.
   """
   @spec reload_scheduler() :: :ok | {:error, term()}
-  def reload_scheduler, do: SchedulerRuntime.reload()
+  def reload_scheduler do
+    SchedulerRuntime.reload()
+  catch
+    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  end
 
   @doc """
   Forces one scheduler evaluation tick.
   """
   @spec tick_scheduler() :: :ok | {:error, term()}
-  def tick_scheduler, do: SchedulerRuntime.tick()
+  def tick_scheduler do
+    SchedulerRuntime.tick()
+  catch
+    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  end
 
   @doc """
   Lists scheduler runtime entries derived from the active manifest.
   """
-  @spec scheduled_entries() :: [map()] | {:error, term()}
-  def scheduled_entries, do: SchedulerRuntime.scheduled()
+  @spec scheduled_entries() :: [SchedulerEntry.t()] | {:error, term()}
+  def scheduled_entries do
+    SchedulerRuntime.inspect_entries()
+  catch
+    :exit, {:noproc, _} -> {:error, :scheduler_not_running}
+  end
+
+  defp validate_run_event_opts(opts) do
+    after_sequence = Keyword.get(opts, :after_sequence)
+    limit = Keyword.get(opts, :limit)
+
+    cond do
+      not is_nil(after_sequence) and (not is_integer(after_sequence) or after_sequence < 0) ->
+        {:error, :invalid_opts}
+
+      not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
+        {:error, :invalid_opts}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp filter_run_events(events, opts) do
+    case Keyword.get(opts, :after_sequence) do
+      sequence when is_integer(sequence) and sequence >= 0 ->
+        Enum.filter(events, &(&1.sequence > sequence))
+
+      _ ->
+        events
+    end
+  end
+
+  defp maybe_limit_run_events(events, opts) do
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> Enum.take(events, limit)
+      _ -> events
+    end
+  end
+
+  defp manifest_summary(%Version{} = version) do
+    manifest = version.manifest
+
+    %{
+      manifest_version_id: version.manifest_version_id,
+      content_hash: version.content_hash,
+      asset_count: list_count(manifest.assets),
+      pipeline_count: list_count(manifest.pipelines),
+      schedule_count: list_count(manifest.schedules)
+    }
+  end
+
+  defp manifest_asset_targets(%Version{} = version) do
+    version.manifest.assets
+    |> List.wrap()
+    |> Enum.map(fn asset ->
+      target_ref = asset.ref
+
+      %{
+        target_id: target_id_for_asset(target_ref),
+        label: inspect(target_ref)
+      }
+    end)
+    |> Enum.sort_by(& &1.label)
+  end
+
+  defp manifest_pipeline_targets(%Version{} = version) do
+    version.manifest.pipelines
+    |> List.wrap()
+    |> Enum.map(fn pipeline ->
+      target_module = pipeline.module
+
+      %{
+        target_id: target_id_for_pipeline(target_module),
+        label: inspect(target_module)
+      }
+    end)
+    |> Enum.sort_by(& &1.label)
+  end
+
+  defp resolve_asset_target_ref(%Version{} = version, target_id) when is_binary(target_id) do
+    case Enum.find(
+           List.wrap(version.manifest.assets),
+           &(target_id_for_asset(&1.ref) == target_id)
+         ) do
+      %{ref: target_ref} -> {:ok, target_ref}
+      _ -> {:error, :invalid_asset_target}
+    end
+  end
+
+  defp resolve_pipeline_target_module(%Version{} = version, target_id)
+       when is_binary(target_id) do
+    case Enum.find(
+           List.wrap(version.manifest.pipelines),
+           &(target_id_for_pipeline(&1.module) == target_id)
+         ) do
+      %{module: target_module} -> {:ok, target_module}
+      _ -> {:error, :invalid_pipeline_target}
+    end
+  end
+
+  defp target_id_for_asset({module, name}) when is_atom(module) and is_atom(name) do
+    "asset:" <> Atom.to_string(module) <> ":" <> Atom.to_string(name)
+  end
+
+  defp target_id_for_pipeline(module) when is_atom(module) do
+    "pipeline:" <> Atom.to_string(module)
+  end
+
+  defp list_count(value) when is_list(value), do: length(value)
+  defp list_count(_value), do: 0
 end

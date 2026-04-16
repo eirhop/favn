@@ -22,8 +22,8 @@ Favn `v0.5.0` refactor is in progress.
 
 ## Current Focus
 
-- complete post-Phase-7 review cleanup and merge readiness
-- move into Phase 8 `favn_view` implementation planning and initial slices
+- keep Phase 8 `favn_view` + orchestrator boundary stable after completion review
+- move toward Phase 9 developer tooling and packaging flows
 - keep `favn` as the public DSL/facade package
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
 - keep `favn_orchestrator` as the manifest-pinned control plane and storage owner
@@ -46,6 +46,8 @@ Favn `v0.5.0` refactor is in progress.
 - `docs/refactor/PHASE_6_TODO.md` - Phase 6 implementation checklist
 - `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md` - Phase 7 runner/plugin architecture plan
 - `docs/refactor/PHASE_7_TODO.md` - Phase 7 implementation checklist
+- `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md` - Phase 8 view + orchestrator live-events architecture plan
+- `docs/refactor/PHASE_8_TODO.md` - Phase 8 implementation checklist
 
 ## Storage Adapter Verification Notes
 
@@ -105,3 +107,10 @@ config :favn_orchestrator,
     migration_mode: :manual
   ]
 ```
+
+## View Runtime Configuration
+
+When running `favn_view` in non-test environments, configure endpoint secrets with environment variables:
+
+- `FAVN_VIEW_SECRET_KEY_BASE`
+- `FAVN_VIEW_SIGNING_SALT`

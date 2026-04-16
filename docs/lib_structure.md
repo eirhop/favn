@@ -196,4 +196,33 @@ Notes:
   - `apps/favn_duckdb/lib/favn_duckdb/worker.ex`
 - `apps/favn_runner/lib/favn_runner/plugin.ex` now owns the minimal generic plugin boundary used to load plugin child specs with plugin-local options.
 - `apps/favn_core/lib/favn/manifest/sql_execution.ex` now carries manifest SQL execution payload for SQL assets.
+- Phase 8 view/runtime planning docs now live in:
+  - `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
+  - `docs/refactor/PHASE_8_TODO.md`
+- Phase 8 orchestrator live-event boundary now begins with:
+  - `apps/favn_orchestrator/lib/favn_orchestrator/events.ex`
+  - `apps/favn_orchestrator/lib/favn_orchestrator/run_event.ex`
+  - `apps/favn_orchestrator/lib/favn_orchestrator/scheduler_entry.ex`
+  - `apps/favn_orchestrator/lib/favn_orchestrator/transition_writer.ex`
+- Phase 8 initial `favn_view` LiveView runtime slice now includes:
+  - `apps/favn_view/lib/favn_view/endpoint.ex`
+  - `apps/favn_view/lib/favn_view/runs.ex`
+  - `apps/favn_view/lib/favn_view/manifests.ex`
+  - `apps/favn_view/lib/favn_view/scheduler.ex`
+  - `apps/favn_view/lib/favn_view/presenters/run_presenter.ex`
+  - `apps/favn_view/lib/favn_view/presenters/manifest_presenter.ex`
+  - `apps/favn_view/lib/favn_view/presenters/scheduler_presenter.ex`
+  - `apps/favn_view/lib/favn_view_web.ex`
+  - `apps/favn_view/lib/favn_view_web/router.ex`
+  - `apps/favn_view/lib/favn_view_web/layouts.ex`
+  - `apps/favn_view/lib/favn_view_web/core_components.ex`
+  - `apps/favn_view/lib/favn_view_web/telemetry.ex`
+  - `apps/favn_view/lib/favn_view_web/error_html.ex`
+  - `apps/favn_view/lib/favn_view_web/error_json.ex`
+  - `apps/favn_view/lib/favn_view_web/live/dashboard_live.ex`
+  - `apps/favn_view/lib/favn_view_web/live/manifests/index_live.ex`
+  - `apps/favn_view/lib/favn_view_web/live/manifests/show_live.ex`
+  - `apps/favn_view/lib/favn_view_web/live/runs/index_live.ex`
+  - `apps/favn_view/lib/favn_view_web/live/runs/show_live.ex`
+  - `apps/favn_view/lib/favn_view_web/live/scheduler/index_live.ex`
 - New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.

@@ -117,6 +117,40 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, [stored_event]} = Storage.list_run_events(run.id)
     assert stored_event.sequence == 1
 
+    running = RunState.transition(run, status: :running)
+
+    transition_event = %{
+      schema_version: 1,
+      sequence: running.event_seq,
+      event_type: :run_started,
+      entity: :run,
+      occurred_at: DateTime.utc_now(),
+      stage: 0,
+      status: running.status,
+      data: %{source: :contract}
+    }
+
+    assert :ok = Storage.persist_run_transition(running, transition_event)
+    assert :idempotent = Storage.persist_run_transition(running, transition_event)
+
+    assert {:ok, run_events} = Storage.list_run_events(run.id)
+    persisted_transition = Enum.find(run_events, &(&1.sequence == running.event_seq))
+    assert persisted_transition.schema_version == 1
+    assert persisted_transition.entity == :run
+    assert persisted_transition.stage == 0
+
+    assert {:error, :conflicting_event_sequence} =
+             Storage.persist_run_transition(running, %{transition_event | data: %{source: :other}})
+
+    stale = %{run | event_seq: 1} |> RunState.with_snapshot_hash()
+
+    assert {:error, :stale_write} =
+             Storage.persist_run_transition(stale, %{
+               sequence: 1,
+               event_type: :run_started,
+               occurred_at: DateTime.utc_now()
+             })
+
     key = {MyApp.Pipeline, :daily}
     assert :ok = Storage.put_scheduler_state(key, %{version: 1, last_due_at: DateTime.utc_now()})
     assert {:error, :stale_scheduler_state} = Storage.put_scheduler_state(key, %{version: 1})

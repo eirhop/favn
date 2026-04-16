@@ -25,7 +25,8 @@ defmodule FavnOrchestrator.MixProject do
 
   defp deps do
     [
-      {:favn_core, in_umbrella: true}
+      {:favn_core, in_umbrella: true},
+      {:phoenix_pubsub, "~> 2.2"}
     ]
   end
 end

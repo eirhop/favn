@@ -87,6 +87,37 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert entry.manifest_version_id == version.manifest_version_id
   end
 
+  test "inspect_entries returns stable scheduler entry dto with state" do
+    version = scheduler_manifest_version("mv_scheduler_inspect")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+
+    [raw_entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: raw_entry.module,
+      schedule_id: raw_entry.schedule.name,
+      schedule_fingerprint: raw_entry.schedule_fingerprint,
+      last_due_at: DateTime.utc_now(),
+      in_flight_run_id: "run_inflight"
+    }
+
+    assert :ok = Storage.put_scheduler_state({raw_entry.module, raw_entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+
+    [entry] = Runtime.inspect_entries(name)
+    assert %FavnOrchestrator.SchedulerEntry{} = entry
+    assert entry.pipeline_module == MyApp.Pipelines.Daily
+    assert entry.schedule_id == :daily
+    assert entry.cron == raw_entry.schedule.cron
+    assert entry.timezone == raw_entry.schedule.timezone
+    assert entry.in_flight_run_id == "run_inflight"
+    assert %DateTime{} = entry.last_due_at
+  end
+
   test "tick submits scheduled pipeline run and persists scheduler state" do
     version = scheduler_manifest_version("mv_scheduler_tick")
     assert :ok = FavnOrchestrator.register_manifest(version)

@@ -267,9 +267,10 @@ defmodule Favn do
   end
 
   @doc false
-  @spec list_run_events(run_id()) :: {:ok, [map()]} | {:error, term()}
-  def list_run_events(run_id) do
-    orchestrator_runtime_call(:list_run_events, [run_id])
+  @spec list_run_events(run_id(), keyword()) ::
+          {:ok, [FavnOrchestrator.RunEvent.t()]} | {:error, term()}
+  def list_run_events(run_id, opts \\ []) when is_list(opts) do
+    orchestrator_runtime_call(:list_run_events, [run_id, opts])
   end
 
   @doc false
@@ -345,7 +346,9 @@ defmodule Favn do
     with {:module, ^scheduler} <- Code.ensure_loaded(scheduler),
          true <- function_exported?(scheduler, function_name, 0) do
       try do
-        apply(scheduler, function_name, [])
+        scheduler
+        |> apply(function_name, [])
+        |> normalize_scheduler_result()
       rescue
         UndefinedFunctionError ->
           {:error, :runtime_not_available}
@@ -363,6 +366,11 @@ defmodule Favn do
       _ -> {:error, :runtime_not_available}
     end
   end
+
+  defp normalize_scheduler_result({:error, :scheduler_not_running}),
+    do: {:error, :runtime_not_available}
+
+  defp normalize_scheduler_result(other), do: other
 
   defp sql_runtime_call(function_name, args)
        when is_atom(function_name) and is_list(args) do

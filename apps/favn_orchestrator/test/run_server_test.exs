@@ -119,6 +119,9 @@ defmodule FavnOrchestrator.RunServerTest do
     assert {:ok, stored} = Storage.get_run(run_state.id)
     assert stored.status == :cancelled
     assert stored.error == {:cancelled, %{reason: :pre_start_cancel}}
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+    assert events == []
   end
 
   test "does not crash when step_started persist loses to external cancel" do
@@ -159,6 +162,9 @@ defmodule FavnOrchestrator.RunServerTest do
     assert {:ok, stored} = Storage.get_run(run_state.id)
     assert stored.status == :cancelled
     assert stored.error == {:cancelled, %{reason: :submit_race}}
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+    assert Enum.map(events, & &1.event_type) == [:run_started]
   end
 
   defp manifest_version(manifest_version_id) do

@@ -104,8 +104,16 @@ defmodule FavnDuckdbTest do
         Application.put_env(:favn, :runner_plugins, previous_plugins)
       end
 
-      if Process.whereis(Worker) do
-        GenServer.stop(Worker, :normal, 1_000)
+      case Process.whereis(Worker) do
+        nil ->
+          :ok
+
+        _pid ->
+          try do
+            GenServer.stop(Worker, :normal, 1_000)
+          catch
+            :exit, {:noproc, _} -> :ok
+          end
       end
 
       if is_nil(previous_in_process_client) do

@@ -105,6 +105,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def persist_run_transition(%RunState{} = run, event, opts)
+      when is_map(event) and is_list(opts) do
+    with {:ok, normalized_run} <- RunStateCodec.normalize(run),
+         {:ok, normalized_event} <- RunEventCodec.normalize(run.id, event),
+         :ok <- validate_transition_alignment(normalized_run, normalized_event) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:persist_run_transition, normalized_run, normalized_event})
+    end
+  end
+
+  @impl true
   def get_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:get_run, run_id})
@@ -272,7 +283,42 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   def handle_call({:put_run, %RunState{} = incoming}, _from, state) do
     {reply, runs} = put_run_with_semantics(state.runs, incoming)
-    {:reply, reply, %{state | runs: runs}}
+
+    normalized_reply = if reply == :idempotent, do: :ok, else: reply
+
+    {:reply, normalized_reply, %{state | runs: runs}}
+  end
+
+  def handle_call({:persist_run_transition, %RunState{} = run, event}, _from, state) do
+    {run_reply, runs} = put_run_with_semantics(state.runs, run)
+
+    case run_reply do
+      run_write_result when run_write_result in [:ok, :idempotent] ->
+        current = Map.get(state.run_events, run.id, [])
+
+        case append_event_with_semantics(current, event) do
+          {:ok, event_write_result, next_events} ->
+            next_state = %{
+              state
+              | runs: runs,
+                run_events: Map.put(state.run_events, run.id, next_events)
+            }
+
+            result =
+              case {run_write_result, event_write_result} do
+                {:idempotent, :idempotent} -> :idempotent
+                _ -> :ok
+              end
+
+            {:reply, result, next_state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:get_run, run_id}, _from, state) do
@@ -391,7 +437,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp put_run_with_semantics(runs, %RunState{} = incoming) do
     case Map.fetch(runs, incoming.id) do
       :error ->
-        {:ok, Map.put(runs, incoming.id, incoming)}
+        {{:ok, :ok}, Map.put(runs, incoming.id, incoming)}
 
       {:ok, %RunState{} = existing} ->
         case WriteSemantics.decide(
@@ -400,15 +446,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
                incoming.event_seq,
                incoming.snapshot_hash
              ) do
-          :replace -> {:ok, Map.put(runs, incoming.id, incoming)}
-          :idempotent -> {:ok, runs}
+          :replace -> {{:ok, :ok}, Map.put(runs, incoming.id, incoming)}
+          :idempotent -> {{:ok, :idempotent}, runs}
           {:error, reason} -> {{:error, reason}, runs}
         end
     end
     |> normalize_put_run_reply()
   end
 
-  defp normalize_put_run_reply({:ok, runs}), do: {:ok, runs}
+  defp normalize_put_run_reply({{:ok, result}, runs}) when result in [:ok, :idempotent],
+    do: {result, runs}
+
   defp normalize_put_run_reply({{:error, reason}, runs}), do: {{:error, reason}, runs}
 
   defp filter_runs(runs, run_opts) do
@@ -422,6 +470,34 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     case Keyword.get(run_opts, :limit) do
       limit when is_integer(limit) and limit > 0 -> Enum.take(runs, limit)
       _ -> runs
+    end
+  end
+
+  defp validate_transition_alignment(%RunState{} = run, event) when is_map(event) do
+    cond do
+      Map.get(event, :run_id) != run.id ->
+        {:error, :invalid_run_event_run_id}
+
+      Map.get(event, :sequence) != run.event_seq ->
+        {:error, :invalid_run_event_sequence}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp append_event_with_semantics(current_events, event) when is_list(current_events) do
+    sequence = Map.get(event, :sequence)
+
+    case Enum.find(current_events, &(Map.get(&1, :sequence) == sequence)) do
+      nil ->
+        {:ok, :ok, Enum.sort_by(current_events ++ [event], &Map.get(&1, :sequence, 0))}
+
+      existing when existing == event ->
+        {:ok, :idempotent, current_events}
+
+      _existing ->
+        {:error, :conflicting_event_sequence}
     end
   end
 

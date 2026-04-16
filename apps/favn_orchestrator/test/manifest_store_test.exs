@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Version
+  alias FavnOrchestrator
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -26,6 +27,27 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
     assert :ok = ManifestStore.set_active_manifest("mv_b")
     assert {:ok, "mv_b"} = ManifestStore.get_active_manifest()
+  end
+
+  test "exposes operator manifest summaries and active-manifest targets" do
+    version_a = manifest_version("mv_a", {MyApp.AssetA, :asset})
+    version_b = manifest_version("mv_b", {MyApp.AssetB, :asset})
+
+    assert :ok = ManifestStore.register_manifest(version_a)
+    assert :ok = ManifestStore.register_manifest(version_b)
+    assert :ok = ManifestStore.set_active_manifest("mv_a")
+
+    assert {:ok, summaries} = FavnOrchestrator.list_manifest_summaries()
+    assert Enum.map(summaries, & &1.manifest_version_id) == ["mv_a", "mv_b"]
+
+    assert {:ok, summary} = FavnOrchestrator.get_manifest_summary("mv_a")
+    assert summary.asset_count == 1
+    assert summary.pipeline_count == 0
+
+    assert {:ok, targets} = FavnOrchestrator.active_manifest_targets()
+    assert targets.manifest_version_id == "mv_a"
+    assert Enum.map(targets.assets, & &1.label) == ["{MyApp.AssetA, :asset}"]
+    assert targets.pipelines == []
   end
 
   defp manifest_version(manifest_version_id, ref) do
