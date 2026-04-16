@@ -313,7 +313,20 @@ defmodule Favn.SQLAsset do
 
       @doc false
       @spec asset(map()) :: Favn.Asset.return_value()
-      def asset(_ctx), do: {:error, :runtime_not_available}
+      def asset(ctx), do: Favn.SQLAsset.runtime_asset(__MODULE__, ctx)
+    end
+  end
+
+  @doc false
+  @spec runtime_asset(module(), map()) :: Favn.Asset.return_value()
+  def runtime_asset(module, ctx) when is_atom(module) and is_map(ctx) do
+    runtime_module = Favn.SQLAsset.Runtime
+
+    with {:module, ^runtime_module} <- Code.ensure_loaded(runtime_module),
+         true <- function_exported?(runtime_module, :run, 2) do
+      :erlang.apply(runtime_module, :run, [module, struct(Favn.Run.Context, ctx)])
+    else
+      _ -> {:error, :runtime_not_available}
     end
   end
 

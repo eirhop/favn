@@ -10,6 +10,7 @@ defmodule FavnRunner.Worker do
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.Context
+  alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
   alias FavnRunner.EventSink
 
@@ -56,7 +57,7 @@ defmodule FavnRunner.Worker do
           execute_elixir_asset(asset, ContextBuilder.build(work, asset, execution_id))
 
         :sql ->
-          {:error, sql_manifest_execution_not_supported()}
+          execute_sql_asset(asset, version, work)
 
         _ ->
           {:error, %{kind: :error, reason: {:unsupported_asset_type, asset.type}, stacktrace: []}}
@@ -204,13 +205,16 @@ defmodule FavnRunner.Worker do
     EventSink.emit(server, execution_id, event)
   end
 
-  defp sql_manifest_execution_not_supported do
-    %{
-      kind: :error,
-      reason: :sql_manifest_execution_not_supported,
-      stacktrace: [],
-      message:
-        "SQL asset execution is disabled in runner until manifest-carried SQL payload is available"
-    }
+  defp execute_sql_asset(%Asset{} = asset, %Version{} = version, %RunnerWork{} = work) do
+    SQLAssetRuntime.run_manifest(asset, version, work)
+  rescue
+    error ->
+      %{
+        kind: :error,
+        reason: error,
+        stacktrace: __STACKTRACE__,
+        message: Exception.message(error)
+      }
+      |> then(&{:error, &1})
   end
 end

@@ -239,7 +239,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] phase-2 baseline established deterministic fallback behavior for unavailable runtime SQL bridges (`{:error, :runtime_not_available}`)
   - [x] canonical domain/compiler foundation physically re-centered into `favn_core`
   - [x] post-Phase-2 re-thinning: move internal-only compiler/manifest/planning machinery back into `favn_core` while keeping `favn` as thin public surface
-  - [ ] remove temporary migration seams once runner/runtime boundary ownership is finalized
+  - [x] remove temporary migration seams once runner/runtime boundary ownership is finalized
 - [x] Phase 3: implement persisted manifest schema and manifest version pinning
   - [x] planning docs created: `docs/refactor/PHASE_3_MANIFEST_VERSIONING_PLAN.md`
   - [x] implementation checklist created: `docs/refactor/PHASE_3_TODO.md`
@@ -263,7 +263,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] elixir and source assets now execute through `favn_runner` contract APIs (`register_manifest/1`, `submit_work/2`, `await_result/2`, `run/2`)
   - [x] runner-side connection runtime ownership moved from `favn_legacy` to `favn_runner` (`Favn.Connection.Loader/Registry/Resolved/Validator/Error/Sanitizer/Info`)
   - [x] SQL runtime ownership slice moved from `favn_legacy` to `favn_runner` (`Favn.SQLAsset.Runtime`, `Favn.SQL.RuntimeBridge`, and required `Favn.SQL.*` runtime modules)
-  - [ ] enable manifest-pinned SQL asset execution in runner (currently rejected until SQL payload is carried by manifest/core contract)
+  - [x] enable manifest-pinned SQL asset execution in runner (manifest SQL payload now carried in core contract)
   - [x] runtime SQL bridge paths now fail deterministically with `{:error, :runtime_not_available}` when runner runtime is not started, and return normalized `%Favn.SQL.Error{}` values for invalid config/session inputs when runner runtime is started
 - [x] Phase 5: build the orchestrator boundary in `favn_orchestrator`
   - [x] planning docs created: `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md`
@@ -296,10 +296,16 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] initial `favn_storage_postgres` foundation implemented with managed/external repo modes, migration runner/schema checks, and persisted manifests/runs/events/scheduler cursors
   - [x] add opt-in live Postgres integration coverage (`FAVN_POSTGRES_TEST_URL`) and document managed/external wiring
   - [x] later-phase storage follow-ups moved to future roadmap phases so Phase 6 can close cleanly
-- [ ] Phase 7: move DuckDB into `favn_duckdb`
-  - [ ] carry SQL asset execution payload in the manifest/core contract
-  - [ ] enable manifest-pinned SQL asset execution in `favn_runner`
-  - [ ] remove temporary migration/runtime seams in `favn` after the manifest-backed runner SQL path lands
+- [x] Phase 7: move DuckDB into `favn_duckdb`
+  - [x] planning docs created: `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md`
+  - [x] implementation checklist created: `docs/refactor/PHASE_7_TODO.md`
+  - [x] carry SQL asset execution payload in the manifest/core contract
+  - [x] enable manifest-pinned SQL asset execution in `favn_runner`
+  - [x] add DuckDB placement support with exactly `:in_process | :separate_process`
+  - [x] remove temporary migration/runtime seams in `favn` after the manifest-backed runner SQL path lands
+  - [x] preserve in-process appender compatibility semantics for schema-qualified writes
+  - [x] enforce manifest-only deferred asset-ref resolution in manifest-backed runner SQL execution
+  - [x] add explicit separate-process worker call timeout handling (no hidden default 5s call timeout)
 - [ ] Phase 8: add `favn_view`
 - [ ] Phase 9: ship developer tooling and packaging flows
   - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path
@@ -321,11 +327,16 @@ Detailed migration planning for the current refactor slices lives in:
 - `docs/refactor/PHASE_5_TODO.md`
 - `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md`
 - `docs/refactor/PHASE_6_TODO.md`
+- `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md`
+- `docs/refactor/PHASE_7_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 
 - [ ] Queueing and admission control
 - [ ] Concurrency controls
+- [ ] DuckDB worker pooling and concurrency-control improvements for `:separate_process` mode
+- [ ] DuckDB worker observability, tuning, and recovery semantics
+- [ ] Resource-aware execution placement after real workload validation
 - [ ] Run deduplication / run keys
 - [ ] Improved failure recovery
 - [ ] Materialization history tracking

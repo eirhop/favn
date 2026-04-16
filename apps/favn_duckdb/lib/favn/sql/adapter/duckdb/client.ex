@@ -18,5 +18,5 @@ defmodule Favn.SQL.Adapter.DuckDB.Client do
   @callback release(handle()) :: :ok | {:error, term()}
 
   @spec default() :: module()
-  def default, do: Favn.SQL.Adapter.DuckDB.Client.Duckdbex
+  def default, do: FavnDuckdb.Runtime.client_module()
 end

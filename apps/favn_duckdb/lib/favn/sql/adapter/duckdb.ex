@@ -4,6 +4,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   This module is internal to Favn runtime SQL execution and must not be exposed
   as an external API contract.
+
+  Bulk ingestion paths should prefer the DuckDB Appender path for substantial
+  insert workloads instead of repeated prepared inserts.
   """
 
   @behaviour Favn.SQL.Adapter

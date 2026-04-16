@@ -204,60 +204,6 @@ defmodule Favn.SQL do
     end
   end
 
-  @doc false
-  @spec connect(term(), opts()) :: {:ok, term()} | {:error, term()}
-  def connect(connection, opts \\ []) do
-    runtime_bridge_call(:connect, [connection, opts])
-  end
-
-  @doc false
-  @spec query(term(), iodata(), opts()) :: {:ok, term()} | {:error, term()}
-  def query(session, statement, opts \\ []) do
-    runtime_bridge_call(:query, [session, statement, opts])
-  end
-
-  @doc false
-  @spec materialize(term(), term(), opts()) :: {:ok, term()} | {:error, term()}
-  def materialize(session, write_plan, opts \\ []) do
-    runtime_bridge_call(:materialize, [session, write_plan, opts])
-  end
-
-  @doc false
-  @spec disconnect(term()) :: :ok
-  def disconnect(session) do
-    case runtime_bridge_call(:disconnect, [session]) do
-      :ok -> :ok
-      {:error, _reason} -> :ok
-    end
-  end
-
-  @doc false
-  @spec get_relation(term(), term()) :: {:ok, term() | nil} | {:error, term()}
-  def get_relation(session, relation) do
-    runtime_bridge_call(:get_relation, [session, relation])
-  end
-
-  @doc false
-  @spec columns(term(), term()) :: {:ok, [term()]} | {:error, term()}
-  def columns(session, relation) do
-    runtime_bridge_call(:columns, [session, relation])
-  end
-
-  defp runtime_bridge_call(function_name, args) do
-    bridge = Module.concat(Favn.SQL, RuntimeBridge)
-
-    if function_exported?(bridge, function_name, length(args)) do
-      apply(bridge, function_name, args)
-    else
-      with {:module, ^bridge} <- Code.ensure_loaded(bridge),
-           true <- function_exported?(bridge, function_name, length(args)) do
-        apply(bridge, function_name, args)
-      else
-        _ -> {:error, :runtime_not_available}
-      end
-    end
-  end
-
   defp build_sql_definitions!(module, raw_definitions, imports) do
     imported_definitions = fetch_imported_definitions!(imports)
 

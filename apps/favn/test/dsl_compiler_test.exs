@@ -74,35 +74,42 @@ defmodule Favn.DSLCompilerTest do
     assert asset.type == :sql
   end
 
-  test "runtime sql paths fail safely when runtime is unavailable or inputs are invalid" do
-    assert match?({:error, :runtime_not_available}, Favn.SQL.connect(:warehouse)) or
+  test "public sql helpers fail safely when runtime is unavailable" do
+    assert {:ok, %Favn.SQL.Render{}} = Favn.render(SalesSnapshot)
+
+    assert match?({:error, :runtime_not_available}, Favn.preview(SalesSnapshot)) or
              match?(
-               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :connect}},
-               Favn.SQL.connect(:warehouse)
+               {:error,
+                %Favn.SQLAsset.Error{
+                  type: :backend_execution_failed,
+                  cause: %Favn.SQL.Error{type: :invalid_config, operation: :connect}
+                }},
+               Favn.preview(SalesSnapshot)
              )
 
-    assert match?({:error, :runtime_not_available}, Favn.SQL.query(:session, "select 1")) or
+    assert match?({:error, :runtime_not_available}, Favn.explain(SalesSnapshot)) or
              match?(
-               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
-               Favn.SQL.query(:session, "select 1")
+               {:error,
+                %Favn.SQLAsset.Error{
+                  type: :backend_execution_failed,
+                  cause: %Favn.SQL.Error{type: :invalid_config, operation: :connect}
+                }},
+               Favn.explain(SalesSnapshot)
              )
 
-    assert match?({:error, :runtime_not_available}, Favn.SQL.materialize(:session, :plan)) or
+    assert match?({:error, :runtime_not_available}, Favn.materialize(SalesSnapshot)) or
              match?(
-               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
-               Favn.SQL.materialize(:session, :plan)
+               {:error,
+                %Favn.SQLAsset.Error{
+                  type: :backend_execution_failed,
+                  cause: %Favn.SQL.Error{type: :invalid_config, operation: :connect}
+                }},
+               Favn.materialize(SalesSnapshot)
              )
+  end
 
-    assert match?({:error, :runtime_not_available}, Favn.SQL.get_relation(:session, :relation)) or
-             match?(
-               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
-               Favn.SQL.get_relation(:session, :relation)
-             )
-
-    assert match?({:error, :runtime_not_available}, Favn.SQL.columns(:session, :relation)) or
-             match?(
-               {:error, %Favn.SQL.Error{type: :invalid_config, operation: :session}},
-               Favn.SQL.columns(:session, :relation)
-             )
+  test "public sql helpers return normalized SQLAsset error for invalid input" do
+    assert {:error, %Favn.SQLAsset.Error{type: :invalid_asset_input, phase: :render}} =
+             Favn.render(:not_a_sql_asset)
   end
 end

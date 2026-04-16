@@ -125,7 +125,11 @@ defmodule Favn.SQLAsset.Renderer do
       definition_catalog: definition_catalog,
       stack: [],
       cache: %{},
-      current_file: Map.get(definition.raw_asset || %{}, :sql_file, definition.asset.file)
+      current_file: Map.get(definition.raw_asset || %{}, :sql_file, definition.asset.file),
+      manifest_relation_by_module:
+        Map.get(definition.raw_asset || %{}, :manifest_relation_by_module, %{}),
+      deferred_resolution:
+        Map.get(definition.raw_asset || %{}, :deferred_resolution, :manifest_or_compiled)
     }
   end
 
@@ -304,7 +308,9 @@ defmodule Favn.SQLAsset.Renderer do
                  env.asset_ref,
                  asset_ref.span,
                  env.stack,
-                 env.current_file
+                 env.current_file,
+                 env.manifest_relation_by_module,
+                 env.deferred_resolution
                ),
              :ok <- ensure_same_connection(asset_ref, relation_ref, env) do
           {:ok, relation_ref, %{env | cache: Map.put(env.cache, module, relation_ref)}}
@@ -312,7 +318,75 @@ defmodule Favn.SQLAsset.Renderer do
     end
   end
 
-  defp resolve_deferred_module(module, asset_ref, span, stack, current_file) do
+  defp resolve_deferred_module(
+         module,
+         asset_ref,
+         span,
+         stack,
+         current_file,
+         relation_map,
+         deferred_resolution
+       ) do
+    case manifest_relation(module, relation_map) do
+      {:ok, relation_ref} ->
+        {:ok, relation_ref}
+
+      :error ->
+        resolve_missing_deferred_module(
+          module,
+          asset_ref,
+          span,
+          stack,
+          current_file,
+          deferred_resolution
+        )
+    end
+  end
+
+  defp resolve_missing_deferred_module(
+         module,
+         asset_ref,
+         span,
+         stack,
+         current_file,
+         :manifest_only
+       ) do
+    {:error,
+     %Error{
+       type: :unresolved_asset_ref,
+       phase: :render,
+       asset_ref: asset_ref,
+       span: span,
+       line: span.start_line,
+       file: current_file,
+       message:
+         "SQL asset reference #{inspect(module)} is not present in the pinned manifest relation map",
+       stack: stack,
+       details: %{module: module}
+     }}
+  end
+
+  defp resolve_missing_deferred_module(
+         module,
+         asset_ref,
+         span,
+         stack,
+         current_file,
+         _deferred_resolution
+       ) do
+    resolve_compiled_module(module, asset_ref, span, stack, current_file)
+  end
+
+  defp manifest_relation(module, relation_map) when is_map(relation_map) do
+    case Map.fetch(relation_map, module) do
+      {:ok, %RelationRef{} = relation_ref} -> {:ok, relation_ref}
+      _ -> :error
+    end
+  end
+
+  defp manifest_relation(_module, _relation_map), do: :error
+
+  defp resolve_compiled_module(module, asset_ref, span, stack, current_file) do
     case Code.ensure_compiled(module) do
       {:module, _compiled} ->
         case Compiler.compile_module_assets(module) do

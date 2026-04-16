@@ -1,18 +1,24 @@
 defmodule FavnDuckdb do
   @moduledoc """
-  Documentation for `FavnDuckdb`.
+  DuckDB execution plugin for `favn_runner`.
   """
 
-  @doc """
-  Hello world.
+  @behaviour FavnRunner.Plugin
 
-  ## Examples
+  @impl true
+  def child_specs(opts) when is_list(opts) do
+    case FavnDuckdb.Runtime.execution_mode(opts) do
+      :in_process ->
+        []
 
-      iex> FavnDuckdb.hello()
-      :world
-
-  """
-  def hello do
-    :world
+      :separate_process ->
+        [
+          {FavnDuckdb.Worker,
+           [
+             name: FavnDuckdb.Runtime.worker_name(opts),
+             client: Favn.SQL.Adapter.DuckDB.Client.Duckdbex
+           ]}
+        ]
+    end
   end
 end
