@@ -292,11 +292,13 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] Phase 5 carry-over cleanup: remove the memory-specific adapter lifecycle shortcut and re-center shared storage codecs/write semantics into orchestrator ownership
   - [x] initial `favn_storage_sqlite` foundation implemented with managed repo bootstrap + migrations, adapter contract coverage, and persisted manifests/runs/events/scheduler cursors
   - [x] shared adapter contract coverage added across memory/sqlite/postgres with opt-in live postgres path
+  - [x] guarded SQL write semantics now enforce atomic run snapshot and scheduler version invariants in SQLite and Postgres, with concurrency-focused SQLite tests and opt-in live Postgres concurrency tests
   - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent default (`mix favn.dev --sqlite` path)
   - [x] initial `favn_storage_postgres` foundation implemented with managed/external repo modes, migration runner/schema checks, and persisted manifests/runs/events/scheduler cursors
   - [x] add opt-in live Postgres integration coverage (`FAVN_POSTGRES_TEST_URL`) and document managed/external wiring
   - [ ] broaden Postgres integration coverage for transaction/concurrency behavior against a live database
   - [ ] end cleanup: rename temporary adapter modules (`FavnStorageSqlite.Adapter`, `FavnStoragePostgres.Adapter`) to preserved `Favn.Storage.Adapter.*` names after legacy module collisions are removed
+  - [ ] end cleanup: replace temporary BEAM term-blob payload storage with the intended canonical inspectable payload format
 - [ ] Phase 7: move DuckDB into `favn_duckdb`
   - [ ] carry SQL asset execution payload in the manifest/core contract
   - [ ] enable manifest-pinned SQL asset execution in `favn_runner`

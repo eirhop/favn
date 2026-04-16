@@ -134,6 +134,11 @@ Recommended SQLite rules:
 - `:manual` may exist as an opt-in for embedded or test scenarios, but it should not be the default friction path
 - keep the schema JSON-first and boring; do not try to mirror every Postgres table if the current orchestrator contract does not need it yet
 
+Current implementation note:
+
+- the first extracted SQLite cut currently stores run, event, and scheduler payload bodies as BEAM term blobs behind relational summary/version columns
+- that is an acceptable extraction shortcut for the first durable cut, but it should be treated as temporary scaffolding rather than the final inspectable persistence shape
+
 Recommended SQLite persisted tables in the first cut:
 
 1. `favn_manifest_versions`
@@ -215,11 +220,16 @@ Recommended Postgres design rule:
 - persist queryable columns for the fields needed by `list_runs/1`, conflict detection, future operator filtering, and scheduler correctness
 - keep the full canonical `RunState` payload as versioned JSONB for projection/reconstruction
 
+Current implementation note:
+
+- the first extracted Postgres cut currently stores run, event, and scheduler payload bodies as BEAM term blobs plus relational summary/version columns
+- that is intentionally narrower than the target JSON/JSONB-oriented end state and should be cleaned up in a later follow-up before final cutover
+
 This is intentionally narrower than the older legacy-oriented Postgres foundation plan. In particular:
 
 - do not make `favn_asset_window_latest` a blocker for the first Phase 6 cut unless a current orchestrator API starts depending on it
 - do not reintroduce legacy `%Favn.Run{}`-first persistence as the primary durable model
-- do not store Erlang term blobs
+- the current first extracted cut still uses temporary term blobs for payload bodies even though the target end state should move away from them
 
 The right first Postgres unit is the orchestrator-owned `RunState` plus queryable summary columns and append-only events.
 
@@ -314,6 +324,11 @@ Recommended behavior in external mode:
 - the adapter returns `:none` from `child_spec/1`
 - no repo lifecycle is owned by Favn
 - startup still verifies schema readiness when the adapter is first used
+
+Current managed-instance constraint:
+
+- the current extracted SQLite and Postgres adapters should be treated as one managed instance per adapter app per BEAM node
+- the repo modules are still globally named, so `supervisor_name` is not a true multi-instance isolation mechanism yet
 
 ## Legacy Slice Map
 

@@ -17,7 +17,7 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
 
           opts = [
             repo_mode: :managed,
-            repo_config: Keyword.merge(repo_config, pool_size: 1),
+            repo_config: Keyword.merge(repo_config, pool_size: 4),
             migration_mode: :auto,
             supervisor_name: supervisor_name
           ]
@@ -74,6 +74,68 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "enforces run write conflicts under concurrent updates", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        version = manifest_version("mv_pg_concurrency_#{System.unique_integer([:positive])}")
+        assert :ok = Adapter.put_manifest_version(version, opts)
+
+        base =
+          RunState.new(
+            id: "run_pg_concurrent_#{System.unique_integer([:positive])}",
+            manifest_version_id: version.manifest_version_id,
+            manifest_content_hash: version.content_hash,
+            asset_ref: {MyApp.Asset, :asset}
+          )
+
+        assert :ok = Adapter.put_run(base, opts)
+
+        running = %{base | event_seq: 2, status: :running} |> RunState.with_snapshot_hash()
+        failed = %{base | event_seq: 2, status: :error} |> RunState.with_snapshot_hash()
+
+        results =
+          concurrent_results(fn -> Adapter.put_run(running, opts) end, fn ->
+            Adapter.put_run(failed, opts)
+          end)
+
+        assert Enum.sort(results) == [:ok, {:error, :conflicting_snapshot}]
+    end
+  end
+
+  test "enforces scheduler version checks under concurrent updates", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        key = {MyApp.Pipeline, :daily}
+        assert :ok = Adapter.put_scheduler_state(key, %{version: 1}, opts)
+
+        results =
+          concurrent_results(
+            fn ->
+              Adapter.put_scheduler_state(
+                key,
+                %{version: 2, last_due_at: DateTime.utc_now()},
+                opts
+              )
+            end,
+            fn ->
+              Adapter.put_scheduler_state(
+                key,
+                %{version: 2, last_due_at: DateTime.utc_now()},
+                opts
+              )
+            end
+          )
+
+        assert Enum.sort(results) == [:ok, {:error, :stale_scheduler_state}]
+    end
+  end
+
   defp repo_config_from_url(url) do
     uri = URI.parse(url)
 
@@ -127,5 +189,28 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
+  end
+
+  defp concurrent_results(fun_a, fun_b) do
+    parent = self()
+
+    task_a = Task.async(fn -> await_release(parent, :task_a, fun_a) end)
+    task_b = Task.async(fn -> await_release(parent, :task_b, fun_b) end)
+
+    assert_receive {:ready, :task_a}
+    assert_receive {:ready, :task_b}
+
+    send(task_a.pid, :go)
+    send(task_b.pid, :go)
+
+    [Task.await(task_a, 5_000), Task.await(task_b, 5_000)]
+  end
+
+  defp await_release(parent, label, fun) do
+    send(parent, {:ready, label})
+
+    receive do
+      :go -> fun.()
+    end
   end
 end

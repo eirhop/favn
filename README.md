@@ -59,6 +59,11 @@ Current extracted adapter module names during migration:
 - SQLite: `FavnStorageSqlite.Adapter`
 - Postgres: `FavnStoragePostgres.Adapter`
 
+Current storage-format note:
+
+- SQLite/Postgres foundation adapters still persist run/event/scheduler payload bodies as BEAM term blobs for the first extracted cut
+- this is intentional temporary scaffolding, not the long-term JSON/JSONB end state described in the architecture notes
+
 SQLite local-dev persistence example:
 
 ```elixir

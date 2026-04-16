@@ -1,9 +1,11 @@
 defmodule FavnStorageSqlite.Migrations do
   @moduledoc false
 
+  alias Ecto.Adapters.SQL
   alias FavnStorageSqlite.Migrations.CreateFoundation
 
   @migrations [{20_260_415_000_000, CreateFoundation}]
+  @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 
   @spec migrate!(module()) :: :ok
   def migrate!(repo) when is_atom(repo) do
@@ -13,5 +15,49 @@ defmodule FavnStorageSqlite.Migrations do
       end)
 
     :ok
+  end
+
+  @spec schema_ready?(module()) :: boolean()
+  def schema_ready?(repo) when is_atom(repo) do
+    schema_objects_ready?(repo) and migration_versions_ready?(repo)
+  end
+
+  defp schema_objects_ready?(repo) do
+    required = [
+      "favn_manifest_versions",
+      "favn_runtime_settings",
+      "favn_runs",
+      "favn_run_events",
+      "favn_scheduler_cursors",
+      "favn_counters"
+    ]
+
+    placeholders = Enum.map_join(1..length(required), ",", &"?#{&1}")
+
+    sql =
+      "SELECT COUNT(*) = ?#{length(required) + 1} FROM sqlite_master WHERE type = 'table' AND name IN (#{placeholders})"
+
+    params = required ++ [length(required)]
+
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: [[1]]}} -> true
+      {:ok, %{rows: [[true]]}} -> true
+      _ -> false
+    end
+  end
+
+  defp migration_versions_ready?(repo) do
+    placeholders = Enum.map_join(1..length(@expected_versions), ",", &"?#{&1}")
+
+    sql =
+      "SELECT COUNT(*) = ?#{length(@expected_versions) + 1} FROM schema_migrations WHERE version IN (#{placeholders})"
+
+    params = @expected_versions ++ [length(@expected_versions)]
+
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: [[1]]}} -> true
+      {:ok, %{rows: [[true]]}} -> true
+      _ -> false
+    end
   end
 end

@@ -54,6 +54,8 @@ This checklist records the storage-boundary work that belongs in Phase 6. The re
 - [x] Add SQLite migration and persistence tests.
 - [ ] Add Postgres migration, transaction, and concurrency tests.
 - [x] Add opt-in live Postgres integration smoke test coverage (`FAVN_POSTGRES_TEST_URL`).
+- [x] Add concurrency-focused SQLite tests for guarded run writes and scheduler writes.
+- [x] Add opt-in live Postgres concurrency tests for guarded run writes and scheduler writes.
 - [x] Add orchestrator integration coverage with SQLite configured.
 - [x] Add orchestrator integration coverage with Postgres configured (opt-in live DB).
 
@@ -85,3 +87,4 @@ This checklist records the storage-boundary work that belongs in Phase 6. The re
 ## End Cleanup
 
 - [ ] Rename extracted adapter modules to preserved names (`Favn.Storage.Adapter.Postgres` / `Favn.Storage.Adapter.SQLite`) after legacy module collisions are removed during final cutover.
+- [ ] Replace temporary BEAM term-blob payload storage in SQLite/Postgres with the intended canonical inspectable payload format before final cutover.

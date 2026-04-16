@@ -13,6 +13,7 @@ defmodule FavnStoragePostgres.Adapter do
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.WriteSemantics
+  alias FavnStoragePostgres.Migrations
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Supervisor, as: PostgresSupervisor
 
@@ -243,35 +244,8 @@ defmodule FavnStoragePostgres.Adapter do
   def put_scheduler_state(key, state, opts) when is_map(state) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          {:ok, normalized_key} <- SchedulerStateCodec.normalize_key(key),
-         {:ok, normalized_state} <- SchedulerStateCodec.normalize_state(state),
-         {:ok, existing_version} <- fetch_scheduler_version(repo, normalized_key),
-         {:ok, write_version} <-
-           resolve_scheduler_version(existing_version, normalized_state[:version]) do
-      persisted = Map.put(normalized_state, :version, write_version)
-      {pipeline_module, schedule_id} = normalized_key
-
-      sql =
-        """
-        INSERT INTO favn_scheduler_cursors (pipeline_module, schedule_id, version, updated_at, state_blob)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT(pipeline_module, schedule_id) DO UPDATE SET
-          version = EXCLUDED.version,
-          updated_at = EXCLUDED.updated_at,
-          state_blob = EXCLUDED.state_blob
-        """
-
-      params = [
-        Atom.to_string(pipeline_module),
-        encode_schedule_id(schedule_id),
-        write_version,
-        DateTime.utc_now(),
-        encode_term(persisted)
-      ]
-
-      case SQL.query(repo, sql, params) do
-        {:ok, _} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
+         {:ok, normalized_state} <- SchedulerStateCodec.normalize_state(state) do
+      persist_scheduler_state(repo, normalized_key, normalized_state)
     end
   end
 
@@ -281,7 +255,7 @@ defmodule FavnStoragePostgres.Adapter do
          {:ok, {pipeline_module, schedule_id}} <- SchedulerStateCodec.normalize_key(key) do
       sql =
         """
-        SELECT state_blob
+        SELECT version, state_blob
         FROM favn_scheduler_cursors
         WHERE pipeline_module = $1 AND schedule_id = $2
         LIMIT 1
@@ -293,13 +267,17 @@ defmodule FavnStoragePostgres.Adapter do
         {:ok, %{rows: []}} ->
           {:ok, nil}
 
-        {:ok, %{rows: [[blob]]}} ->
+        {:ok, %{rows: [[version, blob]]}} ->
           with {:ok, decoded} <- decode_term(blob),
                true <- is_map(decoded) do
             {:ok,
              struct(
                Favn.Scheduler.State,
-               Map.merge(decoded, %{pipeline_module: pipeline_module, schedule_id: schedule_id})
+               Map.merge(decoded, %{
+                 pipeline_module: pipeline_module,
+                 schedule_id: schedule_id,
+                 version: version
+               })
              )}
           else
             false -> {:error, :invalid_scheduler_blob}
@@ -314,13 +292,9 @@ defmodule FavnStoragePostgres.Adapter do
 
   defp persist_run(repo, run) do
     repo.transact(fn ->
-      with {:ok, existing} <- fetch_run_head(repo, run.id),
-           decision <- decide_run_write(existing, run),
-           :ok <- persist_run_decision(repo, decision, run) do
-        :ok
-      else
-        {:error, reason} ->
-          repo.rollback(reason)
+      case guarded_put_run(repo, run) do
+        :ok -> {:ok, :ok}
+        {:error, reason} -> repo.rollback(reason)
       end
     end)
     |> case do
@@ -329,10 +303,7 @@ defmodule FavnStoragePostgres.Adapter do
     end
   end
 
-  defp persist_run_decision(_repo, :idempotent, _run), do: :ok
-  defp persist_run_decision(_repo, {:error, reason}, _run), do: {:error, reason}
-
-  defp persist_run_decision(repo, decision, run) when decision in [:insert, :replace] do
+  defp guarded_put_run(repo, run) do
     with {:ok, updated_seq} <- next_updated_seq(repo) do
       sql =
         """
@@ -358,6 +329,7 @@ defmodule FavnStoragePostgres.Adapter do
           inserted_at = EXCLUDED.inserted_at,
           updated_at = EXCLUDED.updated_at,
           run_blob = EXCLUDED.run_blob
+        WHERE EXCLUDED.event_seq > favn_runs.event_seq
         """
 
       params = [
@@ -374,17 +346,126 @@ defmodule FavnStoragePostgres.Adapter do
       ]
 
       case SQL.query(repo, sql, params) do
-        {:ok, _} -> :ok
+        {:ok, %{num_rows: num_rows}} when num_rows > 0 -> :ok
+        {:ok, _} -> classify_run_write_result(repo, run)
         {:error, reason} -> {:error, reason}
       end
     end
   end
 
-  defp decide_run_write(nil, run),
-    do: WriteSemantics.decide(nil, nil, run.event_seq, run.snapshot_hash)
+  defp classify_run_write_result(repo, run) do
+    with {:ok, existing} <- fetch_run_head(repo, run.id) do
+      case existing do
+        {existing_event_seq, existing_hash} ->
+          case WriteSemantics.decide(
+                 existing_event_seq,
+                 existing_hash,
+                 run.event_seq,
+                 run.snapshot_hash
+               ) do
+            :idempotent -> :ok
+            {:error, reason} -> {:error, reason}
+            other -> {:error, {:unexpected_run_write_decision, other}}
+          end
 
-  defp decide_run_write({existing_event_seq, existing_hash}, run) do
-    WriteSemantics.decide(existing_event_seq, existing_hash, run.event_seq, run.snapshot_hash)
+        nil ->
+          {:error, :run_write_not_applied}
+      end
+    end
+  end
+
+  defp persist_scheduler_state(repo, key, normalized_state) do
+    repo.transact(fn ->
+      case guarded_put_scheduler_state(repo, key, normalized_state) do
+        :ok -> {:ok, :ok}
+        {:error, reason} -> repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp guarded_put_scheduler_state(repo, {pipeline_module, schedule_id} = key, normalized_state) do
+    encoded_state = normalized_state |> Map.delete(:version) |> encode_term()
+    encoded_schedule_id = encode_schedule_id(schedule_id)
+    updated_at = DateTime.utc_now()
+
+    {sql, params} =
+      scheduler_upsert_query(
+        Atom.to_string(pipeline_module),
+        encoded_schedule_id,
+        normalized_state,
+        updated_at,
+        encoded_state
+      )
+
+    case SQL.query(repo, sql, params) do
+      {:ok, %{num_rows: num_rows}} when num_rows > 0 -> :ok
+      {:ok, _} -> classify_scheduler_write_result(repo, key, normalized_state[:version])
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp scheduler_upsert_query(
+         pipeline_module,
+         encoded_schedule_id,
+         normalized_state,
+         updated_at,
+         encoded_state
+       ) do
+    case normalized_state[:version] do
+      nil ->
+        {
+          """
+          INSERT INTO favn_scheduler_cursors (pipeline_module, schedule_id, version, updated_at, state_blob)
+          VALUES ($1, $2, 1, $3, $4)
+          ON CONFLICT(pipeline_module, schedule_id) DO UPDATE SET
+            version = favn_scheduler_cursors.version + 1,
+            updated_at = EXCLUDED.updated_at,
+            state_blob = EXCLUDED.state_blob
+          """,
+          [pipeline_module, encoded_schedule_id, updated_at, encoded_state]
+        }
+
+      incoming_version ->
+        expected_previous = incoming_version - 1
+
+        {
+          """
+          INSERT INTO favn_scheduler_cursors (pipeline_module, schedule_id, version, updated_at, state_blob)
+          SELECT $1, $2, $3, $4, $5
+          WHERE $3 = 1 OR EXISTS (
+            SELECT 1
+            FROM favn_scheduler_cursors
+            WHERE pipeline_module = $1 AND schedule_id = $2
+          )
+          ON CONFLICT(pipeline_module, schedule_id) DO UPDATE SET
+            version = EXCLUDED.version,
+            updated_at = EXCLUDED.updated_at,
+            state_blob = EXCLUDED.state_blob
+          WHERE favn_scheduler_cursors.version = $6
+          """,
+          [
+            pipeline_module,
+            encoded_schedule_id,
+            incoming_version,
+            updated_at,
+            encoded_state,
+            expected_previous
+          ]
+        }
+    end
+  end
+
+  defp classify_scheduler_write_result(repo, key, incoming_version) do
+    with {:ok, existing_version} <- fetch_scheduler_version(repo, key) do
+      case resolve_scheduler_version(existing_version, incoming_version) do
+        {:ok, _version} -> {:error, :scheduler_write_not_applied}
+        {:error, reason} -> {:error, reason}
+      end
+    end
   end
 
   defp next_updated_seq(repo) do
@@ -597,7 +678,13 @@ defmodule FavnStoragePostgres.Adapter do
           {:ok, Repo}
 
         :external ->
-          {:ok, Keyword.fetch!(normalized, :repo)}
+          repo = Keyword.fetch!(normalized, :repo)
+
+          if Migrations.schema_ready?(repo) do
+            {:ok, repo}
+          else
+            {:error, :schema_not_ready}
+          end
       end
     end
   end
