@@ -127,7 +127,7 @@ Notes:
   - `contracts/runner_work.ex`
   - `contracts/runner_result.ex`
   - `contracts/runner_event.ex`
-- Intended steady-state ownership remains: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane, and `favn_view` via orchestrator APIs only.
+- Intended steady-state ownership is now: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane plus auth/authz/audit, and a separate `favn_web` tier outside the umbrella talking to orchestrator over a remote boundary. `favn_view` remains transitional only.
 - Phase 3 populated `apps/favn_core/lib/favn/` with canonical manifest schema/versioning, serializer/hash/compatibility logic, graph/planning helpers, SQL helper internals, and shared runner/orchestrator contract structs.
 - Phase 4 implementation grew `apps/favn_runner/lib/favn_runner/` around a small execution-owned set of modules such as a runner server, manifest store/resolver, worker supervision, and context builder.
 - Phase 4 implementation moved `Favn.Run.Context` and `Favn.Run.AssetResult` out of `favn_legacy` into `apps/favn_core/lib/favn/run/`, while runner-owned connection and SQL runtime modules moved into `apps/favn_runner/lib/favn/` under preserved `Favn.*` names.
@@ -196,15 +196,15 @@ Notes:
   - `apps/favn_duckdb/lib/favn_duckdb/worker.ex`
 - `apps/favn_runner/lib/favn_runner/plugin.ex` now owns the minimal generic plugin boundary used to load plugin child specs with plugin-local options.
 - `apps/favn_core/lib/favn/manifest/sql_execution.ex` now carries manifest SQL execution payload for SQL assets.
-- Phase 8 view/runtime planning docs now live in:
-  - `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
+- Phase 8 web/orchestrator boundary planning docs now live in:
+  - `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`
   - `docs/refactor/PHASE_8_TODO.md`
 - Phase 8 orchestrator live-event boundary now begins with:
   - `apps/favn_orchestrator/lib/favn_orchestrator/events.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/run_event.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/scheduler_entry.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/transition_writer.ex`
-- Phase 8 initial `favn_view` LiveView runtime slice now includes:
+- The existing `favn_view` runtime slice remains in-repo only as a transitional same-BEAM prototype and currently includes:
   - `apps/favn_view/lib/favn_view/endpoint.ex`
   - `apps/favn_view/lib/favn_view/runs.ex`
   - `apps/favn_view/lib/favn_view/manifests.ex`

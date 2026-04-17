@@ -1,0 +1,41 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "plugin": ["@sveltejs/opencode"],
+
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated"],
+      "enabled": true
+    },
+    "storybook": {
+      "type": "remote",
+      "url": "http://localhost:6006/mcp",
+      "enabled": true
+    }
+  },
+
+  "tools": {
+    "svelte_*": false,
+    "playwright_*": false,
+    "storybook_*": false
+  },
+
+  "agent": {
+    "build": {
+      "tools": {
+        "svelte_*": false,
+        "playwright_*": false,
+        "storybook_*": false
+      }
+    },
+    "web-dev": {
+      "tools": {
+        "svelte_*": true,
+        "playwright_*": true,
+        "storybook_*": true
+      }
+    }
+  }
+}
