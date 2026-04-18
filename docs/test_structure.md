@@ -124,3 +124,13 @@ Notes:
   - `apps/favn_view/test/support/conn_case.ex`
   - `apps/favn_view/test/support/fixtures.ex`
 - Future Phase 8/9 emphasis should shift toward orchestrator HTTP contract tests, auth/authz tests, SSE replay tests, service-auth tests, and thin web smoke tests rather than expanding same-BEAM `favn_view` coverage.
+- Initial Phase 8 boundary-correction API/auth coverage now includes:
+  - `apps/favn_orchestrator/test/api/router_test.exs`
+  - `apps/favn_orchestrator/test/api/config_test.exs`
+  - `apps/favn_orchestrator/test/api/idempotency_store_test.exs`
+  - `apps/favn_orchestrator/test/api/router_test.exs` now also covers schedule list/detail reads, manifest activation idempotency replay, actor admin read authz cases, and actor management commands (create/roles/password)
+  - `apps/favn_orchestrator/test/http_contract/schema_test.exs` for orchestrator-owned machine-readable schema lock coverage
+- Initial Phase 8 `favn_web` auth/session E2E coverage now includes:
+  - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`
+  - `web/favn_web/tests/e2e/mock-orchestrator-server.mjs` (deterministic local orchestrator mock used during Playwright runs)
+  - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` now also covers thin operator smoke over `/api/web/v1/**` (runs/manifests/schedules commands + run stream relay validation)

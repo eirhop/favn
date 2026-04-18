@@ -225,4 +225,30 @@ Notes:
   - `apps/favn_view/lib/favn_view_web/live/runs/index_live.ex`
   - `apps/favn_view/lib/favn_view_web/live/runs/show_live.ex`
   - `apps/favn_view/lib/favn_view_web/live/scheduler/index_live.ex`
+- Phase 8 boundary-correction backend slices now also include orchestrator HTTP/API + auth foundations:
+  - `apps/favn_orchestrator/lib/favn_orchestrator/api/router.ex`
+  - `apps/favn_orchestrator/lib/favn_orchestrator/api/config.ex`
+  - `apps/favn_orchestrator/lib/favn_orchestrator/api/idempotency_store.ex`
+  - `apps/favn_orchestrator/lib/favn_orchestrator/auth.ex`
+  - `apps/favn_orchestrator/lib/favn_orchestrator/auth/store.ex`
+  - `apps/favn_orchestrator/priv/http_contract/v1/*.schema.json`
+- Initial separate web workspace boundary slice now includes:
+  - `web/favn_web/src/hooks.server.ts`
+  - `web/favn_web/src/lib/server/orchestrator.ts`
+  - `web/favn_web/src/lib/server/web_api.ts`
+  - `web/favn_web/src/lib/server/session.ts`
+  - `web/favn_web/src/routes/login/+page.server.ts`
+  - `web/favn_web/src/routes/login/+page.svelte`
+  - `web/favn_web/src/routes/+page.server.ts`
+  - `web/favn_web/src/routes/api/web/v1/streams/runs/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/streams/runs/[run_id]/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/runs/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/runs/[run_id]/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/runs/[run_id]/cancel/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/runs/[run_id]/rerun/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/manifests/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/manifests/active/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/manifests/[manifest_version_id]/activate/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/schedules/+server.ts`
+  - `web/favn_web/src/routes/api/web/v1/schedules/[schedule_id]/+server.ts`
 - New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.

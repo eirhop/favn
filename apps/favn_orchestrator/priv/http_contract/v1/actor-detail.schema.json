@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://favn.dev/contracts/orchestrator/v1/actor-detail.schema.json",
+  "title": "ActorDetail",
+  "type": "object",
+  "required": ["id", "username", "display_name", "roles", "status", "inserted_at", "updated_at"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "username": { "type": "string", "minLength": 1 },
+    "display_name": { "type": "string", "minLength": 1 },
+    "roles": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["viewer", "operator", "admin"] },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "status": { "type": "string", "enum": ["active", "disabled"] },
+    "inserted_at": { "type": ["string", "null"] },
+    "updated_at": { "type": ["string", "null"] }
+  }
+}

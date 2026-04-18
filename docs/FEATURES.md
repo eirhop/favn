@@ -310,12 +310,27 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] earlier same-BEAM `favn_view` prototype exists as transitional reference only
   - [x] planning docs replaced with `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`
   - [x] implementation checklist reset in `docs/refactor/PHASE_8_TODO.md`
-  - [ ] lock the canonical private orchestrator HTTP API, DTOs, error envelope, and versioning rules
-  - [ ] lock the authoritative SSE event contract, cursor model, and replay/resume behavior
-  - [ ] implement orchestrator-owned local username/password auth, actor/session records, roles, and audit model
-  - [ ] implement explicit web-to-orchestrator service authentication and trusted actor-context forwarding
-  - [ ] stand up a thin `favn_web` prototype that proves login, session handling, remote reads/commands, and browser-facing SSE relay
-  - [ ] freeze `favn_view` as transitional and stop treating it as the Phase 8 exit target
+  - [x] initial private orchestrator HTTP API v1 foundation landed (auth/session endpoints, manifests/runs reads, run commands, error envelope)
+  - [x] initial SSE stream foundation landed (`/streams/runs` + `Last-Event-ID` ready-event baseline)
+  - [x] initial orchestrator local username/password auth/session/audit foundation landed
+  - [x] explicit web-to-orchestrator service authentication and trusted actor-context forwarding landed in baseline form
+  - [x] thin `favn_web` baseline landed for login/logout cookie session, runs read, and browser-facing SSE relay
+  - [x] service-auth hardening now fails closed when API tokens are not configured (test env keeps a test-only token default)
+  - [x] mutating run commands now persist/replay successful responses for duplicate `Idempotency-Key` requests within configured TTL
+  - [x] login abuse hardening baseline landed (failure delay + orchestrator-side rate limiting)
+  - [x] `Last-Event-ID` validation added on both web relay and orchestrator stream endpoints
+  - [x] web session cookies are now signed and tamper-checked before actor-context forwarding
+  - [x] schedules list/detail read endpoints landed on orchestrator API (`GET /schedules`, `GET /schedules/:schedule_id`)
+  - [x] manifest activation command landed with idempotency replay + authz/audit coverage (`POST /manifests/:manifest_version_id/activate`)
+  - [x] admin actor read endpoints landed (`GET /actors`, `GET /actors/:actor_id`) with role-based access checks
+  - [x] admin actor management commands landed (`POST /actors`, `PUT /actors/:actor_id/roles`, `PUT /actors/:actor_id/password`) with audit coverage
+  - [x] thin web BFF route set expanded for runs/manifests/schedules commands and reads (`/api/web/v1/**`)
+  - [x] run-scoped browser SSE relay endpoint landed (`/api/web/v1/streams/runs/:run_id`)
+  - [x] auth/authz role-matrix coverage expanded in API router tests (viewer/operator/admin cases)
+  - [x] canonical orchestrator-owned DTO schema set landed under `apps/favn_orchestrator/priv/http_contract/v1`
+  - [x] stream replay now uses persisted run-event history with cursor validation (`cursor_invalid` on unknown cursor)
+  - [x] thin web operator-flow smoke coverage now exercises `/api/web/v1/**` runs/manifests/schedules + stream relay paths
+  - [x] `favn_view` is now explicitly archived/frozen and removed from active umbrella Phase 8 test alias paths
 - [ ] Phase 9: ship developer tooling and packaging flows
   - [ ] support the honest build/runtime target set: `web`, `orchestrator`, `runner`, and optional `single`
   - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path

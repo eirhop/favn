@@ -117,3 +117,15 @@ The current `favn_view` Phoenix prototype is transitional only. If it is still r
 
 - `FAVN_VIEW_SECRET_KEY_BASE`
 - `FAVN_VIEW_SIGNING_SALT`
+
+## Phase 8 Orchestrator/Web Security Configuration
+
+When running the private orchestrator API and `favn_web` prototype during Phase 8 boundary work:
+
+- orchestrator API service credentials must be explicitly configured (fail-closed):
+  - `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`
+  - `FAVN_ORCHESTRATOR_API_ENABLED=1`
+- web tier must provide the matching service token when calling orchestrator:
+  - `FAVN_ORCHESTRATOR_SERVICE_TOKEN`
+- web cookie signing secret must be configured outside local dev/test:
+  - `FAVN_WEB_SESSION_SECRET`

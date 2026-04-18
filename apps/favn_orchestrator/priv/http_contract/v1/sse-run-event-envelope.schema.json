@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://favn.dev/contracts/orchestrator/v1/sse-run-event-envelope.schema.json",
+  "title": "SSERunEventEnvelope",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "stream",
+    "topic",
+    "event_type",
+    "occurred_at",
+    "actor",
+    "resource",
+    "sequence",
+    "cursor",
+    "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "event_id": { "type": "string", "minLength": 1 },
+    "stream": { "type": "string", "minLength": 1 },
+    "topic": {
+      "type": "object",
+      "required": ["type", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["run"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "event_type": { "type": "string", "minLength": 1 },
+    "occurred_at": { "type": ["string", "null"] },
+    "actor": {
+      "type": "object",
+      "required": ["type", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "required": ["type", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["run"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "cursor": { "type": "string", "minLength": 1 },
+    "data": { "type": "object" }
+  }
+}

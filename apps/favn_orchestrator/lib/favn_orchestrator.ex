@@ -3,12 +3,14 @@ defmodule FavnOrchestrator do
   Orchestrator control-plane facade for manifest-pinned run submission.
   """
 
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.Scheduler.ManifestEntries
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.SchedulerEntry
   alias FavnOrchestrator.Storage
@@ -229,6 +231,58 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Lists replayable events for one run stream after an optional persisted cursor sequence.
+  """
+  @spec list_run_stream_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_run_stream_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
+    after_sequence = Keyword.get(opts, :after_sequence)
+    limit = Keyword.get(opts, :limit, 200)
+
+    with true <- is_integer(limit) and limit > 0,
+         {:ok, events} <- list_run_events(run_id) do
+      case after_sequence do
+        nil ->
+          {:ok, Enum.take(events, limit)}
+
+        sequence when is_integer(sequence) and sequence >= 0 ->
+          replay_after_sequence(events, sequence, limit)
+
+        _ ->
+          {:error, :cursor_invalid}
+      end
+    else
+      false -> {:error, :cursor_invalid}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Lists replayable global run events after one optional persisted cursor.
+
+  The cursor is a `{run_id, sequence}` tuple from a previously observed event.
+  """
+  @spec list_global_run_stream_events(keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_global_run_stream_events(opts \\ []) when is_list(opts) do
+    after_cursor = Keyword.get(opts, :after_cursor)
+    limit = Keyword.get(opts, :limit, 200)
+
+    with true <- is_integer(limit) and limit > 0,
+         {:ok, runs} <- list_runs(limit: 5_000),
+         {:ok, events} <- collect_global_run_events(runs) do
+      sorted =
+        events
+        |> Enum.sort_by(fn event ->
+          {DateTime.to_unix(event.occurred_at, :microsecond), event.run_id, event.sequence}
+        end)
+
+      replay_after_cursor(sorted, after_cursor, limit)
+    else
+      false -> {:error, :cursor_invalid}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Subscribes the current process to one run-scoped live event stream.
   """
   @spec subscribe_run(run_id()) :: :ok | {:error, term()}
@@ -284,6 +338,44 @@ defmodule FavnOrchestrator do
     :exit, {:noproc, _} -> {:error, :scheduler_not_running}
   end
 
+  @doc """
+  Lists operator-facing schedule inspection entries.
+
+  Falls back to active-manifest schedule descriptors when scheduler runtime is not running.
+  """
+  @spec list_schedule_entries() :: {:ok, [SchedulerEntry.t()]} | {:error, term()}
+  def list_schedule_entries do
+    case scheduled_entries() do
+      entries when is_list(entries) -> {:ok, entries}
+      {:error, :scheduler_not_running} -> list_schedule_entries_from_active_manifest()
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Returns one schedule inspection entry by remote schedule id.
+  """
+  @spec get_schedule_entry(String.t()) :: {:ok, SchedulerEntry.t()} | {:error, term()}
+  def get_schedule_entry(schedule_id) when is_binary(schedule_id) do
+    with {:ok, entries} <- list_schedule_entries() do
+      case Enum.find(entries, &(schedule_entry_id(&1) == schedule_id)) do
+        nil -> {:error, :schedule_not_found}
+        %SchedulerEntry{} = entry -> {:ok, entry}
+      end
+    end
+  end
+
+  @doc """
+  Returns the stable remote id for one schedule inspection entry.
+  """
+  @spec schedule_entry_id(SchedulerEntry.t()) :: String.t()
+  def schedule_entry_id(%SchedulerEntry{} = entry) do
+    pipeline_module = entry.pipeline_module || Favn.Unknown
+    schedule_name = entry.schedule_id || :unknown
+
+    "schedule:" <> Atom.to_string(pipeline_module) <> ":" <> Atom.to_string(schedule_name)
+  end
+
   defp validate_run_event_opts(opts) do
     after_sequence = Keyword.get(opts, :after_sequence)
     limit = Keyword.get(opts, :limit)
@@ -314,6 +406,57 @@ defmodule FavnOrchestrator do
     case Keyword.get(opts, :limit) do
       limit when is_integer(limit) and limit > 0 -> Enum.take(events, limit)
       _ -> events
+    end
+  end
+
+  defp replay_after_sequence(events, sequence, limit) do
+    if sequence == 0 do
+      {:ok, Enum.take(events, limit)}
+    else
+      if Enum.any?(events, &(&1.sequence == sequence)) do
+        {:ok,
+         events
+         |> Enum.filter(&(&1.sequence > sequence))
+         |> Enum.take(limit)}
+      else
+        {:error, :cursor_invalid}
+      end
+    end
+  end
+
+  defp replay_after_cursor(events, nil, limit), do: {:ok, Enum.take(events, limit)}
+
+  defp replay_after_cursor(events, {run_id, sequence}, limit)
+       when is_binary(run_id) and is_integer(sequence) and sequence > 0 do
+    case Enum.find_index(events, &(&1.run_id == run_id and &1.sequence == sequence)) do
+      nil -> {:error, :cursor_invalid}
+      index -> {:ok, events |> Enum.drop(index + 1) |> Enum.take(limit)}
+    end
+  end
+
+  defp replay_after_cursor(_events, _cursor, _limit), do: {:error, :cursor_invalid}
+
+  defp collect_global_run_events(runs) when is_list(runs) do
+    Enum.reduce_while(runs, {:ok, []}, fn run, {:ok, acc} ->
+      case list_run_events(run.id) do
+        {:ok, events} -> {:cont, {:ok, acc ++ events}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp list_schedule_entries_from_active_manifest do
+    with {:ok, manifest_version_id} <- active_manifest(),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, index} <- Index.build_from_version(version),
+         {:ok, runtime_entries} <- ManifestEntries.discover(version, index) do
+      entries =
+        runtime_entries
+        |> Map.values()
+        |> Enum.map(&SchedulerEntry.from_runtime/1)
+        |> Enum.sort_by(&{inspect(&1.pipeline_module), inspect(&1.schedule_id)})
+
+      {:ok, entries}
     end
   end
 

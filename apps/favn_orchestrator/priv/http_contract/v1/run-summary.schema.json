@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://favn.dev/contracts/orchestrator/v1/run-summary.schema.json",
+  "title": "RunSummary",
+  "type": "object",
+  "required": [
+    "id",
+    "status",
+    "submit_kind",
+    "manifest_version_id",
+    "event_seq",
+    "started_at",
+    "finished_at",
+    "error"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "minLength": 1 },
+    "submit_kind": { "type": "string", "minLength": 1 },
+    "manifest_version_id": { "type": "string", "minLength": 1 },
+    "event_seq": { "type": "integer", "minimum": 1 },
+    "started_at": { "type": ["string", "null"] },
+    "finished_at": { "type": ["string", "null"] },
+    "error": {}
+  }
+}
