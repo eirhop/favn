@@ -23,7 +23,7 @@ Near-term priority is to execute the refactor in the locked migration order:
 - separate orchestrator boundary
 - storage adapters for memory, SQLite, and Postgres
 - DuckDB as the first optional runner plugin
-- corrected web/orchestrator boundary work, then local developer tooling and packaging
+- corrected web/orchestrator boundary work, then the core local developer tooling loop, then broader packaging/install flows
 
 ## Terminology
 
@@ -332,10 +332,21 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] thin web operator-flow smoke coverage now exercises `/api/web/v1/**` runs/manifests/schedules + stream relay paths
   - [x] `favn_view` is now explicitly archived/frozen and removed from active umbrella Phase 8 test alias paths
 - [ ] Phase 9: ship developer tooling and packaging flows
-  - [ ] support the honest build/runtime target set: `web`, `orchestrator`, `runner`, and optional `single`
-  - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path
-  - [ ] support separate web-process local dev and packaging flows
-  - [ ] broaden live Postgres migration/transaction/concurrency coverage in a production-like verification path
+  - [ ] next PR: core local dev lifecycle only
+  - [ ] add foreground `mix favn.dev` as the default local stack startup command for `favn_web + favn_orchestrator + favn_runner`
+  - [ ] add `mix favn.dev --sqlite` as the immediate persistent local mode
+  - [ ] add `mix favn.stop` for clean local shutdown while preserving logs and SQLite by default
+  - [ ] add `mix favn.reload` as the temporary daily-driver for backend and manifest changes without restarting orchestrator
+  - [ ] add private manifest publish/register support in orchestrator so new manifests can be activated without restarting orchestrator
+  - [ ] add `mix favn.status` as the boring local operator view
+  - [ ] add minimal `.favn/` runtime state, secrets, log, and manifest-cache handling needed for those commands
+  - [ ] keep `favn_web` as a thin built local web process for this slice; rely on browser refresh instead of web HMR
+  - [ ] allow `mix favn.reload` / `mix favn.status` / `mix favn.stop` from a second terminal by targeting the running foreground stack through project-local `.favn/` state
+  - [ ] later Phase 9: add `mix favn.install`
+  - [ ] later Phase 9: add `mix favn.reset`
+  - [ ] later Phase 9: add `mix favn.logs`
+  - [ ] later Phase 9: support the honest build/runtime target set: `web`, `orchestrator`, `runner`, and optional `single`
+  - [ ] later Phase 9: broaden live Postgres migration/transaction/concurrency coverage in a production-like verification path
 - [ ] Phase 10: cut over and delete legacy runtime paths
   - [ ] rename temporary adapter modules (`FavnStorageSqlite.Adapter`, `FavnStoragePostgres.Adapter`) to preserved `Favn.Storage.Adapter.*` names after legacy module collisions are removed
   - [ ] replace temporary BEAM term-blob payload storage with the intended canonical inspectable payload format
@@ -369,6 +380,8 @@ Detailed migration planning for the current refactor slices lives in:
 - `docs/refactor/PHASE_7_TODO.md`
 - `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`
 - `docs/refactor/PHASE_8_TODO.md`
+- `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md`
+- `docs/refactor/PHASE_9_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
 

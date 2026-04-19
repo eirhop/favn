@@ -23,8 +23,11 @@ Favn `v0.5.0` refactor is in progress.
 
 ## Current Focus
 
-- Phase 8 has been reopened and redefined as web/orchestrator boundary, SSE, auth/authz, and audit preparation for the real `web + orchestrator + runner` topology
-- current implementation focus is to lock the orchestrator remote API and auth model before finalizing Phase 9 tooling and packaging
+- Phase 8 baseline work now establishes the `favn_web + favn_orchestrator + favn_runner` boundary in baseline form: private orchestrator HTTP API v1, SSE baseline, orchestrator-owned auth/session/audit baseline, and thin `favn_web` proof flows
+- immediate next-PR focus is the core local developer loop only: foreground `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`, and the minimal `.favn/` config/state needed to drive them
+- `mix favn.reload` should rebuild and activate the new manifest without restarting orchestrator; a browser refresh through the thin local web process should show the updated state
+- that reload flow should use the private orchestrator API for manifest publish/register so local dev and future production publish share the same boundary
+- broader Phase 9 install/reset/logs/build packaging work remains intentionally deferred until after the core local dev loop lands
 - keep `favn` as the public DSL/facade package
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
 - keep `favn_orchestrator` as the manifest-pinned control plane, auth/authz authority, and storage owner
@@ -51,6 +54,8 @@ Favn `v0.5.0` refactor is in progress.
 - `docs/refactor/PHASE_7_TODO.md` - Phase 7 implementation checklist
 - `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md` - Phase 8 web/orchestrator boundary, SSE, auth, and audit architecture plan
 - `docs/refactor/PHASE_8_TODO.md` - Phase 8 implementation checklist
+- `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` - next-PR-only core local developer tooling plan
+- `docs/refactor/PHASE_9_TODO.md` - next-PR implementation checklist for core local developer tooling
 
 ## Storage Adapter Verification Notes
 

@@ -210,6 +210,88 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"data" => %{"activated" => true}} = Jason.decode!(response.resp_body)
   end
 
+  test "service token can activate manifest without actor headers" do
+    version = schedule_manifest_version("mv_activate_service")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests/mv_activate_service/activate")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"activated" => true}} = Jason.decode!(response.resp_body)
+  end
+
+  test "lists in-flight run ids for reload guard" do
+    seed_run_events!("run_in_flight_a", [1])
+
+    response =
+      conn(:get, "/api/orchestrator/v1/runs/in-flight")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"run_ids" => run_ids, "count" => count}} =
+             Jason.decode!(response.resp_body)
+
+    assert "run_in_flight_a" in run_ids
+    assert count >= 1
+  end
+
+  test "service token can cancel run without actor headers" do
+    seed_run_events!("run_cancel_service", [1])
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs/run_cancel_service/cancel")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"cancelled" => true, "run_id" => "run_cancel_service"}} =
+             Jason.decode!(response.resp_body)
+  end
+
+  test "registers manifest through private API" do
+    version = schedule_manifest_version("mv_register_router")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests", %{
+        manifest_version_id: version.manifest_version_id,
+        manifest: version.manifest
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 201
+
+    assert %{"data" => %{"manifest" => manifest}} = Jason.decode!(response.resp_body)
+    assert manifest["manifest_version_id"] == "mv_register_router"
+  end
+
+  test "returns conflict when manifest version id changes content" do
+    version = schedule_manifest_version("mv_register_conflict")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    conflicting_manifest =
+      version.manifest
+      |> Map.from_struct()
+      |> Map.put(:metadata, %{changed: true})
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests", %{
+        manifest_version_id: version.manifest_version_id,
+        manifest: conflicting_manifest
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 409
+    assert %{"error" => %{"code" => "manifest_conflict"}} = Jason.decode!(response.resp_body)
+  end
+
   test "forbids non-operator manifest activation" do
     version = schedule_manifest_version("mv_activate_forbidden")
     assert :ok = FavnOrchestrator.register_manifest(version)
