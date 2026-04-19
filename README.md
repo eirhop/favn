@@ -18,15 +18,18 @@ Favn `v0.5.0` refactor is in progress.
 - canonical manifest schema/versioning, serializer/hash identity, compatibility checks, and shared runner contracts are now implemented in `favn_core`
 - initial runner boundary execution now exists in `favn_runner` for manifest registration plus Elixir/source asset execution through runner contracts
 - runner-owned connection runtime and SQL execution runtime slices are now hosted in `apps/favn_runner/lib/favn/connection/**`, `apps/favn_runner/lib/favn/sql/**`, and `apps/favn_runner/lib/favn/sql_asset/**`
+- the earlier same-BEAM `favn_view` Phoenix prototype still exists in-repo as a transitional reference, but it is no longer the steady-state target architecture
 - examples that exercise runtime execution may still reflect legacy-reference behavior during migration
 
 ## Current Focus
 
-- keep Phase 8 `favn_view` + orchestrator boundary stable after completion review
-- move toward Phase 9 developer tooling and packaging flows
+- Phase 8 has been reopened and redefined as web/orchestrator boundary, SSE, auth/authz, and audit preparation for the real `web + orchestrator + runner` topology
+- current implementation focus is to lock the orchestrator remote API and auth model before finalizing Phase 9 tooling and packaging
 - keep `favn` as the public DSL/facade package
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
-- keep `favn_orchestrator` as the manifest-pinned control plane and storage owner
+- keep `favn_orchestrator` as the manifest-pinned control plane, auth/authz authority, and storage owner
+- keep `favn_runner` as execution-only and transport-pluggable
+- treat `favn_view` as transitional only; do not treat same-BEAM UI calls as the product boundary
 - breaking changes remain allowed before `v1.0`
 
 ## Documentation Pointers
@@ -46,7 +49,7 @@ Favn `v0.5.0` refactor is in progress.
 - `docs/refactor/PHASE_6_TODO.md` - Phase 6 implementation checklist
 - `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md` - Phase 7 runner/plugin architecture plan
 - `docs/refactor/PHASE_7_TODO.md` - Phase 7 implementation checklist
-- `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md` - Phase 8 view + orchestrator live-events architecture plan
+- `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md` - Phase 8 web/orchestrator boundary, SSE, auth, and audit architecture plan
 - `docs/refactor/PHASE_8_TODO.md` - Phase 8 implementation checklist
 
 ## Storage Adapter Verification Notes
@@ -108,9 +111,21 @@ config :favn_orchestrator,
   ]
 ```
 
-## View Runtime Configuration
+## Transitional View Runtime Configuration
 
-When running `favn_view` in non-test environments, configure endpoint secrets with environment variables:
+The current `favn_view` Phoenix prototype is transitional only. If it is still run in non-test environments during the migration window, configure endpoint secrets with environment variables:
 
 - `FAVN_VIEW_SECRET_KEY_BASE`
 - `FAVN_VIEW_SIGNING_SALT`
+
+## Phase 8 Orchestrator/Web Security Configuration
+
+When running the private orchestrator API and `favn_web` prototype during Phase 8 boundary work:
+
+- orchestrator API service credentials must be explicitly configured (fail-closed):
+  - `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`
+  - `FAVN_ORCHESTRATOR_API_ENABLED=1`
+- web tier must provide the matching service token when calling orchestrator:
+  - `FAVN_ORCHESTRATOR_SERVICE_TOKEN`
+- web cookie signing secret must be configured outside local dev/test:
+  - `FAVN_WEB_SESSION_SECRET`

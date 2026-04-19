@@ -23,7 +23,7 @@ Near-term priority is to execute the refactor in the locked migration order:
 - separate orchestrator boundary
 - storage adapters for memory, SQLite, and Postgres
 - DuckDB as the first optional runner plugin
-- separate view runtime and local developer tooling
+- corrected web/orchestrator boundary work, then local developer tooling and packaging
 
 ## Terminology
 
@@ -216,7 +216,7 @@ Goal: first complete SQL workflow on top of the shared runtime window model.
 
 **Status: In Progress**
 
-Goal: turn Favn into a manifest-first product with separate authoring, runner, orchestrator, and view boundaries.
+Goal: turn Favn into a manifest-first product with separate authoring, web, orchestrator, and runner boundaries.
 
 Pre-refactor groundwork already completed in the legacy runtime and to be carried forward during migration:
 
@@ -227,7 +227,7 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] old v0.5 roadmap marked as replaced
   - [x] umbrella app list locked
   - [x] dependency direction rules locked
-  - [x] app role boundaries locked (`favn_core` compiler/manifest, orchestrator-owned storage/APIs, runner-owned execution plugins, view-through-orchestrator)
+  - [x] app role boundaries locked, with the current corrected direction being `favn_core` compiler/manifest, orchestrator-owned storage/APIs/auth/audit, runner-owned execution plugins, and a separate web tier over a remote orchestrator boundary
   - [x] migration rules locked
   - [x] legacy deletion criteria defined
 - [x] Phase 1: create umbrella and isolate `favn_legacy`
@@ -306,23 +306,53 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] preserve in-process appender compatibility semantics for schema-qualified writes
   - [x] enforce manifest-only deferred asset-ref resolution in manifest-backed runner SQL execution
   - [x] add explicit separate-process worker call timeout handling (no hidden default 5s call timeout)
-- [x] Phase 8: add `favn_view`
-  - [x] planning docs created: `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
-  - [x] implementation checklist created: `docs/refactor/PHASE_8_TODO.md`
-  - [x] implement initial Phoenix LiveView prototype slice in `favn_view` (endpoint/router/layouts, dashboard, run list/detail, manifest list/detail, scheduler inspection)
-  - [x] restore orchestrator-owned run live events/subscriptions for view updates (`subscribe_run/1`, `subscribe_runs/0`, typed `%FavnOrchestrator.RunEvent{}`)
-  - [x] introduce explicit orchestrator transition writer and route run lifecycle persistence through authoritative write-then-broadcast path
-  - [x] add presenter shaping layer for stable UI map contracts and presenter contract tests
-  - [x] tighten post-review boundary correctness (active-manifest-scoped submit targets, orchestrator-owned manifest DTO selectors, canonical step event identity/order in timeline, idempotent transition no-rebroadcast)
-  - [x] close Phase 8 implementation/test/docs review and mark the prototype boundary slice complete
+- [ ] Phase 8: correct the web/orchestrator boundary before Phase 9
+  - [x] earlier same-BEAM `favn_view` prototype exists as transitional reference only
+  - [x] planning docs replaced with `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`
+  - [x] implementation checklist reset in `docs/refactor/PHASE_8_TODO.md`
+  - [x] initial private orchestrator HTTP API v1 foundation landed (auth/session endpoints, manifests/runs reads, run commands, error envelope)
+  - [x] initial SSE stream foundation landed (`/streams/runs` + `Last-Event-ID` ready-event baseline)
+  - [x] initial orchestrator local username/password auth/session/audit foundation landed
+  - [x] explicit web-to-orchestrator service authentication and trusted actor-context forwarding landed in baseline form
+  - [x] thin `favn_web` baseline landed for login/logout cookie session, runs read, and browser-facing SSE relay
+  - [x] service-auth hardening now fails closed when API tokens are not configured (test env keeps a test-only token default)
+  - [x] mutating run/manifests commands are available behind role checks and audit hooks (idempotency deferred)
+  - [x] `Last-Event-ID` validation added on both web relay and orchestrator stream endpoints
+  - [x] web session cookies are now signed and tamper-checked before actor-context forwarding
+  - [x] schedules list/detail read endpoints landed on orchestrator API (`GET /schedules`, `GET /schedules/:schedule_id`)
+  - [x] manifest activation command landed with authz/audit coverage (`POST /manifests/:manifest_version_id/activate`)
+  - [x] admin actor read endpoints landed (`GET /actors`, `GET /actors/:actor_id`) with role-based access checks
+  - [x] admin actor management commands landed (`POST /actors`, `PUT /actors/:actor_id/roles`, `PUT /actors/:actor_id/password`) with audit coverage
+  - [x] thin web BFF route set expanded for runs/manifests/schedules commands and reads (`/api/web/v1/**`)
+  - [x] run-scoped browser SSE relay endpoint landed (`/api/web/v1/streams/runs/:run_id`)
+  - [x] auth/authz role-matrix coverage expanded in API router tests (viewer/operator/admin cases)
+  - [x] canonical orchestrator-owned DTO schema set landed under `apps/favn_orchestrator/priv/http_contract/v1`
+  - [x] run-scoped stream replay uses persisted run-event history with cursor validation (`cursor_invalid` on unknown run cursor)
+  - [x] global `/streams/runs` remains a baseline transport-ready stream, not a scalable replay contract
+  - [x] thin web operator-flow smoke coverage now exercises `/api/web/v1/**` runs/manifests/schedules + stream relay paths
+  - [x] `favn_view` is now explicitly archived/frozen and removed from active umbrella Phase 8 test alias paths
 - [ ] Phase 9: ship developer tooling and packaging flows
+  - [ ] support the honest build/runtime target set: `web`, `orchestrator`, `runner`, and optional `single`
   - [ ] finish local-dev integration and polish for `favn_storage_sqlite` as the persistent `mix favn.dev --sqlite` path
+  - [ ] support separate web-process local dev and packaging flows
   - [ ] broaden live Postgres migration/transaction/concurrency coverage in a production-like verification path
 - [ ] Phase 10: cut over and delete legacy runtime paths
   - [ ] rename temporary adapter modules (`FavnStorageSqlite.Adapter`, `FavnStoragePostgres.Adapter`) to preserved `Favn.Storage.Adapter.*` names after legacy module collisions are removed
   - [ ] replace temporary BEAM term-blob payload storage with the intended canonical inspectable payload format
   - [ ] decide whether scheduler writes without explicit versions should stay permissive or become stricter optimistic writes
   - [ ] replace repeated external Postgres schema-readiness checks with a clearer startup/cached readiness strategy
+
+## Required After Refactor And Before A Safe Web-Facing Release
+
+These are required release blockers, not optional hardening tasks:
+
+- [ ] Durable orchestrator auth persistence: move actors/credentials/sessions/audit to orchestrator storage-backed durability; remove in-memory-only auth/session/audit before safe release.
+- [ ] Real password/auth foundation: replace prototype-grade custom auth/session internals with a stronger boring default and durable session lifecycle.
+- [ ] Real browser-edge abuse protection: implement login abuse/rate-limiting at the web edge; do not rely on orchestrator `remote_ip` for browser abuse controls.
+- [ ] Durable idempotency contract (if shipped): persist idempotency records durably with request fingerprint conflict detection; otherwise explicitly ship without idempotency until completed.
+- [ ] Scalable global SSE replay/cursor model: replace replay-by-rebuild behavior with a durable replay model where orchestrator remains authoritative for history and cursors.
+- [ ] Real end-to-end integration coverage: add tests against real orchestrator implementation; do not rely only on mock-orchestrator browser smoke tests for release confidence.
+- [ ] Service credential hardening: strengthen service identity binding, support credential rotation/config hardening, and avoid trusting caller-provided identity headers as sole identity proof.
 
 Detailed migration planning for the current refactor slices lives in:
 
@@ -337,7 +367,7 @@ Detailed migration planning for the current refactor slices lives in:
 - `docs/refactor/PHASE_6_TODO.md`
 - `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md`
 - `docs/refactor/PHASE_7_TODO.md`
-- `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
+- `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`
 - `docs/refactor/PHASE_8_TODO.md`
 
 Deferred until after the refactor unless needed to establish the new boundaries:
@@ -349,6 +379,10 @@ Deferred until after the refactor unless needed to establish the new boundaries:
 - [ ] Resource-aware execution placement after real workload validation
 - [ ] Run deduplication / run keys
 - [ ] Improved failure recovery
+- [ ] Rebuilt richer web UX after the remote boundary stabilizes
+- [ ] Azure Entra ID auth provider
+- [ ] Gatewayed direct orchestrator API exposure
+- [ ] Separate web/orchestrator hot-reload and local dev workflow polish
 - [ ] Materialization history tracking
 - [ ] Asset and window state inspection
 - [ ] Asset dependency provenance and relation-lineage inspection APIs

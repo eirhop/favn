@@ -112,10 +112,10 @@ Notes:
   - `apps/favn_runner/test/execution/sql_asset_test.exs` for manifest-pinned SQL execution through both `:in_process` and `:separate_process` DuckDB modes
   - `apps/favn_runner/test/plugin_test.exs` for generic runner plugin config normalization
   - `apps/favn_duckdb/test/favn_duckdb_test.exs` for DuckDB plugin child specs, separate worker lifecycle behavior, and separate-process client behavior
-- Phase 8 view/orchestrator event test additions are tracked in `docs/refactor/PHASE_8_TODO.md`.
+- Phase 8 web/orchestrator boundary test additions are tracked in `docs/refactor/PHASE_8_TODO.md`.
 - Initial Phase 8 orchestrator live-event boundary tests now include:
   - `apps/favn_orchestrator/test/events_test.exs`
-- Initial Phase 8 view runtime tests now include:
+- The existing `favn_view` prototype tests remain in-repo as transitional reference coverage and currently include:
   - `apps/favn_view/test/dashboard_live_test.exs`
   - `apps/favn_view/test/manifests_scheduler_live_test.exs`
   - `apps/favn_view/test/operator_flow_live_test.exs`
@@ -123,3 +123,13 @@ Notes:
   - `apps/favn_view/test/runs_live_test.exs`
   - `apps/favn_view/test/support/conn_case.ex`
   - `apps/favn_view/test/support/fixtures.ex`
+- Future Phase 8/9 emphasis should shift toward orchestrator HTTP contract tests, auth/authz tests, SSE replay tests, service-auth tests, and thin web smoke tests rather than expanding same-BEAM `favn_view` coverage.
+- Initial Phase 8 boundary-correction API/auth coverage now includes:
+  - `apps/favn_orchestrator/test/api/router_test.exs`
+  - `apps/favn_orchestrator/test/api/config_test.exs`
+  - `apps/favn_orchestrator/test/api/router_test.exs` now also covers schedule list/detail reads, command/authz paths, run-scoped SSE replay, and actor admin read/management authz cases
+  - `apps/favn_orchestrator/test/http_contract/schema_test.exs` for orchestrator-owned machine-readable schema lock coverage
+- Initial Phase 8 `favn_web` auth/session E2E coverage now includes:
+  - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`
+  - `web/favn_web/tests/e2e/mock-orchestrator-server.mjs` (deterministic local orchestrator mock used during Playwright runs)
+  - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` now also covers thin operator smoke over `/api/web/v1/**` (runs/manifests/schedules commands + run stream relay validation)

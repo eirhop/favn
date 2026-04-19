@@ -2,7 +2,9 @@
 
 ## Status
 
-Phase 3 through Phase 7 are implemented (with later-phase follow-ups tracked in `docs/FEATURES.md` and per-phase TODO files)
+Phase 3 through Phase 7 are implemented.
+
+The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype exists as transitional history only. Phase 8 is reopened and redefined as preparation for the correct `web + orchestrator + runner` boundary before Phase 9 tooling and packaging are finalized.
 
 ## Summary
 
@@ -11,11 +13,17 @@ v0.5 is no longer a continuation of the current single-app runtime architecture.
 Instead, v0.5 is the refactor release that turns Favn into a product with clear boundaries between:
 
 - user-facing authoring (`favn`)
+- public web/BFF (`favn_web`, likely outside the Elixir umbrella)
 - compute execution (`favn_runner`)
 - orchestration/control plane (`favn_orchestrator`)
-- operator UI (`favn_view`)
 
 This replaces the previous v0.5 direction, which focused on hardening the current single-node production setup before later introducing distributed execution and view support. The new direction pulls those architectural boundaries forward now. 
+
+Architecture correction note:
+
+- the earlier same-BEAM `favn_view -> favn_orchestrator` direction is no longer the steady-state target
+- `favn_view` remains a disposable prototype/reference only
+- the durable Phase 8 asset is now the orchestrator API, SSE/event model, auth/authz design, and audit model
 
 ## Why this refactor is needed
 
@@ -45,10 +53,11 @@ By the end of v0.5, Favn should support:
 4. **Manifest-version-pinned runs**.
 5. **A separate orchestrator runtime** that operates from persisted manifest data, not from loading user modules directly.
 6. **A separate runner runtime** that executes user asset code.
-7. **A separate view runtime** for UI/API.
-8. **Local developer UX** through `mix favn.dev`, with memory storage by default and SQLite optional.
-9. **Single-node packaging** and **split deployment packaging** as supported product modes.
-10. **A legacy cutover path** so the old monolith can be retired cleanly.
+7. **A separate web tier** for browser UI, sessions, browser-facing APIs, and SSE.
+8. **Orchestrator-owned local username/password auth** with stable actor/role/audit semantics.
+9. **Local developer UX** through `mix favn.dev`, with memory storage by default and SQLite optional.
+10. **Single-node packaging** and **split deployment packaging** for `web`, `orchestrator`, and `runner`, with optional `single` assembly mode.
+11. **A legacy cutover path** so the old monolith can be retired cleanly.
 
 ## v0.5 non-goals
 
@@ -72,10 +81,11 @@ This is the intended end-state product boundary and should drive all Phase 3+
 decisions:
 
 - `favn`: public authoring dependency (public DSL + public facade)
+- `favn_web`: public web/BFF tier (likely separate monorepo workspace/package, not an umbrella app)
 - `favn_core`: internal shared compiler/manifest/planning/contracts layer
 - `favn_runner`: execution/runtime boundary
 - `favn_orchestrator`: control plane and system of record (persisted manifests, scheduling, run lifecycle)
-- `favn_view`: UI/API integration through orchestrator APIs only
+- `favn_view`: transitional same-BEAM prototype only, not the steady-state target
 
 Critical runtime rule:
 
@@ -98,10 +108,19 @@ Critical runtime rule:
   - loads pinned manifests, executes assets, and emits execution results/events
 - `favn_orchestrator`
   - control plane and product API boundary
-  - owns scheduling, run lifecycle, manifests, event history, and storage contracts
+  - owns scheduling, run lifecycle, manifests, event history, auth/authz, audit, and storage contracts
+
+### Web tier workspace/package
+- `favn_web`
+  - thin public edge / BFF
+  - owns browser UI, login/logout, secure cookie sessions, browser-facing HTTP and SSE, request validation, rate limiting, and response shaping
+  - talks to orchestrator only over a private authenticated remote API
+
+### Transitional prototype app
 - `favn_view`
-  - Phoenix/LiveView UI
-  - reads and writes through orchestrator APIs only
+  - in-repo same-BEAM prototype/reference
+  - not the long-term product boundary
+  - should be removed after `favn_web` covers the required smoke flows
 
 ### Adapter/plugin apps
 - `favn_storage_postgres`
@@ -127,7 +146,15 @@ The following decisions are the Phase 0 deliverable answers and are treated as l
 
 ### Locked umbrella app list
 
-The target app structure above is the locked Phase 0 umbrella app list:
+Historical note: Phase 0 locked the initial umbrella scaffold including `favn_view`.
+
+Corrected steady-state note:
+
+- the steady-state architecture is now `favn_web + favn_orchestrator + favn_runner`, not `favn_view + favn_orchestrator`
+- `favn_web` is expected to live as a separate monorepo workspace/package outside the Elixir umbrella
+- `favn_view` remains in the repo only as a transitional prototype until replacement
+
+The current umbrella app list therefore remains:
 
 - public package: `favn`
 - internal runtime apps: `favn_core`, `favn_runner`, `favn_orchestrator`, `favn_view`
@@ -136,6 +163,10 @@ The target app structure above is the locked Phase 0 umbrella app list:
 
 No additional umbrella apps should be introduced during early migration unless the boundary cannot be expressed cleanly with this set.
 
+Phase 8 correction rule:
+
+- do not treat the historical presence of `favn_view` in the umbrella as permission to keep same-BEAM UI coupling as the product architecture
+
 ### Allowed dependency directions between apps
 
 Allowed compile-time dependency directions for the umbrella:
@@ -143,7 +174,7 @@ Allowed compile-time dependency directions for the umbrella:
 - `favn -> favn_core`
 - `favn_orchestrator -> favn_core`
 - `favn_runner -> favn_core`
-- `favn_view -> favn_orchestrator`
+- `favn_view -> favn_orchestrator` (transitional prototype only)
 - `favn_storage_postgres -> favn_orchestrator`
 - `favn_storage_sqlite -> favn_orchestrator`
 - `favn_duckdb -> favn_runner`
@@ -154,11 +185,11 @@ Locked dependency rules:
 1. `favn_core` must stay at the bottom of the graph and must not depend on any other umbrella app.
 2. `favn` is the public authoring package and must not depend on `favn_runner`, `favn_orchestrator`, `favn_view`, storage adapters, plugins, or `favn_legacy`.
 3. `favn_core` should contain only DSL/compiler/manifest concerns plus truly shared boundary contracts, not scheduler, storage, or UI behavior.
-4. `favn_orchestrator` is the system of record and must own manifests, schedules, runs, event history, operator APIs, and storage contracts.
+4. `favn_orchestrator` is the system of record and must own manifests, schedules, runs, event history, operator APIs, auth/authz, audit, and storage contracts.
 5. `favn_orchestrator` must not depend on `favn_runner` implementation details; any runner protocol contract shared across runtimes belongs in `favn_core`.
 6. `favn_runner` is execution-only and must not depend on `favn_orchestrator`, storage adapters, or `favn_view`.
 7. `favn_runner` should execute pinned manifest work, invoke runner-side plugins, and emit execution results/events back to orchestrator.
-8. `favn_view` must depend on `favn_orchestrator` APIs only and must not depend directly on `favn_core`, `favn_runner`, storage adapters, plugins, or user business code.
+8. `favn_view` is transitional only, may depend on `favn_orchestrator` for the prototype path, and must not define new steady-state backend contract ownership.
 9. Storage apps depend only on `favn_orchestrator`; storage is a control-plane concern.
 10. Runner plugins depend only on `favn_runner`; execution plugins are a runner concern.
 11. No production app may depend on `favn_test_support`.
@@ -167,6 +198,7 @@ Locked dependency rules:
 14. App-specific fixtures should stay in `apps/<app>/test/support`.
 15. `favn_test_support` must stay dependency-light and must not take umbrella-app dependencies that would prevent low-level apps such as `favn_core` from using it in tests.
 16. No new app may depend on `favn_legacy`.
+17. The steady-state web tier must communicate with orchestrator over an explicit remote boundary and must not rely on same-BEAM direct calls.
 
 ### Packaging rule for `favn_runner`
 
@@ -214,7 +246,7 @@ For larger subsystems and `favn_legacy` itself:
 
 1. CI no longer needs the legacy code for compile, test, or runtime execution.
 2. `mix favn.dev`, packaging flows, and supported deployment modes run through the new architecture.
-3. Orchestrator, runner, storage, and view boundaries are exercised without the legacy runtime path.
+3. Orchestrator, runner, storage, and web/orchestrator boundaries are exercised without the legacy runtime path.
 4. `favn_legacy` is at most an optional regression reference and not a required dependency of any supported flow.
 5. The repository docs describe the new architecture as the only active product shape.
 
@@ -229,11 +261,15 @@ For larger subsystems and `favn_legacy` itself:
 - `favn_core`
 - `favn_runner`
 - `favn_orchestrator`
-- `favn_view`
+- `favn_view` (transitional prototype)
 - `favn_storage_postgres`
 - `favn_storage_sqlite`
 - `favn_test_support`
 - `favn_legacy`
+
+Separate monorepo product artifact:
+
+- `favn_web` (not a Hex library; browser/server deployment artifact)
 
 Rationale:
 users should not need to understand or depend directly on internal product boundaries. The public authoring contract is `favn`; runtime apps remain internal product artifacts even when they are packaged into runnable images.
@@ -250,14 +286,15 @@ Default local behavior:
 
 - memory storage by default
 - SQLite optional for persistence
-- local orchestrator and view started from version-matched runtime artifacts
+- local orchestrator started from version-matched runtime artifacts
 - local runner started from the user project
+- local web tier started as a separate dev/runtime process against the private orchestrator API
 
 ### 2. Single-node deployment
 One assembled image containing:
 
+- web runtime
 - orchestrator runtime
-- view runtime
 - runner payload
 - user business code
 - compiled manifest
@@ -266,7 +303,7 @@ One assembled image containing:
 ### 3. Split deployment
 Three-way topology:
 
-- prebuilt `favn_view`
+- prebuilt `favn_web`
 - prebuilt `favn_orchestrator`
 - user-built runner image
 
@@ -283,14 +320,15 @@ This remains the target production contract even if same-node/simple modes are s
    - but orchestration must target a runner contract, not direct local module invocation
    - the runner should stay lightweight and focused on business-code execution
 
-3. **View is internet-facing, orchestrator and runners are private by default**
+3. **Web is internet-facing, orchestrator and runners are private by default**
+   - browser clients never connect directly to orchestrator or runners
    - avoid collapsing back into one exposed runtime
 
 4. **One user dependency**
    - user business projects should depend on `favn`, not on internal apps directly
 
 5. **Orchestrator is the control-plane center**
-   - operator APIs, run state, scheduling, manifests, and persistence belong there
+   - operator APIs, run state, scheduling, manifests, auth/authz, audit, and persistence belong there
 
 6. **Minimal app count**
    - split only where there is a real deployment, dependency, or ownership boundary
@@ -544,35 +582,76 @@ Phase 7 should also absorb the remaining older carried-forward SQL follow-ups:
 
 ---
 
-## Phase 8 — Add view runtime
+## Phase 8 — Web/Orchestrator Boundary, API, Events, and Auth
 
 ### Goal
-Create the UI as a true external boundary.
+Establish the correct long-term remote boundary between the public web tier and the private orchestrator before tooling and packaging are finalized.
+
+Important scope rule:
+
+- Phase 8 locks architecture and boundary ownership.
+- Phase 8 does **not** claim a safe release-ready security/scalability model.
+- durable hardening required for a safe web-facing release is tracked explicitly as post-refactor release-blocking work.
 
 Detailed implementation planning for this phase lives in:
 
-- `docs/refactor/PHASE_8_VIEW_PROTOTYPE_PLAN.md`
+- `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`
 - `docs/refactor/PHASE_8_TODO.md`
 
 ### Deliverables
-In `favn_view`:
 
-- Phoenix/LiveView app
-- API integration with orchestrator
-- manifest/run inspection UI
-- local dev integration with `mix favn.dev`
+In `favn_orchestrator` and the new web tier boundary:
+
+- private orchestrator HTTP API v1
+- SSE transport baseline with run-scoped replay/resume foundation
+- orchestrator-owned local username/password auth foundation
+- orchestrator-owned actor/role/session/audit model
+- explicit web-to-orchestrator service authentication
+- thin web prototype proving login, session handling, reads, commands, and SSE relay over the remote boundary
+- explicit deprecation of same-BEAM `favn_view` as the steady-state target
 
 ### Exit criteria
-- view runs without requiring user projects to add it as a normal Mix dependency
-- view interacts with orchestrator APIs, not internal module calls into user code
-- local dev can inspect compiled manifests and runs in the UI
+
+- the orchestrator remote API and DTO/error/versioning rules are locked in tests/docs
+- live run updates flow over SSE, including run-scoped replay/resume semantics
+- username/password auth works through the web tier while orchestrator remains the authz and audit authority
+- the web prototype proves the boundary without becoming the long-term investment center
+- Phase 9 can package the real `web + orchestrator + runner` topology without hidden same-BEAM assumptions
+
+Explicitly not part of Phase 8 exit criteria:
+
+- durable auth/session/audit persistence
+- durable idempotency contract
+- release-grade browser-edge abuse/rate-limit controls
+- scalable global SSE replay/cursor model
+- safe-release credential-hardening and rotation model
+
+These are required before a safe web-facing release and are tracked in roadmap release-blocker sections.
+
+Required before safe web-facing release:
+
+- durable orchestrator auth persistence for actors/credentials/sessions/audit
+- stronger boring password/session foundation replacing prototype-grade internals
+- real browser-edge abuse/rate-limit controls
+- durable idempotency contract with request-fingerprint conflict handling (if shipped)
+- scalable global SSE replay/cursor model
+- real end-to-end integration tests against live orchestrator
+- service credential hardening with identity binding and rotation
+
+### Status
+Reopened and redefined.
+
+Historical note:
+
+- the earlier `favn_view` LiveView prototype is implemented as a transitional reference only
+- it no longer satisfies Phase 8 exit criteria on its own
 
 ---
 
 ## Phase 9 — Developer tooling and packaging
 
 ### Goal
-Make the new architecture usable, not just technically correct.
+Make the corrected `web + orchestrator + runner` architecture usable, packageable, and pleasant in local development.
 
 ### Deliverables
 - `mix favn.install`
@@ -580,15 +659,19 @@ Make the new architecture usable, not just technically correct.
 - `mix favn.dev --sqlite`
 - `mix favn.stop`
 - `mix favn.reset`
+- `mix favn.build.web`
+- `mix favn.build.orchestrator`
 - `mix favn.build.runner`
 - `mix favn.build.single`
 
 Tooling behavior:
 
-- local dev downloads version-matched runtime artifacts for orchestrator/view
+- local dev downloads or resolves version-matched runtime artifacts for orchestrator and web as separate targets
 - local dev does not require Docker by default
 - Docker/dev-container mode may be added optionally later
-- single-image assembly combines runtime artifacts with user runner payload and manifest
+- single-image assembly combines web, orchestrator, and runner artifacts without erasing their runtime boundaries
+- split deployment targets are `web`, `orchestrator`, and `runner`
+- local dev and packaging must not rely on same-BEAM `favn_view -> favn_orchestrator` shortcuts
 
 Additional storage follow-ups in this phase:
 
@@ -596,8 +679,9 @@ Additional storage follow-ups in this phase:
 - broaden live Postgres migration/transaction/concurrency verification in a production-like test path
 
 ### Exit criteria
-- user can go from `{:favn, ...}` dependency to local UI and orchestration quickly
-- user can package single-node and split deployments without understanding internal app structure
+- user can go from `{:favn, ...}` dependency to local web UI and orchestration quickly
+- user can package `web`, `orchestrator`, `runner`, and optional `single` targets without understanding internal implementation details
+- local dev makes the public/private split visible even on one machine
 
 ---
 
@@ -636,7 +720,7 @@ Recommended migration order:
 5. `favn_orchestrator`
 6. storage adapters
 7. `favn_duckdb`
-8. `favn_view`
+8. web/orchestrator API, event, and auth boundary
 9. tooling and packaging
 10. legacy deletion
 
@@ -650,11 +734,12 @@ v0.5 is complete when:
 - manifests are compiled and versioned
 - orchestrator schedules from persisted manifest state
 - runner executes user code behind a runner boundary
-- view is a separate runtime
+- web is a separate runtime and public edge
 - local dev works through `mix favn.dev`
 - SQLite local persistence works
 - single-node packaging works
 - split deployment works in first supported form
+- orchestrator owns auth/authz and audit for operator actions
 - old monolith is no longer the active architecture
 
 ## Nice-to-have items after v0.5
@@ -668,3 +753,6 @@ These should come after the refactor foundation, not before:
 - separate plugin repo if ecosystem size justifies it
 - advanced cloud deployment automation
 - deeper operator tooling and observability polish
+- rebuilt richer web UX after the boundary contracts are stable
+- Azure Entra ID auth provider
+- future gatewayed direct orchestrator API exposure

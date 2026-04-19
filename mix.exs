@@ -23,7 +23,6 @@ defmodule FavnUmbrella.MixProject do
         "do --app favn test",
         "do --app favn_runner test",
         "do --app favn_orchestrator test",
-        "do --app favn_view test",
         "do --app favn_storage_postgres test",
         "do --app favn_storage_sqlite test",
         "do --app favn_duckdb test"

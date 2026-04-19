@@ -2,7 +2,7 @@
 
 Purpose:
 
-- internal UI runtime that interacts through orchestrator APIs
+- archived transitional same-BEAM prototype from the pre-`favn_web` boundary cut
 
 Visibility:
 
@@ -20,4 +20,6 @@ Must not depend on in Phase 1:
 
 Current status:
 
-- scaffold-only, not implemented yet
+- frozen and archived in Phase 8
+- not part of the active Phase 8/9 delivery path
+- no new product-boundary semantics should be added here

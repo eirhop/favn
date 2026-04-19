@@ -92,6 +92,7 @@ defmodule FavnOrchestrator.EventsTest do
 
   test "does not broadcast when transition persistence fails" do
     run = run_state("run_events_conflict")
+    run_id = run.id
     running = RunState.transition(run, status: :running)
     conflicting = RunState.transition(run, status: :error, error: :boom)
 
@@ -109,7 +110,7 @@ defmodule FavnOrchestrator.EventsTest do
     assert {:error, :conflicting_snapshot} =
              TransitionWriter.persist_transition(conflicting, :run_failed, %{})
 
-    refute_receive {:favn_run_event, _event}, 100
+    refute_receive {:favn_run_event, %RunEvent{run_id: ^run_id}}, 100
   end
 
   test "idempotent transition writes are not re-broadcast" do

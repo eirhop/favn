@@ -22,7 +22,7 @@ The most important file is `docs/FEATURES.md`. We will use this file to document
     - Branch main with name based on feature to be implemented as feature/*.
     - If user asks explixitly to work on a specific branch then go to that branch, make sure it is up to date and start working. 
 - After any Elixir code change, run `mix format`, `mix compile --warnings-as-errors`, `mix test`, `mix credo --strict`, `mix dialyzer`, and `mix xref graph --format stats --label compile-connected`. Fix all failures before finishing.
-
+- Only web-dev agent should work with favn_web as web-dev has web dev tooling. When needed to do changes on favn_web, offload work to web-dev agent
 
 ### Breaking changes and legacy code
 - Breaking changes are allowed until we have a real production release and external users depending on the API >v1.0.
