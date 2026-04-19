@@ -1,9 +1,9 @@
 defmodule FavnOrchestrator.RunnerClient.LocalNode do
   @moduledoc """
-  Local runner client that dispatches to a configured runner module at runtime.
+  Local runner client that dispatches to a live runner node via RPC.
 
   This keeps the orchestrator side free from compile-time dependencies on
-  `favn_runner` while still allowing local-node execution in development.
+  `favn_runner` while preserving a real process boundary in local development.
   """
 
   @behaviour Favn.Contracts.RunnerClient
@@ -12,7 +12,7 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
 
-  @type opt :: {:runner_module, module()}
+  @type opt :: {:runner_node, node()} | {:runner_module, module()}
 
   @impl true
   @spec register_manifest(Version.t(), [opt()]) :: :ok | {:error, term()}
@@ -44,19 +44,36 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
        when is_list(opts) and is_atom(function) and is_list(args) do
     runner_module = Keyword.get(opts, :runner_module, FavnRunner)
 
-    with {:ok, module} <- ensure_module(runner_module),
-         true <- function_exported?(module, function, length(args)) do
-      apply(module, function, args)
+    if is_atom(runner_module) and function_exported?(runner_module, function, length(args)) do
+      {:ok, runner_node} = fetch_runner_node(opts)
+      dispatch_call(runner_node, runner_module, function, args)
     else
-      false -> {:error, {:runner_function_undefined, runner_module, function, length(args)}}
-      {:error, _reason} = error -> error
+      {:error, {:runner_function_undefined, runner_module, function, length(args)}}
     end
   end
 
-  defp ensure_module(module) when is_atom(module) do
-    case Code.ensure_loaded(module) do
-      {:module, ^module} -> {:ok, module}
-      {:error, reason} -> {:error, {:runner_module_unavailable, module, reason}}
+  defp fetch_runner_node(opts) when is_list(opts) do
+    case Keyword.get(opts, :runner_node) do
+      value when is_atom(value) -> {:ok, value}
+      _ -> {:ok, nil}
+    end
+  end
+
+  defp dispatch_call(nil, runner_module, function, args) do
+    apply(runner_module, function, args)
+  end
+
+  defp dispatch_call(runner_node, runner_module, function, args) when is_atom(runner_node) do
+    with :ok <- ensure_connected(runner_node) do
+      :erpc.call(runner_node, runner_module, function, args, 15_000)
+    end
+  end
+
+  defp ensure_connected(runner_node) when is_atom(runner_node) do
+    case Node.connect(runner_node) do
+      true -> :ok
+      false -> {:error, {:runner_node_unreachable, runner_node}}
+      :ignored -> {:error, {:runner_node_ignored, runner_node}}
     end
   end
 end

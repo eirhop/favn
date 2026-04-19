@@ -42,7 +42,7 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
   end
 
   test "returns error when runner module is missing" do
-    assert {:error, {:runner_module_unavailable, MissingRunnerModule, _reason}} =
+    assert {:error, {:runner_function_undefined, MissingRunnerModule, :cancel_work, 3}} =
              LocalNode.cancel_work("exec_2", %{}, runner_module: MissingRunnerModule)
   end
 end

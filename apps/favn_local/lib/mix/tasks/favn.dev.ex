@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Favn.Dev do
   use Mix.Task
 
+  @dialyzer {:nowarn_function, run: 1}
+
   @shortdoc "Starts local Favn dev stack"
 
   @moduledoc """

@@ -98,6 +98,18 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 - [ ] If needed later, attach only to the orchestrator/control-plane runtime.
 - [ ] Add small helper functions for interactive use: `Favn.Dev.reload/0`, `Favn.Dev.status/0`, `Favn.Dev.stop/0`.
 
+## Follow-Up Refactor / Future Features
+
+- [ ] evaluate whether `favn` should later become a thin distribution package over authoring + local tooling ownership (`favn` + `favn_local`)
+- [ ] document and enforce durable local control-plane boundaries between web, orchestrator, and runner in dev mode
+- [ ] add watch mode / auto-reload
+- [ ] add `doctor` / environment validation
+- [ ] add `clean` / reset local state helper
+- [ ] add log-tail helper commands
+- [ ] add restart-single-service helper
+- [ ] improve port conflict diagnostics
+- [ ] define explicit `.favn/` secrets/state policy
+
 ## Testing
 
 - [x] Add config resolution tests.

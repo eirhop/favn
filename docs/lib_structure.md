@@ -8,7 +8,6 @@ apps/
 │   ├── favn.ex
 │   ├── favn/
 │       ├── public_scaffold.ex
-│       ├── dev.ex
 │       ├── asset.ex
 │       ├── assets.ex
 │       ├── connection.ex
@@ -19,20 +18,25 @@ apps/
 │       ├── sql.ex
 │       ├── sql_asset.ex
 │       ├── window.ex
-│       ├── dev/
-│       │   ├── config.ex
-│       │   ├── lock.ex
-│       │   ├── orchestrator_client.ex
-│       │   ├── paths.ex
-│       │   ├── process.ex
-│       │   ├── reload.ex
-│       │   ├── runner_control.ex
-│       │   ├── secrets.ex
-│       │   ├── stack.ex
-│       │   ├── state.ex
-│       │   └── status.ex
 │       ├── triggers/
 │       └── (public DSL entrypoints only)
+├── favn_local/lib/
+│   ├── favn_local.ex
+│   ├── favn/
+│   │   ├── dev.ex
+│   │   └── dev/
+│   │       ├── config.ex
+│   │       ├── lock.ex
+│   │       ├── node_control.ex
+│   │       ├── orchestrator_client.ex
+│   │       ├── paths.ex
+│   │       ├── process.ex
+│   │       ├── reload.ex
+│   │       ├── runner_control.ex
+│   │       ├── secrets.ex
+│   │       ├── stack.ex
+│   │       ├── state.ex
+│   │       └── status.ex
 │   └── mix/tasks/
 │       ├── favn.dev.ex
 │       ├── favn.reload.ex

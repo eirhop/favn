@@ -1,6 +1,6 @@
 defmodule Favn.Dev do
   @moduledoc """
-  Local developer tooling facade.
+  Local developer tooling facade owned by `apps/favn_local`.
 
   This module is intentionally small and delegates to focused implementation
   modules under `Favn.Dev.*`.

@@ -676,6 +676,13 @@ Foundational local dev loop only:
 - foreground startup by default so terminal exit stops the owned local stack
 - private manifest publish through orchestrator API so manifests can be updated without restarting orchestrator
 
+Ownership and packaging note:
+
+- local lifecycle/tooling ownership lives in `apps/favn_local`
+- public authoring/build ownership stays in `apps/favn`
+- future one-install UX and internal ownership do not need to be identical
+- follow-up design item: evaluate whether `favn` later becomes a thin distribution package over authoring + local tooling
+
 Important scope rule for the next PR:
 
 - do not make the immediate implementation slice primarily about install/reset/logs/build packaging tasks
@@ -709,6 +716,33 @@ Tooling behavior:
 - single-image assembly combines web, orchestrator, and runner artifacts without erasing their runtime boundaries
 - split deployment targets are `web`, `orchestrator`, and `runner`
 - local dev and packaging must not rely on same-BEAM `favn_view -> favn_orchestrator` shortcuts
+
+Local control-plane boundary follow-up:
+
+- local orchestrator, runner, and web communication must stay explicit across process boundaries
+- live runner registration/control should target the actual running local runner instance
+- one-off helper process registration should not be used as the steady-state control path
+
+Lifecycle semantics to keep explicit:
+
+- lock scope protects short runtime-state mutation windows only; foreground wait loops never hold `.favn/lock`
+- startup failure must stop started services, repair runtime state, and leave subsequent `dev/reload/stop/status` in a sane state
+- `reload` runs against a running stack and keeps orchestrator alive while publishing/activating manifests
+
+Test strategy follow-up:
+
+- maintain true lifecycle coverage for start/status/reload/stop across concurrent processes
+- include explicit tests for startup-failure cleanup, reload during running state, and partial/dead service recovery
+
+Future local-tooling features (not this PR):
+
+- watch mode / auto-reload
+- doctor / environment validation
+- clean/reset local state
+- log tail helpers
+- restart single service
+- improved port-conflict diagnostics
+- clearer `.favn/` secrets/state policy
 
 Additional storage follow-ups in this phase:
 

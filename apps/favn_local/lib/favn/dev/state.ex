@@ -1,6 +1,9 @@
 defmodule Favn.Dev.State do
   @moduledoc """
   Reads and writes project-local `.favn/` state files.
+
+  Runtime state is versioned through the top-level `schema_version` field in
+  `runtime.json`.
   """
 
   alias Favn.Dev.Paths

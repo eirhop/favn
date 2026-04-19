@@ -17,6 +17,12 @@ This plan treats the merged Phase 8 web/orchestrator boundary work as locked bas
 - the web/orchestrator remote HTTP + SSE boundary already exists in baseline form.
 - orchestrator-owned auth/session/audit baseline already exists.
 
+### Ownership boundary
+
+- `apps/favn_local` owns local lifecycle/tooling implementation (`dev`, `stop`, `reload`, `status`, `.favn/` state)
+- `apps/favn` stays the public authoring/build surface
+- future distribution UX may wrap multiple owner apps; packaging shape and ownership shape do not need to be the same
+
 ### Strict next-PR scope
 
 Foundational, next PR:
@@ -192,6 +198,7 @@ Default `mix favn.dev`:
 - starts runner, orchestrator, and web, then stays attached in the foreground
 - stops the full owned stack when interrupted or when the terminal session exits normally
 - writes current runtime ownership to `.favn/runtime.json` so another terminal can run `mix favn.reload`, `mix favn.status`, or `mix favn.stop`
+- acquires `.favn/lock` only for short runtime state mutation windows, never for the full foreground wait lifetime
 
 Optional interactive mode:
 
@@ -379,6 +386,12 @@ Use full stop/start instead when:
 - orchestrator code changed
 - orchestrator config changed
 - local lifecycle/control-path wiring changed
+
+### Local runner control boundary
+
+- manifest re-registration during reload must target the live runner process
+- local control cannot rely on one-off helper VMs that do not affect the running runner instance
+- local orchestrator runner-client wiring should explicitly use configured local runner control (`:runner_client` + `:runner_client_opts`) at startup
 
 ### Should reload recover a stopped stack?
 
@@ -654,6 +667,12 @@ At least one serial smoke path should cover:
 5. verify active manifest changes or is re-registered cleanly
 6. `mix favn.stop`
 7. verify runtime state is cleared while logs/SQLite remain
+
+Lifecycle-specific additions:
+
+- test that `mix favn.dev` does not hold `.favn/lock` across the full foreground lifetime
+- test second-terminal `reload/status/stop` behavior while foreground `dev` is running
+- test startup/bootstrap failure cleanup for stale process/state recovery
 
 Recommended location:
 

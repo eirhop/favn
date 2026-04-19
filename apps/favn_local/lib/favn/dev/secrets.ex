@@ -17,7 +17,8 @@ defmodule Favn.Dev.Secrets do
     secrets = %{
       "service_token" => config.service_token || stored["service_token"] || random_secret(24),
       "web_session_secret" =>
-        config.web_session_secret || stored["web_session_secret"] || random_secret(32)
+        config.web_session_secret || stored["web_session_secret"] || random_secret(32),
+      "rpc_cookie" => stored["rpc_cookie"] || random_secret(24)
     }
 
     case State.write_secrets(secrets, opts) do
