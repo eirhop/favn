@@ -548,7 +548,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, _run} = await_terminal_run(run_id)
     assert {:ok, stored_events} = Storage.list_run_events(run_id)
 
-    received = collect_run_events(length(stored_events) * 2)
+    received = collect_run_events_for_run(run_id, length(stored_events) * 2)
 
     assert Enum.frequencies_by(received, & &1.sequence) ==
              Map.new(stored_events, fn event -> {event.sequence, 2} end)
@@ -1238,6 +1238,25 @@ defmodule FavnOrchestrator.RunManagerTest do
         timeout -> flunk("expected #{count} pubsub run events")
       end
     end)
+  end
+
+  defp collect_run_events_for_run(run_id, count, timeout \\ 2_000)
+       when is_binary(run_id) and count > 0 do
+    collect_run_events_for_run(run_id, count, timeout, [])
+  end
+
+  defp collect_run_events_for_run(_run_id, 0, _timeout, acc), do: Enum.reverse(acc)
+
+  defp collect_run_events_for_run(run_id, remaining, timeout, acc) do
+    receive do
+      {:favn_run_event, event} when event.run_id == run_id ->
+        collect_run_events_for_run(run_id, remaining - 1, timeout, [event | acc])
+
+      {:favn_run_event, _other_event} ->
+        collect_run_events_for_run(run_id, remaining, timeout, acc)
+    after
+      timeout -> flunk("expected #{remaining} more pubsub run events for #{run_id}")
+    end
   end
 
   defp manifest_version(manifest_version_id) do
