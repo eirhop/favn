@@ -112,6 +112,12 @@ Required change:
 
 Establish the correct long-term remote boundary between `favn_web` and `favn_orchestrator`, including the canonical HTTP API, SSE event model, local-password auth foundation, service-to-service trust, and actor/audit semantics needed before Phase 9 tooling and packaging are finalized.
 
+Scope control rule:
+
+- Phase 8 establishes boundary correctness.
+- Phase 8 does not claim safe-release security/scalability hardening.
+- durable hardening required before a safe web-facing release is explicitly deferred to roadmap release blockers.
+
 ### Phase 8 priority order
 
 1. orchestrator API design and implementation
@@ -124,8 +130,8 @@ Establish the correct long-term remote boundary between `favn_web` and `favn_orc
 In scope:
 
 - private orchestrator HTTP API v1
-- orchestrator-owned remote DTOs, error envelopes, pagination rules, and idempotency rules
-- orchestrator-owned SSE endpoints with replay/resume behavior
+- orchestrator-owned remote DTOs and error envelopes
+- orchestrator-owned SSE endpoints with transport baseline and run-scoped replay/resume foundation
 - local username/password auth backend in orchestrator
 - actor, role, session, and audit record model in orchestrator
 - explicit service-to-service auth from web to orchestrator
@@ -144,11 +150,17 @@ Out of scope:
 ### Phase 8 deliverables
 
 - a canonical orchestrator API contract document and HTTP endpoint skeleton
-- a canonical SSE event contract document and replay/resume behavior
+- a canonical SSE event contract document and baseline transport semantics
 - actor/auth/session/audit domain model locked in orchestrator
 - a thin `favn_web` prototype proving login, session handling, reads, commands, and SSE relay
 - `favn_view` explicitly frozen as transitional
 - Phase 9 reframed around the corrected deployment shape
+
+Not a Phase 8 deliverable:
+
+- release-grade login abuse controls
+- durable idempotency replay contract
+- scalable global SSE replay/cursor model
 
 ## 4. Canonical Orchestrator API Design
 
@@ -345,10 +357,7 @@ Recommended error codes include:
 - `forbidden`
 - `not_found`
 - `conflict`
-- `idempotency_conflict`
-- `rate_limited`
 - `cursor_invalid`
-- `cursor_expired`
 - `service_unauthorized`
 
 ### Pagination and filtering
@@ -362,16 +371,17 @@ Recommended baseline:
 
 ### Idempotency
 
-Recommended v0.5 rule:
+Phase 8 status:
 
-- require `Idempotency-Key` for operator-initiated mutating commands that can be retried by web or browser UX
-- persist idempotency records in orchestrator keyed by `service_identity + actor_id + route + idempotency_key`
-- reject reused keys with materially different request bodies as `409 idempotency_conflict`
-- initial required coverage:
-  - `POST /runs`
-  - `POST /runs/:run_id/cancel`
-  - `POST /runs/:run_id/rerun`
-  - `POST /manifests/:manifest_version_id/activate`
+- durable idempotency is deferred out of Phase 8
+- mutating commands in Phase 8 should remain explicit baseline commands with authz/audit
+- no claim of safe replay semantics should be made until idempotency is storage-backed and request-fingerprint aware
+
+Required before safe web-facing release:
+
+- persist idempotency records durably
+- include request-fingerprint/body conflict detection
+- define explicit behavior for key reuse conflicts
 
 ### Internal-only vs browser-safe exposure
 
@@ -408,8 +418,8 @@ Recommended private endpoints:
 
 Phase 8 minimum:
 
-- run-global stream for dashboards/run lists
-- run-scoped stream for run detail
+- run-global stream as baseline transport/ready channel (no scalable replay guarantees yet)
+- run-scoped stream for run detail with replay/resume foundation
 - scheduler pages may remain snapshot-driven in the first cut, but any later live scheduler updates should reuse the same event envelope and cursor model instead of inventing a second transport
 
 ### Browser-facing SSE endpoints in web
@@ -484,16 +494,16 @@ SSE framing recommendation:
 ### Sequencing, replay, and cursor behavior
 
 - run-scoped events keep a monotonic per-run `sequence`
-- SSE replay uses the opaque `cursor`, not only the per-run `sequence`
-- orchestrator remains the durable source of truth for replay from persisted event history
-- for global mixed streams, the cursor must reflect durable stream order across events
+- run-scoped SSE replay uses the opaque cursor plus per-run sequence semantics
+- orchestrator remains the durable source of truth for run-scoped replay from persisted history
+- global mixed-stream durable ordering/replay is deferred until a scalable cursor model is implemented
 
 ### Resume strategy
 
 - browsers rely on `Last-Event-ID` automatically when reconnecting to `favn_web`
 - `favn_web` forwards `Last-Event-ID` to orchestrator when reopening the upstream stream
-- orchestrator replays events strictly after the supplied cursor
-- if the cursor is unknown or expired, return a structured error or reset event so the web tier can refetch snapshots and reopen from head
+- run-scoped streams replay events strictly after the supplied cursor
+- global stream baseline may return a ready/reset state without claiming durable replay guarantees
 
 ### Reconnection model
 
@@ -826,7 +836,7 @@ The Phase 8 web prototype should prove the boundary, not define the product UX.
 
 - HTTP contract tests in `favn_orchestrator` for every v1 endpoint
 - schema lock tests for request/response DTOs and error envelopes
-- regression tests for pagination, filtering, and idempotency behavior
+- regression tests for pagination/filtering baselines and command authz behavior
 
 ### Auth/authz tests
 
@@ -855,10 +865,9 @@ The Phase 8 web prototype should prove the boundary, not define the product UX.
 
 ### SSE/event stream tests
 
-- stream bootstrapping tests with snapshot + replay
-- `Last-Event-ID` resume tests
-- invalid/expired cursor tests
-- run-global and run-scoped stream authorization tests
+- stream bootstrapping tests with snapshot + run-scoped replay
+- `Last-Event-ID` validation and run-scoped resume tests
+- run-global baseline and run-scoped stream authorization tests
 - relay tests proving `favn_web` does not become the source of truth
 
 ### Browser/web integration smoke tests
@@ -872,7 +881,7 @@ The Phase 8 web prototype should prove the boundary, not define the product UX.
 - run lifecycle and event persistence invariants
 - audit append behavior
 - actor/session lookup correctness
-- idempotency store behavior
+- explicit deferral tests/docs ensuring no durable idempotency claim is implied in Phase 8
 
 ### Runner contract tests
 
@@ -894,8 +903,8 @@ Recommended order:
 2. orchestrator auth domain PR
 3. orchestrator HTTP API skeleton PR
 4. orchestrator read-model endpoints PR
-5. orchestrator mutating command + idempotency PR
-6. orchestrator SSE endpoint and replay PR
+5. orchestrator mutating command + authz/audit PR
+6. orchestrator SSE endpoint baseline + run-scoped replay PR
 7. web service-auth + browser session PR
 8. thin web prototype screens and SSE relay PR
 9. actor admin/bootstrap and audit visibility PR
@@ -913,6 +922,13 @@ Rationale:
 
 The roadmap should explicitly queue these follow-ups after the corrected Phase 8/9 work:
 
+- durable orchestrator auth persistence (actors, credentials, sessions, audit)
+- stronger boring password/session foundation replacing prototype-grade internals
+- browser-edge login abuse/rate-limit protection (not orchestrator `remote_ip` heuristics)
+- durable idempotency contract with request fingerprint conflict handling (if shipped)
+- scalable global SSE replay/cursor model with durable ordering semantics
+- real end-to-end integration coverage against the live orchestrator implementation
+- service credential hardening with stronger identity binding and rotation support
 - production-ready public/private split and deployment hardening
 - richer rebuilt web UX after the contract and auth foundations stabilize
 - Azure Entra ID provider as an additional auth provider

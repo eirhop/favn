@@ -587,6 +587,12 @@ Phase 7 should also absorb the remaining older carried-forward SQL follow-ups:
 ### Goal
 Establish the correct long-term remote boundary between the public web tier and the private orchestrator before tooling and packaging are finalized.
 
+Important scope rule:
+
+- Phase 8 locks architecture and boundary ownership.
+- Phase 8 does **not** claim a safe release-ready security/scalability model.
+- durable hardening required for a safe web-facing release is tracked explicitly as post-refactor release-blocking work.
+
 Detailed implementation planning for this phase lives in:
 
 - `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md`
@@ -597,7 +603,7 @@ Detailed implementation planning for this phase lives in:
 In `favn_orchestrator` and the new web tier boundary:
 
 - private orchestrator HTTP API v1
-- authoritative SSE event contract and replay/resume behavior
+- SSE transport baseline with run-scoped replay/resume foundation
 - orchestrator-owned local username/password auth foundation
 - orchestrator-owned actor/role/session/audit model
 - explicit web-to-orchestrator service authentication
@@ -607,10 +613,30 @@ In `favn_orchestrator` and the new web tier boundary:
 ### Exit criteria
 
 - the orchestrator remote API and DTO/error/versioning rules are locked in tests/docs
-- live run updates flow over SSE with `Last-Event-ID` replay/resume semantics
+- live run updates flow over SSE, including run-scoped replay/resume semantics
 - username/password auth works through the web tier while orchestrator remains the authz and audit authority
 - the web prototype proves the boundary without becoming the long-term investment center
 - Phase 9 can package the real `web + orchestrator + runner` topology without hidden same-BEAM assumptions
+
+Explicitly not part of Phase 8 exit criteria:
+
+- durable auth/session/audit persistence
+- durable idempotency contract
+- release-grade browser-edge abuse/rate-limit controls
+- scalable global SSE replay/cursor model
+- safe-release credential-hardening and rotation model
+
+These are required before a safe web-facing release and are tracked in roadmap release-blocker sections.
+
+Required before safe web-facing release:
+
+- durable orchestrator auth persistence for actors/credentials/sessions/audit
+- stronger boring password/session foundation replacing prototype-grade internals
+- real browser-edge abuse/rate-limit controls
+- durable idempotency contract with request-fingerprint conflict handling (if shipped)
+- scalable global SSE replay/cursor model
+- real end-to-end integration tests against live orchestrator
+- service credential hardening with identity binding and rotation
 
 ### Status
 Reopened and redefined.
