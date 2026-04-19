@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import type { RequestHandler } from './$types';
 import { orchestratorListRuns, orchestratorSubmitRun } from '$lib/server/orchestrator';
 import { jsonError, readJsonBody, relayJson, requireSession } from '$lib/server/web_api';
@@ -54,6 +53,6 @@ export const POST: RequestHandler = async (event) => {
 		);
 	}
 
-	const upstream = await orchestratorSubmitRun(event.locals.session!, payload, randomUUID());
+	const upstream = await orchestratorSubmitRun(event.locals.session!, payload);
 	return relayJson(upstream);
 };

@@ -39,11 +39,6 @@ export async function relayJson(upstream: Response): Promise<Response> {
 	const headers = new Headers();
 	headers.set('content-type', 'application/json; charset=utf-8');
 
-	const replayed = upstream.headers.get('x-favn-idempotent-replayed');
-	if (replayed) {
-		headers.set('x-favn-idempotent-replayed', replayed);
-	}
-
 	return new Response(JSON.stringify(payload), {
 		status,
 		headers

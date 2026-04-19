@@ -25,16 +25,6 @@ config :favn_orchestrator,
     ),
   auth_session_ttl_seconds:
     String.to_integer(System.get_env("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "43200")),
-  auth_login_failure_delay_ms:
-    String.to_integer(System.get_env("FAVN_ORCHESTRATOR_AUTH_LOGIN_FAILURE_DELAY_MS", "100")),
-  auth_rate_limit_window_seconds:
-    String.to_integer(System.get_env("FAVN_ORCHESTRATOR_AUTH_RATE_LIMIT_WINDOW_SECONDS", "300")),
-  auth_rate_limit_max_attempts:
-    String.to_integer(System.get_env("FAVN_ORCHESTRATOR_AUTH_RATE_LIMIT_MAX_ATTEMPTS", "8")),
-  auth_rate_limit_block_seconds:
-    String.to_integer(System.get_env("FAVN_ORCHESTRATOR_AUTH_RATE_LIMIT_BLOCK_SECONDS", "60")),
-  api_idempotency_ttl_seconds:
-    String.to_integer(System.get_env("FAVN_ORCHESTRATOR_API_IDEMPOTENCY_TTL_SECONDS", "86400")),
   auth_bootstrap_username: System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME", ""),
   auth_bootstrap_password: System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", ""),
   auth_bootstrap_display_name:

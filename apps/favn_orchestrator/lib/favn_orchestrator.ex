@@ -257,32 +257,6 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
-  Lists replayable global run events after one optional persisted cursor.
-
-  The cursor is a `{run_id, sequence}` tuple from a previously observed event.
-  """
-  @spec list_global_run_stream_events(keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
-  def list_global_run_stream_events(opts \\ []) when is_list(opts) do
-    after_cursor = Keyword.get(opts, :after_cursor)
-    limit = Keyword.get(opts, :limit, 200)
-
-    with true <- is_integer(limit) and limit > 0,
-         {:ok, runs} <- list_runs(limit: 5_000),
-         {:ok, events} <- collect_global_run_events(runs) do
-      sorted =
-        events
-        |> Enum.sort_by(fn event ->
-          {DateTime.to_unix(event.occurred_at, :microsecond), event.run_id, event.sequence}
-        end)
-
-      replay_after_cursor(sorted, after_cursor, limit)
-    else
-      false -> {:error, :cursor_invalid}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  @doc """
   Subscribes the current process to one run-scoped live event stream.
   """
   @spec subscribe_run(run_id()) :: :ok | {:error, term()}
@@ -422,27 +396,6 @@ defmodule FavnOrchestrator do
         {:error, :cursor_invalid}
       end
     end
-  end
-
-  defp replay_after_cursor(events, nil, limit), do: {:ok, Enum.take(events, limit)}
-
-  defp replay_after_cursor(events, {run_id, sequence}, limit)
-       when is_binary(run_id) and is_integer(sequence) and sequence > 0 do
-    case Enum.find_index(events, &(&1.run_id == run_id and &1.sequence == sequence)) do
-      nil -> {:error, :cursor_invalid}
-      index -> {:ok, events |> Enum.drop(index + 1) |> Enum.take(limit)}
-    end
-  end
-
-  defp replay_after_cursor(_events, _cursor, _limit), do: {:error, :cursor_invalid}
-
-  defp collect_global_run_events(runs) when is_list(runs) do
-    Enum.reduce_while(runs, {:ok, []}, fn run, {:ok, acc} ->
-      case list_run_events(run.id) do
-        {:ok, events} -> {:cont, {:ok, acc ++ events}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
   end
 
   defp list_schedule_entries_from_active_manifest do

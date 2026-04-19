@@ -4,7 +4,6 @@ defmodule FavnOrchestrator.Application do
   use Application
 
   alias FavnOrchestrator.API.Config, as: APIConfig
-  alias FavnOrchestrator.API.IdempotencyStore
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.RunManager
@@ -18,7 +17,6 @@ defmodule FavnOrchestrator.Application do
       children =
         storage_children ++
           [
-            {IdempotencyStore, []},
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},

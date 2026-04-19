@@ -127,8 +127,7 @@ Notes:
 - Initial Phase 8 boundary-correction API/auth coverage now includes:
   - `apps/favn_orchestrator/test/api/router_test.exs`
   - `apps/favn_orchestrator/test/api/config_test.exs`
-  - `apps/favn_orchestrator/test/api/idempotency_store_test.exs`
-  - `apps/favn_orchestrator/test/api/router_test.exs` now also covers schedule list/detail reads, manifest activation idempotency replay, actor admin read authz cases, and actor management commands (create/roles/password)
+  - `apps/favn_orchestrator/test/api/router_test.exs` now also covers schedule list/detail reads, command/authz paths, run-scoped SSE replay, and actor admin read/management authz cases
   - `apps/favn_orchestrator/test/http_contract/schema_test.exs` for orchestrator-owned machine-readable schema lock coverage
 - Initial Phase 8 `favn_web` auth/session E2E coverage now includes:
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`

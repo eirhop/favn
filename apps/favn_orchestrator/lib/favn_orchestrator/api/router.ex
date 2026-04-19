@@ -6,7 +6,6 @@ defmodule FavnOrchestrator.API.Router do
   use Plug.Router
 
   alias FavnOrchestrator
-  alias FavnOrchestrator.API.IdempotencyStore
   alias FavnOrchestrator.Auth
 
   plug(Plug.RequestId)
@@ -29,8 +28,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, params} <- fetch_json_body(conn),
          {:ok, username} <- fetch_required_string(params, "username"),
          {:ok, password} <- fetch_required_string(params, "password"),
-         {:ok, session, actor} <-
-           Auth.password_login(username, password, identifier: auth_identifier(conn)) do
+         {:ok, session, actor} <- Auth.password_login(username, password) do
       Auth.put_audit(%{
         action: "auth.password.login",
         actor_id: actor.id,
@@ -42,12 +40,7 @@ defmodule FavnOrchestrator.API.Router do
       data(conn, 201, %{session: session_dto(session), actor: actor_dto(actor)})
     else
       {:error, :invalid_credentials} ->
-        apply_login_failure_delay()
         error(conn, 401, "unauthenticated", "Invalid username or password")
-
-      {:error, :rate_limited} ->
-        apply_login_failure_delay()
-        error(conn, 429, "rate_limited", "Too many login attempts")
 
       {:error, {:missing_field, field}} ->
         error(conn, 422, "validation_failed", "Missing required field", %{field: field})
@@ -186,8 +179,6 @@ defmodule FavnOrchestrator.API.Router do
   post "/api/orchestrator/v1/manifests/:manifest_version_id/activate" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
-         {:ok, scope_key} <- idempotency_scope_key(conn, actor.id),
-         :ok <- ensure_idempotent_not_replayed(scope_key),
          :ok <- FavnOrchestrator.activate_manifest(manifest_version_id),
          :ok <- maybe_reload_scheduler() do
       Auth.put_audit(%{
@@ -200,16 +191,8 @@ defmodule FavnOrchestrator.API.Router do
         service_identity: service_identity(conn)
       })
 
-      payload = %{activated: true, manifest_version_id: manifest_version_id}
-      :ok = put_idempotent_response(scope_key, 200, payload)
-      data(conn, 200, payload)
+      data(conn, 200, %{activated: true, manifest_version_id: manifest_version_id})
     else
-      {:error, :missing_idempotency_key} ->
-        error(conn, 422, "validation_failed", "Missing Idempotency-Key header")
-
-      {:error, {:idempotent_replay, response_entry}} ->
-        send_idempotent_replay(conn, response_entry)
-
       {:error, :manifest_version_not_found} ->
         error(conn, 404, "not_found", "Manifest version was not found")
 
@@ -327,8 +310,6 @@ defmodule FavnOrchestrator.API.Router do
   post "/api/orchestrator/v1/runs" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
-         {:ok, scope_key} <- idempotency_scope_key(conn, actor.id),
-         :ok <- ensure_idempotent_not_replayed(scope_key),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, run_id} <- submit_run_from_request(params),
          {:ok, run} <- FavnOrchestrator.get_run(run_id) do
@@ -342,16 +323,8 @@ defmodule FavnOrchestrator.API.Router do
         service_identity: service_identity(conn)
       })
 
-      payload = %{run: run_summary_dto(run)}
-      :ok = put_idempotent_response(scope_key, 201, payload)
-      data(conn, 201, payload)
+      data(conn, 201, %{run: run_summary_dto(run)})
     else
-      {:error, :missing_idempotency_key} ->
-        error(conn, 422, "validation_failed", "Missing Idempotency-Key header")
-
-      {:error, {:idempotent_replay, response_entry}} ->
-        send_idempotent_replay(conn, response_entry)
-
       {:error, :invalid_target} ->
         error(conn, 422, "validation_failed", "Invalid run target request")
 
@@ -381,8 +354,6 @@ defmodule FavnOrchestrator.API.Router do
   post "/api/orchestrator/v1/runs/:run_id/cancel" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
-         {:ok, scope_key} <- idempotency_scope_key(conn, actor.id),
-         :ok <- ensure_idempotent_not_replayed(scope_key),
          :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor.id}) do
       Auth.put_audit(%{
         action: "run.cancel",
@@ -394,16 +365,8 @@ defmodule FavnOrchestrator.API.Router do
         service_identity: service_identity(conn)
       })
 
-      payload = %{cancelled: true, run_id: run_id}
-      :ok = put_idempotent_response(scope_key, 200, payload)
-      data(conn, 200, payload)
+      data(conn, 200, %{cancelled: true, run_id: run_id})
     else
-      {:error, :missing_idempotency_key} ->
-        error(conn, 422, "validation_failed", "Missing Idempotency-Key header")
-
-      {:error, {:idempotent_replay, response_entry}} ->
-        send_idempotent_replay(conn, response_entry)
-
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
@@ -421,8 +384,6 @@ defmodule FavnOrchestrator.API.Router do
   post "/api/orchestrator/v1/runs/:run_id/rerun" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
-         {:ok, scope_key} <- idempotency_scope_key(conn, actor.id),
-         :ok <- ensure_idempotent_not_replayed(scope_key),
          {:ok, rerun_id} <- FavnOrchestrator.rerun(run_id),
          {:ok, rerun_run} <- FavnOrchestrator.get_run(rerun_id) do
       Auth.put_audit(%{
@@ -435,16 +396,8 @@ defmodule FavnOrchestrator.API.Router do
         service_identity: service_identity(conn)
       })
 
-      payload = %{run: run_summary_dto(rerun_run)}
-      :ok = put_idempotent_response(scope_key, 201, payload)
-      data(conn, 201, payload)
+      data(conn, 201, %{run: run_summary_dto(rerun_run)})
     else
-      {:error, :missing_idempotency_key} ->
-        error(conn, 422, "validation_failed", "Missing Idempotency-Key header")
-
-      {:error, {:idempotent_replay, response_entry}} ->
-        send_idempotent_replay(conn, response_entry)
-
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
@@ -462,11 +415,8 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/streams/runs" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, last_event_id} <- validate_last_event_id(header(conn, "last-event-id")),
-         {:ok, cursor} <- parse_runs_cursor(last_event_id),
-         {:ok, events} <-
-           FavnOrchestrator.list_global_run_stream_events(after_cursor: cursor, limit: 200) do
-      sse_runs_stream(conn, events)
+         {:ok, last_event_id} <- validate_last_event_id(header(conn, "last-event-id")) do
+      sse_ready(conn, "runs", last_event_id)
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -476,9 +426,6 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :invalid_last_event_id} ->
         error(conn, 422, "validation_failed", "Invalid Last-Event-ID header")
-
-      {:error, :cursor_invalid} ->
-        error(conn, 422, "cursor_invalid", "Cursor is invalid or no longer replayable")
 
       {:error, _reason} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
@@ -728,58 +675,6 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp idempotency_scope_key(conn, actor_id) do
-    case header(conn, "idempotency-key") do
-      value when is_binary(value) and value != "" ->
-        scope = [conn.method, conn.request_path, actor_id, value] |> Enum.join(":")
-        {:ok, scope}
-
-      _ ->
-        {:error, :missing_idempotency_key}
-    end
-  end
-
-  defp ensure_idempotent_not_replayed(scope_key) do
-    case IdempotencyStore.fetch(scope_key) do
-      :not_found -> :ok
-      {:ok, response_entry} -> {:error, {:idempotent_replay, response_entry}}
-    end
-  end
-
-  defp put_idempotent_response(scope_key, status, payload) do
-    body = Jason.encode!(%{data: payload})
-
-    IdempotencyStore.put(scope_key, %{
-      status: status,
-      body: body,
-      content_type: "application/json"
-    })
-  end
-
-  defp send_idempotent_replay(conn, response_entry) do
-    conn
-    |> put_resp_content_type(response_entry.content_type)
-    |> put_resp_header("x-favn-idempotent-replayed", "true")
-    |> send_resp(response_entry.status, response_entry.body)
-  end
-
-  defp auth_identifier(conn) do
-    case conn.remote_ip do
-      {a, b, c, d} -> Enum.join([a, b, c, d], ".")
-      {_, _, _, _, _, _, _, _} = addr -> addr |> :inet.ntoa() |> List.to_string()
-    end
-  end
-
-  defp apply_login_failure_delay do
-    delay_ms = Application.get_env(:favn_orchestrator, :auth_login_failure_delay_ms, 100)
-
-    if is_integer(delay_ms) and delay_ms > 0 do
-      Process.sleep(delay_ms)
-    end
-
-    :ok
-  end
-
   defp validate_last_event_id(nil), do: {:ok, nil}
 
   defp validate_last_event_id(value) when is_binary(value) do
@@ -801,24 +696,6 @@ defmodule FavnOrchestrator.API.Router do
       :ok -> :ok
       {:error, :scheduler_not_running} -> :ok
       {:error, _reason} = error -> error
-    end
-  end
-
-  defp parse_runs_cursor(nil), do: {:ok, nil}
-
-  defp parse_runs_cursor(value) when is_binary(value) do
-    case String.split(value, ":", parts: 3) do
-      ["runs", run_id, sequence] ->
-        with true <- run_id != "",
-             {int, ""} <- Integer.parse(sequence),
-             true <- int > 0 do
-          {:ok, {run_id, int}}
-        else
-          _ -> {:error, :cursor_invalid}
-        end
-
-      _other ->
-        {:error, :cursor_invalid}
     end
   end
 
@@ -1020,17 +897,10 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp sse_runs_stream(conn, events) when is_list(events) do
-    latest_cursor =
-      case List.last(events) do
-        nil -> "cursor:0"
-        event -> runs_cursor(event)
-      end
+  defp sse_ready(conn, stream, last_event_id) do
+    cursor = last_event_id || "cursor:0"
 
-    body =
-      events
-      |> Enum.map_join("", &sse_runs_event_body/1)
-      |> Kernel.<>(sse_ready_body("runs", latest_cursor))
+    body = sse_ready_body(stream, cursor)
 
     conn
     |> put_resp_content_type("text/event-stream")
@@ -1056,28 +926,6 @@ defmodule FavnOrchestrator.API.Router do
     |> put_resp_header("cache-control", "no-cache")
     |> put_resp_header("x-accel-buffering", "no")
     |> send_resp(200, body)
-  end
-
-  defp sse_runs_event_body(event) do
-    cursor = runs_cursor(event)
-    event_name = event_name(event.event_type)
-
-    payload =
-      Jason.encode!(%{
-        schema_version: 1,
-        event_id: "evt:" <> event.run_id <> ":" <> Integer.to_string(event.sequence),
-        stream: "runs",
-        topic: %{type: "run", id: event.run_id},
-        event_type: event_name,
-        occurred_at: datetime(event.occurred_at),
-        actor: %{type: "system", id: "orchestrator"},
-        resource: %{type: "run", id: event.run_id},
-        sequence: event.sequence,
-        cursor: cursor,
-        data: run_event_dto(event)
-      })
-
-    "id: #{cursor}\nevent: #{event_name}\ndata: #{payload}\n\n"
   end
 
   defp sse_run_event_body(event, run_id) do
@@ -1115,7 +963,6 @@ defmodule FavnOrchestrator.API.Router do
     "id: #{cursor}\nevent: stream.ready\ndata: #{payload}\n\n"
   end
 
-  defp runs_cursor(event), do: "runs:" <> event.run_id <> ":" <> Integer.to_string(event.sequence)
   defp run_cursor(event), do: "run:" <> event.run_id <> ":" <> Integer.to_string(event.sequence)
 
   defp actor_dto(actor) do

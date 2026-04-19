@@ -32,10 +32,9 @@ defmodule FavnOrchestrator.Auth do
     end
   end
 
-  @spec password_login(String.t(), String.t(), keyword()) ::
-          {:ok, session(), actor()} | {:error, term()}
-  def password_login(username, password, opts \\ []) do
-    with {:ok, actor} <- Store.authenticate_password(username, password, opts),
+  @spec password_login(String.t(), String.t()) :: {:ok, session(), actor()} | {:error, term()}
+  def password_login(username, password) do
+    with {:ok, actor} <- Store.authenticate_password(username, password),
          {:ok, session} <- Store.issue_session(actor.id, provider: "password_local") do
       {:ok, session, actor}
     end

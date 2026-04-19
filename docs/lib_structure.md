@@ -228,7 +228,6 @@ Notes:
 - Phase 8 boundary-correction backend slices now also include orchestrator HTTP/API + auth foundations:
   - `apps/favn_orchestrator/lib/favn_orchestrator/api/router.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/api/config.ex`
-  - `apps/favn_orchestrator/lib/favn_orchestrator/api/idempotency_store.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/auth.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/auth/store.ex`
   - `apps/favn_orchestrator/priv/http_contract/v1/*.schema.json`

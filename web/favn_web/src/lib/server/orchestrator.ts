@@ -103,52 +103,36 @@ export function orchestratorGetRun(session: WebSession, runId: string): Promise<
 
 export function orchestratorSubmitRun(
 	session: WebSession,
-	payload: { target: { type: 'asset' | 'pipeline'; id: string }; manifest_selection?: unknown },
-	idempotencyKey: string
+	payload: { target: { type: 'asset' | 'pipeline'; id: string }; manifest_selection?: unknown }
 ): Promise<Response> {
 	return orchestratorAuthed('/api/orchestrator/v1/runs', session, {
 		method: 'POST',
 		headers: {
 			accept: 'application/json',
-			'content-type': 'application/json',
-			'idempotency-key': idempotencyKey
+			'content-type': 'application/json'
 		},
 		body: JSON.stringify(payload)
 	});
 }
 
-export function orchestratorCancelRun(
-	session: WebSession,
-	runId: string,
-	idempotencyKey: string
-): Promise<Response> {
+export function orchestratorCancelRun(session: WebSession, runId: string): Promise<Response> {
 	return orchestratorAuthed(
 		`/api/orchestrator/v1/runs/${encodeURIComponent(runId)}/cancel`,
 		session,
 		{
 			method: 'POST',
-			headers: {
-				accept: 'application/json',
-				'idempotency-key': idempotencyKey
-			}
+			headers: { accept: 'application/json' }
 		}
 	);
 }
 
-export function orchestratorRerunRun(
-	session: WebSession,
-	runId: string,
-	idempotencyKey: string
-): Promise<Response> {
+export function orchestratorRerunRun(session: WebSession, runId: string): Promise<Response> {
 	return orchestratorAuthed(
 		`/api/orchestrator/v1/runs/${encodeURIComponent(runId)}/rerun`,
 		session,
 		{
 			method: 'POST',
-			headers: {
-				accept: 'application/json',
-				'idempotency-key': idempotencyKey
-			}
+			headers: { accept: 'application/json' }
 		}
 	);
 }
@@ -167,18 +151,14 @@ export function orchestratorGetActiveManifest(session: WebSession): Promise<Resp
 
 export function orchestratorActivateManifest(
 	session: WebSession,
-	manifestVersionId: string,
-	idempotencyKey: string
+	manifestVersionId: string
 ): Promise<Response> {
 	return orchestratorAuthed(
 		`/api/orchestrator/v1/manifests/${encodeURIComponent(manifestVersionId)}/activate`,
 		session,
 		{
 			method: 'POST',
-			headers: {
-				accept: 'application/json',
-				'idempotency-key': idempotencyKey
-			}
+			headers: { accept: 'application/json' }
 		}
 	);
 }

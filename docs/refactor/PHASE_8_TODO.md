@@ -42,9 +42,9 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 
 ## Mutating Operator Commands
 
-- [x] Add run submit endpoint with required idempotency handling.
-- [x] Add cancel and rerun command endpoints with required idempotency handling.
-- [x] Persist and replay successful command responses for repeated `Idempotency-Key` requests within the configured TTL window.
+- [x] Add run submit endpoint baseline (without durable idempotency guarantees yet).
+- [x] Add cancel and rerun command endpoints baseline (without durable idempotency guarantees yet).
+- [x] Keep idempotency explicitly deferred until durable storage + request fingerprinting are implemented.
 - [x] Add manifest activation endpoint with authz and audit coverage.
 - [x] Add consistent command authorization and audit hooks.
 
@@ -59,9 +59,10 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 ## SSE Event Streams
 
 - [x] Add private orchestrator SSE endpoints for global runs and run-scoped streams.
-- [x] Add opaque cursor ids and `Last-Event-ID` resume handling.
+- [x] Add opaque cursor ids and `Last-Event-ID` resume handling for run-scoped streams.
 - [x] Reject malformed `Last-Event-ID` headers at both web relay and orchestrator boundaries.
-- [x] Keep orchestrator as the authoritative replay source from persisted history.
+- [x] Keep orchestrator as the authoritative replay source from persisted history for run-scoped streams.
+- [x] Keep `/streams/runs` as baseline transport stream and defer scalable global replay semantics.
 - [x] Add stream authz checks for viewer/operator/admin roles.
 
 ## Thin `favn_web` Prototype
@@ -69,7 +70,7 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 - [x] Create a separate web workspace/package outside the Elixir umbrella.
 - [x] Add browser login/logout flows with secure HttpOnly cookie sessions.
 - [x] Sign web session cookies and reject tampered payloads before forwarding actor context.
-- [x] Ensure browser auth failures are slowed/rate-limited to reduce brute-force pressure.
+- [x] Keep browser auth flow baseline-only in Phase 8; defer real browser-edge abuse controls to post-refactor release blockers.
 - [x] Add thin BFF routes for run/manifest/schedule pages.
 - [x] Add browser-facing SSE endpoints that authenticate the cookie session and relay orchestrator streams.
 - [x] Add run-scoped browser-facing SSE relay endpoint (`/api/web/v1/streams/runs/:run_id`).
@@ -90,6 +91,16 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 - [x] Add SSE replay/resume tests.
 - [x] Add thin web browser smoke tests.
 - [x] Move `mix favn.dev` / `mix favn.dev --sqlite` smoke coverage tracking to Phase 9 tooling scope.
+
+## Required After Refactor And Before Safe Web-Facing Release
+
+- [ ] Durable orchestrator auth persistence: persist actors/credentials/sessions/audit through orchestrator storage (remove in-memory-only runtime auth state before release).
+- [ ] Real password/auth foundation: replace prototype-grade custom auth/session internals with stronger durable defaults.
+- [ ] Real browser-edge abuse protection: implement login abuse protection/rate limiting at web edge; do not rely on orchestrator `remote_ip`.
+- [ ] Durable idempotency contract (if shipped): persist records durably and reject key reuse with conflicting request fingerprints.
+- [ ] Scalable global SSE replay/cursor model: replace replay-by-rebuild behavior with durable replay/cursor semantics.
+- [ ] Real end-to-end integration coverage against live orchestrator (not mock-only browser smoke).
+- [ ] Service credential hardening: stronger service identity binding, rotation, and config hardening beyond caller-provided identity headers.
 
 ## Verification Gate (Per AGENTS.md)
 

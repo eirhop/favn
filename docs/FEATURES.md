@@ -316,19 +316,19 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [x] explicit web-to-orchestrator service authentication and trusted actor-context forwarding landed in baseline form
   - [x] thin `favn_web` baseline landed for login/logout cookie session, runs read, and browser-facing SSE relay
   - [x] service-auth hardening now fails closed when API tokens are not configured (test env keeps a test-only token default)
-  - [x] mutating run commands now persist/replay successful responses for duplicate `Idempotency-Key` requests within configured TTL
-  - [x] login abuse hardening baseline landed (failure delay + orchestrator-side rate limiting)
+  - [x] mutating run/manifests commands are available behind role checks and audit hooks (idempotency deferred)
   - [x] `Last-Event-ID` validation added on both web relay and orchestrator stream endpoints
   - [x] web session cookies are now signed and tamper-checked before actor-context forwarding
   - [x] schedules list/detail read endpoints landed on orchestrator API (`GET /schedules`, `GET /schedules/:schedule_id`)
-  - [x] manifest activation command landed with idempotency replay + authz/audit coverage (`POST /manifests/:manifest_version_id/activate`)
+  - [x] manifest activation command landed with authz/audit coverage (`POST /manifests/:manifest_version_id/activate`)
   - [x] admin actor read endpoints landed (`GET /actors`, `GET /actors/:actor_id`) with role-based access checks
   - [x] admin actor management commands landed (`POST /actors`, `PUT /actors/:actor_id/roles`, `PUT /actors/:actor_id/password`) with audit coverage
   - [x] thin web BFF route set expanded for runs/manifests/schedules commands and reads (`/api/web/v1/**`)
   - [x] run-scoped browser SSE relay endpoint landed (`/api/web/v1/streams/runs/:run_id`)
   - [x] auth/authz role-matrix coverage expanded in API router tests (viewer/operator/admin cases)
   - [x] canonical orchestrator-owned DTO schema set landed under `apps/favn_orchestrator/priv/http_contract/v1`
-  - [x] stream replay now uses persisted run-event history with cursor validation (`cursor_invalid` on unknown cursor)
+  - [x] run-scoped stream replay uses persisted run-event history with cursor validation (`cursor_invalid` on unknown run cursor)
+  - [x] global `/streams/runs` remains a baseline transport-ready stream, not a scalable replay contract
   - [x] thin web operator-flow smoke coverage now exercises `/api/web/v1/**` runs/manifests/schedules + stream relay paths
   - [x] `favn_view` is now explicitly archived/frozen and removed from active umbrella Phase 8 test alias paths
 - [ ] Phase 9: ship developer tooling and packaging flows
@@ -341,6 +341,18 @@ Pre-refactor groundwork already completed in the legacy runtime and to be carrie
   - [ ] replace temporary BEAM term-blob payload storage with the intended canonical inspectable payload format
   - [ ] decide whether scheduler writes without explicit versions should stay permissive or become stricter optimistic writes
   - [ ] replace repeated external Postgres schema-readiness checks with a clearer startup/cached readiness strategy
+
+## Required After Refactor And Before A Safe Web-Facing Release
+
+These are required release blockers, not optional hardening tasks:
+
+- [ ] Durable orchestrator auth persistence: move actors/credentials/sessions/audit to orchestrator storage-backed durability; remove in-memory-only auth/session/audit before safe release.
+- [ ] Real password/auth foundation: replace prototype-grade custom auth/session internals with a stronger boring default and durable session lifecycle.
+- [ ] Real browser-edge abuse protection: implement login abuse/rate-limiting at the web edge; do not rely on orchestrator `remote_ip` for browser abuse controls.
+- [ ] Durable idempotency contract (if shipped): persist idempotency records durably with request fingerprint conflict detection; otherwise explicitly ship without idempotency until completed.
+- [ ] Scalable global SSE replay/cursor model: replace replay-by-rebuild behavior with a durable replay model where orchestrator remains authoritative for history and cursors.
+- [ ] Real end-to-end integration coverage: add tests against real orchestrator implementation; do not rely only on mock-orchestrator browser smoke tests for release confidence.
+- [ ] Service credential hardening: strengthen service identity binding, support credential rotation/config hardening, and avoid trusting caller-provided identity headers as sole identity proof.
 
 Detailed migration planning for the current refactor slices lives in:
 

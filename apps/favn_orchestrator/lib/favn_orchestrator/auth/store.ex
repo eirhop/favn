@@ -64,11 +64,11 @@ defmodule FavnOrchestrator.Auth.Store do
     GenServer.call(__MODULE__, {:get_actor, actor_id})
   end
 
-  @spec authenticate_password(String.t(), String.t(), keyword()) ::
-          {:ok, actor()} | {:error, :invalid_credentials | :rate_limited}
-  def authenticate_password(username, password, opts \\ [])
-      when is_binary(username) and is_binary(password) and is_list(opts) do
-    GenServer.call(__MODULE__, {:authenticate_password, username, password, opts})
+  @spec authenticate_password(String.t(), String.t()) ::
+          {:ok, actor()} | {:error, :invalid_credentials}
+  def authenticate_password(username, password)
+      when is_binary(username) and is_binary(password) do
+    GenServer.call(__MODULE__, {:authenticate_password, username, password})
   end
 
   @spec issue_session(String.t(), keyword()) :: {:ok, session()} | {:error, term()}
@@ -105,8 +105,7 @@ defmodule FavnOrchestrator.Auth.Store do
        usernames: %{},
        credentials: %{},
        sessions: %{},
-       audits: [],
-       failed_logins: %{}
+       audits: []
      }}
   end
 
@@ -118,8 +117,7 @@ defmodule FavnOrchestrator.Auth.Store do
        usernames: %{},
        credentials: %{},
        sessions: %{},
-       audits: [],
-       failed_logins: %{}
+       audits: []
      }}
   end
 
@@ -231,27 +229,18 @@ defmodule FavnOrchestrator.Auth.Store do
     end
   end
 
-  def handle_call({:authenticate_password, username, password, opts}, _from, state) do
-    now = DateTime.utc_now()
+  def handle_call({:authenticate_password, username, password}, _from, state) do
     normalized_username = String.trim(username)
-    identifier = login_identifier(opts)
-    failure_key = {normalized_username, identifier}
 
-    with {:ok, failed_logins} <- ensure_login_allowed(state.failed_logins, failure_key, now),
-         {:ok, actor_id} <- fetch_username(state, normalized_username),
+    with {:ok, actor_id} <- fetch_username(state, normalized_username),
          {:ok, actor} <- fetch_actor(state, actor_id),
          :ok <- ensure_actor_active(actor),
          {:ok, credential} <- fetch_credential(state, actor_id),
          :ok <- verify_password(password, credential) do
-      next_state = %{state | failed_logins: Map.delete(failed_logins, failure_key)}
-      {:reply, {:ok, actor}, next_state}
+      {:reply, {:ok, actor}, state}
     else
-      {:error, :rate_limited, failed_logins} ->
-        {:reply, {:error, :rate_limited}, %{state | failed_logins: failed_logins}}
-
       _other ->
-        failed_logins = record_failed_login(state.failed_logins, failure_key, now)
-        {:reply, {:error, :invalid_credentials}, %{state | failed_logins: failed_logins}}
+        {:reply, {:error, :invalid_credentials}, state}
     end
   end
 
@@ -402,90 +391,5 @@ defmodule FavnOrchestrator.Auth.Store do
 
   defp default_session_ttl_seconds do
     Application.get_env(:favn_orchestrator, :auth_session_ttl_seconds, 43_200)
-  end
-
-  defp login_identifier(opts) do
-    value = Keyword.get(opts, :identifier, "unknown")
-
-    if is_binary(value) and value != "" do
-      value
-    else
-      "unknown"
-    end
-  end
-
-  defp ensure_login_allowed(failed_logins, failure_key, now) do
-    normalized = prune_failed_logins(failed_logins, now)
-
-    case Map.get(normalized, failure_key) do
-      nil ->
-        {:ok, normalized}
-
-      %{blocked_until: nil} ->
-        {:ok, normalized}
-
-      %{blocked_until: blocked_until} ->
-        case DateTime.compare(blocked_until, now) do
-          :gt -> {:error, :rate_limited, normalized}
-          _ -> {:ok, normalized}
-        end
-    end
-  end
-
-  defp record_failed_login(failed_logins, failure_key, now) do
-    attempts_window_seconds =
-      Application.get_env(:favn_orchestrator, :auth_rate_limit_window_seconds, 300)
-
-    max_attempts = Application.get_env(:favn_orchestrator, :auth_rate_limit_max_attempts, 8)
-
-    base_block_seconds =
-      Application.get_env(:favn_orchestrator, :auth_rate_limit_block_seconds, 60)
-
-    current =
-      case Map.get(failed_logins, failure_key) do
-        %{first_attempt_at: first_attempt_at} = value ->
-          if DateTime.diff(now, first_attempt_at, :second) <= attempts_window_seconds do
-            value
-          else
-            %{count: 0, first_attempt_at: now, blocked_until: nil}
-          end
-
-        _other ->
-          %{count: 0, first_attempt_at: now, blocked_until: nil}
-      end
-
-    next_count = current.count + 1
-
-    blocked_until =
-      if next_count >= max_attempts do
-        block_multiplier = min(next_count - max_attempts + 1, 5)
-        DateTime.add(now, base_block_seconds * block_multiplier, :second)
-      else
-        nil
-      end
-
-    Map.put(failed_logins, failure_key, %{
-      count: next_count,
-      first_attempt_at: current.first_attempt_at,
-      blocked_until: blocked_until
-    })
-  end
-
-  defp prune_failed_logins(failed_logins, now) do
-    attempts_window_seconds =
-      Application.get_env(:favn_orchestrator, :auth_rate_limit_window_seconds, 300)
-
-    Enum.reduce(failed_logins, %{}, fn {key, value}, acc ->
-      age = DateTime.diff(now, value.first_attempt_at, :second)
-
-      still_blocked =
-        not is_nil(value.blocked_until) and DateTime.compare(value.blocked_until, now) == :gt
-
-      if age <= attempts_window_seconds or still_blocked do
-        Map.put(acc, key, value)
-      else
-        acc
-      end
-    end)
   end
 end

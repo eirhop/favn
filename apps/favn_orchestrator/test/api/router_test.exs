@@ -9,7 +9,6 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
   alias FavnOrchestrator
-  alias FavnOrchestrator.API.IdempotencyStore
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
@@ -24,29 +23,13 @@ defmodule FavnOrchestrator.API.RouterTest do
     previous_username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)
     previous_password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
     previous_display = Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name)
-    previous_failure_delay = Application.get_env(:favn_orchestrator, :auth_login_failure_delay_ms)
-
-    previous_rate_limit_window =
-      Application.get_env(:favn_orchestrator, :auth_rate_limit_window_seconds)
-
-    previous_rate_limit_attempts =
-      Application.get_env(:favn_orchestrator, :auth_rate_limit_max_attempts)
-
-    previous_rate_limit_block =
-      Application.get_env(:favn_orchestrator, :auth_rate_limit_block_seconds)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, ["test-service-token"])
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Admin User")
-    Application.put_env(:favn_orchestrator, :auth_login_failure_delay_ms, 0)
-    Application.put_env(:favn_orchestrator, :auth_rate_limit_window_seconds, 300)
-    Application.put_env(:favn_orchestrator, :auth_rate_limit_max_attempts, 2)
-    Application.put_env(:favn_orchestrator, :auth_rate_limit_block_seconds, 60)
 
-    idempotency_start = ensure_idempotency_store_started()
     auth_start = ensure_auth_store_started()
-    :ok = IdempotencyStore.reset()
     :ok = AuthStore.reset()
     Memory.reset()
     :ok = Auth.bootstrap_admin()
@@ -56,12 +39,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       restore_env(:favn_orchestrator, :auth_bootstrap_username, previous_username)
       restore_env(:favn_orchestrator, :auth_bootstrap_password, previous_password)
       restore_env(:favn_orchestrator, :auth_bootstrap_display_name, previous_display)
-      restore_env(:favn_orchestrator, :auth_login_failure_delay_ms, previous_failure_delay)
-      restore_env(:favn_orchestrator, :auth_rate_limit_window_seconds, previous_rate_limit_window)
-      restore_env(:favn_orchestrator, :auth_rate_limit_max_attempts, previous_rate_limit_attempts)
-      restore_env(:favn_orchestrator, :auth_rate_limit_block_seconds, previous_rate_limit_block)
       maybe_stop_auth_store(auth_start)
-      maybe_stop_idempotency_store(idempotency_start)
     end)
 
     :ok
@@ -105,9 +83,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"error" => %{"code" => "service_unauthorized"}} = Jason.decode!(response.resp_body)
   end
 
-  test "SSE global stream replays persisted events and returns event-stream content type" do
-    seed_run_events!("run_stream_a", [1, 2])
-
+  test "SSE global stream returns baseline ready event" do
     {:ok, session, actor} = Auth.password_login("admin", "admin-password")
 
     response =
@@ -115,14 +91,13 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-id", session.id)
-      |> put_req_header("last-event-id", "runs:run_stream_a:1")
+      |> put_req_header("last-event-id", "runs:cursor_1")
       |> Router.call(@opts)
 
     assert response.status == 200
     assert ["text/event-stream; charset=utf-8"] = get_resp_header(response, "content-type")
-    assert response.resp_body =~ "event: run_updated"
-    assert response.resp_body =~ "id: runs:run_stream_a:2"
     assert response.resp_body =~ "event: stream.ready"
+    assert response.resp_body =~ "id: runs:cursor_1"
     assert response.resp_body =~ "stream\":\"runs\""
   end
 
@@ -160,24 +135,8 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
   end
 
-  test "SSE stream rejects invalid or unknown cursor" do
-    seed_run_events!("run_stream_c", [1])
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
-
+  test "password login returns invalid credentials without rate-limiting branch" do
     response =
-      conn(:get, "/api/orchestrator/v1/streams/runs")
-      |> put_req_header("authorization", "Bearer test-service-token")
-      |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
-      |> put_req_header("last-event-id", "runs:run_stream_c:99")
-      |> Router.call(@opts)
-
-    assert response.status == 422
-    assert %{"error" => %{"code" => "cursor_invalid"}} = Jason.decode!(response.resp_body)
-  end
-
-  test "password login rate limits repeated invalid attempts" do
-    first_response =
       conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
         username: "admin",
         password: "wrong-password"
@@ -185,28 +144,8 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> Router.call(@opts)
 
-    assert first_response.status == 401
-
-    second_response =
-      conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
-        username: "admin",
-        password: "wrong-password"
-      })
-      |> put_req_header("authorization", "Bearer test-service-token")
-      |> Router.call(@opts)
-
-    assert second_response.status == 401
-
-    third_response =
-      conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
-        username: "admin",
-        password: "wrong-password"
-      })
-      |> put_req_header("authorization", "Bearer test-service-token")
-      |> Router.call(@opts)
-
-    assert third_response.status == 429
-    assert %{"error" => %{"code" => "rate_limited"}} = Jason.decode!(third_response.resp_body)
+    assert response.status == 401
+    assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
   end
 
   test "lists schedules from active manifest when scheduler runtime is not running" do
@@ -254,35 +193,21 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert schedule["active"] == true
   end
 
-  test "activates manifest and replays duplicate idempotency key" do
+  test "activates manifest" do
     version = schedule_manifest_version("mv_activate_router")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
     {:ok, session, actor} = Auth.password_login("admin", "admin-password")
 
-    request_headers = [
-      {"authorization", "Bearer test-service-token"},
-      {"x-favn-actor-id", actor.id},
-      {"x-favn-session-id", session.id},
-      {"idempotency-key", "activate-manifest-key-1"}
-    ]
-
-    first =
+    response =
       conn(:post, "/api/orchestrator/v1/manifests/mv_activate_router/activate")
-      |> put_headers(request_headers)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
       |> Router.call(@opts)
 
-    assert first.status == 200
-    assert %{"data" => %{"activated" => true}} = Jason.decode!(first.resp_body)
-
-    second =
-      conn(:post, "/api/orchestrator/v1/manifests/mv_activate_router/activate")
-      |> put_headers(request_headers)
-      |> Router.call(@opts)
-
-    assert second.status == 200
-    assert ["true"] == get_resp_header(second, "x-favn-idempotent-replayed")
-    assert second.resp_body == first.resp_body
+    assert response.status == 200
+    assert %{"data" => %{"activated" => true}} = Jason.decode!(response.resp_body)
   end
 
   test "forbids non-operator manifest activation" do
@@ -299,7 +224,6 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-id", session.id)
-      |> put_req_header("idempotency-key", "activate-manifest-forbidden")
       |> Router.call(@opts)
 
     assert response.status == 403
@@ -463,17 +387,6 @@ defmodule FavnOrchestrator.API.RouterTest do
     end
   end
 
-  defp ensure_idempotency_store_started do
-    case Process.whereis(IdempotencyStore) do
-      nil ->
-        start_supervised!({IdempotencyStore, []})
-        :started
-
-      _pid ->
-        :existing
-    end
-  end
-
   defp maybe_stop_auth_store(:existing), do: :ok
 
   defp maybe_stop_auth_store(:started) do
@@ -483,21 +396,8 @@ defmodule FavnOrchestrator.API.RouterTest do
     end
   end
 
-  defp maybe_stop_idempotency_store(:existing), do: :ok
-
-  defp maybe_stop_idempotency_store(:started) do
-    case Process.whereis(IdempotencyStore) do
-      nil -> :ok
-      pid -> GenServer.stop(pid, :normal)
-    end
-  end
-
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
-
-  defp put_headers(conn, headers) do
-    Enum.reduce(headers, conn, fn {key, value}, acc -> put_req_header(acc, key, value) end)
-  end
 
   defp schedule_manifest_version(manifest_version_id) do
     manifest = %Manifest{

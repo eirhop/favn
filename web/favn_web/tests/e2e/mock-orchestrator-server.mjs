@@ -68,20 +68,9 @@ const SCHEDULE_DETAILS = new Map([
 /** @type {Map<string, { actorId: string; provider: string }>} */
 const sessions = new Map();
 
-/** @type {Map<string, { status: number; payload: Record<string, unknown> }>} */
-const idempotencyStore = new Map();
-
 function sendJson(response, status, payload) {
 	response.writeHead(status, {
 		'content-type': 'application/json; charset=utf-8'
-	});
-	response.end(JSON.stringify(payload));
-}
-
-function sendJsonWithHeaders(response, status, payload, headers = {}) {
-	response.writeHead(status, {
-		'content-type': 'application/json; charset=utf-8',
-		...headers
 	});
 	response.end(JSON.stringify(payload));
 }
@@ -129,29 +118,6 @@ function requireAuthenticatedSession(request, response) {
 	}
 
 	return { actorId, sessionId };
-}
-
-function withIdempotencyReplay(request, response, session, operationScope, resolveFresh) {
-	const idempotencyKey = request.headers['idempotency-key'];
-
-	if (typeof idempotencyKey !== 'string' || idempotencyKey.trim().length === 0) {
-		sendJson(response, 422, { error: { message: 'Missing idempotency-key header' } });
-		return;
-	}
-
-	const storeKey = `${session.actorId}:${operationScope}:${idempotencyKey.trim()}`;
-	const replay = idempotencyStore.get(storeKey);
-
-	if (replay) {
-		sendJsonWithHeaders(response, replay.status, replay.payload, {
-			'x-favn-idempotent-replayed': 'true'
-		});
-		return;
-	}
-
-	const fresh = resolveFresh();
-	idempotencyStore.set(storeKey, fresh);
-	sendJson(response, fresh.status, fresh.payload);
 }
 
 async function readJsonBody(request) {
@@ -280,19 +246,16 @@ function handleSubmitRun(request, response) {
 				return;
 			}
 
-			withIdempotencyReplay(request, response, session, 'submit_run', () => ({
-				status: 202,
-				payload: {
-					data: {
-						run_id: 'run_submitted_001',
-						status: 'queued',
-						target: {
-							type: target.type,
-							id: target.id
-						}
+			sendJson(response, 202, {
+				data: {
+					run_id: 'run_submitted_001',
+					status: 'queued',
+					target: {
+						type: target.type,
+						id: target.id
 					}
 				}
-			}));
+			});
 		})
 		.catch(() => {
 			sendJson(response, 500, { error: { message: 'Mock server error' } });
@@ -303,30 +266,24 @@ function handleCancelRun(request, response, runId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
 
-	withIdempotencyReplay(request, response, session, `cancel_run:${runId}`, () => ({
-		status: 200,
-		payload: {
-			data: {
-				run_id: runId,
-				status: 'cancelling'
-			}
+	sendJson(response, 200, {
+		data: {
+			run_id: runId,
+			status: 'cancelling'
 		}
-	}));
+	});
 }
 
 function handleRerunRun(request, response, runId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
 
-	withIdempotencyReplay(request, response, session, `rerun_run:${runId}`, () => ({
-		status: 202,
-		payload: {
-			data: {
-				run_id: `${runId}_rerun_001`,
-				status: 'queued'
-			}
+	sendJson(response, 202, {
+		data: {
+			run_id: `${runId}_rerun_001`,
+			status: 'queued'
 		}
-	}));
+	});
 }
 
 function handleListManifests(request, response) {
@@ -352,15 +309,12 @@ function handleActivateManifest(request, response, manifestVersionId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
 
-	withIdempotencyReplay(request, response, session, `activate_manifest:${manifestVersionId}`, () => ({
-		status: 200,
-		payload: {
-			data: {
-				manifest_version_id: manifestVersionId,
-				status: 'active'
-			}
+	sendJson(response, 200, {
+		data: {
+			manifest_version_id: manifestVersionId,
+			status: 'active'
 		}
-	}));
+	});
 }
 
 function handleListSchedules(request, response) {
