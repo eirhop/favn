@@ -64,7 +64,9 @@ apps/
 ├── favn_duckdb/lib/
 │   └── favn_duckdb.ex
 ├── favn_test_support/lib/
-│   └── favn_test_support.ex
+│   ├── favn_test_support.ex
+│   └── favn_test_support/
+│       └── fixtures.ex
 └── favn_legacy/lib/
     ├── favn.ex
     └── favn/
