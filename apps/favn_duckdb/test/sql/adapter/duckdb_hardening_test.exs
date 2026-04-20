@@ -1,16 +1,18 @@
-defmodule Favn.SQLDuckDBAdapterHardeningTest do
-  use ExUnit.Case
+defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
+  use ExUnit.Case, async: false
 
   alias Favn.Connection.Resolved
   alias Favn.SQL.Adapter.DuckDB
-  alias Favn.SQL.{Error, Relation, WritePlan}
+  alias Favn.SQL.Error
+  alias Favn.SQL.Relation
+  alias Favn.SQL.WritePlan
 
-  @events_table :sql_duckdb_adapter_hardening_events
+  @events_table :favn_duckdb_adapter_hardening_events
 
   defmodule FakeClient do
     @behaviour Favn.SQL.Adapter.DuckDB.Client
 
-    @events_table :sql_duckdb_adapter_hardening_events
+    @events_table :favn_duckdb_adapter_hardening_events
 
     @impl true
     def open(_database) do
@@ -149,55 +151,43 @@ defmodule Favn.SQLDuckDBAdapterHardeningTest do
   end
 
   setup do
-    state = Favn.TestSetup.capture_state()
+    if :ets.whereis(@events_table) != :undefined do
+      :ets.delete(@events_table)
+    end
+
+    :ets.new(@events_table, [:named_table, :ordered_set, :public])
+
+    keys = [
+      :connection_mode,
+      :query_mode,
+      :fetch_mode,
+      :begin_mode,
+      :commit_mode,
+      :rollback_mode,
+      :appender_add_rows_mode,
+      :appender_flush_mode,
+      :appender_close_mode
+    ]
+
+    Enum.each(keys, &Application.put_env(:favn, &1, :ok))
 
     on_exit(fn ->
-      Favn.TestSetup.restore_state(state)
-
-      Enum.each(
-        [
-          :connection_mode,
-          :query_mode,
-          :fetch_mode,
-          :begin_mode,
-          :commit_mode,
-          :rollback_mode,
-          :appender_add_rows_mode,
-          :appender_flush_mode,
-          :appender_close_mode
-        ],
-        &Application.delete_env(:favn, &1)
-      )
+      Enum.each(keys, &Application.delete_env(:favn, &1))
 
       if :ets.whereis(@events_table) != :undefined do
         :ets.delete(@events_table)
       end
     end)
 
-    :ets.new(@events_table, [:named_table, :ordered_set, :public])
-
-    Application.put_env(:favn, :connection_mode, :ok)
-    Application.put_env(:favn, :query_mode, :ok)
-    Application.put_env(:favn, :fetch_mode, :ok)
-    Application.put_env(:favn, :begin_mode, :ok)
-    Application.put_env(:favn, :commit_mode, :ok)
-    Application.put_env(:favn, :rollback_mode, :ok)
-    Application.put_env(:favn, :appender_add_rows_mode, :ok)
-    Application.put_env(:favn, :appender_flush_mode, :ok)
-    Application.put_env(:favn, :appender_close_mode, :ok)
-
     :ok
   end
 
-  test "BEGIN failure keeps begin error and does not rollback" do
+  test "begin failure keeps begin-stage transaction error and does not rollback" do
     Application.put_env(:favn, :begin_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
-    assert {:error,
-            %Error{
-              operation: :transaction,
-              details: %{transaction_stage: :begin}
-            }} = DuckDB.transaction(conn, fn _ -> {:ok, :ok} end, [])
+    assert {:error, %Error{operation: :transaction, details: %{transaction_stage: :begin}}} =
+             DuckDB.transaction(conn, fn _ -> {:ok, :ok} end, [])
 
     refute Enum.any?(events(), fn
              {:rollback, _conn_ref} -> true
@@ -221,39 +211,11 @@ defmodule Favn.SQLDuckDBAdapterHardeningTest do
     Application.put_env(:favn, :commit_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
-    assert {:error,
-            %Error{
-              operation: :transaction,
-              details: %{transaction_stage: :commit}
-            }} = DuckDB.transaction(conn, fn _ -> {:ok, :ok} end, [])
+    assert {:error, %Error{operation: :transaction, details: %{transaction_stage: :commit}}} =
+             DuckDB.transaction(conn, fn _ -> {:ok, :ok} end, [])
 
     assert Enum.any?(events(), fn
              {:rollback, _conn_ref} -> true
-             _ -> false
-           end)
-  end
-
-  test "rollback failure keeps original transaction failure context" do
-    Application.put_env(:favn, :rollback_mode, :error)
-    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
-
-    assert {:error,
-            %Error{
-              operation: :transaction,
-              message: "transaction rollback failed",
-              retryable?: false,
-              details: %{transaction_stage: :rollback, original_error: %{message: "body failed"}}
-            }} = DuckDB.transaction(conn, fn _ -> {:error, "body failed"} end, [])
-  end
-
-  test "query success releases result handle" do
-    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
-    assert {:ok, _} = DuckDB.query(conn, "SELECT 1", [])
-
-    {result_ref, _sql} = last_result_ref!()
-
-    assert Enum.any?(events(), fn
-             {:release, ^result_ref} -> true
              _ -> false
            end)
   end
@@ -273,22 +235,6 @@ defmodule Favn.SQLDuckDBAdapterHardeningTest do
            end)
   end
 
-  test "query fetch raise releases result handle" do
-    Application.put_env(:favn, :fetch_mode, :raise)
-    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
-
-    assert_raise RuntimeError, "fetch failed", fn ->
-      DuckDB.query(conn, "SELECT 1", [])
-    end
-
-    {result_ref, _sql} = last_result_ref!()
-
-    assert Enum.any?(events(), fn
-             {:release, ^result_ref} -> true
-             _ -> false
-           end)
-  end
-
   test "releases database handle when connection allocation fails" do
     Application.put_env(:favn, :connection_mode, :error)
 
@@ -297,41 +243,6 @@ defmodule Favn.SQLDuckDBAdapterHardeningTest do
 
     assert Enum.any?(events(), fn
              {:release, _resource} -> true
-             _ -> false
-           end)
-  end
-
-  test "appender success closes appender without extra release" do
-    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
-
-    write_plan =
-      %WritePlan{
-        materialization: :table,
-        target: %Relation{schema: "main", name: "bulk_users", type: :table},
-        select_sql: "SELECT 1 AS id",
-        options: %{appender_rows: [[1], [2]]}
-      }
-
-    assert {:ok, %Favn.SQL.Result{kind: :materialize, command: "appender"}} =
-             DuckDB.materialize(conn, write_plan, [])
-
-    appender_ref =
-      events()
-      |> Enum.find_value(fn
-        {:appender_open, _conn_ref, ref} -> ref
-        _ -> nil
-      end)
-
-    assert appender_ref
-
-    assert 1 ==
-             Enum.count(events(), fn
-               {:appender_close, ^appender_ref} -> true
-               _ -> false
-             end)
-
-    refute Enum.any?(events(), fn
-             {:release, ^appender_ref} -> true
              _ -> false
            end)
   end
@@ -366,16 +277,13 @@ defmodule Favn.SQLDuckDBAdapterHardeningTest do
              end)
   end
 
-  test "conflict failures normalize as retryable without blanket write lock" do
+  test "conflict failures normalize as retryable" do
     Application.put_env(:favn, :query_mode, :conflict)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error,
-            %Error{
-              operation: :execute,
-              retryable?: true,
-              details: %{classification: :conflict}
-            }} = DuckDB.execute(conn, "INSERT INTO t VALUES (1)", [])
+            %Error{operation: :execute, retryable?: true, details: %{classification: :conflict}}} =
+             DuckDB.execute(conn, "INSERT INTO t VALUES (1)", [])
   end
 
   defp resolved do

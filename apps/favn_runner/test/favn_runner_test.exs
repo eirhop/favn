@@ -6,8 +6,11 @@ defmodule FavnRunnerTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
+  alias FavnTestSupport.Fixtures
 
   setup do
+    Fixtures.compile_fixture!(:runner_assets)
+
     manifest_version = "mv_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
     manifest =
@@ -34,6 +37,47 @@ defmodule FavnRunnerTest do
     :ok = FavnRunner.register_manifest(version)
 
     %{version: version}
+  end
+
+  test "runs a shared fixture asset through runner execution boundary", %{version: version} do
+    fixture_ref = {Favn.Test.Fixtures.Assets.Runner.RunnerAssets, :base}
+
+    fixture_manifest =
+      build_manifest([
+        %Asset{
+          ref: fixture_ref,
+          module: elem(fixture_ref, 0),
+          name: :base,
+          type: :elixir,
+          execution: %{entrypoint: :base, arity: 1}
+        }
+      ])
+
+    {:ok, fixture_version} =
+      Version.new(fixture_manifest,
+        manifest_version_id:
+          "mv_fixture_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    assert :ok = FavnRunner.register_manifest(fixture_version)
+
+    work =
+      %RunnerWork{
+        run_id: "run_fixture",
+        manifest_version_id: fixture_version.manifest_version_id,
+        manifest_content_hash: fixture_version.content_hash,
+        asset_ref: fixture_ref,
+        params: %{partition: "2026-03-25"}
+      }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :ok
+    assert [%{ref: ^fixture_ref, status: :ok}] = result.asset_results
+
+    assert [%{meta: meta}] = result.asset_results
+    assert meta == %{partition: "2026-03-25"}
+
+    assert version.manifest_version_id != fixture_version.manifest_version_id
   end
 
   test "runs one elixir asset through runner boundary", %{version: version} do

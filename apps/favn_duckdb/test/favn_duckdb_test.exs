@@ -1,6 +1,7 @@
 defmodule FavnDuckdbTest do
   use ExUnit.Case, async: false
 
+  alias FavnDuckdb.Runtime
   alias FavnDuckdb.Runtime.SeparateProcess
   alias FavnDuckdb.Worker
 
@@ -204,5 +205,27 @@ defmodule FavnDuckdbTest do
     assert {:ok, conn_ref} = SeparateProcess.connection(db_ref)
 
     assert {:error, :worker_call_timeout} = SeparateProcess.query(conn_ref, "SELECT 1", [])
+  end
+
+  test "runtime config falls back to safe defaults for invalid plugin options" do
+    Application.put_env(:favn, :runner_plugins, [
+      {FavnDuckdb,
+       execution_mode: :unknown_mode, worker_name: "invalid", worker_call_timeout: :invalid}
+    ])
+
+    assert Runtime.execution_mode() == :in_process
+    assert Runtime.worker_name() == FavnDuckdb.Worker
+    assert Runtime.worker_call_timeout() == :infinity
+    assert Runtime.client_module() == FavnDuckdb.Runtime.InProcess
+  end
+
+  test "worker returns invalid_handle for unknown references in separate_process mode" do
+    Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :separate_process}])
+    {:ok, _pid} = Worker.start_link(name: Worker, client: FakeClient)
+
+    assert {:error, :invalid_handle} = SeparateProcess.query(make_ref(), "SELECT 1", [])
+    assert {:error, :invalid_handle} = SeparateProcess.fetch_all(make_ref())
+    assert {:error, :invalid_handle} = SeparateProcess.columns(make_ref())
+    assert :ok = SeparateProcess.release(make_ref())
   end
 end

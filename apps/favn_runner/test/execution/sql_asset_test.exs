@@ -118,6 +118,54 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert %{type: :unresolved_asset_ref} = asset_result.error
   end
 
+  test "manifest execution fails when sql payload is missing" do
+    plugin_module = Module.concat([FavnDuckdb])
+    Application.put_env(:favn, :runner_plugins, [{plugin_module, execution_mode: :in_process}])
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.MissingPayloadSQLAsset, :asset}
+    version = register_manifest_without_sql_execution!(ref)
+
+    work =
+      %RunnerWork{
+        run_id: "run_sql_missing_payload",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref
+      }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+
+    assert [asset_result] = result.asset_results
+    assert asset_result.status == :error
+    assert %{type: :invalid_sql_asset_definition, phase: :runtime} = asset_result.error
+  end
+
+  test "manifest sql execution reports backend failure when runtime connection is missing" do
+    plugin_module = Module.concat([FavnDuckdb])
+    Application.put_env(:favn, :runner_plugins, [{plugin_module, execution_mode: :in_process}])
+
+    Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.MissingConnectionSQLAsset, :asset}
+    version = register_sql_manifest!(ref)
+
+    work =
+      %RunnerWork{
+        run_id: "run_sql_missing_connection",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref
+      }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+
+    assert [asset_result] = result.asset_results
+    assert asset_result.status == :error
+    assert %{type: :backend_execution_failed, phase: :materialize} = asset_result.error
+  end
+
   defp register_sql_manifest!(ref) do
     relation = RelationRef.new!(%{connection: :duckdb_runtime, name: "manifest_sql_asset"})
 
@@ -228,7 +276,49 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     :ok = FavnRunner.register_manifest(version)
     version
   end
+
+  defp register_manifest_without_sql_execution!(ref) do
+    relation =
+      RelationRef.new!(%{connection: :duckdb_runtime, name: "manifest_sql_asset_missing"})
+
+    manifest =
+      %Manifest{
+        schema_version: 1,
+        runner_contract_version: 1,
+        assets: [
+          %Asset{
+            ref: ref,
+            module: elem(ref, 0),
+            name: :asset,
+            type: :sql,
+            execution: %{entrypoint: :asset, arity: 1},
+            relation: relation,
+            materialization: :view,
+            sql_execution: nil
+          }
+        ],
+        pipelines: [],
+        schedules: [],
+        graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
+        metadata: %{}
+      }
+
+    {:ok, version} =
+      Version.new(manifest,
+        manifest_version_id:
+          "mv_sql_missing_payload_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    :ok = FavnRunner.register_manifest(version)
+    version
+  end
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.SQLAsset do
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.MissingPayloadSQLAsset do
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.MissingConnectionSQLAsset do
 end

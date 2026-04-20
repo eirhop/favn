@@ -130,6 +130,15 @@ Notes:
   - `apps/favn_runner/test/execution/sql_asset_test.exs` for manifest-pinned SQL execution through both `:in_process` and `:separate_process` DuckDB modes
   - `apps/favn_runner/test/plugin_test.exs` for generic runner plugin config normalization
   - `apps/favn_duckdb/test/favn_duckdb_test.exs` for DuckDB plugin child specs, separate worker lifecycle behavior, and separate-process client behavior
+- Runner execution parity migration batch 2 expanded owner-app coverage with:
+  - `apps/favn_runner/test/connection/loader_test.exs` for runner-owned connection runtime config loading/validation behavior
+  - `apps/favn_runner/test/sql/runtime_bridge_test.exs` for runtime SQL connection/session/operation semantics
+  - `apps/favn_runner/test/worker_test.exs` expanded failure-shape coverage (`raise`/`throw`/`exit`/invalid return/arity mismatch)
+  - `apps/favn_runner/test/server_test.exs` expanded execution timeout/not-found/input-validation behavior
+  - `apps/favn_runner/test/execution/sql_asset_test.exs` expanded manifest SQL runtime failure-path coverage
+- DuckDB plugin parity migration batch 2 expanded owner-app coverage with:
+  - `apps/favn_duckdb/test/sql/adapter/duckdb_hardening_test.exs` for DuckDB adapter transaction/appender/resource-cleanup hardening semantics
+  - `apps/favn_duckdb/test/favn_duckdb_test.exs` expanded runtime option-default and invalid-handle behavior
 - Phase 8 web/orchestrator boundary test additions are tracked in `docs/refactor/PHASE_8_TODO.md`.
 - Initial Phase 8 orchestrator live-event boundary tests now include:
   - `apps/favn_orchestrator/test/events_test.exs`
