@@ -220,12 +220,53 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
            end)
   end
 
+  test "rollback failure keeps original transaction failure context" do
+    Application.put_env(:favn, :rollback_mode, :error)
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:error,
+            %Error{
+              operation: :transaction,
+              message: "transaction rollback failed",
+              retryable?: false,
+              details: %{transaction_stage: :rollback, original_error: %{message: "body failed"}}
+            }} = DuckDB.transaction(conn, fn _ -> {:error, "body failed"} end, [])
+  end
+
+  test "query success releases result handle" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+    assert {:ok, _result} = DuckDB.query(conn, "SELECT 1", [])
+
+    {result_ref, _sql} = last_result_ref!()
+
+    assert Enum.any?(events(), fn
+             {:release, ^result_ref} -> true
+             _ -> false
+           end)
+  end
+
   test "query fetch error releases result handle" do
     Application.put_env(:favn, :fetch_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error, %Error{type: :execution_error, operation: :query}} =
              DuckDB.query(conn, "SELECT 1", [])
+
+    {result_ref, _sql} = last_result_ref!()
+
+    assert Enum.any?(events(), fn
+             {:release, ^result_ref} -> true
+             _ -> false
+           end)
+  end
+
+  test "query fetch raise releases result handle" do
+    Application.put_env(:favn, :fetch_mode, :raise)
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert_raise RuntimeError, "fetch failed", fn ->
+      DuckDB.query(conn, "SELECT 1", [])
+    end
 
     {result_ref, _sql} = last_result_ref!()
 
@@ -275,6 +316,41 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
                {:appender_close, ^appender_ref} -> true
                _ -> false
              end)
+  end
+
+  test "appender success closes appender without extra release" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    write_plan =
+      %WritePlan{
+        materialization: :table,
+        target: %Relation{schema: "main", name: "bulk_users", type: :table},
+        select_sql: "SELECT 1 AS id",
+        options: %{appender_rows: [[1], [2]]}
+      }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize, command: "appender"}} =
+             DuckDB.materialize(conn, write_plan, [])
+
+    appender_ref =
+      events()
+      |> Enum.find_value(fn
+        {:appender_open, _conn_ref, ref} -> ref
+        _ -> nil
+      end)
+
+    assert appender_ref
+
+    assert 1 ==
+             Enum.count(events(), fn
+               {:appender_close, ^appender_ref} -> true
+               _ -> false
+             end)
+
+    refute Enum.any?(events(), fn
+             {:release, ^appender_ref} -> true
+             _ -> false
+           end)
   end
 
   test "conflict failures normalize as retryable" do
