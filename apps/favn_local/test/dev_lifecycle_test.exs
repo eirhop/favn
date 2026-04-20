@@ -20,38 +20,40 @@ defmodule Favn.Dev.LifecycleTest do
       File.rm_rf(root_dir)
     end)
 
+    if System.get_env("FAVN_RUN_DEV_LIFECYCLE") != "1" do
+      {:ok, skip: "set FAVN_RUN_DEV_LIFECYCLE=1 to run real local lifecycle integration"}
+    else
+      :ok
+    end
+
     %{root_dir: root_dir}
   end
 
   test "foreground lifecycle leaves lock free and supports second-terminal control", %{
     root_dir: root_dir
   } do
-    if System.get_env("FAVN_RUN_DEV_LIFECYCLE") != "1" do
-      :ok
-    else
-      root_dir = File.cwd!()
+    root_dir = File.cwd!()
 
-      task = Task.async(fn -> Dev.dev(root_dir: root_dir) end)
+    task = Task.async(fn -> Dev.dev(root_dir: root_dir) end)
 
-      assert :ok =
-               wait_until(fn ->
-                 match?(
-                   {:ok, %{"services" => %{"runner" => _, "orchestrator" => _, "web" => _}}},
-                   State.read_runtime(root_dir: root_dir)
-                 )
-               end)
+    assert :ok =
+             wait_until(fn ->
+               match?(
+                 {:ok, %{"services" => %{"runner" => _, "orchestrator" => _, "web" => _}}},
+                 State.read_runtime(root_dir: root_dir)
+               )
+             end)
 
-      assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
-      assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
+    assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
+    assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
 
-      assert :ok = Dev.reload(root_dir: root_dir)
-      assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
+    assert :ok = Dev.reload(root_dir: root_dir)
+    assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
 
-      assert :ok = Dev.stop(root_dir: root_dir)
-      assert %{stack_status: :stopped} = Dev.status(root_dir: root_dir)
+    assert :ok = Dev.stop(root_dir: root_dir)
+    assert %{stack_status: :stopped} = Dev.status(root_dir: root_dir)
 
-      _ = Task.await(task, 60_000)
-    end
+    _ = Task.await(task, 60_000)
   end
 
   test "startup failure cleans runtime state", %{root_dir: root_dir} do
