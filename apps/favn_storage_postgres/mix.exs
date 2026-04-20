@@ -25,6 +25,7 @@ defmodule FavnStoragePostgres.MixProject do
   defp deps do
     [
       {:favn_orchestrator, in_umbrella: true},
+      {:favn_test_support, in_umbrella: true, only: :test},
       {:ecto_sql, "~> 3.13.4"},
       {:postgrex, "~> 0.22"}
     ]

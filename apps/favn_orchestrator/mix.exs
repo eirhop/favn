@@ -26,6 +26,7 @@ defmodule FavnOrchestrator.MixProject do
   defp deps do
     [
       {:favn_core, in_umbrella: true},
+      {:favn_test_support, in_umbrella: true, only: :test},
       {:phoenix_pubsub, "~> 2.2"},
       {:plug_cowboy, "~> 2.7"},
       {:jason, "~> 1.4"}

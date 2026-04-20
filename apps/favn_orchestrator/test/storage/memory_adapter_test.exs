@@ -44,6 +44,26 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
     assert {:error, :conflicting_snapshot} = Storage.put_run(conflict)
   end
 
+  test "accepts higher-seq writes and returns latest stored run" do
+    base =
+      RunState.new(
+        id: "run_2",
+        manifest_version_id: "mv_a",
+        manifest_content_hash: "hash",
+        asset_ref: {MyApp.Asset, :asset}
+      )
+
+    assert :ok = Storage.put_run(base)
+
+    newer =
+      %{base | event_seq: base.event_seq + 1, status: :running} |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(newer)
+
+    assert {:ok, stored} = Storage.get_run(base.id)
+    assert stored.event_seq == 2
+  end
+
   test "normalizes and validates run events" do
     event = %{sequence: 1, event_type: :run_started, occurred_at: DateTime.utc_now()}
 
