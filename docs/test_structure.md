@@ -1,6 +1,6 @@
 # Test Folder Structure (`apps/*/test`)
 
-This document maps the umbrella test layout during the Phase 2 -> Phase 3 transition.
+This document maps the current umbrella test layout during the v0.5 refactor.
 
 ```text
 apps/
@@ -77,7 +77,7 @@ Notes:
 
 - Most runtime coverage remains in `apps/favn_legacy/test` until slices are migrated.
 - Each migrated slice must move or recreate tests in the new owner app without dual-compiling namespace owners.
-- During Phase 2, umbrella `mix test` runs migrated owner-app suites first; legacy runtime suites remain available in `apps/favn_legacy/test` as reference coverage.
+- The current umbrella `mix test` alias is migration-oriented, includes `apps/favn_local/test`, and keeps legacy runtime suites available in `apps/favn_legacy/test` as reference coverage.
 - The current umbrella `mix test` alias shape is migration-oriented and not the final CI/test contract.
 - Test execution should be simplified again after ownership and runtime boundaries settle in later phases.
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures used during migration.

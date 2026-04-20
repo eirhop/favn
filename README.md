@@ -9,6 +9,7 @@ Favn `v0.5.0` refactor is in progress.
 - `apps/favn` now owns the public Phase 2 authoring/DSL surface
 - internal compiler/manifest/planning/shared-contract ownership has been re-centered into `apps/favn_core`
 - `apps/favn_core` now owns Phase 3 manifest/versioning foundations and shared runner contracts
+- the core local dev lifecycle is now implemented in `apps/favn_local`
 - Phase 0-4 contracts and migration rules are tracked in `docs/REFACTOR.md`
 
 ## Current Refactor Reality
@@ -18,16 +19,16 @@ Favn `v0.5.0` refactor is in progress.
 - canonical manifest schema/versioning, serializer/hash identity, compatibility checks, and shared runner contracts are now implemented in `favn_core`
 - initial runner boundary execution now exists in `favn_runner` for manifest registration plus Elixir/source asset execution through runner contracts
 - runner-owned connection runtime and SQL execution runtime slices are now hosted in `apps/favn_runner/lib/favn/connection/**`, `apps/favn_runner/lib/favn/sql/**`, and `apps/favn_runner/lib/favn/sql_asset/**`
-- the earlier same-BEAM `favn_view` Phoenix prototype still exists in-repo as a transitional reference, but it is no longer the steady-state target architecture
+- local lifecycle commands `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status` are implemented in `apps/favn_local`
+- the earlier same-BEAM `favn_view` Phoenix prototype still exists in-repo as a transitional reference only
 - examples that exercise runtime execution may still reflect legacy-reference behavior during migration
 
 ## Current Focus
 
 - Phase 8 baseline work now establishes the `favn_web + favn_orchestrator + favn_runner` boundary in baseline form: private orchestrator HTTP API v1, SSE baseline, orchestrator-owned auth/session/audit baseline, and thin `favn_web` proof flows
-- immediate next-PR focus is the core local developer loop only: foreground `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`, and the minimal `.favn/` config/state needed to drive them
-- `mix favn.reload` should rebuild and activate the new manifest without restarting orchestrator; a browser refresh through the thin local web process should show the updated state
-- that reload flow should use the private orchestrator API for manifest publish/register so local dev and future production publish share the same boundary
-- broader Phase 9 install/reset/logs/build packaging work remains intentionally deferred until after the core local dev loop lands
+- the core local developer loop has landed in `apps/favn_local`, including foreground `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status`
+- current Phase 9 follow-up is the remaining packaging/install/reset/logs/build work around that lifecycle
+- current Phase 10 follow-up is legacy cutover cleanup so the repo docs, CI, and supported flows converge on the new architecture
 - keep `favn` as the public DSL/facade package
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
 - keep `favn_orchestrator` as the manifest-pinned control plane, auth/authz authority, and storage owner
@@ -54,8 +55,8 @@ Favn `v0.5.0` refactor is in progress.
 - `docs/refactor/PHASE_7_TODO.md` - Phase 7 implementation checklist
 - `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md` - Phase 8 web/orchestrator boundary, SSE, auth, and audit architecture plan
 - `docs/refactor/PHASE_8_TODO.md` - Phase 8 implementation checklist
-- `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` - next-PR-only core local developer tooling plan
-- `docs/refactor/PHASE_9_TODO.md` - next-PR implementation checklist for core local developer tooling
+- `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` - Phase 9 local lifecycle and packaging plan
+- `docs/refactor/PHASE_9_TODO.md` - Phase 9 implementation checklist
 
 ## Storage Adapter Verification Notes
 
