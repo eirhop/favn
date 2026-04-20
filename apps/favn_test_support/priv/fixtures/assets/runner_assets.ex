@@ -246,6 +246,21 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def child_spec(_opts), do: :none
 
   @impl true
+  def put_manifest_version(_version, _opts), do: :ok
+
+  @impl true
+  def get_manifest_version(_version_id, _opts), do: {:error, :not_found}
+
+  @impl true
+  def list_manifest_versions(_opts), do: {:ok, []}
+
+  @impl true
+  def set_active_manifest_version(_version_id, _opts), do: :ok
+
+  @impl true
+  def get_active_manifest_version(_opts), do: {:error, :not_found}
+
+  @impl true
   def put_run(_run, _opts) do
     count = :persistent_term.get(@counter_key, 0)
     :persistent_term.put(@counter_key, count + 1)
@@ -264,13 +279,19 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_runs(_opts, _adapter_opts), do: {:ok, []}
 
   @impl true
-  def scheduler_child_spec(_opts), do: :none
+  def persist_run_transition(run, _transition, opts), do: put_run(run, opts)
 
   @impl true
-  def put_scheduler_state(_state, _opts), do: :ok
+  def append_run_event(_run_id, _event, _opts), do: :ok
 
   @impl true
-  def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: {:ok, nil}
+  def list_run_events(_run_id, _opts), do: {:ok, []}
+
+  @impl true
+  def put_scheduler_state(_scheduler_key, _state, _opts), do: :ok
+
+  @impl true
+  def get_scheduler_state(_scheduler_key, _opts), do: {:ok, nil}
 
   def reset!, do: :persistent_term.put(@counter_key, 0)
 end
