@@ -1,10 +1,13 @@
 defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias FavnOrchestrator.RunState
   alias FavnStoragePostgres.Adapter
+  alias FavnStoragePostgres.Migrations
+  alias FavnStoragePostgres.Repo
 
   setup_all do
     case System.get_env("FAVN_POSTGRES_TEST_URL") do
@@ -74,6 +77,37 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "same-seq idempotent and stale/conflict semantics", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        version = manifest_version("mv_pg_seq_#{System.unique_integer([:positive])}")
+        assert :ok = Adapter.put_manifest_version(version, opts)
+
+        base =
+          RunState.new(
+            id: "run_pg_seq_#{System.unique_integer([:positive])}",
+            manifest_version_id: version.manifest_version_id,
+            manifest_content_hash: version.content_hash,
+            asset_ref: {MyApp.Asset, :asset}
+          )
+
+        assert :ok = Adapter.put_run(base, opts)
+        assert :ok = Adapter.put_run(base, opts)
+
+        conflict = %{base | status: :error} |> RunState.with_snapshot_hash()
+        assert {:error, :conflicting_snapshot} = Adapter.put_run(conflict, opts)
+
+        newer = %{base | event_seq: 2, status: :running} |> RunState.with_snapshot_hash()
+        assert :ok = Adapter.put_run(newer, opts)
+
+        stale = %{base | event_seq: 1, status: :running} |> RunState.with_snapshot_hash()
+        assert {:error, :stale_write} = Adapter.put_run(stale, opts)
+    end
+  end
+
   test "enforces run write conflicts under concurrent updates", context do
     case context[:opts] do
       nil ->
@@ -133,6 +167,47 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
           )
 
         assert Enum.sort(results) == [:ok, {:error, :stale_scheduler_state}]
+    end
+  end
+
+  test "scheduler supports multiple schedule ids and nil fallback", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        key_daily = {MyApp.Pipeline, :daily}
+        key_hourly = {MyApp.Pipeline, :hourly}
+
+        assert :ok = Adapter.put_scheduler_state(key_daily, %{version: 1}, opts)
+
+        Process.sleep(5)
+        assert :ok = Adapter.put_scheduler_state(key_hourly, %{version: 1}, opts)
+
+        assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} =
+                 Adapter.get_scheduler_state(key_daily, opts)
+
+        assert {:ok, %Favn.Scheduler.State{schedule_id: :hourly}} =
+                 Adapter.get_scheduler_state(key_hourly, opts)
+
+        assert {:ok, %Favn.Scheduler.State{schedule_id: :hourly}} =
+                 Adapter.get_scheduler_state({MyApp.Pipeline, nil}, opts)
+    end
+  end
+
+  test "manual schema readiness can recover after missing migration row", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      _opts ->
+        assert true == Migrations.schema_ready?(Repo)
+
+        assert {:ok, _} = SQL.query(Repo, "DELETE FROM schema_migrations", [])
+        assert false == Migrations.schema_ready?(Repo)
+
+        :ok = Migrations.migrate!(Repo)
+        assert true == Migrations.schema_ready?(Repo)
     end
   end
 

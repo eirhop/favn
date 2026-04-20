@@ -8,6 +8,8 @@ defmodule FavnStoragePostgres.AdapterTest do
   end
 
   test "managed mode validates repo config" do
+    assert {:error, {:invalid_repo_config, :hostname}} = Adapter.child_spec(repo_mode: :managed)
+
     assert {:error, {:invalid_repo_config, :hostname}} =
              Adapter.child_spec(repo_mode: :managed, repo_config: [])
 
@@ -42,6 +44,9 @@ defmodule FavnStoragePostgres.AdapterTest do
   end
 
   test "external mode requires a postgres repo module and manual migration mode" do
+    assert {:error, {:invalid_external_repo, nil}} =
+             Adapter.child_spec(repo_mode: :external)
+
     assert :none =
              Adapter.child_spec(
                repo_mode: :external,

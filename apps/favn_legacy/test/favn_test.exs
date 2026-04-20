@@ -42,31 +42,6 @@ defmodule FavnTest do
     def archive_orders(_ctx), do: :ok
   end
 
-  defmodule FacadeRawErrorStore do
-    @behaviour Favn.Storage.Adapter
-
-    @impl true
-    def child_spec(_opts), do: :none
-
-    @impl true
-    def put_run(_run, _opts), do: {:error, :write_failed}
-
-    @impl true
-    def get_run(_run_id, _opts), do: {:error, :read_failed}
-
-    @impl true
-    def list_runs(_opts, _adapter_opts), do: {:error, :list_failed}
-
-    @impl true
-    def scheduler_child_spec(_opts), do: :none
-
-    @impl true
-    def put_scheduler_state(_state, _opts), do: :ok
-
-    @impl true
-    def get_scheduler_state(_pipeline_module, _schedule_id, _opts), do: {:ok, nil}
-  end
-
   require Logger
 
   alias Favn.Test.Fixtures.Assets.Basic.AdditionalAssets
@@ -303,13 +278,5 @@ defmodule FavnTest do
              {SampleAssets, :extract_orders},
              {SampleAssets, :normalize_orders}
            ]
-  end
-
-  test "public run facade returns canonical storage error contract" do
-    Application.put_env(:favn, :storage_adapter, FacadeRawErrorStore)
-
-    assert {:error, {:store_error, :read_failed}} = Favn.get_run("run-1")
-    assert {:error, {:store_error, :list_failed}} = Favn.list_runs()
-    assert {:error, :invalid_opts} = Favn.list_runs(status: :pending)
   end
 end

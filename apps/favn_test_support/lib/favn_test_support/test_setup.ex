@@ -1,5 +1,6 @@
 defmodule Favn.TestSetup do
   @moduledoc false
+  @compile {:no_warn_undefined, [Favn.Assets.Registry, Favn.Assets.GraphIndex]}
 
   alias Favn.Assets.GraphIndex
   alias Favn.Assets.Registry
@@ -10,6 +11,8 @@ defmodule Favn.TestSetup do
           previous_catalog: {:ok, Favn.Assets.Registry.catalog()} | {:error, term()},
           previous_storage_adapter: module() | nil,
           previous_storage_adapter_opts: keyword() | nil,
+          previous_orchestrator_storage_adapter: module() | nil,
+          previous_orchestrator_storage_adapter_opts: keyword() | nil,
           previous_scheduler_opts: keyword() | nil,
           previous_connection_modules: list(module()) | nil,
           previous_connections: keyword() | map() | nil
@@ -25,6 +28,10 @@ defmodule Favn.TestSetup do
       previous_catalog: Registry.build_catalog(previous_modules || []),
       previous_storage_adapter: Application.get_env(:favn, :storage_adapter),
       previous_storage_adapter_opts: Application.get_env(:favn, :storage_adapter_opts),
+      previous_orchestrator_storage_adapter:
+        Application.get_env(:favn_orchestrator, :storage_adapter),
+      previous_orchestrator_storage_adapter_opts:
+        Application.get_env(:favn_orchestrator, :storage_adapter_opts),
       previous_scheduler_opts: Application.get_env(:favn, :scheduler),
       previous_connection_modules: Application.get_env(:favn, :connection_modules),
       previous_connections: Application.get_env(:favn, :connections)
@@ -34,10 +41,10 @@ defmodule Favn.TestSetup do
   @spec setup_asset_modules([module()], keyword()) :: :ok
   def setup_asset_modules(modules, opts \\ []) do
     Application.put_env(:favn, :asset_modules, modules)
-    :ok = Registry.reload()
+    reload_registry()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = GraphIndex.reload(modules)
+      reload_graph_index(modules)
     end
 
     :ok
@@ -47,6 +54,8 @@ defmodule Favn.TestSetup do
   def configure_storage_adapter(store, store_opts \\ []) do
     Application.put_env(:favn, :storage_adapter, store)
     Application.put_env(:favn, :storage_adapter_opts, store_opts)
+    Application.put_env(:favn_orchestrator, :storage_adapter, store)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, store_opts)
   end
 
   @spec clear_memory_storage_adapter() :: :ok
@@ -78,9 +87,23 @@ defmodule Favn.TestSetup do
     if Keyword.get(opts, :clear_storage_adapter_env?, false) do
       Application.delete_env(:favn, :storage_adapter)
       Application.delete_env(:favn, :storage_adapter_opts)
+      Application.delete_env(:favn_orchestrator, :storage_adapter)
+      Application.delete_env(:favn_orchestrator, :storage_adapter_opts)
     else
       restore_env(:storage_adapter, state.previous_storage_adapter)
       restore_env(:storage_adapter_opts, state.previous_storage_adapter_opts)
+
+      restore_env(
+        :favn_orchestrator,
+        :storage_adapter,
+        state.previous_orchestrator_storage_adapter
+      )
+
+      restore_env(
+        :favn_orchestrator,
+        :storage_adapter_opts,
+        state.previous_orchestrator_storage_adapter_opts
+      )
     end
 
     restore_env(:pipeline_modules, state.previous_pipeline_modules)
@@ -95,10 +118,10 @@ defmodule Favn.TestSetup do
   defp restore_asset_modules(modules), do: Application.put_env(:favn, :asset_modules, modules)
 
   defp restore_registry({:ok, _catalog}, opts) do
-    :ok = Registry.reload()
+    reload_registry()
 
     if Keyword.get(opts, :reload_graph?, false) do
-      :ok = GraphIndex.reload(current_asset_modules())
+      reload_graph_index(current_asset_modules())
     end
 
     :ok
@@ -106,10 +129,27 @@ defmodule Favn.TestSetup do
 
   defp restore_registry({:error, _reason}, _opts), do: :ok
 
+  defp reload_registry do
+    case Registry.reload() do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp reload_graph_index(modules) when is_list(modules) do
+    case GraphIndex.reload(modules) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
   defp current_asset_modules do
     Application.get_env(:favn, :asset_modules, [])
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
   defp restore_env(key, value), do: Application.put_env(:favn, key, value)
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 end

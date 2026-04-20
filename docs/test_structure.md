@@ -6,8 +6,8 @@ This document maps the current umbrella test layout during the v0.5 refactor.
 apps/
 ├── favn/test/
 │   ├── boundary_defaults_test.exs
-│   ├── favn_test.exs
 │   ├── dsl_compiler_test.exs
+│   ├── favn_test.exs
 │   ├── manifest_generator_test.exs
 │   ├── public_authoring_parity_test.exs
 │   ├── public_pipeline_parity_test.exs
@@ -45,9 +45,24 @@ apps/
 │   ├── favn_runner_test.exs
 │   └── test_helper.exs
 ├── favn_orchestrator/test/
-│   ├── favn_orchestrator_test.exs
+│   ├── events_test.exs
+│   ├── manifest_store_test.exs
+│   ├── orchestrator_runner_integration_test.exs
+│   ├── projector_test.exs
 │   ├── runner_client/
 │   │   └── local_node_test.exs
+│   ├── run_manager_test.exs
+│   ├── run_server_test.exs
+│   ├── scheduler/
+│   │   └── runtime_test.exs
+│   ├── storage/
+│   │   ├── manifest_codec_test.exs
+│   │   ├── memory_adapter_test.exs
+│   │   ├── run_event_codec_test.exs
+│   │   ├── run_state_codec_test.exs
+│   │   ├── scheduler_state_codec_test.exs
+│   │   └── write_semantics_test.exs
+│   ├── storage_facade_test.exs
 │   └── test_helper.exs
 ├── favn_view/test/
 │   ├── favn_view_test.exs
@@ -56,7 +71,9 @@ apps/
 │   ├── favn_storage_postgres_test.exs
 │   └── test_helper.exs
 ├── favn_storage_sqlite/test/
-│   ├── favn_storage_sqlite_test.exs
+│   ├── adapter_test.exs
+│   ├── sqlite_storage_bootstrap_test.exs
+│   ├── sqlite_storage_test.exs
 │   └── test_helper.exs
 ├── favn_duckdb/test/
 │   ├── favn_duckdb_test.exs
@@ -69,14 +86,9 @@ apps/
     ├── connection_test.exs
     ├── favn_test.exs
     ├── pipeline_test.exs
-    ├── runner_test.exs
-    ├── scheduler_test.exs
     ├── shared_fixture_support_smoke_test.exs
     ├── sql_asset_test.exs
     ├── sql_test.exs
-    ├── storage_test.exs
-    ├── support/
-    │   └── favn_test_setup.ex
     └── test_helper.exs
 ```
 
@@ -144,6 +156,20 @@ Notes:
   - `apps/favn_runner/test/worker_test.exs` expanded failure-shape coverage (`raise`/`throw`/`exit`/invalid return/arity mismatch)
   - `apps/favn_runner/test/server_test.exs` expanded execution timeout/not-found/input-validation behavior
   - `apps/favn_runner/test/execution/sql_asset_test.exs` expanded manifest SQL runtime failure-path coverage
+- Control-plane/runtime-state parity migration batch 3 expanded owner-app coverage with:
+  - `apps/favn_orchestrator/test/orchestrator_runner_integration_test.exs`
+  - `apps/favn_orchestrator/test/projector_test.exs`
+  - `apps/favn_orchestrator/test/run_manager_test.exs`
+  - `apps/favn_orchestrator/test/run_server_test.exs`
+  - `apps/favn_orchestrator/test/scheduler/runtime_test.exs`
+  - `apps/favn_orchestrator/test/storage_facade_test.exs`
+  - `apps/favn_storage_sqlite/test/sqlite_storage_test.exs`
+  - `apps/favn/test/runtime_facade_test.exs`
+- Batch 3 also migrated remaining storage semantics parity from legacy into owner suites:
+  - `apps/favn_orchestrator/test/storage/memory_adapter_test.exs`
+  - `apps/favn_storage_postgres/test/adapter_test.exs`
+  - `apps/favn_storage_postgres/test/integration/adapter_live_test.exs`
+- Shared test setup used by both legacy and owner apps now lives in `apps/favn_test_support/lib/favn_test_support/test_setup.ex` (`Favn.TestSetup`), so migrated owner suites no longer require setup code from `apps/favn_legacy/test/support/`.
 - DuckDB plugin parity migration batch 2 expanded owner-app coverage with:
   - `apps/favn_duckdb/test/sql/adapter/duckdb_hardening_test.exs` for DuckDB adapter transaction/appender/resource-cleanup hardening semantics
   - `apps/favn_duckdb/test/favn_duckdb_test.exs` expanded runtime option-default and invalid-handle behavior
