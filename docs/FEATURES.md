@@ -13,6 +13,7 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 - remaining Phase 9 work is packaging and local-tooling follow-up: `install`, `reset`, `logs`, and build targets for `web`, `orchestrator`, `runner`, and optional `single`
 - Phase 10 remains open for legacy cutover cleanup, final repo/CI convergence, and deleting remaining supported legacy runtime dependence
 - shared migration fixture substrate now lives in `apps/favn_test_support` (`priv/fixtures/**` + `FavnTestSupport.Fixtures`) so later per-app parity PRs can reuse one fixture source of truth
+- authoring/compiler/planning/window parity batch 1 has moved broad coverage into `apps/favn/test` and `apps/favn_core/test`, while retaining non-migrated legacy contract suites in `apps/favn_legacy/test` until full parity lands
 - execution ownership parity batch 2 expanded runner/plugin confidence in owner apps: `apps/favn_runner/test` now covers richer runner/server/worker/connection runtime SQL paths, and `apps/favn_duckdb/test` now carries broader DuckDB adapter/runtime hardening semantics
 
 ## v0.5 Status By Phase
