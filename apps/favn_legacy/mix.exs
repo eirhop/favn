@@ -38,6 +38,7 @@ defmodule FavnLegacy.MixProject do
       {:favn, in_umbrella: true},
       {:favn_orchestrator, in_umbrella: true},
       {:favn_runner, in_umbrella: true},
+      {:favn_test_support, in_umbrella: true, only: :test},
       {:telemetry, "~> 1.3.0"},
       {:ecto, "~> 3.13.5"},
       {:ecto_sql, "~> 3.13.4"},
