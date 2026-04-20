@@ -5,9 +5,13 @@ This document maps the current umbrella test layout during the v0.5 refactor.
 ```text
 apps/
 ├── favn/test/
+│   ├── boundary_defaults_test.exs
 │   ├── favn_test.exs
 │   ├── dsl_compiler_test.exs
 │   ├── manifest_generator_test.exs
+│   ├── public_authoring_parity_test.exs
+│   ├── public_pipeline_parity_test.exs
+│   ├── runtime_facade_test.exs
 │   └── test_helper.exs
 ├── favn_local/test/
 │   ├── dev_config_test.exs
@@ -29,6 +33,11 @@ apps/
 │   ├── value_objects_test.exs
 │   ├── window_schedule_test.exs
 │   ├── asset_and_dsl_test.exs
+│   ├── assets/
+│   │   ├── compiler_parity_test.exs
+│   │   └── graph_planner_parity_test.exs
+│   ├── pipeline/
+│   │   └── resolver_parity_test.exs
 │   ├── manifest/
 │   ├── contracts/
 │   └── test_helper.exs
@@ -56,10 +65,7 @@ apps/
 │   ├── fixtures_test.exs
 │   └── test_helper.exs
 └── favn_legacy/test/
-    ├── asset_test.exs
-    ├── assets_test.exs
     ├── connection_test.exs
-    ├── favn_test.exs
     ├── pipeline_test.exs
     ├── runner_test.exs
     ├── scheduler_test.exs
@@ -67,7 +73,6 @@ apps/
     ├── sql_asset_test.exs
     ├── sql_test.exs
     ├── storage_test.exs
-    ├── window_test.exs
     ├── support/
     │   └── favn_test_setup.ex
     └── test_helper.exs
@@ -82,6 +87,7 @@ Notes:
 - Test execution should be simplified again after ownership and runtime boundaries settle in later phases.
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures used during migration.
 - shared fixture source for migration parity now lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.
+- batch 1 parity migration moved broad authoring/compiler/planning/window ownership from `apps/favn_legacy/test` into `apps/favn/test` and `apps/favn_core/test`.
 - Umbrella apps may depend on `favn_test_support` only with `only: :test`.
 - Fixtures used by only one app should stay in that app's local `test/support` directory.
 - Phase 3 should grow `apps/favn_core/test` with manifest schema, manifest versioning, serializer, compatibility, graph, and shared contract tests.
