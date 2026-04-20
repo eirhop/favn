@@ -1,0 +1,97 @@
+defmodule Favn.PublicAuthoringParityTest do
+  use ExUnit.Case, async: true
+
+  alias Favn.Test.Fixtures.Assets.Basic.AdditionalAssets
+  alias Favn.Test.Fixtures.Assets.Basic.CrossModuleAssets
+  alias Favn.Test.Fixtures.Assets.Basic.SampleAssets
+  alias Favn.Test.Fixtures.Assets.Basic.SpoofedAssets
+  alias FavnTestSupport.Fixtures
+
+  setup_all do
+    Fixtures.compile_fixture!(:basic_assets)
+    :ok
+  end
+
+  setup do
+    previous_asset_modules = Application.get_env(:favn, :asset_modules)
+
+    on_exit(fn ->
+      if is_nil(previous_asset_modules) do
+        Application.delete_env(:favn, :asset_modules)
+      else
+        Application.put_env(:favn, :asset_modules, previous_asset_modules)
+      end
+    end)
+
+    :ok
+  end
+
+  test "list_assets/0 returns configured assets sorted by canonical ref" do
+    Application.put_env(:favn, :asset_modules, [SampleAssets, CrossModuleAssets, AdditionalAssets])
+
+    assert {:ok, assets} = Favn.list_assets()
+
+    assert Enum.map(assets, & &1.ref) == [
+             {AdditionalAssets, :archive_orders},
+             {CrossModuleAssets, :publish_orders},
+             {SampleAssets, :extract_orders},
+             {SampleAssets, :normalize_orders}
+           ]
+  end
+
+  test "list_assets/1 keeps deterministic results across overlapping modules" do
+    assert {:ok, assets} =
+             Favn.list_assets([SampleAssets, CrossModuleAssets, AdditionalAssets, SampleAssets])
+
+    assert Enum.map(assets, & &1.ref) == [
+             {AdditionalAssets, :archive_orders},
+             {CrossModuleAssets, :publish_orders},
+             {SampleAssets, :extract_orders},
+             {SampleAssets, :normalize_orders}
+           ]
+  end
+
+  test "get_asset/1 resolves canonical refs across modules" do
+    assert {:ok, asset} = Favn.get_asset({SampleAssets, :normalize_orders})
+    assert asset.depends_on == [{SampleAssets, :extract_orders}]
+
+    assert {:ok, cross_module_asset} = Favn.get_asset({CrossModuleAssets, :publish_orders})
+    assert cross_module_asset.depends_on == [{SampleAssets, :normalize_orders}]
+  end
+
+  test "asset_module?/1 and get_asset/1 reject spoofed and invalid modules" do
+    assert Favn.asset_module?(SampleAssets)
+    refute Favn.asset_module?(Enum)
+    refute Favn.asset_module?(SpoofedAssets)
+
+    assert {:error, :not_asset_module} = Favn.get_asset({Enum, :map})
+    assert {:error, :not_asset_module} = Favn.get_asset({SpoofedAssets, :asset})
+    assert {:error, :asset_not_found} = Favn.get_asset({SampleAssets, :missing})
+  end
+
+  test "list_assets/0 reports invalid configured modules with module context" do
+    Application.put_env(:favn, :asset_modules, [SampleAssets, SpoofedAssets])
+
+    assert {:error, {SpoofedAssets, {:invalid_asset_module, SpoofedAssets}}} = Favn.list_assets()
+  end
+
+  test "single-asset module fetch keeps doc and canonical ref" do
+    module_name = Module.concat(__MODULE__, "SingleAsset#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Asset
+
+        @doc "Single asset facade"
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/public_authoring_parity_test.exs"
+    )
+
+    assert {:ok, asset} = Favn.get_asset(module_name)
+    assert asset.ref == {module_name, :asset}
+    assert asset.doc == "Single asset facade"
+  end
+end
