@@ -6,10 +6,10 @@ Phase 3 through Phase 7 are implemented.
 
 The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype exists as transitional history only. Phase 8 is reopened and redefined as preparation for the correct `web + orchestrator + runner` boundary before Phase 9 tooling and packaging are finalized.
 
-Immediate next-step note:
+Phase 9 is in progress.
 
-- the next PR should implement only the core local dev loop: `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`, and the minimum `.favn/` config/state needed to support them
-- packaging/install/reset/logs/build tasks remain later Phase 9 or pre-v1 follow-up work, not the immediate slice
+- the core local dev lifecycle is now implemented in `apps/favn_local`
+- remaining Phase 9 work stays open for install/reset/logs follow-up, build and packaging targets (`web`, `orchestrator`, `runner`, optional `single`), and the already-documented local validation/polish work that still belongs to Phase 9
 
 ## Summary
 
@@ -658,14 +658,14 @@ Historical note:
 ### Goal
 Make the corrected `web + orchestrator + runner` architecture usable, packageable, and pleasant in local development.
 
-Detailed implementation planning for the immediate next-PR slice lives in:
+Detailed implementation planning for Phase 9 lives in:
 
 - `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md`
 - `docs/refactor/PHASE_9_TODO.md`
 
-### Immediate next-PR slice
+### Completed core local lifecycle slice
 
-Foundational local dev loop only:
+Implemented in `apps/favn_local`:
 
 - `mix favn.dev`
 - `mix favn.dev --sqlite`
@@ -683,23 +683,24 @@ Ownership and packaging note:
 - future one-install UX and internal ownership do not need to be identical
 - follow-up design item: evaluate whether `favn` later becomes a thin distribution package over authoring + local tooling
 
-Important scope rule for the next PR:
+Phase 9 follow-up scope rule:
 
-- do not make the immediate implementation slice primarily about install/reset/logs/build packaging tasks
 - do not reopen architecture by collapsing back to same-BEAM web shortcuts
-- do not treat production hardening as part of the local-dev lifecycle slice
-- do not optimize the immediate slice around SvelteKit HMR; prefer a thin built local web process and browser refresh
+- do not treat production hardening as part of the Phase 9 local-dev and packaging slice
+- do not optimize Phase 9 around SvelteKit HMR; prefer a thin built local web process and browser refresh
+
+### Remaining Phase 9 deliverables
+
+- `mix favn.install`
+- `mix favn.reset`
+- `mix favn.logs`
+- `mix favn.build.web`
+- `mix favn.build.orchestrator`
+- `mix favn.build.runner`
+- `mix favn.build.single`
+- local validation and polish for lifecycle recovery, partial/dead service recovery, and explicit SQLite/Postgres follow-up verification
 
 ### Deliverables
-- `mix favn.dev`
-- `mix favn.dev --sqlite`
-- `mix favn.stop`
-- `mix favn.reload`
-- `mix favn.status`
-- minimal `.favn/` local runtime state and config model
-
-Later in Phase 9, but not in the next PR:
-
 - `mix favn.install`
 - `mix favn.reset`
 - `mix favn.logs`
@@ -734,7 +735,7 @@ Test strategy follow-up:
 - maintain true lifecycle coverage for start/status/reload/stop across concurrent processes
 - include explicit tests for startup-failure cleanup, reload during running state, and partial/dead service recovery
 
-Future local-tooling features (not this PR):
+Future local-tooling features (not required for Phase 9 completion):
 
 - watch mode / auto-reload
 - doctor / environment validation
@@ -753,6 +754,19 @@ Additional storage follow-ups in this phase:
 - user can go from `{:favn, ...}` dependency to local web UI and orchestration quickly
 - user can package `web`, `orchestrator`, `runner`, and optional `single` targets without understanding internal implementation details
 - local dev makes the public/private split visible even on one machine
+
+### Status
+In progress.
+
+Completed in this phase so far:
+
+- core local lifecycle commands and minimal `.favn/` state/config now exist in `apps/favn_local`
+
+Still open in this phase:
+
+- install/reset/logs follow-up
+- build and packaging targets for `web`, `orchestrator`, `runner`, and optional `single`
+- remaining lifecycle validation and local storage verification called out above
 
 ---
 

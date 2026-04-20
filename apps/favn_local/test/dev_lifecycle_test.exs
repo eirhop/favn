@@ -29,9 +29,7 @@ defmodule Favn.Dev.LifecycleTest do
     %{root_dir: root_dir}
   end
 
-  test "foreground lifecycle leaves lock free and supports second-terminal control", %{
-    root_dir: root_dir
-  } do
+  test "foreground lifecycle leaves lock free and supports second-terminal control" do
     root_dir = File.cwd!()
 
     task = Task.async(fn -> Dev.dev(root_dir: root_dir) end)

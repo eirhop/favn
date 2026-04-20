@@ -1,6 +1,6 @@
 # Library Folder Structure (`apps/*/lib`)
 
-This document maps the umbrella library layout during the Phase 2 -> Phase 3 transition.
+This document maps the current umbrella library layout during the v0.5 refactor.
 
 ```text
 apps/
