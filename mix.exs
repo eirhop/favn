@@ -7,7 +7,8 @@ defmodule FavnUmbrella.MixProject do
       version: "0.5.0-dev",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      dialyzer: [plt_add_apps: [:mix]]
     ]
   end
 

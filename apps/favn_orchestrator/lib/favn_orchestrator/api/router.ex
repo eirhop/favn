@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.API.Router do
 
   use Plug.Router
 
+  alias Favn.Manifest.Version
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
 
@@ -133,6 +134,45 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
+  post "/api/orchestrator/v1/manifests" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, params} <- fetch_json_body(conn),
+         {:ok, version} <- build_manifest_version(params),
+         :ok <- FavnOrchestrator.register_manifest(version),
+         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(version.manifest_version_id) do
+      Auth.put_audit(%{
+        action: "manifest.register",
+        session_id: header(conn, "x-favn-session-id"),
+        resource_type: "manifest",
+        resource_id: version.manifest_version_id,
+        outcome: "accepted",
+        service_identity: service_identity(conn)
+      })
+
+      data(conn, 201, %{manifest: summary})
+    else
+      {:error, {:missing_field, field}} ->
+        error(conn, 422, "validation_failed", "Missing required field", %{field: field})
+
+      {:error, {:invalid_manifest_version_id, _value}} ->
+        error(conn, 422, "validation_failed", "Invalid manifest version id")
+
+      {:error, :manifest_version_conflict} ->
+        error(
+          conn,
+          409,
+          "manifest_conflict",
+          "Manifest version id already exists with different content"
+        )
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
   get "/api/orchestrator/v1/manifests/active" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
@@ -178,13 +218,13 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/manifests/:manifest_version_id/activate" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, actor_id, session_id} <- ensure_activation_context(conn),
          :ok <- FavnOrchestrator.activate_manifest(manifest_version_id),
          :ok <- maybe_reload_scheduler() do
       Auth.put_audit(%{
         action: "manifest.activate",
-        actor_id: actor.id,
-        session_id: header(conn, "x-favn-session-id"),
+        actor_id: actor_id,
+        session_id: session_id,
         resource_type: "manifest",
         resource_id: manifest_version_id,
         outcome: "accepted",
@@ -199,6 +239,24 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  get "/api/orchestrator/v1/runs/in-flight" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, runs} <- FavnOrchestrator.list_runs(limit: 500) do
+      running_ids =
+        runs
+        |> Enum.filter(&(&1.status == :running))
+        |> Enum.map(& &1.id)
+
+      data(conn, 200, %{count: length(running_ids), run_ids: running_ids})
+    else
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
@@ -353,12 +411,12 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/runs/:run_id/cancel" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
-         :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor.id}) do
+         {:ok, actor_id, session_id} <- ensure_operator_context(conn),
+         :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor_id}) do
       Auth.put_audit(%{
         action: "run.cancel",
-        actor_id: actor.id,
-        session_id: header(conn, "x-favn-session-id"),
+        actor_id: actor_id,
+        session_id: session_id,
         resource_type: "run",
         resource_id: run_id,
         outcome: "accepted",
@@ -675,6 +733,22 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
+  defp ensure_activation_context(conn) do
+    case ensure_actor_context(conn, :operator) do
+      {:ok, session, actor} -> {:ok, actor.id, session.id}
+      {:error, :unauthenticated} -> {:ok, nil, nil}
+      {:error, :forbidden} = error -> error
+    end
+  end
+
+  defp ensure_operator_context(conn) do
+    case ensure_actor_context(conn, :operator) do
+      {:ok, session, actor} -> {:ok, actor.id, session.id}
+      {:error, :unauthenticated} -> {:ok, nil, nil}
+      {:error, :forbidden} = error -> error
+    end
+  end
+
   defp validate_last_event_id(nil), do: {:ok, nil}
 
   defp validate_last_event_id(value) when is_binary(value) do
@@ -753,6 +827,25 @@ defmodule FavnOrchestrator.API.Router do
     case Map.get(params, key) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, {:missing_field, key}}
+    end
+  end
+
+  defp build_manifest_version(params) when is_map(params) do
+    with %{} = manifest <- Map.get(params, "manifest"),
+         opts <- manifest_version_opts(params),
+         {:ok, version} <- Version.new(manifest, opts) do
+      {:ok, version}
+    else
+      nil -> {:error, {:missing_field, "manifest"}}
+      {:error, _reason} = error -> error
+      _other -> {:error, {:missing_field, "manifest"}}
+    end
+  end
+
+  defp manifest_version_opts(params) when is_map(params) do
+    case Map.get(params, "manifest_version_id") do
+      value when is_binary(value) and value != "" -> [manifest_version_id: value]
+      _other -> []
     end
   end
 

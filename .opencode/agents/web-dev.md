@@ -3,9 +3,22 @@ description: Web developer that has front-end developer tooling
 mode: all
 temperature: 0.1
 tools:
-  write: false
-  edit: false
-  bash: false
+    bash: true
+    read: true
+    edit: true
+    grep: true
+    glob: true
+    lsp: true
+    skill: true
+    todowrite: true
+    question: true
+    webfetch: true
+    websearch: true
+    svelte: true
+    playwright: true
+    storybook: true
+permission:
+    "*": allow
 ---
 
 You are the frontend dev in this project using sveltekit for frontend-dev and playwright and storybook for testing and components. 

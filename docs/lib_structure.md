@@ -6,7 +6,7 @@ This document maps the umbrella library layout during the Phase 2 -> Phase 3 tra
 apps/
 ├── favn/lib/
 │   ├── favn.ex
-│   └── favn/
+│   ├── favn/
 │       ├── public_scaffold.ex
 │       ├── asset.ex
 │       ├── assets.ex
@@ -20,6 +20,28 @@ apps/
 │       ├── window.ex
 │       ├── triggers/
 │       └── (public DSL entrypoints only)
+├── favn_local/lib/
+│   ├── favn_local.ex
+│   ├── favn/
+│   │   ├── dev.ex
+│   │   └── dev/
+│   │       ├── config.ex
+│   │       ├── lock.ex
+│   │       ├── node_control.ex
+│   │       ├── orchestrator_client.ex
+│   │       ├── paths.ex
+│   │       ├── process.ex
+│   │       ├── reload.ex
+│   │       ├── runner_control.ex
+│   │       ├── secrets.ex
+│   │       ├── stack.ex
+│   │       ├── state.ex
+│   │       └── status.ex
+│   └── mix/tasks/
+│       ├── favn.dev.ex
+│       ├── favn.reload.ex
+│       ├── favn.status.ex
+│       └── favn.stop.ex
 ├── favn_core/lib/
 │   ├── favn_core.ex
 │   └── favn/
@@ -28,7 +50,10 @@ apps/
 │   └── favn_runner/application.ex
 ├── favn_orchestrator/lib/
 │   ├── favn_orchestrator.ex
-│   └── favn_orchestrator/application.ex
+│   └── favn_orchestrator/
+│       ├── application.ex
+│       └── runner_client/
+│           └── local_node.ex
 ├── favn_view/lib/
 │   ├── favn_view.ex
 │   └── favn_view/application.ex

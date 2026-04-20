@@ -9,6 +9,21 @@ apps/
 │   ├── dsl_compiler_test.exs
 │   ├── manifest_generator_test.exs
 │   └── test_helper.exs
+├── favn_local/test/
+│   ├── dev_config_test.exs
+│   ├── dev_lifecycle_test.exs
+│   ├── dev_lock_test.exs
+│   ├── dev_orchestrator_client_test.exs
+│   ├── dev_process_test.exs
+│   ├── dev_reload_test.exs
+│   ├── dev_state_test.exs
+│   ├── dev_status_test.exs
+│   ├── dev_stop_test.exs
+│   ├── mix_tasks/
+│   │   └── favn_dev_task_test.exs
+│   ├── integration/
+│   │   └── dev_stack_smoke_test.exs
+│   └── test_helper.exs
 ├── favn_core/test/
 │   ├── favn_core_test.exs
 │   ├── value_objects_test.exs
@@ -22,6 +37,8 @@ apps/
 │   └── test_helper.exs
 ├── favn_orchestrator/test/
 │   ├── favn_orchestrator_test.exs
+│   ├── runner_client/
+│   │   └── local_node_test.exs
 │   └── test_helper.exs
 ├── favn_view/test/
 │   ├── favn_view_test.exs
