@@ -1,5 +1,5 @@
 defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
@@ -44,5 +44,18 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
   test "returns error when runner module is missing" do
     assert {:error, {:runner_function_undefined, MissingRunnerModule, :cancel_work, 3}} =
              LocalNode.cancel_work("exec_2", %{}, runner_module: MissingRunnerModule)
+  end
+
+  test "remote dispatch does not require local runner module exports" do
+    runner_node = :definitely_missing_runner@localhost
+
+    assert {:error, {reason, node}} =
+             LocalNode.cancel_work("exec_2", %{},
+               runner_module: MissingRunnerModule,
+               runner_node: runner_node
+             )
+
+    assert reason in [:runner_node_unreachable, :runner_node_ignored]
+    assert node == runner_node
   end
 end

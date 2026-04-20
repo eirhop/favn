@@ -124,6 +124,7 @@ This list is intentionally detailed and execution-oriented. `docs/FEATURES.md` r
 - [x] Add local runner/orchestrator control-path tests.
 - [x] Add manifest publish API coverage.
 - [x] Add one serial end-to-end local smoke path.
+- [x] Add a lifecycle test that catches lock-scope and live-runner registration regressions.
 
 ## Docs
 

@@ -392,6 +392,7 @@ Use full stop/start instead when:
 - manifest re-registration during reload must target the live runner process
 - local control cannot rely on one-off helper VMs that do not affect the running runner instance
 - local orchestrator runner-client wiring should explicitly use configured local runner control (`:runner_client` + `:runner_client_opts`) at startup
+- distributed node identities used for local runner/orchestrator control should be stored as full node names (`name@host`) in runtime state
 
 ### Should reload recover a stopped stack?
 

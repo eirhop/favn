@@ -1,5 +1,10 @@
 defmodule Favn.Dev.NodeControl do
-  @moduledoc false
+  @moduledoc """
+  Distributed-node helpers for local tooling.
+
+  Local tooling uses explicit shortname-based distributed Erlang nodes and stores
+  the fully-qualified node name (`name@host`) in `.favn/runtime.json`.
+  """
 
   @spec ensure_local_node_started(String.t(), keyword()) :: :ok | {:error, term()}
   def ensure_local_node_started(cookie, opts \\ []) when is_binary(cookie) and is_list(opts) do
@@ -26,6 +31,17 @@ defmodule Favn.Dev.NodeControl do
           {:error, reason} ->
             {:error, {:node_start_failed, reason}}
         end
+    end
+  end
+
+  @spec shortname_to_full(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def shortname_to_full(shortname) when is_binary(shortname) and shortname != "" do
+    case :net_adm.localhost() do
+      host when is_list(host) and host != [] ->
+        {:ok, shortname <> "@" <> List.to_string(host)}
+
+      other ->
+        {:error, {:invalid_local_host, other}}
     end
   end
 end

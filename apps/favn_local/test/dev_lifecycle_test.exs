@@ -21,102 +21,75 @@ defmodule Favn.Dev.LifecycleTest do
     %{root_dir: root_dir}
   end
 
-  test "foreground start allows status/reload/stop from another process", %{root_dir: root_dir} do
-    :ok = State.ensure_layout(root_dir: root_dir)
-    write_fake_curl(root_dir)
+  test "foreground lifecycle leaves lock free and supports second-terminal control", %{
+    root_dir: root_dir
+  } do
+    root_dir = File.cwd!()
 
-    specs = service_specs(root_dir)
+    task = Task.async(fn -> Dev.dev(root_dir: root_dir) end)
 
-    task =
-      Task.async(fn ->
-        Dev.dev(
-          root_dir: root_dir,
-          service_specs_override: specs,
-          skip_bootstrap: true,
-          skip_readiness: true
-        )
-      end)
+    assert :ok =
+             wait_until(fn ->
+               match?(
+                 {:ok, %{"services" => %{"runner" => _, "orchestrator" => _, "web" => _}}},
+                 State.read_runtime(root_dir: root_dir)
+               )
+             end)
 
-    assert :ok = wait_until(fn -> match?({:ok, _}, State.read_runtime(root_dir: root_dir)) end)
     assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
-
     assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
+
     assert :ok = Dev.reload(root_dir: root_dir)
+    assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
+
     assert :ok = Dev.stop(root_dir: root_dir)
     assert %{stack_status: :stopped} = Dev.status(root_dir: root_dir)
 
-    _ = Task.await(task, 15_000)
+    _ = Task.await(task, 60_000)
   end
 
-  defp service_specs(root_dir) do
-    logs_dir = Paths.logs_dir(root_dir)
+  test "startup failure cleans runtime state", %{root_dir: root_dir} do
+    :ok = State.ensure_layout(root_dir: root_dir)
 
-    [
+    failing_specs = [
       %{
         name: "runner",
         exec: System.find_executable("bash") || "/bin/bash",
-        args: ["-lc", "sleep 60"],
+        args: ["-lc", "sleep 30"],
         cwd: root_dir,
-        log_path: Path.join(logs_dir, "runner.log"),
+        log_path: Paths.runner_log_path(root_dir),
         env: %{}
       },
       %{
         name: "orchestrator",
-        exec: System.find_executable("bash") || "/bin/bash",
-        args: ["-lc", "sleep 60"],
+        exec: "/definitely/missing/executable",
+        args: [],
         cwd: root_dir,
-        log_path: Path.join(logs_dir, "orchestrator.log"),
-        env: %{}
-      },
-      %{
-        name: "web",
-        exec: System.find_executable("bash") || "/bin/bash",
-        args: ["-lc", "sleep 60"],
-        cwd: root_dir,
-        log_path: Path.join(logs_dir, "web.log"),
+        log_path: Paths.orchestrator_log_path(root_dir),
         env: %{}
       }
     ]
+
+    assert {:error, {:start_failed, "orchestrator", _reason}} =
+             Dev.dev(
+               root_dir: root_dir,
+               service_specs_override: failing_specs,
+               skip_bootstrap: true,
+               skip_readiness: true
+             )
+
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+    assert {:ok, %{"error" => _}} = State.read_last_failure(root_dir: root_dir)
   end
 
-  defp write_fake_curl(root_dir) do
-    bin_dir = Path.join(root_dir, "bin")
-    File.mkdir_p!(bin_dir)
-
-    script =
-      [
-        "#!/usr/bin/env bash",
-        "url=\"${@: -1}\"",
-        "if [[ \"$url\" == *\"/api/orchestrator/v1/runs/in-flight\"* ]]; then",
-        "  printf '%s\\n' '{\"data\":{\"run_ids\":[]}}'",
-        "  printf '%s\\n' '200'",
-        "elif [[ \"$url\" == *\"/api/orchestrator/v1/manifests/\"*\"/activate\"* ]]; then",
-        "  printf '%s\\n' '{\"data\":{\"activated\":true}}'",
-        "  printf '%s\\n' '200'",
-        "elif [[ \"$url\" == *\"/api/orchestrator/v1/manifests\"* ]]; then",
-        "  printf '%s\\n' '{\"data\":{\"manifest\":{\"manifest_version_id\":\"mv_test\"}}}'",
-        "  printf '%s\\n' '201'",
-        "else",
-        "  printf '%s\\n' '{\"error\":{\"code\":\"not_found\"}}'",
-        "  printf '%s\\n' '404'",
-        "fi"
-      ]
-      |> Enum.join("\n")
-
-    curl_path = Path.join(bin_dir, "curl")
-    File.write!(curl_path, script)
-    File.chmod!(curl_path, 0o755)
-    System.put_env("PATH", bin_dir <> ":" <> (System.get_env("PATH") || ""))
-  end
-
-  defp wait_until(fun, attempts \\ 60)
+  defp wait_until(fun, attempts \\ 120)
   defp wait_until(_fun, 0), do: {:error, :timeout}
 
   defp wait_until(fun, attempts) do
     if fun.() do
       :ok
     else
-      Process.sleep(100)
+      Process.sleep(250)
       wait_until(fun, attempts - 1)
     end
   end

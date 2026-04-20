@@ -8,6 +8,7 @@ defmodule Favn.Dev.Stack do
 
   alias Favn.Dev.Config
   alias Favn.Dev.Lock
+  alias Favn.Dev.NodeControl
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
@@ -92,12 +93,23 @@ defmodule Favn.Dev.Stack do
     root_dir = Paths.root_dir(opts)
     suffix = Integer.to_string(:erlang.phash2(root_dir, 1_000_000))
 
-    {:ok,
-     %{
-       runner: "favn_runner_#{suffix}",
-       orchestrator: "favn_orchestrator_#{suffix}",
-       control: "favn_local_ctl_#{suffix}"
-     }}
+    runner_short = "favn_runner_#{suffix}"
+    orchestrator_short = "favn_orchestrator_#{suffix}"
+    control_short = "favn_local_ctl_#{suffix}"
+
+    with {:ok, runner_full} <- NodeControl.shortname_to_full(runner_short),
+         {:ok, orchestrator_full} <- NodeControl.shortname_to_full(orchestrator_short),
+         {:ok, control_full} <- NodeControl.shortname_to_full(control_short) do
+      {:ok,
+       %{
+         runner_short: runner_short,
+         runner_full: runner_full,
+         orchestrator_short: orchestrator_short,
+         orchestrator_full: orchestrator_full,
+         control_short: control_short,
+         control_full: control_full
+       }}
+    end
   end
 
   defp start_services(config, secrets, node_names, opts) do
@@ -137,7 +149,7 @@ defmodule Favn.Dev.Stack do
       exec: elixir,
       args: [
         "--sname",
-        node_names.runner,
+        node_names.runner_short,
         "--cookie",
         secrets["rpc_cookie"],
         "-S",
@@ -177,7 +189,7 @@ defmodule Favn.Dev.Stack do
       exec: elixir,
       args: [
         "--sname",
-        node_names.orchestrator,
+        node_names.orchestrator_short,
         "--cookie",
         secrets["rpc_cookie"],
         "-S",
@@ -193,7 +205,7 @@ defmodule Favn.Dev.Stack do
         "MIX_ENV" => "dev",
         "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
         "FAVN_DEV_SQLITE_PATH" => sqlite_path,
-        "FAVN_DEV_RUNNER_NODE" => node_names.runner,
+        "FAVN_DEV_RUNNER_NODE" => node_names.runner_full,
         "FAVN_ORCHESTRATOR_API_ENABLED" =>
           if(config.orchestrator_api_enabled, do: "1", else: "0"),
         "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
@@ -233,15 +245,19 @@ defmodule Favn.Dev.Stack do
       "orchestrator_base_url" => config.orchestrator_base_url,
       "web_base_url" => config.web_base_url,
       "rpc_cookie_ref" => "secrets.rpc_cookie",
-      "node_names" => %{"runner" => node_names.runner, "orchestrator" => node_names.orchestrator},
+      "node_names" => %{
+        "runner" => node_names.runner_full,
+        "orchestrator" => node_names.orchestrator_full,
+        "control" => node_names.control_full
+      },
       "services" =>
         Map.new(services, fn {name, info} ->
           service = %{"pid" => info.pid, "log_path" => info.log_path}
 
           service =
             case name do
-              "runner" -> Map.put(service, "node_name", node_names.runner)
-              "orchestrator" -> Map.put(service, "node_name", node_names.orchestrator)
+              "runner" -> Map.put(service, "node_name", node_names.runner_full)
+              "orchestrator" -> Map.put(service, "node_name", node_names.orchestrator_full)
               _ -> service
             end
 
@@ -271,7 +287,7 @@ defmodule Favn.Dev.Stack do
          {:ok, version} <- Favn.pin_manifest_version(build.manifest),
          :ok <-
            RunnerControl.register_manifest(version,
-             runner_node_name: node_names.runner,
+             runner_node_name: node_names.runner_full,
              rpc_cookie: secrets["rpc_cookie"]
            ),
          :ok <-
@@ -471,7 +487,7 @@ defmodule Favn.Dev.Stack do
       "orchestrator: pid=#{services["orchestrator"].pid} url=#{config.orchestrator_base_url}"
     )
 
-    IO.puts("runner: pid=#{services["runner"].pid} node=#{node_names.runner}")
+    IO.puts("runner: pid=#{services["runner"].pid} node=#{node_names.runner_full}")
     IO.puts("logs: web=#{services["web"].log_path}")
     IO.puts("logs: orchestrator=#{services["orchestrator"].log_path}")
     IO.puts("logs: runner=#{services["runner"].log_path}")

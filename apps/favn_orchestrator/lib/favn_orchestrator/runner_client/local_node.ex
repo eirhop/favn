@@ -44,11 +44,12 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
        when is_list(opts) and is_atom(function) and is_list(args) do
     runner_module = Keyword.get(opts, :runner_module, FavnRunner)
 
-    if is_atom(runner_module) and function_exported?(runner_module, function, length(args)) do
-      {:ok, runner_node} = fetch_runner_node(opts)
-      dispatch_call(runner_node, runner_module, function, args)
-    else
-      {:error, {:runner_function_undefined, runner_module, function, length(args)}}
+    case fetch_runner_node(opts) do
+      {:ok, nil} ->
+        dispatch_local(runner_module, function, args)
+
+      {:ok, runner_node} ->
+        dispatch_remote(runner_node, runner_module, function, args)
     end
   end
 
@@ -59,11 +60,15 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
     end
   end
 
-  defp dispatch_call(nil, runner_module, function, args) do
-    apply(runner_module, function, args)
+  defp dispatch_local(runner_module, function, args) do
+    if is_atom(runner_module) and function_exported?(runner_module, function, length(args)) do
+      apply(runner_module, function, args)
+    else
+      {:error, {:runner_function_undefined, runner_module, function, length(args)}}
+    end
   end
 
-  defp dispatch_call(runner_node, runner_module, function, args) when is_atom(runner_node) do
+  defp dispatch_remote(runner_node, runner_module, function, args) when is_atom(runner_node) do
     with :ok <- ensure_connected(runner_node) do
       :erpc.call(runner_node, runner_module, function, args, 15_000)
     end
