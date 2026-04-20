@@ -1,6 +1,8 @@
 defmodule Favn.SQLDuckDBAdapterTest do
   use ExUnit.Case
 
+  @moduletag :legacy_execution_reference
+
   alias Favn.Connection.Definition
   alias Favn.Connection.Loader
   alias Favn.Connection.Registry

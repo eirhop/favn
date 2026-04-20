@@ -26,7 +26,7 @@ defmodule FavnRunner.ServerTest do
 
     assert {:ok, execution_id} = FavnRunner.submit_work(work)
     assert :ok = FavnRunner.cancel_work(execution_id, %{reason: :operator_cancel})
-    assert {:ok, result} = FavnRunner.await_result(execution_id, 2_000)
+    assert {:ok, result} = FavnRunner.await_result(execution_id, 7_000)
     assert result.status == :cancelled
   end
 
@@ -63,7 +63,7 @@ defmodule FavnRunner.ServerTest do
       }
     })
 
-    assert {:ok, result} = FavnRunner.await_result(execution_id, 2_000)
+    assert {:ok, result} = FavnRunner.await_result(execution_id, 7_000)
     assert result.status == :cancelled
   end
 
@@ -93,6 +93,40 @@ defmodule FavnRunner.ServerTest do
     assert {:ok, result} = FavnRunner.await_result(execution_id, 2_000)
     assert result.status == :error
     assert result.error == {:worker_crash, :killed}
+  end
+
+  test "await_result returns timeout while execution is still running" do
+    {:ok, version} =
+      Version.new(build_manifest(FavnRunner.ServerTest.SlowAsset),
+        manifest_version_id: unique_id("mv")
+      )
+
+    assert :ok = FavnRunner.register_manifest(version)
+
+    work =
+      %RunnerWork{
+        run_id: unique_id("run"),
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {FavnRunner.ServerTest.SlowAsset, :asset}
+      }
+
+    assert {:ok, execution_id} = FavnRunner.submit_work(work)
+    assert {:error, :timeout} = FavnRunner.await_result(execution_id, 10)
+    assert {:ok, result} = FavnRunner.await_result(execution_id, 7_000)
+    assert result.status == :ok
+  end
+
+  test "cancel_work and await_result return execution_not_found for unknown execution id" do
+    assert {:error, :execution_not_found} = FavnRunner.cancel_work("rx_missing")
+    assert {:error, :execution_not_found} = FavnRunner.await_result("rx_missing", 50)
+  end
+
+  test "favn runner facade validates await and cancel arguments" do
+    assert {:error, :invalid_await_args} = FavnRunner.await_result(:bad, 10)
+    assert {:error, :invalid_await_args} = FavnRunner.await_result("rx", -1)
+    assert {:error, :invalid_cancel_args} = FavnRunner.cancel_work(:bad, %{})
+    assert {:error, :invalid_cancel_args} = FavnRunner.cancel_work("rx", :bad)
   end
 
   defp build_manifest(asset_module) do

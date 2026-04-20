@@ -1,6 +1,8 @@
 defmodule Favn.ConnectionTest do
   use ExUnit.Case
 
+  @moduletag :legacy_execution_reference
+
   alias Favn.Connection.ConfigError
   alias Favn.Connection.Definition
   alias Favn.Connection.Error

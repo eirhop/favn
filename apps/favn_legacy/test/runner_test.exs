@@ -2,6 +2,8 @@ defmodule Favn.RunnerTest do
   use ExUnit.Case
   import ExUnit.CaptureLog
 
+  @moduletag :legacy_execution_reference
+
   alias Favn.Test.Fixtures.Assets.Runner.RunnerAssets
   alias Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore
 
