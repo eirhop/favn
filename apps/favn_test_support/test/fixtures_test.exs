@@ -13,6 +13,18 @@ defmodule FavnTestSupport.FixturesTest do
         defmacro __using__(_opts), do: quote(do: nil)
       end
       """)
+      |> maybe_define_stub(Favn.Storage.Adapter, """
+      defmodule Favn.Storage.Adapter do
+        @callback child_spec(keyword()) :: any()
+        @callback put_run(term(), keyword()) :: :ok | {:error, term()}
+        @callback get_run(term(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback list_runs(keyword(), keyword()) :: {:ok, list()} | {:error, term()}
+        @callback scheduler_child_spec(keyword()) :: any()
+        @callback put_scheduler_state(term(), keyword()) :: :ok | {:error, term()}
+        @callback get_scheduler_state(module(), term(), keyword()) ::
+                    {:ok, term()} | {:error, term()}
+      end
+      """)
 
     on_exit(fn ->
       purge_modules(Enum.reverse(created_stubs))
@@ -111,6 +123,31 @@ defmodule FavnTestSupport.FixturesTest do
 
     assert :ok = sample_assets.extract_orders(%{})
     assert :oops = spoofed_assets.__favn_assets__()
+  end
+
+  test "runner fixture group compiles and exposes callable behaviors" do
+    assert :ok = Fixtures.compile_fixture!(:runner_assets)
+
+    runner_assets = Module.concat(Favn.Test.Fixtures.Assets.Runner, RunnerAssets)
+    terminal_failing_store = Module.concat(Favn.Test.Fixtures.Assets.Runner, TerminalFailingStore)
+
+    assert {:ok, %{partition: "2026-01-01"}} =
+             runner_assets.base(%{params: %{partition: "2026-01-01"}})
+
+    assert :ok = runner_assets.transient_then_ok(%{attempt: 2})
+
+    assert :ok =
+             runner_assets.announce_source(%{params: %{notify_pid: self()}, run_id: "run-123"})
+
+    assert_receive {:announced_run_id, "run-123"}
+
+    assert :ok = terminal_failing_store.reset!()
+
+    Enum.each(1..7, fn _step ->
+      assert :ok = terminal_failing_store.put_run(%{}, [])
+    end)
+
+    assert {:error, :terminal_write_failed} = terminal_failing_store.put_run(%{}, [])
   end
 
   defp maybe_define_stub(modules, module, definition) do
