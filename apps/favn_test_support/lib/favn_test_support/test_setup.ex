@@ -1,14 +1,9 @@
 defmodule Favn.TestSetup do
   @moduledoc false
-  @compile {:no_warn_undefined, [Favn.Assets.Registry, Favn.Assets.GraphIndex]}
-
-  alias Favn.Assets.GraphIndex
-  alias Favn.Assets.Registry
 
   @type state :: %{
-          previous_modules: list(module()) | nil,
+          previous_asset_modules: list(module()) | nil,
           previous_pipeline_modules: list(module()) | nil,
-          previous_catalog: {:ok, Favn.Assets.Registry.catalog()} | {:error, term()},
           previous_storage_adapter: module() | nil,
           previous_storage_adapter_opts: keyword() | nil,
           previous_orchestrator_storage_adapter: module() | nil,
@@ -20,12 +15,9 @@ defmodule Favn.TestSetup do
 
   @spec capture_state() :: state()
   def capture_state do
-    previous_modules = Application.get_env(:favn, :asset_modules)
-
     %{
-      previous_modules: previous_modules,
+      previous_asset_modules: Application.get_env(:favn, :asset_modules),
       previous_pipeline_modules: Application.get_env(:favn, :pipeline_modules),
-      previous_catalog: Registry.build_catalog(previous_modules || []),
       previous_storage_adapter: Application.get_env(:favn, :storage_adapter),
       previous_storage_adapter_opts: Application.get_env(:favn, :storage_adapter_opts),
       previous_orchestrator_storage_adapter:
@@ -38,18 +30,6 @@ defmodule Favn.TestSetup do
     }
   end
 
-  @spec setup_asset_modules([module()], keyword()) :: :ok
-  def setup_asset_modules(modules, opts \\ []) do
-    Application.put_env(:favn, :asset_modules, modules)
-    reload_registry()
-
-    if Keyword.get(opts, :reload_graph?, false) do
-      reload_graph_index(modules)
-    end
-
-    :ok
-  end
-
   @spec configure_storage_adapter(module(), keyword()) :: :ok
   def configure_storage_adapter(store, store_opts \\ []) do
     Application.put_env(:favn, :storage_adapter, store)
@@ -58,31 +38,9 @@ defmodule Favn.TestSetup do
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, store_opts)
   end
 
-  @spec clear_memory_storage_adapter() :: :ok
-  def clear_memory_storage_adapter do
-    table = Favn.Storage.Adapter.Memory.Table
-
-    if :ets.whereis(table) != :undefined do
-      :ets.delete_all_objects(table)
-    end
-
-    :ok
-  end
-
-  @spec clear_memory_scheduler_storage() :: :ok
-  def clear_memory_scheduler_storage do
-    table = Favn.Storage.Adapter.Memory.SchedulerTable
-
-    if :ets.whereis(table) != :undefined do
-      :ets.delete_all_objects(table)
-    end
-
-    :ok
-  end
-
   @spec restore_state(state(), keyword()) :: :ok
   def restore_state(state, opts \\ []) do
-    restore_asset_modules(state.previous_modules)
+    restore_env(:asset_modules, state.previous_asset_modules)
 
     if Keyword.get(opts, :clear_storage_adapter_env?, false) do
       Application.delete_env(:favn, :storage_adapter)
@@ -111,40 +69,7 @@ defmodule Favn.TestSetup do
     restore_env(:connection_modules, state.previous_connection_modules)
     restore_env(:connections, state.previous_connections)
 
-    restore_registry(state.previous_catalog, opts)
-  end
-
-  defp restore_asset_modules(nil), do: Application.delete_env(:favn, :asset_modules)
-  defp restore_asset_modules(modules), do: Application.put_env(:favn, :asset_modules, modules)
-
-  defp restore_registry({:ok, _catalog}, opts) do
-    reload_registry()
-
-    if Keyword.get(opts, :reload_graph?, false) do
-      reload_graph_index(current_asset_modules())
-    end
-
     :ok
-  end
-
-  defp restore_registry({:error, _reason}, _opts), do: :ok
-
-  defp reload_registry do
-    case Registry.reload() do
-      :ok -> :ok
-      {:error, _reason} -> :ok
-    end
-  end
-
-  defp reload_graph_index(modules) when is_list(modules) do
-    case GraphIndex.reload(modules) do
-      :ok -> :ok
-      {:error, _reason} -> :ok
-    end
-  end
-
-  defp current_asset_modules do
-    Application.get_env(:favn, :asset_modules, [])
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)

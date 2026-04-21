@@ -2,11 +2,11 @@
 
 ## Status
 
-Phase 3 through Phase 7 are implemented.
+Phase 3 through Phase 8 foundations are implemented.
 
-The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype exists as transitional history only. Phase 8 is reopened and redefined as preparation for the correct `web + orchestrator + runner` boundary before Phase 9 tooling and packaging are finalized.
+The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype is now historical only and has been removed from the umbrella.
 
-Phase 9 is in progress.
+Phase 9 is in progress, and the Phase 10 app-deletion slice has removed `favn_legacy` and `favn_view`.
 
 - the core local dev lifecycle is now implemented in `apps/favn_local`
 - remaining Phase 9 work stays open for install/reset/logs follow-up, build and packaging targets (`web`, `orchestrator`, `runner`, optional `single`), and the already-documented local validation/polish work that still belongs to Phase 9
@@ -27,7 +27,7 @@ This replaces the previous v0.5 direction, which focused on hardening the curren
 Architecture correction note:
 
 - the earlier same-BEAM `favn_view -> favn_orchestrator` direction is no longer the steady-state target
-- `favn_view` remains a disposable prototype/reference only
+- the disposable `favn_view` prototype has been removed from the umbrella
 - the durable Phase 8 asset is now the orchestrator API, SSE/event model, auth/authz design, and audit model
 
 ## Why this refactor is needed
@@ -90,7 +90,6 @@ decisions:
 - `favn_core`: internal shared compiler/manifest/planning/contracts layer
 - `favn_runner`: execution/runtime boundary
 - `favn_orchestrator`: control plane and system of record (persisted manifests, scheduling, run lifecycle)
-- `favn_view`: transitional same-BEAM prototype only, not the steady-state target
 
 Critical runtime rule:
 
@@ -121,12 +120,6 @@ Critical runtime rule:
   - owns browser UI, login/logout, secure cookie sessions, browser-facing HTTP and SSE, request validation, rate limiting, and response shaping
   - talks to orchestrator only over a private authenticated remote API
 
-### Transitional prototype app
-- `favn_view`
-  - in-repo same-BEAM prototype/reference
-  - not the long-term product boundary
-  - should be removed after `favn_web` covers the required smoke flows
-
 ### Adapter/plugin apps
 - `favn_storage_postgres`
   - orchestrator storage adapter
@@ -137,7 +130,6 @@ Critical runtime rule:
 
 ### Internal support apps
 - `favn_test_support`
-- `favn_legacy` (temporary during migration)
 
 ## Phase 0 decisions
 
@@ -151,20 +143,20 @@ The following decisions are the Phase 0 deliverable answers and are treated as l
 
 ### Locked umbrella app list
 
-Historical note: Phase 0 locked the initial umbrella scaffold including `favn_view`.
+Historical note: Phase 0 locked the initial umbrella scaffold including `favn_view` and `favn_legacy`.
 
 Corrected steady-state note:
 
 - the steady-state architecture is now `favn_web + favn_orchestrator + favn_runner`, not `favn_view + favn_orchestrator`
 - `favn_web` is expected to live as a separate monorepo workspace/package outside the Elixir umbrella
-- `favn_view` remains in the repo only as a transitional prototype until replacement
+- both transitional apps were later removed once owner-app coverage and the separate web boundary existed
 
 The current umbrella app list therefore remains:
 
 - public package: `favn`
-- internal runtime apps: `favn_core`, `favn_runner`, `favn_orchestrator`, `favn_view`
+- internal runtime apps: `favn_core`, `favn_runner`, `favn_orchestrator`
 - adapter/plugin apps: `favn_storage_postgres`, `favn_storage_sqlite`, `favn_duckdb`
-- internal support apps: `favn_test_support`, `favn_legacy`
+- internal support apps: `favn_test_support`
 
 No additional umbrella apps should be introduced during early migration unless the boundary cannot be expressed cleanly with this set.
 
@@ -179,7 +171,6 @@ Allowed compile-time dependency directions for the umbrella:
 - `favn -> favn_core`
 - `favn_orchestrator -> favn_core`
 - `favn_runner -> favn_core`
-- `favn_view -> favn_orchestrator` (transitional prototype only)
 - `favn_storage_postgres -> favn_orchestrator`
 - `favn_storage_sqlite -> favn_orchestrator`
 - `favn_duckdb -> favn_runner`
@@ -188,13 +179,13 @@ Allowed compile-time dependency directions for the umbrella:
 Locked dependency rules:
 
 1. `favn_core` must stay at the bottom of the graph and must not depend on any other umbrella app.
-2. `favn` is the public authoring package and must not depend on `favn_runner`, `favn_orchestrator`, `favn_view`, storage adapters, plugins, or `favn_legacy`.
+2. `favn` is the public authoring package and must not depend on `favn_runner`, `favn_orchestrator`, storage adapters, or plugins.
 3. `favn_core` should contain only DSL/compiler/manifest concerns plus truly shared boundary contracts, not scheduler, storage, or UI behavior.
 4. `favn_orchestrator` is the system of record and must own manifests, schedules, runs, event history, operator APIs, auth/authz, audit, and storage contracts.
 5. `favn_orchestrator` must not depend on `favn_runner` implementation details; any runner protocol contract shared across runtimes belongs in `favn_core`.
-6. `favn_runner` is execution-only and must not depend on `favn_orchestrator`, storage adapters, or `favn_view`.
+6. `favn_runner` is execution-only and must not depend on `favn_orchestrator` or storage adapters.
 7. `favn_runner` should execute pinned manifest work, invoke runner-side plugins, and emit execution results/events back to orchestrator.
-8. `favn_view` is transitional only, may depend on `favn_orchestrator` for the prototype path, and must not define new steady-state backend contract ownership.
+8. Same-BEAM UI coupling is removed and must not be reintroduced as the product boundary.
 9. Storage apps depend only on `favn_orchestrator`; storage is a control-plane concern.
 10. Runner plugins depend only on `favn_runner`; execution plugins are a runner concern.
 11. No production app may depend on `favn_test_support`.
@@ -202,7 +193,7 @@ Locked dependency rules:
 13. `favn_test_support` should hold only cross-app test fixtures, helpers, builders, and file fixtures.
 14. App-specific fixtures should stay in `apps/<app>/test/support`.
 15. `favn_test_support` must stay dependency-light and must not take umbrella-app dependencies that would prevent low-level apps such as `favn_core` from using it in tests.
-16. No new app may depend on `favn_legacy`.
+16. Deleted migration-only apps must not be reintroduced as active dependencies.
 17. The steady-state web tier must communicate with orchestrator over an explicit remote boundary and must not rely on same-BEAM direct calls.
 
 ### Packaging rule for `favn_runner`
@@ -266,11 +257,9 @@ For larger subsystems and `favn_legacy` itself:
 - `favn_core`
 - `favn_runner`
 - `favn_orchestrator`
-- `favn_view` (transitional prototype)
 - `favn_storage_postgres`
 - `favn_storage_sqlite`
 - `favn_test_support`
-- `favn_legacy`
 
 Separate monorepo product artifact:
 
@@ -338,9 +327,8 @@ This remains the target production contract even if same-node/simple modes are s
 6. **Minimal app count**
    - split only where there is a real deployment, dependency, or ownership boundary
 
-7. **Legacy monolith is reference-only during migration**
-   - no major new feature work there
-   - use it to preserve behavior and compare outputs
+7. **Legacy migration artifacts are removed once owner apps cover supported behavior**
+   - do not reintroduce same-BEAM `favn_view` shortcuts or legacy runtime ownership
 
 ## Phase roadmap
 

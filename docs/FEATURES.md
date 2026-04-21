@@ -11,9 +11,9 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 
 - Phase 9 core local lifecycle has landed in `apps/favn_local`: `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`
 - remaining Phase 9 work is packaging and local-tooling follow-up: `install`, `reset`, `logs`, and build targets for `web`, `orchestrator`, `runner`, and optional `single`
-- Phase 10 remains open for legacy cutover cleanup, final repo/CI convergence, and deleting remaining supported legacy runtime dependence
+- Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
 - shared migration fixture substrate now lives in `apps/favn_test_support` (`priv/fixtures/**` + `FavnTestSupport.Fixtures`) so later per-app parity PRs can reuse one fixture source of truth
-- authoring/compiler/planning/window parity batch 1 has moved broad coverage into `apps/favn/test` and `apps/favn_core/test`, while retaining non-migrated legacy contract suites in `apps/favn_legacy/test` until full parity lands
+- authoring/compiler/planning/window coverage now lives in owner suites under `apps/favn/test` and `apps/favn_core/test`
 - execution ownership parity batch 2 expanded runner/plugin confidence in owner apps: `apps/favn_runner/test` now covers richer runner/server/worker/connection runtime SQL paths, and `apps/favn_duckdb/test` now carries broader DuckDB adapter/runtime hardening semantics
 - control-plane/runtime-state parity batch 3 is now completed: scheduler/runtime/storage/public-facade coverage has moved into owner suites under `apps/favn_orchestrator/test`, `apps/favn_storage_sqlite/test`, `apps/favn_storage_postgres/test`, and `apps/favn/test`, with shared setup moved out of legacy into `apps/favn_test_support`
 
@@ -29,13 +29,13 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 - Phase 7: complete
 - Phase 8: in progress; the corrected `favn_web + favn_orchestrator + favn_runner` boundary baseline exists, but safe-release follow-up is still open
 - Phase 9: in progress; core local lifecycle is done in `apps/favn_local`, while packaging/build/install/reset/logs and remaining validation/polish stay open
-- Phase 10: not complete; legacy cutover and final cleanup still remain
+- Phase 10: in progress; app deletion is complete, while remaining post-legacy cleanup still stays open
 
 ## Pre-v1 Release Blockers / Major Remaining Work
 
 - finish Phase 9 packaging targets for `web`, `orchestrator`, `runner`, and optional `single`
 - finish Phase 9 local-tooling follow-up: `mix favn.install`, `mix favn.reset`, `mix favn.logs`, plus remaining lifecycle and local-storage validation/polish
-- complete Phase 10 legacy cutover so supported flows, CI, and docs no longer depend on transitional legacy runtime paths
+- finish remaining Phase 10 post-legacy cleanup, including final storage-format and adapter naming follow-up
 - durable orchestrator auth/session/audit persistence before any safe web-facing release
 - stronger password/session foundation and browser-edge abuse controls before any safe web-facing release
 - durable idempotency and scalable SSE replay/cursor model before any safe web-facing release if those capabilities are shipped

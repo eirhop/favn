@@ -12,12 +12,11 @@ Allowed dependencies in Phase 1:
 
 - `favn_core`
 
-Must not depend on in Phase 1:
+Must not depend on:
 
 - `favn_runner` implementation
-- `favn_view`
-- `favn_legacy`
 
 Current status:
 
-- scaffold-only, not implemented yet
+- implemented control-plane runtime and private HTTP API boundary
+- owns manifest persistence, run lifecycle, scheduler runtime, auth, audit, and storage contracts

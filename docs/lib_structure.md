@@ -54,9 +54,6 @@ apps/
 │       ├── application.ex
 │       └── runner_client/
 │           └── local_node.ex
-├── favn_view/lib/
-│   ├── favn_view.ex
-│   └── favn_view/application.ex
 ├── favn_storage_postgres/lib/
 │   └── favn_storage_postgres.ex
 ├── favn_storage_sqlite/lib/
@@ -67,46 +64,12 @@ apps/
 │   ├── favn_test_support.ex
 │   └── favn_test_support/
 │       └── fixtures.ex
-└── favn_legacy/lib/
-    ├── favn.ex
-    └── favn/
-        ├── application.ex
-        ├── agent_guide.ex
-        ├── asset.ex
-        ├── assets.ex
-        ├── backfill.ex
-        ├── connection.ex
-        ├── multi_asset.ex
-        ├── namespace.ex
-        ├── pipeline.ex
-        ├── run.ex
-        ├── scheduler.ex
-        ├── source.ex
-        ├── sql.ex
-        ├── sql_asset.ex
-        ├── storage.ex
-        ├── submission.ex
-        ├── window.ex
-        ├── asset/
-        ├── assets/
-        ├── connection/
-        ├── dsl/
-        ├── pipeline/
-        ├── run/
-        ├── runtime/
-        ├── scheduler/
-        ├── sql/
-        ├── sql_asset/
-        ├── storage/
-        ├── triggers/
-        └── window/
 ```
 
 Notes:
 
-- `favn_legacy` is the active v0.4 reference runtime during migration.
+- `apps/favn_legacy` and `apps/favn_view` were removed in the Phase 10 deletion pass.
 - Phase 2 migration currently establishes public DSL/facade ownership under `favn`.
-- Runtime execution APIs remain legacy-owned while compile-time/manifest foundations are migrated.
 - Internal compiler/manifest/planning/shared contracts are now re-centered into `apps/favn_core/lib/favn/`.
 - Phase 3 modules now owned in `apps/favn_core/lib/favn/` include:
   - `manifest.ex`
@@ -154,7 +117,7 @@ Notes:
   - `contracts/runner_work.ex`
   - `contracts/runner_result.ex`
   - `contracts/runner_event.ex`
-- Intended steady-state ownership is now: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane plus auth/authz/audit, and a separate `favn_web` tier outside the umbrella talking to orchestrator over a remote boundary. `favn_view` remains transitional only.
+- Intended steady-state ownership is now: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane plus auth/authz/audit, and a separate `favn_web` tier outside the umbrella talking to orchestrator over a remote boundary.
 - Phase 3 populated `apps/favn_core/lib/favn/` with canonical manifest schema/versioning, serializer/hash/compatibility logic, graph/planning helpers, SQL helper internals, and shared runner/orchestrator contract structs.
 - Phase 4 implementation grew `apps/favn_runner/lib/favn_runner/` around a small execution-owned set of modules such as a runner server, manifest store/resolver, worker supervision, and context builder.
 - Phase 4 implementation moved `Favn.Run.Context` and `Favn.Run.AssetResult` out of `favn_legacy` into `apps/favn_core/lib/favn/run/`, while runner-owned connection and SQL runtime modules moved into `apps/favn_runner/lib/favn/` under preserved `Favn.*` names.
@@ -231,27 +194,6 @@ Notes:
   - `apps/favn_orchestrator/lib/favn_orchestrator/run_event.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/scheduler_entry.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/transition_writer.ex`
-- The existing `favn_view` runtime slice remains in-repo only as a transitional same-BEAM prototype and currently includes:
-  - `apps/favn_view/lib/favn_view/endpoint.ex`
-  - `apps/favn_view/lib/favn_view/runs.ex`
-  - `apps/favn_view/lib/favn_view/manifests.ex`
-  - `apps/favn_view/lib/favn_view/scheduler.ex`
-  - `apps/favn_view/lib/favn_view/presenters/run_presenter.ex`
-  - `apps/favn_view/lib/favn_view/presenters/manifest_presenter.ex`
-  - `apps/favn_view/lib/favn_view/presenters/scheduler_presenter.ex`
-  - `apps/favn_view/lib/favn_view_web.ex`
-  - `apps/favn_view/lib/favn_view_web/router.ex`
-  - `apps/favn_view/lib/favn_view_web/layouts.ex`
-  - `apps/favn_view/lib/favn_view_web/core_components.ex`
-  - `apps/favn_view/lib/favn_view_web/telemetry.ex`
-  - `apps/favn_view/lib/favn_view_web/error_html.ex`
-  - `apps/favn_view/lib/favn_view_web/error_json.ex`
-  - `apps/favn_view/lib/favn_view_web/live/dashboard_live.ex`
-  - `apps/favn_view/lib/favn_view_web/live/manifests/index_live.ex`
-  - `apps/favn_view/lib/favn_view_web/live/manifests/show_live.ex`
-  - `apps/favn_view/lib/favn_view_web/live/runs/index_live.ex`
-  - `apps/favn_view/lib/favn_view_web/live/runs/show_live.ex`
-  - `apps/favn_view/lib/favn_view_web/live/scheduler/index_live.ex`
 - Phase 8 boundary-correction backend slices now also include orchestrator HTTP/API + auth foundations:
   - `apps/favn_orchestrator/lib/favn_orchestrator/api/router.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/api/config.ex`
@@ -277,4 +219,4 @@ Notes:
   - `web/favn_web/src/routes/api/web/v1/manifests/[manifest_version_id]/activate/+server.ts`
   - `web/favn_web/src/routes/api/web/v1/schedules/+server.ts`
   - `web/favn_web/src/routes/api/web/v1/schedules/[schedule_id]/+server.ts`
-- New runtime/DSL ownership should continue moving from `favn_legacy` to owner apps by bounded slice in later phases.
+- Legacy-owned runtime and UI slices are now deleted; new ownership should land directly in the current owner apps.

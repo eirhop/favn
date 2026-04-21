@@ -64,9 +64,6 @@ apps/
 │   │   └── write_semantics_test.exs
 │   ├── storage_facade_test.exs
 │   └── test_helper.exs
-├── favn_view/test/
-│   ├── favn_view_test.exs
-│   └── test_helper.exs
 ├── favn_storage_postgres/test/
 │   ├── favn_storage_postgres_test.exs
 │   └── test_helper.exs
@@ -81,27 +78,16 @@ apps/
 ├── favn_test_support/test/
 │   ├── fixtures_test.exs
 │   └── test_helper.exs
-└── favn_legacy/test/
-    ├── assets_test.exs
-    ├── connection_test.exs
-    ├── favn_test.exs
-    ├── pipeline_test.exs
-    ├── shared_fixture_support_smoke_test.exs
-    ├── sql_asset_test.exs
-    ├── sql_test.exs
-    └── test_helper.exs
 ```
 
 Notes:
 
-- Most runtime coverage remains in `apps/favn_legacy/test` until slices are migrated.
 - Each migrated slice must move or recreate tests in the new owner app without dual-compiling namespace owners.
-- The current umbrella `mix test` alias is migration-oriented, includes `apps/favn_local/test`, and keeps legacy runtime suites available in `apps/favn_legacy/test` as reference coverage.
-- The current umbrella `mix test` alias shape is migration-oriented and not the final CI/test contract.
-- Test execution should be simplified again after ownership and runtime boundaries settle in later phases.
+- Legacy and same-BEAM view tests are deleted; supported coverage now lives in the owner-app suites.
+- The current umbrella `mix test` alias includes the owner apps plus `apps/favn_local/test`.
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures used during migration.
 - shared fixture source for migration parity now lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.
-- batch 1 parity migration moved broad authoring/compiler/planning/window ownership into `apps/favn/test` and `apps/favn_core/test`, while preserving non-migrated legacy contract coverage in `apps/favn_legacy/test`.
+- batch 1 parity migration moved broad authoring/compiler/planning/window ownership into `apps/favn/test` and `apps/favn_core/test`.
 - Umbrella apps may depend on `favn_test_support` only with `only: :test`.
 - Fixtures used by only one app should stay in that app's local `test/support` directory.
 - Phase 3 should grow `apps/favn_core/test` with manifest schema, manifest versioning, serializer, compatibility, graph, and shared contract tests.
@@ -169,22 +155,14 @@ Notes:
   - `apps/favn_orchestrator/test/storage/memory_adapter_test.exs`
   - `apps/favn_storage_postgres/test/adapter_test.exs`
   - `apps/favn_storage_postgres/test/integration/adapter_live_test.exs`
-- Shared test setup used by both legacy and owner apps now lives in `apps/favn_test_support/lib/favn_test_support/test_setup.ex` (`Favn.TestSetup`), so migrated owner suites no longer require setup code from `apps/favn_legacy/test/support/`.
+- Shared test setup used by owner apps now lives in `apps/favn_test_support/lib/favn_test_support/test_setup.ex` (`Favn.TestSetup`).
 - DuckDB plugin parity migration batch 2 expanded owner-app coverage with:
   - `apps/favn_duckdb/test/sql/adapter/duckdb_hardening_test.exs` for DuckDB adapter transaction/appender/resource-cleanup hardening semantics
   - `apps/favn_duckdb/test/favn_duckdb_test.exs` expanded runtime option-default and invalid-handle behavior
 - Phase 8 web/orchestrator boundary test additions are tracked in `docs/refactor/PHASE_8_TODO.md`.
 - Initial Phase 8 orchestrator live-event boundary tests now include:
   - `apps/favn_orchestrator/test/events_test.exs`
-- The existing `favn_view` prototype tests remain in-repo as transitional reference coverage and currently include:
-  - `apps/favn_view/test/dashboard_live_test.exs`
-  - `apps/favn_view/test/manifests_scheduler_live_test.exs`
-  - `apps/favn_view/test/operator_flow_live_test.exs`
-  - `apps/favn_view/test/presenters_test.exs`
-  - `apps/favn_view/test/runs_live_test.exs`
-  - `apps/favn_view/test/support/conn_case.ex`
-  - `apps/favn_view/test/support/fixtures.ex`
-- Future Phase 8/9 emphasis should shift toward orchestrator HTTP contract tests, auth/authz tests, SSE replay tests, service-auth tests, and thin web smoke tests rather than expanding same-BEAM `favn_view` coverage.
+- Phase 8/9 emphasis stays on orchestrator HTTP contract tests, auth/authz tests, SSE replay tests, service-auth tests, and thin web smoke tests.
 - Initial Phase 8 boundary-correction API/auth coverage now includes:
   - `apps/favn_orchestrator/test/api/router_test.exs`
   - `apps/favn_orchestrator/test/api/config_test.exs`
