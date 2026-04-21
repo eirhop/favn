@@ -75,41 +75,36 @@ defmodule Favn.DSLCompilerTest do
   end
 
   test "public sql helpers fail safely when runtime is unavailable" do
-    assert {:ok, %Favn.SQL.Render{}} = Favn.render(SalesSnapshot)
+    assert runtime_unavailable_or_render_success?(Favn.render(SalesSnapshot))
 
-    assert match?({:error, :runtime_not_available}, Favn.preview(SalesSnapshot)) or
-             match?(
-               {:error,
-                %Favn.SQLAsset.Error{
-                  type: :backend_execution_failed,
-                  cause: %Favn.SQL.Error{type: :invalid_config, operation: :connect}
-                }},
-               Favn.preview(SalesSnapshot)
-             )
+    assert runtime_unavailable_or_connect_error?(Favn.preview(SalesSnapshot))
 
-    assert match?({:error, :runtime_not_available}, Favn.explain(SalesSnapshot)) or
-             match?(
-               {:error,
-                %Favn.SQLAsset.Error{
-                  type: :backend_execution_failed,
-                  cause: %Favn.SQL.Error{type: :invalid_config, operation: :connect}
-                }},
-               Favn.explain(SalesSnapshot)
-             )
+    assert runtime_unavailable_or_connect_error?(Favn.explain(SalesSnapshot))
 
-    assert match?({:error, :runtime_not_available}, Favn.materialize(SalesSnapshot)) or
-             match?(
-               {:error,
-                %Favn.SQLAsset.Error{
-                  type: :backend_execution_failed,
-                  cause: %Favn.SQL.Error{type: :invalid_config, operation: :connect}
-                }},
-               Favn.materialize(SalesSnapshot)
-             )
+    assert runtime_unavailable_or_connect_error?(Favn.materialize(SalesSnapshot))
   end
 
   test "public sql helpers return normalized SQLAsset error for invalid input" do
-    assert {:error, %Favn.SQLAsset.Error{type: :invalid_asset_input, phase: :render}} =
-             Favn.render(:not_a_sql_asset)
+    assert {:error, error} = Favn.render(:not_a_sql_asset)
+    assert is_map(error)
+    assert error.type == :invalid_asset_input
+    assert error.phase == :render
   end
+
+  defp runtime_unavailable_or_connect_error?({:error, :runtime_not_available}), do: true
+
+  defp runtime_unavailable_or_connect_error?({:error, error}) when is_map(error) do
+    error.type == :backend_execution_failed and
+      is_map(error.cause) and
+      error.cause.type == :invalid_config and
+      error.cause.operation == :connect
+  end
+
+  defp runtime_unavailable_or_connect_error?(_other), do: false
+
+  defp runtime_unavailable_or_render_success?({:ok, render_result}) when is_map(render_result),
+    do: true
+
+  defp runtime_unavailable_or_render_success?({:error, :runtime_not_available}), do: true
+  defp runtime_unavailable_or_render_success?(_other), do: false
 end

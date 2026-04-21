@@ -64,27 +64,35 @@ defmodule Favn.Dev.Process do
     %{name: name, exec: exec, args: args, cwd: cwd, log_path: log_path} = spec
     env = Map.get(spec, :env, %{})
 
-    case File.open(log_path, [:append, :binary]) do
-      {:ok, io} ->
-        port_opts = [
-          :binary,
-          :exit_status,
-          :use_stdio,
-          :stderr_to_stdout,
-          :hide,
-          {:args, args},
-          {:cd, String.to_charlist(cwd)},
-          {:env, encode_env(env)}
-        ]
+    try do
+      case File.open(log_path, [:append, :binary]) do
+        {:ok, io} ->
+          port_opts = [
+            :binary,
+            :exit_status,
+            :use_stdio,
+            :stderr_to_stdout,
+            :hide,
+            {:args, args},
+            {:cd, String.to_charlist(cwd)},
+            {:env, encode_env(env)}
+          ]
 
-        port = Port.open({:spawn_executable, String.to_charlist(exec)}, port_opts)
-        os_pid = port |> Port.info(:os_pid) |> normalize_os_pid()
+          port = Port.open({:spawn_executable, String.to_charlist(exec)}, port_opts)
+          os_pid = port |> Port.info(:os_pid) |> normalize_os_pid()
 
-        send(parent, {:service_started, self(), %{name: name, pid: os_pid, log_path: log_path}})
-        service_loop(parent, name, port, io)
+          send(parent, {:service_started, self(), %{name: name, pid: os_pid, log_path: log_path}})
+          service_loop(parent, name, port, io)
 
-      {:error, reason} ->
-        send(parent, {:service_start_failed, self(), {:log_open_failed, reason}})
+        {:error, reason} ->
+          send(parent, {:service_start_failed, self(), {:log_open_failed, reason}})
+      end
+    rescue
+      error in ErlangError ->
+        send(parent, {:service_start_failed, self(), {:port_open_failed, error.original}})
+    catch
+      kind, reason ->
+        send(parent, {:service_start_failed, self(), {:port_open_failed, {kind, reason}}})
     end
   end
 

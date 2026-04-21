@@ -1,11 +1,11 @@
-defmodule FavnLocal.MixProject do
+defmodule FavnAuthoring.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :favn_local,
+      app: :favn_authoring,
       version: "0.5.0-dev",
-      description: "Local runtime lifecycle tooling owner for Favn",
+      description: "Internal authoring implementation for Favn public package",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -24,7 +24,6 @@ defmodule FavnLocal.MixProject do
 
   defp deps do
     [
-      {:favn_authoring, in_umbrella: true},
       {:favn_core, in_umbrella: true},
       {:favn_test_support, in_umbrella: true, only: :test}
     ]

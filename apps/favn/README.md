@@ -2,22 +2,26 @@
 
 Purpose:
 
-- public user-facing package for Favn authoring and integration
+- one public package users depend on (`{:favn, ...}`)
+- own public facade and public `mix favn.*` entrypoints
 
 Visibility:
 
 - public package
 
-Allowed dependencies in Phase 1:
+Allowed dependencies:
 
-- `favn_core`
+- `favn_authoring`
+- `favn_local`
 
 Must not depend on:
 
+- `favn_core` directly
 - `favn_runner`, `favn_orchestrator`
 - `favn_storage_postgres`, `favn_storage_sqlite`, `favn_duckdb`
 
 Current status:
 
-- implemented public DSL/facade package
-- delegates runtime-facing calls to orchestrator/runner boundaries without owning runtime internals
+- thin wrapper package
+- delegates authoring facade calls to `FavnAuthoring`
+- delegates lifecycle task behavior to `Favn.Dev` (owned by `favn_local`)

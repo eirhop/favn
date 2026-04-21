@@ -5,7 +5,7 @@ defmodule Favn.MixProject do
     [
       app: :favn,
       version: "0.5.0-dev",
-      description: "Public authoring package scaffold for v0.5 migration",
+      description: "Public Favn package wrapper",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -24,7 +24,8 @@ defmodule Favn.MixProject do
 
   defp deps do
     [
-      {:favn_core, in_umbrella: true},
+      {:favn_authoring, in_umbrella: true},
+      {:favn_local, in_umbrella: true},
       {:favn_test_support, in_umbrella: true, only: :test}
     ]
   end

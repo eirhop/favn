@@ -48,7 +48,7 @@ defmodule Favn.SQLAsset.Input do
         {:ok, asset}
 
       {:error, _reason} ->
-        case Favn.get_asset(module) do
+        case FavnAuthoring.get_asset(module) do
           {:ok, %Favn.Asset{} = asset} ->
             normalize(asset)
 

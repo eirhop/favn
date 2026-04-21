@@ -1,8 +1,6 @@
 defmodule Favn.Dev.StatusTest do
   use ExUnit.Case, async: true
 
-  import ExUnit.CaptureIO
-
   alias Favn.Dev.State
   alias Favn.Dev.Status
 
@@ -26,7 +24,7 @@ defmodule Favn.Dev.StatusTest do
     assert status.active_manifest_version_id == nil
   end
 
-  test "mix favn.status prints local stack shape", %{root_dir: root_dir} do
+  test "inspect_stack/1 returns local stack shape fields", %{root_dir: root_dir} do
     pid = :os.getpid() |> List.to_string() |> String.to_integer()
 
     runtime = %{
@@ -41,15 +39,12 @@ defmodule Favn.Dev.StatusTest do
 
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
 
-    output =
-      capture_io(fn ->
-        Mix.Tasks.Favn.Status.run(["--root-dir", root_dir])
-      end)
+    status = Status.inspect_stack(root_dir: root_dir)
 
-    assert output =~ "Favn local dev stack"
-    assert output =~ "manifest: mv_test"
-    assert output =~ "web:"
-    assert output =~ "orchestrator:"
-    assert output =~ "runner:"
+    assert status.stack_status == :running
+    assert status.active_manifest_version_id == "mv_test"
+    assert status.services.web.status == :running
+    assert status.services.orchestrator.status == :running
+    assert status.services.runner.status == :running
   end
 end

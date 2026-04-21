@@ -5,30 +5,32 @@
 Favn `v0.5.0` refactor is in progress.
 
 - umbrella structure is scaffolded under `apps/`
-- `apps/favn` now owns the public Phase 2 authoring/DSL surface
+- `apps/favn` is now the thin public package wrapper/distribution app
+- `apps/favn_authoring` now owns authoring/manifest-facing implementation previously housed under `apps/favn`
 - internal compiler/manifest/planning/shared-contract ownership has been re-centered into `apps/favn_core`
 - `apps/favn_core` now owns Phase 3 manifest/versioning foundations and shared runner contracts
-- the core local dev lifecycle is now implemented in `apps/favn_local`
+- the core local dev lifecycle implementation is owned by `apps/favn_local`
 - the old `apps/favn_legacy` monolith has been deleted after ownership moved to the new apps
 - Phase 0-4 contracts and migration rules are tracked in `docs/REFACTOR.md`
 
 ## Current Refactor Reality
 
-- the public `Favn.*` authoring DSL now compiles from `apps/favn`
+- the public `Favn.*` facade now resolves from `apps/favn` and delegates authoring behavior into `apps/favn_authoring`
 - orchestrator-owned runtime scheduling, run tracking, rerun/cancel flows, and public runtime contracts now live in `apps/favn_orchestrator`
 - canonical manifest schema/versioning, serializer/hash identity, compatibility checks, and shared runner contracts are now implemented in `favn_core`
 - initial runner boundary execution now exists in `favn_runner` for manifest registration plus Elixir/source asset execution through runner contracts
 - runner-owned connection runtime and SQL execution runtime slices are now hosted in `apps/favn_runner/lib/favn/connection/**`, `apps/favn_runner/lib/favn/sql/**`, and `apps/favn_runner/lib/favn/sql_asset/**`
-- local lifecycle commands `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status` are implemented in `apps/favn_local`
+- public lifecycle entrypoint tasks `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status` are now owned by `apps/favn` and delegate to `apps/favn_local`
 - the earlier same-BEAM `favn_view` Phoenix prototype has been removed in favor of the separate `web/favn_web` boundary
 
 ## Current Focus
 
 - Phase 8 baseline work now establishes the `favn_web + favn_orchestrator + favn_runner` boundary in baseline form: private orchestrator HTTP API v1, SSE baseline, orchestrator-owned auth/session/audit baseline, and thin `favn_web` proof flows
-- the core local developer loop has landed in `apps/favn_local`, including foreground `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status`
+- the core local developer loop implementation remains in `apps/favn_local`, while public task entrypoints live in `apps/favn`
 - current Phase 9 follow-up is the remaining packaging/install/reset/logs/build work around that lifecycle
 - the legacy deletion slice is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
-- keep `favn` as the public DSL/facade package
+- keep `favn` as the one public package and public entrypoint surface
+- keep `favn_authoring` as internal authoring/manifest implementation ownership
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
 - keep `favn_orchestrator` as the manifest-pinned control plane, auth/authz authority, and storage owner
 - keep `favn_runner` as execution-only and transport-pluggable

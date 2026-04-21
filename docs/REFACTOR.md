@@ -86,6 +86,8 @@ This is the intended end-state product boundary and should drive all Phase 3+
 decisions:
 
 - `favn`: public authoring dependency (public DSL + public facade)
+- `favn_authoring`: internal authoring/manifest implementation ownership
+- `favn_local`: internal local lifecycle/tooling implementation ownership
 - `favn_web`: public web/BFF tier (likely separate monorepo workspace/package, not an umbrella app)
 - `favn_core`: internal shared compiler/manifest/planning/contracts layer
 - `favn_runner`: execution/runtime boundary
@@ -100,9 +102,18 @@ Critical runtime rule:
 ### Public-facing package
 - `favn`
   - the single dependency user business projects add
-  - owns public DSL and user-facing integration surface
-  - compiles manifests from user business code
-  - depends on `favn_core`, but not on runtime product apps directly
+  - owns the public package identity, public facade, and public `mix favn.*` task entrypoints
+  - delegates authoring implementation to `favn_authoring`
+  - delegates local lifecycle/tooling implementation to `favn_local`
+  - remains the only package users should need to think about
+
+### Internal authoring/tooling apps
+- `favn_authoring`
+  - owns authoring/manifest-facing implementation internals behind `FavnAuthoring`
+  - depends on `favn_core`
+- `favn_local`
+  - owns local lifecycle/tooling implementation internals behind `Favn.Dev.*`
+  - depends on `favn_authoring` and `favn_core`
 
 ### Internal runtime apps
 - `favn_core`
@@ -155,6 +166,7 @@ The current umbrella app list therefore remains:
 
 - public package: `favn`
 - internal runtime apps: `favn_core`, `favn_runner`, `favn_orchestrator`
+- internal implementation apps: `favn_authoring`, `favn_local`
 - adapter/plugin apps: `favn_storage_postgres`, `favn_storage_sqlite`, `favn_duckdb`
 - internal support apps: `favn_test_support`
 
@@ -168,7 +180,11 @@ Phase 8 correction rule:
 
 Allowed compile-time dependency directions for the umbrella:
 
-- `favn -> favn_core`
+- `favn -> favn_authoring`
+- `favn -> favn_local`
+- `favn_authoring -> favn_core`
+- `favn_local -> favn_authoring`
+- `favn_local -> favn_core`
 - `favn_orchestrator -> favn_core`
 - `favn_runner -> favn_core`
 - `favn_storage_postgres -> favn_orchestrator`
@@ -179,22 +195,24 @@ Allowed compile-time dependency directions for the umbrella:
 Locked dependency rules:
 
 1. `favn_core` must stay at the bottom of the graph and must not depend on any other umbrella app.
-2. `favn` is the public authoring package and must not depend on `favn_runner`, `favn_orchestrator`, storage adapters, or plugins.
-3. `favn_core` should contain only DSL/compiler/manifest concerns plus truly shared boundary contracts, not scheduler, storage, or UI behavior.
-4. `favn_orchestrator` is the system of record and must own manifests, schedules, runs, event history, operator APIs, auth/authz, audit, and storage contracts.
-5. `favn_orchestrator` must not depend on `favn_runner` implementation details; any runner protocol contract shared across runtimes belongs in `favn_core`.
-6. `favn_runner` is execution-only and must not depend on `favn_orchestrator` or storage adapters.
-7. `favn_runner` should execute pinned manifest work, invoke runner-side plugins, and emit execution results/events back to orchestrator.
-8. Same-BEAM UI coupling is removed and must not be reintroduced as the product boundary.
-9. Storage apps depend only on `favn_orchestrator`; storage is a control-plane concern.
-10. Runner plugins depend only on `favn_runner`; execution plugins are a runner concern.
-11. No production app may depend on `favn_test_support`.
-12. Any umbrella app may depend on `favn_test_support` only as a test-only dependency.
-13. `favn_test_support` should hold only cross-app test fixtures, helpers, builders, and file fixtures.
-14. App-specific fixtures should stay in `apps/<app>/test/support`.
-15. `favn_test_support` must stay dependency-light and must not take umbrella-app dependencies that would prevent low-level apps such as `favn_core` from using it in tests.
-16. Deleted migration-only apps must not be reintroduced as active dependencies.
-17. The steady-state web tier must communicate with orchestrator over an explicit remote boundary and must not rely on same-BEAM direct calls.
+2. `favn` is the only public package and must stay thin: it depends on `favn_authoring` and `favn_local`, and must not depend directly on runtime product apps, storage adapters, or plugins.
+3. `favn_authoring` owns authoring/manifest-facing implementation and depends on `favn_core`.
+4. `favn_local` owns local lifecycle/tooling implementation and depends on `favn_authoring` plus `favn_core`.
+5. `favn_core` should contain only DSL/compiler/manifest concerns plus truly shared boundary contracts, not scheduler, storage, or UI behavior.
+6. `favn_orchestrator` is the system of record and must own manifests, schedules, runs, event history, operator APIs, auth/authz, audit, and storage contracts.
+7. `favn_orchestrator` must not depend on `favn_runner` implementation details; any runner protocol contract shared across runtimes belongs in `favn_core`.
+8. `favn_runner` is execution-only and must not depend on `favn_orchestrator` or storage adapters.
+9. `favn_runner` should execute pinned manifest work, invoke runner-side plugins, and emit execution results/events back to orchestrator.
+10. Same-BEAM UI coupling is removed and must not be reintroduced as the product boundary.
+11. Storage apps depend only on `favn_orchestrator`; storage is a control-plane concern.
+12. Runner plugins depend only on `favn_runner`; execution plugins are a runner concern.
+13. No production app may depend on `favn_test_support`.
+14. Any umbrella app may depend on `favn_test_support` only as a test-only dependency.
+15. `favn_test_support` should hold only cross-app test fixtures, helpers, builders, and file fixtures.
+16. App-specific fixtures should stay in `apps/<app>/test/support`.
+17. `favn_test_support` must stay dependency-light and must not take umbrella-app dependencies that would prevent low-level apps such as `favn_core` from using it in tests.
+18. Deleted migration-only apps must not be reintroduced as active dependencies.
+19. The steady-state web tier must communicate with orchestrator over an explicit remote boundary and must not rely on same-BEAM direct calls.
 
 ### Packaging rule for `favn_runner`
 
@@ -667,9 +685,10 @@ Implemented in `apps/favn_local`:
 Ownership and packaging note:
 
 - local lifecycle/tooling ownership lives in `apps/favn_local`
-- public authoring/build ownership stays in `apps/favn`
+- public package/entrypoint ownership lives in `apps/favn`
+- public authoring/build implementation ownership lives in `apps/favn_authoring`
 - future one-install UX and internal ownership do not need to be identical
-- follow-up design item: evaluate whether `favn` later becomes a thin distribution package over authoring + local tooling
+- `favn` is now explicitly the thin distribution wrapper over authoring + local tooling internals
 
 Phase 9 follow-up scope rule:
 
