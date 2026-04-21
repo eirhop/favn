@@ -12,12 +12,11 @@ Allowed dependencies in Phase 1:
 
 - `favn_core`
 
-Must not depend on in Phase 1:
+Must not depend on:
 
-- `favn_orchestrator`, `favn_view`
+- `favn_orchestrator`
 - `favn_storage_postgres`, `favn_storage_sqlite`
-- `favn_legacy`
 
 Current status:
 
-- scaffold-only, not implemented yet
+- implemented runner runtime boundary for manifest-backed execution, connection loading, and SQL runtime work

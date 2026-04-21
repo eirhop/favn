@@ -87,7 +87,6 @@ defmodule Favn.Asset do
 
   ## See also
 
-  - `Favn.AgentGuide`
   - `Favn.SQLAsset`
   - `Favn.MultiAsset`
   - `Favn.Namespace`

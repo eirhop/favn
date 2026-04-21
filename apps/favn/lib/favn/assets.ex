@@ -53,7 +53,6 @@ defmodule Favn.Assets do
 
   ## See also
 
-  - `Favn.AgentGuide`
   - `Favn.Asset`
   - `Favn.MultiAsset`
   """

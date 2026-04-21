@@ -96,7 +96,6 @@ defmodule Favn.SQLAsset do
 
   ## See also
 
-  - `Favn.AgentGuide`
   - `Favn.SQL`
   - `Favn.Window`
   - `Favn.Connection`

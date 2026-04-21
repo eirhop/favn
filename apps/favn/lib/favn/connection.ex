@@ -49,7 +49,6 @@ defmodule Favn.Connection do
 
   ## See also
 
-  - `Favn.AgentGuide`
   - `Favn.SQLAsset`
   - `Favn.SQL`
   """

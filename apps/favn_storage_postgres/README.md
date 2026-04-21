@@ -14,10 +14,9 @@ Allowed dependencies in Phase 1:
 - `ecto_sql`
 - `postgrex`
 
-Must not depend on in Phase 1:
+Must not depend on:
 
-- `favn_core`, `favn_runner`, `favn_view`
-- `favn_legacy`
+- `favn_core`, `favn_runner`
 
 Current status:
 

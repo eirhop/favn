@@ -5,11 +5,11 @@
 Favn `v0.5.0` refactor is in progress.
 
 - umbrella structure is scaffolded under `apps/`
-- `apps/favn_legacy` contains the active v0.4 reference runtime during migration
 - `apps/favn` now owns the public Phase 2 authoring/DSL surface
 - internal compiler/manifest/planning/shared-contract ownership has been re-centered into `apps/favn_core`
 - `apps/favn_core` now owns Phase 3 manifest/versioning foundations and shared runner contracts
 - the core local dev lifecycle is now implemented in `apps/favn_local`
+- the old `apps/favn_legacy` monolith has been deleted after ownership moved to the new apps
 - Phase 0-4 contracts and migration rules are tracked in `docs/REFACTOR.md`
 
 ## Current Refactor Reality
@@ -20,20 +20,19 @@ Favn `v0.5.0` refactor is in progress.
 - initial runner boundary execution now exists in `favn_runner` for manifest registration plus Elixir/source asset execution through runner contracts
 - runner-owned connection runtime and SQL execution runtime slices are now hosted in `apps/favn_runner/lib/favn/connection/**`, `apps/favn_runner/lib/favn/sql/**`, and `apps/favn_runner/lib/favn/sql_asset/**`
 - local lifecycle commands `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status` are implemented in `apps/favn_local`
-- the earlier same-BEAM `favn_view` Phoenix prototype still exists in-repo as a transitional reference only
-- examples that exercise runtime execution may still reflect legacy-reference behavior during migration
+- the earlier same-BEAM `favn_view` Phoenix prototype has been removed in favor of the separate `web/favn_web` boundary
 
 ## Current Focus
 
 - Phase 8 baseline work now establishes the `favn_web + favn_orchestrator + favn_runner` boundary in baseline form: private orchestrator HTTP API v1, SSE baseline, orchestrator-owned auth/session/audit baseline, and thin `favn_web` proof flows
 - the core local developer loop has landed in `apps/favn_local`, including foreground `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status`
 - current Phase 9 follow-up is the remaining packaging/install/reset/logs/build work around that lifecycle
-- current Phase 10 follow-up is legacy cutover cleanup so the repo docs, CI, and supported flows converge on the new architecture
+- the legacy deletion slice is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
 - keep `favn` as the public DSL/facade package
 - keep `favn_core` as the canonical manifest/planning/shared-contract layer
 - keep `favn_orchestrator` as the manifest-pinned control plane, auth/authz authority, and storage owner
 - keep `favn_runner` as execution-only and transport-pluggable
-- treat `favn_view` as transitional only; do not treat same-BEAM UI calls as the product boundary
+- treat `web/favn_web` as the only supported UI boundary direction
 - breaking changes remain allowed before `v1.0`
 
 ## Documentation Pointers
@@ -116,13 +115,6 @@ config :favn_orchestrator,
     migration_mode: :manual
   ]
 ```
-
-## Transitional View Runtime Configuration
-
-The current `favn_view` Phoenix prototype is transitional only. If it is still run in non-test environments during the migration window, configure endpoint secrets with environment variables:
-
-- `FAVN_VIEW_SECRET_KEY_BASE`
-- `FAVN_VIEW_SIGNING_SALT`
 
 ## Phase 8 Orchestrator/Web Security Configuration
 

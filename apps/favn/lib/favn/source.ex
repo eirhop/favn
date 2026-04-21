@@ -45,7 +45,6 @@ defmodule Favn.Source do
 
   ## See also
 
-  - `Favn.AgentGuide`
   - `Favn.SQLAsset`
   - `Favn.Namespace`
   """

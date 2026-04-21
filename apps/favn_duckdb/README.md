@@ -20,9 +20,7 @@ Must not depend on:
 
 - `favn`
 - `favn_orchestrator`
-- `favn_view`
 - storage adapters
-- `favn_legacy`
 
 ## Runner plugin configuration
 
