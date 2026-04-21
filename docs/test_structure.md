@@ -9,6 +9,8 @@ apps/
 │   ├── dsl_compiler_test.exs
 │   ├── favn_test.exs
 │   ├── manifest_generator_test.exs
+│   ├── mix_tasks/
+│   │   └── public_tasks_test.exs
 │   ├── public_authoring_parity_test.exs
 │   ├── public_pipeline_parity_test.exs
 │   ├── runtime_facade_test.exs
@@ -84,7 +86,7 @@ Notes:
 
 - Each migrated slice must move or recreate tests in the new owner app without dual-compiling namespace owners.
 - Legacy and same-BEAM view tests are deleted; supported coverage now lives in the owner-app suites.
-- The current umbrella `mix test` alias includes the owner apps plus `apps/favn_local/test`.
+- The current umbrella `mix test` alias includes `apps/favn_authoring/test` (currently minimal), `apps/favn/test`, and `apps/favn_local/test` plus the runtime/storage owner apps.
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures used during migration.
 - shared fixture source for migration parity now lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.
 - batch 1 parity migration moved broad authoring/compiler/planning/window ownership into `apps/favn/test` and `apps/favn_core/test`.

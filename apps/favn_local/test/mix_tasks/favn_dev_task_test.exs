@@ -1,8 +1,8 @@
-defmodule Mix.Tasks.Favn.DevTaskTest do
+defmodule Favn.DevTaskTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Dev
   alias Favn.Dev.State
-  alias Mix.Tasks.Favn.Dev
 
   setup do
     root_dir =
@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Favn.DevTaskTest do
     %{root_dir: root_dir}
   end
 
-  test "mix favn.dev fails when stack is already marked running", %{root_dir: root_dir} do
+  test "dev/1 fails when stack is already marked running", %{root_dir: root_dir} do
     current_pid = :os.getpid() |> List.to_string() |> String.to_integer()
 
     runtime = %{
@@ -30,8 +30,6 @@ defmodule Mix.Tasks.Favn.DevTaskTest do
 
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
 
-    assert_raise Mix.Error, ~r/local stack already running/, fn ->
-      Dev.run(["--root-dir", root_dir])
-    end
+    assert {:error, :stack_already_running} = Dev.dev(root_dir: root_dir)
   end
 end

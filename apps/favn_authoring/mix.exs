@@ -1,11 +1,11 @@
-defmodule Favn.MixProject do
+defmodule FavnAuthoring.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :favn,
+      app: :favn_authoring,
       version: "0.5.0-dev",
-      description: "Public Favn package wrapper",
+      description: "Internal authoring implementation for Favn public package",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -24,9 +24,7 @@ defmodule Favn.MixProject do
 
   defp deps do
     [
-      {:favn_authoring, in_umbrella: true},
-      {:favn_local, in_umbrella: true},
-      {:favn_orchestrator, in_umbrella: true, only: :test},
+      {:favn_core, in_umbrella: true},
       {:favn_test_support, in_umbrella: true, only: :test}
     ]
   end

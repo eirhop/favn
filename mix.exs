@@ -24,6 +24,7 @@ defmodule FavnUmbrella.MixProject do
       test: [
         "do --app favn_test_support test",
         "do --app favn_core test",
+        "do --app favn_authoring test",
         "do --app favn test",
         "do --app favn_runner test",
         "do --app favn_orchestrator test",

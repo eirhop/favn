@@ -8,6 +8,10 @@ defmodule Favn.Dev.LifecycleTest do
   alias Favn.Dev.Paths
   alias Favn.Dev.State
 
+  @run_real_stack_lifecycle? System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" and
+                               System.get_env("FAVN_RUN_DEV_LIFECYCLE_STACK") == "1"
+  @real_stack_skip_reason "set FAVN_RUN_DEV_LIFECYCLE=1 and FAVN_RUN_DEV_LIFECYCLE_STACK=1 to run full local stack lifecycle integration"
+
   setup do
     root_dir =
       Path.join(System.tmp_dir!(), "favn_dev_lifecycle_#{System.unique_integer([:positive])}")
@@ -20,17 +24,12 @@ defmodule Favn.Dev.LifecycleTest do
       File.rm_rf(root_dir)
     end)
 
-    if System.get_env("FAVN_RUN_DEV_LIFECYCLE") != "1" do
-      {:ok, skip: "set FAVN_RUN_DEV_LIFECYCLE=1 to run real local lifecycle integration"}
-    else
-      :ok
-    end
-
     %{root_dir: root_dir}
   end
 
+  @tag skip: if(@run_real_stack_lifecycle?, do: false, else: @real_stack_skip_reason)
   test "foreground lifecycle leaves lock free and supports second-terminal control" do
-    root_dir = File.cwd!()
+    root_dir = Path.expand("../../..", __DIR__)
 
     task = Task.async(fn -> Dev.dev(root_dir: root_dir) end)
 

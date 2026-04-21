@@ -10,10 +10,11 @@
 Favn `v0.5.0` is a refactor release toward a manifest-first product with separate authoring, web, orchestrator, and runner boundaries.
 
 - Phase 9 core local lifecycle has landed in `apps/favn_local`: `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`
+- public package topology migration is complete: `apps/favn` is now the thin public wrapper, `apps/favn_authoring` owns authoring implementation, and `apps/favn_local` owns lifecycle/tooling internals
 - remaining Phase 9 work is packaging and local-tooling follow-up: `install`, `reset`, `logs`, and build targets for `web`, `orchestrator`, `runner`, and optional `single`
 - Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
 - shared migration fixture substrate now lives in `apps/favn_test_support` (`priv/fixtures/**` + `FavnTestSupport.Fixtures`) so later per-app parity PRs can reuse one fixture source of truth
-- authoring/compiler/planning/window coverage now lives in owner suites under `apps/favn/test` and `apps/favn_core/test`
+- authoring/compiler/planning/window coverage now lives in public-facade suites under `apps/favn/test` and core suites under `apps/favn_core/test`
 - execution ownership parity batch 2 expanded runner/plugin confidence in owner apps: `apps/favn_runner/test` now covers richer runner/server/worker/connection runtime SQL paths, and `apps/favn_duckdb/test` now carries broader DuckDB adapter/runtime hardening semantics
 - control-plane/runtime-state parity batch 3 is now completed: scheduler/runtime/storage/public-facade coverage has moved into owner suites under `apps/favn_orchestrator/test`, `apps/favn_storage_sqlite/test`, `apps/favn_storage_postgres/test`, and `apps/favn/test`, with shared setup moved out of legacy into `apps/favn_test_support`
 
@@ -21,7 +22,7 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 
 - Phase 0: complete
 - Phase 1: complete
-- Phase 2: in progress; public `favn` ownership and core compiler/manifest recentering are in place, but legacy cutover is not finished
+- Phase 2: in progress; `favn` public wrapper + `favn_authoring` internal ownership split is now in place, but broader cutover follow-up remains
 - Phase 3: complete
 - Phase 4: complete
 - Phase 5: complete

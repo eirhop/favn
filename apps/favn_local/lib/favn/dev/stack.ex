@@ -26,6 +26,9 @@ defmodule Favn.Dev.Stack do
       print_start_summary(startup)
       wait_foreground(startup, opts)
     else
+      {:error, :stack_already_running} = error ->
+        error
+
       {:error, reason} = error ->
         _ = cleanup_after_failure(reason, opts)
         error
@@ -283,8 +286,8 @@ defmodule Favn.Dev.Stack do
 
     with :ok <- Mix.Task.reenable("compile"),
          _ <- Mix.Task.run("compile", ["--force"]),
-         {:ok, build} <- Favn.build_manifest(),
-         {:ok, version} <- Favn.pin_manifest_version(build.manifest),
+         {:ok, build} <- FavnAuthoring.build_manifest(),
+         {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
          :ok <-
            RunnerControl.register_manifest(version,
              runner_node_name: node_names.runner_full,

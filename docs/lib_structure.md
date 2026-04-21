@@ -6,7 +6,14 @@ This document maps the current umbrella library layout during the v0.5 refactor.
 apps/
 ├── favn/lib/
 │   ├── favn.ex
-│   ├── favn/
+│   └── mix/tasks/
+│       ├── favn.dev.ex
+│       ├── favn.reload.ex
+│       ├── favn.status.ex
+│       └── favn.stop.ex
+├── favn_authoring/lib/
+│   ├── favn.ex
+│   └── favn/
 │       ├── public_scaffold.ex
 │       ├── asset.ex
 │       ├── assets.ex
@@ -19,7 +26,7 @@ apps/
 │       ├── sql_asset.ex
 │       ├── window.ex
 │       ├── triggers/
-│       └── (public DSL entrypoints only)
+│       └── (authoring entrypoints)
 ├── favn_local/lib/
 │   ├── favn_local.ex
 │   ├── favn/
@@ -37,11 +44,6 @@ apps/
 │   │       ├── stack.ex
 │   │       ├── state.ex
 │   │       └── status.ex
-│   └── mix/tasks/
-│       ├── favn.dev.ex
-│       ├── favn.reload.ex
-│       ├── favn.status.ex
-│       └── favn.stop.ex
 ├── favn_core/lib/
 │   ├── favn_core.ex
 │   └── favn/
@@ -69,7 +71,9 @@ apps/
 Notes:
 
 - `apps/favn_legacy` and `apps/favn_view` were removed in the Phase 10 deletion pass.
-- Phase 2 migration currently establishes public DSL/facade ownership under `favn`.
+- `apps/favn` now owns the thin public package boundary and public `mix favn.*` entrypoints.
+- `apps/favn_authoring` now owns authoring/manifest-facing implementation internals.
+- `apps/favn_local` continues to own local lifecycle/tooling implementation internals.
 - Internal compiler/manifest/planning/shared contracts are now re-centered into `apps/favn_core/lib/favn/`.
 - Phase 3 modules now owned in `apps/favn_core/lib/favn/` include:
   - `manifest.ex`
