@@ -44,11 +44,25 @@ defmodule Favn.Dev.Build.OrchestratorTest do
     assert {:ok, build_json} = File.read(Path.join(result.build_dir, "build.json"))
     assert {:ok, metadata_json} = File.read(Path.join(result.dist_dir, "metadata.json"))
     assert File.exists?(Path.join(result.dist_dir, "bundle.json"))
+    assert File.exists?(Path.join(result.dist_dir, "OPERATOR_NOTES.md"))
 
     assert {:ok, %{"target" => "orchestrator", "build_id" => build_id}} = JSON.decode(build_json)
 
-    assert {:ok, %{"target" => "orchestrator", "build_id" => ^build_id}} =
+    assert {:ok,
+            %{
+              "target" => "orchestrator",
+              "build_id" => ^build_id,
+              "artifact" => %{"kind" => "assembly_metadata", "operational" => false},
+              "compatibility" => %{"supported_storage_modes" => ["memory", "sqlite", "postgres"]},
+              "required_env" => required_env
+            }} =
              JSON.decode(metadata_json)
+
+    assert "FAVN_POSTGRES_HOST" in required_env
+    assert "FAVN_POSTGRES_PORT" in required_env
+    assert "FAVN_POSTGRES_USERNAME" in required_env
+    assert "FAVN_POSTGRES_PASSWORD" in required_env
+    assert "FAVN_POSTGRES_DATABASE" in required_env
   end
 
   test "build_orchestrator/1 requires install", %{root_dir: root_dir} do

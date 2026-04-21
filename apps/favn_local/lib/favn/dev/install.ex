@@ -48,11 +48,8 @@ defmodule Favn.Dev.Install do
       {:error, :missing_fingerprint} ->
         {:error, :install_stale}
 
-      {:error, reason} = error ->
-        case reason do
-          {:missing_tool, _tool} -> {:error, :install_stale}
-          _ -> error
-        end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

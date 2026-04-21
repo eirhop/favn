@@ -31,7 +31,8 @@ defmodule Favn.Dev.Build.Web do
            write_json(
              Path.join(dist_dir, "bundle.json"),
              web_bundle_json(build_id, web_source_root, opts)
-           ) do
+           ),
+         :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
     else
       nil -> {:error, :missing_install_runtime_input}
@@ -56,6 +57,12 @@ defmodule Favn.Dev.Build.Web do
     |> Map.put("phase", "dist")
     |> Map.put("target", @target)
     |> Map.put("web_source_root", source_root)
+    |> Map.put("artifact", %{
+      "kind" => "assembly_metadata",
+      "operational" => false,
+      "truthfulness" => "metadata_only"
+    })
+    |> Map.put("topology", %{"boundary" => "web", "includes_user_business_code" => false})
     |> Map.put("compatibility", %{
       "orchestrator_api_version" => "v1"
     })
@@ -105,5 +112,19 @@ defmodule Favn.Dev.Build.Web do
     stamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d%H%M%S")
     unique = System.unique_integer([:positive])
     "wb_#{stamp}_#{unique}"
+  end
+
+  defp write_operator_notes(dist_dir) do
+    notes = [
+      "# Favn Web Artifact Notes",
+      "",
+      "This output is a metadata-oriented Phase 9 artifact.",
+      "It is not a standalone deployable web runtime bundle.",
+      "",
+      "Use this artifact for packaging metadata contracts only.",
+      ""
+    ]
+
+    File.write(Path.join(dist_dir, "OPERATOR_NOTES.md"), Enum.join(notes, "\n"))
   end
 end

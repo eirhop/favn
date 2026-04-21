@@ -19,13 +19,56 @@ defmodule Mix.Tasks.Favn.Dev do
     opts = normalize_storage_flags(opts)
 
     case Dev.dev(opts) do
-      :ok -> :ok
-      {:error, :stack_already_running} -> Mix.raise("local stack already running")
-      {:error, :install_required} -> Mix.raise("install required; run mix favn.install")
-      {:error, :install_stale} -> Mix.raise("install stale; run mix favn.install --force")
-      {:error, reason} -> Mix.raise("failed to start local stack: #{inspect(reason)}")
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Mix.raise(error_message(reason))
     end
   end
+
+  defp error_message(:stack_already_running), do: "local stack already running"
+
+  defp error_message(:install_required), do: "install required; run mix favn.install"
+
+  defp error_message(:install_stale), do: "install stale; run mix favn.install --force"
+
+  defp error_message({:stack_partially_running, service_states}) do
+    details =
+      service_states
+      |> Enum.map_join(", ", fn {service, state} -> "#{service}=#{state}" end)
+
+    "local stack is in a partial/dead state (#{details}); run mix favn.stop to clean up before retrying"
+  end
+
+  defp error_message({:missing_tool, tool}),
+    do: "missing required tool #{tool}; run mix favn.install after tool is available"
+
+  defp error_message({:tool_check_failed, tool, status, output}),
+    do: "required tool #{tool} check failed (status=#{status}): #{output}; rerun mix favn.install"
+
+  defp error_message({:port_conflict, service, port}),
+    do: "port conflict: #{service} cannot bind port #{port}; free the port and retry"
+
+  defp error_message({:port_check_failed, service, port, reason}),
+    do:
+      "port check failed for #{service} on #{port}: #{inspect(reason)}; verify local networking and retry"
+
+  defp error_message({:postgres_misconfigured, field}),
+    do: "postgres configuration missing #{field}; fix config :favn, :local and retry"
+
+  defp error_message({:postgres_unavailable, host, port, reason}),
+    do:
+      "postgres unavailable at #{host}:#{port} (#{inspect(reason)}); start postgres or fix config and retry"
+
+  defp error_message({:web_build_failed, status, output}),
+    do: "web build failed (status=#{status}): #{output}"
+
+  defp error_message({:service_exit, service, status}),
+    do:
+      "#{service} exited during startup (status=#{status}); inspect .favn/logs/#{service}.log and check for stale state or port conflicts"
+
+  defp error_message(reason), do: "failed to start local stack: #{inspect(reason)}"
 
   defp normalize_storage_flags(opts) do
     sqlite? = Keyword.get(opts, :sqlite, false)

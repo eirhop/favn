@@ -10,6 +10,7 @@ apps/
 │   ├── favn_test.exs
 │   ├── manifest_generator_test.exs
 │   ├── mix_tasks/
+│   │   ├── read_doc_task_test.exs
 │   │   └── public_tasks_test.exs
 │   ├── public_authoring_parity_test.exs
 │   ├── public_pipeline_parity_test.exs
@@ -35,7 +36,11 @@ apps/
 │   ├── mix_tasks/
 │   │   └── favn_dev_task_test.exs
 │   ├── integration/
+│   │   ├── dev_storage_verification_test.exs
 │   │   └── dev_stack_smoke_test.exs
+│   └── test_helper.exs
+├── favn_authoring/test/
+│   ├── doc_reader_test.exs
 │   └── test_helper.exs
 ├── favn_core/test/
 │   ├── favn_core_test.exs

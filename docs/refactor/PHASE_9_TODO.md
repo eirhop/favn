@@ -2,13 +2,11 @@
 
 ## Status
 
-Execution checklist for the remaining Phase 9 hardening, verification, and
-packaging-honesty work described in
-`docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md`.
+Execution checklist for Phase 9 hardening, verification, and packaging honesty
+work described in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md`.
 
-Phase 9 is no longer mainly about adding commands. The command surface is
-already implemented; the remaining work is making it reliable, test-covered, and
-operationally truthful.
+Phase 9 execution is now complete. This file is retained as a completion record
+plus post-v0.5 follow-up separation.
 
 Implemented command surface that should not be reopened as net-new feature work:
 
@@ -24,6 +22,55 @@ Implemented command surface that should not be reopened as net-new feature work:
 - [x] `mix favn.build.orchestrator`
 - [x] `mix favn.build.runner`
 - [x] `mix favn.build.single`
+- [x] `mix favn.read_doc`
+
+## Batch Execution Plan
+
+Execute remaining work in bounded batches so Phase 9 can close without reopening
+scope.
+
+### Batch 1: docs/task alignment and `read_doc`
+
+- [x] Move post-v1 niceties out of active Phase 9 execution and into roadmap sections.
+- [x] Add `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`.
+- [x] Implement `read_doc` on top of `Code.fetch_docs/1` with explicit handling for:
+  - `:module_not_found`
+  - `:chunk_not_found`
+  - unsupported or invalid docs payloads
+- [x] Keep first cut limited to module docs and public function docs grouped by name.
+- [x] Add/close `read_doc` tests and docs wiring.
+
+### Batch 2: install and diagnostics hardening
+
+- [x] Make `mix favn.dev` and `mix favn.build.*` fail clearly when install state is missing or stale.
+- [x] Add stronger missing-prerequisite diagnostics for install, build, and dev flows.
+- [x] Add stale-state diagnostics for local lifecycle and build flows.
+- [x] Add missing Node/npm diagnostic coverage.
+- [x] Add install fingerprint/stale-detection/offline-reuse coverage.
+
+### Batch 3: lifecycle recovery hardening
+
+- [x] Tighten lifecycle recovery when runtime state exists but all owned services are dead.
+- [x] Tighten partial/dead service handling so `status` reports it clearly and `stop` stays idempotent.
+- [x] Add stronger startup failure cleanup verification.
+- [x] Add stale-runtime and partial/dead service recovery coverage.
+- [x] Add startup-failure cleanup coverage.
+
+### Batch 4: packaging honesty hardening
+
+- [x] Make `mix favn.build.web` outputs operationally honest with explicit metadata-oriented semantics and operator notes.
+- [x] Make `mix favn.build.orchestrator` outputs operationally honest with explicit metadata-oriented semantics and operator notes.
+- [x] Verify `mix favn.build.runner` remains the reference-quality packaging target for manifest-first artifact truthfulness.
+- [x] Harden `mix favn.build.single` with topology-preserving assembly-only semantics, non-operational scripts, and operator notes.
+- [x] Add build metadata contract coverage for `web`, `orchestrator`, `runner`, and `single`.
+
+### Batch 5: storage verification closeout
+
+- [x] Add explicit SQLite verification for install, dev, reload, stop, logs, reset, and single packaging flows.
+- [x] Verify explicit local Postgres configuration and startup path, not just SQLite follow-up behavior.
+- [x] Add broader opt-in Postgres verification for local and orchestrator packaging paths.
+- [x] Add explicit SQLite end-to-end coverage for the full Phase 9 tooling loop.
+- [x] Add broader opt-in Postgres verification coverage.
 
 Implemented Phase 9 foundation that should not be restated as open unless a real
 gap remains:
@@ -82,47 +129,43 @@ gap remains:
 
 ## Remaining Hardening And Verification
 
-- [ ] Make `mix favn.dev` and `mix favn.build.*` fail clearly when install state is missing or stale.
-- [ ] Tighten lifecycle recovery when runtime state exists but all owned services are dead.
-- [ ] Tighten partial/dead service handling so `status` reports it clearly and `stop` can clean it up idempotently.
-- [ ] Add stronger startup failure cleanup verification.
-- [ ] Add explicit SQLite verification for install, dev, reload, stop, logs, reset, and single packaging flows.
-- [ ] Add broader opt-in Postgres verification for local and orchestrator packaging paths.
-- [ ] Add better missing-prerequisite diagnostics for install, build, and dev flows.
-- [ ] Add better stale-state diagnostics for local lifecycle and build flows.
-- [ ] Add better port-conflict diagnostics for local startup.
-- [ ] Verify explicit local Postgres configuration and startup path, not just SQLite follow-up behavior.
-- [ ] Keep diagnostics targeted and boring; do not grow a broad doctor framework in this slice.
+- [x] Tighten lifecycle recovery when runtime state exists but all owned services are dead.
+- [x] Tighten partial/dead service handling so `status` reports it clearly and `stop` can clean it up idempotently.
+- [x] Add stronger startup failure cleanup verification.
+- [x] Add better missing-prerequisite diagnostics for install, build, and dev flows.
+- [x] Add better stale-state diagnostics for local lifecycle and build flows.
+- [x] Add better port-conflict diagnostics for local startup.
+- [x] Keep diagnostics targeted and boring; do not grow a broad doctor framework in this slice.
 
 ## Remaining Packaging Honesty Work
 
-- [ ] Make `mix favn.build.web` outputs more operationally honest than metadata-oriented first-cut artifacts.
-- [ ] Make `mix favn.build.orchestrator` outputs more operationally honest than metadata-oriented first-cut artifacts.
-- [ ] Verify `mix favn.build.runner` remains the reference-quality packaging target for manifest-first artifact truthfulness.
-- [ ] Harden `mix favn.build.single` until the assembled bundle start/stop path is operationally truthful end to end.
+- [x] Make `mix favn.build.web` outputs operationally honest with explicit metadata-only semantics.
+- [x] Make `mix favn.build.orchestrator` outputs operationally honest with explicit metadata-only semantics.
+- [x] Verify `mix favn.build.runner` remains the reference-quality packaging target for manifest-first artifact truthfulness.
+- [x] Harden `mix favn.build.single` with topology-preserving assembly-only semantics and explicit non-operational scripts.
 
 ## Remaining Testing
 
-- [ ] Add install fingerprint and stale-detection coverage.
-- [ ] Add missing Node/npm diagnostic coverage.
-- [ ] Add offline reuse coverage when install state is current.
+- [x] Add install fingerprint and stale-detection coverage.
+- [x] Add missing Node/npm diagnostic coverage.
+- [x] Add offline reuse coverage when install state is current.
 - [x] Add reset refusal and success coverage.
 - [x] Add logs all-services, single-service, tail, follow, and historical-access coverage.
-- [ ] Add build metadata contract coverage for `web`, `orchestrator`, `runner`, and `single`.
+- [x] Add build metadata contract coverage for `web`, `orchestrator`, `runner`, and `single`.
 - [x] Add runner artifact coverage for user code, manifest, and plugin inclusion.
 - [x] Add single artifact coverage for the three-runtime bundle layout.
-- [ ] Add stale-runtime recovery and partial/dead service recovery coverage.
-- [ ] Add startup-failure cleanup coverage.
-- [ ] Add explicit SQLite end-to-end coverage for the full Phase 9 tooling loop.
-- [ ] Add broader opt-in Postgres verification coverage.
+- [x] Add stale-runtime recovery and partial/dead service recovery coverage.
+- [x] Add startup-failure cleanup coverage.
+- [x] Add explicit SQLite end-to-end coverage for the full Phase 9 tooling loop.
+- [x] Add broader opt-in Postgres verification coverage.
 
 ## Docs
 
 - [x] Keep `README.md` aligned with the implemented command surface and public local-dev flow.
 - [x] Update `docs/REFACTOR.md` so Phase 9 is described as hardening, verification, and packaging honesty rather than missing commands.
-- [x] Update `docs/FEATURES.md` so remaining Phase 9 work no longer implies install/reset/logs/build commands are absent.
-- [x] Update `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` to distinguish implemented command surface, partially realized packaging, and still-open hardening work.
-- [x] Keep this TODO file as a tight execution checklist for the real remaining Phase 9 work.
+- [x] Update `docs/FEATURES.md` so Phase 9 completion status and scope are explicit.
+- [x] Update `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` to reflect implemented command surface, packaging honesty, and completion status.
+- [x] Keep this TODO file as a completion record plus post-v0.5 follow-up separation.
 
 ## Post-v0.5 Follow-Up
 

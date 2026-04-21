@@ -25,6 +25,12 @@ defmodule Mix.Tasks.Favn.Status do
     IO.puts("orchestrator: #{format_service(status.services.orchestrator)}")
     IO.puts("runner: #{format_service(status.services.runner)}")
 
+    case status.stack_status do
+      :partial -> IO.puts("hint: run mix favn.stop to clean up partial/dead services")
+      :stale -> IO.puts("hint: run mix favn.stop to clear stale runtime state")
+      _other -> :ok
+    end
+
     last_failure = if is_map(status.last_failure), do: inspect(status.last_failure), else: "none"
     IO.puts("last failure: #{last_failure}")
   end

@@ -30,11 +30,27 @@ defmodule Favn.Dev.Stack do
       {:error, :stack_already_running} = error ->
         error
 
+      {:error, {:stack_partially_running, _service_states}} = error ->
+        error
+
       {:error, reason} = error ->
-        _ = cleanup_after_failure(reason, opts)
+        if cleanup_required?(reason) do
+          _ = cleanup_after_failure(reason, opts)
+        end
+
         error
     end
   end
+
+  defp cleanup_required?(:install_required), do: false
+  defp cleanup_required?(:install_stale), do: false
+  defp cleanup_required?({:missing_tool, _tool}), do: false
+  defp cleanup_required?({:tool_check_failed, _tool, _status, _output}), do: false
+  defp cleanup_required?({:port_conflict, _service, _port}), do: false
+  defp cleanup_required?({:port_check_failed, _service, _port, _reason}), do: false
+  defp cleanup_required?({:postgres_misconfigured, _field}), do: false
+  defp cleanup_required?({:postgres_unavailable, _host, _port, _reason}), do: false
+  defp cleanup_required?(_reason), do: true
 
   @spec stop(root_opt()) :: :ok | {:error, term()}
   def stop(opts \\ []) when is_list(opts) do
@@ -58,6 +74,7 @@ defmodule Favn.Dev.Stack do
            :ok <- ensure_stack_not_running(opts),
            :ok <- ensure_install_ready(opts),
            config <- Config.resolve(opts),
+           :ok <- ensure_startup_prerequisites(config),
            {:ok, secrets} <- Secrets.resolve(config, opts),
            {:ok, node_names} <- build_node_names(opts),
            {:ok, services} <- start_services(config, secrets, node_names, opts),
@@ -70,10 +87,15 @@ defmodule Favn.Dev.Stack do
   defp ensure_stack_not_running(opts) do
     case State.read_runtime(opts) do
       {:ok, runtime} ->
-        if any_service_running?(runtime) do
-          {:error, :stack_already_running}
-        else
-          State.clear_runtime(opts)
+        case runtime_health(runtime) do
+          :running ->
+            {:error, :stack_already_running}
+
+          :partial ->
+            {:error, {:stack_partially_running, runtime_service_statuses(runtime)}}
+
+          :stale ->
+            State.clear_runtime(opts)
         end
 
       {:error, :not_found} ->
@@ -92,13 +114,99 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp any_service_running?(runtime) do
-    runtime
-    |> Map.get("services", %{})
-    |> Map.values()
-    |> Enum.any?(fn
-      %{"pid" => pid} when is_integer(pid) and pid > 0 -> DevProcess.alive?(pid)
-      _ -> false
+  defp ensure_startup_prerequisites(config) do
+    case ensure_ports_available(config) do
+      :ok -> ensure_storage_ready(config)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ensure_ports_available(config) do
+    case ensure_port_available(:orchestrator, config.orchestrator_port) do
+      :ok -> ensure_port_available(:web, config.web_port)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ensure_port_available(service, port)
+       when is_atom(service) and is_integer(port) and port > 0 do
+    case :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, false}]) do
+      {:ok, socket} ->
+        :ok = :gen_tcp.close(socket)
+        :ok
+
+      {:error, :eaddrinuse} ->
+        {:error, {:port_conflict, service, port}}
+
+      {:error, reason} ->
+        {:error, {:port_check_failed, service, port, reason}}
+    end
+  end
+
+  defp ensure_storage_ready(%{storage: :postgres, postgres: postgres}) when is_map(postgres) do
+    case validate_postgres_config(postgres) do
+      :ok -> verify_postgres_connectivity(postgres)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp ensure_storage_ready(_config), do: :ok
+
+  defp validate_postgres_config(postgres) do
+    required = [
+      hostname: :hostname,
+      username: :username,
+      password: :password,
+      database: :database
+    ]
+
+    case Enum.find(required, fn {_field, key} ->
+           postgres[key] |> to_string() |> String.trim() == ""
+         end) do
+      {field, _key} -> {:error, {:postgres_misconfigured, field}}
+      nil -> :ok
+    end
+  end
+
+  defp verify_postgres_connectivity(postgres) do
+    host = postgres.hostname |> to_string()
+    port = postgres.port
+
+    case :gen_tcp.connect(String.to_charlist(host), port, [:binary, {:active, false}], 1_500) do
+      {:ok, socket} ->
+        :ok = :gen_tcp.close(socket)
+        :ok
+
+      {:error, reason} ->
+        {:error, {:postgres_unavailable, host, port, reason}}
+    end
+  end
+
+  defp runtime_health(runtime) do
+    statuses = runtime_service_statuses(runtime)
+
+    cond do
+      Enum.all?(statuses, &match?({_name, :running}, &1)) -> :running
+      Enum.any?(statuses, &match?({_name, :running}, &1)) -> :partial
+      true -> :stale
+    end
+  end
+
+  defp runtime_service_statuses(runtime) do
+    services = Map.get(runtime, "services", %{})
+
+    ["web", "orchestrator", "runner"]
+    |> Enum.map(fn service_name ->
+      state =
+        case get_in(services, [service_name, "pid"]) do
+          pid when is_integer(pid) and pid > 0 ->
+            if DevProcess.alive?(pid), do: :running, else: :dead
+
+          _ ->
+            :unknown
+        end
+
+      {service_name, state}
     end)
   end
 

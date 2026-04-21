@@ -47,7 +47,8 @@ defmodule Favn.Dev.Build.Single do
            ),
          :ok <- write_json(Path.join(dist_dir, "config/assembly.json"), assembly),
          :ok <- write_env_files(dist_dir, storage),
-         :ok <- write_scripts(dist_dir) do
+         :ok <- write_scripts(dist_dir),
+         :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
     end
   end
@@ -124,6 +125,12 @@ defmodule Favn.Dev.Build.Single do
     |> Map.put("phase", "dist")
     |> Map.put("target", @target)
     |> Map.put("assembly", assembly)
+    |> Map.put("artifact", %{
+      "kind" => "assembly_bundle",
+      "operational" => false,
+      "truthfulness" => "topology_assembly_only"
+    })
+    |> Map.put("topology", %{"boundary" => "web+orchestrator+runner", "collapsed" => false})
     |> Map.put("compatibility", %{
       "topology" => "web+orchestrator+runner",
       "storage_modes" => ["sqlite", "postgres"]
@@ -222,12 +229,20 @@ defmodule Favn.Dev.Build.Single do
     start_script = [
       "#!/usr/bin/env sh",
       "set -eu",
-      "echo \"Starting favn single bundle\"",
-      "echo \"Run web/orchestrator/runner using env files under ./env\"",
+      "echo \"Favn single bundle in this Phase 9 build is assembly-only.\"",
+      "echo \"No operational runtime launch wiring is bundled yet.\"",
+      "echo \"See OPERATOR_NOTES.md and env/*.env for required deployment inputs.\"",
+      "exit 1",
       ""
     ]
 
-    stop_script = ["#!/usr/bin/env sh", "set -eu", "echo \"Stopping favn single bundle\"", ""]
+    stop_script = [
+      "#!/usr/bin/env sh",
+      "set -eu",
+      "echo \"No managed processes were started by this assembly-only artifact.\"",
+      "exit 1",
+      ""
+    ]
 
     [
       File.write(Path.join(dist_dir, "bin/start"), Enum.join(start_script, "\n")),
@@ -255,5 +270,20 @@ defmodule Favn.Dev.Build.Single do
     stamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d%H%M%S")
     unique = System.unique_integer([:positive])
     "sb_#{stamp}_#{unique}"
+  end
+
+  defp write_operator_notes(dist_dir) do
+    notes = [
+      "# Favn Single Artifact Notes",
+      "",
+      "This output preserves the web + orchestrator + runner topology and env contracts.",
+      "In this Phase 9 cut it is assembly metadata/output, not an operational launcher bundle.",
+      "",
+      "The generated bin/start and bin/stop scripts intentionally exit non-zero to avoid",
+      "falsely implying full local deployment automation.",
+      ""
+    ]
+
+    File.write(Path.join(dist_dir, "OPERATOR_NOTES.md"), Enum.join(notes, "\n"))
   end
 end

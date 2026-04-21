@@ -80,4 +80,21 @@ defmodule Favn.Dev.InstallTest do
     assert {:error, :install_stale} =
              Install.ensure_ready(root_dir: root_dir, skip_tool_checks: true)
   end
+
+  test "ensure_ready/1 returns missing_tool when tool prerequisite is unavailable", %{
+    root_dir: root_dir
+  } do
+    assert {:ok, :installed} =
+             Install.run(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+
+    previous_path = System.get_env("PATH")
+
+    try do
+      System.put_env("PATH", "")
+
+      assert {:error, {:missing_tool, :node}} = Install.ensure_ready(root_dir: root_dir)
+    after
+      if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
+    end
+  end
 end

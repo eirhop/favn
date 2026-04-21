@@ -21,12 +21,24 @@ defmodule Mix.Tasks.Favn.Build.Single do
         IO.puts("Favn single build complete")
         IO.puts("build id: #{build_id}")
         IO.puts("dist: #{dist_dir}")
+        IO.puts("note: assembly-only artifact; see #{Path.join(dist_dir, "OPERATOR_NOTES.md")}")
 
       {:error, :install_required} ->
         Mix.raise("build blocked: install required; run mix favn.install")
 
       {:error, :install_stale} ->
         Mix.raise("build blocked: install stale; run mix favn.install --force")
+
+      {:error, {:missing_tool, tool}} ->
+        Mix.raise("build blocked: missing required tool #{tool}; run mix favn.install")
+
+      {:error, {:tool_check_failed, tool, status, output}} ->
+        Mix.raise(
+          "build blocked: required tool #{tool} check failed (status=#{status}): #{output}; rerun mix favn.install"
+        )
+
+      {:error, :missing_install_runtime_input} ->
+        Mix.raise("build blocked: install runtime input missing; run mix favn.install --force")
 
       {:error, {:invalid_storage, value}} ->
         Mix.raise(

@@ -2,7 +2,7 @@
 
 ## Status
 
-Source-of-truth plan for the remaining Phase 9 developer-tooling and
+Source-of-truth completion record for the Phase 9 developer-tooling and
 packageability slice after the command surface landed.
 
 This document starts from the now-implemented core lifecycle baseline:
@@ -23,19 +23,19 @@ treated as implemented first-cut behavior:
 - `mix favn.build.orchestrator`
 - `mix favn.build.runner`
 - `mix favn.build.single`
+- `mix favn.read_doc`
 
-The remaining Phase 9 batch is now hardening, verification, diagnostics polish,
-and packaging honesty.
+The Phase 9 batch is now closed for v0.5 scope.
 
 Current packaging reality:
 
 - `mix favn.build.runner` is the most complete packaging target today
-- `mix favn.build.web` and `mix favn.build.orchestrator` currently produce
-  metadata-oriented first-cut outputs and still need to become more deployable
-  and operationally honest
-- `mix favn.build.single` preserves the right `web + orchestrator + runner`
-  topology, but still needs hardening if the assembled bundle start/stop path is
-  not yet truly operational end to end
+- `mix favn.build.web` and `mix favn.build.orchestrator` now emit explicit
+  metadata-oriented artifacts with honest `artifact` metadata and
+  `OPERATOR_NOTES.md`
+- `mix favn.build.single` now emits an explicit topology-preserving assembly
+  artifact with honest non-operational start/stop scripts and
+  `OPERATOR_NOTES.md`
 
 ## 1. Feature Summary
 
@@ -67,6 +67,7 @@ Recommended default:
 - `mix favn.build.orchestrator`
 - `mix favn.build.runner`
 - `mix favn.build.single`
+- `mix favn.read_doc`
 
 ### Partially realized packaging work
 
@@ -74,19 +75,15 @@ Recommended default:
   and failure-history plumbing are in place
 - `build.runner` already packages the strongest end-to-end artifact shape in this
   phase
-- `build.web` and `build.orchestrator` still need packaging follow-up so their
-  outputs are more than metadata-oriented placeholders
-- `build.single` already reflects the correct topology, but still needs startup,
-  stop, and cleanup hardening before it is fully honest as an operational bundle
+- `build.web` and `build.orchestrator` now ship explicit metadata-oriented
+  packaging contracts (`artifact.kind=assembly_metadata`) with operator notes
+- `build.single` now ships explicit assembly-only packaging contracts
+  (`artifact.kind=assembly_bundle`, `operational=false`) with non-operational
+  start/stop scripts to avoid false deployability claims
 
-### Still-open hardening work
+### Remaining hardening work
 
-- lifecycle recovery when runtime state exists but services are dead
-- partial/dead service handling and idempotent cleanup
-- startup failure cleanup verification
-- explicit SQLite verification across the full tooling loop
-- broader opt-in Postgres verification
-- targeted missing-prerequisite, stale-state, and port-conflict diagnostics
+- no remaining Phase 9 hardening work
 
 ## 3. Scope And Non-Goals
 
@@ -198,16 +195,14 @@ Recommended command-line overrides:
 
 - `mix favn.dev` uses configured local storage mode
 - `mix favn.dev --sqlite` forces `storage: :sqlite`
-- later follow-up should allow `mix favn.dev --postgres` to force
-  `storage: :postgres`
+- `mix favn.dev --postgres` forces `storage: :postgres`
 - `mix favn.build.single --storage sqlite|postgres` overrides the single bundle
   default explicitly
 
-Recommendation for first cut:
+Recommendation:
 
-- keep `mix favn.dev --sqlite` as-is
-- add `--postgres` support as part of the remaining Phase 9 validation/build
-  batch so Postgres is explicit rather than hidden behind config only
+- keep `mix favn.dev --sqlite` and `mix favn.dev --postgres` explicit
+- keep `mix favn.build.single --storage sqlite|postgres` explicit
 - do not add a general `--storage` flag if named modes keep the UX clearer
 
 Alternative:
@@ -418,12 +413,34 @@ Recommendation:
 
 - keep it as a thin helper
 
+### `mix favn.read_doc`
+
+Current status:
+
+- implemented first cut
+
+Operational meaning:
+
+- read module/function docs from locally available compiled modules through
+  `Code.fetch_docs/1`
+- support `mix favn.read_doc ModuleName` and
+  `mix favn.read_doc ModuleName function_name`
+- function-name form returns all public arities for that name
+
+Scope guardrails:
+
+- no fuzzy search
+- no full documentation browser
+- no source-jump behavior
+- no external HexDocs/web fetching
+- private functions are not shown in first-cut public output
+
 ### `mix favn.build.web`
 
 Current status:
 
-- implemented first cut with metadata-oriented output; still needs packaging
-  honesty follow-up
+- implemented with explicit metadata-oriented output and packaging honesty
+  metadata/operator notes
 
 Operational meaning:
 
@@ -441,8 +458,8 @@ Recommended default:
 
 Current status:
 
-- implemented first cut with metadata-oriented output; still needs packaging
-  honesty follow-up
+- implemented with explicit metadata-oriented output and packaging honesty
+  metadata/operator notes
 
 Operational meaning:
 
@@ -479,8 +496,8 @@ Recommended default:
 
 Current status:
 
-- implemented first cut with the correct topology; still needs hardening and
-  operational verification around the assembled start/stop path
+- implemented with the correct topology and explicit non-operational assembly
+  semantics via metadata, scripts, and operator notes
 
 Operational meaning:
 
@@ -1108,11 +1125,11 @@ Recommended default:
   - keep the honest distinction between local dev, split deployment, and
     single-node packaging
 - `docs/REFACTOR.md`
-  - keep the remaining Phase 9 scope aligned with this plan
+  - keep the Phase 9 completion status aligned with this plan
 - `docs/FEATURES.md`
-  - keep the high-level roadmap wording aligned with this remaining tooling batch
+  - keep the high-level roadmap wording aligned with Phase 9 completion
 - `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md`
-  - this document is the architecture source of truth for the remaining slice
+  - this document is the architecture source of truth for the completion record
 - `docs/refactor/PHASE_9_TODO.md`
   - execution checklist derived from this design
 
@@ -1204,19 +1221,20 @@ Recommended default:
 
 - keep `build.runner` as the reference for what an operationally honest build
   should look like
-- move `build.web` and `build.orchestrator` from metadata-oriented outputs toward
-  genuinely deployable/operator-honest artifacts
-- harden `build.single` until the assembled bundle start/stop path is truly
-  operational
+- keep `build.web` and `build.orchestrator` explicitly metadata-oriented until
+  true deployable packaging is introduced in a later slice, and keep those
+  semantics honest in metadata and docs
+- keep `build.single` topology-preserving and explicitly assembly-only until true
+  operational launcher wiring is introduced in a later slice
 
 ### Slice 4: finish verification and docs
 
-- add explicit SQLite verification across install, dev, reload, stop, logs,
-  reset, and single packaging
-- add broader opt-in Postgres verification for local and orchestrator packaging
-  paths
+- close remaining stale-state diagnostics polish
+- close remaining install fingerprint/offline-reuse verification polish
 - finish docs so Phase 9 is described as hardening, validation, and packaging
   honesty rather than command creation
+
+Slice status: completed.
 
 Priority rule:
 

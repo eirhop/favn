@@ -38,7 +38,8 @@ defmodule Favn.Dev.Build.Runner do
          metadata_json <- metadata_json(build_id, version, modules, plugins, copied_modules, opts),
          :ok <- write_json(Path.join(build_dir, "build.json"), build_json),
          :ok <- write_json(Path.join(dist_dir, "metadata.json"), metadata_json),
-         :ok <- File.write(Path.join(dist_dir, "manifest.json"), serialized_manifest <> "\n") do
+         :ok <- File.write(Path.join(dist_dir, "manifest.json"), serialized_manifest <> "\n"),
+         :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
     end
   end
@@ -145,6 +146,12 @@ defmodule Favn.Dev.Build.Runner do
     base(build_id, version, opts)
     |> Map.put("phase", "dist")
     |> Map.put("target", @target)
+    |> Map.put("artifact", %{
+      "kind" => "runtime_package",
+      "operational" => true,
+      "truthfulness" => "manifest_and_code_included"
+    })
+    |> Map.put("topology", %{"boundary" => "runner", "includes_user_business_code" => true})
     |> Map.put("compatibility", %{
       "manifest_schema_version" => version.schema_version,
       "runner_contract_version" => version.runner_contract_version,
@@ -191,5 +198,19 @@ defmodule Favn.Dev.Build.Runner do
     stamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d%H%M%S")
     unique = System.unique_integer([:positive])
     "rb_#{stamp}_#{unique}"
+  end
+
+  defp write_operator_notes(dist_dir) do
+    notes = [
+      "# Favn Runner Artifact Notes",
+      "",
+      "This output is the most operationally complete Phase 9 packaging target.",
+      "It includes pinned manifest data plus compiled user business code beams.",
+      "",
+      "It still requires the orchestrator boundary for full distributed topology.",
+      ""
+    ]
+
+    File.write(Path.join(dist_dir, "OPERATOR_NOTES.md"), Enum.join(notes, "\n"))
   end
 end

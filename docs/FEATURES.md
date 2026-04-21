@@ -13,11 +13,11 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 - public package topology migration is complete: `apps/favn` is now the thin public wrapper, `apps/favn_authoring` owns authoring implementation, and `apps/favn_local` owns lifecycle/tooling internals
 - the Phase 9 command surface now includes `mix favn.install`, `mix favn.reset`, `mix favn.logs`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, and `mix favn.build.single`
 - `mix favn.build.runner` is the most complete packaging target today
-- `mix favn.build.web` and `mix favn.build.orchestrator` currently exist as first-cut metadata-oriented outputs and still need more operationally honest packaging
-- `mix favn.build.single` has the intended topology, but still needs hardening and verification before it should be treated as fully operational
+- `mix favn.build.web` and `mix favn.build.orchestrator` now emit explicit metadata-oriented artifacts with honest `artifact` metadata and `OPERATOR_NOTES.md`
+- `mix favn.build.single` now emits an explicit topology-preserving assembly artifact with honest non-operational start/stop scripts and `OPERATOR_NOTES.md`
+- `mix favn.read_doc` now provides local compiled-doc lookup for modules and public function names
 - local storage configuration now supports `memory`, `sqlite`, and `postgres` through `config :favn, :local` plus `mix favn.dev --sqlite|--postgres`
-- remaining Phase 9 work is hardening, validation, diagnostics polish, and packaging honesty
-- the remaining Phase 9 tooling/packageability design is now captured in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` and `docs/refactor/PHASE_9_TODO.md`
+- Phase 9 hardening, packaging honesty, and storage verification are complete and captured in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` and `docs/refactor/PHASE_9_TODO.md`
 - Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
 - shared migration fixture substrate now lives in `apps/favn_test_support` (`priv/fixtures/**` + `FavnTestSupport.Fixtures`) so later per-app parity PRs can reuse one fixture source of truth
 - authoring/compiler/planning/window coverage now lives in public-facade suites under `apps/favn/test` and core suites under `apps/favn_core/test`
@@ -35,13 +35,11 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 - Phase 6: complete
 - Phase 7: complete
 - Phase 8: in progress; the corrected `favn_web + favn_orchestrator + favn_runner` boundary baseline exists, but safe-release follow-up is still open
-- Phase 9: in progress; command coverage exists, while hardening, verification, diagnostics, and honest packaging still stay open
+- Phase 9: complete; command coverage, lifecycle hardening, packaging honesty, and storage verification are now closed for v0.5 scope
 - Phase 10: in progress; app deletion is complete, while remaining post-legacy cleanup still stays open
 
 ## Pre-v1 Release Blockers / Major Remaining Work
 
-- finish Phase 9 hardening and verification for lifecycle recovery, partial/dead service handling, startup cleanup, SQLite coverage, opt-in Postgres coverage, and targeted diagnostics
-- make build outputs operationally honest for `web`, `orchestrator`, and `single`, while keeping the manifest-first `web + orchestrator + runner` boundary strict
 - finish remaining Phase 10 post-legacy cleanup, including final storage-format and adapter naming follow-up
 - durable orchestrator auth/session/audit persistence before any safe web-facing release
 - stronger password/session foundation and browser-edge abuse controls before any safe web-facing release
@@ -66,3 +64,6 @@ Ship a stable, production-usable Favn on the refactored architecture:
 - API and polling triggers
 - distributed multi-node execution and resource-aware scheduling
 - deeper observability and operator tooling
+- local watch mode and auto-reload ergonomics
+- broader environment doctor and validation framework
+- richer log querying and service-targeted restart niceties

@@ -6,10 +6,10 @@ Phase 3 through Phase 8 foundations are implemented.
 
 The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype is now historical only and has been removed from the umbrella.
 
-Phase 9 is in progress, and the Phase 10 app-deletion slice has removed `favn_legacy` and `favn_view`.
+Phase 9 is complete, and the Phase 10 app-deletion slice has removed `favn_legacy` and `favn_view`.
 
-- the Phase 9 command surface is now largely implemented in `apps/favn_local` and exposed through `apps/favn`
-- the remaining Phase 9 work is lifecycle recovery hardening, partial/dead service handling, startup failure cleanup verification, explicit SQLite verification across the full tooling loop, broader opt-in Postgres verification, targeted missing-prerequisite/stale-state/port-conflict diagnostics, and packaging honesty for `web`, `orchestrator`, and `single`
+- the Phase 9 command surface is implemented in `apps/favn_local` and exposed through `apps/favn`
+- lifecycle recovery hardening, packaging honesty, and SQLite/Postgres verification coverage are closed for Phase 9 scope
 
 ## Summary
 
@@ -707,16 +707,16 @@ Implemented command surface:
 - `mix favn.build.orchestrator`
 - `mix favn.build.runner`
 - `mix favn.build.single`
+- `mix favn.read_doc`
 
-Remaining hardening and verification work:
+Phase 9 hardening and verification closed in this slice:
 
-- lifecycle recovery hardening when runtime state exists but owned services are dead
-- partial/dead service handling so `status` and `stop` stay accurate and idempotent
-- startup failure cleanup verification
+- lifecycle recovery for stale runtime state and partial/dead service handling
+- startup failure cleanup verification and idempotent stop semantics
 - explicit SQLite verification across install, dev, reload, stop, logs, reset, and single packaging flows
-- broader opt-in Postgres verification for local and packaging paths
+- opt-in Postgres verification coverage for local and packaging contracts
 - targeted missing-prerequisite, stale-state, and port-conflict diagnostics
-- packaging honesty for `web`, `orchestrator`, and `single` so documented outputs match what is truly operational today
+- install fingerprint/stale-detection/offline-reuse validation coverage
 
 Tooling behavior:
 
@@ -726,6 +726,7 @@ Tooling behavior:
 - single-image assembly combines web, orchestrator, and runner artifacts without erasing their runtime boundaries
 - split deployment targets are `web`, `orchestrator`, and `runner`
 - local dev and packaging must not rely on same-BEAM `favn_view -> favn_orchestrator` shortcuts
+- metadata-oriented targets (`web`, `orchestrator`, `single`) must declare non-operational semantics explicitly in artifact metadata and `OPERATOR_NOTES.md`
 
 Local control-plane boundary follow-up:
 
