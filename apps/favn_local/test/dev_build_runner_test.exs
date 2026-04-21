@@ -56,6 +56,7 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert File.exists?(build_json_path)
     assert File.exists?(metadata_json_path)
     assert File.exists?(manifest_json_path)
+    assert File.exists?(Path.join(result.dist_dir, "OPERATOR_NOTES.md"))
 
     assert {:ok, build_json} = File.read(build_json_path)
     assert {:ok, metadata_json} = File.read(metadata_json_path)
@@ -63,7 +64,12 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert {:ok, %{"target" => "runner", "build_id" => build_id}} = JSON.decode(build_json)
 
     assert {:ok,
-            %{"target" => "runner", "build_id" => ^build_id, "compatibility" => compatibility}} =
+            %{
+              "target" => "runner",
+              "build_id" => ^build_id,
+              "artifact" => %{"kind" => "runtime_package", "operational" => true},
+              "compatibility" => compatibility
+            }} =
              JSON.decode(metadata_json)
 
     assert is_map(compatibility)

@@ -31,7 +31,8 @@ defmodule Favn.Dev.Build.Orchestrator do
            write_json(
              Path.join(dist_dir, "bundle.json"),
              orchestrator_bundle_json(build_id, source_root, opts)
-           ) do
+           ),
+         :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
     else
       nil -> {:error, :missing_install_runtime_input}
@@ -56,6 +57,15 @@ defmodule Favn.Dev.Build.Orchestrator do
     |> Map.put("phase", "dist")
     |> Map.put("target", @target)
     |> Map.put("orchestrator_source_root", source_root)
+    |> Map.put("artifact", %{
+      "kind" => "assembly_metadata",
+      "operational" => false,
+      "truthfulness" => "metadata_only"
+    })
+    |> Map.put("topology", %{
+      "boundary" => "orchestrator",
+      "includes_user_business_code" => false
+    })
     |> Map.put("compatibility", %{
       "orchestrator_api_version" => "v1",
       "runner_contract_version" => 1,
@@ -113,5 +123,19 @@ defmodule Favn.Dev.Build.Orchestrator do
     stamp = DateTime.utc_now() |> Calendar.strftime("%Y%m%d%H%M%S")
     unique = System.unique_integer([:positive])
     "ob_#{stamp}_#{unique}"
+  end
+
+  defp write_operator_notes(dist_dir) do
+    notes = [
+      "# Favn Orchestrator Artifact Notes",
+      "",
+      "This output is a metadata-oriented Phase 9 artifact.",
+      "It is not a standalone deployable orchestrator runtime bundle.",
+      "",
+      "Use this artifact for compatibility/env contract metadata.",
+      ""
+    ]
+
+    File.write(Path.join(dist_dir, "OPERATOR_NOTES.md"), Enum.join(notes, "\n"))
   end
 end

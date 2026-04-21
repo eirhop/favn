@@ -3,6 +3,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
   import ExUnit.CaptureIO
 
+  alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
   alias Mix.Tasks.Favn.Build.Orchestrator, as: BuildOrchestratorTask
   alias Mix.Tasks.Favn.Build.Runner, as: BuildRunnerTask
@@ -69,6 +70,41 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     end
   end
 
+  test "mix favn.dev raises with partial runtime recovery guidance", %{root_dir: root_dir} do
+    log_path = Path.join(root_dir, ".favn/logs/runner.log")
+    assert :ok = File.mkdir_p(Path.dirname(log_path))
+
+    spec = %{
+      name: "fixture",
+      exec: System.find_executable("bash") || "/bin/bash",
+      args: ["-lc", "sleep 30"],
+      cwd: root_dir,
+      log_path: log_path,
+      env: %{}
+    }
+
+    assert {:ok, info} = DevProcess.start_service(spec)
+
+    runtime = %{
+      "services" => %{
+        "web" => %{"pid" => 999_999},
+        "orchestrator" => %{"pid" => 999_998},
+        "runner" => %{"pid" => info.pid}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    try do
+      assert_raise Mix.Error, ~r/local stack is in a partial\/dead state/, fn ->
+        DevTask.run(["--root-dir", root_dir])
+      end
+    after
+      _ = DevProcess.stop_pid(info.pid)
+      _ = State.clear_runtime(root_dir: root_dir)
+    end
+  end
+
   test "mix favn.status prints stack details", %{root_dir: root_dir} do
     pid = :os.getpid() |> List.to_string() |> String.to_integer()
 
@@ -96,6 +132,27 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "runner:"
   end
 
+  test "mix favn.status reports stale runtime hint", %{root_dir: root_dir} do
+    runtime = %{
+      "storage" => "memory",
+      "services" => %{
+        "web" => %{"pid" => 999_999},
+        "orchestrator" => %{"pid" => 999_998},
+        "runner" => %{"pid" => 999_997}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    output =
+      capture_io(fn ->
+        StatusTask.run(["--root-dir", root_dir])
+      end)
+
+    assert output =~ "status: stale"
+    assert output =~ "hint: run mix favn.stop to clear stale runtime state"
+  end
+
   test "mix favn.install writes install state", %{root_dir: root_dir} do
     output =
       capture_io(fn ->
@@ -119,6 +176,20 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert output =~ "Favn install is already up to date"
+  end
+
+  test "mix favn.install reports missing prerequisite tools", %{root_dir: root_dir} do
+    previous_path = System.get_env("PATH")
+
+    try do
+      System.put_env("PATH", "")
+
+      assert_raise Mix.Error, ~r/install failed: missing required tool node/, fn ->
+        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+      end
+    after
+      if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
+    end
   end
 
   test "mix favn.logs prints service logs", %{root_dir: root_dir} do
@@ -191,6 +262,94 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "Favn web build complete"
     assert output =~ "build id:"
     assert output =~ "/.favn/dist/web/"
+  end
+
+  test "mix favn.build.web reports missing prerequisite tools", %{root_dir: root_dir} do
+    _ =
+      capture_io(fn ->
+        InstallTask.run([
+          "--root-dir",
+          root_dir,
+          "--skip-web-install",
+          "--skip-tool-checks"
+        ])
+      end)
+
+    previous_path = System.get_env("PATH")
+
+    try do
+      System.put_env("PATH", "")
+
+      assert_raise Mix.Error, ~r/build blocked: missing required tool node/, fn ->
+        BuildWebTask.run(["--root-dir", root_dir])
+      end
+    after
+      if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
+    end
+  end
+
+  test "mix favn.dev reports port conflicts before startup", %{root_dir: root_dir} do
+    _ =
+      capture_io(fn ->
+        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+      end)
+
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, false}])
+    {:ok, port} = :inet.port(socket)
+
+    previous_local = Application.get_env(:favn, :local, :__missing__)
+
+    try do
+      Application.put_env(:favn, :local, web_port: port)
+
+      assert_raise Mix.Error,
+                   ~r/port conflict: web cannot bind port #{port}; free the port and retry/,
+                   fn ->
+                     DevTask.run(["--root-dir", root_dir])
+                   end
+    after
+      :ok = :gen_tcp.close(socket)
+
+      case previous_local do
+        :__missing__ -> Application.delete_env(:favn, :local)
+        value -> Application.put_env(:favn, :local, value)
+      end
+    end
+  end
+
+  test "mix favn.dev reports postgres connectivity failures", %{root_dir: root_dir} do
+    _ =
+      capture_io(fn ->
+        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+      end)
+
+    previous_local = Application.get_env(:favn, :local, :__missing__)
+
+    try do
+      Application.put_env(
+        :favn,
+        :local,
+        storage: :postgres,
+        postgres: [
+          hostname: "127.0.0.1",
+          port: 1,
+          username: "postgres",
+          password: "postgres",
+          database: "favn",
+          ssl: false,
+          pool_size: 10
+        ]
+      )
+
+      assert_raise Mix.Error, ~r/postgres unavailable at 127.0.0.1:1/, fn ->
+        DevTask.run(["--root-dir", root_dir])
+      end
+    after
+      case previous_local do
+        :__missing__ -> Application.delete_env(:favn, :local)
+        value -> Application.put_env(:favn, :local, value)
+      end
+    end
   end
 
   test "mix favn.build.orchestrator prints build summary", %{root_dir: root_dir} do

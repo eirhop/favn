@@ -98,7 +98,7 @@ defmodule Favn.Dev.Status do
     cond do
       Enum.all?(statuses, &(&1 == :running)) -> :running
       Enum.any?(statuses, &(&1 == :running)) -> :partial
-      Enum.all?(statuses, &(&1 in [:dead, :unknown])) -> :stopped
+      Enum.all?(statuses, &(&1 in [:dead, :unknown])) -> :stale
       true -> :unknown
     end
   end

@@ -47,4 +47,26 @@ defmodule Favn.Dev.StatusTest do
     assert status.services.orchestrator.status == :running
     assert status.services.runner.status == :running
   end
+
+  test "inspect_stack/1 reports stale when runtime exists but services are dead", %{
+    root_dir: root_dir
+  } do
+    runtime = %{
+      "storage" => "memory",
+      "services" => %{
+        "web" => %{"pid" => 999_999},
+        "orchestrator" => %{"pid" => 999_998},
+        "runner" => %{"pid" => 999_997}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    status = Status.inspect_stack(root_dir: root_dir)
+
+    assert status.stack_status == :stale
+    assert status.services.web.status == :dead
+    assert status.services.orchestrator.status == :dead
+    assert status.services.runner.status == :dead
+  end
 end

@@ -58,9 +58,24 @@ defmodule Favn.Dev.Build.SingleTest do
     assert File.exists?(Path.join(result.dist_dir, "env/runner.env"))
     assert File.exists?(Path.join(result.dist_dir, "bin/start"))
     assert File.exists?(Path.join(result.dist_dir, "bin/stop"))
+    assert File.exists?(Path.join(result.dist_dir, "OPERATOR_NOTES.md"))
 
     assert {:ok, assembly_json} = File.read(Path.join(result.dist_dir, "config/assembly.json"))
+    assert {:ok, metadata_json} = File.read(Path.join(result.dist_dir, "metadata.json"))
+    assert {:ok, start_script} = File.read(Path.join(result.dist_dir, "bin/start"))
+    assert {:ok, stop_script} = File.read(Path.join(result.dist_dir, "bin/stop"))
+
     assert {:ok, %{"storage" => %{"mode" => "sqlite"}}} = JSON.decode(assembly_json)
+
+    assert {:ok,
+            %{
+              "artifact" => %{"kind" => "assembly_bundle", "operational" => false},
+              "topology" => %{"boundary" => "web+orchestrator+runner", "collapsed" => false}
+            }} = JSON.decode(metadata_json)
+
+    assert start_script =~ "assembly-only"
+    assert start_script =~ "exit 1"
+    assert stop_script =~ "exit 1"
   end
 
   test "build_single/1 supports postgres storage override", %{root_dir: root_dir} do

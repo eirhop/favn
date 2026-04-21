@@ -31,6 +31,14 @@ defmodule Mix.Tasks.Favn.Install do
       {:error, {:missing_tool, tool}} ->
         Mix.raise("install failed: missing required tool #{tool}")
 
+      {:error, {:tool_check_failed, tool, status, output}} ->
+        Mix.raise(
+          "install failed: required tool #{tool} check failed (status=#{status}): #{output}"
+        )
+
+      {:error, {:web_install_failed, status, output}} ->
+        Mix.raise("install failed: web dependency install failed (status=#{status}): #{output}")
+
       {:error, reason} ->
         Mix.raise("install failed: #{inspect(reason)}")
     end

@@ -44,9 +44,16 @@ defmodule Favn.Dev.Build.WebTest do
     assert {:ok, build_json} = File.read(Path.join(result.build_dir, "build.json"))
     assert {:ok, metadata_json} = File.read(Path.join(result.dist_dir, "metadata.json"))
     assert File.exists?(Path.join(result.dist_dir, "bundle.json"))
+    assert File.exists?(Path.join(result.dist_dir, "OPERATOR_NOTES.md"))
 
     assert {:ok, %{"target" => "web", "build_id" => build_id}} = JSON.decode(build_json)
-    assert {:ok, %{"target" => "web", "build_id" => ^build_id}} = JSON.decode(metadata_json)
+
+    assert {:ok,
+            %{
+              "target" => "web",
+              "build_id" => ^build_id,
+              "artifact" => %{"kind" => "assembly_metadata", "operational" => false}
+            }} = JSON.decode(metadata_json)
   end
 
   test "build_web/1 requires install", %{root_dir: root_dir} do

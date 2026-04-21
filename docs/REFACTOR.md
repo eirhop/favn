@@ -6,10 +6,10 @@ Phase 3 through Phase 8 foundations are implemented.
 
 The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype is now historical only and has been removed from the umbrella.
 
-Phase 9 is in progress, and the Phase 10 app-deletion slice has removed `favn_legacy` and `favn_view`.
+Phase 9 is complete, and the Phase 10 app-deletion slice has removed `favn_legacy` and `favn_view`.
 
-- the core local dev lifecycle is now implemented in `apps/favn_local`
-- remaining Phase 9 work stays open for install/reset/logs follow-up, build and packaging targets (`web`, `orchestrator`, `runner`, optional `single`), and the already-documented local validation/polish work that still belongs to Phase 9
+- the Phase 9 command surface is implemented in `apps/favn_local` and exposed through `apps/favn`
+- lifecycle recovery hardening, packaging honesty, and SQLite/Postgres verification coverage are closed for Phase 9 scope
 
 ## Summary
 
@@ -696,18 +696,10 @@ Phase 9 follow-up scope rule:
 - do not treat production hardening as part of the Phase 9 local-dev and packaging slice
 - do not optimize Phase 9 around SvelteKit HMR; prefer a thin built local web process and browser refresh
 
-### Remaining Phase 9 deliverables
-
-- `mix favn.install`
-- `mix favn.reset`
-- `mix favn.logs`
-- `mix favn.build.web`
-- `mix favn.build.orchestrator`
-- `mix favn.build.runner`
-- `mix favn.build.single`
-- local validation and polish for lifecycle recovery, partial/dead service recovery, and explicit SQLite/Postgres follow-up verification
-
 ### Deliverables
+
+Implemented command surface:
+
 - `mix favn.install`
 - `mix favn.reset`
 - `mix favn.logs`
@@ -715,6 +707,16 @@ Phase 9 follow-up scope rule:
 - `mix favn.build.orchestrator`
 - `mix favn.build.runner`
 - `mix favn.build.single`
+- `mix favn.read_doc`
+
+Phase 9 hardening and verification closed in this slice:
+
+- lifecycle recovery for stale runtime state and partial/dead service handling
+- startup failure cleanup verification and idempotent stop semantics
+- explicit SQLite verification across install, dev, reload, stop, logs, reset, and single packaging flows
+- opt-in Postgres verification coverage for local and packaging contracts
+- targeted missing-prerequisite, stale-state, and port-conflict diagnostics
+- install fingerprint/stale-detection/offline-reuse validation coverage
 
 Tooling behavior:
 
@@ -724,6 +726,7 @@ Tooling behavior:
 - single-image assembly combines web, orchestrator, and runner artifacts without erasing their runtime boundaries
 - split deployment targets are `web`, `orchestrator`, and `runner`
 - local dev and packaging must not rely on same-BEAM `favn_view -> favn_orchestrator` shortcuts
+- metadata-oriented targets (`web`, `orchestrator`, `single`) must declare non-operational semantics explicitly in artifact metadata and `OPERATOR_NOTES.md`
 
 Local control-plane boundary follow-up:
 
@@ -742,7 +745,7 @@ Test strategy follow-up:
 - maintain true lifecycle coverage for start/status/reload/stop across concurrent processes
 - include explicit tests for startup-failure cleanup, reload during running state, and partial/dead service recovery
 
-Future local-tooling features (not required for Phase 9 completion):
+Post-v0.5 local-tooling follow-up ideas:
 
 - watch mode / auto-reload
 - doctor / environment validation
@@ -752,7 +755,7 @@ Future local-tooling features (not required for Phase 9 completion):
 - improved port-conflict diagnostics
 - clearer `.favn/` secrets/state policy
 
-Additional storage follow-ups in this phase:
+Additional storage follow-ups beyond this phase:
 
 - finish local-dev integration and polish for the extracted SQLite adapter path behind `mix favn.dev --sqlite`
 - broaden live Postgres migration/transaction/concurrency verification in a production-like test path
@@ -763,17 +766,16 @@ Additional storage follow-ups in this phase:
 - local dev makes the public/private split visible even on one machine
 
 ### Status
-In progress.
+Complete.
 
 Completed in this phase so far:
 
 - core local lifecycle commands and minimal `.favn/` state/config now exist in `apps/favn_local`
+- the Phase 9 install/reset/logs/build command surface now exists and is documented publicly
 
-Still open in this phase:
+Closed in this phase:
 
-- install/reset/logs follow-up
-- build and packaging targets for `web`, `orchestrator`, `runner`, and optional `single`
-- remaining lifecycle validation and local storage verification called out above
+- lifecycle recovery hardening, targeted diagnostics, packaging honesty, and SQLite/opt-in Postgres verification are complete for Phase 9 scope
 
 ---
 

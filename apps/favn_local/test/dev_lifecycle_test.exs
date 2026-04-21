@@ -6,6 +6,7 @@ defmodule Favn.Dev.LifecycleTest do
   alias Favn.Dev
   alias Favn.Dev.Lock
   alias Favn.Dev.Paths
+  alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
 
   @run_real_stack_lifecycle? System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" and
@@ -86,6 +87,112 @@ defmodule Favn.Dev.LifecycleTest do
 
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
     assert {:ok, %{"error" => _}} = State.read_last_failure(root_dir: root_dir)
+  end
+
+  test "dev auto-clears stale runtime before continuing", %{root_dir: root_dir} do
+    stale_runtime = %{
+      "services" => %{
+        "web" => %{"pid" => 999_999},
+        "orchestrator" => %{"pid" => 999_998},
+        "runner" => %{"pid" => 999_997}
+      }
+    }
+
+    assert :ok = State.write_runtime(stale_runtime, root_dir: root_dir)
+
+    assert {:error, :install_required} = Dev.dev(root_dir: root_dir)
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  end
+
+  test "dev reports partial runtime and does not clear state", %{root_dir: root_dir} do
+    log_path = Paths.runner_log_path(root_dir)
+    assert :ok = File.mkdir_p(Path.dirname(log_path))
+
+    spec = %{
+      name: "fixture",
+      exec: System.find_executable("bash") || "/bin/bash",
+      args: ["-lc", "sleep 30"],
+      cwd: root_dir,
+      log_path: log_path,
+      env: %{}
+    }
+
+    assert {:ok, info} = DevProcess.start_service(spec)
+
+    runtime = %{
+      "services" => %{
+        "web" => %{"pid" => 999_999},
+        "orchestrator" => %{"pid" => 999_998},
+        "runner" => %{"pid" => info.pid}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    assert {:error, {:stack_partially_running, states}} = Dev.dev(root_dir: root_dir)
+    assert {"runner", :running} in states
+    assert {:ok, _runtime} = State.read_runtime(root_dir: root_dir)
+
+    assert :ok = Dev.stop(root_dir: root_dir)
+    refute DevProcess.alive?(info.pid)
+  end
+
+  test "dev/1 returns explicit port conflict before startup", %{root_dir: root_dir} do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, false}])
+    {:ok, port} = :inet.port(socket)
+
+    try do
+      assert {:error, {:port_conflict, :web, ^port}} =
+               Dev.dev(
+                 root_dir: root_dir,
+                 web_port: port,
+                 skip_install_check: true,
+                 skip_bootstrap: true,
+                 skip_readiness: true
+               )
+    after
+      :ok = :gen_tcp.close(socket)
+    end
+  end
+
+  test "dev/1 returns explicit postgres unavailable diagnostics", %{root_dir: root_dir} do
+    assert {:error, {:postgres_unavailable, "127.0.0.1", 1, _reason}} =
+             Dev.dev(
+               root_dir: root_dir,
+               storage: :postgres,
+               postgres: [
+                 hostname: "127.0.0.1",
+                 port: 1,
+                 username: "postgres",
+                 password: "postgres",
+                 database: "favn",
+                 ssl: false,
+                 pool_size: 10
+               ],
+               skip_install_check: true,
+               skip_bootstrap: true,
+               skip_readiness: true
+             )
+  end
+
+  test "dev/1 returns explicit postgres misconfiguration diagnostics", %{root_dir: root_dir} do
+    assert {:error, {:postgres_misconfigured, :hostname}} =
+             Dev.dev(
+               root_dir: root_dir,
+               storage: :postgres,
+               postgres: [
+                 hostname: "",
+                 port: 5432,
+                 username: "postgres",
+                 password: "postgres",
+                 database: "favn",
+                 ssl: false,
+                 pool_size: 10
+               ],
+               skip_install_check: true,
+               skip_bootstrap: true,
+               skip_readiness: true
+             )
   end
 
   defp wait_until(fun, attempts \\ 120)

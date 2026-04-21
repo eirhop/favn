@@ -11,14 +11,13 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 
 - Phase 9 core local lifecycle has landed in `apps/favn_local`: `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`
 - public package topology migration is complete: `apps/favn` is now the thin public wrapper, `apps/favn_authoring` owns authoring implementation, and `apps/favn_local` owns lifecycle/tooling internals
-- Phase 9 install foundation is now in place through `mix favn.install` plus project-local `.favn/install` metadata/fingerprint state
-- Phase 9 local-tooling follow-up now also includes `mix favn.reset` and `mix favn.logs`
-- Phase 9 runner packaging first-cut is now in place through `mix favn.build.runner` with project-local build/dist metadata outputs
-- Phase 9 split build first-cut now also includes `mix favn.build.web` and `mix favn.build.orchestrator`
-- Phase 9 single-node assembly first-cut is now in place through `mix favn.build.single`
+- the Phase 9 command surface now includes `mix favn.install`, `mix favn.reset`, `mix favn.logs`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, and `mix favn.build.single`
+- `mix favn.build.runner` is the most complete packaging target today
+- `mix favn.build.web` and `mix favn.build.orchestrator` now emit explicit metadata-oriented artifacts with honest `artifact` metadata and `OPERATOR_NOTES.md`
+- `mix favn.build.single` now emits an explicit topology-preserving assembly artifact with honest non-operational start/stop scripts and `OPERATOR_NOTES.md`
+- `mix favn.read_doc` now provides local compiled-doc lookup for modules and public function names
 - local storage configuration now supports `memory`, `sqlite`, and `postgres` through `config :favn, :local` plus `mix favn.dev --sqlite|--postgres`
-- remaining Phase 9 work is broader validation/polish
-- the remaining Phase 9 tooling/packageability design is now captured in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` and `docs/refactor/PHASE_9_TODO.md`
+- Phase 9 hardening, packaging honesty, and storage verification are complete and captured in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` and `docs/refactor/PHASE_9_TODO.md`
 - Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
 - shared migration fixture substrate now lives in `apps/favn_test_support` (`priv/fixtures/**` + `FavnTestSupport.Fixtures`) so later per-app parity PRs can reuse one fixture source of truth
 - authoring/compiler/planning/window coverage now lives in public-facade suites under `apps/favn/test` and core suites under `apps/favn_core/test`
@@ -36,13 +35,11 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 - Phase 6: complete
 - Phase 7: complete
 - Phase 8: in progress; the corrected `favn_web + favn_orchestrator + favn_runner` boundary baseline exists, but safe-release follow-up is still open
-- Phase 9: in progress; core local lifecycle is done in `apps/favn_local`, while packaging/build/install/reset/logs and remaining validation/polish stay open
+- Phase 9: complete; command coverage, lifecycle hardening, packaging honesty, and storage verification are now closed for v0.5 scope
 - Phase 10: in progress; app deletion is complete, while remaining post-legacy cleanup still stays open
 
 ## Pre-v1 Release Blockers / Major Remaining Work
 
-- finish Phase 9 packaging targets for `web`, `orchestrator`, `runner`, and optional `single`
-- finish Phase 9 local-tooling follow-up: `mix favn.install`, `mix favn.reset`, `mix favn.logs`, plus remaining lifecycle and local-storage validation/polish
 - finish remaining Phase 10 post-legacy cleanup, including final storage-format and adapter naming follow-up
 - durable orchestrator auth/session/audit persistence before any safe web-facing release
 - stronger password/session foundation and browser-edge abuse controls before any safe web-facing release
@@ -67,3 +64,6 @@ Ship a stable, production-usable Favn on the refactored architecture:
 - API and polling triggers
 - distributed multi-node execution and resource-aware scheduling
 - deeper observability and operator tooling
+- local watch mode and auto-reload ergonomics
+- broader environment doctor and validation framework
+- richer log querying and service-targeted restart niceties

@@ -18,12 +18,15 @@ apps/
 │       ├── favn.dev.ex
 │       ├── favn.install.ex
 │       ├── favn.logs.ex
+│       ├── favn.read_doc.ex
 │       ├── favn.reload.ex
 │       ├── favn.reset.ex
 │       ├── favn.status.ex
 │       └── favn.stop.ex
 ├── favn_authoring/lib/
 │   ├── favn.ex
+│   ├── favn_authoring/
+│   │   └── doc_reader.ex
 │   └── favn/
 │       ├── public_scaffold.ex
 │       ├── asset.ex
