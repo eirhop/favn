@@ -86,6 +86,99 @@ Recommended default:
 
 ## 5. Proposed Command Set And Semantics
 
+### Storage configuration rule
+
+Recommended default:
+
+- storage selection is explicit
+- storage is always an orchestrator concern
+- the same logical storage modes should be supported across local dev and
+  packaging, while the default differs by workflow
+
+Supported storage modes for this Phase 9 slice:
+
+- `memory`
+- `sqlite`
+- `postgres`
+
+Workflow defaults:
+
+- local dev default: `memory`
+- local dev persistent convenience mode: `sqlite`
+- single-node packaging default: `sqlite`
+- split deployment recommended default: `postgres`
+
+Important boundary rule:
+
+- web and runner do not choose storage directly
+- they only receive the orchestrator address and related credentials/config
+- storage adapter selection and storage connection config belong to orchestrator
+
+### Proposed public config shape
+
+Recommended default:
+
+- keep public user configuration under `config :favn, :local` for local dev
+- keep packaging/deployment configuration explicit through generated env files
+  and documented environment variables
+- do not require users to configure internal apps directly in the normal path
+
+Example local config:
+
+```elixir
+config :favn, :local,
+  storage: :memory,
+  sqlite_path: ".favn/data/orchestrator.sqlite3",
+  postgres: [
+    hostname: "127.0.0.1",
+    port: 5432,
+    username: "postgres",
+    password: "postgres",
+    database: "my_app_favn_dev",
+    ssl: false,
+    pool_size: 10
+  ]
+```
+
+Meaning:
+
+- `storage`: `:memory | :sqlite | :postgres`
+- `sqlite_path`: used when `storage: :sqlite`
+- `postgres`: used when `storage: :postgres`
+
+Recommended command-line overrides:
+
+- `mix favn.dev` uses configured local storage mode
+- `mix favn.dev --sqlite` forces `storage: :sqlite`
+- later follow-up should allow `mix favn.dev --postgres` to force
+  `storage: :postgres`
+- `mix favn.build.single --storage sqlite|postgres` overrides the single bundle
+  default explicitly
+
+Recommendation for first cut:
+
+- keep `mix favn.dev --sqlite` as-is
+- add `--postgres` support as part of the remaining Phase 9 validation/build
+  batch so Postgres is explicit rather than hidden behind config only
+- do not add a general `--storage` flag if named modes keep the UX clearer
+
+Alternative:
+
+- use one generic `--storage <mode>` flag everywhere
+
+Pros:
+
+- more uniform CLI
+
+Cons:
+
+- slightly more abstract for the most common cases
+
+Recommendation:
+
+- named convenience flags are fine for local dev if the underlying config model
+  still uses explicit storage modes
+
 ### `mix favn.install`
 
 Recommended default:
@@ -543,6 +636,26 @@ Recommended default storage stance:
 - runtime config selects memory, SQLite, or Postgres
 - operator recommendation for split deployment: Postgres
 
+Supported runtime configuration contract:
+
+- `FAVN_STORAGE=memory|sqlite|postgres`
+- if `sqlite`:
+  - `FAVN_SQLITE_PATH=/path/to/orchestrator.sqlite3`
+- if `postgres`:
+  - `FAVN_POSTGRES_HOST`
+  - `FAVN_POSTGRES_PORT`
+  - `FAVN_POSTGRES_USERNAME`
+  - `FAVN_POSTGRES_PASSWORD`
+  - `FAVN_POSTGRES_DATABASE`
+  - `FAVN_POSTGRES_SSL`
+  - optional pool and timeout env if needed
+
+Why this should be explicit:
+
+- it makes the storage support matrix visible
+- it keeps local, single-node, and split deployment stories aligned
+- it avoids implying that SQLite is the only durable option outside dev
+
 ### `mix favn.build.runner`
 
 Recommended default:
@@ -673,6 +786,27 @@ Recommendation:
 
 - keep three explicit runtimes inside one bundle
 
+Supported single-node storage modes:
+
+- `sqlite` by default
+- `postgres` explicitly when the operator wants an external durable database even
+  for a single-node runtime bundle
+
+Recommended first-cut single-node config contract:
+
+- bundle writes `config/assembly.json` with `storage.mode`
+- generated env files include either:
+  - `FAVN_STORAGE=sqlite` plus `FAVN_SQLITE_PATH=...`
+  - or `FAVN_STORAGE=postgres` plus explicit Postgres env
+- `bin/start` reads the assembly config and exports orchestrator env before
+  starting the separate runtimes
+
+Important recommendation:
+
+- support Postgres in single-node mode, but do not make it the default
+- single-node Postgres should mean "single compute node, external Postgres",
+  not an embedded Postgres dependency inside the bundle
+
 ### Split deployment contract
 
 Recommended honest operator story:
@@ -775,6 +909,37 @@ They should not become owners of public build-task workflow logic.
 5. `mix favn.stop`
 6. `mix favn.reset` only when a full local wipe is desired
 
+Local storage examples:
+
+- memory default via config:
+
+```elixir
+config :favn, :local, storage: :memory
+```
+
+- SQLite local persistence:
+
+```elixir
+config :favn, :local,
+  storage: :sqlite,
+  sqlite_path: ".favn/data/orchestrator.sqlite3"
+```
+
+- Postgres local dev:
+
+```elixir
+config :favn, :local,
+  storage: :postgres,
+  postgres: [
+    hostname: "127.0.0.1",
+    port: 5432,
+    username: "postgres",
+    password: "postgres",
+    database: "my_app_favn_dev",
+    ssl: false
+  ]
+```
+
 ### Build runner
 
 1. run `mix favn.install`
@@ -793,6 +958,13 @@ They should not become owners of public build-task workflow logic.
 6. wire explicit config between them using the produced metadata/env contract
 7. publish and activate the runner artifact's included manifest in orchestrator
 
+Split deployment storage recommendation:
+
+- use Postgres unless there is a deliberate reason to keep the control plane on
+  SQLite
+- configure storage only on orchestrator deployment inputs
+- web and runner stay storage-agnostic
+
 ### Build single-node deployment
 
 1. run `mix favn.install`
@@ -800,6 +972,13 @@ They should not become owners of public build-task workflow logic.
 3. deploy the assembled bundle from `.favn/dist/single/<build_id>/`
 4. start the bundle with the generated single-node scripts
 5. default to SQLite-backed orchestrator storage inside the bundle
+
+Single-node Postgres option:
+
+- `mix favn.build.single --storage postgres`
+- generated bundle expects explicit Postgres env in the orchestrator config
+- web and runner configuration stay unchanged apart from the orchestrator base
+  address and credentials
 
 ## 10. Testing Strategy
 
@@ -895,6 +1074,21 @@ Recommended default:
 Recommended default:
 
 - SQLite
+
+### Should Postgres be supported for local dev, single-node, and split deployment?
+
+Recommended default:
+
+- yes
+- local dev: supported but not default
+- single-node: supported but not default
+- split deployment: supported and recommended default
+
+Reason:
+
+- it keeps the storage support story honest and explicit
+- it avoids locking packaged workflows to SQLite-only assumptions
+- it matches the fact that storage is already an orchestrator adapter concern
 
 ### Should split deployment artifacts hide the deployment topology?
 

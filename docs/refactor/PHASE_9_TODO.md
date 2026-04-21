@@ -36,6 +36,16 @@ Completed baseline work that should not be reopened here:
 - [ ] Add a boring reinstall path such as `mix favn.install --force`.
 - [ ] Record install failures under `.favn/history/`.
 
+## Storage Configuration Contract
+
+- [ ] Define explicit supported storage modes for Phase 9: `memory`, `sqlite`, and `postgres`.
+- [ ] Keep storage selection as an orchestrator-only concern in local and packaged workflows.
+- [ ] Add public local config documentation under `config :favn, :local` for `storage`, `sqlite_path`, and `postgres` settings.
+- [ ] Preserve `mix favn.dev --sqlite` and add explicit Postgres local-dev invocation support.
+- [ ] Define runtime env contract for packaged orchestrator storage selection (`FAVN_STORAGE`, SQLite path, Postgres connection env).
+- [ ] Define `mix favn.build.single --storage sqlite|postgres` semantics.
+- [ ] Keep web and runner deployment inputs storage-agnostic.
+
 ## Reset And Logs
 
 - [ ] Implement `mix favn.reset`.
@@ -98,6 +108,7 @@ Completed baseline work that should not be reopened here:
 - [ ] Add broader opt-in Postgres verification for local and orchestrator packaging paths.
 - [ ] Add better missing-prerequisite diagnostics for install/build/dev flows.
 - [ ] Add better port-conflict diagnostics for local startup.
+- [ ] Verify explicit local Postgres configuration and startup path, not just SQLite follow-up behavior.
 - [ ] Keep diagnostics targeted and boring; do not grow a broad doctor framework in this slice.
 
 ## Testing
