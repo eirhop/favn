@@ -120,7 +120,7 @@ defmodule Favn.Dev.Reload do
       exec: elixir,
       args: [
         "--sname",
-        runner_node,
+        runner_sname(runner_node),
         "--cookie",
         secrets["rpc_cookie"],
         "-S",
@@ -134,6 +134,14 @@ defmodule Favn.Dev.Reload do
       log_path: Paths.runner_log_path(root_dir),
       env: %{"MIX_ENV" => "dev"}
     }
+  end
+
+  @doc false
+  @spec runner_sname(String.t()) :: String.t()
+  def runner_sname(node_name) when is_binary(node_name) do
+    node_name
+    |> String.split("@", parts: 2)
+    |> hd()
   end
 
   defp register_manifest_in_runner(version, runtime, secrets) do

@@ -6,12 +6,66 @@ defmodule Favn.Dev do
   modules under `Favn.Dev.*`.
   """
 
+  alias Favn.Dev.Build.Orchestrator, as: OrchestratorBuild
+  alias Favn.Dev.Build.Runner, as: RunnerBuild
+  alias Favn.Dev.Build.Single, as: SingleBuild
+  alias Favn.Dev.Build.Web, as: WebBuild
+  alias Favn.Dev.Install
+  alias Favn.Dev.Logs
   alias Favn.Dev.Reload
+  alias Favn.Dev.Reset
   alias Favn.Dev.Stack
   alias Favn.Dev.Status
 
   @type status_opts :: [root_dir: Path.t()]
   @type lifecycle_opts :: [root_dir: Path.t()]
+
+  @doc """
+  Resolves and validates local install inputs used by dev tooling.
+  """
+  @spec install(lifecycle_opts()) :: {:ok, :installed | :already_installed} | {:error, term()}
+  def install(opts \\ []) when is_list(opts), do: Install.run(opts)
+
+  @doc false
+  @spec ensure_install_ready(lifecycle_opts()) :: :ok | {:error, term()}
+  def ensure_install_ready(opts \\ []) when is_list(opts), do: Install.ensure_ready(opts)
+
+  @doc """
+  Deletes all project-local `.favn/` artifacts after ensuring no owned services
+  are still running.
+  """
+  @spec reset(lifecycle_opts()) :: :ok | {:error, term()}
+  def reset(opts \\ []) when is_list(opts), do: Reset.run(opts)
+
+  @doc """
+  Prints local service logs.
+  """
+  @spec logs(keyword()) :: :ok
+  def logs(opts \\ []) when is_list(opts), do: Logs.run(opts)
+
+  @doc """
+  Builds the project-local runner packaging target.
+  """
+  @spec build_runner(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
+  def build_runner(opts \\ []) when is_list(opts), do: RunnerBuild.run(opts)
+
+  @doc """
+  Builds the project-local web packaging target.
+  """
+  @spec build_web(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
+  def build_web(opts \\ []) when is_list(opts), do: WebBuild.run(opts)
+
+  @doc """
+  Builds the project-local orchestrator packaging target.
+  """
+  @spec build_orchestrator(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
+  def build_orchestrator(opts \\ []) when is_list(opts), do: OrchestratorBuild.run(opts)
+
+  @doc """
+  Builds the project-local single-node assembly target.
+  """
+  @spec build_single(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
+  def build_single(opts \\ []) when is_list(opts), do: SingleBuild.run(opts)
 
   @doc """
   Starts local stack in foreground mode.

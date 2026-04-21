@@ -1,543 +1,483 @@
-# Phase 9 Core Dev Tooling Plan
+# Phase 9 Remaining Dev Tooling And Packaging Plan
 
 ## Status
 
-Planning document for the next PR only.
+Implementation-ready design for the remaining Phase 9 developer-tooling and
+packageability slice.
 
-This plan treats the merged Phase 8 web/orchestrator boundary work as locked baseline context and narrows the next PR to the core local developer lifecycle only.
-
-## 1. Locked assumptions
-
-### Architecture baseline
-
-- `favn_web` is the public web tier and lives in `web/favn_web`.
-- `favn_orchestrator` is the private control plane and system of record.
-- `favn_runner` is execution-only.
-- `favn_view` is archived/transitional only and must not regain product-boundary importance.
-- the web/orchestrator remote HTTP + SSE boundary already exists in baseline form.
-- orchestrator-owned auth/session/audit baseline already exists.
-
-### Ownership boundary
-
-- `apps/favn_local` owns local lifecycle/tooling implementation (`dev`, `stop`, `reload`, `status`, `.favn/` state)
-- `apps/favn` stays the public authoring/build surface
-- future distribution UX may wrap multiple owner apps; packaging shape and ownership shape do not need to be the same
-
-### Strict next-PR scope
-
-Foundational, next PR:
+This document starts from the now-implemented core lifecycle baseline:
 
 - `mix favn.dev`
+- `mix favn.dev --sqlite`
 - `mix favn.stop`
 - `mix favn.reload`
 - `mix favn.status`
-- minimal config and `.favn/` state to support those commands
-- memory storage by default with SQLite as the immediate persistent local option
 
-Explicitly out of scope for this PR:
+It does not reopen that work. It defines the remaining Phase 9 batch:
 
 - `mix favn.install`
 - `mix favn.reset`
 - `mix favn.logs`
-- build/packaging tasks
-- release/install/distribution polish
-- durable auth hardening
-- v1-safe production hardening
-- richer web UX
-- custom storage adapters
+- `mix favn.build.web`
+- `mix favn.build.orchestrator`
+- `mix favn.build.runner`
+- `mix favn.build.single`
+- remaining lifecycle/storage validation and diagnostics polish
 
-### Boundary guardrails
+## 1. Feature Summary
 
-Product-critical:
-
-- do not replace the separate web process with a same-BEAM shortcut
-- do not add compile-time dependencies from `apps/favn` to internal runtime apps
-- do not add a new umbrella app
-
-Refactor-enabling:
-
-- for local dev only, use a small localhost-only runner/orchestrator control path that preserves process separation and keeps future transport options open
+Phase 9 should close by making the already-corrected `web + orchestrator +
+runner` topology easy to set up locally and honest to package for deployment,
+without exposing internal apps as user-facing dependencies.
 
 Recommended default:
 
-- use `.favn/runtime.json` plus a localhost-only local control path for lifecycle actions that cannot go through the product API
-- use the private orchestrator HTTP API for manifest publish/register + activate so local reload and future production publish follow the same boundary
+- keep `{:favn, ...}` as the only user dependency
+- keep all Favn-managed project side effects under `.favn/`
+- make `mix favn.install` the explicit prerequisite for tooling that needs
+  resolved runtime inputs
+- keep build targets explicit and topology-preserving
+- make `single` a convenience assembly of three explicit runtimes, not one
+  collapsed runtime
 
-Why:
+## 2. Scope And Non-Goals
 
-- it keeps `favn_web`, `favn_orchestrator`, and `favn_runner` as separate processes
-- it avoids same-BEAM collapse
-- it avoids compile-time deps from `apps/favn` to runtime apps
-- it keeps the next PR focused on lifecycle rather than broad transport packaging
+### In scope
 
-## 2. Immediate developer workflow
+- explicit install/setup flow
+- destructive local reset flow
+- boring log access helper
+- split build targets for `web`, `orchestrator`, and `runner`
+- single-node assembly target
+- project-local artifact/state layout for install, build, dist, logs, runtime,
+  SQLite data, manifest cache, and failure history
+- recovery/diagnostics validation needed to close Phase 9 honestly
 
-### First start
+### Out of scope
 
-Developer flow after this PR:
+- production hardening and safe-release security work
+- Docker as the default local or packaging path
+- a general-purpose environment doctor beyond targeted diagnostics needed for
+  these commands
+- reintroducing same-BEAM product shortcuts
+- reopening `dev`, `stop`, `reload`, or `status` as new feature work
+- magical auto-deploy or remote rollout automation
 
-1. run `mix favn.dev` from the user project root in one terminal
-2. the task creates `.favn/`, resolves config, generates local secrets if missing, builds the current manifest, starts runner/orchestrator/web, registers and activates the manifest, then prints URLs, PIDs, storage mode, and log paths
-3. keep that terminal open while the local stack is running
-4. open the printed `favn_web` URL in the browser
+## 3. Assumptions
 
-### Daily change loop
+- public package topology migration is complete
+- `apps/favn` is the thin public wrapper and public `mix favn.*` entrypoint owner
+- `apps/favn_authoring` owns authoring and manifest-facing implementation
+- `apps/favn_local` owns local lifecycle/tooling and packaging implementation
+- `web/favn_web` remains the web workspace/package source of truth
+- local lifecycle already persists project-local runtime state in `.favn/`
+- manifest publish/activate over the private orchestrator API already exists
 
-Use the following decision table:
+## 4. Locked Constraints
 
-| Change type | Expected action |
-| --- | --- |
-| changes that only affect manifest contents shown in the UI | `mix favn.reload`, then browser refresh |
-| `web/favn_web` code changes | full `mix favn.stop` then `mix favn.dev` |
-| user asset/pipeline/schedule/source/connection/SQL changes | `mix favn.reload` |
-| changes under `apps/favn`, `apps/favn_core`, or `apps/favn_runner` that affect manifest generation or execution behavior | `mix favn.reload` |
-| changes under `apps/favn_orchestrator` or local dev config that affect orchestrator behavior, ports, storage mode, auth wiring, or control-path wiring | full stop and start |
-| broken or partially running stack | `mix favn.stop` then `mix favn.dev` |
+1. one public dependency: users only need `{:favn, ...}`
+2. project-local side effects only: Favn-managed install/build/runtime artifacts
+   live under `.favn/`
+3. preserve runtime boundaries: local and packaged flows must keep explicit
+   web/orchestrator/runner separation
+4. no Docker requirement by default
+5. do not replace already-landed lifecycle commands
+6. do not treat production hardening as Phase 9 scope
 
-### Status checks
+## 5. Proposed Command Set And Semantics
 
-- `mix favn.status` is the boring operator view for local state
-- it should work whether the stack is healthy, partially dead, or fully stopped
-
-### Stopping services
-
-- `Ctrl-C` or normal terminal exit from the foreground `mix favn.dev` session should stop the full owned stack
-- `mix favn.stop` remains the explicit cleanup/fallback command from another terminal
-- logs and SQLite data are preserved by default
-
-## 3. Detailed plan for `mix favn.dev`
-
-Category: foundational
-
-### Responsibilities
-
-`mix favn.dev` should:
-
-1. acquire a local lifecycle lock so only one dev command mutates `.favn/` at a time
-2. resolve local dev config
-3. create required `.favn/` directories
-4. load or generate persistent local secrets
-5. build and pin the current manifest version from the user project
-6. start runner
-7. start orchestrator
-8. register the current manifest in runner
-9. publish/register the current manifest in orchestrator through the private API
-10. activate the manifest in orchestrator
-11. start `favn_web` as a thin built local web process
-12. verify readiness and print a compact startup summary
-13. remain attached in the foreground until interrupted
-
-### Startup order
-
-Recommended order:
-
-1. `.favn/` preparation and lock
-2. config + secret resolution
-3. manifest build/pin
-4. runner start and readiness
-5. orchestrator start and readiness
-6. manifest registration in runner
-7. manifest publish/register + activation in orchestrator
-8. web process start and readiness
-9. final status write + console summary
-10. wait in the foreground and stop owned services when the session exits
-
-Why this order:
-
-- runner should be ready before orchestrator tries to dispatch work through the configured runner client
-- orchestrator should be ready before web starts relaying to it
-- manifest publish/registration + activation should happen before the browser opens the stack so the UI reflects real local state immediately
-
-### Readiness checks
-
-Runner readiness:
-
-- process is alive
-- local runner node responds to a lightweight RPC ping
-
-Orchestrator readiness:
-
-- process is alive
-- local orchestrator node responds to RPC ping
-- configured HTTP port is accepting connections
-
-Web readiness:
-
-- process is alive
-- configured local web URL returns any successful HTTP response or redirect
-
-Recommended default timeouts:
-
-- runner ready timeout: 10 seconds
-- orchestrator ready timeout: 15 seconds
-- web ready timeout: 20 seconds
-
-### Default local wiring
-
-Recommended defaults:
-
-- orchestrator API URL: `http://127.0.0.1:4101`
-- web URL: `http://127.0.0.1:4173`
-- storage mode: `:memory`
-- SQLite path when enabled: `.favn/data/orchestrator.sqlite3`
-
-Wiring behavior:
-
-- `mix favn.dev` injects `FAVN_ORCHESTRATOR_BASE_URL` for `favn_web`
-- `mix favn.dev` injects a generated local service token into both orchestrator and web
-- `mix favn.dev` injects a generated local web session secret for `favn_web`
-- secrets persist in `.favn/secrets.json` so stop/start keeps local login wiring stable
-- `favn_web` should run in a production-like local mode for this PR, not a Vite/HMR-oriented dev mode
-
-### Foreground lifecycle
-
-Foreground should remain the default behavior.
-
-Default `mix favn.dev`:
-
-- starts runner, orchestrator, and web, then stays attached in the foreground
-- stops the full owned stack when interrupted or when the terminal session exits normally
-- writes current runtime ownership to `.favn/runtime.json` so another terminal can run `mix favn.reload`, `mix favn.status`, or `mix favn.stop`
-- acquires `.favn/lock` only for short runtime state mutation windows, never for the full foreground wait lifetime
-
-Optional interactive mode:
-
-- not required as a separate first-cut mode if normal `mix favn.dev` is already foreground and explicit
-- if added later, it should still attach only to the orchestrator/control-plane runtime
-
-### Failure reporting
-
-If startup fails:
-
-1. write failure details to `.favn/history/last_failure.json`
-2. print which service failed and where its logs are
-3. stop any services started by the failed invocation
-4. leave logs and SQLite state intact
-5. exit non-zero
-
-### Avoiding orphaned processes
-
-Foundational recommendation:
-
-- launch services under one foreground owner session that records child pids/process groups in `.favn/runtime.json`
-
-Why:
-
-- the foreground session can clean up owned services automatically
-- `mix favn.stop` can still terminate the owned subtree when cleanup did not happen cleanly
-- stale pid detection is simpler
-- local crash reporting is easier to reason about
-
-### Behavior when one process is already running
+### Storage configuration rule
 
 Recommended default:
 
-- if all owned services are already running and healthy with the same config hash, print the stack summary and exit `0`
-- if the stack is partially running, partially dead, or the config hash differs, fail with an actionable message and tell the developer to run `mix favn.stop` first
+- storage selection is explicit
+- storage is always an orchestrator concern
+- the same logical storage modes should be supported across local dev and
+  packaging, while the default differs by workflow
 
-Reason:
+Supported storage modes for this Phase 9 slice:
 
-- no surprise duplicate processes
-- no hidden partial repair logic in the first cut
-- lower review and maintenance risk
+- `memory`
+- `sqlite`
+- `postgres`
 
-## 4. Detailed plan for `mix favn.stop`
+Workflow defaults:
 
-Category: foundational
+- local dev default: `memory`
+- local dev persistent convenience mode: `sqlite`
+- single-node packaging default: `sqlite`
+- split deployment recommended default: `postgres`
 
-### Responsibilities
+Important boundary rule:
 
-`mix favn.stop` should:
+- web and runner do not choose storage directly
+- they only receive the orchestrator address and related credentials/config
+- storage adapter selection and storage connection config belong to orchestrator
 
-1. acquire the lifecycle lock
-2. read `.favn/runtime.json`
-3. stop web/orchestrator/runner cleanly even if one of them is already dead
-4. delete active runtime state files
-5. preserve logs, manifest cache, secrets, and SQLite data by default
-
-### Stop order
-
-Recommended order:
-
-1. stop `favn_web`
-2. ask orchestrator to stop admitting new work and cancel any in-flight local runs
-3. stop `favn_runner`
-4. stop `favn_orchestrator`
-
-Why:
-
-- web goes down first so no new browser traffic enters the stack
-- orchestrator gets a chance to record shutdown-driven cancellation intent before runner disappears
-- runner exits before orchestrator fully disappears, reducing local orphaned execution work
-
-### Timeout behavior
-
-Recommended defaults:
-
-- graceful stop timeout per service: 10 seconds
-- orchestrator drain/cancel wait before hard stop: 15 seconds
-
-### Forced kill fallback
-
-If graceful stop times out:
-
-1. send a stronger termination signal to the stored process group
-2. wait a short second timeout
-3. record forced-kill fallback in `.favn/history/last_failure.json`
-
-### Behavior when one process is already dead
-
-Expected behavior:
-
-- continue stopping the rest
-- report the dead service as stale/dead in the console summary
-- clear `.favn/runtime.json` when no active owned services remain
-
-### Idempotency
-
-Product-critical expectation:
-
-- `mix favn.stop` is idempotent
-- running it against an already stopped stack exits `0` and prints `stack not running`
-
-## 5. Detailed plan for `mix favn.reload`
-
-Category: foundational
-
-This is the most important next-PR command.
-
-### Responsibilities
-
-`mix favn.reload` should:
-
-1. acquire the lifecycle lock
-2. confirm the local stack is running
-3. recompile the user project
-4. rebuild and pin the current manifest version
-5. restart the runner so changed project code is loaded cleanly
-6. register the new manifest in runner
-7. publish/register the new manifest in orchestrator through the private API
-8. activate the new manifest in orchestrator for future runs
-9. update `.favn/manifests/latest.json` and `.favn/runtime.json`
-10. leave `favn_web` alone
-
-### When browser refresh is enough
-
-For the next PR, the normal web behavior should be:
-
-- `favn_web` stays running unchanged
-- browser refresh calls web
-- web calls orchestrator
-- orchestrator returns state from the current active manifest and current runs
-
-So for ordinary `favn` development, `mix favn.reload` plus browser refresh should be enough.
-
-### When `mix favn.reload` is required
-
-Use `mix favn.reload` for:
-
-- asset changes
-- pipeline changes
-- schedule changes
-- manifest-affecting DSL changes
-- SQL asset or source changes
-- connection/runtime config changes consumed by the runner
-- changes in `apps/favn`, `apps/favn_core`, or `apps/favn_runner` that affect manifest generation or execution behavior
-
-### What happens to in-flight runs
-
-Recommended default for the first cut:
-
-- `mix favn.reload` should fail if orchestrator reports any in-flight runs
-- it should print the run ids and ask the developer to wait, cancel them explicitly, or stop the stack
-
-Why:
-
-- restarting the runner under active work is surprising and hard to explain cleanly in a first-cut local workflow
-- refusing reload is safer and easier to review than best-effort implicit cancellation in the first PR
-
-Future nice-to-have:
-
-- a later `--force` mode could explicitly cancel and continue, but that should stay out of the next PR
-
-### Orchestrator behavior during reload
+### Proposed public config shape
 
 Recommended default:
 
-- do not restart orchestrator during `mix favn.reload`
-- `mix favn.reload` should send the newly built manifest to orchestrator through the private API and then activate it
+- keep public user configuration under `config :favn, :local` for local dev
+- keep packaging/deployment configuration explicit through generated env files
+  and documented environment variables
+- do not require users to configure internal apps directly in the normal path
 
-### Manifest publish endpoint
-
-Foundational recommendation:
-
-- add a private orchestrator endpoint to register one manifest version without restarting orchestrator
-- recommended shape: `POST /api/orchestrator/v1/manifests`
-- keep `POST /api/orchestrator/v1/manifests/:manifest_version_id/activate` as the separate activation step
-
-Why this belongs in or alongside the next PR:
-
-- `mix favn.reload` needs a real no-restart publish path
-- the same behavior is needed in production so orchestrator can accept new manifests without stopping
-- it keeps local dev aligned with the steady-state boundary instead of inventing a dev-only import mechanism
-
-Use full stop/start instead when:
-
-- orchestrator code changed
-- orchestrator config changed
-- local lifecycle/control-path wiring changed
-
-### Local runner control boundary
-
-- manifest re-registration during reload must target the live runner process
-- local control cannot rely on one-off helper VMs that do not affect the running runner instance
-- local orchestrator runner-client wiring should explicitly use configured local runner control (`:runner_client` + `:runner_client_opts`) at startup
-- distributed node identities used for local runner/orchestrator control should be stored as full node names (`name@host`) in runtime state
-
-### Should reload recover a stopped stack?
-
-Recommended default:
-
-- no
-- `mix favn.reload` should fail if the stack is not running
-- it should print `stack not running; use mix favn.dev`
-
-Reason:
-
-- reload should mean reload, not bootstrap
-- hidden auto-start behavior makes failures harder to interpret
-
-## 6. Detailed plan for `mix favn.status`
-
-Category: foundational
-
-### Responsibilities
-
-`mix favn.status` should show:
-
-- whether web/orchestrator/runner are expected to be running
-- whether their recorded pids are actually alive
-- URLs / ports where applicable
-- storage mode
-- current active manifest id if available
-- last known manifest id if orchestrator is down but cache exists
-- recent failure info if a service died unexpectedly
-
-### Output style
-
-Boring operator-friendly text, for example:
-
-```text
-Favn local dev stack
-
-status: running
-storage: memory
-manifest: mv_01H...
-
-web: running pid=12345 url=http://127.0.0.1:4173 log=.favn/logs/web.log
-orchestrator: running pid=12346 url=http://127.0.0.1:4101 log=.favn/logs/orchestrator.log
-runner: running pid=12347 node=favn_runner_dev@127.0.0.1 log=.favn/logs/runner.log
-
-last failure: none
-```
-
-### Data sources
-
-Recommended order:
-
-1. `.favn/runtime.json`
-2. live pid/process-group checks
-3. local RPC calls for runner/orchestrator details
-4. `.favn/manifests/latest.json` fallback when orchestrator is unavailable
-5. `.favn/history/last_failure.json` for recent failure/restart notes
-
-## 7. Minimal config model
-
-Category: foundational
-
-Keep the next-PR config small and local-dev-specific.
-
-### Recommended config namespace
-
-Use one small config entry under `apps/favn`:
+Example local config:
 
 ```elixir
-config :favn, :dev,
+config :favn, :local,
   storage: :memory,
   sqlite_path: ".favn/data/orchestrator.sqlite3",
-  orchestrator_api_enabled: true,
-  orchestrator_port: 4101,
-  web_port: 4173,
-  orchestrator_base_url: "http://127.0.0.1:4101",
-  web_base_url: "http://127.0.0.1:4173",
-  service_token: nil,
-  web_session_secret: nil
+  postgres: [
+    hostname: "127.0.0.1",
+    port: 5432,
+    username: "postgres",
+    password: "postgres",
+    database: "my_app_favn_dev",
+    ssl: false,
+    pool_size: 10
+  ]
 ```
 
-### Meaning
+Meaning:
 
-- `storage`: `:memory | :sqlite`
-- `sqlite_path`: only used when storage is `:sqlite`
-- `orchestrator_api_enabled`: kept explicit so dev tooling can fail clearly if someone disables the API
-- `orchestrator_port`: private local orchestrator HTTP port
-- `web_port`: local built-web port
-- `orchestrator_base_url`: injected into `favn_web`
-- `web_base_url`: printed and used for status output
-- `service_token`: optional override; if `nil`, generate and persist in `.favn/secrets.json`
-- `web_session_secret`: optional override; if `nil`, generate and persist in `.favn/secrets.json`
+- `storage`: `:memory | :sqlite | :postgres`
+- `sqlite_path`: used when `storage: :sqlite`
+- `postgres`: used when `storage: :postgres`
 
-### Immediate non-goals for config
+Recommended command-line overrides:
 
-Future roadmap only:
+- `mix favn.dev` uses configured local storage mode
+- `mix favn.dev --sqlite` forces `storage: :sqlite`
+- later follow-up should allow `mix favn.dev --postgres` to force
+  `storage: :postgres`
+- `mix favn.build.single --storage sqlite|postgres` overrides the single bundle
+  default explicitly
 
-- Postgres-first config design
-- custom storage adapter config
-- release/distribution config model
-- a large matrix of web/orchestrator/runner deployment modes
+Recommendation for first cut:
 
-### Internal-only runtime values
+- keep `mix favn.dev --sqlite` as-is
+- add `--postgres` support as part of the remaining Phase 9 validation/build
+  batch so Postgres is explicit rather than hidden behind config only
+- do not add a general `--storage` flag if named modes keep the UX clearer
 
-Do not put these in the public config model for the next PR:
+Alternative:
 
-- local node names
-- local Erlang cookie
-- log file paths
-- process-group ids
+- use one generic `--storage <mode>` flag everywhere
 
-These belong in `.favn/runtime.json` or `.favn/secrets.json`, not in user-facing config.
+Pros:
 
-## 8. `.favn/` state model
+- more uniform CLI
 
-Category: foundational
+Cons:
 
-### Recommended layout
+- slightly more abstract for the most common cases
+
+Recommendation:
+
+- named convenience flags are fine for local dev if the underlying config model
+  still uses explicit storage modes
+
+### `mix favn.install`
+
+Recommended default:
+
+- explicit prerequisite/setup command
+- resolves and verifies the project-local runtime inputs needed by local dev and
+  build/package commands
+- writes an install fingerprint under `.favn/install/`
+- does not silently run from other commands
+
+What it installs or resolves:
+
+- version-matched internal runtime build inputs for `web`, `orchestrator`, and
+  `runner`
+- project-local JS dependency state required by `favn_web`
+- project-local toolchain/install metadata used to detect stale state later
+
+What it should not do by default:
+
+- it should not produce final deployment bundles
+- it should not start services
+- it should not mutate runtime state outside `.favn/install/` and failure history
+
+Should it resolve/build local web and orchestrator runtime artifacts ahead of time?
+
+Recommended default:
+
+- resolve install inputs ahead of time: yes
+- build final target artifacts ahead of time: no
+
+Why:
+
+- it keeps install explicit and reusable
+- it avoids stale hidden deployment builds
+- it keeps `build.*` commands as the place where final artifacts are created
+
+Should it verify JS/node/npm tooling for `favn_web`?
+
+- yes
+- missing Node/npm is one of the main reasons local dev or packaging would fail
+- install is the boring place to fail early with a targeted message
+
+Auto-trigger behavior:
+
+- recommended default: no auto-trigger
+- `mix favn.dev` and `mix favn.build.*` should validate install state and fail
+  with `install required` or `install stale; run mix favn.install`
+
+Offline behavior:
+
+- if `.favn/install/install.json` matches the required fingerprint, later
+  commands may proceed offline
+- if install inputs are missing or stale, offline operation should fail fast and
+  explicitly
+
+Missing-tool behavior:
+
+- fail early during install with actionable diagnostics
+- record the failure under `.favn/history/`
+- do not leave partially-written runtime state
+
+Stale-artifact behavior:
+
+- compare current inputs against an install fingerprint covering at least:
+  - `favn` package version
+  - runtime source fingerprint for `favn_web` and internal release inputs
+  - relevant lockfiles/tool versions used during install
+- if stale, fail explicit commands and require a fresh install
+- allow `mix favn.install --force` as the boring rebuild path
+
+Alternative:
+
+- auto-run install from `dev` and `build`
+
+Pros:
+
+- fewer manual steps for first-time users
+
+Cons:
+
+- hidden network/toolchain side effects
+- harder-to-explain failures
+- less predictable CI/operator behavior
+
+Recommendation:
+
+- keep install explicit
+
+### `mix favn.reset`
+
+Recommended default:
+
+- destructive local cleanup command that removes all Favn-managed project-local
+  state under `.favn/`
+
+Semantics:
+
+- require the stack to be stopped first
+- if recorded runtime state exists and live Favn-owned processes are still
+  running, fail and tell the user to run `mix favn.stop`
+- if runtime state is stale and no live processes remain, clear the stale state
+  and continue
+- delete the full `.favn/` tree
+
+Should it delete all of `.favn/`?
+
+- yes
+- first cut should stay simple and honest
+
+Should there be `--keep-*` modes?
+
+- recommended default: no
+
+Why:
+
+- `reset` should mean full reset
+- partial cleanup modes create more semantics and testing cost than value in the
+  first cut
+
+Alternative:
+
+- `--keep-logs`, `--keep-install`, `--keep-data`
+
+Pros:
+
+- more operator convenience
+
+Cons:
+
+- more surprising combinations
+- more edge-case behavior to document and test
+
+Recommendation:
+
+- keep the first cut destructive and simple
+
+### `mix favn.logs`
+
+Recommended default:
+
+- thin file-tail helper over preserved log files under `.favn/logs/`
+
+Supported behavior:
+
+- default: show recent logs for all services
+- service selection: `web`, `orchestrator`, or `runner`
+- `--tail N`
+- `--follow`
+- historical access while the stack is down
+
+Operational shape:
+
+- read known log paths from runtime/configured layout, not from process stdout
+- when showing all services, print service-prefixed output in stable order
+- when following all services, multiplex the three files with service prefixes
+
+What it should not become:
+
+- not a structured observability system
+- not a log indexing/query engine
+- not a replacement for reading the raw files directly
+
+Alternative:
+
+- add structured JSON querying and filtering now
+
+Pros:
+
+- richer operator experience
+
+Cons:
+
+- not needed to close Phase 9
+- pushes the design toward observability work instead of boring tooling
+
+Recommendation:
+
+- keep it as a thin helper
+
+### `mix favn.build.web`
+
+Operational meaning:
+
+- build the deployable public web/BFF artifact for the current Favn version
+- does not include user business code
+- expects to talk to a separately deployed orchestrator over the private API
+
+Recommended default:
+
+- consume installed `favn_web` build inputs from `.favn/install/`
+- write a final artifact bundle under `.favn/dist/web/<build_id>/`
+- write build working files under `.favn/build/web/<build_id>/`
+
+### `mix favn.build.orchestrator`
+
+Operational meaning:
+
+- build the deployable private orchestrator artifact for the current Favn version
+- does not include user business code
+- remains storage-neutral at build time; runtime storage config is provided by
+  the operator
+
+Recommended default:
+
+- consume installed orchestrator release inputs from `.favn/install/`
+- write a final artifact bundle under `.favn/dist/orchestrator/<build_id>/`
+- write build working files under `.favn/build/orchestrator/<build_id>/`
+
+### `mix favn.build.runner`
+
+Operational meaning:
+
+- build the project-specific execution artifact that combines the internal runner
+  runtime with the user's business code and one pinned manifest version
+
+Recommended default:
+
+- consume the current user project, installed runner build inputs, selected
+  plugins, and a freshly pinned manifest version
+- write a final artifact bundle under `.favn/dist/runner/<build_id>/`
+- write build working files under `.favn/build/runner/<build_id>/`
+
+### `mix favn.build.single`
+
+Operational meaning:
+
+- assemble one deployable bundle that contains separate web, orchestrator, and
+  runner runtimes plus wiring/config needed to run them together on one node
+- convenience topology only; it must not collapse the architecture conceptually
+
+Recommended default:
+
+- internally build or reuse matching `web`, `orchestrator`, and `runner`
+  artifacts from the same build batch
+- write a final assembled bundle under `.favn/dist/single/<build_id>/`
+- write assembly working files under `.favn/build/single/<build_id>/`
+
+## 6. `.favn/` Artifact And State Layout
+
+Recommended layout:
 
 ```text
 .favn/
 ├── runtime.json
 ├── secrets.json
 ├── lock
+├── install/
+│   ├── install.json
+│   ├── toolchain.json
+│   ├── cache/
+│   │   └── npm/
+│   └── runtimes/
+│       ├── web/
+│       │   ├── source/
+│       │   └── node_modules/
+│       ├── orchestrator/
+│       │   └── source/
+│       └── runner/
+│           └── template/
+├── build/
+│   ├── web/<build_id>/
+│   ├── orchestrator/<build_id>/
+│   ├── runner/<build_id>/
+│   └── single/<build_id>/
+├── dist/
+│   ├── web/<build_id>/
+│   ├── orchestrator/<build_id>/
+│   ├── runner/<build_id>/
+│   └── single/<build_id>/
 ├── logs/
+│   ├── web.log
 │   ├── orchestrator.log
-│   ├── runner.log
-│   └── web.log
+│   └── runner.log
 ├── data/
 │   └── orchestrator.sqlite3
 ├── manifests/
-│   └── latest.json
+│   ├── latest.json
+│   └── cache/
+│       └── <manifest_version_id>.json
 └── history/
-    └── last_failure.json
+    ├── last_failure.json
+    └── failures/
+        └── <timestamp>-<command>.json
 ```
 
-### File roles
+### Directory roles
 
-- `runtime.json`: active stack metadata, config hash, owner-session pid, child pids, process groups, ports, node names, start time, current storage mode
-- `secrets.json`: generated local service token, web session secret, and local RPC cookie
-- `lock`: lifecycle command lock file
-- `logs/*`: combined stdout/stderr logs for each service
-- `data/orchestrator.sqlite3`: SQLite local persistence when enabled
-- `manifests/latest.json`: last built manifest metadata and cache pointer for status/reload reporting
-- `history/last_failure.json`: most recent startup/shutdown/failure detection summary
+- `runtime.json`: current live stack state only
+- `secrets.json`: generated local secrets and local control credentials
+- `lock`: short-lived lifecycle mutation lock
+- `install/`: resolved project-local runtime inputs reused by `dev` and build
+  commands
+- `build/`: reproducible intermediate working directories and per-build metadata
+- `dist/`: operator-facing output bundles
+- `logs/`: preserved service logs
+- `data/`: preserved local SQLite state
+- `manifests/latest.json`: last built manifest metadata for status/reload flows
+- `manifests/cache/`: serialized pinned manifests reused by build/package flows
+- `history/`: recent failure summaries and preserved per-command failure records
 
 ### Ephemeral vs preserved
 
@@ -545,301 +485,696 @@ Ephemeral:
 
 - `runtime.json`
 - `lock`
+- `build/` contents are reproducible scratch data, though preserved until reset
 
-Preserved across stop/start by default:
+Preserved by default:
 
+- `install/`
+- `dist/`
+- `logs/`
+- `data/`
+- `manifests/`
+- `history/`
 - `secrets.json`
-- `logs/*`
-- `data/orchestrator.sqlite3`
-- `manifests/latest.json`
-- `history/last_failure.json`
 
-### What later `mix favn.reset` should delete
+### What `mix favn.reset` deletes
 
-Before-v1 but not next PR:
+- all of `.favn/`
+- including install artifacts, dist outputs, logs, SQLite data, manifest cache,
+  secrets, and failure history
 
-- everything under `.favn/`, including SQLite data, logs, manifest cache, secrets, and failure history
+Alternative:
 
-## 9. Module/file plan
+- keep `dist/` outside `.favn/`
 
-Category: foundational
+Pros:
 
-### `apps/favn` user-facing task entrypoints
+- easier manual discovery for operators
 
-- `apps/favn/lib/mix/tasks/favn.dev.ex`
-- `apps/favn/lib/mix/tasks/favn.stop.ex`
-- `apps/favn/lib/mix/tasks/favn.reload.ex`
-- `apps/favn/lib/mix/tasks/favn.status.ex`
+Cons:
 
-### `apps/favn` boring tooling library
+- breaks the project-local side-effect rule
+- scatters Favn-owned artifacts
 
-- `apps/favn/lib/favn/dev.ex`
-  - thin public helper surface for optional IEx mode: `reload/0`, `status/0`, `stop/0`
-- `apps/favn/lib/favn/dev/config.ex`
-  - resolve config defaults, CLI flags, and generated-secret fallbacks
-- `apps/favn/lib/favn/dev/state.ex`
-  - read/write `.favn/runtime.json`, `.favn/secrets.json`, `.favn/manifests/latest.json`, and failure history
-- `apps/favn/lib/favn/dev/lock.ex`
-  - lifecycle lock handling
-- `apps/favn/lib/favn/dev/process.ex`
-  - foreground owner-session process handling, child process management, signal/timeout handling
-- `apps/favn/lib/favn/dev/rpc.ex`
-  - local-node RPC helpers for runner/orchestrator control without compile-time deps
-- `apps/favn/lib/favn/dev/manifest.ex`
-  - build/pin/cache manifest metadata for startup and reload
-- `apps/favn/lib/favn/dev/status.ex`
-  - live stack inspection and console rendering
-- `apps/favn/lib/favn/dev/reload.ex`
-  - compile/build manifest, runner restart, manifest publish/register, activation flow
-- `apps/favn/lib/favn/dev/orchestrator_client.ex`
-  - private HTTP client for manifest publish/activate and status reads needed by local dev tooling
-- `apps/favn/lib/favn/dev/service/orchestrator.ex`
-  - orchestrator command/env builder
-- `apps/favn/lib/favn/dev/service/runner.ex`
-  - runner command/env builder
-- `apps/favn/lib/favn/dev/service/web.ex`
-  - `favn_web` build/start command/env builder
-- `apps/favn/lib/favn/dev/stack.ex`
-  - high-level coordination for `dev`, `stop`, and shared lifecycle behavior
+Recommendation:
 
-### Minimal runtime-side helpers outside `apps/favn`
+- keep all Favn-managed outputs under `.favn/`
 
-Refactor-enabling, still in scope because they are required to preserve boundaries:
+## 7. Build And Package Contracts
 
-- `apps/favn_orchestrator/lib/favn_orchestrator/runner_client/local_node.ex`
-  - local dev runner-client implementation using a localhost-only control path to a separate runner node
+### Shared build contract
 
-Minimal orchestrator-side API addition required for reload:
+Each `mix favn.build.*` command should:
 
-- `POST /api/orchestrator/v1/manifests`
-  - accepts one canonical manifest payload or manifest-version envelope and persists/registers it
-  - protected by the existing private service-auth boundary
+- require a current successful install fingerprint
+- create a new `build_id`
+- write build metadata under `.favn/build/<target>/<build_id>/build.json`
+- write final artifact metadata under `.favn/dist/<target>/<build_id>/metadata.json`
+- leave the final operator-consumable bundle in `.favn/dist/<target>/<build_id>/`
 
-Optional but not required if raw RPC is sufficient:
+Recommended shared metadata fields:
 
-- thin orchestrator/runner readiness helper functions in their existing facades
+- `schema_version`
+- `target`
+- `build_id`
+- `built_at`
+- `favn_package_version`
+- `install_fingerprint`
+- `elixir_version`
+- `otp_release`
+- `source_fingerprint`
+- `required_env`
+- `compatibility`
 
-### Explicit boundary note
-
-Product-critical:
-
-- `apps/favn` must not call `FavnOrchestrator` or `FavnRunner` directly as compile-time deps
-- any runtime-module references from `apps/favn` should go through local RPC helpers and dynamic module names
-
-## 10. Testing plan
-
-Category: foundational
-
-### Unit tests in `apps/favn/test`
-
-- config resolution tests
-- `.favn` path/state read-write tests
-- lock behavior tests
-- status rendering tests
-- stale runtime-state detection tests
-- SQLite path normalization/default tests
-
-### Integration tests in `apps/favn/test`
-
-- foreground owner-session lifecycle tests using small fixture processes
-- `mix favn.dev` startup sequencing tests with fixture/stub services where direct unit isolation is enough
-- `mix favn.stop` graceful-stop and forced-kill fallback tests
-- `mix favn.reload` refusal when stack is stopped
-- `mix favn.reload` refusal when in-flight runs exist
-- `mix favn.reload` runner-only restart behavior while keeping web and orchestrator pids unchanged
-- `mix favn.reload` manifest publish behavior against the real private orchestrator API
-
-### Runtime integration coverage
-
-Add focused tests around the local dev runner bridge:
-
-- `apps/favn_orchestrator/test/...` for `runner_client/local_node.ex`
-- verify manifest register/submit/cancel calls cross a separate local runner node without compile-time runner deps in orchestrator
-- add API tests for `POST /api/orchestrator/v1/manifests` register behavior and follow-up activation flow
-
-### End-to-end smoke path
-
-At least one serial smoke path should cover:
-
-1. `mix favn.dev`
-2. `mix favn.status`
-3. verify web and orchestrator URLs respond
-4. `mix favn.reload`
-5. verify active manifest changes or is re-registered cleanly
-6. `mix favn.stop`
-7. verify runtime state is cleared while logs/SQLite remain
-
-Lifecycle-specific additions:
-
-- test that `mix favn.dev` does not hold `.favn/lock` across the full foreground lifetime
-- test second-terminal `reload/status/stop` behavior while foreground `dev` is running
-- test startup/bootstrap failure cleanup for stale process/state recovery
-
-Recommended location:
-
-- `apps/favn/test/integration/dev_stack_smoke_test.exs`
-
-This can be slower and serial, but it should exist so the next PR proves the real local lifecycle at least once.
-
-## 11. Internal implementation slicing/order
-
-Category: refactor-enabling
-
-Keep the PR as one coherent feature batch, but implement it in small reviewable slices.
-
-### Slice 1: foundation and boundary-safe control path
-
-- `.favn` state model
-- config resolution
-- lifecycle lock
-- foreground owner-session helpers
-- local runner/orchestrator RPC control path
-
-### Slice 2: usable stack lifecycle first
-
-- `mix favn.dev`
-- `mix favn.stop`
-- `mix favn.status`
-- memory mode default
-- SQLite path wiring
-- foreground owner-session cleanup semantics
-
-### Slice 3: manifest-driven reload workflow
-
-- manifest build/pin/cache
-- `mix favn.reload`
-- active-manifest reporting in status
-- browser-refresh-oriented web behavior
-- manifest publish through the private orchestrator API
-
-### Slice 4: optional follow-up polish and smoke coverage
-
-- `Favn.Dev.reload/0`, `status/0`, `stop/0`
-- end-to-end smoke path
-- doc polish
-
-Priority rule:
-
-- if scope gets tight, do not cut `dev/stop/reload/status`
-- cut optional interactive-shell follow-up first, not the foreground core loop
-
-## 12. Required doc updates
-
-Category: foundational
-
-### `README.md`
-
-Update to:
-
-- restate that Phase 8 baseline boundary work now exists
-- state that the immediate next PR is core local dev tooling only
-- add pointers to the new Phase 9 plan/TODO docs
-
-### `docs/REFACTOR.md`
-
-Update to:
-
-- add Phase 9 plan/TODO doc links
-- narrow the immediate Phase 9 slice to core local dev tooling
-- explicitly defer install/reset/logs/build tasks out of the next PR while keeping them in Phase 9 or pre-v1 roadmap
-
-### `docs/FEATURES.md`
-
-Update to:
-
-- add a clear next-PR checklist for the core local dev loop
-- separate later Phase 9 tooling from the next PR
-- keep broader build/install/reset/logs work visible on the roadmap
-
-### Add new docs
-
-Recommended and should land now:
-
-- `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md`
-- `docs/refactor/PHASE_9_TODO.md`
-
-Reason:
-
-- this slice is large enough to need its own planning/source-of-truth docs
-- `docs/FEATURES.md` should stay high-level while `PHASE_9_TODO.md` stays execution-oriented
-
-## 13. Tooling roadmap before v1
-
-| Item | Timing | Category | Notes |
-| --- | --- | --- | --- |
-| `mix favn.dev` | next PR | foundational | foreground local stack startup |
-| `mix favn.stop` | next PR | foundational | clean shutdown and idempotency |
-| `mix favn.reload` | next PR | foundational | daily-driver manifest reload plus runner restart |
-| `POST /api/orchestrator/v1/manifests` | next PR | product-critical | no-restart manifest publish path used by local dev and later production flows |
-| `mix favn.status` | next PR | foundational | boring operator view |
-| optional dedicated interactive shell mode | later Phase 9 if still needed | nice-to-have | likely unnecessary if normal `mix favn.dev` is already foreground |
-| `.favn/` local state model | next PR | foundational | runtime metadata, logs, secrets, SQLite path |
-| SQLite local persistence mode | next PR | foundational | immediate persistent local option |
-| `mix favn.install` | later Phase 9 | refactor-enabling | bootstrap runtime dependencies/setup |
-| `mix favn.reset` | later Phase 9 | refactor-enabling | destructive local cleanup, separate from stop |
-| `mix favn.logs` | later Phase 9 | nice-to-have | log tailing/selection on top of preserved logs |
-| `mix favn.build.web` | before v1 but not next | product-critical | honest split deployment packaging |
-| `mix favn.build.orchestrator` | before v1 but not next | product-critical | honest split deployment packaging |
-| `mix favn.build.runner` | before v1 but not next | product-critical | honest split deployment packaging |
-| `mix favn.build.single` | before v1 but not next | product-critical | first supported single-node assembly |
-| bootstrap/admin setup task | before v1 but not next | product-critical | replace ad hoc env-only bootstrap for real product setup |
-| broader live Postgres verification path | later Phase 9 | refactor-enabling | production-like confidence, not core local loop |
-| durable auth/session hardening | before v1 but not next | product-critical | not part of next PR |
-| richer log/observability UX | future/nice-to-have | nice-to-have | after core lifecycle is stable |
-| Docker/dev-container local mode | future/nice-to-have | future roadmap only | explicitly not required for next PR |
-
-## 14. Open questions with recommended defaults
-
-### 1. How should local orchestrator-to-runner, manifest publish, and second-terminal control work before broader transport packaging?
+### Versioning and compatibility representation
 
 Recommended default:
 
-- use `.favn/runtime.json` plus a localhost-only local control path for lifecycle actions
-- use the private orchestrator API for manifest publish/register + activate
+- write explicit compatibility metadata rather than hiding assumptions in file
+  names
+
+At minimum:
+
+- web artifacts declare orchestrator API compatibility, for example `api_v1`
+- orchestrator artifacts declare supported API/storage/runtime compatibility
+- runner artifacts declare manifest schema version, manifest version id, runner
+  contract version, and included plugin list
+- single artifacts declare the exact `web`, `orchestrator`, and `runner` build
+  ids assembled together
+
+Alternative:
+
+- rely only on package version matching
+
+Pros:
+
+- fewer fields
+
+Cons:
+
+- too implicit for debugging mismatches
+- weaker operator story during upgrades
+
+Recommendation:
+
+- include explicit compatibility metadata files
+
+### `mix favn.build.web`
+
+Consumes:
+
+- `.favn/install/runtimes/web/`
+
+Outputs:
+
+- `.favn/build/web/<build_id>/`
+- `.favn/dist/web/<build_id>/`
+
+Dist contents should include at least:
+
+- deployable web runtime bundle
+- `metadata.json`
+- `README.txt` or equivalent operator notes for required env/config
+
+Required metadata should include at least:
+
+- target `web`
+- build id
+- Favn version
+- supported orchestrator API version
+- required env such as orchestrator base URL, service token, and session secret
+
+### `mix favn.build.orchestrator`
+
+Consumes:
+
+- `.favn/install/runtimes/orchestrator/`
+
+Outputs:
+
+- `.favn/build/orchestrator/<build_id>/`
+- `.favn/dist/orchestrator/<build_id>/`
+
+Dist contents should include at least:
+
+- deployable orchestrator runtime bundle
+- `metadata.json`
+- operator notes for storage and service-auth configuration
+
+Required metadata should include at least:
+
+- target `orchestrator`
+- build id
+- Favn version
+- supported API version
+- supported storage modes and adapter expectations
+- runner contract compatibility version
+
+Recommended default storage stance:
+
+- storage-neutral build artifact
+- runtime config selects memory, SQLite, or Postgres
+- operator recommendation for split deployment: Postgres
+
+Supported runtime configuration contract:
+
+- `FAVN_STORAGE=memory|sqlite|postgres`
+- if `sqlite`:
+  - `FAVN_SQLITE_PATH=/path/to/orchestrator.sqlite3`
+- if `postgres`:
+  - `FAVN_POSTGRES_HOST`
+  - `FAVN_POSTGRES_PORT`
+  - `FAVN_POSTGRES_USERNAME`
+  - `FAVN_POSTGRES_PASSWORD`
+  - `FAVN_POSTGRES_DATABASE`
+  - `FAVN_POSTGRES_SSL`
+  - optional pool and timeout env if needed
+
+Why this should be explicit:
+
+- it makes the storage support matrix visible
+- it keeps local, single-node, and split deployment stories aligned
+- it avoids implying that SQLite is the only durable option outside dev
+
+### `mix favn.build.runner`
+
+Recommended default:
+
+- one runner build packages one pinned manifest version
+
+Consumes:
+
+- current user project code
+- selected plugins from the current dependency graph/config
+- freshly generated and pinned manifest from `favn_authoring`
+- `.favn/install/runtimes/runner/`
+
+Outputs:
+
+- `.favn/build/runner/<build_id>/`
+- `.favn/dist/runner/<build_id>/`
+
+Dist contents should include at least:
+
+- deployable runner runtime bundle
+- compiled user business code
+- pinned serialized manifest
+- manifest metadata envelope
+- included plugin inventory
+- `metadata.json`
+
+Required metadata should include at least:
+
+- target `runner`
+- build id
+- project/app identity
+- Favn version
+- manifest schema version
+- manifest version id
+- manifest hash
+- runner contract version
+- included plugin identifiers and versions
+
+Runner packaging rule:
+
+- `favn_runner` remains internal and is not part of the user's public authoring
+  dependency surface
+- the runner artifact still includes the internal runner runtime because that is
+  a packaging concern, not a public dependency concern
+- the build task, not the user's dependency list, is responsible for assembling
+  the internal runner runtime around the authored project code
+
+Alternative:
+
+- package runner without a manifest and fetch manifests remotely at runtime
+
+Pros:
+
+- fewer runner rebuilds when manifests change
+
+Cons:
+
+- weaker deployment determinism
+- more complex remote coordination before Phase 9 is even complete
+- easier to blur the line between authored code version and runnable payload
+
+Recommendation:
+
+- keep the first cut pinned to one manifest version per runner build
+
+### `mix favn.build.single`
+
+Recommended default:
+
+- assemble a single deployable bundle containing three explicit runtimes and
+  their wiring, not one merged BEAM system
+
+Consumes:
+
+- matching `web`, `orchestrator`, and `runner` outputs from the same build batch
+  or internally generated equivalents
+
+Outputs:
+
+- `.favn/build/single/<build_id>/`
+- `.favn/dist/single/<build_id>/`
+
+Dist contents should include at least:
+
+- `web/`
+- `orchestrator/`
+- `runner/`
+- `config/assembly.json`
+- `env/web.env`
+- `env/orchestrator.env`
+- `env/runner.env`
+- `bin/start`
+- `bin/stop`
+- `metadata.json`
+
+Config passing model:
+
+- generate one assembly manifest that records service addresses, shared secrets,
+  storage choice, and matching build ids
+- start scripts translate that assembly manifest into per-service env/config at
+  runtime
+
+Recommended default storage mode:
+
+- SQLite
 
 Why:
 
-- separate processes stay intact
-- no new public API surface is needed
-- no compile-time dependency from `apps/favn` to runtime apps
+- memory is not operator-friendly for a packaged single-node bundle
+- Postgres adds an external dependency that fights the point of the single-node
+  convenience mode
 
-### 2. Should `mix favn.reload` cancel in-flight runs automatically?
+Alternative:
+
+- one merged runtime
+
+Pros:
+
+- superficially simpler packaging
+
+Cons:
+
+- collapses the architecture and teaches the wrong mental model
+- makes later split deployment less honest
+
+Recommendation:
+
+- keep three explicit runtimes inside one bundle
+
+Supported single-node storage modes:
+
+- `sqlite` by default
+- `postgres` explicitly when the operator wants an external durable database even
+  for a single-node runtime bundle
+
+Recommended first-cut single-node config contract:
+
+- bundle writes `config/assembly.json` with `storage.mode`
+- generated env files include either:
+  - `FAVN_STORAGE=sqlite` plus `FAVN_SQLITE_PATH=...`
+  - or `FAVN_STORAGE=postgres` plus explicit Postgres env
+- `bin/start` reads the assembly config and exports orchestrator env before
+  starting the separate runtimes
+
+Important recommendation:
+
+- support Postgres in single-node mode, but do not make it the default
+- single-node Postgres should mean "single compute node, external Postgres",
+  not an embedded Postgres dependency inside the bundle
+
+### Split deployment contract
+
+Recommended honest operator story:
+
+- `build.web` produces the public web/BFF artifact only
+- `build.orchestrator` produces the private control-plane artifact only
+- `build.runner` produces the project-specific execution artifact only
+- the operator deploys them separately and wires them with explicit URLs,
+  credentials, and runner registration/publish steps
+
+Important honesty rule:
+
+- split deployment is not one command that secretly assumes one node
+- it is three separate artifacts with explicit compatibility metadata
+
+## 8. Ownership By App
+
+### `apps/favn`
+
+Owns:
+
+- public package identity
+- public `Mix.Tasks.Favn.*` entrypoints only
+- public docs/examples for user-facing flows
+- thin delegation to `favn_authoring` and `favn_local`
+
+Should not own:
+
+- `.favn/` filesystem logic
+- install/build/reset/logs implementation details
+- direct compile-time dependencies on runtime product apps
+
+### `apps/favn_local`
+
+Owns:
+
+- `.favn/` artifact/state layout
+- install/reset/logs implementation
+- build/package orchestration and artifact writers
+- local validation and diagnostics behavior
+- recovery/cleanup semantics around project-local state
+
+Recommended implementation ownership:
+
+- `Favn.Dev.Install`
+- `Favn.Dev.Reset`
+- `Favn.Dev.Logs`
+- `Favn.Dev.Build.*`
+- shared `.favn` metadata/diagnostics helpers
+
+### `apps/favn_authoring`
+
+Owns:
+
+- manifest generation, serialization, hashing, and pinning used by build flows
+- plugin resolution from the authored project surface
+- runner-facing manifest/build inputs consumed by `favn_local`
+
+Should not own:
+
+- local runtime state
+- project-local install/build/dist directory policy
+- process lifecycle or log handling
+
+### `apps/favn_core`
+
+Owns only if needed:
+
+- shared structs/types/contracts for manifest or compatibility metadata that are
+  genuinely cross-boundary
+
+Should not absorb:
+
+- packaging workflows
+- project-local tooling orchestration
+
+### Runtime apps
+
+`favn_orchestrator`, `favn_runner`, and `favn_web` should only gain minimal
+export/build hooks or compatibility metadata seams needed to support packaging.
+They should not become owners of public build-task workflow logic.
+
+## 9. User Workflows
+
+### First-time setup
+
+1. add `{:favn, ...}`
+2. configure authored modules normally
+3. run `mix favn.install`
+4. run `mix favn.dev`
+5. use `mix favn.status`, `mix favn.logs`, `mix favn.reload`, and `mix favn.stop`
+   during normal iteration
+
+### Normal local dev
+
+1. `mix favn.install` once per relevant runtime/tooling change
+2. `mix favn.dev`
+3. `mix favn.reload` for manifest/project changes
+4. `mix favn.logs` when needed
+5. `mix favn.stop`
+6. `mix favn.reset` only when a full local wipe is desired
+
+Local storage examples:
+
+- memory default via config:
+
+```elixir
+config :favn, :local, storage: :memory
+```
+
+- SQLite local persistence:
+
+```elixir
+config :favn, :local,
+  storage: :sqlite,
+  sqlite_path: ".favn/data/orchestrator.sqlite3"
+```
+
+- Postgres local dev:
+
+```elixir
+config :favn, :local,
+  storage: :postgres,
+  postgres: [
+    hostname: "127.0.0.1",
+    port: 5432,
+    username: "postgres",
+    password: "postgres",
+    database: "my_app_favn_dev",
+    ssl: false
+  ]
+```
+
+### Build runner
+
+1. run `mix favn.install`
+2. run `mix favn.build.runner`
+3. take the output from `.favn/dist/runner/<build_id>/`
+4. deploy that artifact as the execution runtime for the current project build
+5. publish/activate the included manifest version in the target orchestrator
+
+### Build split deployment
+
+1. run `mix favn.install`
+2. run `mix favn.build.web`
+3. run `mix favn.build.orchestrator`
+4. run `mix favn.build.runner`
+5. deploy web, orchestrator, and runner separately
+6. wire explicit config between them using the produced metadata/env contract
+7. publish and activate the runner artifact's included manifest in orchestrator
+
+Split deployment storage recommendation:
+
+- use Postgres unless there is a deliberate reason to keep the control plane on
+  SQLite
+- configure storage only on orchestrator deployment inputs
+- web and runner stay storage-agnostic
+
+### Build single-node deployment
+
+1. run `mix favn.install`
+2. run `mix favn.build.single`
+3. deploy the assembled bundle from `.favn/dist/single/<build_id>/`
+4. start the bundle with the generated single-node scripts
+5. default to SQLite-backed orchestrator storage inside the bundle
+
+Single-node Postgres option:
+
+- `mix favn.build.single --storage postgres`
+- generated bundle expects explicit Postgres env in the orchestrator config
+- web and runner configuration stay unchanged apart from the orchestrator base
+  address and credentials
+
+## 10. Testing Strategy
+
+### Install and artifact layout
+
+- install layout creation tests
+- install fingerprint and stale-detection tests
+- missing Node/npm diagnostics tests
+- offline reuse tests when install state is current
+
+### Reset and logs
+
+- reset refusal while live stack is still running
+- reset success after stop
+- reset cleanup of full `.favn/`
+- logs access for all services and single-service selection
+- logs historical access when the stack is down
+- follow/tail behavior coverage
+
+### Build contracts
+
+- metadata contract tests for `web`, `orchestrator`, `runner`, and `single`
+- output layout tests for `.favn/build/` and `.favn/dist/`
+- runner build tests that assert inclusion of user code, pinned manifest, and
+  selected plugins
+- single build tests that assert three explicit service bundles are present
+
+### Validation and polish
+
+- stale runtime recovery when all services are dead
+- partial/dead service recovery through `status` plus `stop`
+- startup failure cleanup and failure-history recording
+- explicit SQLite smoke path across install, dev, reload, stop, logs, reset, and
+  single packaging
+- broader opt-in Postgres verification for local and orchestrator packaging paths
+- port conflict and missing prerequisite diagnostics tests
+
+Recommended default:
+
+- keep Postgres verification opt-in through explicit environment-driven test
+  paths
+
+## 11. Docs That Must Be Updated
+
+- `README.md`
+  - add the explicit `mix favn.install` first-time setup step once implemented
+  - document the honest distinction between local dev, split deployment, and
+    single-node packaging
+- `docs/REFACTOR.md`
+  - keep the remaining Phase 9 scope aligned with this plan
+- `docs/FEATURES.md`
+  - keep the high-level roadmap wording aligned with this remaining tooling batch
+- `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md`
+  - this document is the architecture source of truth for the remaining slice
+- `docs/refactor/PHASE_9_TODO.md`
+  - execution checklist derived from this design
+
+## 12. Open Questions With Recommended Defaults
+
+### Should `mix favn.install` be explicit-only or auto-triggered?
+
+Recommended default:
+
+- explicit-only
+
+### Should install produce final web/orchestrator builds ahead of time?
 
 Recommended default:
 
 - no
-- fail fast and ask the user to wait/cancel/stop first
+- resolve install inputs and JS dependencies only
 
-### 3. Should `mix favn.reload` auto-start the stack if it is down?
+### Should `mix favn.reset` offer keep modes in the first cut?
 
 Recommended default:
 
 - no
-- keep bootstrap and reload as separate commands
 
-### 4. Should `mix favn.dev` try to auto-repair partial stacks?
-
-Recommended default:
-
-- no for the first cut
-- print status and require `mix favn.stop` first
-
-### 5. Should a dedicated `mix favn.dev --interactive` land in the next PR?
+### Should `mix favn.logs` stay a thin helper or become structured log tooling?
 
 Recommended default:
 
-- no separate dedicated mode is required in the next PR if normal `mix favn.dev` is already foreground
-- add one later only if we discover a real debugging need beyond the normal foreground loop
+- thin helper only
 
-### 6. Which helper functions should be available in IEx?
+### Should `mix favn.build.runner` package one or many manifest versions?
 
 Recommended default:
 
-- `Favn.Dev.reload()`
-- `Favn.Dev.status()`
-- `Favn.Dev.stop()`
+- one pinned manifest version per build
 
-Boundary warning:
+### What should single-node default storage be?
 
-- do not add helper shortcuts that call across steady-state product boundaries in-process as the normal workflow
-- helpers should remain lifecycle/debug utilities only
+Recommended default:
+
+- SQLite
+
+### Should Postgres be supported for local dev, single-node, and split deployment?
+
+Recommended default:
+
+- yes
+- local dev: supported but not default
+- single-node: supported but not default
+- split deployment: supported and recommended default
+
+Reason:
+
+- it keeps the storage support story honest and explicit
+- it avoids locking packaged workflows to SQLite-only assumptions
+- it matches the fact that storage is already an orchestrator adapter concern
+
+### Should split deployment artifacts hide the deployment topology?
+
+Recommended default:
+
+- no
+- keep three explicit artifacts and explicit config wiring
+
+### How much diagnostics work belongs in Phase 9?
+
+Recommended default:
+
+- targeted diagnostics only: missing install, missing Node/npm, stale state,
+  startup cleanup, and port conflicts
+- do not expand into a broad doctor framework yet
+
+## 13. Suggested Implementation Slices / PR Order
+
+### Slice 1: install foundation and expanded `.favn/` layout
+
+- add `.favn/install/`, `.favn/build/`, `.favn/dist/`, manifest cache, and
+  failure-history layout expansion
+- implement `mix favn.install`
+- add install fingerprinting and stale detection
+- add targeted prerequisite diagnostics
+
+### Slice 2: reset and logs
+
+- implement `mix favn.reset`
+- implement `mix favn.logs`
+- lock in destructive reset semantics and preserved historical log access
+
+### Slice 3: runner packaging contract first
+
+- implement `mix favn.build.runner`
+- add manifest cache/export contract
+- lock metadata and plugin inclusion contract
+
+### Slice 4: split runtime artifacts
+
+- implement `mix favn.build.web`
+- implement `mix favn.build.orchestrator`
+- lock split deployment metadata and operator docs
+
+### Slice 5: single-node assembly
+
+- implement `mix favn.build.single`
+- lock three-runtime bundle structure and generated config/env contract
+- default single-node storage to SQLite
+
+### Slice 6: validation and polish
+
+- harden startup cleanup, stale-state handling, partial/dead service stop flows,
+  and diagnostics
+- add explicit SQLite and opt-in broader Postgres verification
+- finish docs
+
+Priority rule:
+
+- if scope must be narrowed temporarily, keep `install` and `build.runner`
+  ahead of optional niceties
+- do not cut the topology-preserving `single` semantics even if implementation is
+  minimal
+
+## 14. Acceptance Criteria For Phase 9 Completion
+
+Phase 9 is complete when all of the following are true:
+
+1. users can start from `{:favn, ...}` and run `mix favn.install` followed by
+   `mix favn.dev` without needing to understand internal apps
+2. all Favn-managed install/build/runtime side effects live under `.favn/`
+3. `mix favn.reset` fully removes project-local Favn state after the stack is
+   stopped
+4. `mix favn.logs` provides boring access to current and historical service logs
+5. `mix favn.build.web`, `mix favn.build.orchestrator`, and
+   `mix favn.build.runner` each produce explicit operator-facing artifacts with
+   compatibility metadata
+6. `mix favn.build.runner` packages user code, internal runner runtime, pinned
+   manifest, and selected plugins without making `favn_runner` part of the
+   public dependency surface
+7. `mix favn.build.single` produces one bundle containing explicit web,
+   orchestrator, and runner runtimes, not one collapsed runtime
+8. lifecycle recovery, partial/dead service recovery, startup cleanup, explicit
+   SQLite verification, and broader opt-in Postgres verification all have
+   coverage
+9. missing prerequisite, stale state, and port-conflict failures produce
+   actionable diagnostics
+10. docs describe the local and packaging story honestly without same-BEAM or
+    machine-global assumptions

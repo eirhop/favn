@@ -11,7 +11,14 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 
 - Phase 9 core local lifecycle has landed in `apps/favn_local`: `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`
 - public package topology migration is complete: `apps/favn` is now the thin public wrapper, `apps/favn_authoring` owns authoring implementation, and `apps/favn_local` owns lifecycle/tooling internals
-- remaining Phase 9 work is packaging and local-tooling follow-up: `install`, `reset`, `logs`, and build targets for `web`, `orchestrator`, `runner`, and optional `single`
+- Phase 9 install foundation is now in place through `mix favn.install` plus project-local `.favn/install` metadata/fingerprint state
+- Phase 9 local-tooling follow-up now also includes `mix favn.reset` and `mix favn.logs`
+- Phase 9 runner packaging first-cut is now in place through `mix favn.build.runner` with project-local build/dist metadata outputs
+- Phase 9 split build first-cut now also includes `mix favn.build.web` and `mix favn.build.orchestrator`
+- Phase 9 single-node assembly first-cut is now in place through `mix favn.build.single`
+- local storage configuration now supports `memory`, `sqlite`, and `postgres` through `config :favn, :local` plus `mix favn.dev --sqlite|--postgres`
+- remaining Phase 9 work is broader validation/polish
+- the remaining Phase 9 tooling/packageability design is now captured in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` and `docs/refactor/PHASE_9_TODO.md`
 - Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
 - shared migration fixture substrate now lives in `apps/favn_test_support` (`priv/fixtures/**` + `FavnTestSupport.Fixtures`) so later per-app parity PRs can reuse one fixture source of truth
 - authoring/compiler/planning/window coverage now lives in public-facade suites under `apps/favn/test` and core suites under `apps/favn_core/test`

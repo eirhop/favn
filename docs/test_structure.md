@@ -16,12 +16,19 @@ apps/
 │   ├── runtime_facade_test.exs
 │   └── test_helper.exs
 ├── favn_local/test/
+│   ├── dev_build_orchestrator_test.exs
+│   ├── dev_build_runner_test.exs
+│   ├── dev_build_single_test.exs
+│   ├── dev_build_web_test.exs
 │   ├── dev_config_test.exs
+│   ├── dev_install_test.exs
 │   ├── dev_lifecycle_test.exs
 │   ├── dev_lock_test.exs
+│   ├── dev_logs_test.exs
 │   ├── dev_orchestrator_client_test.exs
 │   ├── dev_process_test.exs
 │   ├── dev_reload_test.exs
+│   ├── dev_reset_test.exs
 │   ├── dev_state_test.exs
 │   ├── dev_status_test.exs
 │   ├── dev_stop_test.exs

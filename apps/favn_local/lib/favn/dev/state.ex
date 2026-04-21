@@ -21,9 +21,28 @@ defmodule Favn.Dev.State do
     [
       Paths.favn_dir(root_dir),
       Paths.logs_dir(root_dir),
+      Paths.install_dir(root_dir),
+      Paths.install_cache_dir(root_dir),
+      Paths.install_cache_npm_dir(root_dir),
+      Paths.install_runtimes_dir(root_dir),
+      Paths.install_runtime_web_dir(root_dir),
+      Paths.install_runtime_orchestrator_dir(root_dir),
+      Paths.install_runtime_runner_dir(root_dir),
+      Paths.build_dir(root_dir),
+      Paths.build_target_dir(root_dir, "web"),
+      Paths.build_target_dir(root_dir, "orchestrator"),
+      Paths.build_target_dir(root_dir, "runner"),
+      Paths.build_target_dir(root_dir, "single"),
+      Paths.dist_dir(root_dir),
+      Paths.dist_target_dir(root_dir, "web"),
+      Paths.dist_target_dir(root_dir, "orchestrator"),
+      Paths.dist_target_dir(root_dir, "runner"),
+      Paths.dist_target_dir(root_dir, "single"),
       Paths.data_dir(root_dir),
       Paths.manifests_dir(root_dir),
-      Paths.history_dir(root_dir)
+      Paths.manifest_cache_dir(root_dir),
+      Paths.history_dir(root_dir),
+      Paths.failures_dir(root_dir)
     ]
     |> Enum.reduce_while(:ok, fn dir, :ok ->
       case File.mkdir_p(dir) do
@@ -74,6 +93,42 @@ defmodule Favn.Dev.State do
       |> Paths.root_dir()
       |> Paths.latest_manifest_path()
       |> write_json(manifest)
+    end
+  end
+
+  @spec read_install(root_opt()) :: {:ok, map()} | {:error, read_error()}
+  def read_install(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.install_path()
+    |> read_json()
+  end
+
+  @spec write_install(map(), root_opt()) :: :ok | {:error, term()}
+  def write_install(install, opts \\ []) when is_map(install) and is_list(opts) do
+    with :ok <- ensure_layout(opts) do
+      opts
+      |> Paths.root_dir()
+      |> Paths.install_path()
+      |> write_json(install)
+    end
+  end
+
+  @spec read_toolchain(root_opt()) :: {:ok, map()} | {:error, read_error()}
+  def read_toolchain(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.toolchain_path()
+    |> read_json()
+  end
+
+  @spec write_toolchain(map(), root_opt()) :: :ok | {:error, term()}
+  def write_toolchain(toolchain, opts \\ []) when is_map(toolchain) and is_list(opts) do
+    with :ok <- ensure_layout(opts) do
+      opts
+      |> Paths.root_dir()
+      |> Paths.toolchain_path()
+      |> write_json(toolchain)
     end
   end
 
