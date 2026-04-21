@@ -1,131 +1,185 @@
-# Favn
+<p align="center">
+  <img src="docs/images/favn-logo-transparent.png" alt="Favn logo" width="220" />
+</p>
+
+<h1 align="center">Favn</h1>
+
+<p align="center">
+  Define business-oriented data assets in Elixir, model how they depend on each other, and turn them into predictable runs.
+</p>
+
+<p align="center">
+  <a href="#status"><strong>Status</strong></a>
+  ·
+  <a href="#what-favn-gives-you"><strong>Features</strong></a>
+  ·
+  <a href="#core-concepts"><strong>Concepts</strong></a>
+  ·
+  <a href="#quickstart"><strong>Quickstart</strong></a>
+  ·
+  <a href="#local-development"><strong>Local Dev</strong></a>
+  ·
+  <a href="#common-public-api-entry-points"><strong>API</strong></a>
+  ·
+  <a href="#documentation"><strong>Docs</strong></a>
+</p>
+
+Favn is an Elixir library for defining business-oriented data assets, understanding how they depend on each other, and turning those definitions into predictable runs.
+
+It is aimed at teams who want data and workflow logic to live in normal Elixir modules instead of being spread across ad hoc scripts, scheduler config, and undocumented conventions.
 
 ## Status
 
-Favn `v0.5.0` refactor is in progress.
+Favn is in private development and the `v0.5.0` refactor is still in progress.
 
-- umbrella structure is scaffolded under `apps/`
-- `apps/favn` is now the thin public package wrapper/distribution app
-- `apps/favn_authoring` now owns authoring/manifest-facing implementation previously housed under `apps/favn`
-- internal compiler/manifest/planning/shared-contract ownership has been re-centered into `apps/favn_core`
-- `apps/favn_core` now owns Phase 3 manifest/versioning foundations and shared runner contracts
-- the core local dev lifecycle implementation is owned by `apps/favn_local`
-- the old `apps/favn_legacy` monolith has been deleted after ownership moved to the new apps
-- Phase 0-4 contracts and migration rules are tracked in `docs/REFACTOR.md`
+- breaking changes are still allowed before `v1.0`
+- `{:favn, ...}` remains the one public package users should depend on
+- local development tooling is available today through `mix favn.dev`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 
-## Current Refactor Reality
+## What Favn Gives You
 
-- the public `Favn.*` facade now resolves from `apps/favn` and delegates authoring behavior into `apps/favn_authoring`
-- orchestrator-owned runtime scheduling, run tracking, rerun/cancel flows, and public runtime contracts now live in `apps/favn_orchestrator`
-- canonical manifest schema/versioning, serializer/hash identity, compatibility checks, and shared runner contracts are now implemented in `favn_core`
-- initial runner boundary execution now exists in `favn_runner` for manifest registration plus Elixir/source asset execution through runner contracts
-- runner-owned connection runtime and SQL execution runtime slices are now hosted in `apps/favn_runner/lib/favn/connection/**`, `apps/favn_runner/lib/favn/sql/**`, and `apps/favn_runner/lib/favn/sql_asset/**`
-- public lifecycle entrypoint tasks `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, and `mix favn.status` are now owned by `apps/favn` and delegate to `apps/favn_local`
-- the earlier same-BEAM `favn_view` Phoenix prototype has been removed in favor of the separate `web/favn_web` boundary
+- Elixir DSLs for single assets, multi-assets, SQL assets, namespaces, schedules, and pipelines
+- explicit dependency modeling between assets
+- compile-time manifest generation for authored business code
+- deterministic planning from selected targets and dependency rules
+- pipeline definitions for scheduled or operator-triggered runs
+- local runtime workflow support for authoring, inspection, and orchestration
+- SQL-aware asset authoring with reusable SQL definitions and relation references
 
-## Current Focus
+## Core Concepts
 
-- Phase 8 baseline work now establishes the `favn_web + favn_orchestrator + favn_runner` boundary in baseline form: private orchestrator HTTP API v1, SSE baseline, orchestrator-owned auth/session/audit baseline, and thin `favn_web` proof flows
-- the core local developer loop implementation remains in `apps/favn_local`, while public task entrypoints live in `apps/favn`
-- current Phase 9 follow-up is the remaining packaging/install/reset/logs/build work around that lifecycle
-- the legacy deletion slice is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
-- keep `favn` as the one public package and public entrypoint surface
-- keep `favn_authoring` as internal authoring/manifest implementation ownership
-- keep `favn_core` as the canonical manifest/planning/shared-contract layer
-- keep `favn_orchestrator` as the manifest-pinned control plane, auth/authz authority, and storage owner
-- keep `favn_runner` as execution-only and transport-pluggable
-- treat `web/favn_web` as the only supported UI boundary direction
-- breaking changes remain allowed before `v1.0`
+### Assets
 
-## Documentation Pointers
+Assets are the units of business work in Favn. An asset can be written as normal Elixir (`use Favn.Asset`) or as a SQL-backed asset (`use Favn.SQLAsset`).
 
-- `docs/REFACTOR.md` - locked architecture boundaries, migration rules, phase plan
-- `docs/FEATURES.md` - roadmap status
-- `docs/lib_structure.md` - umbrella library layout
-- `docs/test_structure.md` - umbrella test layout
-- `docs/refactor/PHASE_2_MIGRATION_PLAN.md` - Phase 2 transitional ownership plan
-- `docs/refactor/PHASE_3_MANIFEST_VERSIONING_PLAN.md` - Phase 3 manifest/versioning architecture plan
-- `docs/refactor/PHASE_3_TODO.md` - Phase 3 implementation checklist
-- `docs/refactor/PHASE_4_RUNNER_BOUNDARY_PLAN.md` - Phase 4 runner architecture plan
-- `docs/refactor/PHASE_4_TODO.md` - Phase 4 implementation checklist
-- `docs/refactor/PHASE_5_ORCHESTRATOR_BOUNDARY_PLAN.md` - Phase 5 orchestrator architecture plan
-- `docs/refactor/PHASE_5_TODO.md` - Phase 5 implementation checklist
-- `docs/refactor/PHASE_6_STORAGE_ADAPTER_PLAN.md` - Phase 6 storage adapter architecture plan
-- `docs/refactor/PHASE_6_TODO.md` - Phase 6 implementation checklist
-- `docs/refactor/PHASE_7_DUCKDB_RUNNER_PLAN.md` - Phase 7 runner/plugin architecture plan
-- `docs/refactor/PHASE_7_TODO.md` - Phase 7 implementation checklist
-- `docs/refactor/PHASE_8_WEB_ORCHESTRATOR_BOUNDARY_PLAN.md` - Phase 8 web/orchestrator boundary, SSE, auth, and audit architecture plan
-- `docs/refactor/PHASE_8_TODO.md` - Phase 8 implementation checklist
-- `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` - Phase 9 local lifecycle and packaging plan
-- `docs/refactor/PHASE_9_TODO.md` - Phase 9 implementation checklist
+### Pipelines
 
-## Storage Adapter Verification Notes
+Pipelines select one or more target assets and describe how they should run, for example whether dependencies should be included and whether the pipeline should have a schedule.
 
-- SQLite adapter coverage runs in normal `mix test` execution.
-- Postgres live integration coverage is opt-in via `FAVN_POSTGRES_TEST_URL`:
-  - `mix test apps/favn_storage_postgres/test/integration/adapter_live_test.exs`
+### Manifests
 
-## Storage Adapter Configuration
+Favn compiles your authored modules into a manifest so planning and runtime behavior can operate from a stable, explicit description of the graph.
 
-Current extracted adapter module names during migration:
+## Quickstart
 
-- SQLite: `FavnStorageSqlite.Adapter`
-- Postgres: `FavnStoragePostgres.Adapter`
+### 1. Add the dependency
 
-Current storage-format note:
-
-- SQLite/Postgres foundation adapters still persist run/event/scheduler payload bodies as BEAM term blobs for the first extracted cut
-- this is intentional temporary scaffolding, not the long-term JSON/JSONB end state described in the architecture notes
-
-SQLite local-dev persistence example:
+Favn is not published on Hex yet.
 
 ```elixir
-config :favn_orchestrator,
-  storage_adapter: FavnStorageSqlite.Adapter,
-  storage_adapter_opts: [
-    database: ".favn/dev.sqlite3",
-    migration_mode: :auto,
-    pool_size: 1
+def deps do
+  [
+    {:favn, git: "https://github.com/eirhop/favn.git", branch: "main"}
+  ]
+end
+```
+
+### 2. Define an asset
+
+```elixir
+defmodule MyApp.Raw.Sales.Orders do
+  use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
+  use Favn.Asset
+
+  @doc "Load raw orders"
+  @meta owner: "data-platform", category: :sales, tags: [:raw]
+  @relation true
+  def asset(_ctx) do
+    :ok
+  end
+end
+```
+
+### 3. Define a downstream SQL asset
+
+```elixir
+defmodule MyApp.Gold.Sales.OrderSummary do
+  use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
+  use Favn.SQLAsset
+
+  @meta owner: "analytics", category: :sales, tags: [:gold]
+  @depends MyApp.Raw.Sales.Orders
+  @materialized :view
+
+  query do
+    ~SQL"""
+    select *
+    from MyApp.Raw.Sales.Orders
+    """
+  end
+end
+```
+
+### 4. Define a pipeline
+
+```elixir
+defmodule MyApp.Pipelines.DailySales do
+  use Favn.Pipeline
+
+  pipeline :daily_sales do
+    asset MyApp.Gold.Sales.OrderSummary
+    deps :all
+    schedule cron: "0 2 * * *", timezone: "Etc/UTC"
+  end
+end
+```
+
+### 5. Configure authored modules
+
+```elixir
+import Config
+
+config :favn,
+  asset_modules: [
+    MyApp.Raw.Sales.Orders,
+    MyApp.Gold.Sales.OrderSummary
+  ],
+  pipeline_modules: [
+    MyApp.Pipelines.DailySales
   ]
 ```
 
-Postgres managed mode example:
+### 6. Inspect and compile from IEx
 
 ```elixir
-config :favn_orchestrator,
-  storage_adapter: FavnStoragePostgres.Adapter,
-  storage_adapter_opts: [
-    repo_mode: :managed,
-    repo_config: [
-      hostname: "localhost",
-      database: "favn",
-      username: "postgres",
-      password: "postgres"
-    ],
-    migration_mode: :manual
-  ]
+{:ok, assets} = Favn.list_assets()
+{:ok, pipeline} = Favn.get_pipeline(MyApp.Pipelines.DailySales)
+{:ok, manifest} = Favn.generate_manifest()
 ```
 
-Postgres external mode example:
+## Local Development
 
-```elixir
-config :favn_orchestrator,
-  storage_adapter: FavnStoragePostgres.Adapter,
-  storage_adapter_opts: [
-    repo_mode: :external,
-    repo: MyApp.Repo,
-    migration_mode: :manual
-  ]
+Favn includes a local developer loop for running the current project with the Favn runtime stack.
+
+```bash
+mix favn.dev
+mix favn.status
+mix favn.reload
+mix favn.stop
 ```
 
-## Phase 8 Orchestrator/Web Security Configuration
+Today this is still part of the ongoing `v0.5` refactor, but it is the intended public entrypoint for local iteration.
 
-When running the private orchestrator API and `favn_web` prototype during Phase 8 boundary work:
+## Common Public API Entry Points
 
-- orchestrator API service credentials must be explicitly configured (fail-closed):
-  - `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`
-  - `FAVN_ORCHESTRATOR_API_ENABLED=1`
-- web tier must provide the matching service token when calling orchestrator:
-  - `FAVN_ORCHESTRATOR_SERVICE_TOKEN`
-- web cookie signing secret must be configured outside local dev/test:
-  - `FAVN_WEB_SESSION_SECRET`
+- `Favn.list_assets/0,1`
+- `Favn.get_asset/1`
+- `Favn.get_pipeline/1`
+- `Favn.resolve_pipeline/2`
+- `Favn.generate_manifest/0,1`
+- `Favn.build_manifest/0,1`
+- `Favn.plan_asset_run/2`
+- `Favn.run_pipeline/2`
+
+## Documentation
+
+- `docs/FEATURES.md` tracks roadmap and feature status
+- `docs/REFACTOR.md` tracks the `v0.5` architecture and migration plan
+- `docs/lib_structure.md` describes the current library layout
+- `docs/test_structure.md` describes the current test layout
+
+## Current Direction
+
+The current release work is focused on making Favn a manifest-first product with clear authoring, orchestrator, runner, and web boundaries while keeping `favn` as the only public package.
+
+That internal refactor should not change the core user-facing goal: define assets and pipelines in Elixir, compile them into an explicit graph, and run them with predictable behavior.
