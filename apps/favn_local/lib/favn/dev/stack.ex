@@ -134,6 +134,8 @@ defmodule Favn.Dev.Stack do
           list
 
         _ ->
+          :ok = ensure_web_assets(root_dir, opts)
+
           [
             runner_spec(root_dir, node_names, secrets),
             orchestrator_spec(root_dir, config, node_names, secrets),
@@ -151,6 +153,26 @@ defmodule Favn.Dev.Stack do
           {:halt, {:error, {:start_failed, spec.name, reason}}}
       end
     end)
+  end
+
+  defp ensure_web_assets(root_dir, opts) do
+    if Keyword.get(opts, :skip_web_build, false) do
+      :ok
+    else
+      web_cwd = Path.join(root_dir, "web/favn_web")
+      built_index = Path.join(web_cwd, "dist/index.html")
+
+      if File.exists?(built_index) do
+        :ok
+      else
+        npm = System.find_executable("npm") || "npm"
+
+        case System.cmd(npm, ["run", "build", "--silent"], cd: web_cwd, stderr_to_stdout: true) do
+          {_output, 0} -> :ok
+          {output, status} -> {:error, {:web_build_failed, status, String.trim(output)}}
+        end
+      end
+    end
   end
 
   defp runner_spec(root_dir, node_names, secrets) do
@@ -185,9 +207,26 @@ defmodule Favn.Dev.Stack do
     code =
       """
       storage = System.get_env("FAVN_DEV_STORAGE", "memory")
-      if storage == "sqlite" do
-        Application.put_env(:favn_orchestrator, :storage_adapter, FavnStorageSqlite.Adapter)
-        Application.put_env(:favn_orchestrator, :storage_adapter_opts, database: System.get_env("FAVN_DEV_SQLITE_PATH"))
+
+      cond do
+        storage == "sqlite" ->
+          Application.put_env(:favn_orchestrator, :storage_adapter, FavnStorageSqlite.Adapter)
+          Application.put_env(:favn_orchestrator, :storage_adapter_opts, database: System.get_env("FAVN_DEV_SQLITE_PATH"))
+
+        storage == "postgres" ->
+          Application.put_env(:favn_orchestrator, :storage_adapter, FavnStoragePostgres.Adapter)
+
+          Application.put_env(
+            :favn_orchestrator,
+            :storage_adapter_opts,
+            hostname: System.get_env("FAVN_DEV_POSTGRES_HOST"),
+            port: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_PORT", "5432")),
+            username: System.get_env("FAVN_DEV_POSTGRES_USERNAME"),
+            password: System.get_env("FAVN_DEV_POSTGRES_PASSWORD"),
+            database: System.get_env("FAVN_DEV_POSTGRES_DATABASE"),
+            ssl: System.get_env("FAVN_DEV_POSTGRES_SSL", "false") == "true",
+            pool_size: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_POOL_SIZE", "10"))
+          )
       end
       runner_node = String.to_atom(System.get_env("FAVN_DEV_RUNNER_NODE"))
       Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
@@ -218,6 +257,13 @@ defmodule Favn.Dev.Stack do
         "MIX_ENV" => "dev",
         "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
         "FAVN_DEV_SQLITE_PATH" => sqlite_path,
+        "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
+        "FAVN_DEV_POSTGRES_PORT" => Integer.to_string(config.postgres.port),
+        "FAVN_DEV_POSTGRES_USERNAME" => config.postgres.username,
+        "FAVN_DEV_POSTGRES_PASSWORD" => config.postgres.password,
+        "FAVN_DEV_POSTGRES_DATABASE" => config.postgres.database,
+        "FAVN_DEV_POSTGRES_SSL" => if(config.postgres.ssl, do: "true", else: "false"),
+        "FAVN_DEV_POSTGRES_POOL_SIZE" => Integer.to_string(config.postgres.pool_size),
         "FAVN_DEV_RUNNER_NODE" => node_names.runner_full,
         "FAVN_ORCHESTRATOR_API_ENABLED" =>
           if(config.orchestrator_api_enabled, do: "1", else: "0"),
@@ -228,17 +274,21 @@ defmodule Favn.Dev.Stack do
   end
 
   defp web_spec(root_dir, config, secrets) do
-    bash = System.find_executable("bash") || "/bin/bash"
     npm = System.find_executable("npm") || "npm"
     web_cwd = Path.join(root_dir, "web/favn_web")
 
-    command =
-      "#{npm} run build --silent && #{npm} run preview -- --host 127.0.0.1 --port #{config.web_port}"
-
     %{
       name: "web",
-      exec: bash,
-      args: ["-lc", command],
+      exec: npm,
+      args: [
+        "run",
+        "preview",
+        "--",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        Integer.to_string(config.web_port)
+      ],
       cwd: web_cwd,
       log_path: Paths.web_log_path(root_dir),
       env: %{
@@ -389,18 +439,18 @@ defmodule Favn.Dev.Stack do
   end
 
   defp http_up?(url) do
-    case System.cmd(
-           "curl",
-           ["-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "1", url],
-           stderr_to_stdout: true
-         ) do
-      {code, 0} ->
-        case Integer.parse(String.trim(code)) do
-          {status, _rest} when status >= 200 and status < 500 -> true
-          _ -> false
+    case URI.parse(url) do
+      %URI{host: host, port: port} when is_binary(host) and is_integer(port) and port > 0 ->
+        case :gen_tcp.connect(String.to_charlist(host), port, [:binary, {:active, false}], 1_000) do
+          {:ok, socket} ->
+            :gen_tcp.close(socket)
+            true
+
+          {:error, _reason} ->
+            false
         end
 
-      {_output, _status} ->
+      _other ->
         false
     end
   end

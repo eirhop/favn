@@ -145,19 +145,132 @@ defmodule Favn.Dev.Install do
   defp write_install_state(fingerprint, toolchain, opts) do
     root_dir = Paths.root_dir(opts)
 
+    runtime_inputs = runtime_inputs(root_dir)
+
     install = %{
       "schema_version" => @schema_version,
       "installed_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "fingerprint" => fingerprint,
-      "runtime_inputs" => %{
-        "web" => %{"source_root" => Path.join(root_dir, "web/favn_web")},
-        "orchestrator" => %{"source_root" => Path.join(root_dir, "apps/favn_orchestrator")},
-        "runner" => %{"source_root" => Path.join(root_dir, "apps/favn_runner")}
-      },
+      "runtime_inputs" => runtime_inputs,
       "toolchain_ref" => "toolchain.json"
     }
 
-    with :ok <- State.write_toolchain(toolchain, opts), do: State.write_install(install, opts)
+    with :ok <- materialize_runtime_inputs(runtime_inputs, root_dir),
+         :ok <- State.write_toolchain(toolchain, opts),
+         do: State.write_install(install, opts)
+  end
+
+  defp runtime_inputs(root_dir) do
+    %{
+      "web" => %{
+        "source_root" => Path.join(root_dir, "web/favn_web"),
+        "materialized_root" => Paths.install_runtime_web_dir(root_dir)
+      },
+      "orchestrator" => %{
+        "source_root" => Path.join(root_dir, "apps/favn_orchestrator"),
+        "materialized_root" => Paths.install_runtime_orchestrator_dir(root_dir)
+      },
+      "runner" => %{
+        "source_root" => Path.join(root_dir, "apps/favn_runner"),
+        "materialized_root" => Paths.install_runtime_runner_dir(root_dir)
+      }
+    }
+  end
+
+  defp materialize_runtime_inputs(runtime_inputs, root_dir) do
+    [
+      materialize_web_input(runtime_inputs, root_dir),
+      materialize_orchestrator_input(runtime_inputs, root_dir),
+      materialize_runner_input(runtime_inputs, root_dir)
+    ]
+    |> run_materialization_steps()
+  end
+
+  defp run_materialization_steps(results) do
+    Enum.reduce_while(results, :ok, fn
+      :ok, :ok -> {:cont, :ok}
+      {:error, reason}, :ok -> {:halt, {:error, reason}}
+      other, :ok -> {:halt, {:error, {:unexpected_materialization_result, other}}}
+    end)
+  end
+
+  defp materialize_web_input(runtime_inputs, root_dir) do
+    source_root = get_in(runtime_inputs, ["web", "source_root"])
+    materialized_root = get_in(runtime_inputs, ["web", "materialized_root"])
+    source_dir = Path.join(materialized_root, "source")
+
+    with :ok <- File.mkdir_p(source_dir),
+         :ok <-
+           copy_if_exists(
+             Path.join(source_root, "package.json"),
+             Path.join(source_dir, "package.json")
+           ),
+         :ok <-
+           copy_if_exists(
+             Path.join(source_root, "package-lock.json"),
+             Path.join(source_dir, "package-lock.json")
+           ),
+         :ok <-
+           write_json(
+             Path.join(materialized_root, "runtime_input.json"),
+             %{
+               "source_root" => source_root,
+               "materialized_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+             }
+           ) do
+      copy_if_exists(Path.join(root_dir, "mix.lock"), Path.join(source_dir, "mix.lock"))
+    end
+  end
+
+  defp materialize_orchestrator_input(runtime_inputs, root_dir) do
+    source_root = get_in(runtime_inputs, ["orchestrator", "source_root"])
+    materialized_root = get_in(runtime_inputs, ["orchestrator", "materialized_root"])
+    source_dir = Path.join(materialized_root, "source")
+
+    with :ok <- File.mkdir_p(source_dir),
+         :ok <-
+           copy_if_exists(Path.join(source_root, "mix.exs"), Path.join(source_dir, "mix.exs")),
+         :ok <- copy_if_exists(Path.join(root_dir, "mix.lock"), Path.join(source_dir, "mix.lock")) do
+      write_json(
+        Path.join(materialized_root, "runtime_input.json"),
+        %{
+          "source_root" => source_root,
+          "materialized_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+      )
+    end
+  end
+
+  defp materialize_runner_input(runtime_inputs, root_dir) do
+    source_root = get_in(runtime_inputs, ["runner", "source_root"])
+    materialized_root = get_in(runtime_inputs, ["runner", "materialized_root"])
+    source_dir = Path.join(materialized_root, "source")
+
+    with :ok <- File.mkdir_p(source_dir),
+         :ok <-
+           copy_if_exists(Path.join(source_root, "mix.exs"), Path.join(source_dir, "mix.exs")),
+         :ok <- copy_if_exists(Path.join(root_dir, "mix.lock"), Path.join(source_dir, "mix.lock")) do
+      write_json(
+        Path.join(materialized_root, "runtime_input.json"),
+        %{
+          "source_root" => source_root,
+          "materialized_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+      )
+    end
+  end
+
+  defp copy_if_exists(source, destination) do
+    if File.exists?(source) do
+      File.cp(source, destination)
+    else
+      :ok
+    end
+  end
+
+  defp write_json(path, data) when is_map(data) do
+    encoded = JSON.encode_to_iodata!(data)
+    File.write(path, [encoded, "\n"])
   end
 
   @spec fingerprint(root_opt()) :: {:ok, map()} | {:error, term()}

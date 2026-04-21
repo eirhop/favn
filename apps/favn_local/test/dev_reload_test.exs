@@ -2,6 +2,7 @@ defmodule Favn.Dev.ReloadTest do
   use ExUnit.Case, async: true
 
   alias Favn.Dev
+  alias Favn.Dev.Reload
   alias Favn.Dev.State
 
   setup do
@@ -36,5 +37,10 @@ defmodule Favn.Dev.ReloadTest do
 
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
     assert {:error, :stack_not_healthy} = Dev.reload(root_dir: root_dir)
+  end
+
+  test "runner_sname/1 returns short node name" do
+    assert "favn_runner_123" == Reload.runner_sname("favn_runner_123@localhost")
+    assert "favn_runner_123" == Reload.runner_sname("favn_runner_123")
   end
 end

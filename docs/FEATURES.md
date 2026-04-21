@@ -16,6 +16,7 @@ Favn `v0.5.0` is a refactor release toward a manifest-first product with separat
 - Phase 9 runner packaging first-cut is now in place through `mix favn.build.runner` with project-local build/dist metadata outputs
 - Phase 9 split build first-cut now also includes `mix favn.build.web` and `mix favn.build.orchestrator`
 - Phase 9 single-node assembly first-cut is now in place through `mix favn.build.single`
+- local storage configuration now supports `memory`, `sqlite`, and `postgres` through `config :favn, :local` plus `mix favn.dev --sqlite|--postgres`
 - remaining Phase 9 work is broader validation/polish
 - the remaining Phase 9 tooling/packageability design is now captured in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` and `docs/refactor/PHASE_9_TODO.md`
 - Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella

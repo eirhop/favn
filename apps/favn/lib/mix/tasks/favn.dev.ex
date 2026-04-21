@@ -14,9 +14,9 @@ defmodule Mix.Tasks.Favn.Dev do
   @impl Mix.Task
   def run(args) do
     {opts, _rest, _invalid} =
-      OptionParser.parse(args, strict: [root_dir: :string, sqlite: :boolean])
+      OptionParser.parse(args, strict: [root_dir: :string, sqlite: :boolean, postgres: :boolean])
 
-    opts = maybe_sqlite(opts)
+    opts = normalize_storage_flags(opts)
 
     case Dev.dev(opts) do
       :ok -> :ok
@@ -27,11 +27,17 @@ defmodule Mix.Tasks.Favn.Dev do
     end
   end
 
-  defp maybe_sqlite(opts) do
-    if Keyword.get(opts, :sqlite, false) do
-      opts |> Keyword.delete(:sqlite) |> Keyword.put(:storage, :sqlite)
-    else
-      Keyword.delete(opts, :sqlite)
+  defp normalize_storage_flags(opts) do
+    sqlite? = Keyword.get(opts, :sqlite, false)
+    postgres? = Keyword.get(opts, :postgres, false)
+
+    opts = opts |> Keyword.delete(:sqlite) |> Keyword.delete(:postgres)
+
+    cond do
+      sqlite? and postgres? -> Mix.raise("choose only one storage flag: --sqlite or --postgres")
+      sqlite? -> Keyword.put(opts, :storage, :sqlite)
+      postgres? -> Keyword.put(opts, :storage, :postgres)
+      true -> opts
     end
   end
 end

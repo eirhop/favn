@@ -166,6 +166,44 @@ mix favn.reset
 
 Today this is still part of the ongoing `v0.5` refactor, but it is the intended public entrypoint for local iteration.
 
+### favn_local configuration
+
+`favn_local` reads local tooling config from `config :favn, :local` (with
+`config :favn, :dev` still supported for backward compatibility).
+
+```elixir
+config :favn, :local,
+  storage: :memory,
+  sqlite_path: ".favn/data/orchestrator.sqlite3",
+  postgres: [
+    hostname: "127.0.0.1",
+    port: 5432,
+    username: "postgres",
+    password: "postgres",
+    database: "favn",
+    ssl: false,
+    pool_size: 10
+  ]
+```
+
+Storage modes:
+
+- `mix favn.dev` uses configured storage (default `:memory`)
+- `mix favn.dev --sqlite` forces SQLite
+- `mix favn.dev --postgres` forces Postgres
+
+`mix favn.build.single` defaults to SQLite and accepts
+`--storage sqlite|postgres`.
+
+### favn_local implementation notes
+
+- public `mix favn.*` tasks are owned by `apps/favn`
+- implementation is owned by `apps/favn_local`
+- `mix favn.build.runner` is rooted in the current Mix project; `--root-dir`
+  must match the current project root
+- install currently records and snapshots runtime input metadata under
+  `.favn/install/runtimes/*` and caches npm data under `.favn/install/cache/npm`
+
 ## Common Public API Entry Points
 
 - `Favn.list_assets/0,1`

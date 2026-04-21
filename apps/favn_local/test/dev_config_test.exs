@@ -8,6 +8,8 @@ defmodule Favn.Dev.ConfigTest do
 
     assert config.storage == :memory
     assert config.sqlite_path == ".favn/data/orchestrator.sqlite3"
+    assert config.postgres.hostname == "127.0.0.1"
+    assert config.postgres.port == 5432
     assert config.orchestrator_api_enabled == true
     assert config.orchestrator_port == 4101
     assert config.web_port == 4173
@@ -34,5 +36,42 @@ defmodule Favn.Dev.ConfigTest do
     assert config.orchestrator_base_url == "http://127.0.0.1:4201"
     assert config.web_base_url == "http://127.0.0.1:4273"
     assert config.service_token == "dev-token"
+  end
+
+  test "resolve/1 supports postgres storage and postgres options" do
+    config =
+      Config.resolve(
+        storage: :postgres,
+        postgres: [
+          hostname: "db",
+          port: 6543,
+          username: "u",
+          password: "p",
+          database: "favn_dev",
+          ssl: true
+        ]
+      )
+
+    assert config.storage == :postgres
+    assert config.postgres.hostname == "db"
+    assert config.postgres.port == 6543
+    assert config.postgres.username == "u"
+    assert config.postgres.password == "p"
+    assert config.postgres.database == "favn_dev"
+    assert config.postgres.ssl == true
+  end
+
+  test "resolve/1 reads :local config and lets it override :dev" do
+    Application.put_env(:favn, :dev, storage: :memory, sqlite_path: "dev.sqlite")
+    Application.put_env(:favn, :local, storage: :sqlite, sqlite_path: "local.sqlite")
+
+    on_exit(fn ->
+      Application.delete_env(:favn, :dev)
+      Application.delete_env(:favn, :local)
+    end)
+
+    config = Config.resolve([])
+    assert config.storage == :sqlite
+    assert config.sqlite_path == "local.sqlite"
   end
 end

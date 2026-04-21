@@ -4,6 +4,7 @@ defmodule Favn.Dev.Status do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
 
   @type inspect_opts :: [root_dir: Path.t()]
@@ -88,10 +89,7 @@ defmodule Favn.Dev.Status do
   end
 
   defp process_alive?(pid) when is_integer(pid) and pid > 0 do
-    case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
-      {_output, 0} -> true
-      {_output, _exit_status} -> false
-    end
+    DevProcess.alive?(pid)
   end
 
   defp summarize_stack_status(services) do

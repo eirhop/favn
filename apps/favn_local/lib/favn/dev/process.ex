@@ -26,23 +26,65 @@ defmodule Favn.Dev.Process do
   @spec stop_pid(integer(), timeout()) :: :ok
   def stop_pid(pid, timeout_ms \\ 10_000)
       when is_integer(pid) and pid > 0 and is_integer(timeout_ms) do
-    _ = System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
+    _ = send_terminate(pid)
 
     deadline = System.monotonic_time(:millisecond) + timeout_ms
 
     if wait_dead(pid, deadline) do
       :ok
     else
-      _ = System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
+      _ = send_kill(pid)
       :ok
     end
   end
 
   @spec alive?(integer()) :: boolean()
   def alive?(pid) when is_integer(pid) and pid > 0 do
+    case :os.type() do
+      {:unix, _} -> unix_alive?(pid)
+      {:win32, _} -> windows_alive?(pid)
+    end
+  end
+
+  defp send_terminate(pid) do
+    case :os.type() do
+      {:unix, _} ->
+        System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
+
+      {:win32, _} ->
+        System.cmd("taskkill", ["/PID", Integer.to_string(pid)], stderr_to_stdout: true)
+    end
+  end
+
+  defp send_kill(pid) do
+    case :os.type() do
+      {:unix, _} ->
+        System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
+
+      {:win32, _} ->
+        System.cmd("taskkill", ["/PID", Integer.to_string(pid), "/T", "/F"],
+          stderr_to_stdout: true
+        )
+    end
+  end
+
+  defp unix_alive?(pid) do
     case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
       {_out, 0} -> true
       {_out, _status} -> false
+    end
+  end
+
+  defp windows_alive?(pid) do
+    case System.cmd("tasklist", ["/FI", "PID eq #{pid}", "/FO", "CSV", "/NH"],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        normalized = output |> String.trim() |> String.downcase()
+        normalized != "" and not String.starts_with?(normalized, "info:")
+
+      {_output, _status} ->
+        false
     end
   end
 

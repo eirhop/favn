@@ -45,7 +45,13 @@ defmodule Favn.Dev.InstallTest do
 
     assert install["schema_version"] == 1
     assert is_map(install["fingerprint"])
+    assert is_binary(get_in(install, ["runtime_inputs", "web", "materialized_root"]))
     assert toolchain["schema_version"] == 1
+
+    assert File.exists?(Path.join(root_dir, ".favn/install/runtimes/web/runtime_input.json"))
+    assert File.exists?(Path.join(root_dir, ".favn/install/runtimes/web/source/package.json"))
+    assert File.exists?(Path.join(root_dir, ".favn/install/runtimes/orchestrator/source/mix.exs"))
+    assert File.exists?(Path.join(root_dir, ".favn/install/runtimes/runner/source/mix.exs"))
   end
 
   test "run/1 returns already_installed when fingerprint matches", %{root_dir: root_dir} do
