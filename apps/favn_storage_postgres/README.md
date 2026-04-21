@@ -37,6 +37,11 @@ Current status:
   - configure `repo_mode: :external` with `repo: MyApp.Repo`
   - `migration_mode` must remain `:manual`
 
+## Payload compatibility
+
+- pre-closeout persisted run/event/scheduler rows encoded as BEAM term blobs are intentionally unsupported
+- if an environment still has pre-closeout rows, reset/recreate runtime tables before running with the closeout adapter
+
 ## Live integration tests
 
 Postgres live integration coverage is opt-in to avoid requiring a local DB for normal CI/dev loops.

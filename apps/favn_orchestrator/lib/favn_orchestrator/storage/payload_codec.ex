@@ -75,13 +75,15 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
   defp decode_term(%{"__type__" => "struct", "module" => module, "fields" => fields})
        when is_binary(module) do
     with {:ok, decoded_fields} <- decode_term(fields),
-         true <- is_map(decoded_fields),
-         module_atom when is_atom(module_atom) <- String.to_atom(module) do
+         :ok <- validate_struct_fields(decoded_fields, fields),
+         {:ok, module_atom} <- decode_existing_atom(module),
+         :ok <- validate_struct_module(module_atom, module) do
       {:ok, struct(module_atom, decoded_fields)}
     else
-      false -> {:error, {:invalid_struct_fields, fields}}
       error -> error
     end
+  rescue
+    error -> {:error, {:invalid_struct_decode, module, error}}
   end
 
   defp decode_term(%{"__type__" => "map", "entries" => entries}) when is_list(entries) do
@@ -106,7 +108,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
   end
 
   defp decode_term(%{"__type__" => "atom", "value" => value}) when is_binary(value) do
-    {:ok, String.to_atom(value)}
+    decode_existing_atom(value)
   end
 
   defp decode_term(%{"__type__" => type} = value),
@@ -129,6 +131,25 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     |> case do
       {:ok, values} -> {:ok, Enum.reverse(values)}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_existing_atom(value) when is_binary(value) do
+    {:ok, String.to_existing_atom(value)}
+  rescue
+    ArgumentError -> {:error, {:unknown_atom, value}}
+  end
+
+  defp validate_struct_fields(decoded_fields, _raw_fields) when is_map(decoded_fields), do: :ok
+
+  defp validate_struct_fields(_decoded_fields, raw_fields),
+    do: {:error, {:invalid_struct_fields, raw_fields}}
+
+  defp validate_struct_module(module_atom, raw_module) when is_atom(module_atom) do
+    if function_exported?(module_atom, :__struct__, 0) do
+      :ok
+    else
+      {:error, {:invalid_struct_module, raw_module}}
     end
   end
 end

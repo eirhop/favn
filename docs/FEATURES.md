@@ -26,6 +26,7 @@ Completed closeout work:
 - Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
 - stable storage adapter entrypoints are restored as `Favn.Storage.Adapter.SQLite` and `Favn.Storage.Adapter.Postgres`
 - SQL adapters now persist canonical inspectable `json-v1` payloads for run snapshots, run events, and scheduler state instead of BEAM term blobs
+- pre-closeout SQL rows persisted as BEAM term blobs are intentionally unsupported; reset/recreate persisted runtime state when upgrading to the closeout adapters
 - scheduler state writes now use explicit optimistic versions rather than permissive blind increments
 - external Postgres repo mode now caches successful schema-readiness validation instead of repeating catalog checks on every adapter call
 - public/package ownership is locked: `apps/favn` stays thin, `apps/favn_authoring` owns authoring internals, and `apps/favn_local` owns local tooling internals

@@ -176,6 +176,10 @@ If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current
 canonical format.
 
+Pre-closeout SQL payload compatibility is intentionally not supported. Existing
+SQLite/Postgres rows that were persisted as BEAM term blobs must be reset or
+recreated before running with the closeout adapters.
+
 ### favn_local configuration
 
 `favn_local` reads local tooling config from `config :favn, :local` (with

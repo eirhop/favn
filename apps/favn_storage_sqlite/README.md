@@ -43,6 +43,11 @@ config :favn_orchestrator,
 
 Use `migration_mode: :manual` only when schema lifecycle is controlled externally.
 
+## Payload compatibility
+
+- pre-closeout persisted run/event/scheduler rows encoded as BEAM term blobs are intentionally unsupported
+- run `mix favn.reset` (or clear the SQLite runtime tables manually) before running with the closeout adapter
+
 ## Instance model
 
 - current managed mode supports one SQLite adapter instance per BEAM node
