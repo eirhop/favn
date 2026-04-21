@@ -1,9 +1,8 @@
 defmodule FavnAuthoring do
   @moduledoc """
-  Public Phase 2 facade focused on authoring compilation and manifest generation.
+  Public authoring facade focused on compilation and manifest generation.
 
-  This facade intentionally avoids runtime/orchestrator concerns while the runtime
-  migration is still in progress.
+  This facade intentionally avoids runtime and orchestrator concerns.
   """
 
   alias Favn.Asset

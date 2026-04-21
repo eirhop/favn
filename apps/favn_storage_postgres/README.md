@@ -8,7 +8,7 @@ Visibility:
 
 - internal
 
-Allowed dependencies in Phase 1:
+Allowed dependencies:
 
 - `favn_orchestrator`
 - `ecto_sql`
@@ -20,12 +20,13 @@ Must not depend on:
 
 Current status:
 
-- implemented initial Phase 6 Postgres adapter foundation
-- module entrypoint: `FavnStoragePostgres.Adapter`
+- implemented Postgres storage adapter for orchestrator persistence
+- module entrypoint: `Favn.Storage.Adapter.Postgres`
 - supports managed and external repo modes
 - managed mode supports migration bootstrap (`:auto`) and schema-ready enforcement (`:manual`)
 - persists manifest versions, active manifest pointer, run snapshots, run events, and scheduler cursors
-- current persisted run/event/scheduler payloads use BEAM term blobs as a temporary foundation choice; this should be replaced with more inspectable canonical payload storage before final cutover
+- persisted run/event/scheduler payloads now use canonical inspectable `json-v1` payload storage through shared orchestrator codecs
+- external repo mode caches the first successful schema-readiness check instead of re-running catalog checks on every adapter call
 
 ## Runtime modes
 

@@ -1,6 +1,6 @@
 # Library Folder Structure (`apps/*/lib`)
 
-This document maps the current umbrella library layout during the v0.5 refactor.
+This document maps the current umbrella library layout after the v0.5 refactor closeout.
 
 App-level technical docs:
 
@@ -154,6 +154,7 @@ Notes:
 - Initial Phase 5 orchestrator runtime slice added control-plane modules in `apps/favn_orchestrator/lib/favn_orchestrator/`:
   - `storage.ex`
   - `storage/manifest_codec.ex`
+  - `storage/payload_codec.ex`
   - `storage/run_state_codec.ex`
   - `storage/run_event_codec.ex`
   - `storage/scheduler_state_codec.ex`
@@ -178,18 +179,20 @@ Notes:
 - `apps/favn_orchestrator/lib/favn/storage/adapter.ex` is now the single authoritative low-level storage adapter behaviour used by both `Favn.Storage` and `FavnOrchestrator.Storage`.
 - `apps/favn_storage_sqlite/lib/` now includes the initial Phase 6 adapter foundation:
   - `favn_storage_sqlite.ex`
-  - `favn_storage_sqlite/adapter.ex`
+  - `favn/storage/adapter/sqlite.ex`
   - `favn_storage_sqlite/repo.ex`
   - `favn_storage_sqlite/supervisor.ex`
   - `favn_storage_sqlite/migrations.ex`
   - `favn_storage_sqlite/migrations/create_foundation.ex`
 - `apps/favn_storage_postgres/lib/` now includes the initial Phase 6 adapter foundation:
   - `favn_storage_postgres.ex`
-  - `favn_storage_postgres/adapter.ex`
+  - `favn/storage/adapter/postgres.ex`
   - `favn_storage_postgres/repo.ex`
   - `favn_storage_postgres/supervisor.ex`
   - `favn_storage_postgres/migrations.ex`
   - `favn_storage_postgres/migrations/create_foundation.ex`
+- Phase 10 closeout re-established the preserved stable adapter entrypoints under `Favn.Storage.Adapter.SQLite` and `Favn.Storage.Adapter.Postgres` while keeping adapter-app repo/supervisor ownership inside `favn_storage_sqlite` and `favn_storage_postgres`.
+- Phase 10 closeout also replaced SQL adapter BEAM term payload persistence with shared inspectable `json-v1` payload codecs owned by `apps/favn_orchestrator/lib/favn_orchestrator/storage/payload_codec.ex`.
 - Initial Phase 4 implementation now includes:
   - `apps/favn_core/lib/favn/run/context.ex`
   - `apps/favn_core/lib/favn/run/asset_result.ex`

@@ -12,7 +12,7 @@ Current responsibilities:
 
 - own reusable fixture source files under `priv/fixtures/**`
 - expose dependency-light helper APIs for fixture path lookup and compilation
-- provide deterministic fixture group module mappings used by migration tests
+- provide deterministic fixture group module mappings used by cross-app tests
 
 Primary helper API (`FavnTestSupport.Fixtures`):
 
@@ -32,14 +32,14 @@ What should stay local in owner apps:
 - app-specific assertion helpers and behavior semantics
 - app-specific test harnesses in `apps/<owner_app>/test/support`
 
-Allowed dependencies in Phase 1:
+Allowed dependencies:
 
 - keep this app dependency-light so low-level apps can consume it in tests
 
-Must not depend on in Phase 1:
+Must not depend on:
 
 - production runtime paths
 
 Current status:
 
-- shared fixture substrate implemented for migration prep
+- shared fixture substrate is implemented and in active use across owner-app tests

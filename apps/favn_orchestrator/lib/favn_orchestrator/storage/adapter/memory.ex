@@ -378,17 +378,11 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
     reply =
       case {current, incoming_version} do
-        {nil, nil} ->
-          :ok
-
         {nil, 1} ->
           :ok
 
         {nil, _other} ->
           {:error, :invalid_scheduler_version}
-
-        {%{version: version}, nil} when is_integer(version) ->
-          :ok
 
         {%{version: version}, incoming} when is_integer(version) and incoming == version + 1 ->
           :ok
@@ -400,14 +394,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     next_state =
       case reply do
         :ok ->
-          new_version =
-            case {current, incoming_version} do
-              {%{version: version}, nil} when is_integer(version) -> version + 1
-              {nil, nil} -> 1
-              {_value, value} -> value
-            end
-
-          put_in(state, [:scheduler_states, key], Map.put(scheduler_state, :version, new_version))
+          put_in(state, [:scheduler_states, key], scheduler_state)
 
         _ ->
           state

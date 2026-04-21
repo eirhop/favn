@@ -44,7 +44,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
       migration_mode: :auto
     ]
 
-    with_storage_adapter(FavnStorageSqlite.Adapter, opts, fn ->
+    with_storage_adapter(Favn.Storage.Adapter.SQLite, opts, fn ->
       assert_shared_contract("sqlite")
     end)
 
@@ -57,7 +57,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
         :ok
 
       opts ->
-        with_storage_adapter(FavnStoragePostgres.Adapter, opts, fn ->
+        with_storage_adapter(Favn.Storage.Adapter.Postgres, opts, fn ->
           assert_shared_contract("postgres")
         end)
     end
@@ -154,7 +154,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     key = {MyApp.Pipeline, :daily}
     assert :ok = Storage.put_scheduler_state(key, %{version: 1, last_due_at: DateTime.utc_now()})
     assert {:error, :stale_scheduler_state} = Storage.put_scheduler_state(key, %{version: 1})
-    assert :ok = Storage.put_scheduler_state(key, %{last_due_at: DateTime.utc_now()})
+    assert :ok = Storage.put_scheduler_state(key, %{version: 2, last_due_at: DateTime.utc_now()})
     assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} = Storage.get_scheduler_state(key)
   end
 

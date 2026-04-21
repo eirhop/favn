@@ -2,14 +2,18 @@
 
 ## Status
 
-Phase 3 through Phase 8 foundations are implemented.
+All v0.5 refactor phases are now implemented.
 
 The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype is now historical only and has been removed from the umbrella.
 
-Phase 9 is complete, and the Phase 10 app-deletion slice has removed `favn_legacy` and `favn_view`.
+Phase 9 is complete, and Phase 10 closeout is now complete after the final post-legacy cleanup.
 
 - the Phase 9 command surface is implemented in `apps/favn_local` and exposed through `apps/favn`
 - lifecycle recovery hardening, packaging honesty, and SQLite/Postgres verification coverage are closed for Phase 9 scope
+- stable storage adapter entrypoints are restored as `Favn.Storage.Adapter.SQLite` and `Favn.Storage.Adapter.Postgres`
+- SQL adapters now persist canonical inspectable `json-v1` payloads for run snapshots, run events, and scheduler state
+- scheduler state writes are locked to explicit optimistic versions
+- external Postgres repo mode now caches successful schema-readiness validation instead of re-running readiness checks on every adapter call
 
 ## Summary
 
@@ -803,6 +807,16 @@ Final storage cleanup in this phase:
 - docs describe the new product shape
 - legacy app is no longer required for build/test/runtime
 
+### Status
+Complete.
+
+Closed in final Phase 10 cleanup:
+
+- removed the remaining temporary extracted adapter entrypoint names in favor of `Favn.Storage.Adapter.SQLite` and `Favn.Storage.Adapter.Postgres`
+- replaced temporary BEAM term payload persistence with shared canonical inspectable `json-v1` payload storage
+- locked scheduler cursor writes to explicit optimistic version semantics
+- cached successful external Postgres schema-readiness validation for external repo mode
+
 ## Suggested work order inside the codebase
 
 Recommended migration order:
@@ -835,6 +849,8 @@ v0.5 is complete when:
 - split deployment works in first supported form
 - orchestrator owns auth/authz and audit for operator actions
 - old monolith is no longer the active architecture
+
+Those refactor-complete criteria are now satisfied. Remaining work lives in release hardening and product-focused roadmap sections tracked in `docs/FEATURES.md`.
 
 ## Nice-to-have items after v0.5
 

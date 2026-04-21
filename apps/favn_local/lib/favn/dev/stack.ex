@@ -318,11 +318,11 @@ defmodule Favn.Dev.Stack do
 
       cond do
         storage == "sqlite" ->
-          Application.put_env(:favn_orchestrator, :storage_adapter, FavnStorageSqlite.Adapter)
+          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
           Application.put_env(:favn_orchestrator, :storage_adapter_opts, database: System.get_env("FAVN_DEV_SQLITE_PATH"))
 
         storage == "postgres" ->
-          Application.put_env(:favn_orchestrator, :storage_adapter, FavnStoragePostgres.Adapter)
+          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.Postgres)
 
           Application.put_env(
             :favn_orchestrator,

@@ -3,8 +3,8 @@ defmodule FavnStorageSqlite.AdapterTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Version
+  alias Favn.Storage.Adapter.SQLite, as: Adapter
   alias FavnOrchestrator.RunState
-  alias FavnStorageSqlite.Adapter
 
   setup context do
     unique = System.unique_integer([:positive])
@@ -104,7 +104,12 @@ defmodule FavnStorageSqlite.AdapterTest do
     assert {:error, :stale_scheduler_state} =
              Adapter.put_scheduler_state(key, %{version: 1}, opts)
 
-    assert :ok = Adapter.put_scheduler_state(key, %{last_due_at: DateTime.utc_now()}, opts)
+    assert :ok =
+             Adapter.put_scheduler_state(
+               key,
+               %{version: 2, last_due_at: DateTime.utc_now()},
+               opts
+             )
 
     assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} =
              Adapter.get_scheduler_state(key, opts)

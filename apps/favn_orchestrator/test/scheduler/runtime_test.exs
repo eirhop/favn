@@ -102,7 +102,8 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       schedule_id: raw_entry.schedule.name,
       schedule_fingerprint: raw_entry.schedule_fingerprint,
       last_due_at: DateTime.utc_now(),
-      in_flight_run_id: "run_inflight"
+      in_flight_run_id: "run_inflight",
+      version: 1
     }
 
     assert :ok = Storage.put_scheduler_state({raw_entry.module, raw_entry.schedule.name}, state)
@@ -132,7 +133,8 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       pipeline_module: entry.module,
       schedule_id: entry.schedule.name,
       schedule_fingerprint: entry.schedule_fingerprint,
-      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second)
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      version: 1
     }
 
     assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
@@ -167,7 +169,8 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       schedule_id: entry.schedule.name,
       schedule_fingerprint: entry.schedule_fingerprint,
       in_flight_run_id: running.id,
-      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second)
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      version: 1
     }
 
     assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
@@ -195,7 +198,8 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       schedule_id: entry.schedule.name,
       schedule_fingerprint: entry.schedule_fingerprint,
       in_flight_run_id: running.id,
-      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second)
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      version: 1
     }
 
     assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
@@ -226,7 +230,8 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       schedule_id: entry.schedule.name,
       schedule_fingerprint: entry.schedule_fingerprint,
       in_flight_run_id: running.id,
-      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second)
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      version: 1
     }
 
     assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
@@ -273,7 +278,8 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       pipeline_module: entry.module,
       schedule_id: entry.schedule.name,
       schedule_fingerprint: entry.schedule_fingerprint,
-      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second)
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      version: 1
     }
 
     assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
@@ -339,7 +345,8 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       pipeline_module: entry.module,
       schedule_id: entry.schedule.name,
       schedule_fingerprint: entry.schedule_fingerprint,
-      last_due_at: DateTime.add(DateTime.utc_now(), -180, :second)
+      last_due_at: DateTime.add(DateTime.utc_now(), -180, :second),
+      version: 1
     }
 
     assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)

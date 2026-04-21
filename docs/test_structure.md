@@ -1,6 +1,6 @@
 # Test Folder Structure (`apps/*/test`)
 
-This document maps the current umbrella test layout during the v0.5 refactor.
+This document maps the current umbrella test layout after the v0.5 refactor closeout.
 
 ```text
 apps/
@@ -96,11 +96,11 @@ apps/
 
 Notes:
 
-- Each migrated slice must move or recreate tests in the new owner app without dual-compiling namespace owners.
+- Each owner app keeps the tests for the behavior it owns without dual-compiling namespace owners.
 - Legacy and same-BEAM view tests are deleted; supported coverage now lives in the owner-app suites.
 - The current umbrella `mix test` alias includes `apps/favn_authoring/test` (currently minimal), `apps/favn/test`, and `apps/favn_local/test` plus the runtime/storage owner apps.
-- `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures used during migration.
-- shared fixture source for migration parity now lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.
+- `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures.
+- Shared fixture source lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.
 - batch 1 parity migration moved broad authoring/compiler/planning/window ownership into `apps/favn/test` and `apps/favn_core/test`.
 - Umbrella apps may depend on `favn_test_support` only with `only: :test`.
 - Fixtures used by only one app should stay in that app's local `test/support` directory.
@@ -128,6 +128,7 @@ Notes:
 - Initial Phase 5 orchestrator runtime tests now include:
   - `apps/favn_orchestrator/test/integration/storage_adapter_contract_test.exs`
   - `apps/favn_orchestrator/test/storage/manifest_codec_test.exs`
+  - `apps/favn_orchestrator/test/storage/payload_codec_test.exs`
   - `apps/favn_orchestrator/test/storage/run_state_codec_test.exs`
   - `apps/favn_orchestrator/test/storage/run_event_codec_test.exs`
   - `apps/favn_orchestrator/test/storage/scheduler_state_codec_test.exs`
@@ -169,6 +170,7 @@ Notes:
   - `apps/favn_orchestrator/test/storage/memory_adapter_test.exs`
   - `apps/favn_storage_postgres/test/adapter_test.exs`
   - `apps/favn_storage_postgres/test/integration/adapter_live_test.exs`
+- Phase 10 closeout added payload-codec coverage plus explicit scheduler-version expectations across the orchestrator/runtime storage suites.
 - Shared test setup used by owner apps now lives in `apps/favn_test_support/lib/favn_test_support/test_setup.ex` (`Favn.TestSetup`).
 - DuckDB plugin parity migration batch 2 expanded owner-app coverage with:
   - `apps/favn_duckdb/test/sql/adapter/duckdb_hardening_test.exs` for DuckDB adapter transaction/appender/resource-cleanup hardening semantics

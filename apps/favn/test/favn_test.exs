@@ -3,6 +3,6 @@ defmodule FavnPublicTest do
   doctest Favn.PublicScaffold
 
   test "public app scaffold compiles" do
-    assert Favn.PublicScaffold.status() == :phase_2_in_progress
+    assert Favn.PublicScaffold.status() == :refactor_complete
   end
 end

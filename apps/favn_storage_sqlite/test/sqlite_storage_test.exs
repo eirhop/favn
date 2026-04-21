@@ -5,8 +5,8 @@ defmodule Favn.SQLiteStorageTest do
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
+  alias Favn.Storage.Adapter.SQLite, as: Adapter
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
-  alias FavnStorageSqlite.Adapter
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
 
@@ -255,7 +255,8 @@ defmodule Favn.SQLiteStorageTest do
       last_due_at: DateTime.utc_now() |> DateTime.truncate(:second),
       last_submitted_due_at: DateTime.utc_now() |> DateTime.truncate(:second),
       in_flight_run_id: "run-123",
-      queued_due_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      queued_due_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      version: 1
     }
 
     assert :ok =
@@ -279,13 +280,15 @@ defmodule Favn.SQLiteStorageTest do
     first = %SchedulerState{
       pipeline_module: pipeline,
       schedule_id: :daily,
-      schedule_fingerprint: "daily-v1"
+      schedule_fingerprint: "daily-v1",
+      version: 1
     }
 
     second = %SchedulerState{
       pipeline_module: pipeline,
       schedule_id: :hourly,
-      schedule_fingerprint: "hourly-v1"
+      schedule_fingerprint: "hourly-v1",
+      version: 1
     }
 
     assert :ok =
@@ -331,7 +334,7 @@ defmodule Favn.SQLiteStorageTest do
                ]
              )
 
-    assert {:error, {:invalid_blob, _reason}} =
+    assert {:error, {:payload_decode_failed, _reason}} =
              OrchestratorStorage.get_scheduler_state(
                {Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline, :scheduler_daily}
              )

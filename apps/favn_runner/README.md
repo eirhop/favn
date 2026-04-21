@@ -8,7 +8,7 @@ Visibility:
 
 - internal
 
-Allowed dependencies in Phase 1:
+Allowed dependencies:
 
 - `favn_core`
 

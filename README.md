@@ -30,7 +30,10 @@ It is aimed at teams who want data and workflow logic to live in normal Elixir m
 
 ## Status
 
-Favn is in private development and the `v0.5.0` refactor is still in progress.
+Favn is in private development.
+
+The `v0.5.0` architecture refactor is now closed enough to resume normal feature
+development on top of the new boundaries.
 
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
@@ -167,7 +170,11 @@ mix favn.read_doc Favn
 mix favn.read_doc Favn generate_manifest
 ```
 
-Today this is still part of the ongoing `v0.5` refactor, but it is the intended public entrypoint for local iteration.
+This is now the stable public entrypoint for local iteration on the refactored architecture.
+
+If you are upgrading from earlier pre-closeout local SQL storage state, run
+`mix favn.reset` once so local persisted payloads are recreated in the current
+canonical format.
 
 ### favn_local configuration
 
@@ -207,7 +214,7 @@ Storage modes:
 - install currently records and snapshots runtime input metadata under
   `.favn/install/runtimes/*` and caches npm data under `.favn/install/cache/npm`
 
-## Common Public API Entry Points
+## Common Public Authoring API Entry Points
 
 - `Favn.list_assets/0,1`
 - `Favn.get_asset/1`
@@ -216,7 +223,6 @@ Storage modes:
 - `Favn.generate_manifest/0,1`
 - `Favn.build_manifest/0,1`
 - `Favn.plan_asset_run/2`
-- `Favn.run_pipeline/2`
 
 ## Documentation
 
@@ -227,6 +233,9 @@ Storage modes:
 
 ## Current Direction
 
-The current release work is focused on making Favn a manifest-first product with clear authoring, orchestrator, runner, and web boundaries while keeping `favn` as the only public package.
+The current release work is focused on product hardening and operator/developer
+experience on top of the now-closed manifest-first architecture.
 
-That internal refactor should not change the core user-facing goal: define assets and pipelines in Elixir, compile them into an explicit graph, and run them with predictable behavior.
+That architecture work did not change the core user-facing goal: define assets
+and pipelines in Elixir, compile them into an explicit graph, and run them with
+predictable behavior.

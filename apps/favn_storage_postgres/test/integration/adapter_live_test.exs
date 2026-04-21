@@ -4,8 +4,8 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
   alias Ecto.Adapters.SQL
   alias Favn.Manifest
   alias Favn.Manifest.Version
+  alias Favn.Storage.Adapter.Postgres, as: Adapter
   alias FavnOrchestrator.RunState
-  alias FavnStoragePostgres.Adapter
   alias FavnStoragePostgres.Migrations
   alias FavnStoragePostgres.Repo
 

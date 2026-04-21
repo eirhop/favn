@@ -131,10 +131,12 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
             end
 
           if stored.schedule_fingerprint != entry.schedule_fingerprint do
-            :ok = Storage.put_scheduler_state(key, value)
+            persisted = persisted_scheduler_state(stored, value)
+            :ok = Storage.put_scheduler_state(key, persisted)
+            {:cont, {:ok, Map.put(acc, pipeline_module, persisted)}}
+          else
+            {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
           end
-
-          {:cont, {:ok, Map.put(acc, pipeline_module, value)}}
 
         {:ok, stored} when is_map(stored) ->
           state = normalize_scheduler_state(stored)
@@ -163,10 +165,12 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
           end
 
         if persist_state_change?(current, updated) do
-          :ok = Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, updated)
+          persisted = persisted_scheduler_state(current, updated)
+          :ok = Storage.put_scheduler_state({pipeline_module, entry.schedule.name}, persisted)
+          Map.put(acc, pipeline_module, persisted)
+        else
+          Map.put(acc, pipeline_module, updated)
         end
-
-        Map.put(acc, pipeline_module, updated)
       end)
 
     %{state | states: next_states}
@@ -443,13 +447,23 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
       :last_submitted_due_at,
       :in_flight_run_id,
       :queued_due_at,
-      :updated_at
+      :updated_at,
+      :version
     ]
 
     state
     |> Map.take(allowed)
     |> then(&struct(State, &1))
   end
+
+  defp persisted_scheduler_state(previous, %State{} = next) do
+    %{next | version: next_scheduler_version(previous)}
+  end
+
+  defp next_scheduler_version(%State{version: version}) when is_integer(version) and version > 0,
+    do: version + 1
+
+  defp next_scheduler_version(_previous), do: 1
 
   defp configured_tick_ms do
     case Application.get_env(:favn_orchestrator, :scheduler, []) do
