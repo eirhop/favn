@@ -21,6 +21,8 @@ defmodule Mix.Tasks.Favn.Dev do
     case Dev.dev(opts) do
       :ok -> :ok
       {:error, :stack_already_running} -> Mix.raise("local stack already running")
+      {:error, :install_required} -> Mix.raise("install required; run mix favn.install")
+      {:error, :install_stale} -> Mix.raise("install stale; run mix favn.install --force")
       {:error, reason} -> Mix.raise("failed to start local stack: #{inspect(reason)}")
     end
   end

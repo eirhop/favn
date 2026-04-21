@@ -34,7 +34,10 @@ Favn is in private development and the `v0.5.0` refactor is still in progress.
 
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
-- local development tooling is available today through `mix favn.dev`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- local development tooling is available today through `mix favn.install`, `mix favn.dev`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
+- split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with project-local outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
+- single-node assembly packaging now includes `mix favn.build.single` with project-local output under `.favn/dist/single/<build_id>/`
 
 ## What Favn Gives You
 
@@ -152,10 +155,13 @@ config :favn,
 Favn includes a local developer loop for running the current project with the Favn runtime stack.
 
 ```bash
+mix favn.install
 mix favn.dev
+mix favn.logs
 mix favn.status
 mix favn.reload
 mix favn.stop
+mix favn.reset
 ```
 
 Today this is still part of the ongoing `v0.5` refactor, but it is the intended public entrypoint for local iteration.

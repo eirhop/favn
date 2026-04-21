@@ -26,15 +26,15 @@ Completed baseline work that should not be reopened here:
 
 ## Install Foundation
 
-- [ ] Expand `.favn/` layout with `install/`, `build/`, `dist/`, manifest cache, and preserved failure-history directories.
-- [ ] Add install fingerprint metadata under `.favn/install/install.json`.
-- [ ] Add toolchain verification metadata under `.favn/install/toolchain.json`.
-- [ ] Materialize project-local runtime inputs for `web`, `orchestrator`, and `runner` under `.favn/install/runtimes/`.
+- [x] Expand `.favn/` layout with `install/`, `build/`, `dist/`, manifest cache, and preserved failure-history directories.
+- [x] Add install fingerprint metadata under `.favn/install/install.json`.
+- [x] Add toolchain verification metadata under `.favn/install/toolchain.json`.
+- [x] Materialize project-local runtime inputs for `web`, `orchestrator`, and `runner` under `.favn/install/runtimes/`.
 - [ ] Keep JS dependency state for `favn_web` under `.favn/install/`.
-- [ ] Implement `mix favn.install` as an explicit setup command.
+- [x] Implement `mix favn.install` as an explicit setup command.
 - [ ] Make `mix favn.dev` and `mix favn.build.*` fail clearly when install state is missing or stale.
-- [ ] Add a boring reinstall path such as `mix favn.install --force`.
-- [ ] Record install failures under `.favn/history/`.
+- [x] Add a boring reinstall path such as `mix favn.install --force`.
+- [x] Record install failures under `.favn/history/`.
 
 ## Storage Configuration Contract
 
@@ -48,56 +48,56 @@ Completed baseline work that should not be reopened here:
 
 ## Reset And Logs
 
-- [ ] Implement `mix favn.reset`.
-- [ ] Require the stack to be stopped before reset deletes `.favn/`.
-- [ ] Auto-clear only fully stale runtime state during reset when no live owned services remain.
-- [ ] Keep the first cut of reset fully destructive with no `--keep-*` modes.
-- [ ] Implement `mix favn.logs` as a thin file-tail helper.
-- [ ] Support all-services log output.
-- [ ] Support single-service selection for `web`, `orchestrator`, and `runner`.
-- [ ] Support `--tail`.
-- [ ] Support `--follow`.
-- [ ] Preserve historical log access when the stack is down.
+- [x] Implement `mix favn.reset`.
+- [x] Require the stack to be stopped before reset deletes `.favn/`.
+- [x] Auto-clear only fully stale runtime state during reset when no live owned services remain.
+- [x] Keep the first cut of reset fully destructive with no `--keep-*` modes.
+- [x] Implement `mix favn.logs` as a thin file-tail helper.
+- [x] Support all-services log output.
+- [x] Support single-service selection for `web`, `orchestrator`, and `runner`.
+- [x] Support `--tail`.
+- [x] Support `--follow`.
+- [x] Preserve historical log access when the stack is down.
 
 ## Build Metadata Foundations
 
-- [ ] Add per-build working directories under `.favn/build/<target>/<build_id>/`.
-- [ ] Add final artifact directories under `.favn/dist/<target>/<build_id>/`.
-- [ ] Write shared `build.json` metadata for each build target.
-- [ ] Write final artifact `metadata.json` for each build target.
-- [ ] Include explicit compatibility metadata instead of relying only on package-version matching.
+- [x] Add per-build working directories under `.favn/build/<target>/<build_id>/`.
+- [x] Add final artifact directories under `.favn/dist/<target>/<build_id>/`.
+- [x] Write shared `build.json` metadata for each build target.
+- [x] Write final artifact `metadata.json` for each build target.
+- [x] Include explicit compatibility metadata instead of relying only on package-version matching.
 
 ## `mix favn.build.runner`
 
-- [ ] Build a runner artifact from the current user project plus installed internal runner runtime inputs.
-- [ ] Generate and pin the current manifest through `favn_authoring` during the build.
-- [ ] Package compiled user business code into the runner artifact.
-- [ ] Package the pinned serialized manifest into the runner artifact.
-- [ ] Package selected plugins into the runner artifact as appropriate.
-- [ ] Write runner metadata including manifest schema version, manifest version id, manifest hash, runner contract version, and plugin inventory.
-- [ ] Keep the first cut to one pinned manifest version per runner build.
+- [x] Build a runner artifact from the current user project plus installed internal runner runtime inputs.
+- [x] Generate and pin the current manifest through `favn_authoring` during the build.
+- [x] Package compiled user business code into the runner artifact.
+- [x] Package the pinned serialized manifest into the runner artifact.
+- [x] Package selected plugins into the runner artifact as appropriate.
+- [x] Write runner metadata including manifest schema version, manifest version id, manifest hash, runner contract version, and plugin inventory.
+- [x] Keep the first cut to one pinned manifest version per runner build.
 
 ## `mix favn.build.web`
 
-- [ ] Build a deployable web artifact from installed `favn_web` runtime inputs.
-- [ ] Keep the web artifact free of user business code.
-- [ ] Write web metadata including supported orchestrator API compatibility and required environment contract.
+- [x] Build a deployable web artifact from installed `favn_web` runtime inputs.
+- [x] Keep the web artifact free of user business code.
+- [x] Write web metadata including supported orchestrator API compatibility and required environment contract.
 
 ## `mix favn.build.orchestrator`
 
-- [ ] Build a deployable orchestrator artifact from installed internal runtime inputs.
-- [ ] Keep the orchestrator artifact free of user business code.
-- [ ] Keep the build artifact storage-neutral at build time.
-- [ ] Write orchestrator metadata including API compatibility, runner compatibility, and storage expectations.
+- [x] Build a deployable orchestrator artifact from installed internal runtime inputs.
+- [x] Keep the orchestrator artifact free of user business code.
+- [x] Keep the build artifact storage-neutral at build time.
+- [x] Write orchestrator metadata including API compatibility, runner compatibility, and storage expectations.
 
 ## `mix favn.build.single`
 
-- [ ] Assemble one single-node bundle containing separate `web`, `orchestrator`, and `runner` runtimes.
-- [ ] Generate one assembly manifest for config wiring across the three runtimes.
-- [ ] Generate per-service env/config files in the single bundle.
-- [ ] Generate simple start/stop scripts for the single bundle.
-- [ ] Default single-node storage to SQLite.
-- [ ] Keep explicit runtime boundaries visible in the output layout and metadata.
+- [x] Assemble one single-node bundle containing separate `web`, `orchestrator`, and `runner` runtimes.
+- [x] Generate one assembly manifest for config wiring across the three runtimes.
+- [x] Generate per-service env/config files in the single bundle.
+- [x] Generate simple start/stop scripts for the single bundle.
+- [x] Default single-node storage to SQLite.
+- [x] Keep explicit runtime boundaries visible in the output layout and metadata.
 
 ## Validation And Polish
 
@@ -116,11 +116,11 @@ Completed baseline work that should not be reopened here:
 - [ ] Add install fingerprint and stale-detection coverage.
 - [ ] Add missing Node/npm diagnostic coverage.
 - [ ] Add offline reuse coverage when install state is current.
-- [ ] Add reset refusal and success coverage.
-- [ ] Add logs all-services, single-service, tail, follow, and historical-access coverage.
+- [x] Add reset refusal and success coverage.
+- [x] Add logs all-services, single-service, tail, follow, and historical-access coverage.
 - [ ] Add build metadata contract coverage for `web`, `orchestrator`, `runner`, and `single`.
-- [ ] Add runner artifact coverage for user code, manifest, and plugin inclusion.
-- [ ] Add single artifact coverage for the three-runtime bundle layout.
+- [x] Add runner artifact coverage for user code, manifest, and plugin inclusion.
+- [x] Add single artifact coverage for the three-runtime bundle layout.
 - [ ] Add stale-runtime recovery and partial/dead service recovery coverage.
 - [ ] Add explicit SQLite end-to-end coverage for the full Phase 9 tooling loop.
 - [ ] Add broader opt-in Postgres verification coverage.

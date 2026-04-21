@@ -4,6 +4,18 @@ defmodule FavnUmbrella.MixProject do
   def project do
     [
       apps_path: "apps",
+      apps: [
+        :favn,
+        :favn_authoring,
+        :favn_core,
+        :favn_duckdb,
+        :favn_local,
+        :favn_orchestrator,
+        :favn_runner,
+        :favn_storage_postgres,
+        :favn_storage_sqlite,
+        :favn_test_support
+      ],
       version: "0.5.0-dev",
       start_permanent: Mix.env() == :prod,
       deps: deps(),

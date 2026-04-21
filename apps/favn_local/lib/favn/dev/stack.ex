@@ -7,6 +7,7 @@ defmodule Favn.Dev.Stack do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.Install
   alias Favn.Dev.Lock
   alias Favn.Dev.NodeControl
   alias Favn.Dev.OrchestratorClient
@@ -55,6 +56,7 @@ defmodule Favn.Dev.Stack do
     with_lock(opts, fn ->
       with :ok <- State.ensure_layout(opts),
            :ok <- ensure_stack_not_running(opts),
+           :ok <- ensure_install_ready(opts),
            config <- Config.resolve(opts),
            {:ok, secrets} <- Secrets.resolve(config, opts),
            {:ok, node_names} <- build_node_names(opts),
@@ -79,6 +81,14 @@ defmodule Favn.Dev.Stack do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp ensure_install_ready(opts) do
+    if Keyword.get(opts, :skip_install_check, false) do
+      :ok
+    else
+      Install.ensure_ready(opts)
     end
   end
 

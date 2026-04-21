@@ -79,6 +79,7 @@ defmodule Favn.Dev.LifecycleTest do
              Dev.dev(
                root_dir: root_dir,
                service_specs_override: failing_specs,
+               skip_install_check: true,
                skip_bootstrap: true,
                skip_readiness: true
              )

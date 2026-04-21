@@ -7,8 +7,15 @@ apps/
 ├── favn/lib/
 │   ├── favn.ex
 │   └── mix/tasks/
+│       ├── favn.build.orchestrator.ex
+│       ├── favn.build.runner.ex
+│       ├── favn.build.single.ex
+│       ├── favn.build.web.ex
 │       ├── favn.dev.ex
+│       ├── favn.install.ex
+│       ├── favn.logs.ex
 │       ├── favn.reload.ex
+│       ├── favn.reset.ex
 │       ├── favn.status.ex
 │       └── favn.stop.ex
 ├── favn_authoring/lib/
@@ -32,13 +39,21 @@ apps/
 │   ├── favn/
 │   │   ├── dev.ex
 │   │   └── dev/
+│   │       ├── build/
+│   │       │   ├── orchestrator.ex
+│   │       │   ├── runner.ex
+│   │       │   ├── single.ex
+│   │       │   └── web.ex
 │   │       ├── config.ex
+│   │       ├── install.ex
 │   │       ├── lock.ex
+│   │       ├── logs.ex
 │   │       ├── node_control.ex
 │   │       ├── orchestrator_client.ex
 │   │       ├── paths.ex
 │   │       ├── process.ex
 │   │       ├── reload.ex
+│   │       ├── reset.ex
 │   │       ├── runner_control.ex
 │   │       ├── secrets.ex
 │   │       ├── stack.ex
