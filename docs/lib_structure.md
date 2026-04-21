@@ -2,6 +2,10 @@
 
 This document maps the current umbrella library layout during the v0.5 refactor.
 
+App-level technical docs:
+
+- `apps/favn_local/README.md`
+
 ```text
 apps/
 ├── favn/lib/
