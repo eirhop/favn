@@ -1,6 +1,8 @@
 defmodule Favn.RuntimeFacadeTest do
   use ExUnit.Case, async: false
 
+  alias FavnOrchestrator.Storage.Adapter.Memory
+
   defmodule TestSchedules do
     use Favn.Triggers.Schedules
 
@@ -71,49 +73,30 @@ defmodule Favn.RuntimeFacadeTest do
 
   test "runtime helpers delegate to orchestrator when runtime is started" do
     started_before? = started?(:favn_orchestrator)
+    assert {:ok, _apps} = Application.ensure_all_started(:favn_orchestrator)
+    :ok = Memory.reset()
 
-    case Application.ensure_all_started(:favn_orchestrator) do
-      {:ok, _apps} ->
-        :ok = reset_memory_storage!()
+    on_exit(fn ->
+      :ok = Memory.reset()
 
-        on_exit(fn ->
-          :ok = reset_memory_storage!()
+      if not started_before? do
+        _ = Application.stop(:favn_orchestrator)
+      end
+    end)
 
-          if not started_before? do
-            _ = Application.stop(:favn_orchestrator)
-          end
-        end)
-
-        assert {:ok, []} = Favn.list_runs()
-        assert {:error, :not_found} = Favn.get_run("run_missing")
-        assert {:error, :not_found} = Favn.rerun("run_missing")
-        assert {:error, :not_found} = Favn.cancel_run("run_missing")
-        assert {:error, :active_manifest_not_set} = Favn.run_pipeline(DailyPipeline)
-        assert {:error, :runtime_not_available} = Favn.reload_scheduler()
-        assert {:error, :runtime_not_available} = Favn.tick_scheduler()
-        assert {:error, :runtime_not_available} = Favn.list_scheduled_pipelines()
-
-      {:error, {:favn_orchestrator, _reason}} ->
-        assert {:error, :runtime_not_available} = Favn.get_run("run_missing")
-        assert {:error, :runtime_not_available} = Favn.list_runs()
-        assert {:error, :runtime_not_available} = Favn.rerun("run_missing")
-        assert {:error, :runtime_not_available} = Favn.cancel_run("run_missing")
-    end
+    assert {:ok, []} = Favn.list_runs()
+    assert {:error, :not_found} = Favn.get_run("run_missing")
+    assert {:error, :not_found} = Favn.rerun("run_missing")
+    assert {:error, :not_found} = Favn.cancel_run("run_missing")
+    assert {:error, :active_manifest_not_set} = Favn.run_pipeline(DailyPipeline)
+    assert {:error, :runtime_not_available} = Favn.reload_scheduler()
+    assert {:error, :runtime_not_available} = Favn.tick_scheduler()
+    assert {:error, :runtime_not_available} = Favn.list_scheduled_pipelines()
   end
 
   defp started?(app) do
     Enum.any?(Application.started_applications(), fn {started_app, _desc, _version} ->
       started_app == app
     end)
-  end
-
-  defp reset_memory_storage! do
-    memory_module = Module.concat([FavnOrchestrator, Storage, Adapter, Memory])
-
-    if function_exported?(memory_module, :reset, 0) do
-      memory_module.reset()
-    else
-      :ok
-    end
   end
 end

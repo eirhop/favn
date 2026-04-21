@@ -8,6 +8,10 @@ defmodule Favn.Dev.LifecycleTest do
   alias Favn.Dev.Paths
   alias Favn.Dev.State
 
+  @run_real_stack_lifecycle? System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" and
+                               System.get_env("FAVN_RUN_DEV_LIFECYCLE_STACK") == "1"
+  @real_stack_skip_reason "set FAVN_RUN_DEV_LIFECYCLE=1 and FAVN_RUN_DEV_LIFECYCLE_STACK=1 to run full local stack lifecycle integration"
+
   setup do
     root_dir =
       Path.join(System.tmp_dir!(), "favn_dev_lifecycle_#{System.unique_integer([:positive])}")
@@ -23,33 +27,30 @@ defmodule Favn.Dev.LifecycleTest do
     %{root_dir: root_dir}
   end
 
+  @tag skip: if(@run_real_stack_lifecycle?, do: false, else: @real_stack_skip_reason)
   test "foreground lifecycle leaves lock free and supports second-terminal control" do
-    if System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" do
-      root_dir = File.cwd!()
+    root_dir = Path.expand("../../..", __DIR__)
 
-      task = Task.async(fn -> Dev.dev(root_dir: root_dir) end)
+    task = Task.async(fn -> Dev.dev(root_dir: root_dir) end)
 
-      assert :ok =
-               wait_until(fn ->
-                 match?(
-                   {:ok, %{"services" => %{"runner" => _, "orchestrator" => _, "web" => _}}},
-                   State.read_runtime(root_dir: root_dir)
-                 )
-               end)
+    assert :ok =
+             wait_until(fn ->
+               match?(
+                 {:ok, %{"services" => %{"runner" => _, "orchestrator" => _, "web" => _}}},
+                 State.read_runtime(root_dir: root_dir)
+               )
+             end)
 
-      assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
-      assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
+    assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
+    assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
 
-      assert :ok = Dev.reload(root_dir: root_dir)
-      assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
+    assert :ok = Dev.reload(root_dir: root_dir)
+    assert %{stack_status: :running} = Dev.status(root_dir: root_dir)
 
-      assert :ok = Dev.stop(root_dir: root_dir)
-      assert %{stack_status: :stopped} = Dev.status(root_dir: root_dir)
+    assert :ok = Dev.stop(root_dir: root_dir)
+    assert %{stack_status: :stopped} = Dev.status(root_dir: root_dir)
 
-      _ = Task.await(task, 60_000)
-    else
-      assert true
-    end
+    _ = Task.await(task, 60_000)
   end
 
   test "startup failure cleans runtime state", %{root_dir: root_dir} do

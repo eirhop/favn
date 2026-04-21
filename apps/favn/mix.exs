@@ -26,6 +26,7 @@ defmodule Favn.MixProject do
     [
       {:favn_authoring, in_umbrella: true},
       {:favn_local, in_umbrella: true},
+      {:favn_orchestrator, in_umbrella: true, only: :test},
       {:favn_test_support, in_umbrella: true, only: :test}
     ]
   end
