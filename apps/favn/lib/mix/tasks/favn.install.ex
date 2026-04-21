@@ -22,10 +22,10 @@ defmodule Mix.Tasks.Favn.Install do
       )
 
     case Dev.install(opts) do
-      :ok ->
+      {:ok, :installed} ->
         IO.puts("Favn install complete")
 
-      {:error, :already_installed} ->
+      {:ok, :already_installed} ->
         IO.puts("Favn install is already up to date")
 
       {:error, {:missing_tool, tool}} ->

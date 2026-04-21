@@ -38,10 +38,16 @@ defmodule Favn.Dev.Build.RunnerTest do
   end
 
   test "build_runner/1 writes build and dist contracts", %{root_dir: root_dir} do
-    assert :ok = Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+    assert {:ok, :installed} =
+             Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
 
     assert {:ok, result} =
-             Dev.build_runner(root_dir: root_dir, skip_compile: true, skip_tool_checks: true)
+             Dev.build_runner(
+               root_dir: root_dir,
+               skip_compile: true,
+               skip_tool_checks: true,
+               skip_project_root_check: true
+             )
 
     build_json_path = Path.join(result.build_dir, "build.json")
     metadata_json_path = Path.join(result.dist_dir, "metadata.json")
@@ -69,7 +75,19 @@ defmodule Favn.Dev.Build.RunnerTest do
   end
 
   test "build_runner/1 requires install", %{root_dir: root_dir} do
-    assert {:error, :install_required} = Dev.build_runner(root_dir: root_dir, skip_compile: true)
+    assert {:error, :install_required} =
+             Dev.build_runner(
+               root_dir: root_dir,
+               skip_compile: true,
+               skip_project_root_check: true
+             )
+  end
+
+  test "build_runner/1 rejects root_dir that is not the current project root", %{
+    root_dir: root_dir
+  } do
+    assert {:error, {:unsupported_root_dir, _requested, _current}} =
+             Dev.build_runner(root_dir: root_dir, skip_compile: true, skip_tool_checks: true)
   end
 
   defp metadata_manifest_id(metadata_json) do

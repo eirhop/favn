@@ -5,6 +5,9 @@ defmodule Mix.Tasks.Favn.Build.Runner do
 
   @moduledoc """
   Builds `.favn/build/runner/<build_id>` and `.favn/dist/runner/<build_id>`.
+
+  The runner build is rooted in the current Mix project. `--root-dir` controls
+  artifact location only when it matches the current project root.
   """
 
   alias Favn.Dev
@@ -24,6 +27,11 @@ defmodule Mix.Tasks.Favn.Build.Runner do
 
       {:error, :install_stale} ->
         Mix.raise("build blocked: install stale; run mix favn.install --force")
+
+      {:error, {:unsupported_root_dir, requested, current}} ->
+        Mix.raise(
+          "runner build is rooted in the current Mix project only; got --root-dir=#{requested}, current=#{current}"
+        )
 
       {:error, reason} ->
         Mix.raise("runner build failed: #{inspect(reason)}")

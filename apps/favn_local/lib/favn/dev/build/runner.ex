@@ -1,6 +1,10 @@
 defmodule Favn.Dev.Build.Runner do
   @moduledoc """
   Project-local runner build target.
+
+  This target currently builds the manifest and compiled user modules from the
+  current Mix project root (`File.cwd!/0`). A different `:root_dir` is not
+  accepted for project selection.
   """
 
   alias Favn.Dev.Install
@@ -14,7 +18,8 @@ defmodule Favn.Dev.Build.Runner do
 
   @spec run(root_opt()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
-    with :ok <- Install.ensure_ready(opts),
+    with :ok <- ensure_project_root(opts),
+         :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
          :ok <- force_compile(opts),
          {:ok, build} <- FavnAuthoring.build_manifest(),
@@ -35,6 +40,17 @@ defmodule Favn.Dev.Build.Runner do
          :ok <- write_json(Path.join(dist_dir, "metadata.json"), metadata_json),
          :ok <- File.write(Path.join(dist_dir, "manifest.json"), serialized_manifest <> "\n") do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
+    end
+  end
+
+  defp ensure_project_root(opts) do
+    requested_root = opts |> Paths.root_dir() |> Path.expand()
+    current_root = File.cwd!() |> Path.expand()
+
+    if requested_root == current_root or Keyword.get(opts, :skip_project_root_check, false) do
+      :ok
+    else
+      {:error, {:unsupported_root_dir, requested_root, current_root}}
     end
   end
 

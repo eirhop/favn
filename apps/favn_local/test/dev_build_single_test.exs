@@ -39,10 +39,16 @@ defmodule Favn.Dev.Build.SingleTest do
   test "build_single/1 writes assembled single-node bundle with sqlite default", %{
     root_dir: root_dir
   } do
-    assert :ok = Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+    assert {:ok, :installed} =
+             Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
 
     assert {:ok, result} =
-             Dev.build_single(root_dir: root_dir, skip_compile: true, skip_tool_checks: true)
+             Dev.build_single(
+               root_dir: root_dir,
+               skip_compile: true,
+               skip_tool_checks: true,
+               skip_project_root_check: true
+             )
 
     assert File.exists?(Path.join(result.build_dir, "build.json"))
     assert File.exists?(Path.join(result.dist_dir, "metadata.json"))
@@ -58,14 +64,16 @@ defmodule Favn.Dev.Build.SingleTest do
   end
 
   test "build_single/1 supports postgres storage override", %{root_dir: root_dir} do
-    assert :ok = Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+    assert {:ok, :installed} =
+             Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
 
     assert {:ok, result} =
              Dev.build_single(
                root_dir: root_dir,
                storage: :postgres,
                skip_compile: true,
-               skip_tool_checks: true
+               skip_tool_checks: true,
+               skip_project_root_check: true
              )
 
     assert {:ok, assembly_json} = File.read(Path.join(result.dist_dir, "config/assembly.json"))

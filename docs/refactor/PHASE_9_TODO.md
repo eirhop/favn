@@ -29,7 +29,8 @@ Completed baseline work that should not be reopened here:
 - [x] Expand `.favn/` layout with `install/`, `build/`, `dist/`, manifest cache, and preserved failure-history directories.
 - [x] Add install fingerprint metadata under `.favn/install/install.json`.
 - [x] Add toolchain verification metadata under `.favn/install/toolchain.json`.
-- [x] Materialize project-local runtime inputs for `web`, `orchestrator`, and `runner` under `.favn/install/runtimes/`.
+- [x] Record project-local runtime input roots for `web`, `orchestrator`, and `runner` in install metadata under `.favn/install/`.
+- [ ] Materialize copied/runtime-resolved inputs under `.favn/install/runtimes/` if we choose to move beyond metadata-only install state.
 - [ ] Keep JS dependency state for `favn_web` under `.favn/install/`.
 - [x] Implement `mix favn.install` as an explicit setup command.
 - [ ] Make `mix favn.dev` and `mix favn.build.*` fail clearly when install state is missing or stale.

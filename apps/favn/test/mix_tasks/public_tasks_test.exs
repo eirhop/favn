@@ -107,6 +107,20 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert {:ok, _toolchain} = State.read_toolchain(root_dir: root_dir)
   end
 
+  test "mix favn.install reports already up to date", %{root_dir: root_dir} do
+    _ =
+      capture_io(fn ->
+        InstallTask.run(["--root-dir", root_dir, "--skip-web-install", "--skip-tool-checks"])
+      end)
+
+    output =
+      capture_io(fn ->
+        InstallTask.run(["--root-dir", root_dir, "--skip-web-install", "--skip-tool-checks"])
+      end)
+
+    assert output =~ "Favn install is already up to date"
+  end
+
   test "mix favn.logs prints service logs", %{root_dir: root_dir} do
     assert :ok = State.ensure_layout(root_dir: root_dir)
     assert :ok = File.write(Path.join(root_dir, ".favn/logs/web.log"), "hello\n")
@@ -132,20 +146,35 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     refute File.exists?(Path.join(root_dir, ".favn"))
   end
 
-  test "mix favn.build.runner prints build summary", %{root_dir: root_dir} do
+  test "mix favn.build.runner prints build summary" do
+    current_root = File.cwd!()
+
     _ =
       capture_io(fn ->
-        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+        InstallTask.run(["--root-dir", current_root, "--skip-web-install"])
       end)
 
     output =
       capture_io(fn ->
-        BuildRunnerTask.run(["--root-dir", root_dir])
+        BuildRunnerTask.run(["--root-dir", current_root])
       end)
 
     assert output =~ "Favn runner build complete"
     assert output =~ "build id:"
     assert output =~ "/.favn/dist/runner/"
+  end
+
+  test "mix favn.build.runner rejects root_dir outside current mix project", %{root_dir: root_dir} do
+    _ =
+      capture_io(fn ->
+        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+      end)
+
+    assert_raise Mix.Error,
+                 ~r/runner build is rooted in the current Mix project only/,
+                 fn ->
+                   BuildRunnerTask.run(["--root-dir", root_dir])
+                 end
   end
 
   test "mix favn.build.web prints build summary", %{root_dir: root_dir} do
@@ -180,15 +209,17 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "/.favn/dist/orchestrator/"
   end
 
-  test "mix favn.build.single prints build summary", %{root_dir: root_dir} do
+  test "mix favn.build.single prints build summary" do
+    current_root = File.cwd!()
+
     _ =
       capture_io(fn ->
-        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+        InstallTask.run(["--root-dir", current_root, "--skip-web-install"])
       end)
 
     output =
       capture_io(fn ->
-        BuildSingleTask.run(["--root-dir", root_dir, "--storage", "sqlite"])
+        BuildSingleTask.run(["--root-dir", current_root, "--storage", "sqlite"])
       end)
 
     assert output =~ "Favn single build complete"

@@ -10,11 +10,11 @@ defmodule Favn.Dev.Install do
 
   @type root_opt :: [root_dir: Path.t()]
 
-  @spec run(root_opt()) :: :ok | {:error, term()}
+  @spec run(root_opt()) :: {:ok, :installed | :already_installed} | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
     case do_run(opts) do
-      :ok ->
-        :ok
+      {:ok, status} ->
+        {:ok, status}
 
       {:error, reason} = error ->
         _ =
@@ -87,12 +87,13 @@ defmodule Favn.Dev.Install do
     end
   end
 
-  defp maybe_install(:already_installed, _current_fingerprint, _opts), do: :ok
+  defp maybe_install(:already_installed, _current_fingerprint, _opts),
+    do: {:ok, :already_installed}
 
   defp maybe_install(:install, current_fingerprint, opts) do
     with {:ok, toolchain} <- build_toolchain(opts),
          :ok <- install_web_dependencies(opts) do
-      write_install_state(current_fingerprint, toolchain, opts)
+      with :ok <- write_install_state(current_fingerprint, toolchain, opts), do: {:ok, :installed}
     end
   end
 

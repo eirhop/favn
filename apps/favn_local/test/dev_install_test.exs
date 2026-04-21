@@ -35,7 +35,8 @@ defmodule Favn.Dev.InstallTest do
   end
 
   test "run/1 writes install and toolchain metadata", %{root_dir: root_dir} do
-    assert :ok = Install.run(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+    assert {:ok, :installed} =
+             Install.run(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
 
     assert :ok = Install.ensure_ready(root_dir: root_dir, skip_tool_checks: true)
 
@@ -45,6 +46,14 @@ defmodule Favn.Dev.InstallTest do
     assert install["schema_version"] == 1
     assert is_map(install["fingerprint"])
     assert toolchain["schema_version"] == 1
+  end
+
+  test "run/1 returns already_installed when fingerprint matches", %{root_dir: root_dir} do
+    assert {:ok, :installed} =
+             Install.run(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+
+    assert {:ok, :already_installed} =
+             Install.run(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
   end
 
   test "ensure_ready/1 returns install_required when install state is missing", %{

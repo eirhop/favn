@@ -23,7 +23,7 @@ defmodule Favn.Dev do
   @doc """
   Resolves and validates local install inputs used by dev tooling.
   """
-  @spec install(lifecycle_opts()) :: :ok | {:error, term()}
+  @spec install(lifecycle_opts()) :: {:ok, :installed | :already_installed} | {:error, term()}
   def install(opts \\ []) when is_list(opts), do: Install.run(opts)
 
   @doc false

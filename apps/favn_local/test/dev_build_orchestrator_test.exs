@@ -36,7 +36,8 @@ defmodule Favn.Dev.Build.OrchestratorTest do
   end
 
   test "build_orchestrator/1 writes build and dist contracts", %{root_dir: root_dir} do
-    assert :ok = Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+    assert {:ok, :installed} =
+             Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
 
     assert {:ok, result} = Dev.build_orchestrator(root_dir: root_dir, skip_tool_checks: true)
 

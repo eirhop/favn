@@ -33,6 +33,11 @@ defmodule Mix.Tasks.Favn.Build.Single do
           "single build failed: invalid storage #{inspect(value)}; expected sqlite|postgres"
         )
 
+      {:error, {:unsupported_root_dir, requested, current}} ->
+        Mix.raise(
+          "single build is rooted in the current Mix project only; got --root-dir=#{requested}, current=#{current}"
+        )
+
       {:error, reason} ->
         Mix.raise("single build failed: #{inspect(reason)}")
     end
