@@ -1,5 +1,5 @@
 defmodule FavnAuthoring.DocReaderTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias FavnAuthoring.DocReader
 
@@ -51,6 +51,7 @@ defmodule FavnAuthoring.DocReaderTest do
 
       assert {:error, {:fetch_failed, :chunk_not_found}} = DocReader.read_module(module)
     after
+      _ = :code.del_path(String.to_charlist(temp_dir))
       Code.compiler_options(previous_compiler_options)
       File.rm_rf(temp_dir)
     end

@@ -171,14 +171,14 @@ gap remains:
 
 Move nice-to-have work here instead of keeping it in the active Phase 9 TODO:
 
-- [ ] watch mode and auto-reload
-- [ ] broader doctor or environment validation framework
-- [ ] richer log tooling or log-query features
-- [ ] restart single-service convenience flow
-- [ ] convenience niceties beyond the targeted diagnostics needed for the current command surface
+- watch mode and auto-reload
+- broader doctor or environment validation framework
+- richer log tooling or log-query features
+- restart single-service convenience flow
+- convenience niceties beyond the targeted diagnostics needed for the current command surface
 
 ## Explicitly Deferred Beyond This Slice
 
-- [ ] production hardening and safe-release auth/session work
-- [ ] Docker-first local or packaging workflows
-- [ ] hidden same-BEAM shortcuts for local or packaged runtimes
+- production hardening and safe-release auth/session work
+- Docker-first local or packaging workflows
+- hidden same-BEAM shortcuts for local or packaged runtimes

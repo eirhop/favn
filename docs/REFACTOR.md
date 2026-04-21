@@ -755,7 +755,7 @@ Post-v0.5 local-tooling follow-up ideas:
 - improved port-conflict diagnostics
 - clearer `.favn/` secrets/state policy
 
-Additional storage follow-ups in this phase:
+Additional storage follow-ups beyond this phase:
 
 - finish local-dev integration and polish for the extracted SQLite adapter path behind `mix favn.dev --sqlite`
 - broaden live Postgres migration/transaction/concurrency verification in a production-like test path
@@ -766,16 +766,16 @@ Additional storage follow-ups in this phase:
 - local dev makes the public/private split visible even on one machine
 
 ### Status
-In progress.
+Complete.
 
 Completed in this phase so far:
 
 - core local lifecycle commands and minimal `.favn/` state/config now exist in `apps/favn_local`
 - the Phase 9 install/reset/logs/build command surface now exists and is documented publicly
 
-Still open in this phase:
+Closed in this phase:
 
-- finish hardening lifecycle recovery and packaging honesty so the already-implemented Phase 9 command surface is reliable, test-covered, and operationally truthful
+- lifecycle recovery hardening, targeted diagnostics, packaging honesty, and SQLite/opt-in Postgres verification are complete for Phase 9 scope
 
 ---
 
