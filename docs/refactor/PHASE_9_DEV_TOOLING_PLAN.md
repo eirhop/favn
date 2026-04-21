@@ -2,8 +2,8 @@
 
 ## Status
 
-Implementation-ready design for the remaining Phase 9 developer-tooling and
-packageability slice.
+Source-of-truth plan for the remaining Phase 9 developer-tooling and
+packageability slice after the command surface landed.
 
 This document starts from the now-implemented core lifecycle baseline:
 
@@ -13,7 +13,8 @@ This document starts from the now-implemented core lifecycle baseline:
 - `mix favn.reload`
 - `mix favn.status`
 
-It does not reopen that work. It defines the remaining Phase 9 batch:
+It does not reopen that work. The command surface below now exists and should be
+treated as implemented first-cut behavior:
 
 - `mix favn.install`
 - `mix favn.reset`
@@ -22,13 +23,25 @@ It does not reopen that work. It defines the remaining Phase 9 batch:
 - `mix favn.build.orchestrator`
 - `mix favn.build.runner`
 - `mix favn.build.single`
-- remaining lifecycle/storage validation and diagnostics polish
+
+The remaining Phase 9 batch is now hardening, verification, diagnostics polish,
+and packaging honesty.
+
+Current packaging reality:
+
+- `mix favn.build.runner` is the most complete packaging target today
+- `mix favn.build.web` and `mix favn.build.orchestrator` currently produce
+  metadata-oriented first-cut outputs and still need to become more deployable
+  and operationally honest
+- `mix favn.build.single` preserves the right `web + orchestrator + runner`
+  topology, but still needs hardening if the assembled bundle start/stop path is
+  not yet truly operational end to end
 
 ## 1. Feature Summary
 
 Phase 9 should close by making the already-corrected `web + orchestrator +
-runner` topology easy to set up locally and honest to package for deployment,
-without exposing internal apps as user-facing dependencies.
+runner` topology reliable locally and honest to package for deployment, without
+exposing internal apps as user-facing dependencies.
 
 Recommended default:
 
@@ -39,8 +52,43 @@ Recommended default:
 - keep build targets explicit and topology-preserving
 - make `single` a convenience assembly of three explicit runtimes, not one
   collapsed runtime
+- finish hardening lifecycle recovery and packaging honesty so the
+  already-implemented command surface is reliable, test-covered, and
+  operationally truthful
 
-## 2. Scope And Non-Goals
+## 2. Current Phase 9 Reality
+
+### Implemented command surface
+
+- `mix favn.install`
+- `mix favn.reset`
+- `mix favn.logs`
+- `mix favn.build.web`
+- `mix favn.build.orchestrator`
+- `mix favn.build.runner`
+- `mix favn.build.single`
+
+### Partially realized packaging work
+
+- install layout, fingerprinting, toolchain capture, runtime-input recording,
+  and failure-history plumbing are in place
+- `build.runner` already packages the strongest end-to-end artifact shape in this
+  phase
+- `build.web` and `build.orchestrator` still need packaging follow-up so their
+  outputs are more than metadata-oriented placeholders
+- `build.single` already reflects the correct topology, but still needs startup,
+  stop, and cleanup hardening before it is fully honest as an operational bundle
+
+### Still-open hardening work
+
+- lifecycle recovery when runtime state exists but services are dead
+- partial/dead service handling and idempotent cleanup
+- startup failure cleanup verification
+- explicit SQLite verification across the full tooling loop
+- broader opt-in Postgres verification
+- targeted missing-prerequisite, stale-state, and port-conflict diagnostics
+
+## 3. Scope And Non-Goals
 
 ### In scope
 
@@ -63,7 +111,7 @@ Recommended default:
 - reopening `dev`, `stop`, `reload`, or `status` as new feature work
 - magical auto-deploy or remote rollout automation
 
-## 3. Assumptions
+## 4. Assumptions
 
 - public package topology migration is complete
 - `apps/favn` is the thin public wrapper and public `mix favn.*` entrypoint owner
@@ -73,7 +121,7 @@ Recommended default:
 - local lifecycle already persists project-local runtime state in `.favn/`
 - manifest publish/activate over the private orchestrator API already exists
 
-## 4. Locked Constraints
+## 5. Locked Constraints
 
 1. one public dependency: users only need `{:favn, ...}`
 2. project-local side effects only: Favn-managed install/build/runtime artifacts
@@ -84,7 +132,7 @@ Recommended default:
 5. do not replace already-landed lifecycle commands
 6. do not treat production hardening as Phase 9 scope
 
-## 5. Proposed Command Set And Semantics
+## 6. Command Set And Semantics
 
 ### Storage configuration rule
 
@@ -181,6 +229,10 @@ Recommendation:
 
 ### `mix favn.install`
 
+Current status:
+
+- implemented first cut
+
 Recommended default:
 
 - explicit prerequisite/setup command
@@ -269,6 +321,10 @@ Recommendation:
 
 ### `mix favn.reset`
 
+Current status:
+
+- implemented first cut
+
 Recommended default:
 
 - destructive local cleanup command that removes all Favn-managed project-local
@@ -317,6 +373,10 @@ Recommendation:
 
 ### `mix favn.logs`
 
+Current status:
+
+- implemented first cut
+
 Recommended default:
 
 - thin file-tail helper over preserved log files under `.favn/logs/`
@@ -360,6 +420,11 @@ Recommendation:
 
 ### `mix favn.build.web`
 
+Current status:
+
+- implemented first cut with metadata-oriented output; still needs packaging
+  honesty follow-up
+
 Operational meaning:
 
 - build the deployable public web/BFF artifact for the current Favn version
@@ -373,6 +438,11 @@ Recommended default:
 - write build working files under `.favn/build/web/<build_id>/`
 
 ### `mix favn.build.orchestrator`
+
+Current status:
+
+- implemented first cut with metadata-oriented output; still needs packaging
+  honesty follow-up
 
 Operational meaning:
 
@@ -389,6 +459,10 @@ Recommended default:
 
 ### `mix favn.build.runner`
 
+Current status:
+
+- implemented and currently the most complete packaging target in Phase 9
+
 Operational meaning:
 
 - build the project-specific execution artifact that combines the internal runner
@@ -403,6 +477,11 @@ Recommended default:
 
 ### `mix favn.build.single`
 
+Current status:
+
+- implemented first cut with the correct topology; still needs hardening and
+  operational verification around the assembled start/stop path
+
 Operational meaning:
 
 - assemble one deployable bundle that contains separate web, orchestrator, and
@@ -416,7 +495,7 @@ Recommended default:
 - write a final assembled bundle under `.favn/dist/single/<build_id>/`
 - write assembly working files under `.favn/build/single/<build_id>/`
 
-## 6. `.favn/` Artifact And State Layout
+## 7. `.favn/` Artifact And State Layout
 
 Recommended layout:
 
@@ -520,7 +599,7 @@ Recommendation:
 
 - keep all Favn-managed outputs under `.favn/`
 
-## 7. Build And Package Contracts
+## 8. Build And Package Contracts
 
 ### Shared build contract
 
@@ -822,7 +901,7 @@ Important honesty rule:
 - split deployment is not one command that secretly assumes one node
 - it is three separate artifacts with explicit compatibility metadata
 
-## 8. Ownership By App
+## 9. Ownership By App
 
 ### `apps/favn`
 
@@ -889,7 +968,7 @@ Should not absorb:
 export/build hooks or compatibility metadata seams needed to support packaging.
 They should not become owners of public build-task workflow logic.
 
-## 9. User Workflows
+## 10. User Workflows
 
 ### First-time setup
 
@@ -980,7 +1059,7 @@ Single-node Postgres option:
 - web and runner configuration stay unchanged apart from the orchestrator base
   address and credentials
 
-## 10. Testing Strategy
+## 11. Testing Strategy
 
 ### Install and artifact layout
 
@@ -1021,11 +1100,12 @@ Recommended default:
 - keep Postgres verification opt-in through explicit environment-driven test
   paths
 
-## 11. Docs That Must Be Updated
+## 12. Docs That Must Be Updated
 
 - `README.md`
-  - add the explicit `mix favn.install` first-time setup step once implemented
-  - document the honest distinction between local dev, split deployment, and
+  - keep the explicit `mix favn.install` first-time setup step aligned with the
+    implemented command surface
+  - keep the honest distinction between local dev, split deployment, and
     single-node packaging
 - `docs/REFACTOR.md`
   - keep the remaining Phase 9 scope aligned with this plan
@@ -1036,7 +1116,7 @@ Recommended default:
 - `docs/refactor/PHASE_9_TODO.md`
   - execution checklist derived from this design
 
-## 12. Open Questions With Recommended Defaults
+## 13. Open Questions With Recommended Defaults
 
 ### Should `mix favn.install` be explicit-only or auto-triggered?
 
@@ -1105,46 +1185,38 @@ Recommended default:
   startup cleanup, and port conflicts
 - do not expand into a broad doctor framework yet
 
-## 13. Suggested Implementation Slices / PR Order
+## 14. Suggested Remaining Execution Order
 
-### Slice 1: install foundation and expanded `.favn/` layout
+### Slice 1: close install-state validation gaps
 
-- add `.favn/install/`, `.favn/build/`, `.favn/dist/`, manifest cache, and
-  failure-history layout expansion
-- implement `mix favn.install`
-- add install fingerprinting and stale detection
-- add targeted prerequisite diagnostics
+- make `mix favn.dev` and `mix favn.build.*` fail clearly when install state is
+  missing or stale
+- finish targeted prerequisite and stale-state diagnostics
+- verify offline reuse and failure recording semantics
 
-### Slice 2: reset and logs
+### Slice 2: finish lifecycle hardening
 
-- implement `mix favn.reset`
-- implement `mix favn.logs`
-- lock in destructive reset semantics and preserved historical log access
+- harden stale-runtime recovery and partial/dead service cleanup behavior
+- verify startup failure cleanup and idempotent stop semantics
+- finish targeted port-conflict diagnostics
 
-### Slice 3: runner packaging contract first
+### Slice 3: finish packaging honesty
 
-- implement `mix favn.build.runner`
-- add manifest cache/export contract
-- lock metadata and plugin inclusion contract
+- keep `build.runner` as the reference for what an operationally honest build
+  should look like
+- move `build.web` and `build.orchestrator` from metadata-oriented outputs toward
+  genuinely deployable/operator-honest artifacts
+- harden `build.single` until the assembled bundle start/stop path is truly
+  operational
 
-### Slice 4: split runtime artifacts
+### Slice 4: finish verification and docs
 
-- implement `mix favn.build.web`
-- implement `mix favn.build.orchestrator`
-- lock split deployment metadata and operator docs
-
-### Slice 5: single-node assembly
-
-- implement `mix favn.build.single`
-- lock three-runtime bundle structure and generated config/env contract
-- default single-node storage to SQLite
-
-### Slice 6: validation and polish
-
-- harden startup cleanup, stale-state handling, partial/dead service stop flows,
-  and diagnostics
-- add explicit SQLite and opt-in broader Postgres verification
-- finish docs
+- add explicit SQLite verification across install, dev, reload, stop, logs,
+  reset, and single packaging
+- add broader opt-in Postgres verification for local and orchestrator packaging
+  paths
+- finish docs so Phase 9 is described as hardening, validation, and packaging
+  honesty rather than command creation
 
 Priority rule:
 
@@ -1153,7 +1225,7 @@ Priority rule:
 - do not cut the topology-preserving `single` semantics even if implementation is
   minimal
 
-## 14. Acceptance Criteria For Phase 9 Completion
+## 15. Acceptance Criteria For Phase 9 Completion
 
 Phase 9 is complete when all of the following are true:
 
@@ -1177,4 +1249,15 @@ Phase 9 is complete when all of the following are true:
 9. missing prerequisite, stale state, and port-conflict failures produce
    actionable diagnostics
 10. docs describe the local and packaging story honestly without same-BEAM or
-    machine-global assumptions
+     machine-global assumptions
+
+## 16. Post-v0.5 Follow-Up
+
+These do not belong in the active Phase 9 execution checklist:
+
+- watch mode and auto-reload
+- broader doctor or environment validation frameworks
+- richer log tooling or log-query features
+- restart-single-service convenience flows
+- convenience niceties beyond the targeted diagnostics needed for the current
+  command surface

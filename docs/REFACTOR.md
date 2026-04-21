@@ -8,8 +8,8 @@ The earlier same-BEAM `favn_view -> favn_orchestrator` Phase 8 prototype is now 
 
 Phase 9 is in progress, and the Phase 10 app-deletion slice has removed `favn_legacy` and `favn_view`.
 
-- the core local dev lifecycle is now implemented in `apps/favn_local`
-- remaining Phase 9 work stays open for install/reset/logs follow-up, build and packaging targets (`web`, `orchestrator`, `runner`, optional `single`), and the already-documented local validation/polish work that still belongs to Phase 9
+- the Phase 9 command surface is now largely implemented in `apps/favn_local` and exposed through `apps/favn`
+- the remaining Phase 9 work is lifecycle recovery hardening, partial/dead service handling, startup failure cleanup verification, explicit SQLite verification across the full tooling loop, broader opt-in Postgres verification, targeted missing-prerequisite/stale-state/port-conflict diagnostics, and packaging honesty for `web`, `orchestrator`, and `single`
 
 ## Summary
 
@@ -696,18 +696,10 @@ Phase 9 follow-up scope rule:
 - do not treat production hardening as part of the Phase 9 local-dev and packaging slice
 - do not optimize Phase 9 around SvelteKit HMR; prefer a thin built local web process and browser refresh
 
-### Remaining Phase 9 deliverables
-
-- `mix favn.install`
-- `mix favn.reset`
-- `mix favn.logs`
-- `mix favn.build.web`
-- `mix favn.build.orchestrator`
-- `mix favn.build.runner`
-- `mix favn.build.single`
-- local validation and polish for lifecycle recovery, partial/dead service recovery, and explicit SQLite/Postgres follow-up verification
-
 ### Deliverables
+
+Implemented command surface:
+
 - `mix favn.install`
 - `mix favn.reset`
 - `mix favn.logs`
@@ -715,6 +707,16 @@ Phase 9 follow-up scope rule:
 - `mix favn.build.orchestrator`
 - `mix favn.build.runner`
 - `mix favn.build.single`
+
+Remaining hardening and verification work:
+
+- lifecycle recovery hardening when runtime state exists but owned services are dead
+- partial/dead service handling so `status` and `stop` stay accurate and idempotent
+- startup failure cleanup verification
+- explicit SQLite verification across install, dev, reload, stop, logs, reset, and single packaging flows
+- broader opt-in Postgres verification for local and packaging paths
+- targeted missing-prerequisite, stale-state, and port-conflict diagnostics
+- packaging honesty for `web`, `orchestrator`, and `single` so documented outputs match what is truly operational today
 
 Tooling behavior:
 
@@ -742,7 +744,7 @@ Test strategy follow-up:
 - maintain true lifecycle coverage for start/status/reload/stop across concurrent processes
 - include explicit tests for startup-failure cleanup, reload during running state, and partial/dead service recovery
 
-Future local-tooling features (not required for Phase 9 completion):
+Post-v0.5 local-tooling follow-up ideas:
 
 - watch mode / auto-reload
 - doctor / environment validation
@@ -768,12 +770,11 @@ In progress.
 Completed in this phase so far:
 
 - core local lifecycle commands and minimal `.favn/` state/config now exist in `apps/favn_local`
+- the Phase 9 install/reset/logs/build command surface now exists and is documented publicly
 
 Still open in this phase:
 
-- install/reset/logs follow-up
-- build and packaging targets for `web`, `orchestrator`, `runner`, and optional `single`
-- remaining lifecycle validation and local storage verification called out above
+- finish hardening lifecycle recovery and packaging honesty so the already-implemented Phase 9 command surface is reliable, test-covered, and operationally truthful
 
 ---
 
