@@ -32,8 +32,8 @@ defmodule FavnOrchestrator.EventsTest do
     assert :ok = FavnOrchestrator.subscribe_runs()
     assert :ok = TransitionWriter.persist_transition(run, :run_created, %{kind: :test})
 
-    assert_receive {:favn_run_event, %RunEvent{} = event}
-    assert_receive {:favn_run_event, %RunEvent{} = event_again}
+    assert {:ok, event} = receive_run_event(run.id)
+    assert {:ok, event_again} = receive_run_event(run.id)
 
     assert event.run_id == run.id
     assert event.sequence == 1
@@ -53,7 +53,7 @@ defmodule FavnOrchestrator.EventsTest do
 
     assert :ok = TransitionWriter.persist_transition(run, :run_created, %{kind: :test})
 
-    refute_receive {:favn_run_event, _event}, 100
+    refute_matching_run_event(run.id, 100)
   end
 
   test "list_run_events/2 returns typed events and supports filters" do
@@ -100,17 +100,17 @@ defmodule FavnOrchestrator.EventsTest do
     assert :ok = FavnOrchestrator.subscribe_runs()
 
     assert :ok = TransitionWriter.persist_transition(run, :run_created, %{})
-    assert_receive {:favn_run_event, %RunEvent{sequence: 1}}
-    assert_receive {:favn_run_event, %RunEvent{sequence: 1}}
+    assert {:ok, %RunEvent{sequence: 1}} = receive_run_event(run.id)
+    assert {:ok, %RunEvent{sequence: 1}} = receive_run_event(run.id)
 
     assert :ok = TransitionWriter.persist_transition(running, :run_started, %{})
-    assert_receive {:favn_run_event, %RunEvent{sequence: 2}}
-    assert_receive {:favn_run_event, %RunEvent{sequence: 2}}
+    assert {:ok, %RunEvent{sequence: 2}} = receive_run_event(run.id)
+    assert {:ok, %RunEvent{sequence: 2}} = receive_run_event(run.id)
 
     assert {:error, :conflicting_snapshot} =
              TransitionWriter.persist_transition(conflicting, :run_failed, %{})
 
-    refute_receive {:favn_run_event, %RunEvent{run_id: ^run_id}}, 100
+    refute_matching_run_event(run_id, 100)
   end
 
   test "idempotent transition writes are not re-broadcast" do
@@ -118,10 +118,10 @@ defmodule FavnOrchestrator.EventsTest do
 
     assert :ok = FavnOrchestrator.subscribe_run(run.id)
     assert :ok = TransitionWriter.persist_transition(run, :run_created, %{kind: :test})
-    assert_receive {:favn_run_event, %RunEvent{sequence: 1}}
+    assert {:ok, %RunEvent{sequence: 1}} = receive_run_event(run.id)
 
     assert :ok = TransitionWriter.persist_transition(run, :run_created, %{kind: :test})
-    refute_receive {:favn_run_event, _event}, 100
+    refute_matching_run_event(run.id, 100)
   end
 
   test "snapshot bootstrap can resume from last persisted sequence without gaps" do
@@ -140,7 +140,7 @@ defmodule FavnOrchestrator.EventsTest do
     assert :ok = FavnOrchestrator.subscribe_run(run.id)
     assert :ok = TransitionWriter.persist_transition(failed, :run_failed, %{stage: 0})
 
-    assert_receive {:favn_run_event, %RunEvent{} = live_event}
+    assert {:ok, live_event} = receive_run_event(run.id)
     assert live_event.sequence == 3
 
     assert {:ok, delta_events} =
@@ -160,6 +160,30 @@ defmodule FavnOrchestrator.EventsTest do
       manifest_content_hash: "hash_events",
       asset_ref: {MyApp.Assets.Gold, :asset}
     )
+  end
+
+  defp receive_run_event(run_id, timeout \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_receive_run_event(run_id, deadline)
+  end
+
+  defp do_receive_run_event(run_id, deadline) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:favn_run_event, %RunEvent{run_id: ^run_id} = event} ->
+        {:ok, event}
+
+      {:favn_run_event, %RunEvent{}} ->
+        do_receive_run_event(run_id, deadline)
+    after
+      remaining ->
+        {:error, :timeout}
+    end
+  end
+
+  defp refute_matching_run_event(run_id, timeout) do
+    assert {:error, :timeout} = receive_run_event(run_id, timeout)
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
