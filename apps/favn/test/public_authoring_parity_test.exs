@@ -103,6 +103,33 @@ defmodule Favn.PublicAuthoringParityTest do
     assert fetched.depends_on == [{RelationCustomers, :asset}, {RelationOrders, :asset}]
   end
 
+  test "single-module lookup falls back when omitted and surfaces configured catalog failures when included" do
+    module_name =
+      Module.concat(__MODULE__, "SingleAssetFallback#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Asset
+
+        @doc "Single asset fallback"
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/public_authoring_parity_test.exs"
+    )
+
+    Application.put_env(:favn, :asset_modules, [SampleAssets])
+
+    assert {:ok, asset} = Favn.get_asset(module_name)
+    assert asset.ref == {module_name, :asset}
+
+    Application.put_env(:favn, :asset_modules, [RelationOrders, SpoofedAssets])
+
+    assert {:error, {SpoofedAssets, {:invalid_asset_module, SpoofedAssets}}} =
+             Favn.get_asset(RelationOrders)
+  end
+
   test "asset_module?/1 and get_asset/1 reject spoofed and invalid modules" do
     assert Favn.asset_module?(SampleAssets)
     refute Favn.asset_module?(Enum)

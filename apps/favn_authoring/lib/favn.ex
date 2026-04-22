@@ -55,13 +55,14 @@ defmodule FavnAuthoring do
   def list_assets(module) when is_atom(module) do
     case Application.get_env(:favn, :asset_modules, :unset) do
       modules when is_list(modules) ->
-        list_assets_for_module_from_catalog(module, modules)
+        if module in modules do
+          list_assets_for_module_from_catalog(module, modules)
+        else
+          compile_module_assets(module)
+        end
 
       _other ->
-        case Compiler.compile_module_assets(module) do
-          {:ok, assets} -> {:ok, assets}
-          {:error, reason} -> {:error, reason}
-        end
+        compile_module_assets(module)
     end
   end
 
@@ -90,10 +91,17 @@ defmodule FavnAuthoring do
     end
   end
 
+  defp compile_module_assets(module) when is_atom(module) do
+    case Compiler.compile_module_assets(module) do
+      {:ok, assets} -> {:ok, assets}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @doc """
   Fetches one compiled asset by module shorthand or canonical ref.
   """
-  @spec get_asset(module() | asset_ref()) :: {:ok, asset()} | {:error, asset_error()}
+  @spec get_asset(module() | asset_ref()) :: {:ok, asset()} | {:error, asset_error() | term()}
   def get_asset(module) when is_atom(module) do
     get_asset({module, :asset})
   end
@@ -103,9 +111,23 @@ defmodule FavnAuthoring do
          %Asset{} = asset <- Enum.find(assets, &(&1.ref == ref)) do
       {:ok, asset}
     else
-      {:error, :not_asset_module} -> {:error, :not_asset_module}
-      {:error, _reason} -> {:error, :not_asset_module}
-      nil -> {:error, :asset_not_found}
+      {:error, :not_asset_module} ->
+        {:error, :not_asset_module}
+
+      {:error, {^module, _reason}} ->
+        {:error, :not_asset_module}
+
+      {:error, {reason_tag, ^module}} when is_atom(reason_tag) ->
+        {:error, :not_asset_module}
+
+      {:error, {other_module, reason}} when is_atom(other_module) ->
+        {:error, {other_module, reason}}
+
+      {:error, _reason} ->
+        {:error, :not_asset_module}
+
+      nil ->
+        {:error, :asset_not_found}
     end
   end
 
