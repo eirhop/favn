@@ -59,6 +59,25 @@ defmodule Favn.Assets.CompilerParityTest do
     assert message =~ "module shorthand requires a single-asset module"
   end
 
+  test "compile_module_assets/1 loads valid modules before export checks" do
+    module = Module.concat(__MODULE__, "LoadableAsset#{System.unique_integer([:positive])}")
+
+    compile_loadable_module!(
+      module,
+      """
+      defmodule #{inspect(module)} do
+        use Favn.Asset
+
+        def asset(_ctx), do: :ok
+      end
+      """
+    )
+
+    with_unloaded_module(module, fn ->
+      assert {:ok, [%Asset{ref: {^module, :asset}}]} = Compiler.compile_module_assets(module)
+    end)
+  end
+
   test "resolves namespace inheritance from separately compiled ancestor modules" do
     root = Module.concat(__MODULE__, "Root#{System.unique_integer([:positive])}")
     raw = Module.concat(root, Raw)
@@ -168,5 +187,39 @@ defmodule Favn.Assets.CompilerParityTest do
              Compiler.compile_module_assets(module_name)
 
     assert message =~ "duplicate values for canonical key :catalog"
+  end
+
+  defp with_unloaded_module(module, fun) when is_atom(module) and is_function(fun, 0) do
+    assert {:module, ^module} = Code.ensure_loaded(module)
+
+    :code.purge(module)
+    :code.delete(module)
+
+    try do
+      fun.()
+    after
+      assert {:module, ^module} = Code.ensure_loaded(module)
+    end
+  end
+
+  defp compile_loadable_module!(module, source) when is_atom(module) and is_binary(source) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_core_loadable_modules_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+
+    file_path = Path.join(dir, "#{Macro.underscore(Atom.to_string(module))}.ex")
+    File.mkdir_p!(Path.dirname(file_path))
+    File.write!(file_path, source)
+
+    Code.prepend_path(dir)
+
+    assert {:ok, modules, _diagnostics} =
+             Kernel.ParallelCompiler.compile_to_path([file_path], dir, return_diagnostics: true)
+
+    assert module in modules
   end
 end

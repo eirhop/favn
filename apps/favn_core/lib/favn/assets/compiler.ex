@@ -13,28 +13,34 @@ defmodule Favn.Assets.Compiler do
 
   @spec compile_module_assets(module()) :: {:ok, [map()]} | {:error, term()}
   def compile_module_assets(module) when is_atom(module) do
-    cond do
-      function_exported?(module, :__favn_assets__, 0) ->
-        module.__favn_assets__()
-        |> normalize_module_assets(module)
+    case Code.ensure_loaded(module) do
+      {:module, ^module} ->
+        cond do
+          function_exported?(module, :__favn_assets__, 0) ->
+            module.__favn_assets__()
+            |> normalize_module_assets(module)
 
-      function_exported?(module, :__favn_asset_compiler__, 0) ->
-        with compiler when is_atom(compiler) <- module.__favn_asset_compiler__(),
-             {:module, _loaded} <- Code.ensure_loaded(compiler),
-             true <- function_exported?(compiler, :compile_assets, 1) do
-          case compiler.compile_assets(module) do
-            {:ok, assets} -> normalize_compiled_assets(assets, module)
-            {:error, reason} -> {:error, reason}
-            _ -> {:error, {:invalid_asset_compiler, module}}
-          end
-        else
-          {:error, _reason} -> {:error, {:invalid_asset_compiler, module}}
-          false -> {:error, {:invalid_asset_compiler, module}}
-          _ -> {:error, {:invalid_asset_compiler, module}}
+          function_exported?(module, :__favn_asset_compiler__, 0) ->
+            with compiler when is_atom(compiler) <- module.__favn_asset_compiler__(),
+                 {:module, _loaded} <- Code.ensure_loaded(compiler),
+                 true <- function_exported?(compiler, :compile_assets, 1) do
+              case compiler.compile_assets(module) do
+                {:ok, assets} -> normalize_compiled_assets(assets, module)
+                {:error, reason} -> {:error, reason}
+                _ -> {:error, {:invalid_asset_compiler, module}}
+              end
+            else
+              {:error, _reason} -> {:error, {:invalid_asset_compiler, module}}
+              false -> {:error, {:invalid_asset_compiler, module}}
+              _ -> {:error, {:invalid_asset_compiler, module}}
+            end
+
+          true ->
+            {:error, :not_asset_module}
         end
 
-      true ->
-        {:error, :not_asset_module}
+      {:error, _reason} ->
+        {:error, {:invalid_asset_module, module}}
     end
   rescue
     _ -> {:error, {:invalid_asset_module, module}}

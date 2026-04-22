@@ -134,7 +134,8 @@ defmodule Favn.Manifest.Generator do
   defp compile_schedules(modules) when is_list(modules) do
     modules
     |> Enum.reduce_while({:ok, []}, fn module, {:ok, acc} ->
-      if function_exported?(module, :__favn_schedules__, 0) do
+      with {:module, ^module} <- Code.ensure_loaded(module),
+           true <- function_exported?(module, :__favn_schedules__, 0) do
         schedules =
           module
           |> then(& &1.__favn_schedules__())
@@ -144,7 +145,7 @@ defmodule Favn.Manifest.Generator do
 
         {:cont, {:ok, schedules ++ acc}}
       else
-        {:halt, {:error, {:schedule_compile_failed, module, :not_schedule_module}}}
+        _ -> {:halt, {:error, {:schedule_compile_failed, module, :not_schedule_module}}}
       end
     end)
     |> case do
@@ -187,7 +188,8 @@ defmodule Favn.Manifest.Generator do
   end
 
   defp fetch_pipeline_definition(module) when is_atom(module) do
-    with true <- function_exported?(module, :__favn_pipeline__, 0),
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :__favn_pipeline__, 0),
          definition <- module.__favn_pipeline__(),
          true <- is_struct(definition, Favn.Pipeline.Definition) do
       {:ok, definition}
