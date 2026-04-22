@@ -7,21 +7,26 @@ defmodule Favn.Assets.DependencyInference do
   alias Favn.Diagnostic
   alias Favn.RelationRef
 
+  @type catalog :: %{
+          required(:assets) => [map()],
+          required(:assets_by_ref) => %{Favn.Ref.t() => map()},
+          required(:relation_owners) => %{RelationRef.t() => Favn.Ref.t()},
+          optional(:diagnostics) => [Diagnostic.t()]
+        }
+
+  @spec infer_assets([map()]) :: {:ok, catalog()} | {:error, error()}
+  def infer_assets(assets) when is_list(assets) do
+    infer(%{
+      assets: assets,
+      assets_by_ref: Map.new(assets, &{Map.get(&1, :ref), &1}),
+      relation_owners: relation_owner_index(assets),
+      diagnostics: []
+    })
+  end
+
   @type error :: {:dependency_inference_error, Favn.Ref.t(), Diagnostic.t()}
 
-  @spec infer(%{
-          assets: [map()],
-          assets_by_ref: %{Favn.Ref.t() => map()},
-          relation_owners: %{RelationRef.t() => Favn.Ref.t()}
-        }) ::
-          {:ok,
-           %{
-             assets: [map()],
-             assets_by_ref: %{Favn.Ref.t() => map()},
-             relation_owners: %{RelationRef.t() => Favn.Ref.t()},
-             diagnostics: [Diagnostic.t()]
-           }}
-          | {:error, error()}
+  @spec infer(catalog()) :: {:ok, catalog()} | {:error, error()}
   def infer(catalog) do
     relation_owner_entries = Map.to_list(catalog.relation_owners)
 
@@ -98,6 +103,15 @@ defmodule Favn.Assets.DependencyInference do
   defp explicit_dependency_map(asset) when is_map(asset) do
     Enum.reduce(Map.get(asset, :depends_on, []), %{}, fn ref, acc ->
       Map.put(acc, ref, %Dependency{asset_ref: ref, provenance: [:explicit], relation_inputs: []})
+    end)
+  end
+
+  defp relation_owner_index(assets) when is_list(assets) do
+    Enum.reduce(assets, %{}, fn asset, acc ->
+      case Map.get(asset, :relation) do
+        %RelationRef{} = relation_ref -> Map.put(acc, relation_ref, Map.get(asset, :ref))
+        _other -> acc
+      end
     end)
   end
 

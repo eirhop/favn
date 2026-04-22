@@ -19,6 +19,7 @@ defmodule Favn.Assets.GraphIndex do
   even when multiple downstream assets depend on them.
   """
 
+  alias Favn.Assets.DependencyInference
   alias Favn.Ref
 
   @index_key {__MODULE__, :index}
@@ -399,10 +400,11 @@ defmodule Favn.Assets.GraphIndex do
     end)
     |> case do
       {:ok, assets} ->
-        {:ok,
-         assets
-         |> Enum.uniq_by(&Map.get(&1, :ref))
-         |> Enum.sort_by(&Map.get(&1, :ref))}
+        assets = assets |> Enum.uniq_by(&Map.get(&1, :ref)) |> Enum.sort_by(&Map.get(&1, :ref))
+
+        with {:ok, inferred_catalog} <- DependencyInference.infer_assets(assets) do
+          {:ok, inferred_catalog.assets}
+        end
 
       {:error, _} = error ->
         error

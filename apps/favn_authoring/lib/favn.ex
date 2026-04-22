@@ -60,17 +60,12 @@ defmodule FavnAuthoring do
   end
 
   def list_assets(modules) when is_list(modules) do
-    modules
-    |> Enum.reduce_while({:ok, []}, fn module, {:ok, acc} ->
-      case Compiler.compile_module_assets(module) do
-        {:ok, assets} -> {:cont, {:ok, assets ++ acc}}
-        {:error, reason} -> {:halt, {:error, {module, reason}}}
-      end
-    end)
-    |> case do
-      {:ok, assets} ->
-        assets = assets |> Enum.uniq_by(& &1.ref) |> Enum.sort_by(& &1.ref)
-        {:ok, assets}
+    case Generator.build_catalog(asset_modules: modules) do
+      {:ok, catalog} ->
+        {:ok, catalog.assets}
+
+      {:error, {:asset_compile_failed, module, reason}} ->
+        {:error, {module, reason}}
 
       {:error, _reason} = error ->
         error

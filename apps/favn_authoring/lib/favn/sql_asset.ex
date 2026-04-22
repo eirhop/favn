@@ -23,14 +23,13 @@ defmodule Favn.SQLAsset do
 
         @doc "Build the gold orders fact table"
         @meta owner: "analytics", category: :sales, tags: [:gold]
-        @depends MyApp.Silver.Sales.StgOrders
         @window Favn.Window.daily(lookback: 1)
         @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
         query do
           ~SQL\"""
           select *
-          from MyApp.Silver.Sales.StgOrders
+          from silver.sales.stg_orders
           where order_date >= @window_start
             and order_date < @window_end
           \"""
@@ -72,6 +71,16 @@ defmodule Favn.SQLAsset do
   - `:append` does not accept `:window_column`
   - `:delete_insert` requires `:window_column`
   - `:merge`, `:replace`, and `unique_key` are not supported in v0.4
+
+  ## Dependency inference
+
+  Relation-style references such as `silver.sales.stg_orders` are the preferred
+  way to reference upstream SQL inputs.
+
+  When a relation reference resolves to an owned asset relation in the same
+  connection, Favn infers the dependency automatically. Use `@depends` when the
+  dependency is not visible in the SQL body, when you need a non-SQL upstream,
+  or when the relation cannot be resolved from owned asset metadata.
 
   ## What gets compiled
 
@@ -186,7 +195,7 @@ defmodule Favn.SQLAsset do
       query do
         ~SQL\"""
         select *
-        from MyApp.Raw.Sales.Orders
+        from raw.sales.orders
         \"""
       end
 

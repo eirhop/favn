@@ -105,17 +105,21 @@ defmodule MyApp.Gold.Sales.OrderSummary do
   use Favn.SQLAsset
 
   @meta owner: "analytics", category: :sales, tags: [:gold]
-  @depends MyApp.Raw.Sales.Orders
   @materialized :view
 
   query do
     ~SQL"""
     select *
-    from MyApp.Raw.Sales.Orders
+    from raw.sales.orders
     """
   end
 end
 ```
+
+Relation-style SQL references are the primary authoring path. When a reference
+resolves to an owned asset relation on the same connection, Favn infers the
+dependency automatically, so `@depends` is only needed for dependencies that
+are not visible in SQL or cannot be resolved from owned relations.
 
 ### 4. Define a pipeline
 
