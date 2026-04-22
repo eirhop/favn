@@ -94,10 +94,10 @@ defmodule Favn.Pipeline do
         @materialized :view
 
         query do
-          ~SQL"""
+          ~SQL\"""
           select *
           from raw.sales.orders
-          """
+          \"""
         end
       end
 
