@@ -29,32 +29,15 @@ defmodule Favn.Dev.NodeControl do
             :ok
 
           {:error, reason} ->
-            {:error, {:node_start_failed, reason}}
+            {:error, {:shortname_host_unavailable, reason}}
         end
     end
   end
 
   @spec shortname_to_full(String.t()) :: {:ok, String.t()} | {:error, term()}
   def shortname_to_full(shortname) when is_binary(shortname) and shortname != "" do
-    with :ok <- ensure_shortname_runtime(),
-         {:ok, host} <- local_short_host() do
+    with {:ok, host} <- local_short_host() do
       {:ok, shortname <> "@" <> host}
-    end
-  end
-
-  defp ensure_shortname_runtime do
-    case Node.alive?() do
-      true ->
-        :ok
-
-      false ->
-        name = "favn_local_host_probe_#{:erlang.unique_integer([:positive])}" |> String.to_atom()
-
-        case Node.start(name, name_domain: :shortnames) do
-          {:ok, _pid} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-          {:error, reason} -> {:error, {:shortname_host_unavailable, reason}}
-        end
     end
   end
 
