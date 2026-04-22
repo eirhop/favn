@@ -110,14 +110,15 @@ defmodule Favn.Triggers.Schedules do
 
   @spec fetch(module(), atom()) :: {:ok, Schedule.unresolved_t()} | {:error, fetch_error()}
   def fetch(module, name) when is_atom(module) and is_atom(name) do
-    if function_exported?(module, :__favn_schedule__, 1) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :__favn_schedule__, 1) do
       case module.__favn_schedule__(name) do
         {:ok, %Schedule{} = schedule} -> {:ok, Schedule.apply_ref(schedule, {module, name})}
         {:error, :not_found} -> {:error, {:schedule_not_found, name}}
         _other -> {:error, :schedule_not_defined}
       end
     else
-      {:error, :not_schedule_module}
+      _ -> {:error, :not_schedule_module}
     end
   rescue
     _error -> {:error, :schedule_not_defined}

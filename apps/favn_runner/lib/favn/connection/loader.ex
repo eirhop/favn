@@ -67,40 +67,54 @@ defmodule Favn.Connection.Loader do
   end
 
   defp load_definition(module) when is_atom(module) do
-    if function_exported?(module, :definition, 0) do
-      with :ok <- validate_behaviour(module) do
-        definition = module.definition()
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :definition, 0),
+         :ok <- validate_behaviour(module) do
+      definition = module.definition()
 
-        case definition do
-          %Definition{} = defn ->
-            normalized = %Definition{defn | module: module}
+      case definition do
+        %Definition{} = defn ->
+          normalized = %Definition{defn | module: module}
 
-            case Validator.validate_definition(normalized) do
-              :ok -> {:ok, normalized}
-              {:error, errors} -> {:error, errors}
-            end
+          case Validator.validate_definition(normalized) do
+            :ok -> {:ok, normalized}
+            {:error, errors} -> {:error, errors}
+          end
 
-          _other ->
-            {:error,
-             [
-               %Error{
-                 type: :invalid_definition,
-                 module: module,
-                 message:
-                   "connection module #{inspect(module)} must return %Favn.Connection.Definition{}"
-               }
-             ]}
-        end
+        _other ->
+          {:error,
+           [
+             %Error{
+               type: :invalid_definition,
+               module: module,
+               message:
+                 "connection module #{inspect(module)} must return %Favn.Connection.Definition{}"
+             }
+           ]}
       end
     else
-      {:error,
-       [
-         %Error{
-           type: :invalid_module,
-           module: module,
-           message: "connection module #{inspect(module)} must export definition/0"
-         }
-       ]}
+      {:error, reason} when is_atom(reason) ->
+        {:error,
+         [
+           %Error{
+             type: :invalid_module,
+             module: module,
+             message: "connection module #{inspect(module)} could not be loaded"
+           }
+         ]}
+
+      false ->
+        {:error,
+         [
+           %Error{
+             type: :invalid_module,
+             module: module,
+             message: "connection module #{inspect(module)} must export definition/0"
+           }
+         ]}
+
+      {:error, _errors} = error ->
+        error
     end
   end
 

@@ -422,13 +422,14 @@ defmodule Favn.Pipeline do
 
   @spec fetch(module()) :: {:ok, Definition.t()} | {:error, fetch_error()}
   def fetch(module) when is_atom(module) do
-    if function_exported?(module, :__favn_pipeline__, 0) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :__favn_pipeline__, 0) do
       case module.__favn_pipeline__() do
         %Definition{} = definition -> {:ok, definition}
         _other -> {:error, :pipeline_not_defined}
       end
     else
-      {:error, :not_pipeline_module}
+      _ -> {:error, :not_pipeline_module}
     end
   rescue
     _error ->

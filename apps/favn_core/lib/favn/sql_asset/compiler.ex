@@ -17,13 +17,14 @@ defmodule Favn.SQLAsset.Compiler do
 
   @spec fetch_definition(module()) :: {:ok, Definition.t()} | {:error, term()}
   def fetch_definition(module) when is_atom(module) do
-    if function_exported?(module, :__favn_sql_asset_definition__, 0) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :__favn_sql_asset_definition__, 0) do
       case module.__favn_sql_asset_definition__() do
         %Definition{} = definition -> {:ok, definition}
         _other -> {:error, :invalid_sql_asset_definition}
       end
     else
-      {:error, :invalid_sql_asset_definition}
+      _ -> {:error, :invalid_sql_asset_definition}
     end
   rescue
     _ -> {:error, :invalid_sql_asset_definition}
