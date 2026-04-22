@@ -4,23 +4,26 @@
 
 Favn is an Elixir library for defining and orchestrating business-oriented data assets.
 This repository is in a v0.5 umbrella refactor.
-During Phase 1, the active v0.4 reference runtime lives in `apps/favn_legacy/lib/favn.ex`.
-The new public app scaffold is `apps/favn/lib/favn.ex` but it is not yet the migrated runtime API source of truth.
-The most important file is `docs/FEATURES.md`. We will use this file to document our progress and roadmap.
+The public package boundary lives in `apps/favn/lib/favn.ex`.
+Authoring implementation lives in `apps/favn_authoring/lib/favn.ex`.
+The most important user-facing docs are `docs/FEATURES.md` and `docs/ROADMAP.md`.
 
 **Important rules**
 - Favn is currently in private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
-- Always start by reading `README.md`, `docs/REFACTOR.md`, and `docs/FEATURES.md`. To get context of state of repo.
+- Always start by reading `README.md`, `docs/REFACTOR.md`, `docs/FEATURES.md`, and `docs/ROADMAP.md` to get context on current behavior and planned work.
 - If you know you need to read the whole file use a large limit >2000 so you do not need to do multiple tool calls. 
-- Keep status of roadmap features up to date in `docs/FEATURES.md`. If you need a task list with details, create a separate file for that and link to it from FEATURES.md. 
+- Keep `docs/FEATURES.md` focused on implemented, user-visible behavior only.
+- Keep `docs/ROADMAP.md` focused on planned work only. Do not leave already-implemented items there.
+- When a feature lands, update `docs/FEATURES.md` and remove or downgrade the corresponding roadmap item in `docs/ROADMAP.md`.
+- If you need a detailed task list, create a separate file and link to it from `docs/ROADMAP.md` or the relevant doc.
 - When you start coding, make sure task exist, and when you have created the code always mark task as done.
-- Always keep user documentation up to date in the current source-of-truth location and `README.md`. During Phase 1 this is primarily `apps/favn_legacy/lib/favn.ex`.
+- Always keep user documentation up to date in the current source-of-truth location and `README.md`.
 - when creating new files, please update `docs/lib_structure.md` or `docs/test_structure.md`
 - Before starting a new coding session - always:
     - Identify new coding session through that chat history is empty
     - Make sure main branch is up to date
     - Branch main with name based on feature to be implemented as feature/*.
-    - If user asks explixitly to work on a specific branch then go to that branch, make sure it is up to date and start working. 
+    - If user asks explicitly to work on a specific branch then go to that branch, make sure it is up to date and start working. 
 - After any Elixir code change, run `mix format`, `mix compile --warnings-as-errors`, `mix test`, `mix credo --strict`, `mix dialyzer`, and `mix xref graph --format stats --label compile-connected`. Fix all failures before finishing.
 - In Elixir - always use shared fixtures and test helpers from apps/favn_test_support when available, and keep app-local test support limited to behavior or setup that is genuinely specific to that app.
 - Only web-dev agent should work with favn_web as web-dev has web dev tooling. When needed to do changes on favn_web, offload work to web-dev agent

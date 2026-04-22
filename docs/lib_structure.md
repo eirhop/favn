@@ -6,6 +6,12 @@ App-level technical docs:
 
 - `apps/favn_local/README.md`
 
+Top-level product docs:
+
+- `docs/FEATURES.md` for implemented capabilities
+- `docs/FEATURE_AUDIT_TASKLIST.md` for the current feature audit work breakdown
+- `docs/ROADMAP.md` for planned work
+
 ```text
 apps/
 ├── favn/lib/
