@@ -53,9 +53,15 @@ defmodule FavnAuthoring do
   """
   @spec list_assets(module() | [module()]) :: {:ok, [asset()]} | {:error, term()}
   def list_assets(module) when is_atom(module) do
-    case Compiler.compile_module_assets(module) do
-      {:ok, assets} -> {:ok, assets}
-      {:error, reason} -> {:error, reason}
+    case Application.get_env(:favn, :asset_modules, :unset) do
+      modules when is_list(modules) ->
+        list_assets_for_module_from_catalog(module, modules)
+
+      _other ->
+        case Compiler.compile_module_assets(module) do
+          {:ok, assets} -> {:ok, assets}
+          {:error, reason} -> {:error, reason}
+        end
     end
   end
 
@@ -73,6 +79,16 @@ defmodule FavnAuthoring do
   end
 
   def list_assets(_invalid), do: {:error, :invalid_asset_modules}
+
+  defp list_assets_for_module_from_catalog(module, modules)
+       when is_atom(module) and is_list(modules) do
+    with {:ok, assets} <- list_assets(modules) do
+      case Enum.filter(assets, &(&1.module == module)) do
+        [] -> {:error, :not_asset_module}
+        module_assets -> {:ok, module_assets}
+      end
+    end
+  end
 
   @doc """
   Fetches one compiled asset by module shorthand or canonical ref.

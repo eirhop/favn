@@ -7,6 +7,36 @@ defmodule Favn.PublicAuthoringParityTest do
   alias Favn.Test.Fixtures.Assets.Basic.SpoofedAssets
   alias FavnTestSupport.Fixtures
 
+  defmodule RelationOrders do
+    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+    use Favn.Asset
+
+    @relation [name: "orders"]
+    def asset(_ctx), do: :ok
+  end
+
+  defmodule RelationCustomers do
+    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+    use Favn.Asset
+
+    @relation [name: "customers"]
+    def asset(_ctx), do: :ok
+  end
+
+  defmodule RelationCustomer360 do
+    use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
+    use Favn.SQLAsset
+
+    @materialized :view
+    query do
+      ~SQL"""
+      select o.id, c.id as customer_id
+      from raw.commerce.orders o
+      join raw.commerce.customers c on c.id = o.customer_id
+      """
+    end
+  end
+
   setup_all do
     Fixtures.compile_fixture!(:basic_assets)
     :ok
@@ -57,6 +87,20 @@ defmodule Favn.PublicAuthoringParityTest do
 
     assert {:ok, cross_module_asset} = Favn.get_asset({CrossModuleAssets, :publish_orders})
     assert cross_module_asset.depends_on == [{SampleAssets, :normalize_orders}]
+  end
+
+  test "configured single-module lookups keep inferred relation dependencies" do
+    Application.put_env(:favn, :asset_modules, [
+      RelationOrders,
+      RelationCustomers,
+      RelationCustomer360
+    ])
+
+    assert {:ok, [asset]} = Favn.list_assets(RelationCustomer360)
+    assert asset.depends_on == [{RelationCustomers, :asset}, {RelationOrders, :asset}]
+
+    assert {:ok, fetched} = Favn.get_asset(RelationCustomer360)
+    assert fetched.depends_on == [{RelationCustomers, :asset}, {RelationOrders, :asset}]
   end
 
   test "asset_module?/1 and get_asset/1 reject spoofed and invalid modules" do
