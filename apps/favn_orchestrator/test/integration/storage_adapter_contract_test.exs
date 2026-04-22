@@ -82,6 +82,19 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert :ok = Storage.set_active_manifest_version(manifest_version_id)
     assert {:ok, ^manifest_version_id} = Storage.get_active_manifest_version()
 
+    assert {:ok, stored_version} = Storage.get_manifest_version(manifest_version_id)
+    assert %Manifest{} = stored_version.manifest
+    assert [%Favn.Manifest.Asset{ref: {MyApp.Asset, :asset}}] = stored_version.manifest.assets
+
+    assert {:ok, listed_versions} = Storage.list_manifest_versions()
+
+    assert Enum.any?(listed_versions, fn %Version{manifest: %Manifest{} = manifest} ->
+             Enum.any?(
+               manifest.assets,
+               &match?(%Favn.Manifest.Asset{ref: {MyApp.Asset, :asset}}, &1)
+             )
+           end)
+
     run =
       RunState.new(
         id: "run_contract_#{label}_#{System.unique_integer([:positive])}",

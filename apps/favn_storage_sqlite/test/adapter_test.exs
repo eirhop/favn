@@ -2,6 +2,7 @@ defmodule FavnStorageSqlite.AdapterTest do
   use ExUnit.Case, async: false
 
   alias Favn.Manifest
+  alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter.SQLite, as: Adapter
   alias FavnOrchestrator.RunState
@@ -44,6 +45,11 @@ defmodule FavnStorageSqlite.AdapterTest do
 
     assert {:ok, stored} = Adapter.get_manifest_version("mv_sqlite", opts)
     assert stored.content_hash == version.content_hash
+    assert %Manifest{} = stored.manifest
+    assert [%Asset{ref: {MyApp.Asset, :asset}}] = stored.manifest.assets
+
+    assert {:ok, listed} = Adapter.list_manifest_versions(opts)
+    assert [%Version{manifest: %Manifest{assets: [%Asset{ref: {MyApp.Asset, :asset}}]}}] = listed
 
     assert :ok = Adapter.set_active_manifest_version("mv_sqlite", opts)
     assert {:ok, "mv_sqlite"} = Adapter.get_active_manifest_version(opts)

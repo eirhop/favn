@@ -14,6 +14,8 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     assert {:ok, decoded} = ManifestCodec.from_record(record)
     assert decoded.manifest_version_id == version.manifest_version_id
     assert decoded.content_hash == version.content_hash
+    assert %Manifest{} = decoded.manifest
+    assert [%Favn.Manifest.Asset{ref: {MyApp.Asset, :asset}}] = decoded.manifest.assets
   end
 
   test "rejects content hash mismatch" do
