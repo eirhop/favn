@@ -221,7 +221,7 @@ defmodule Favn.Dev.Stack do
     orchestrator_short = "favn_orchestrator_#{suffix}"
     control_short = "favn_local_ctl_#{suffix}"
 
-    with :ok <- NodeControl.ensure_local_node_started(secrets["rpc_cookie"], name: control_short),
+    with :ok <- maybe_start_local_node(secrets, control_short, opts),
          {:ok, runner_full} <- NodeControl.shortname_to_full(runner_short),
          {:ok, orchestrator_full} <- NodeControl.shortname_to_full(orchestrator_short),
          {:ok, control_full} <- NodeControl.shortname_to_full(control_short) do
@@ -234,6 +234,17 @@ defmodule Favn.Dev.Stack do
          control_short: control_short,
          control_full: control_full
        }}
+    end
+  end
+
+  defp maybe_start_local_node(secrets, control_short, opts)
+       when is_map(secrets) and is_binary(control_short) and is_list(opts) do
+    case Keyword.get(opts, :service_specs_override) do
+      list when is_list(list) and list != [] ->
+        :ok
+
+      _ ->
+        NodeControl.ensure_local_node_started(secrets["rpc_cookie"], name: control_short)
     end
   end
 

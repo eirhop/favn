@@ -4,9 +4,6 @@ defmodule Favn.Dev.NodeControlTest do
   alias Favn.Dev.NodeControl
 
   test "shortname_to_full/1 uses canonical shortname host" do
-    cookie = "favn_node_control_test_#{System.unique_integer([:positive])}"
-    assert :ok = NodeControl.ensure_local_node_started(cookie)
-
     raw_host = :net_adm.localhost() |> List.to_string()
 
     assert {:ok, full_name} = NodeControl.shortname_to_full("favn_runner_test")

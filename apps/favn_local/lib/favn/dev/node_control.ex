@@ -44,7 +44,7 @@ defmodule Favn.Dev.NodeControl do
   defp local_short_host do
     case node() do
       :nonode@nohost ->
-        {:error, :shortname_host_not_available}
+        short_host_from_localhost()
 
       node_name when is_atom(node_name) ->
         node_name
@@ -53,6 +53,32 @@ defmodule Favn.Dev.NodeControl do
         |> parse_short_host()
     end
   end
+
+  defp short_host_from_localhost do
+    case :net_adm.localhost() do
+      host when is_list(host) and host != [] ->
+        host
+        |> List.to_string()
+        |> String.trim()
+        |> String.downcase()
+        |> String.split(".", parts: 2)
+        |> hd()
+        |> normalize_short_host()
+
+      _other ->
+        {:error, :shortname_host_not_available}
+    end
+  end
+
+  defp normalize_short_host(host) when is_binary(host) and host != "" do
+    if String.contains?(host, ".") do
+      {:error, {:invalid_shortname_host, host}}
+    else
+      {:ok, host}
+    end
+  end
+
+  defp normalize_short_host(_host), do: {:error, :shortname_host_not_available}
 
   defp parse_short_host([_name, host]) when is_binary(host) and host != "" do
     if String.contains?(host, ".") do
