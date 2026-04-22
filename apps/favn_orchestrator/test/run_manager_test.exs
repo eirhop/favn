@@ -605,6 +605,23 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.target_refs == [{MyApp.Assets.Gold, :asset}]
   end
 
+  test "submits manual pipeline run from persisted descriptor with single-asset module shorthand" do
+    version = manifest_version("mv_pipeline_single_asset_shorthand")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    assert :ok =
+             FavnOrchestrator.activate_manifest("mv_pipeline_single_asset_shorthand")
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.SingleAssetShorthand)
+
+    assert {:ok, run} = await_terminal_run(run_id)
+
+    assert run.status == :ok
+    assert run.submit_kind == :pipeline
+    assert run.target_refs == [{MyApp.Assets.Gold, :asset}]
+  end
+
   test "preserves orchestrator metadata and namespaces runner metadata on success paths" do
     version = manifest_version("mv_metadata_preserve")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1286,6 +1303,14 @@ defmodule FavnOrchestrator.RunManagerTest do
             module: MyApp.Pipelines.Daily,
             name: :daily,
             selectors: [{:asset, {MyApp.Assets.Gold, :asset}}],
+            deps: :all,
+            schedule: nil,
+            metadata: %{}
+          },
+          %Favn.Manifest.Pipeline{
+            module: MyApp.Pipelines.SingleAssetShorthand,
+            name: :single_asset_shorthand,
+            selectors: [{:asset, MyApp.Assets.Gold}],
             deps: :all,
             schedule: nil,
             metadata: %{}

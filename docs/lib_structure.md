@@ -121,6 +121,7 @@ Notes:
   - `pipeline/definition.ex`
   - `pipeline/resolver.ex`
   - `pipeline/resolution.ex`
+  - `pipeline/selector_normalizer.ex`
   - `plan.ex`
   - `sql/definition.ex`
   - `sql/source.ex`
