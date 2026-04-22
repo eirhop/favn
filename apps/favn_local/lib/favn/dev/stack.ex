@@ -50,6 +50,9 @@ defmodule Favn.Dev.Stack do
   defp cleanup_required?({:port_check_failed, _service, _port, _reason}), do: false
   defp cleanup_required?({:postgres_misconfigured, _field}), do: false
   defp cleanup_required?({:postgres_unavailable, _host, _port, _reason}), do: false
+  defp cleanup_required?({:shortname_host_unavailable, _reason}), do: false
+  defp cleanup_required?(:shortname_host_not_available), do: false
+  defp cleanup_required?({:invalid_shortname_host, _host}), do: false
   defp cleanup_required?(_reason), do: true
 
   @spec stop(root_opt()) :: :ok | {:error, term()}
@@ -76,7 +79,7 @@ defmodule Favn.Dev.Stack do
            config <- Config.resolve(opts),
            :ok <- ensure_startup_prerequisites(config),
            {:ok, secrets} <- Secrets.resolve(config, opts),
-           {:ok, node_names} <- build_node_names(opts),
+           {:ok, node_names} <- build_node_names(secrets, opts),
            {:ok, services} <- start_services(config, secrets, node_names, opts),
            :ok <- write_runtime(config, secrets, node_names, services, opts) do
         {:ok, %{config: config, secrets: secrets, node_names: node_names, services: services}}
@@ -210,7 +213,7 @@ defmodule Favn.Dev.Stack do
     end)
   end
 
-  defp build_node_names(opts) do
+  defp build_node_names(secrets, opts) when is_map(secrets) do
     root_dir = Paths.root_dir(opts)
     suffix = Integer.to_string(:erlang.phash2(root_dir, 1_000_000))
 
@@ -218,7 +221,8 @@ defmodule Favn.Dev.Stack do
     orchestrator_short = "favn_orchestrator_#{suffix}"
     control_short = "favn_local_ctl_#{suffix}"
 
-    with {:ok, runner_full} <- NodeControl.shortname_to_full(runner_short),
+    with :ok <- maybe_start_local_node(secrets, control_short, opts),
+         {:ok, runner_full} <- NodeControl.shortname_to_full(runner_short),
          {:ok, orchestrator_full} <- NodeControl.shortname_to_full(orchestrator_short),
          {:ok, control_full} <- NodeControl.shortname_to_full(control_short) do
       {:ok,
@@ -230,6 +234,17 @@ defmodule Favn.Dev.Stack do
          control_short: control_short,
          control_full: control_full
        }}
+    end
+  end
+
+  defp maybe_start_local_node(secrets, control_short, opts)
+       when is_map(secrets) and is_binary(control_short) and is_list(opts) do
+    case Keyword.get(opts, :service_specs_override) do
+      list when is_list(list) and list != [] ->
+        :ok
+
+      _ ->
+        NodeControl.ensure_local_node_started(secrets["rpc_cookie"], name: control_short)
     end
   end
 

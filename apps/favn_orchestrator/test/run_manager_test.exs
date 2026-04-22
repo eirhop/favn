@@ -1,6 +1,8 @@
 defmodule FavnOrchestrator.RunManagerTest do
   use ExUnit.Case, async: false
 
+  @moduletag capture_log: true
+
   alias Favn.Contracts.RunnerResult
   alias Favn.Manifest
   alias Favn.Manifest.Version
