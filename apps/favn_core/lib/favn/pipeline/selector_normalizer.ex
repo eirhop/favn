@@ -6,8 +6,8 @@ defmodule Favn.Pipeline.SelectorNormalizer do
   @type selector ::
           {:asset, module() | Favn.Ref.t()}
           | {:module, module()}
-          | {:tag, term()}
-          | {:category, term()}
+          | {:tag, atom() | binary()}
+          | {:category, atom() | binary()}
 
   @type resolve_asset_module :: (module() -> {:ok, Favn.Ref.t()} | {:error, term()})
 
