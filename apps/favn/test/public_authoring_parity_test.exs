@@ -1,5 +1,5 @@
 defmodule Favn.PublicAuthoringParityTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Test.Fixtures.Assets.Basic.AdditionalAssets
   alias Favn.Test.Fixtures.Assets.Basic.CrossModuleAssets
