@@ -207,4 +207,121 @@ defmodule Favn.PublicPipelineParityTest do
       """)
     end
   end
+
+  test "get_pipeline/1 loads valid pipeline modules before export checks" do
+    module = Module.concat(__MODULE__, "LoadablePipeline#{System.unique_integer([:positive])}")
+
+    compile_loadable_module!(
+      module,
+      """
+      defmodule #{inspect(module)} do
+        use Favn.Pipeline
+
+        pipeline :loaded_pipeline do
+          asset {#{inspect(SalesAssets)}, :sales_daily}
+          deps :all
+        end
+      end
+      """
+    )
+
+    with_unloaded_module(module, fn ->
+      assert {:ok, definition} = Favn.get_pipeline(module)
+      assert definition.module == module
+      assert definition.name == :loaded_pipeline
+    end)
+  end
+
+  test "generate_manifest/1 compiles unloaded pipeline and schedule modules" do
+    pipeline_module =
+      Module.concat(__MODULE__, "ManifestPipeline#{System.unique_integer([:positive])}")
+
+    schedule_module =
+      Module.concat(__MODULE__, "ManifestSchedules#{System.unique_integer([:positive])}")
+
+    compile_loadable_module!(
+      schedule_module,
+      """
+      defmodule #{inspect(schedule_module)} do
+        use Favn.Triggers.Schedules
+
+        schedule :nightly, cron: "0 2 * * *", timezone: "Etc/UTC"
+      end
+      """
+    )
+
+    compile_loadable_module!(
+      pipeline_module,
+      """
+      defmodule #{inspect(pipeline_module)} do
+        use Favn.Pipeline
+
+        pipeline :nightly_sales do
+          asset {#{inspect(SalesAssets)}, :sales_daily}
+          schedule {#{inspect(schedule_module)}, :nightly}
+        end
+      end
+      """
+    )
+
+    with_unloaded_modules([pipeline_module, schedule_module], fn ->
+      assert {:ok, manifest} =
+               Favn.generate_manifest(
+                 asset_modules: [SalesAssets, ReportingAssets],
+                 pipeline_modules: [pipeline_module],
+                 schedule_modules: [schedule_module]
+               )
+
+      assert Enum.any?(
+               manifest.pipelines,
+               &(&1.module == pipeline_module and &1.name == :nightly_sales)
+             )
+
+      assert Enum.any?(
+               manifest.schedules,
+               &(&1.module == schedule_module and &1.name == :nightly)
+             )
+    end)
+  end
+
+  defp with_unloaded_module(module, fun) when is_atom(module) and is_function(fun, 0) do
+    with_unloaded_modules([module], fun)
+  end
+
+  defp with_unloaded_modules(modules, fun) when is_list(modules) and is_function(fun, 0) do
+    Enum.each(modules, fn module ->
+      assert {:module, ^module} = Code.ensure_loaded(module)
+      :code.purge(module)
+      :code.delete(module)
+    end)
+
+    try do
+      fun.()
+    after
+      Enum.each(modules, fn module ->
+        assert {:module, ^module} = Code.ensure_loaded(module)
+      end)
+    end
+  end
+
+  defp compile_loadable_module!(module, source) when is_atom(module) and is_binary(source) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_pipeline_loadable_modules_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+
+    file_path = Path.join(dir, "#{Macro.underscore(Atom.to_string(module))}.ex")
+    File.mkdir_p!(Path.dirname(file_path))
+    File.write!(file_path, source)
+
+    Code.prepend_path(dir)
+
+    assert {:ok, modules, _diagnostics} =
+             Kernel.ParallelCompiler.compile_to_path([file_path], dir, return_diagnostics: true)
+
+    assert module in modules
+  end
 end

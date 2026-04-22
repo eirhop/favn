@@ -40,7 +40,7 @@ defmodule Favn.Assets.Compiler do
         end
 
       {:error, _reason} ->
-        {:error, {:invalid_asset_module, module}}
+        {:error, :not_asset_module}
     end
   rescue
     _ -> {:error, {:invalid_asset_module, module}}
