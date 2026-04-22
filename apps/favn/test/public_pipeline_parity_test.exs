@@ -153,6 +153,62 @@ defmodule Favn.PublicPipelineParityTest do
     assert {:error, :not_asset_module} = Favn.resolve_pipeline(module_name)
   end
 
+  test "resolve_pipeline/2 returns invalid_selector for invalid tag/category selector values" do
+    module_name =
+      Module.concat(__MODULE__, "InvalidSelectorValue#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Pipeline
+
+        pipeline :invalid_selector_value do
+          select do
+            tag(%{bad: :value})
+            category([:bad])
+          end
+        end
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    assert {:error, :invalid_selector} = Favn.resolve_pipeline(module_name)
+  end
+
+  test "resolve_pipeline/2 preserves compiler errors for invalid asset module shorthand" do
+    bad_asset_module =
+      Module.concat(__MODULE__, "BadAssetModule#{System.unique_integer([:positive])}")
+
+    pipeline_module =
+      Module.concat(__MODULE__, "BadAssetPipeline#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(bad_asset_module)} do
+        def __favn_assets__, do: :invalid_shape
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(pipeline_module)} do
+        use Favn.Pipeline
+
+        pipeline :bad_asset_module_selector do
+          asset #{inspect(bad_asset_module)}
+        end
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    assert {:error, {:invalid_asset_module, ^bad_asset_module}} =
+             Favn.resolve_pipeline(pipeline_module)
+  end
+
   test "pipeline DSL rejects invalid selection and clause usage" do
     assert_raise ArgumentError, ~r/cannot mix shorthand selection/, fn ->
       Code.compile_string("""

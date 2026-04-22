@@ -38,30 +38,47 @@ defmodule Favn.Pipeline.SelectorNormalizer do
   end
 
   defp normalize_selector({:asset, module}, resolve_asset_module) when is_atom(module) do
-    with {:ok, {asset_module, name}} <- resolve_asset_module.(module),
-         true <- is_atom(asset_module) and is_atom(name) do
-      {:ok, {:asset, {asset_module, name}}}
-    else
-      _ -> {:error, :not_asset_module}
+    case resolve_asset_module.(module) do
+      {:ok, {asset_module, name}} when is_atom(asset_module) and is_atom(name) ->
+        {:ok, {:asset, {asset_module, name}}}
+
+      {:error, :not_asset_module} ->
+        {:error, :not_asset_module}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _other ->
+        {:error, :not_asset_module}
     end
   end
 
   defp normalize_selector({:module, module}, _resolve_asset_module) when is_atom(module),
     do: {:ok, {:module, module}}
 
-  defp normalize_selector({:tag, value}, _resolve_asset_module), do: {:ok, {:tag, value}}
+  defp normalize_selector({:tag, value}, _resolve_asset_module)
+       when is_atom(value) or is_binary(value),
+       do: {:ok, {:tag, value}}
 
-  defp normalize_selector({:category, value}, _resolve_asset_module),
-    do: {:ok, {:category, value}}
+  defp normalize_selector({:category, value}, _resolve_asset_module)
+       when is_atom(value) or is_binary(value),
+       do: {:ok, {:category, value}}
 
   defp normalize_selector(_other, _resolve_asset_module), do: {:error, :invalid_selector}
 
   defp resolve_asset_module(module) when is_atom(module) do
-    with {:ok, assets} <- Compiler.compile_module_assets(module),
-         [%{ref: {^module, :asset}}] <- assets do
-      {:ok, {module, :asset}}
-    else
-      _ -> {:error, :not_asset_module}
+    case Compiler.compile_module_assets(module) do
+      {:ok, [%{ref: {^module, :asset}}]} ->
+        {:ok, {module, :asset}}
+
+      {:ok, _assets} ->
+        {:error, :not_asset_module}
+
+      {:error, :not_asset_module} ->
+        {:error, :not_asset_module}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end
