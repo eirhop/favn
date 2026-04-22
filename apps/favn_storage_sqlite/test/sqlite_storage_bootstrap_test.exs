@@ -3,7 +3,7 @@ defmodule Favn.SQLiteStorageBootstrapTest do
 
   alias Favn.Run
   alias Favn.Storage
-  alias FavnStorageSqlite.Adapter
+  alias Favn.Storage.Adapter.SQLite, as: Adapter
 
   setup do
     state = Favn.TestSetup.capture_state()

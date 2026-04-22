@@ -143,8 +143,7 @@ defmodule Favn do
   end
 
   @doc false
-  @spec list_run_events(run_id(), keyword()) ::
-          {:ok, [FavnOrchestrator.RunEvent.t()]} | {:error, term()}
+  @spec list_run_events(run_id(), keyword()) :: {:ok, [map()]} | {:error, term()}
   def list_run_events(run_id, opts \\ []) when is_list(opts) do
     orchestrator_runtime_call(:list_run_events, [run_id, opts])
   end

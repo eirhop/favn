@@ -8,14 +8,14 @@ Visibility:
 
 - internal
 
-Allowed dependencies in Phase 1:
+Allowed dependencies:
 
 - none (bottom of the umbrella graph)
 
-Must not depend on in Phase 1:
+Must not depend on:
 
 - any other umbrella app
 
 Current status:
 
-- scaffold-only, not implemented yet
+- implemented shared foundation for compiler, manifest, planning, and contract work used across the owner apps

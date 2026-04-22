@@ -1,7 +1,7 @@
 defmodule FavnStoragePostgres.AdapterTest do
   use ExUnit.Case, async: true
 
-  alias FavnStoragePostgres.Adapter
+  alias Favn.Storage.Adapter.Postgres, as: Adapter
 
   defmodule ExternalRepoStub do
     def __adapter__, do: Ecto.Adapters.Postgres

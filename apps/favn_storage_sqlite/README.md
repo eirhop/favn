@@ -8,7 +8,7 @@ Visibility:
 
 - internal
 
-Allowed dependencies in Phase 1:
+Allowed dependencies:
 
 - `favn_orchestrator`
 - `ecto_sql`
@@ -20,11 +20,11 @@ Must not depend on:
 
 Current status:
 
-- implemented initial Phase 6 SQLite adapter foundation
-- module entrypoint: `FavnStorageSqlite.Adapter`
+- implemented SQLite storage adapter for orchestrator persistence
+- module entrypoint: `Favn.Storage.Adapter.SQLite`
 - managed repo bootstrap with startup migrations
 - persists manifest versions, active manifest pointer, run snapshots, run events, and scheduler cursors
-- current persisted run/event/scheduler payloads use BEAM term blobs as a temporary foundation choice; this should be replaced with more inspectable canonical payload storage before final cutover
+- persisted run/event/scheduler payloads now use canonical inspectable `json-v1` payload storage through shared orchestrator codecs
 
 ## Runtime configuration
 
@@ -32,7 +32,7 @@ SQLite is the persistent local-dev adapter path.
 
 ```elixir
 config :favn_orchestrator,
-  storage_adapter: FavnStorageSqlite.Adapter,
+  storage_adapter: Favn.Storage.Adapter.SQLite,
   storage_adapter_opts: [
     database: ".favn/dev.sqlite3",
     migration_mode: :auto,
@@ -42,6 +42,11 @@ config :favn_orchestrator,
 ```
 
 Use `migration_mode: :manual` only when schema lifecycle is controlled externally.
+
+## Payload compatibility
+
+- pre-closeout persisted run/event/scheduler rows encoded as BEAM term blobs are intentionally unsupported
+- run `mix favn.reset` (or clear the SQLite runtime tables manually) before running with the closeout adapter
 
 ## Instance model
 

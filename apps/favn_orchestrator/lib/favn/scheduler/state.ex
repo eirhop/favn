@@ -12,7 +12,8 @@ defmodule Favn.Scheduler.State do
           last_submitted_due_at: DateTime.t() | nil,
           in_flight_run_id: String.t() | nil,
           queued_due_at: DateTime.t() | nil,
-          updated_at: DateTime.t() | nil
+          updated_at: DateTime.t() | nil,
+          version: pos_integer() | nil
         }
 
   defstruct pipeline_module: nil,
@@ -23,5 +24,6 @@ defmodule Favn.Scheduler.State do
             last_submitted_due_at: nil,
             in_flight_run_id: nil,
             queued_due_at: nil,
-            updated_at: nil
+            updated_at: nil,
+            version: nil
 end

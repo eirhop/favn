@@ -7,45 +7,81 @@
 
 ## Current Focus
 
-Favn `v0.5.0` is a refactor release toward a manifest-first product with separate authoring, web, orchestrator, and runner boundaries.
+Favn `v0.5.0` established the intended manifest-first product architecture and
+the runtime boundaries between:
 
-- Phase 9 core local lifecycle has landed in `apps/favn_local`: `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`
-- public package topology migration is complete: `apps/favn` is now the thin public wrapper, `apps/favn_authoring` owns authoring implementation, and `apps/favn_local` owns lifecycle/tooling internals
-- the Phase 9 command surface now includes `mix favn.install`, `mix favn.reset`, `mix favn.logs`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, and `mix favn.build.single`
-- `mix favn.build.runner` is the most complete packaging target today
-- `mix favn.build.web` and `mix favn.build.orchestrator` now emit explicit metadata-oriented artifacts with honest `artifact` metadata and `OPERATOR_NOTES.md`
-- `mix favn.build.single` now emits an explicit topology-preserving assembly artifact with honest non-operational start/stop scripts and `OPERATOR_NOTES.md`
-- `mix favn.read_doc` now provides local compiled-doc lookup for modules and public function names
-- local storage configuration now supports `memory`, `sqlite`, and `postgres` through `config :favn, :local` plus `mix favn.dev --sqlite|--postgres`
-- Phase 9 hardening, packaging honesty, and storage verification are complete and captured in `docs/refactor/PHASE_9_DEV_TOOLING_PLAN.md` and `docs/refactor/PHASE_9_TODO.md`
+- `favn` as the public authoring surface and public `mix favn.*` entrypoint owner
+- `favn_authoring` as the internal authoring/manifest implementation owner
+- `favn_local` as the internal local lifecycle/tooling/packaging implementation owner
+- `favn_core` as the shared compiler/manifest/planning/contracts layer
+- `favn_orchestrator` as the control plane and system of record
+- `favn_runner` as the execution runtime
+- `favn_web` as the separate public web edge
+
+The refactor closeout is now complete enough to resume normal feature work.
+
+Completed closeout work:
+
+- Phase 9 local lifecycle and packaging is complete: `mix favn.install`, `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`, `mix favn.reset`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, `mix favn.build.single`, and `mix favn.read_doc`
 - Phase 10 app deletion is complete: `apps/favn_legacy` and `apps/favn_view` are removed from the umbrella
-- shared migration fixture substrate now lives in `apps/favn_test_support` (`priv/fixtures/**` + `FavnTestSupport.Fixtures`) so later per-app parity PRs can reuse one fixture source of truth
-- authoring/compiler/planning/window coverage now lives in public-facade suites under `apps/favn/test` and core suites under `apps/favn_core/test`
-- execution ownership parity batch 2 expanded runner/plugin confidence in owner apps: `apps/favn_runner/test` now covers richer runner/server/worker/connection runtime SQL paths, and `apps/favn_duckdb/test` now carries broader DuckDB adapter/runtime hardening semantics
-- control-plane/runtime-state parity batch 3 is now completed: scheduler/runtime/storage/public-facade coverage has moved into owner suites under `apps/favn_orchestrator/test`, `apps/favn_storage_sqlite/test`, `apps/favn_storage_postgres/test`, and `apps/favn/test`, with shared setup moved out of legacy into `apps/favn_test_support`
+- stable storage adapter entrypoints are restored as `Favn.Storage.Adapter.SQLite` and `Favn.Storage.Adapter.Postgres`
+- SQL adapters now persist canonical inspectable `json-v1` payloads for run snapshots, run events, and scheduler state instead of BEAM term blobs
+- pre-closeout SQL rows persisted as BEAM term blobs are intentionally unsupported; reset/recreate persisted runtime state when upgrading to the closeout adapters
+- scheduler state writes now use explicit optimistic versions rather than permissive blind increments
+- external Postgres repo mode now caches successful schema-readiness validation instead of repeating catalog checks on every adapter call
+- public/package ownership is locked: `apps/favn` stays thin, `apps/favn_authoring` owns authoring internals, and `apps/favn_local` owns local tooling internals
+
+## Refactor Complete Means
+
+For Favn, "refactor complete" now means:
+
+- supported runtime paths no longer depend on `favn_legacy` or same-BEAM `favn_view` shortcuts
+- owner-app boundaries and dependency directions are locked and exercised in the owner apps
+- orchestrator and runner operate on persisted manifest versions and explicit runtime boundaries
+- `favn` remains the public package, while runtime/storage/plugin implementation stays behind owner-app boundaries
+- remaining work before `v1.0` is release hardening, end-to-end confidence, and product polish, not broad architecture migration
 
 ## v0.5 Status By Phase
 
 - Phase 0: complete
 - Phase 1: complete
-- Phase 2: in progress; `favn` public wrapper + `favn_authoring` internal ownership split is now in place, but broader cutover follow-up remains
+- Phase 2: complete
 - Phase 3: complete
 - Phase 4: complete
 - Phase 5: complete
 - Phase 6: complete
 - Phase 7: complete
-- Phase 8: in progress; the corrected `favn_web + favn_orchestrator + favn_runner` boundary baseline exists, but safe-release follow-up is still open
-- Phase 9: complete; command coverage, lifecycle hardening, packaging honesty, and storage verification are now closed for v0.5 scope
-- Phase 10: in progress; app deletion is complete, while remaining post-legacy cleanup still stays open
+- Phase 8: complete for refactor scope; safe-release hardening remains separate release work
+- Phase 9: complete
+- Phase 10: complete
 
-## Pre-v1 Release Blockers / Major Remaining Work
+## Remaining Work Before v1
 
-- finish remaining Phase 10 post-legacy cleanup, including final storage-format and adapter naming follow-up
-- durable orchestrator auth/session/audit persistence before any safe web-facing release
-- stronger password/session foundation and browser-edge abuse controls before any safe web-facing release
-- durable idempotency and scalable SSE replay/cursor model before any safe web-facing release if those capabilities are shipped
+The remaining work before `v1.0` is no longer refactor migration work.
+
+### 1. Safe-release web/orchestrator hardening
+
+- durable orchestrator persistence for actors, credentials, sessions, and audit records
+- stronger boring password and session foundations suitable for a real release
+- browser-edge abuse controls and rate limiting
+- service credential hardening, identity binding, and rotation for the web-to-orchestrator boundary
+- durable request idempotency behavior if idempotency is part of the shipped API contract
+- scalable SSE replay/cursor behavior if replay/resume is part of the shipped operator experience
+
+### 2. End-to-end runtime confidence
+
 - real end-to-end integration coverage against the live orchestrator boundary
-- service credential hardening and rotation model for the web-to-orchestrator boundary
+- packaging verification for supported deployment modes
+- release-oriented verification for local memory, SQLite, and Postgres paths
+- broader confidence around manifest publication, activation, run creation, execution, and event flow across process boundaries
+
+### 3. Stable product and operator experience
+
+- stable documented local developer flow
+- stable documented single-node packaging flow
+- stable documented split deployment flow for web, orchestrator, and runner
+- stable documented storage configuration and operator expectations
+- documentation aligned with the actual supported product shape rather than transitional refactor language
 
 ## v1.0 Goal
 
@@ -53,14 +89,16 @@ Ship a stable, production-usable Favn on the refactored architecture:
 
 - stable `favn` authoring surface
 - manifest-version-pinned orchestration through separate orchestrator and runner runtimes
-- working local development flow plus honest single-node and split deployment packaging
+- working and documented local development flow
+- honest and documented single-node and split deployment packaging
 - built-in memory, SQLite, and Postgres storage options
-- documentation and operator/developer experience aligned with the new product shape
+- release-ready web/orchestrator auth, session, and audit foundations
+- end-to-end verified control-plane and execution flows
 
-## Beyond v1
+## After v1
 
-- richer web UX after the boundary contracts settle
-- more adapters and plugins
+- richer web UX and operator workflows
+- more adapters and runner plugins
 - API and polling triggers
 - distributed multi-node execution and resource-aware scheduling
 - deeper observability and operator tooling
