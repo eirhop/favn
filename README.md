@@ -84,8 +84,19 @@ end
 ### 2. Define an asset
 
 ```elixir
-defmodule MyApp.Raw.Sales.Orders do
-  use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
+defmodule MyApp.Warehouse do
+  use Favn.Namespace, relation: [connection: :warehouse]
+end
+
+defmodule MyApp.Warehouse.Raw do
+  use Favn.Namespace, relation: [catalog: "raw"]
+end
+
+defmodule MyApp.Warehouse.Raw.Sales do
+  use Favn.Namespace, relation: [schema: "sales"]
+end
+
+defmodule MyApp.Warehouse.Raw.Sales.Orders do
   use Favn.Asset
 
   @doc "Load raw orders"
@@ -97,11 +108,24 @@ defmodule MyApp.Raw.Sales.Orders do
 end
 ```
 
+Namespace defaults are inherited from parent modules. Child asset modules only
+need `use Favn.Namespace` when they are adding or overriding shared relation
+defaults. `@relation true` is the normal leaf-module path, while
+`@relation [name: "..."]` is the normal way to override only the relation
+name.
+
 ### 3. Define a downstream SQL asset
 
 ```elixir
-defmodule MyApp.Gold.Sales.OrderSummary do
-  use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
+defmodule MyApp.Warehouse.Gold do
+  use Favn.Namespace, relation: [catalog: "gold"]
+end
+
+defmodule MyApp.Warehouse.Gold.Sales do
+  use Favn.Namespace, relation: [schema: "sales"]
+end
+
+defmodule MyApp.Warehouse.Gold.Sales.OrderSummary do
   use Favn.SQLAsset
 
   @meta owner: "analytics", category: :sales, tags: [:gold]
@@ -128,7 +152,7 @@ defmodule MyApp.Pipelines.DailySales do
   use Favn.Pipeline
 
   pipeline :daily_sales do
-    asset MyApp.Gold.Sales.OrderSummary
+    asset MyApp.Warehouse.Gold.Sales.OrderSummary
     deps :all
     schedule cron: "0 2 * * *", timezone: "Etc/UTC"
   end
@@ -142,8 +166,8 @@ import Config
 
 config :favn,
   asset_modules: [
-    MyApp.Raw.Sales.Orders,
-    MyApp.Gold.Sales.OrderSummary
+    MyApp.Warehouse.Raw.Sales.Orders,
+    MyApp.Warehouse.Gold.Sales.OrderSummary
   ],
   pipeline_modules: [
     MyApp.Pipelines.DailySales
