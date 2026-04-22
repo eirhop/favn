@@ -65,6 +65,73 @@ defmodule Favn.PublicPipelineParityTest do
            ]
   end
 
+  test "resolve_pipeline/2 resolves single-asset module shorthand selector" do
+    asset_module = Module.concat(__MODULE__, "SingleAsset#{System.unique_integer([:positive])}")
+
+    pipeline_module =
+      Module.concat(__MODULE__, "SingleAssetPipeline#{System.unique_integer([:positive])}")
+
+    compile_loadable_module!(
+      asset_module,
+      """
+      defmodule #{inspect(asset_module)} do
+        use Favn.Asset
+
+        def asset(_ctx), do: :ok
+      end
+      """
+    )
+
+    compile_loadable_module!(
+      pipeline_module,
+      """
+      defmodule #{inspect(pipeline_module)} do
+        use Favn.Pipeline
+
+        pipeline :single_asset_shorthand do
+          asset #{inspect(asset_module)}
+          deps :none
+        end
+      end
+      """
+    )
+
+    previous_asset_modules = Application.get_env(:favn, :asset_modules)
+    Application.put_env(:favn, :asset_modules, [asset_module, SalesAssets, ReportingAssets])
+
+    on_exit(fn ->
+      if is_nil(previous_asset_modules) do
+        Application.delete_env(:favn, :asset_modules)
+      else
+        Application.put_env(:favn, :asset_modules, previous_asset_modules)
+      end
+    end)
+
+    assert {:ok, resolution} = Favn.resolve_pipeline(pipeline_module)
+    assert resolution.target_refs == [{asset_module, :asset}]
+    assert resolution.pipeline.selectors == [{:asset, {asset_module, :asset}}]
+  end
+
+  test "resolve_pipeline/2 returns not_asset_module for asset module shorthand on multi-asset module" do
+    module_name =
+      Module.concat(__MODULE__, "InvalidAssetShorthand#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Pipeline
+
+        pipeline :invalid_asset_shorthand do
+          asset(#{inspect(SalesAssets)})
+        end
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    assert {:error, :not_asset_module} = Favn.resolve_pipeline(module_name)
+  end
+
   test "resolve_pipeline/2 returns not_asset_module for invalid module selector" do
     module_name = Module.concat(__MODULE__, "InvalidModule#{System.unique_integer([:positive])}")
 

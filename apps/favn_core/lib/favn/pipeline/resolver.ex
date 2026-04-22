@@ -8,6 +8,7 @@ defmodule Favn.Pipeline.Resolver do
 
   alias Favn.Pipeline.Definition
   alias Favn.Pipeline.Resolution
+  alias Favn.Pipeline.SelectorNormalizer
   alias Favn.Triggers.Schedule
   alias Favn.Window.Anchor
 
@@ -30,7 +31,9 @@ defmodule Favn.Pipeline.Resolver do
     schedule_lookup = Keyword.get(opts, :schedule_lookup)
     default_timezone = Schedule.default_timezone()
 
-    with :ok <- validate_definition(definition),
+    with {:ok, selectors} <- SelectorNormalizer.normalize(definition.selectors),
+         normalized_definition = %Definition{definition | selectors: selectors},
+         :ok <- validate_definition(normalized_definition),
          :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_anchor_window(anchor_window),
@@ -39,7 +42,7 @@ defmodule Favn.Pipeline.Resolver do
          {:ok, schedule} <-
            resolve_schedule(definition.schedule, default_timezone, schedule_lookup),
          {:ok, assets} <- resolve_assets(assets_opt),
-         {:ok, target_refs} <- resolve_selectors(definition, assets) do
+         {:ok, target_refs} <- resolve_selectors(selectors, assets) do
       pipeline_ctx = %{
         id: definition.name,
         name: definition.name,
@@ -59,9 +62,9 @@ defmodule Favn.Pipeline.Resolver do
 
       {:ok,
        %Resolution{
-         pipeline: definition,
+         pipeline: normalized_definition,
          target_refs: target_refs,
-         dependencies: definition.deps,
+         dependencies: normalized_definition.deps,
          pipeline_ctx: pipeline_ctx
        }}
     end
@@ -86,17 +89,7 @@ defmodule Favn.Pipeline.Resolver do
 
   defp validate_selectors([]), do: {:error, :empty_pipeline_selection}
 
-  defp validate_selectors(selectors) when is_list(selectors) do
-    if Enum.all?(selectors, &valid_selector?/1), do: :ok, else: {:error, :invalid_selector}
-  end
-
-  defp validate_selectors(_invalid), do: {:error, :invalid_selector}
-
-  defp valid_selector?({:asset, {module, name}}) when is_atom(module) and is_atom(name), do: true
-  defp valid_selector?({:module, module}) when is_atom(module), do: true
-  defp valid_selector?({:tag, value}) when is_atom(value) or is_binary(value), do: true
-  defp valid_selector?({:category, value}) when is_atom(value) or is_binary(value), do: true
-  defp valid_selector?(_), do: false
+  defp validate_selectors(selectors) when is_list(selectors), do: :ok
 
   defp validate_window(nil), do: :ok
   defp validate_window(value) when is_atom(value), do: :ok
@@ -157,7 +150,7 @@ defmodule Favn.Pipeline.Resolver do
   defp resolve_schedule(value, _default_timezone, _lookup),
     do: {:error, {:invalid_schedule, value}}
 
-  defp resolve_selectors(%Definition{selectors: selectors}, assets) do
+  defp resolve_selectors(selectors, assets) when is_list(selectors) do
     assets_by_ref = Map.new(assets, &{&1.ref, &1})
 
     with {:ok, refs} <- do_resolve_selectors(selectors, assets, assets_by_ref) do
