@@ -48,8 +48,10 @@ defmodule Favn.Manifest.VersionTest do
 
     assert {:ok, %Version{} = version} = Version.new(build, manifest_version_id: "mv_test_build")
 
-    assert version.manifest == canonical_manifest
-    assert is_map(version.manifest)
+    assert %Manifest{} = version.manifest
+    assert version.manifest.schema_version == 1
+    assert version.manifest.runner_contract_version == 1
+    assert version.manifest.assets == []
     refute Map.has_key?(version.manifest, :manifest)
   end
 
@@ -60,7 +62,7 @@ defmodule Favn.Manifest.VersionTest do
     assert {:ok, %Version{} = version} =
              Version.new(build, manifest_version_id: "mv_test_build_hash")
 
-    assert {:ok, manifest_hash} = Identity.hash_manifest(build.manifest)
+    assert {:ok, manifest_hash} = Identity.hash_manifest(version.manifest)
     assert version.content_hash == manifest_hash
   end
 

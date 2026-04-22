@@ -146,6 +146,7 @@ Notes:
   - `manifest/serializer.ex`
   - `manifest/identity.ex`
   - `manifest/compatibility.ex`
+  - `manifest/rehydrate.ex`
   - `manifest/version.ex`
   - `contracts/runner_work.ex`
   - `contracts/runner_result.ex`
