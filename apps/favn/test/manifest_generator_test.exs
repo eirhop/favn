@@ -38,6 +38,36 @@ defmodule Favn.Manifest.GeneratorTest do
     end
   end
 
+  defmodule RelationOrders do
+    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+    use Favn.Asset
+
+    @relation [name: "orders"]
+    def asset(_ctx), do: :ok
+  end
+
+  defmodule RelationCustomers do
+    use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "commerce"]
+    use Favn.Asset
+
+    @relation [name: "customers"]
+    def asset(_ctx), do: :ok
+  end
+
+  defmodule RelationCustomer360 do
+    use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "commerce"]
+    use Favn.SQLAsset
+
+    @materialized :view
+    query do
+      ~SQL"""
+      select o.id, c.id as customer_id
+      from raw.commerce.orders o
+      join raw.commerce.customers c on c.id = o.customer_id
+      """
+    end
+  end
+
   test "generates manifest from explicit module lists" do
     assert {:ok, %Manifest{} = manifest} =
              Favn.generate_manifest(
@@ -73,6 +103,32 @@ defmodule Favn.Manifest.GeneratorTest do
 
     assert {:ok, fetched} = Favn.get_asset(TestAsset)
     assert fetched.ref == {TestAsset, :asset}
+  end
+
+  test "generates manifest dependencies from relation-style SQL references" do
+    assert {:ok, %Manifest{} = manifest} =
+             Favn.generate_manifest(
+               asset_modules: [RelationOrders, RelationCustomers, RelationCustomer360]
+             )
+
+    downstream = Enum.find(manifest.assets, &(&1.ref == {RelationCustomer360, :asset}))
+
+    assert downstream.depends_on == [
+             {RelationCustomers, :asset},
+             {RelationOrders, :asset}
+           ]
+  end
+
+  test "lists assets with inferred dependencies when given a module list" do
+    assert {:ok, assets} =
+             Favn.list_assets([RelationOrders, RelationCustomers, RelationCustomer360])
+
+    downstream = Enum.find(assets, &(&1.ref == {RelationCustomer360, :asset}))
+
+    assert downstream.depends_on == [
+             {RelationCustomers, :asset},
+             {RelationOrders, :asset}
+           ]
   end
 
   test "builds, hashes, validates, and pins manifest versions" do

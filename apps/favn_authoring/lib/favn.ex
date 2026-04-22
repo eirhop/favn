@@ -53,24 +53,26 @@ defmodule FavnAuthoring do
   """
   @spec list_assets(module() | [module()]) :: {:ok, [asset()]} | {:error, term()}
   def list_assets(module) when is_atom(module) do
-    case Compiler.compile_module_assets(module) do
-      {:ok, assets} -> {:ok, assets}
-      {:error, reason} -> {:error, reason}
+    case Application.get_env(:favn, :asset_modules, :unset) do
+      modules when is_list(modules) ->
+        if module in modules do
+          list_assets_for_module_from_catalog(module, modules)
+        else
+          compile_module_assets(module)
+        end
+
+      _other ->
+        compile_module_assets(module)
     end
   end
 
   def list_assets(modules) when is_list(modules) do
-    modules
-    |> Enum.reduce_while({:ok, []}, fn module, {:ok, acc} ->
-      case Compiler.compile_module_assets(module) do
-        {:ok, assets} -> {:cont, {:ok, assets ++ acc}}
-        {:error, reason} -> {:halt, {:error, {module, reason}}}
-      end
-    end)
-    |> case do
-      {:ok, assets} ->
-        assets = assets |> Enum.uniq_by(& &1.ref) |> Enum.sort_by(& &1.ref)
-        {:ok, assets}
+    case Generator.build_catalog(asset_modules: modules) do
+      {:ok, catalog} ->
+        {:ok, catalog.assets}
+
+      {:error, {:asset_compile_failed, module, reason}} ->
+        {:error, {module, reason}}
 
       {:error, _reason} = error ->
         error
@@ -79,10 +81,27 @@ defmodule FavnAuthoring do
 
   def list_assets(_invalid), do: {:error, :invalid_asset_modules}
 
+  defp list_assets_for_module_from_catalog(module, modules)
+       when is_atom(module) and is_list(modules) do
+    with {:ok, assets} <- list_assets(modules) do
+      case Enum.filter(assets, &(&1.module == module)) do
+        [] -> {:error, :not_asset_module}
+        module_assets -> {:ok, module_assets}
+      end
+    end
+  end
+
+  defp compile_module_assets(module) when is_atom(module) do
+    case Compiler.compile_module_assets(module) do
+      {:ok, assets} -> {:ok, assets}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @doc """
   Fetches one compiled asset by module shorthand or canonical ref.
   """
-  @spec get_asset(module() | asset_ref()) :: {:ok, asset()} | {:error, asset_error()}
+  @spec get_asset(module() | asset_ref()) :: {:ok, asset()} | {:error, asset_error() | term()}
   def get_asset(module) when is_atom(module) do
     get_asset({module, :asset})
   end
@@ -92,9 +111,23 @@ defmodule FavnAuthoring do
          %Asset{} = asset <- Enum.find(assets, &(&1.ref == ref)) do
       {:ok, asset}
     else
-      {:error, :not_asset_module} -> {:error, :not_asset_module}
-      {:error, _reason} -> {:error, :not_asset_module}
-      nil -> {:error, :asset_not_found}
+      {:error, :not_asset_module} ->
+        {:error, :not_asset_module}
+
+      {:error, {^module, _reason}} ->
+        {:error, :not_asset_module}
+
+      {:error, {reason_tag, ^module}} when is_atom(reason_tag) ->
+        {:error, :not_asset_module}
+
+      {:error, {other_module, reason}} when is_atom(other_module) ->
+        {:error, {other_module, reason}}
+
+      {:error, _reason} ->
+        {:error, :not_asset_module}
+
+      nil ->
+        {:error, :asset_not_found}
     end
   end
 

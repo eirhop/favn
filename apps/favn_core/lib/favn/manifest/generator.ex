@@ -3,6 +3,7 @@ defmodule Favn.Manifest.Generator do
   Generates canonical `%Favn.Manifest{}` values from authored module inputs.
   """
 
+  alias Favn.Assets.DependencyInference
   alias Favn.Manifest
   alias Favn.Manifest.Asset, as: ManifestAsset
   alias Favn.Manifest.Build
@@ -36,7 +37,7 @@ defmodule Favn.Manifest.Generator do
   @spec build_catalog(opts()) :: {:ok, Catalog.t()} | {:error, term()}
   def build_catalog(opts) when is_list(opts) do
     with :ok <- validate_opts(opts),
-         {:ok, assets} <- compile_assets(resolve_modules(opts, :asset_modules)),
+         {:ok, assets, diagnostics} <- compile_assets(resolve_modules(opts, :asset_modules)),
          {:ok, pipelines} <- compile_pipelines(resolve_modules(opts, :pipeline_modules)),
          {:ok, schedules} <- compile_schedules(resolve_modules(opts, :schedule_modules)) do
       {:ok,
@@ -45,7 +46,7 @@ defmodule Favn.Manifest.Generator do
          assets_by_ref: Map.new(assets, &{Map.get(&1, :ref), &1}),
          pipelines: pipelines,
          schedules: schedules,
-         diagnostics: []
+         diagnostics: diagnostics
        }}
     end
   end
@@ -106,7 +107,10 @@ defmodule Favn.Manifest.Generator do
     |> case do
       {:ok, assets} ->
         assets = assets |> Enum.uniq_by(&Map.get(&1, :ref)) |> Enum.sort(&compare_assets/2)
-        {:ok, assets}
+
+        with {:ok, inferred_catalog} <- DependencyInference.infer_assets(assets) do
+          {:ok, inferred_catalog.assets, inferred_catalog.diagnostics}
+        end
 
       {:error, _} = error ->
         error
