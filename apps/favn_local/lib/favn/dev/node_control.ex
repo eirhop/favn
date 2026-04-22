@@ -36,12 +36,48 @@ defmodule Favn.Dev.NodeControl do
 
   @spec shortname_to_full(String.t()) :: {:ok, String.t()} | {:error, term()}
   def shortname_to_full(shortname) when is_binary(shortname) and shortname != "" do
-    case :net_adm.localhost() do
-      host when is_list(host) and host != [] ->
-        {:ok, shortname <> "@" <> List.to_string(host)}
-
-      other ->
-        {:error, {:invalid_local_host, other}}
+    with :ok <- ensure_shortname_runtime(),
+         {:ok, host} <- local_short_host() do
+      {:ok, shortname <> "@" <> host}
     end
   end
+
+  defp ensure_shortname_runtime do
+    case Node.alive?() do
+      true ->
+        :ok
+
+      false ->
+        name = "favn_local_host_probe_#{:erlang.unique_integer([:positive])}" |> String.to_atom()
+
+        case Node.start(name, name_domain: :shortnames) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+          {:error, reason} -> {:error, {:shortname_host_unavailable, reason}}
+        end
+    end
+  end
+
+  defp local_short_host do
+    case node() do
+      :nonode@nohost ->
+        {:error, :shortname_host_not_available}
+
+      node_name when is_atom(node_name) ->
+        node_name
+        |> Atom.to_string()
+        |> String.split("@", parts: 2)
+        |> parse_short_host()
+    end
+  end
+
+  defp parse_short_host([_name, host]) when is_binary(host) and host != "" do
+    if String.contains?(host, ".") do
+      {:error, {:invalid_shortname_host, host}}
+    else
+      {:ok, host}
+    end
+  end
+
+  defp parse_short_host(_parts), do: {:error, :shortname_host_not_available}
 end

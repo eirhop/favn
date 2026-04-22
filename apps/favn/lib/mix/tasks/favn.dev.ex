@@ -64,6 +64,17 @@ defmodule Mix.Tasks.Favn.Dev do
   defp error_message({:web_build_failed, status, output}),
     do: "web build failed (status=#{status}): #{output}"
 
+  defp error_message({:shortname_host_unavailable, reason}),
+    do:
+      "local Erlang shortname host is unavailable (#{inspect(reason)}); verify local hostname setup and retry"
+
+  defp error_message(:shortname_host_not_available),
+    do: "could not derive local Erlang shortname host; verify local hostname setup and retry"
+
+  defp error_message({:invalid_shortname_host, host}),
+    do:
+      "local host '#{host}' is invalid for Erlang shortnames; use a short hostname or fix local host resolution and retry"
+
   defp error_message({:service_exit, service, status}),
     do:
       "#{service} exited during startup (status=#{status}); inspect .favn/logs/#{service}.log and check for stale state or port conflicts"
