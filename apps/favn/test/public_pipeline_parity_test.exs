@@ -65,6 +65,73 @@ defmodule Favn.PublicPipelineParityTest do
            ]
   end
 
+  test "resolve_pipeline/2 resolves single-asset module shorthand selector" do
+    asset_module = Module.concat(__MODULE__, "SingleAsset#{System.unique_integer([:positive])}")
+
+    pipeline_module =
+      Module.concat(__MODULE__, "SingleAssetPipeline#{System.unique_integer([:positive])}")
+
+    compile_loadable_module!(
+      asset_module,
+      """
+      defmodule #{inspect(asset_module)} do
+        use Favn.Asset
+
+        def asset(_ctx), do: :ok
+      end
+      """
+    )
+
+    compile_loadable_module!(
+      pipeline_module,
+      """
+      defmodule #{inspect(pipeline_module)} do
+        use Favn.Pipeline
+
+        pipeline :single_asset_shorthand do
+          asset #{inspect(asset_module)}
+          deps :none
+        end
+      end
+      """
+    )
+
+    previous_asset_modules = Application.get_env(:favn, :asset_modules)
+    Application.put_env(:favn, :asset_modules, [asset_module, SalesAssets, ReportingAssets])
+
+    on_exit(fn ->
+      if is_nil(previous_asset_modules) do
+        Application.delete_env(:favn, :asset_modules)
+      else
+        Application.put_env(:favn, :asset_modules, previous_asset_modules)
+      end
+    end)
+
+    assert {:ok, resolution} = Favn.resolve_pipeline(pipeline_module)
+    assert resolution.target_refs == [{asset_module, :asset}]
+    assert resolution.pipeline.selectors == [{:asset, {asset_module, :asset}}]
+  end
+
+  test "resolve_pipeline/2 returns not_asset_module for asset module shorthand on multi-asset module" do
+    module_name =
+      Module.concat(__MODULE__, "InvalidAssetShorthand#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Pipeline
+
+        pipeline :invalid_asset_shorthand do
+          asset(#{inspect(SalesAssets)})
+        end
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    assert {:error, :not_asset_module} = Favn.resolve_pipeline(module_name)
+  end
+
   test "resolve_pipeline/2 returns not_asset_module for invalid module selector" do
     module_name = Module.concat(__MODULE__, "InvalidModule#{System.unique_integer([:positive])}")
 
@@ -84,6 +151,62 @@ defmodule Favn.PublicPipelineParityTest do
     )
 
     assert {:error, :not_asset_module} = Favn.resolve_pipeline(module_name)
+  end
+
+  test "resolve_pipeline/2 returns invalid_selector for invalid tag/category selector values" do
+    module_name =
+      Module.concat(__MODULE__, "InvalidSelectorValue#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Pipeline
+
+        pipeline :invalid_selector_value do
+          select do
+            tag(%{bad: :value})
+            category([:bad])
+          end
+        end
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    assert {:error, :invalid_selector} = Favn.resolve_pipeline(module_name)
+  end
+
+  test "resolve_pipeline/2 preserves compiler errors for invalid asset module shorthand" do
+    bad_asset_module =
+      Module.concat(__MODULE__, "BadAssetModule#{System.unique_integer([:positive])}")
+
+    pipeline_module =
+      Module.concat(__MODULE__, "BadAssetPipeline#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(bad_asset_module)} do
+        def __favn_assets__, do: :invalid_shape
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(pipeline_module)} do
+        use Favn.Pipeline
+
+        pipeline :bad_asset_module_selector do
+          asset #{inspect(bad_asset_module)}
+        end
+      end
+      """,
+      "test/public_pipeline_parity_test.exs"
+    )
+
+    assert {:error, {:invalid_asset_module, ^bad_asset_module}} =
+             Favn.resolve_pipeline(pipeline_module)
   end
 
   test "pipeline DSL rejects invalid selection and clause usage" do

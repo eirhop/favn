@@ -3,9 +3,10 @@ defmodule Favn.Manifest.Version do
   Immutable pinned manifest version envelope.
   """
 
-  alias Favn.Manifest.Build
+  alias Favn.Manifest
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Identity
+  alias Favn.Manifest.Rehydrate
 
   @type t :: %__MODULE__{
           manifest_version_id: String.t(),
@@ -13,7 +14,7 @@ defmodule Favn.Manifest.Version do
           schema_version: pos_integer(),
           runner_contract_version: pos_integer(),
           serialization_format: String.t(),
-          manifest: map() | struct(),
+          manifest: Manifest.t(),
           inserted_at: DateTime.t() | nil
         }
 
@@ -37,16 +38,17 @@ defmodule Favn.Manifest.Version do
           {:invalid_manifest_version_id, term()}
           | {:invalid_serialization_format, term()}
           | {:unknown_opt, atom()}
-          | Favn.Manifest.Compatibility.error()
-          | Favn.Manifest.Identity.error()
+          | Rehydrate.error()
+          | Compatibility.error()
+          | Identity.error()
 
   @spec new(map() | struct(), [opt()]) :: {:ok, t()} | {:error, error()}
   def new(manifest, opts \\ []) when is_list(opts) do
-    canonical_manifest = canonical_manifest(manifest)
     manifest_version_id = Keyword.get(opts, :manifest_version_id, default_manifest_version_id())
     serialization_format = Keyword.get(opts, :serialization_format, "json-v1")
 
     with :ok <- validate_opts(opts),
+         {:ok, canonical_manifest} <- Rehydrate.manifest(manifest),
          :ok <- Compatibility.validate_manifest(canonical_manifest),
          {:ok, schema_version} <- read_field(canonical_manifest, :schema_version),
          {:ok, runner_contract_version} <-
@@ -70,17 +72,10 @@ defmodule Favn.Manifest.Version do
     end
   end
 
-  defp canonical_manifest(%Build{manifest: manifest}), do: manifest
-  defp canonical_manifest(manifest), do: manifest
-
   defp read_field(value, field) do
-    atom_key = field
-    string_key = Atom.to_string(field)
-
-    cond do
-      Map.has_key?(value, atom_key) -> {:ok, Map.get(value, atom_key)}
-      Map.has_key?(value, string_key) -> {:ok, Map.get(value, string_key)}
-      true -> {:error, {:missing_manifest_field, field}}
+    case Map.fetch(value, field) do
+      {:ok, field_value} -> {:ok, field_value}
+      :error -> {:error, {:missing_manifest_field, field}}
     end
   end
 

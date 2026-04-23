@@ -51,12 +51,62 @@ defmodule Favn.Pipeline do
 
   ## Full example
 
+      defmodule MyApp.Warehouse do
+        use Favn.Namespace, relation: [connection: :warehouse]
+      end
+
+      defmodule MyApp.Warehouse.Raw do
+        use Favn.Namespace, relation: [catalog: "raw"]
+      end
+
+      defmodule MyApp.Warehouse.Raw.Sales do
+        use Favn.Namespace, relation: [schema: "sales"]
+      end
+
+      defmodule MyApp.Warehouse.Raw.Sales.Orders do
+        use Favn.Asset
+
+        @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
+        @relation true
+        def asset(_ctx), do: :ok
+      end
+
+      defmodule MyApp.Warehouse.Raw.Sales.OrderLines do
+        use Favn.Asset
+
+        @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
+        @relation [name: "order_line_items"]
+        def asset(_ctx), do: :ok
+      end
+
+      defmodule MyApp.Warehouse.Gold do
+        use Favn.Namespace, relation: [catalog: "gold"]
+      end
+
+      defmodule MyApp.Warehouse.Gold.Sales do
+        use Favn.Namespace, relation: [schema: "sales"]
+      end
+
+      defmodule MyApp.Warehouse.Gold.Sales.OrderSummary do
+        use Favn.SQLAsset
+
+        @meta owner: "analytics", category: :sales, tags: [:gold, :daily]
+        @materialized :view
+
+        query do
+          ~SQL\"""
+          select *
+          from raw.sales.orders
+          \"""
+        end
+      end
+
       defmodule MyApp.Pipelines.DailySales do
         use Favn.Pipeline
 
         pipeline :daily_sales do
           select do
-            module MyApp.Gold.Sales
+            module MyApp.Warehouse.Gold.Sales
             tag :daily
             category :sales
           end
@@ -70,6 +120,13 @@ defmodule Favn.Pipeline do
           outputs [:warehouse, :metrics]
         end
       end
+
+  Namespace defaults are inherited from parent modules, so leaf asset modules
+  only need `use Favn.Namespace` when they want to add or override shared
+  relation defaults. `@relation true` is the normal path when the module leaf
+  should become the relation name, while `@relation [name: "..."]` is the
+  normal way to override only the relation name. `@meta` stays module-local and
+  is not inherited from namespace modules.
 
   ## Authoring notes
 

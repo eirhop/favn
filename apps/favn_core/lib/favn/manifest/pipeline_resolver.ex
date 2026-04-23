@@ -7,6 +7,7 @@ defmodule Favn.Manifest.PipelineResolver do
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
+  alias Favn.Pipeline.SelectorNormalizer
   alias Favn.Window.Anchor
   alias Favn.Window.Validate
 
@@ -28,33 +29,39 @@ defmodule Favn.Manifest.PipelineResolver do
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
 
-    with :ok <- validate_opts(opts),
-         :ok <- validate_pipeline(pipeline),
+    with {:ok, selectors} <-
+           SelectorNormalizer.normalize(
+             pipeline.selectors,
+             resolve_asset_module: &resolve_asset_module_from_index(index, &1)
+           ),
+         normalized_pipeline = %Pipeline{pipeline | selectors: selectors},
+         :ok <- validate_opts(opts),
+         :ok <- validate_pipeline(normalized_pipeline),
          :ok <- validate_trigger(trigger),
          :ok <- validate_params(params),
          :ok <- validate_anchor_window(anchor_window),
-         {:ok, schedule} <- resolve_schedule(index, pipeline.schedule),
-         {:ok, target_refs} <- resolve_selectors(index, pipeline.selectors) do
+         {:ok, schedule} <- resolve_schedule(index, normalized_pipeline.schedule),
+         {:ok, target_refs} <- resolve_selectors(index, selectors) do
       {:ok,
        %{
-         pipeline: pipeline,
+         pipeline: normalized_pipeline,
          target_refs: target_refs,
-         dependencies: pipeline.deps,
+         dependencies: normalized_pipeline.deps,
          pipeline_ctx: %{
-           id: pipeline.name,
-           name: pipeline.name,
+           id: normalized_pipeline.name,
+           name: normalized_pipeline.name,
            run_kind: :pipeline,
            resolved_refs: target_refs,
-           deps: pipeline.deps,
-           config: pipeline.config,
-           meta: pipeline.metadata,
+           deps: normalized_pipeline.deps,
+           config: normalized_pipeline.config,
+           meta: normalized_pipeline.metadata,
            trigger: trigger,
            params: params,
            anchor_window: anchor_window,
-           window: pipeline.window,
+           window: normalized_pipeline.window,
            schedule: schedule,
-           source: pipeline.source,
-           outputs: pipeline.outputs
+           source: normalized_pipeline.source,
+           outputs: normalized_pipeline.outputs
          }
        }}
     end
@@ -87,17 +94,7 @@ defmodule Favn.Manifest.PipelineResolver do
 
   defp validate_selectors([]), do: {:error, :empty_pipeline_selection}
 
-  defp validate_selectors(selectors) when is_list(selectors) do
-    if Enum.all?(selectors, &valid_selector?/1), do: :ok, else: {:error, :invalid_selector}
-  end
-
-  defp validate_selectors(_other), do: {:error, :invalid_selector}
-
-  defp valid_selector?({:asset, {module, name}}) when is_atom(module) and is_atom(name), do: true
-  defp valid_selector?({:module, module}) when is_atom(module), do: true
-  defp valid_selector?({:tag, value}) when is_atom(value) or is_binary(value), do: true
-  defp valid_selector?({:category, value}) when is_atom(value) or is_binary(value), do: true
-  defp valid_selector?(_other), do: false
+  defp validate_selectors(selectors) when is_list(selectors), do: :ok
 
   defp validate_outputs(%Pipeline{outputs: outputs}) do
     if Enum.all?(outputs, &is_atom/1), do: :ok, else: {:error, {:invalid_outputs, outputs}}
@@ -190,4 +187,17 @@ defmodule Favn.Manifest.PipelineResolver do
   end
 
   defp tags_from_metadata(_asset), do: []
+
+  defp resolve_asset_module_from_index(%Index{} = index, module) when is_atom(module) do
+    refs =
+      index
+      |> Index.list_assets()
+      |> Enum.filter(&(&1.module == module))
+      |> Enum.map(& &1.ref)
+
+    case refs do
+      [{^module, :asset}] -> {:ok, {module, :asset}}
+      _ -> {:error, :not_asset_module}
+    end
+  end
 end

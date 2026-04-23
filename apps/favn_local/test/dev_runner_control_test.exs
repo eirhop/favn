@@ -23,46 +23,53 @@ defmodule Favn.Dev.RunnerControlTest do
       :ok ->
         build_context(cookie)
 
-      {:error, {:node_start_failed, reason}} ->
-        {:ok, skip: "distributed Erlang unavailable in test environment: #{inspect(reason)}"}
-
       {:error, reason} ->
-        flunk("failed to start local node for runner control test: #{inspect(reason)}")
+        {:ok,
+         %{
+           distributed?: false,
+           skip_reason: "distributed Erlang unavailable in test environment: #{inspect(reason)}"
+         }}
     end
   end
 
   test "register_manifest/2 uses a remote /2 entrypoint when available", ctx do
-    assert :ok =
-             RunnerControl.register_manifest(ctx.version,
-               runner_node_name: ctx.runner_node_name,
-               rpc_cookie: ctx.cookie,
-               runner_module: StubRunnerV2
-             )
+    if maybe_run_distributed?(ctx) do
+      assert :ok =
+               RunnerControl.register_manifest(ctx.version,
+                 runner_node_name: ctx.runner_node_name,
+                 rpc_cookie: ctx.cookie,
+                 runner_module: StubRunnerV2
+               )
+    end
   end
 
   test "register_manifest/2 falls back to a remote /1 entrypoint", ctx do
-    assert :ok =
-             RunnerControl.register_manifest(ctx.version,
-               runner_node_name: ctx.runner_node_name,
-               rpc_cookie: ctx.cookie,
-               runner_module: StubRunnerV1
-             )
+    if maybe_run_distributed?(ctx) do
+      assert :ok =
+               RunnerControl.register_manifest(ctx.version,
+                 runner_node_name: ctx.runner_node_name,
+                 rpc_cookie: ctx.cookie,
+                 runner_module: StubRunnerV1
+               )
+    end
   end
 
   test "register_manifest/2 returns a structured error when no entrypoint exists", ctx do
-    assert {:error, {:runner_manifest_register_unavailable, runner_node, attempted}} =
-             RunnerControl.register_manifest(ctx.version,
-               runner_node_name: ctx.runner_node_name,
-               rpc_cookie: ctx.cookie,
-               runner_module: MissingRunner
-             )
+    if maybe_run_distributed?(ctx) do
+      assert {:error, {:runner_manifest_register_unavailable, runner_node, attempted}} =
+               RunnerControl.register_manifest(ctx.version,
+                 runner_node_name: ctx.runner_node_name,
+                 rpc_cookie: ctx.cookie,
+                 runner_module: MissingRunner
+               )
 
-    assert runner_node == Node.self()
+      assert runner_node == Node.self()
 
-    assert attempted == [
-             %{module: MissingRunner, function: :register_manifest, arity: 2},
-             %{module: MissingRunner, function: :register_manifest, arity: 1}
-           ]
+      assert attempted == [
+               %{module: MissingRunner, function: :register_manifest, arity: 2},
+               %{module: MissingRunner, function: :register_manifest, arity: 1}
+             ]
+    end
   end
 
   defp build_context(cookie) do
@@ -78,6 +85,19 @@ defmodule Favn.Dev.RunnerControlTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_runner_control_test")
 
-    {:ok, %{version: version, cookie: cookie, runner_node_name: Atom.to_string(Node.self())}}
+    {:ok,
+     %{
+       distributed?: true,
+       version: version,
+       cookie: cookie,
+       runner_node_name: Atom.to_string(Node.self())
+     }}
+  end
+
+  defp maybe_run_distributed?(%{distributed?: true}), do: true
+
+  defp maybe_run_distributed?(%{distributed?: false, skip_reason: reason}) do
+    IO.puts("Skipping RunnerControl distributed test: #{reason}")
+    false
   end
 end

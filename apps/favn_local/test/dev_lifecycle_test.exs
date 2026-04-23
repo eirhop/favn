@@ -212,6 +212,92 @@ defmodule Favn.Dev.LifecycleTest do
     assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
   end
 
+  test "dev/1 writes shortname-compatible node names in runtime", %{root_dir: root_dir} do
+    task =
+      Task.async(fn ->
+        Dev.dev(
+          root_dir: root_dir,
+          skip_install_check: true,
+          skip_bootstrap: true,
+          skip_readiness: true,
+          service_specs_override: service_specs(root_dir)
+        )
+      end)
+
+    try do
+      assert :ok =
+               wait_until(fn ->
+                 match?(
+                   {:ok,
+                    %{"node_names" => %{"runner" => _, "orchestrator" => _, "control" => _}}},
+                   State.read_runtime(root_dir: root_dir)
+                 )
+               end)
+
+      assert {:ok, runtime} = State.read_runtime(root_dir: root_dir)
+
+      assert runtime |> get_in(["node_names", "runner"]) |> short_host() |> short_host?()
+      assert runtime |> get_in(["node_names", "orchestrator"]) |> short_host() |> short_host?()
+      assert runtime |> get_in(["node_names", "control"]) |> short_host() |> short_host?()
+
+      assert runtime
+             |> get_in(["services", "runner", "node_name"])
+             |> short_host()
+             |> short_host?()
+
+      assert runtime
+             |> get_in(["services", "orchestrator", "node_name"])
+             |> short_host()
+             |> short_host?()
+
+      assert :ok = Dev.stop(root_dir: root_dir)
+      assert %{stack_status: :stopped} = Dev.status(root_dir: root_dir)
+    after
+      _ = Dev.stop(root_dir: root_dir)
+      _ = Task.await(task, 30_000)
+    end
+  end
+
+  defp service_specs(root_dir) do
+    shell = System.find_executable("bash") || "/bin/bash"
+
+    [
+      %{
+        name: "runner",
+        exec: shell,
+        args: ["-lc", "sleep 60"],
+        cwd: root_dir,
+        log_path: Paths.runner_log_path(root_dir),
+        env: %{}
+      },
+      %{
+        name: "orchestrator",
+        exec: shell,
+        args: ["-lc", "sleep 60"],
+        cwd: root_dir,
+        log_path: Paths.orchestrator_log_path(root_dir),
+        env: %{}
+      },
+      %{
+        name: "web",
+        exec: shell,
+        args: ["-lc", "sleep 60"],
+        cwd: root_dir,
+        log_path: Paths.web_log_path(root_dir),
+        env: %{}
+      }
+    ]
+  end
+
+  defp short_host(node_name) when is_binary(node_name) do
+    case String.split(node_name, "@", parts: 2) do
+      [_name, host] -> host
+      _other -> ""
+    end
+  end
+
+  defp short_host?(host) when is_binary(host), do: host != "" and not String.contains?(host, ".")
+
   defp wait_until(fun, attempts \\ 120)
   defp wait_until(_fun, 0), do: {:error, :timeout}
 
