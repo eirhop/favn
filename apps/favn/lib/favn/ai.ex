@@ -10,25 +10,28 @@ defmodule Favn.AI do
 
   ## What To Read
 
-  | Task | Read | Then read |
-  | ---- | ---- | --------- |
-  | Author one Elixir asset | `Favn.Asset` | `Favn.Namespace`, `Favn.Window` |
-  | Author one SQL asset | `Favn.SQLAsset` | `Favn.SQL`, `Favn.Connection`, `Favn.Namespace`, `Favn.Window` |
-  | Author many similar assets | `Favn.MultiAsset` | `Favn.Namespace`, `Favn.Window` |
-  | Declare external source relations | `Favn.Source` | `Favn.Namespace` |
-  | Share relation defaults | `Favn.Namespace` | the asset/source module you are using |
-  | Reuse SQL definitions | `Favn.SQL` | `Favn.SQLAsset` |
-  | Define a pipeline | `Favn.Pipeline` | `Favn.Triggers.Schedules` |
-  | Define reusable schedules | `Favn.Triggers.Schedules` | `Favn.Pipeline` |
-  | Work with windows/backfills | `Favn.Window` | `Favn plan_asset_run` |
-  | Define connection contracts | `Favn.Connection` | `Favn.SQLAsset` |
-  | Compile a manifest | `Favn generate_manifest` | `Favn.Manifest.Generator` |
-  | Resolve pipeline targets | `Favn resolve_pipeline` | `Favn.Pipeline.Resolver` |
-  | Plan execution order | `Favn plan_asset_run` | `Favn.Assets.Planner` |
-  | Run local tooling | `Favn.Dev` | `apps/favn_local/README.md` |
-  | Inspect public helper functions | `Favn` | the specific function doc |
+  - To author one Elixir asset, read `Favn.Asset`, then `Favn.Namespace` and
+    `Favn.Window` if needed.
+  - To author one SQL asset, read `Favn.SQLAsset`, then `Favn.SQL`,
+    `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as needed.
+  - To author many similar assets in one module, read `Favn.MultiAsset`.
+  - To declare external source relations, read `Favn.Source`.
+  - To share relation defaults, read `Favn.Namespace`.
+  - To define a pipeline, read `Favn.Pipeline`, then
+    `Favn.Triggers.Schedules` if schedules are involved.
+  - To work with windows or backfills, read `Favn.Window`, then
+    `Favn plan_asset_run` if you need planning details.
+  - To define connection contracts, read `Favn.Connection`.
+  - To compile a manifest, read `Favn generate_manifest`, then
+    `Favn.Manifest.Generator` if you need internal compilation details.
+  - To resolve pipeline targets, read `Favn resolve_pipeline`, then
+    `Favn.Pipeline.Resolver` if needed.
+  - To plan execution order, read `Favn plan_asset_run`, then
+    `Favn.Assets.Planner` if needed.
+  - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
+  - To inspect the public helper functions collected in one place, read `Favn`.
 
-  ## Read `Favn` Only When
+  ## About `Favn`
 
   - you need helper functions like `generate_manifest`, `resolve_pipeline`, or
     `plan_asset_run`

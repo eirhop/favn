@@ -2,24 +2,27 @@ defmodule Favn do
   @moduledoc """
   Public Favn facade.
 
-  This module preserves the public `Favn.*` contract while delegating:
+  This module collects the main public helper functions in one place.
+
+  It preserves the public `Favn.*` contract while delegating:
 
   - authoring and manifest compilation to `FavnAuthoring`
   - local lifecycle and packaging tasks to `Favn.Dev` through public
     `mix favn.*` tasks
   - runtime/orchestrator calls to the runtime apps when they are available
 
-  ## When to read this module
+  ## Main Functions
 
-  Read `Favn` when you need to:
-
-  - inspect assets or pipelines from authored modules
-  - generate, build, serialize, hash, validate, or pin manifests
-  - resolve a pipeline into concrete asset refs
-  - plan a deterministic run graph for one or more assets
-
-  Skip this module when the task is clearly about one specific DSL such as
-  `Favn.Asset`, `Favn.SQLAsset`, `Favn.Pipeline`, or `Favn.Dev`.
+  - `list_assets/0,1`: compile and inspect assets
+  - `get_asset/1`: fetch one compiled asset
+  - `get_pipeline/1`: fetch one compiled pipeline definition
+  - `generate_manifest/1`: build the canonical manifest
+  - `build_manifest/1`: build the manifest plus diagnostics metadata
+  - `serialize_manifest/1`, `hash_manifest/1`,
+    `validate_manifest_compatibility/1`, `pin_manifest_version/2`: work with
+    manifest payloads and versions
+  - `resolve_pipeline/2`: resolve one pipeline to concrete targets and context
+  - `plan_asset_run/2`: build a deterministic execution plan
 
   ## Public authoring workflow
 
