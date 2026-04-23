@@ -339,10 +339,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     previous_local = Application.get_env(:favn, :local, :__missing__)
 
     try do
+      web_port = free_port()
+
       Application.put_env(
         :favn,
         :local,
         storage: :postgres,
+        web_port: web_port,
         postgres: [
           hostname: "127.0.0.1",
           port: 1,
@@ -397,5 +400,12 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "Favn single build complete"
     assert output =~ "build id:"
     assert output =~ "/.favn/dist/single/"
+  end
+
+  defp free_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, false}])
+    {:ok, port} = :inet.port(socket)
+    :ok = :gen_tcp.close(socket)
+    port
   end
 end

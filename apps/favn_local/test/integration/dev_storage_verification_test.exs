@@ -43,6 +43,8 @@ defmodule Favn.Dev.StorageVerificationTest do
   test "sqlite verification across install/dev/status/reload/stop/logs/reset/build.single", %{
     root_dir: root_dir
   } do
+    web_port = free_port()
+
     assert {:ok, :installed} =
              Dev.install(
                root_dir: root_dir,
@@ -68,6 +70,7 @@ defmodule Favn.Dev.StorageVerificationTest do
       Task.async(fn ->
         Dev.dev(
           root_dir: root_dir,
+          web_port: web_port,
           storage: :sqlite,
           sqlite_path: ".favn/data/storage_verification.sqlite3",
           skip_tool_checks: true,
@@ -123,10 +126,13 @@ defmodule Favn.Dev.StorageVerificationTest do
         pool_size: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_POOL_SIZE", "10"))
       ]
 
+      web_port = free_port()
+
       task =
         Task.async(fn ->
           Dev.dev(
             root_dir: root_dir,
+            web_port: web_port,
             storage: :postgres,
             postgres: postgres,
             skip_tool_checks: true,
@@ -194,5 +200,12 @@ defmodule Favn.Dev.StorageVerificationTest do
       Process.sleep(100)
       wait_until(fun, attempts - 1)
     end
+  end
+
+  defp free_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, false}])
+    {:ok, port} = :inet.port(socket)
+    :ok = :gen_tcp.close(socket)
+    port
   end
 end
