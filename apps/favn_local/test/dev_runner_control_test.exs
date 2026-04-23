@@ -18,21 +18,17 @@ defmodule Favn.Dev.RunnerControlTest do
 
   setup do
     cookie = "favn_runner_control_test_cookie"
-    assert :ok = NodeControl.ensure_local_node_started(cookie)
 
-    manifest = %{
-      schema_version: 1,
-      runner_contract_version: 1,
-      assets: [],
-      pipelines: [],
-      schedules: [],
-      graph: %{},
-      metadata: %{}
-    }
+    case NodeControl.ensure_local_node_started(cookie) do
+      :ok ->
+        build_context(cookie)
 
-    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_runner_control_test")
+      {:error, {:node_start_failed, reason}} ->
+        {:ok, skip: "distributed Erlang unavailable in test environment: #{inspect(reason)}"}
 
-    %{version: version, cookie: cookie, runner_node_name: Atom.to_string(Node.self())}
+      {:error, reason} ->
+        flunk("failed to start local node for runner control test: #{inspect(reason)}")
+    end
   end
 
   test "register_manifest/2 uses a remote /2 entrypoint when available", ctx do
@@ -67,5 +63,21 @@ defmodule Favn.Dev.RunnerControlTest do
              %{module: MissingRunner, function: :register_manifest, arity: 2},
              %{module: MissingRunner, function: :register_manifest, arity: 1}
            ]
+  end
+
+  defp build_context(cookie) do
+    manifest = %{
+      schema_version: 1,
+      runner_contract_version: 1,
+      assets: [],
+      pipelines: [],
+      schedules: [],
+      graph: %{},
+      metadata: %{}
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_runner_control_test")
+
+    {:ok, %{version: version, cookie: cookie, runner_node_name: Atom.to_string(Node.self())}}
   end
 end

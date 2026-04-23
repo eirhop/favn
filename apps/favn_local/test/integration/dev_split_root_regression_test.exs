@@ -8,7 +8,7 @@ defmodule Favn.DevSplitRootRegressionTest do
 
   @tag skip: if(@run_split_root?, do: false, else: @split_root_skip_reason)
   test "split-root dev loop recovers from stale runtime beams" do
-    repo_root = Path.expand("../../..", __DIR__)
+    repo_root = Path.expand("../../../..", __DIR__)
     project_dir = split_root_project_dir(repo_root)
 
     unless File.exists?(Path.join(project_dir, "mix.exs")) do
@@ -20,8 +20,8 @@ defmodule Favn.DevSplitRootRegressionTest do
     _ = run_mix!(project_dir, ["favn.stop" | root_arg], allow_failure: true)
     _ = run_mix!(project_dir, ["favn.reset" | root_arg], allow_failure: true)
 
-    assert :ok = File.rm_rf(Path.join(repo_root, "_build/dev/lib/favn_runner"))
-    assert :ok = File.rm_rf(Path.join(repo_root, "_build/dev/lib/favn_orchestrator"))
+    assert {:ok, _} = File.rm_rf(Path.join(repo_root, "_build/dev/lib/favn_runner"))
+    assert {:ok, _} = File.rm_rf(Path.join(repo_root, "_build/dev/lib/favn_orchestrator"))
 
     {install_output, 0} = run_mix!(project_dir, ["favn.install" | root_arg])
     assert install_output =~ "Favn install"
