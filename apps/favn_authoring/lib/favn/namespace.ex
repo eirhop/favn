@@ -147,13 +147,37 @@ defmodule Favn.Namespace do
 
   # Namespace inheritance is used during DSL compilation, so same-project
   # ancestor modules may exist but not be compiled yet under parallel compile.
-  # Falling back to ensure_loaded/1 here reintroduces child-first failures for
-  # SQL assets and multi-assets in mix compile/dev packaging paths.
+  # In some compile contexts `Code.can_await_module_compilation?/0` is false,
+  # so `ensure_compiled/1` cannot be used directly. We still need to tolerate
+  # parent/child compile-order races, so we poll `ensure_loaded/1` briefly.
   defp ensure_namespace_module(module) when is_atom(module) do
     if Code.can_await_module_compilation?() do
       Code.ensure_compiled(module)
     else
-      Code.ensure_loaded(module)
+      await_loaded_module(module)
+    end
+  end
+
+  @namespace_load_wait_ms 500
+  @namespace_load_poll_ms 10
+
+  defp await_loaded_module(module) when is_atom(module) do
+    deadline = System.monotonic_time(:millisecond) + @namespace_load_wait_ms
+    await_loaded_module(module, deadline)
+  end
+
+  defp await_loaded_module(module, deadline_ms) when is_atom(module) do
+    case Code.ensure_loaded(module) do
+      {:module, _loaded} = loaded ->
+        loaded
+
+      {:error, _reason} = error ->
+        if System.monotonic_time(:millisecond) < deadline_ms do
+          Process.sleep(@namespace_load_poll_ms)
+          await_loaded_module(module, deadline_ms)
+        else
+          error
+        end
     end
   end
 
