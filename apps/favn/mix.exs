@@ -24,10 +24,21 @@ defmodule Favn.MixProject do
 
   defp deps do
     [
-      {:favn_authoring, in_umbrella: true},
-      {:favn_local, in_umbrella: true},
-      {:favn_orchestrator, in_umbrella: true, only: :test},
-      {:favn_test_support, in_umbrella: true, only: :test}
+      internal_dep(:favn_authoring, "../favn_authoring"),
+      internal_dep(:favn_local, "../favn_local"),
+      internal_dep(:favn_orchestrator, "../favn_orchestrator", only: :test),
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test)
     ]
+  end
+
+  defp internal_dep(app, relative_path, opts \\ []) do
+    source =
+      if Mix.Project.umbrella?() do
+        [in_umbrella: true]
+      else
+        [path: relative_path]
+      end
+
+    {app, Keyword.merge(source, opts)}
   end
 end

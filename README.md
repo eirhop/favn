@@ -76,10 +76,14 @@ Favn is not published on Hex yet.
 ```elixir
 def deps do
   [
-    {:favn, git: "https://github.com/eirhop/favn.git", branch: "main"}
+    {:favn, git: "https://github.com/eirhop/favn.git", branch: "main", subdir: "apps/favn"}
   ]
 end
 ```
+
+`favn` currently lives inside this umbrella repo under `apps/favn`, so the git dependency must use `subdir: "apps/favn"`.
+
+For real projects, prefer pinning a tag or commit ref instead of tracking `main` directly.
 
 ### 2. Define an asset
 
