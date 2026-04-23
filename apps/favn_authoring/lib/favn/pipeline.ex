@@ -23,7 +23,7 @@ defmodule Favn.Pipeline do
         end
       end
 
-  ## Supported clauses
+  ## Clauses
 
   A pipeline block supports these clauses:
 
@@ -39,7 +39,7 @@ defmodule Favn.Pipeline do
   - `source atom`: attach a named pipeline source
   - `outputs [atom, ...]`: attach named outputs
 
-  ## Schedule options
+  ## Schedule Options
 
   Inline `schedule` supports:
 
@@ -49,7 +49,7 @@ defmodule Favn.Pipeline do
   - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
   - `active`: boolean, defaults to `true`
 
-  ## Full example
+  ## Expanded Example
 
       defmodule MyApp.Warehouse do
         use Favn.Namespace, relation: [connection: :warehouse]
@@ -128,7 +128,7 @@ defmodule Favn.Pipeline do
   normal way to override only the relation name. `@meta` stays module-local and
   is not inherited from namespace modules.
 
-  ## Authoring notes
+  ## Rules
 
   - declare exactly one `pipeline :name do ... end`
   - use either shorthand selection (`asset`, `assets`) or `select do ... end`

@@ -276,6 +276,41 @@ Storage modes:
 - `docs/lib_structure.md` describes the current library layout
 - `docs/test_structure.md` describes the current test layout
 
+## AI Doc Entry Point
+
+Favn includes a compiled-doc reader intended for AI-assisted workflows.
+
+Use Favn when you are defining assets and pipelines in Elixir, compiling them
+into a manifest, planning runs, or using the local dev/runtime tooling.
+
+Read `Favn.AI` for the task map and the next module to inspect.
+
+```bash
+mix favn.read_doc Favn.AI
+```
+
+Common follow-up reads:
+
+```bash
+mix favn.read_doc Favn generate_manifest
+mix favn.read_doc Favn.Asset
+mix favn.read_doc Favn.SQLAsset
+mix favn.read_doc Favn.Pipeline
+mix favn.read_doc Favn.Dev
+```
+
+Suggested section for a consumer project's `AGENTS.md`:
+
+```md
+## Favn
+
+Favn is used to define business-oriented assets and pipelines in Elixir,
+compile them into a manifest, and run or inspect them locally.
+
+Before guessing about Favn APIs, read `mix favn.read_doc Favn.AI` and follow
+the module pointers there.
+```
+
 ## Current Direction
 
 The current release work is focused on product hardening and operator/developer

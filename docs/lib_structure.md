@@ -15,6 +15,8 @@ Top-level product docs:
 ```text
 apps/
 ├── favn/lib/
+│   ├── favn/
+│   │   └── ai.ex
 │   ├── favn.ex
 │   └── mix/tasks/
 │       ├── favn.build.orchestrator.ex
@@ -104,6 +106,7 @@ Notes:
 
 - `apps/favn_legacy` and `apps/favn_view` were removed in the Phase 10 deletion pass.
 - `apps/favn` now owns the thin public package boundary and public `mix favn.*` entrypoints.
+- `apps/favn/lib/favn/ai.ex` is the AI-oriented compiled-doc starting point for choosing the right public Favn module to read next.
 - `apps/favn_authoring` now owns authoring/manifest-facing implementation internals.
 - `apps/favn_local` continues to own local lifecycle/tooling implementation internals.
 - Internal compiler/manifest/planning/shared contracts are now re-centered into `apps/favn_core/lib/favn/`.

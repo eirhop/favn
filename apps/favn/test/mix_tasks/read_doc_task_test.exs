@@ -25,6 +25,28 @@ defmodule Mix.Tasks.Favn.ReadDocTaskTest do
     assert output =~ "map/2"
   end
 
+  test "prints AI entrypoint docs for Favn" do
+    output =
+      capture_io(fn ->
+        ReadDocTask.run(["Favn.AI"])
+      end)
+
+    assert output =~ "Module: Favn.AI"
+    assert output =~ "AI-oriented documentation entrypoint"
+    assert output =~ "What To Read"
+  end
+
+  test "prints public Favn function docs" do
+    output =
+      capture_io(fn ->
+        ReadDocTask.run(["Favn", "generate_manifest"])
+      end)
+
+    assert output =~ "Function: generate_manifest"
+    assert output =~ "canonical `%Favn.Manifest{}`"
+    assert output =~ "stable graph payload"
+  end
+
   test "raises on unknown module" do
     assert_raise Mix.Error, ~r/is not available on the current code path/, fn ->
       ReadDocTask.run(["FavnNoSuchModule"])

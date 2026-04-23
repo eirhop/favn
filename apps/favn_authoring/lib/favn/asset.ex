@@ -35,14 +35,14 @@ defmodule Favn.Asset do
         end
       end
 
-  ## Authoring contract
+  ## Contract
 
   - define exactly one public `asset/1`
   - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` directly above `def asset(ctx)`
   - repeat `@depends` for multiple upstream dependencies
   - use module shorthand in `@depends` for another single-asset module
 
-  ## Supported attributes
+  ## Attributes
 
   - `@doc`: asset documentation shown in compiled docs and metadata
   - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
@@ -60,7 +60,7 @@ defmodule Favn.Asset do
   - `true` to infer from module name plus namespace defaults
   - keyword or map relation overrides such as `connection`, `catalog`, and `schema`
 
-  ## What gets compiled
+  ## Compiles To
 
   The DSL compiles into one canonical `%Favn.Asset{}` with:
 
@@ -69,7 +69,7 @@ defmodule Favn.Asset do
   - normalized metadata and dependency refs
   - optional window and relation ownership metadata
 
-  ## Runtime context notes
+  ## Runtime Context
 
   `ctx` is a `Favn.Run.Context`. In practice, authors most often read:
 
@@ -78,7 +78,7 @@ defmodule Favn.Asset do
   - `ctx.asset.relation` for owned relation identity
   - `ctx.window` for resolved runtime windows on windowed assets
 
-  ## Common mistakes
+  ## Common Mistakes
 
   - defining more than one `asset/1`
   - attaching DSL attributes to another function
