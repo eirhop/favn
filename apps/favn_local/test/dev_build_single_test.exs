@@ -40,7 +40,12 @@ defmodule Favn.Dev.Build.SingleTest do
     root_dir: root_dir
   } do
     assert {:ok, :installed} =
-             Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+             Dev.install(
+               root_dir: root_dir,
+               skip_web_install: true,
+               skip_tool_checks: true,
+               skip_runtime_deps_install: true
+             )
 
     assert {:ok, result} =
              Dev.build_single(
@@ -80,7 +85,12 @@ defmodule Favn.Dev.Build.SingleTest do
 
   test "build_single/1 supports postgres storage override", %{root_dir: root_dir} do
     assert {:ok, :installed} =
-             Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+             Dev.install(
+               root_dir: root_dir,
+               skip_web_install: true,
+               skip_tool_checks: true,
+               skip_runtime_deps_install: true
+             )
 
     assert {:ok, result} =
              Dev.build_single(

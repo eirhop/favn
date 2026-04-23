@@ -24,6 +24,7 @@ defmodule Favn.Dev.StateTest do
     assert File.dir?(Path.join(root_dir, ".favn/install/cache"))
     assert File.dir?(Path.join(root_dir, ".favn/install/cache/npm"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtimes"))
+    assert File.dir?(Path.join(root_dir, ".favn/install/runtime_root"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtimes/web"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtimes/orchestrator"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtimes/runner"))
@@ -47,13 +48,16 @@ defmodule Favn.Dev.StateTest do
   end
 
   test "install and toolchain state roundtrip", %{root_dir: root_dir} do
-    install = %{"schema_version" => 1, "fingerprint" => %{"mix_lock_sha256" => "abc"}}
+    install = %{"schema_version" => 2, "fingerprint" => %{"consumer_mix_lock_sha256" => "abc"}}
+    runtime = %{"schema_version" => 1, "materialized_root" => "/tmp/runtime"}
     toolchain = %{"schema_version" => 1, "node_version" => "v22.1.0"}
 
     assert :ok = State.write_install(install, root_dir: root_dir)
+    assert :ok = State.write_install_runtime(runtime, root_dir: root_dir)
     assert :ok = State.write_toolchain(toolchain, root_dir: root_dir)
 
     assert {:ok, ^install} = State.read_install(root_dir: root_dir)
+    assert {:ok, ^runtime} = State.read_install_runtime(root_dir: root_dir)
     assert {:ok, ^toolchain} = State.read_toolchain(root_dir: root_dir)
   end
 end

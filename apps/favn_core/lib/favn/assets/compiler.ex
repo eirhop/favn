@@ -76,7 +76,7 @@ defmodule Favn.Assets.Compiler do
       {:ok, assets} ->
         try do
           validate_single_asset_depends_shorthand!(module)
-          {:ok, assets}
+          resolve_relations(assets, module)
         rescue
           error in ArgumentError -> {:error, {:invalid_compiled_assets, error.message}}
         end
@@ -169,19 +169,21 @@ defmodule Favn.Assets.Compiler do
     relation =
       case fetch_raw_relation(asset_module, asset_name) do
         nil ->
-          Map.get(asset, :relation)
+          resolve_existing_relation(Map.get(asset, :relation), defaults, inferred_name)
 
         authored_value ->
           RelationResolver.resolve_explicit_relation!(authored_value, defaults, inferred_name)
       end
 
-    Map.put(asset, :relation, relation)
+    asset
+    |> Map.put(:relation, relation)
+    |> resolve_relation_inputs(defaults)
   end
 
   defp fetch_raw_relation(module, name) do
     with true <- function_exported?(module, :__favn_assets_raw__, 0),
          entries when is_list(entries) <- module.__favn_assets_raw__(),
-         %{relation: relation} <- Enum.find(entries, &(&1.name == name)) do
+         %{relation: relation} <- Enum.find(entries, &(Map.get(&1, :name) == name)) do
       case relation do
         [] -> nil
         [value] -> value
@@ -189,6 +191,37 @@ defmodule Favn.Assets.Compiler do
     else
       _ -> nil
     end
+  end
+
+  defp resolve_existing_relation(nil, _defaults, _inferred_name), do: nil
+
+  defp resolve_existing_relation(%Favn.RelationRef{} = existing, defaults, inferred_name) do
+    existing
+    |> Map.from_struct()
+    |> RelationResolver.resolve_explicit_relation!(defaults, inferred_name)
+  end
+
+  defp resolve_existing_relation(existing, defaults, inferred_name)
+       when is_map(existing) or is_list(existing) or existing == true do
+    RelationResolver.resolve_explicit_relation!(existing, defaults, inferred_name)
+  end
+
+  defp resolve_relation_inputs(asset, defaults) when is_map(asset) and is_map(defaults) do
+    relation_inputs =
+      asset
+      |> Map.get(:relation_inputs, [])
+      |> Enum.map(fn
+        %Favn.Asset.RelationInput{relation_ref: %Favn.RelationRef{} = relation_ref} = input ->
+          resolved_relation =
+            resolve_existing_relation(relation_ref, defaults, relation_ref.name)
+
+          %{input | relation_ref: resolved_relation}
+
+        other ->
+          other
+      end)
+
+    Map.put(asset, :relation_inputs, relation_inputs)
   end
 
   defp validate_asset(asset) when is_map(asset) do

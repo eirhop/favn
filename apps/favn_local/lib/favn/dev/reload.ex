@@ -13,9 +13,10 @@ defmodule Favn.Dev.Reload do
   alias Favn.Dev.Config
   alias Favn.Dev.Lock
   alias Favn.Dev.OrchestratorClient
-  alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RunnerControl
+  alias Favn.Dev.RuntimeLaunch
+  alias Favn.Dev.RuntimeWorkspace
   alias Favn.Dev.State
   alias Favn.Dev.Status
 
@@ -24,12 +25,12 @@ defmodule Favn.Dev.Reload do
   @spec run(reload_opt()) :: :ok | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
     with :ok <- ensure_running(opts),
-         {:ok, runtime, secrets} <- read_runtime_snapshot(opts),
+         {:ok, runtime, installed_runtime, secrets} <- read_runtime_snapshot(opts),
          :ok <- ensure_no_in_flight_runs(runtime, secrets, opts),
          :ok <- compile_project(),
          {:ok, build} <- FavnAuthoring.build_manifest(),
          {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
-         {:ok, runtime_after_restart} <- restart_runner(runtime, secrets, opts),
+         {:ok, runtime_after_restart} <- restart_runner(runtime, installed_runtime, secrets, opts),
          :ok <- register_manifest_in_runner(version, runtime_after_restart, secrets),
          :ok <- write_manifest_cache(version, opts),
          {:ok, _published} <- publish_manifest(version, runtime_after_restart, secrets, opts),
@@ -52,8 +53,9 @@ defmodule Favn.Dev.Reload do
   defp read_runtime_snapshot(opts) do
     Lock.with_lock(opts, fn ->
       with {:ok, runtime} <- State.read_runtime(opts),
+           {:ok, installed_runtime} <- RuntimeWorkspace.read(opts),
            {:ok, secrets} <- State.read_secrets(opts) do
-        {:ok, runtime, secrets}
+        {:ok, runtime, installed_runtime, secrets}
       end
     end)
   end
@@ -84,8 +86,7 @@ defmodule Favn.Dev.Reload do
     end
   end
 
-  defp restart_runner(runtime, secrets, opts) do
-    root_dir = Paths.root_dir(opts)
+  defp restart_runner(runtime, installed_runtime, secrets, opts) do
     runner_node = get_in(runtime, ["services", "runner", "node_name"])
 
     old_runner_pid = get_in(runtime, ["services", "runner", "pid"])
@@ -94,7 +95,11 @@ defmodule Favn.Dev.Reload do
       :ok = DevProcess.stop_pid(old_runner_pid)
     end
 
-    case DevProcess.start_service(runner_spec(root_dir, runner_node, secrets)) do
+    node_names = %{runner_short: runner_sname(runner_node)}
+
+    case DevProcess.start_service(
+           RuntimeLaunch.runner_spec(installed_runtime, opts, node_names, secrets)
+         ) do
       {:ok, info} ->
         updated_runtime =
           runtime
@@ -109,31 +114,6 @@ defmodule Favn.Dev.Reload do
       {:error, reason} ->
         {:error, {:runner_restart_failed, reason}}
     end
-  end
-
-  defp runner_spec(root_dir, runner_node, secrets) when is_binary(runner_node) do
-    elixir = System.find_executable("elixir") || "elixir"
-    code = "Application.ensure_all_started(:favn_runner); Process.sleep(:infinity)"
-
-    %{
-      name: "runner",
-      exec: elixir,
-      args: [
-        "--sname",
-        runner_sname(runner_node),
-        "--cookie",
-        secrets["rpc_cookie"],
-        "-S",
-        "mix",
-        "run",
-        "--no-start",
-        "--eval",
-        code
-      ],
-      cwd: Path.join(root_dir, "apps/favn_runner"),
-      log_path: Paths.runner_log_path(root_dir),
-      env: %{"MIX_ENV" => "dev"}
-    }
   end
 
   @doc false

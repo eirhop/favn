@@ -124,8 +124,9 @@ Storage selection:
 - validates tool prerequisites (node/npm by default)
 - computes and stores an install fingerprint
 - captures toolchain metadata
-- snapshots runtime input metadata and source files under
-  `.favn/install/runtimes/*`
+- resolves a runnable Favn runtime workspace under `.favn/install/runtime_root`
+- records runtime source/materialization metadata in `.favn/install/runtime.json`
+- installs runtime-root Mix deps for orchestrator/runner/storage apps
 - stores npm cache under `.favn/install/cache/npm`
 
 `mix favn.dev` and build tasks validate install freshness before running.
@@ -135,9 +136,13 @@ Storage selection:
 `mix favn.dev` starts runner, orchestrator, and web as separate local processes
 and writes runtime state to `.favn/runtime.json`.
 
-Before startup, `favn_local` force-compiles the runtime-root `favn_runner` and
-`favn_orchestrator` apps under `--root-dir` so nested consumer workflows do not
-boot stale runner or orchestrator beams.
+Before startup, `favn_local` force-compiles the installed runtime workspace
+under `.favn/install/runtime_root` so orchestrator/runner startup does not boot
+stale internal runtime beams.
+
+`--root-dir` remains supported as a runtime-source override for install
+resolution. Local dev and reload then launch from the installed runtime
+workspace.
 
 Readiness is checked by TCP connection to configured service URLs.
 

@@ -185,7 +185,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert_raise Mix.Error,
-                 ~r/(runtime compile failed for favn_runner under --root-dir|local Erlang shortname host is unavailable)/,
+                 ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable)/,
                  fn ->
                    DevTask.run(["--root-dir", root_dir])
                  end
@@ -231,16 +231,14 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   end
 
   test "mix favn.build.runner prints build summary" do
-    current_root = File.cwd!()
-
     _ =
       capture_io(fn ->
-        InstallTask.run(["--root-dir", current_root, "--skip-web-install"])
+        InstallTask.run(["--skip-web-install", "--skip-runtime-deps-install"])
       end)
 
     output =
       capture_io(fn ->
-        BuildRunnerTask.run(["--root-dir", current_root])
+        BuildRunnerTask.run([])
       end)
 
     assert output =~ "Favn runner build complete"
@@ -385,16 +383,14 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   end
 
   test "mix favn.build.single prints build summary" do
-    current_root = File.cwd!()
-
     _ =
       capture_io(fn ->
-        InstallTask.run(["--root-dir", current_root, "--skip-web-install"])
+        InstallTask.run(["--skip-web-install", "--skip-runtime-deps-install"])
       end)
 
     output =
       capture_io(fn ->
-        BuildSingleTask.run(["--root-dir", current_root, "--storage", "sqlite"])
+        BuildSingleTask.run(["--storage", "sqlite"])
       end)
 
     assert output =~ "Favn single build complete"

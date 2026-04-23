@@ -51,6 +51,8 @@ defmodule Favn.Asset.RelationResolver do
   @spec resolve_relation_attrs!(map(), map(), atom() | binary()) :: RelationRef.t()
   def resolve_relation_attrs!(attrs, defaults, inferred_name)
       when is_map(attrs) and is_map(defaults) do
+    attrs = drop_nil_values(attrs)
+
     attrs
     |> maybe_put_inferred_name(inferred_name)
     |> merge_relation_attrs(defaults)
@@ -102,5 +104,11 @@ defmodule Favn.Asset.RelationResolver do
   defp raise_invalid_relation_value!(value) do
     raise ArgumentError,
           "invalid @relation value #{inspect(value)}; expected true, a keyword list, or a map"
+  end
+
+  defp drop_nil_values(attrs) when is_map(attrs) do
+    attrs
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
   end
 end

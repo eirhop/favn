@@ -17,7 +17,8 @@ defmodule Mix.Tasks.Favn.Install do
           root_dir: :string,
           force: :boolean,
           skip_web_install: :boolean,
-          skip_tool_checks: :boolean
+          skip_tool_checks: :boolean,
+          skip_runtime_deps_install: :boolean
         ]
       )
 
@@ -38,6 +39,9 @@ defmodule Mix.Tasks.Favn.Install do
 
       {:error, {:web_install_failed, status, output}} ->
         Mix.raise("install failed: web dependency install failed (status=#{status}): #{output}")
+
+      {:error, {:runtime_deps_install_failed, status, output}} ->
+        Mix.raise("install failed: runtime deps install failed (status=#{status}): #{output}")
 
       {:error, reason} ->
         Mix.raise("install failed: #{inspect(reason)}")

@@ -24,6 +24,12 @@ defmodule Favn.Dev.Paths do
   @spec install_runtimes_dir(Path.t()) :: Path.t()
   def install_runtimes_dir(root_dir), do: Path.join(install_dir(root_dir), "runtimes")
 
+  @spec install_runtime_root_dir(Path.t()) :: Path.t()
+  def install_runtime_root_dir(root_dir), do: Path.join(install_dir(root_dir), "runtime_root")
+
+  @spec install_runtime_path(Path.t()) :: Path.t()
+  def install_runtime_path(root_dir), do: Path.join(install_dir(root_dir), "runtime.json")
+
   @spec install_runtime_web_dir(Path.t()) :: Path.t()
   def install_runtime_web_dir(root_dir), do: Path.join(install_runtimes_dir(root_dir), "web")
 
