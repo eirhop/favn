@@ -1,5 +1,5 @@
 defmodule Favn.Assets.CompilerParityTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Asset
   alias Favn.Assets.Compiler
@@ -166,6 +166,92 @@ defmodule Favn.Assets.CompilerParityTest do
            }
   end
 
+  test "sql asset namespace inheritance is compile-order independent" do
+    root = Module.concat(__MODULE__, "SQLRoot#{System.unique_integer([:positive])}")
+    gold = Module.concat(root, Gold)
+    asset = Module.concat(gold, ExecutiveOverview)
+
+    compile_modules_to_path!([
+      {"sql_asset.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.Namespace
+         use Favn.SQLAsset
+
+         @materialized :view
+         query do
+           ~SQL\"\"\"
+           select *
+           from executive_overview
+           \"\"\"
+         end
+       end
+       """},
+      {"root.ex",
+       "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend"},
+      {"gold.ex",
+       "defmodule #{inspect(gold)} do\n  use Favn.Namespace, relation: [schema: :gold]\nend"}
+    ])
+
+    assert {:ok, [%Asset{relation: relation, relation_inputs: relation_inputs}]} =
+             Compiler.compile_module_assets(asset)
+
+    assert relation == %RelationRef{
+             connection: :warehouse,
+             catalog: nil,
+             schema: "gold",
+             name: "executive_overview"
+           }
+
+    assert [%Favn.Asset.RelationInput{relation_ref: input_relation}] = relation_inputs
+
+    assert input_relation == %RelationRef{
+             connection: :warehouse,
+             catalog: nil,
+             schema: "gold",
+             name: "executive_overview"
+           }
+  end
+
+  test "multi-asset namespace inheritance is compile-order independent" do
+    root = Module.concat(__MODULE__, "MultiRoot#{System.unique_integer([:positive])}")
+    raw = Module.concat(root, Raw)
+    assets = Module.concat(raw, Extracts)
+
+    compile_modules_to_path!([
+      {"multi_asset.ex",
+       """
+       defmodule #{inspect(assets)} do
+         use Favn.Namespace
+         use Favn.MultiAsset
+
+         @relation true
+         asset :orders do
+           rest do
+             path "/orders"
+             data_path "orders"
+           end
+         end
+
+         def asset(_ctx), do: :ok
+       end
+       """},
+      {"root.ex",
+       "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend"},
+      {"raw.ex",
+       "defmodule #{inspect(raw)} do\n  use Favn.Namespace, relation: [catalog: :raw, schema: :sales]\nend"}
+    ])
+
+    assert {:ok, [%Asset{relation: relation}]} = Compiler.compile_module_assets(assets)
+
+    assert relation == %RelationRef{
+             connection: :warehouse,
+             catalog: "raw",
+             schema: "sales",
+             name: "orders"
+           }
+  end
+
   test "relation normalization rejects duplicate canonical keys" do
     module_name =
       Module.concat(__MODULE__, "DuplicateCatalog#{System.unique_integer([:positive])}")
@@ -221,5 +307,29 @@ defmodule Favn.Assets.CompilerParityTest do
              Kernel.ParallelCompiler.compile_to_path([file_path], dir, return_diagnostics: true)
 
     assert module in modules
+  end
+
+  defp compile_modules_to_path!(entries) when is_list(entries) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_core_parallel_modules_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+
+    files =
+      Enum.map(entries, fn {name, source} ->
+        file_path = Path.join(dir, name)
+        File.write!(file_path, source)
+        file_path
+      end)
+
+    Code.prepend_path(dir)
+
+    assert {:ok, _modules, _diagnostics} =
+             Kernel.ParallelCompiler.compile_to_path(files, dir, return_diagnostics: true)
+
+    :ok
   end
 end
