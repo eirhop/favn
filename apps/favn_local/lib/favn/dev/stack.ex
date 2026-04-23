@@ -73,12 +73,13 @@ defmodule Favn.Dev.Stack do
       with :ok <- State.ensure_layout(opts),
            :ok <- ensure_stack_not_running(opts),
            :ok <- ensure_install_ready(opts),
-           config <- Config.resolve(opts),
-           :ok <- ensure_startup_prerequisites(config),
-           {:ok, secrets} <- Secrets.resolve(config, opts),
-           {:ok, node_names} <- build_node_names(opts),
-           {:ok, services} <- start_services(config, secrets, node_names, opts),
-           :ok <- write_runtime(config, secrets, node_names, services, opts) do
+            config <- Config.resolve(opts),
+            :ok <- ensure_startup_prerequisites(config),
+           :ok <- compile_runtime_apps(Paths.root_dir(opts), opts),
+            {:ok, secrets} <- Secrets.resolve(config, opts),
+            {:ok, node_names} <- build_node_names(opts),
+            {:ok, services} <- start_services(config, secrets, node_names, opts),
+            :ok <- write_runtime(config, secrets, node_names, services, opts) do
         {:ok, %{config: config, secrets: secrets, node_names: node_names, services: services}}
       end
     end)
@@ -208,6 +209,41 @@ defmodule Favn.Dev.Stack do
 
       {service_name, state}
     end)
+  end
+
+  defp compile_runtime_apps(root_dir, opts) do
+    cond do
+      Keyword.get(opts, :skip_runtime_compile, false) ->
+        :ok
+
+      Keyword.has_key?(opts, :service_specs_override) ->
+        :ok
+
+      true ->
+        case compile_runtime_app(:favn_runner, Path.join(root_dir, "apps/favn_runner")) do
+          :ok -> compile_runtime_app(:favn_orchestrator, Path.join(root_dir, "apps/favn_orchestrator"))
+          {:error, _reason} = error -> error
+        end
+    end
+  end
+
+  defp compile_runtime_app(app, app_dir) when is_atom(app) and is_binary(app_dir) do
+    mix = System.find_executable("mix") || "mix"
+
+    case System.cmd(mix, ["compile", "--force"],
+           cd: app_dir,
+           env: %{"MIX_ENV" => "dev"},
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} ->
+        :ok
+
+      {output, status} ->
+        {:error, {:runtime_compile_failed, app, status, String.trim(output)}}
+    end
+  catch
+    :error, :enoent ->
+      {:error, {:runtime_compile_failed, app, :enoent, app_dir}}
   end
 
   defp build_node_names(opts) do

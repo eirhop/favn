@@ -176,6 +176,10 @@ mix favn.read_doc Favn generate_manifest
 
 This is now the stable public entrypoint for local iteration on the refactored architecture.
 
+When `--root-dir` points at a separate Favn runtime tree, `mix favn.dev`
+compiles the runtime-root `favn_runner` and `favn_orchestrator` apps before
+startup so the live runner/orchestrator processes do not boot stale beams.
+
 If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current
 canonical format.

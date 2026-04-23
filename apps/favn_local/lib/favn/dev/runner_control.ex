@@ -13,6 +13,7 @@ defmodule Favn.Dev.RunnerControl do
           {:runner_node_name, String.t()}
           | {:rpc_cookie, String.t()}
           | {:runner_module, module()}
+          | {:runner_server_module, module()}
           | {:root_dir, Path.t()}
 
   @spec register_manifest(Version.t(), [register_opt()]) :: :ok | {:error, term()}
@@ -20,18 +21,71 @@ defmodule Favn.Dev.RunnerControl do
     with {:ok, runner_node} <- fetch_runner_node(opts),
          {:ok, cookie} <- fetch_rpc_cookie(opts),
          :ok <- NodeControl.ensure_local_node_started(cookie),
-         runner_module <- Keyword.get(opts, :runner_module, FavnRunner),
-         true <- is_atom(runner_module),
-         :ok <- ensure_connected(runner_node) do
-      case :erpc.call(runner_node, runner_module, :register_manifest, [version, []], 10_000) do
-        :ok -> :ok
+         {:ok, runner_module} <- fetch_runner_module(opts),
+         {:ok, runner_server_module} <- fetch_runner_server_module(opts),
+         :ok <- ensure_connected(runner_node),
+         {:ok, {module, function, args}, _attempted} <-
+            resolve_register_entrypoint(runner_node, version, runner_module, runner_server_module) do
+       case :erpc.call(runner_node, module, function, args, 10_000) do
+         :ok -> :ok
+         {:error, _reason} = error -> error
+         other -> {:error, {:runner_register_unexpected, other}}
+       end
+      else
+        {:error, {:runner_manifest_register_unavailable, _runner_node, _attempted}} = error -> error
         {:error, _reason} = error -> error
-        other -> {:error, {:runner_register_unexpected, other}}
       end
-    else
-      false -> {:error, :invalid_runner_module}
-      {:error, _reason} = error -> error
+  end
+
+  defp fetch_runner_module(opts) do
+    case Keyword.get(opts, :runner_module, FavnRunner) do
+      module when is_atom(module) -> {:ok, module}
+      _ -> {:error, :invalid_runner_module}
     end
+  end
+
+  defp fetch_runner_server_module(opts) do
+    case Keyword.get(opts, :runner_server_module, FavnRunner.Server) do
+      module when is_atom(module) -> {:ok, module}
+      _ -> {:error, :invalid_runner_server_module}
+    end
+  end
+
+  defp resolve_register_entrypoint(runner_node, version, runner_module, runner_server_module)
+       when is_atom(runner_node) and is_atom(runner_module) and is_atom(runner_server_module) do
+    attempts = [
+      {runner_server_module, :register_manifest, [version, []]},
+      {runner_module, :register_manifest, [version, []]},
+      {runner_module, :register_manifest, [version]}
+    ]
+
+    case Enum.find(attempts, &remote_exported?(runner_node, &1)) do
+      {module, function, args} ->
+        {:ok, {module, function, args}, attempts_to_metadata(attempts)}
+
+      nil ->
+        {:error,
+         {:runner_manifest_register_unavailable, runner_node, attempts_to_metadata(attempts)}}
+    end
+  end
+
+  defp remote_exported?(runner_node, {module, function, args})
+       when is_atom(runner_node) and is_atom(module) and is_atom(function) and is_list(args) do
+    arity = length(args)
+
+    case :erpc.call(runner_node, :erlang, :function_exported, [module, function, arity], 2_000) do
+      true -> true
+      false -> false
+      _other -> false
+    end
+  rescue
+    ErlangError -> false
+  end
+
+  defp attempts_to_metadata(attempts) when is_list(attempts) do
+    Enum.map(attempts, fn {module, function, args} ->
+      %{module: module, function: function, arity: length(args)}
+    end)
   end
 
   defp fetch_runner_node(opts) do

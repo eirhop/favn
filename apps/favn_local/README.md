@@ -135,6 +135,10 @@ Storage selection:
 `mix favn.dev` starts runner, orchestrator, and web as separate local processes
 and writes runtime state to `.favn/runtime.json`.
 
+Before startup, `favn_local` force-compiles the runtime-root `favn_runner` and
+`favn_orchestrator` apps under `--root-dir` so nested consumer workflows do not
+boot stale runner or orchestrator beams.
+
 Readiness is checked by TCP connection to configured service URLs.
 
 Web asset build is performed only when `web/favn_web/dist/index.html` is
@@ -152,6 +156,11 @@ missing.
 
 Runner restart uses a short node name for `--sname`, derived from stored
 runtime full node name.
+
+Manifest registration probes the live runner node for a compatible
+`register_manifest` entrypoint before RPC dispatch so local-dev startup fails
+with an explicit contract error instead of raw `:undef` when the runtime root
+is out of sync.
 
 ### Logs and reset
 
