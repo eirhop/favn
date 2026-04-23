@@ -12,13 +12,22 @@ defmodule Favn.Dev.RuntimeSource do
 
   @spec resolve(keyword()) :: {:ok, t()} | {:error, term()}
   def resolve(opts) when is_list(opts) do
-    with {:error, :not_found} <- maybe_explicit_root_override(opts),
-         {:error, :not_found} <- source_tree_root(),
-         {:error, :not_found} <- dependency_root(),
-         {:error, :not_found} <- cwd_root() do
-      {:error, :runtime_source_not_found}
+    if Keyword.has_key?(opts, :root_dir) do
+      root = Paths.root_dir(opts) |> Path.expand()
+
+      if valid_runtime_root?(root) do
+        {:ok, %{kind: :root_override, root: root}}
+      else
+        {:error, {:invalid_runtime_source_root, root}}
+      end
     else
-      {:ok, _source} = ok -> ok
+      with {:error, :not_found} <- source_tree_root(),
+           {:error, :not_found} <- dependency_root(),
+           {:error, :not_found} <- cwd_root() do
+        {:error, :runtime_source_not_found}
+      else
+        {:ok, _source} = ok -> ok
+      end
     end
   end
 
@@ -70,20 +79,6 @@ defmodule Favn.Dev.RuntimeSource do
     end
   rescue
     _ -> {:error, :not_found}
-  end
-
-  defp maybe_explicit_root_override(opts) do
-    if Keyword.has_key?(opts, :root_dir) do
-      root = Paths.root_dir(opts) |> Path.expand()
-
-      if valid_runtime_root?(root) do
-        {:ok, %{kind: :root_override, root: root}}
-      else
-        {:error, :not_found}
-      end
-    else
-      {:error, :not_found}
-    end
   end
 
   defp source_tree_root do

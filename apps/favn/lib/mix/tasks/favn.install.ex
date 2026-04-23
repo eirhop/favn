@@ -17,7 +17,8 @@ defmodule Mix.Tasks.Favn.Install do
           root_dir: :string,
           force: :boolean,
           skip_web_install: :boolean,
-          skip_tool_checks: :boolean
+          skip_tool_checks: :boolean,
+          skip_runtime_deps_install: :boolean
         ]
       )
 

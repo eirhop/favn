@@ -92,21 +92,21 @@ defmodule Favn.Dev.RuntimeLaunch do
       log_path: Paths.orchestrator_log_path(Paths.root_dir(opts)),
       env:
         Map.merge(runtime_env(), %{
-        "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
-        "FAVN_DEV_SQLITE_PATH" => sqlite_path,
-        "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
-        "FAVN_DEV_POSTGRES_PORT" => Integer.to_string(config.postgres.port),
-        "FAVN_DEV_POSTGRES_USERNAME" => config.postgres.username,
-        "FAVN_DEV_POSTGRES_PASSWORD" => config.postgres.password,
-        "FAVN_DEV_POSTGRES_DATABASE" => config.postgres.database,
-        "FAVN_DEV_POSTGRES_SSL" => if(config.postgres.ssl, do: "true", else: "false"),
-        "FAVN_DEV_POSTGRES_POOL_SIZE" => Integer.to_string(config.postgres.pool_size),
-        "FAVN_DEV_RUNNER_NODE" => node_names.runner_full,
-        "FAVN_ORCHESTRATOR_API_ENABLED" =>
-          if(config.orchestrator_api_enabled, do: "1", else: "0"),
-        "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
-        "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => secrets["service_token"]
-      })
+          "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
+          "FAVN_DEV_SQLITE_PATH" => sqlite_path,
+          "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
+          "FAVN_DEV_POSTGRES_PORT" => Integer.to_string(config.postgres.port),
+          "FAVN_DEV_POSTGRES_USERNAME" => config.postgres.username,
+          "FAVN_DEV_POSTGRES_PASSWORD" => config.postgres.password,
+          "FAVN_DEV_POSTGRES_DATABASE" => config.postgres.database,
+          "FAVN_DEV_POSTGRES_SSL" => if(config.postgres.ssl, do: "true", else: "false"),
+          "FAVN_DEV_POSTGRES_POOL_SIZE" => Integer.to_string(config.postgres.pool_size),
+          "FAVN_DEV_RUNNER_NODE" => node_names.runner_full,
+          "FAVN_ORCHESTRATOR_API_ENABLED" =>
+            if(config.orchestrator_api_enabled, do: "1", else: "0"),
+          "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
+          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => secrets["service_token"]
+        })
     }
   end
 
@@ -130,7 +130,6 @@ defmodule Favn.Dev.RuntimeLaunch do
   end
 
   defp runtime_env do
-    deps_path = Mix.Project.deps_path() |> Path.expand(File.cwd!())
-    %{"MIX_ENV" => "dev", "MIX_DEPS_PATH" => deps_path}
+    %{"MIX_ENV" => "dev"}
   end
 end

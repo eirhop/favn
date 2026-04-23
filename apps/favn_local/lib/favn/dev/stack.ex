@@ -270,10 +270,7 @@ defmodule Favn.Dev.Stack do
 
         case System.cmd(mix, ["compile", "--force"],
                cd: runtime_root,
-               env: %{
-                 "MIX_ENV" => "dev",
-                 "MIX_DEPS_PATH" => Mix.Project.deps_path() |> Path.expand(File.cwd!())
-               },
+               env: %{"MIX_ENV" => "dev"},
                stderr_to_stdout: true
              ) do
           {_output, 0} -> :ok

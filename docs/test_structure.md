@@ -104,7 +104,7 @@ Notes:
 - The current umbrella `mix test` alias includes `apps/favn_authoring/test` (currently minimal), `apps/favn/test`, and `apps/favn_local/test` plus the runtime/storage owner apps.
 - `apps/favn_local/test/dev_runner_control_test.exs` locks the live runner manifest-registration fallback behavior used by split-root local dev startup.
 - `apps/favn_local/test/dev_runtime_launch_test.exs` locks service-spec generation against installed runtime workspace roots.
-- `apps/favn_local/test/integration/dev_split_root_regression_test.exs` adds opt-in split-root startup coverage that exercises `mix favn.dev --root-dir ...` end-to-end against a workload project.
+- `apps/favn_local/test/integration/dev_split_root_regression_test.exs` adds split-root startup coverage that exercises `mix favn.dev --root-dir ...` end-to-end against a workload project whenever the configured workload project exists.
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures.
 - Shared fixture source lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.
 - batch 1 parity migration moved broad authoring/compiler/planning/window ownership into `apps/favn/test` and `apps/favn_core/test`.

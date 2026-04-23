@@ -120,16 +120,22 @@ defmodule Favn.Dev.Install do
   end
 
   defp install_runtime_dependencies(runtime, opts) do
-    if Keyword.get(opts, :runtime_deps_install, false) do
-      runtime_root = runtime["materialized_root"]
-      mix_exec = System.find_executable("mix") || "mix"
-
-      case System.cmd(mix_exec, ["deps.get"], cd: runtime_root, stderr_to_stdout: true) do
-        {_output, 0} -> :ok
-        {output, status} -> {:error, {:runtime_deps_install_failed, status, String.trim(output)}}
-      end
-    else
+    if Keyword.get(opts, :skip_runtime_deps_install, false) do
       :ok
+    else
+      runtime_root = runtime["materialized_root"]
+      runtime_mix_exs = Path.join(runtime_root, "mix.exs")
+
+      if File.exists?(runtime_mix_exs) do
+        mix_exec = System.find_executable("mix") || "mix"
+
+        case System.cmd(mix_exec, ["deps.get"], cd: runtime_root, stderr_to_stdout: true) do
+          {_output, 0} -> :ok
+          {output, status} -> {:error, {:runtime_deps_install_failed, status, String.trim(output)}}
+        end
+      else
+        :ok
+      end
     end
   end
 
@@ -192,13 +198,13 @@ defmodule Favn.Dev.Install do
       {:ok,
        %{
          "schema_version" => @schema_version,
-          "elixir_version" => System.version(),
-          "otp_release" => otp_release(),
-          "node_version" => node_version,
-          "npm_version" => npm_version,
-          "consumer_mix_lock_sha256" => file_sha256(Path.join(root_dir, "mix.lock")),
-          "runtime_source" => runtime_fingerprint
-        }}
+         "elixir_version" => System.version(),
+         "otp_release" => otp_release(),
+         "node_version" => node_version,
+         "npm_version" => npm_version,
+         "consumer_mix_lock_sha256" => file_sha256(Path.join(root_dir, "mix.lock")),
+         "runtime_source" => runtime_fingerprint
+       }}
     end
   end
 

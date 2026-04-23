@@ -3,12 +3,21 @@ defmodule Favn.DevSplitRootRegressionTest do
 
   @moduletag :integration
 
-  @run_split_root? System.get_env("FAVN_RUN_DEV_SPLIT_ROOT") == "1"
-  @split_root_skip_reason "set FAVN_RUN_DEV_SPLIT_ROOT=1 to run split-root dev regression"
+  @repo_root Path.expand("../../../..", __DIR__)
+  @default_project_dir Path.join(@repo_root, "examples/reference_workload")
+  @configured_project_dir (
+                           case System.get_env("FAVN_SPLIT_ROOT_PROJECT") do
+                             value when is_binary(value) and value != "" -> Path.expand(value)
+                             _ -> @default_project_dir
+                           end
+                         )
+
+  @run_split_root? File.exists?(Path.join(@configured_project_dir, "mix.exs"))
+  @split_root_skip_reason "split-root project missing mix.exs at #{@configured_project_dir}"
 
   @tag skip: if(@run_split_root?, do: false, else: @split_root_skip_reason)
   test "split-root dev loop recovers from stale runtime beams" do
-    repo_root = Path.expand("../../../..", __DIR__)
+    repo_root = @repo_root
     project_dir = split_root_project_dir(repo_root)
 
     unless File.exists?(Path.join(project_dir, "mix.exs")) do
