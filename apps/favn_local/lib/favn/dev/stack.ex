@@ -331,6 +331,9 @@ defmodule Favn.Dev.Stack do
       _ ->
         :ok = ensure_web_assets(runtime, opts)
 
+        runner_wait_timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 15_000)
+        runner_wait_node_name = Keyword.get(opts, :runner_wait_node_name, node_names.runner_full)
+
         runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
 
         orchestrator_spec =
@@ -338,12 +341,18 @@ defmodule Favn.Dev.Stack do
 
         web_spec = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
 
-        with {:ok, services} <- start_service_specs([runner_spec]),
-             :ok <- wait_runner_node_ready(node_names.runner_full, 15_000),
-             {:ok, services} <- start_service_specs([orchestrator_spec], services),
-             {:ok, services} <- start_service_specs([web_spec], services) do
-          {:ok, services}
-        else
+        case start_service_specs([runner_spec]) do
+          {:ok, services} ->
+            with :ok <- wait_runner_node_ready(runner_wait_node_name, runner_wait_timeout_ms),
+                 {:ok, services} <- start_service_specs([orchestrator_spec], services),
+                 {:ok, services} <- start_service_specs([web_spec], services) do
+              {:ok, services}
+            else
+              {:error, _reason} = error ->
+                stop_service_map(services)
+                error
+            end
+
           {:error, _reason} = error ->
             error
         end
