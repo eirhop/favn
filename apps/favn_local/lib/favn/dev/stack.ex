@@ -22,7 +22,9 @@ defmodule Favn.Dev.Stack do
 
   @spec start_foreground(root_opt()) :: :ok | {:error, term()}
   def start_foreground(opts \\ []) when is_list(opts) do
-    with {:ok, startup} <- initialize_stack(opts),
+    with {:ok, startup} <- prepare_startup(opts),
+         :ok <- compile_runtime_apps(Paths.root_dir(opts), opts),
+         {:ok, startup} <- initialize_stack(startup, opts),
          :ok <- bootstrap_manifest(startup, opts) do
       print_start_summary(startup)
       wait_foreground(startup, opts)
@@ -68,18 +70,28 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp initialize_stack(opts) do
+  defp prepare_startup(opts) do
     with_lock(opts, fn ->
       with :ok <- State.ensure_layout(opts),
            :ok <- ensure_stack_not_running(opts),
            :ok <- ensure_install_ready(opts),
-            config <- Config.resolve(opts),
-            :ok <- ensure_startup_prerequisites(config),
-           :ok <- compile_runtime_apps(Paths.root_dir(opts), opts),
-            {:ok, secrets} <- Secrets.resolve(config, opts),
-            {:ok, node_names} <- build_node_names(opts),
-            {:ok, services} <- start_services(config, secrets, node_names, opts),
-            :ok <- write_runtime(config, secrets, node_names, services, opts) do
+           config <- Config.resolve(opts),
+           :ok <- ensure_startup_prerequisites(config),
+           {:ok, secrets} <- Secrets.resolve(config, opts),
+           {:ok, node_names} <- build_node_names(opts) do
+        {:ok, %{config: config, secrets: secrets, node_names: node_names}}
+      end
+    end)
+  end
+
+  defp initialize_stack(startup, opts) do
+    %{config: config, secrets: secrets, node_names: node_names} = startup
+
+    with_lock(opts, fn ->
+      with :ok <- State.ensure_layout(opts),
+           :ok <- ensure_stack_not_running(opts),
+           {:ok, services} <- start_services(config, secrets, node_names, opts),
+           :ok <- write_runtime(config, secrets, node_names, services, opts) do
         {:ok, %{config: config, secrets: secrets, node_names: node_names, services: services}}
       end
     end)

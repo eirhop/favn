@@ -13,9 +13,6 @@ defmodule Favn.Dev.RunnerControlTest do
     def register_manifest(_version), do: :ok
   end
 
-  defmodule MissingRunnerServer do
-  end
-
   defmodule MissingRunner do
   end
 
@@ -43,8 +40,7 @@ defmodule Favn.Dev.RunnerControlTest do
              RunnerControl.register_manifest(ctx.version,
                runner_node_name: ctx.runner_node_name,
                rpc_cookie: ctx.cookie,
-               runner_module: StubRunnerV2,
-               runner_server_module: MissingRunnerServer
+               runner_module: StubRunnerV2
              )
   end
 
@@ -53,8 +49,7 @@ defmodule Favn.Dev.RunnerControlTest do
              RunnerControl.register_manifest(ctx.version,
                runner_node_name: ctx.runner_node_name,
                rpc_cookie: ctx.cookie,
-               runner_module: StubRunnerV1,
-               runner_server_module: MissingRunnerServer
+               runner_module: StubRunnerV1
              )
   end
 
@@ -63,14 +58,12 @@ defmodule Favn.Dev.RunnerControlTest do
              RunnerControl.register_manifest(ctx.version,
                runner_node_name: ctx.runner_node_name,
                rpc_cookie: ctx.cookie,
-               runner_module: MissingRunner,
-               runner_server_module: MissingRunnerServer
+               runner_module: MissingRunner
              )
 
     assert runner_node == Node.self()
 
     assert attempted == [
-             %{module: MissingRunnerServer, function: :register_manifest, arity: 2},
              %{module: MissingRunner, function: :register_manifest, arity: 2},
              %{module: MissingRunner, function: :register_manifest, arity: 1}
            ]

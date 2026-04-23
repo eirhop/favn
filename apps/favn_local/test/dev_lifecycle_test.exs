@@ -100,7 +100,7 @@ defmodule Favn.Dev.LifecycleTest do
 
     assert :ok = State.write_runtime(stale_runtime, root_dir: root_dir)
 
-    assert {:error, :install_required} = Dev.dev(root_dir: root_dir)
+    assert {:error, :install_required} = Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
   end
 
@@ -129,7 +129,8 @@ defmodule Favn.Dev.LifecycleTest do
 
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
 
-    assert {:error, {:stack_partially_running, states}} = Dev.dev(root_dir: root_dir)
+    assert {:error, {:stack_partially_running, states}} =
+             Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
     assert {"runner", :running} in states
     assert {:ok, _runtime} = State.read_runtime(root_dir: root_dir)
 
@@ -144,11 +145,12 @@ defmodule Favn.Dev.LifecycleTest do
     try do
       assert {:error, {:port_conflict, :web, ^port}} =
                Dev.dev(
-                 root_dir: root_dir,
-                 web_port: port,
-                 skip_install_check: true,
-                 skip_bootstrap: true,
-                 skip_readiness: true
+                root_dir: root_dir,
+                web_port: port,
+                skip_runtime_compile: true,
+                skip_install_check: true,
+                skip_bootstrap: true,
+                skip_readiness: true
                )
     after
       :ok = :gen_tcp.close(socket)
@@ -160,18 +162,19 @@ defmodule Favn.Dev.LifecycleTest do
              Dev.dev(
                root_dir: root_dir,
                storage: :postgres,
-               postgres: [
-                 hostname: "127.0.0.1",
-                 port: 1,
+                postgres: [
+                  hostname: "127.0.0.1",
+                  port: 1,
                  username: "postgres",
                  password: "postgres",
                  database: "favn",
-                 ssl: false,
-                 pool_size: 10
-               ],
-               skip_install_check: true,
-               skip_bootstrap: true,
-               skip_readiness: true
+                  ssl: false,
+                  pool_size: 10
+                ],
+                skip_runtime_compile: true,
+                skip_install_check: true,
+                skip_bootstrap: true,
+                skip_readiness: true
              )
   end
 
@@ -180,19 +183,33 @@ defmodule Favn.Dev.LifecycleTest do
              Dev.dev(
                root_dir: root_dir,
                storage: :postgres,
-               postgres: [
-                 hostname: "",
-                 port: 5432,
+                postgres: [
+                  hostname: "",
+                  port: 5432,
                  username: "postgres",
                  password: "postgres",
                  database: "favn",
-                 ssl: false,
-                 pool_size: 10
-               ],
+                  ssl: false,
+                  pool_size: 10
+                ],
+                skip_runtime_compile: true,
+                skip_install_check: true,
+                skip_bootstrap: true,
+                skip_readiness: true
+              )
+  end
+
+  test "dev/1 fails runtime compile as preflight before startup lock work", %{root_dir: root_dir} do
+    assert {:error, {:runtime_compile_failed, :favn_runner, _status, _output}} =
+             Dev.dev(
+               root_dir: root_dir,
                skip_install_check: true,
                skip_bootstrap: true,
                skip_readiness: true
              )
+
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+    assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
   end
 
   defp wait_until(fun, attempts \\ 120)

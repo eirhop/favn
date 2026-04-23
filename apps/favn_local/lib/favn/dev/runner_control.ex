@@ -13,7 +13,6 @@ defmodule Favn.Dev.RunnerControl do
           {:runner_node_name, String.t()}
           | {:rpc_cookie, String.t()}
           | {:runner_module, module()}
-          | {:runner_server_module, module()}
           | {:root_dir, Path.t()}
 
   @spec register_manifest(Version.t(), [register_opt()]) :: :ok | {:error, term()}
@@ -22,10 +21,9 @@ defmodule Favn.Dev.RunnerControl do
          {:ok, cookie} <- fetch_rpc_cookie(opts),
          :ok <- NodeControl.ensure_local_node_started(cookie),
          {:ok, runner_module} <- fetch_runner_module(opts),
-         {:ok, runner_server_module} <- fetch_runner_server_module(opts),
          :ok <- ensure_connected(runner_node),
          {:ok, {module, function, args}, _attempted} <-
-            resolve_register_entrypoint(runner_node, version, runner_module, runner_server_module) do
+             resolve_register_entrypoint(runner_node, version, runner_module) do
        case :erpc.call(runner_node, module, function, args, 10_000) do
          :ok -> :ok
          {:error, _reason} = error -> error
@@ -44,17 +42,9 @@ defmodule Favn.Dev.RunnerControl do
     end
   end
 
-  defp fetch_runner_server_module(opts) do
-    case Keyword.get(opts, :runner_server_module, FavnRunner.Server) do
-      module when is_atom(module) -> {:ok, module}
-      _ -> {:error, :invalid_runner_server_module}
-    end
-  end
-
-  defp resolve_register_entrypoint(runner_node, version, runner_module, runner_server_module)
-       when is_atom(runner_node) and is_atom(runner_module) and is_atom(runner_server_module) do
+  defp resolve_register_entrypoint(runner_node, version, runner_module)
+       when is_atom(runner_node) and is_atom(runner_module) do
     attempts = [
-      {runner_server_module, :register_manifest, [version, []]},
       {runner_module, :register_manifest, [version, []]},
       {runner_module, :register_manifest, [version]}
     ]
