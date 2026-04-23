@@ -186,10 +186,9 @@ defmodule Favn.Dev.LifecycleTest do
                root_dir: root_dir,
                web_port: free_port(),
                storage: :postgres,
-               web_port: free_port(),
-               postgres: [
-                 hostname: "",
-                 port: 5432,
+                postgres: [
+                  hostname: "",
+                  port: 5432,
                  username: "postgres",
                  password: "postgres",
                  database: "favn",
