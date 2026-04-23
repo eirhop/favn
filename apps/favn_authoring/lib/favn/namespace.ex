@@ -136,12 +136,24 @@ defmodule Favn.Namespace do
       Module.open?(module) ->
         Module.get_attribute(module, :favn_namespace_config)
 
-      match?({:module, _}, Code.ensure_loaded(module)) and
+      match?({:module, _}, ensure_namespace_module(module)) and
           function_exported?(module, :__favn_namespace_config__, 0) ->
         module.__favn_namespace_config__()
 
       true ->
         nil
+    end
+  end
+
+  # Namespace inheritance is used during DSL compilation, so same-project
+  # ancestor modules may exist but not be compiled yet under parallel compile.
+  # Falling back to ensure_loaded/1 here reintroduces child-first failures for
+  # SQL assets and multi-assets in mix compile/dev packaging paths.
+  defp ensure_namespace_module(module) when is_atom(module) do
+    if Code.can_await_module_compilation?() do
+      Code.ensure_compiled(module)
+    else
+      Code.ensure_loaded(module)
     end
   end
 
