@@ -1,11 +1,17 @@
 defmodule Favn.Dev.OrchestratorClient do
   @moduledoc false
 
+  alias Favn.Manifest.Serializer
+
   @spec publish_manifest(String.t(), String.t(), map()) ::
           {:ok, map()} | {:error, term()}
   def publish_manifest(base_url, service_token, payload)
       when is_binary(base_url) and is_binary(service_token) and is_map(payload) do
-    request_post(base_url <> "/api/orchestrator/v1/manifests", service_token, payload)
+    request_post(
+      base_url <> "/api/orchestrator/v1/manifests",
+      service_token,
+      normalize_publish_payload(payload)
+    )
   end
 
   @spec activate_manifest(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
@@ -103,6 +109,23 @@ defmodule Favn.Dev.OrchestratorClient do
         else
           _ -> {:error, {:invalid_response, output}}
         end
+    end
+  end
+
+  defp normalize_publish_payload(payload) when is_map(payload) do
+    manifest = Map.get(payload, :manifest) || Map.get(payload, "manifest")
+
+    if manifest do
+      manifest_payload =
+        manifest
+        |> Serializer.encode_manifest!()
+        |> JSON.decode!()
+
+      payload
+      |> Map.put(:manifest, manifest_payload)
+      |> Map.delete("manifest")
+    else
+      payload
     end
   end
 end

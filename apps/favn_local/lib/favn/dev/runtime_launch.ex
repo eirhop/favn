@@ -9,7 +9,7 @@ defmodule Favn.Dev.RuntimeLaunch do
   def runner_spec(runtime, opts, node_names, secrets)
       when is_map(runtime) and is_list(opts) and is_map(node_names) and is_map(secrets) do
     elixir = System.find_executable("elixir") || "elixir"
-    code = "Application.ensure_all_started(:favn_runner); Process.sleep(:infinity)"
+    code = "{:ok, _} = Application.ensure_all_started(:favn_runner); Process.sleep(:infinity)"
 
     base_args = [
       "--sname",
@@ -23,7 +23,9 @@ defmodule Favn.Dev.RuntimeLaunch do
       |> ConsumerCodePath.ebin_paths()
       |> Enum.flat_map(fn path -> ["-pa", path] end)
 
-    args = base_args ++ code_path_args ++ ["-S", "mix", "run", "--no-start", "--eval", code]
+    args =
+      base_args ++
+        code_path_args ++ ["-S", "mix", "run", "--no-compile", "--no-start", "--eval", code]
 
     %{
       name: "runner",
@@ -47,10 +49,12 @@ defmodule Favn.Dev.RuntimeLaunch do
 
       cond do
         storage == "sqlite" ->
+          {:ok, _} = Application.ensure_all_started(:favn_storage_sqlite)
           Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
           Application.put_env(:favn_orchestrator, :storage_adapter_opts, database: System.get_env("FAVN_DEV_SQLITE_PATH"))
 
         storage == "postgres" ->
+          {:ok, _} = Application.ensure_all_started(:favn_storage_postgres)
           Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.Postgres)
 
           Application.put_env(
@@ -68,7 +72,21 @@ defmodule Favn.Dev.RuntimeLaunch do
       runner_node = String.to_atom(System.get_env("FAVN_DEV_RUNNER_NODE"))
       Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
       Application.put_env(:favn_orchestrator, :runner_client_opts, [runner_node: runner_node])
-      Application.ensure_all_started(:favn_orchestrator)
+      Application.put_env(
+        :favn_orchestrator,
+        :api_server,
+        enabled: System.get_env("FAVN_ORCHESTRATOR_API_ENABLED", "0") == "1",
+        port: String.to_integer(System.get_env("FAVN_ORCHESTRATOR_API_PORT", "4101"))
+      )
+
+      Application.put_env(
+        :favn_orchestrator,
+        :api_service_tokens,
+        System.get_env("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "")
+        |> String.split(",", trim: true)
+      )
+
+      {:ok, _} = Application.ensure_all_started(:favn_orchestrator)
       Process.sleep(:infinity)
       """
       |> String.trim()
@@ -84,6 +102,7 @@ defmodule Favn.Dev.RuntimeLaunch do
         "-S",
         "mix",
         "run",
+        "--no-compile",
         "--no-start",
         "--eval",
         code
@@ -113,12 +132,13 @@ defmodule Favn.Dev.RuntimeLaunch do
   @spec web_spec(map(), Config.t(), keyword(), map()) :: map()
   def web_spec(runtime, %Config{} = config, opts, secrets)
       when is_map(runtime) and is_list(opts) and is_map(secrets) do
-    npm = System.find_executable("npm") || "npm"
+    node = System.find_executable("node") || "node"
+    vite = Path.join(runtime["web_root"], "node_modules/vite/bin/vite.js")
 
     %{
       name: "web",
-      exec: npm,
-      args: ["run", "preview", "--", "--host", "127.0.0.1", "--port", Integer.to_string(config.web_port)],
+      exec: node,
+      args: [vite, "preview", "--host", "127.0.0.1", "--port", Integer.to_string(config.web_port)],
       cwd: runtime["web_root"],
       log_path: Paths.web_log_path(Paths.root_dir(opts)),
       env: %{

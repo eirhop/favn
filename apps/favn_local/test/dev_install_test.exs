@@ -16,6 +16,10 @@ defmodule Favn.Dev.InstallTest do
     File.write!(Path.join(root_dir, "mix.lock"), "lock")
     File.write!(Path.join(root_dir, "web/favn_web/package.json"), "{}")
     File.write!(Path.join(root_dir, "web/favn_web/package-lock.json"), "{}")
+    File.mkdir_p!(Path.join(root_dir, "web/favn_web/node_modules/.bin"))
+    File.mkdir_p!(Path.join(root_dir, "web/favn_web/dist"))
+    File.write!(Path.join(root_dir, "web/favn_web/node_modules/.bin/vite"), "vite")
+    File.write!(Path.join(root_dir, "web/favn_web/dist/index.html"), "built")
 
     File.write!(
       Path.join(root_dir, "apps/favn_runner/mix.exs"),
@@ -55,9 +59,23 @@ defmodule Favn.Dev.InstallTest do
     assert runtime["materialized_root"] == Path.join(root_dir, ".favn/install/runtime_root")
     assert toolchain["schema_version"] == 2
 
-    assert File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/mix.exs"))
-    assert File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_orchestrator/mix.exs"))
-    assert File.exists?(Path.join(root_dir, ".favn/install/runtime_root/web/favn_web/package.json"))
+    assert File.exists?(
+             Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/mix.exs")
+           )
+
+    assert File.exists?(
+             Path.join(root_dir, ".favn/install/runtime_root/apps/favn_orchestrator/mix.exs")
+           )
+
+    assert File.exists?(
+             Path.join(root_dir, ".favn/install/runtime_root/web/favn_web/package.json")
+           )
+
+    refute File.exists?(
+             Path.join(root_dir, ".favn/install/runtime_root/web/favn_web/node_modules")
+           )
+
+    refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root/web/favn_web/dist"))
   end
 
   test "run/1 returns already_installed when fingerprint matches", %{root_dir: root_dir} do
@@ -86,13 +104,15 @@ defmodule Favn.Dev.InstallTest do
 
   test "ensure_ready/1 returns install_stale when fingerprint differs", %{root_dir: root_dir} do
     assert :ok = State.ensure_layout(root_dir: root_dir)
-    assert :ok = State.write_install_runtime(%{"materialized_root" => root_dir}, root_dir: root_dir)
 
     assert :ok =
-              State.write_install(
-                %{"schema_version" => 2, "fingerprint" => %{"consumer_mix_lock_sha256" => "old"}},
-                root_dir: root_dir
-              )
+             State.write_install_runtime(%{"materialized_root" => root_dir}, root_dir: root_dir)
+
+    assert :ok =
+             State.write_install(
+               %{"schema_version" => 2, "fingerprint" => %{"consumer_mix_lock_sha256" => "old"}},
+               root_dir: root_dir
+             )
 
     assert {:error, :install_stale} =
              Install.ensure_ready(root_dir: root_dir, skip_tool_checks: true)

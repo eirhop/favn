@@ -130,8 +130,11 @@ defmodule Favn.Dev.Install do
         mix_exec = System.find_executable("mix") || "mix"
 
         case System.cmd(mix_exec, ["deps.get"], cd: runtime_root, stderr_to_stdout: true) do
-          {_output, 0} -> :ok
-          {output, status} -> {:error, {:runtime_deps_install_failed, status, String.trim(output)}}
+          {_output, 0} ->
+            :ok
+
+          {output, status} ->
+            {:error, {:runtime_deps_install_failed, status, String.trim(output)}}
         end
       else
         :ok
@@ -148,22 +151,39 @@ defmodule Favn.Dev.Install do
       npm_cache = Paths.install_cache_npm_dir(Paths.root_dir(opts))
       package_lock = Path.join(web_dir, "package-lock.json")
 
-      args =
-        if File.exists?(package_lock) do
-          ["ci", "--silent", "--cache", npm_cache]
-        else
-          ["install", "--silent", "--cache", npm_cache]
-        end
-
       env = %{"npm_config_cache" => npm_cache}
 
-      case System.cmd(npm_exec, args, cd: web_dir, stderr_to_stdout: true, env: env) do
-        {_output, 0} ->
+      install_with_fallback(npm_exec, package_lock, npm_cache, web_dir, env)
+    end
+  end
+
+  defp install_with_fallback(npm_exec, package_lock, npm_cache, web_dir, env) do
+    if File.exists?(package_lock) do
+      case run_npm_install(npm_exec, ["ci", "--cache", npm_cache], web_dir, env) do
+        :ok ->
           :ok
 
-        {output, status} ->
-          {:error, {:web_install_failed, status, String.trim(output)}}
+        {:error, _status, _output} ->
+          case run_npm_install(npm_exec, ["install", "--cache", npm_cache], web_dir, env) do
+            :ok ->
+              :ok
+
+            {:error, status, retry_output} ->
+              {:error, {:web_install_failed, status, String.trim(retry_output)}}
+          end
       end
+    else
+      case run_npm_install(npm_exec, ["install", "--cache", npm_cache], web_dir, env) do
+        :ok -> :ok
+        {:error, status, output} -> {:error, {:web_install_failed, status, String.trim(output)}}
+      end
+    end
+  end
+
+  defp run_npm_install(npm_exec, args, web_dir, env) do
+    case System.cmd(npm_exec, args, cd: web_dir, stderr_to_stdout: true, env: env) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, status, output}
     end
   end
 
