@@ -80,11 +80,11 @@ defmodule Favn.Dev.Stack do
       with :ok <- State.ensure_layout(opts),
            :ok <- ensure_stack_not_running(opts),
            :ok <- ensure_install_ready(opts),
-            config <- Config.resolve(opts),
-            :ok <- ensure_startup_prerequisites(config),
-            {:ok, runtime} <- resolve_runtime(opts),
-            {:ok, secrets} <- Secrets.resolve(config, opts),
-            {:ok, node_names} <- build_node_names(secrets, opts) do
+           config <- Config.resolve(opts),
+           :ok <- ensure_startup_prerequisites(config),
+           {:ok, runtime} <- resolve_runtime(opts),
+           {:ok, secrets} <- Secrets.resolve(config, opts),
+           {:ok, node_names} <- build_node_names(secrets, opts) do
         {:ok, %{config: config, runtime: runtime, secrets: secrets, node_names: node_names}}
       end
     end)
@@ -100,7 +100,13 @@ defmodule Favn.Dev.Stack do
            {:ok, services} <- start_services(runtime, config, secrets, node_names, opts),
            :ok <- write_runtime(config, secrets, node_names, services, opts) do
         {:ok,
-         %{config: config, runtime: runtime, secrets: secrets, node_names: node_names, services: services}}
+         %{
+           config: config,
+           runtime: runtime,
+           secrets: secrets,
+           node_names: node_names,
+           services: services
+         }}
       end
     end)
   end
@@ -273,8 +279,11 @@ defmodule Favn.Dev.Stack do
                env: %{"MIX_ENV" => "dev"},
                stderr_to_stdout: true
              ) do
-          {_output, 0} -> :ok
-          {output, status} -> {:error, {:runtime_compile_failed, :runtime_root, status, String.trim(output)}}
+          {_output, 0} ->
+            :ok
+
+          {output, status} ->
+            {:error, {:runtime_compile_failed, :runtime_root, status, String.trim(output)}}
         end
     end
   end
@@ -315,22 +324,43 @@ defmodule Favn.Dev.Stack do
   end
 
   defp start_services(runtime, config, secrets, node_names, opts) do
-    specs =
-      case Keyword.get(opts, :service_specs_override) do
-        list when is_list(list) and list != [] ->
-          list
+    case Keyword.get(opts, :service_specs_override) do
+      list when is_list(list) and list != [] ->
+        start_service_specs(list)
 
-        _ ->
-          :ok = ensure_web_assets(runtime, opts)
+      _ ->
+        :ok = ensure_web_assets(runtime, opts)
 
-          [
-            RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets),
-            RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets),
-            RuntimeLaunch.web_spec(runtime, config, opts, secrets)
-          ]
-      end
+        runner_wait_timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 15_000)
+        runner_wait_node_name = Keyword.get(opts, :runner_wait_node_name, node_names.runner_full)
 
-    Enum.reduce_while(specs, {:ok, %{}}, fn spec, {:ok, acc} ->
+        runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
+
+        orchestrator_spec =
+          RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
+
+        web_spec = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+
+        case start_service_specs([runner_spec]) do
+          {:ok, services} ->
+            with :ok <- wait_runner_node_ready(runner_wait_node_name, runner_wait_timeout_ms),
+                 {:ok, services} <- start_service_specs([orchestrator_spec], services),
+                 {:ok, services} <- start_service_specs([web_spec], services) do
+              {:ok, services}
+            else
+              {:error, _reason} = error ->
+                stop_service_map(services)
+                error
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+    end
+  end
+
+  defp start_service_specs(specs, initial \\ %{}) when is_list(specs) and is_map(initial) do
+    Enum.reduce_while(specs, {:ok, initial}, fn spec, {:ok, acc} ->
       case DevProcess.start_service(spec) do
         {:ok, info} ->
           {:cont, {:ok, Map.put(acc, info.name, info)}}
@@ -340,6 +370,29 @@ defmodule Favn.Dev.Stack do
           {:halt, {:error, {:start_failed, spec.name, reason}}}
       end
     end)
+  end
+
+  defp wait_runner_node_ready(runner_full, timeout_ms)
+       when is_binary(runner_full) and is_integer(timeout_ms) and timeout_ms > 0 do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    runner_node = String.to_atom(runner_full)
+
+    do_wait_runner_node_ready(runner_node, deadline)
+  end
+
+  defp do_wait_runner_node_ready(runner_node, deadline_ms) when is_atom(runner_node) do
+    case :net_adm.ping(runner_node) do
+      :pong ->
+        :ok
+
+      :pang ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          {:error, {:runner_node_unreachable, runner_node}}
+        else
+          Process.sleep(100)
+          do_wait_runner_node_ready(runner_node, deadline_ms)
+        end
+    end
   end
 
   defp ensure_web_assets(runtime, opts) do
@@ -416,6 +469,7 @@ defmodule Favn.Dev.Stack do
              runner_node_name: node_names.runner_full,
              rpc_cookie: secrets["rpc_cookie"]
            ),
+         :ok <- wait_http(config.orchestrator_base_url, 15_000),
          :ok <-
            State.write_manifest_latest(
              %{

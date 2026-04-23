@@ -18,7 +18,7 @@ defmodule Favn.Dev.Secrets do
       "service_token" => config.service_token || stored["service_token"] || random_secret(24),
       "web_session_secret" =>
         config.web_session_secret || stored["web_session_secret"] || random_secret(32),
-      "rpc_cookie" => stored["rpc_cookie"] || random_secret(24)
+      "rpc_cookie" => normalize_rpc_cookie(stored["rpc_cookie"]) || random_rpc_cookie(24)
     }
 
     case State.write_secrets(secrets, opts) do
@@ -33,4 +33,20 @@ defmodule Favn.Dev.Secrets do
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
   end
+
+  defp random_rpc_cookie(size) when is_integer(size) and size > 0 do
+    size
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode16(case: :upper)
+  end
+
+  defp normalize_rpc_cookie(cookie) when is_binary(cookie) and cookie != "" do
+    if String.match?(cookie, ~r/^[A-Za-z0-9_]+$/) do
+      cookie
+    else
+      nil
+    end
+  end
+
+  defp normalize_rpc_cookie(_cookie), do: nil
 end

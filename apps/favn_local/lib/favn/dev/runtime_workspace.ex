@@ -6,6 +6,7 @@ defmodule Favn.Dev.RuntimeWorkspace do
   alias Favn.Dev.State
 
   @schema_version 1
+  @ignored_entries MapSet.new([".favn", "node_modules", "dist", ".svelte-kit", "test-results"])
 
   @spec materialize(RuntimeSource.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def materialize(%{root: source_root, kind: kind}, opts) when is_list(opts) do
@@ -88,7 +89,7 @@ defmodule Favn.Dev.RuntimeWorkspace do
     with :ok <- File.mkdir_p(destination),
          {:ok, entries} <- File.ls(source) do
       Enum.reduce_while(entries, :ok, fn entry, :ok ->
-        if entry == ".favn" do
+        if MapSet.member?(@ignored_entries, entry) do
           {:cont, :ok}
         else
           child_source = Path.join(source, entry)
