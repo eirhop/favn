@@ -31,6 +31,18 @@ defmodule Favn.Dev.RuntimeSource do
     end
   end
 
+  @spec resolve_runtime_root(Path.t()) :: {:ok, Path.t()} | {:error, :not_found}
+  def resolve_runtime_root(path) when is_binary(path) do
+    path
+    |> Path.expand()
+    |> candidate_roots()
+    |> Enum.find(&valid_runtime_root?/1)
+    |> case do
+      nil -> {:error, :not_found}
+      root -> {:ok, root}
+    end
+  end
+
   @spec fingerprint(t()) :: {:ok, map()} | {:error, term()}
   def fingerprint(%{root: root}) when is_binary(root) do
     case valid_runtime_root?(root) do
@@ -68,13 +80,10 @@ defmodule Favn.Dev.RuntimeSource do
   defp dependency_root do
     case Mix.Project.deps_paths()[:favn] do
       nil -> {:error, :not_found}
-      root ->
-        expanded = Path.expand(root)
 
-        if valid_runtime_root?(expanded) do
-          {:ok, %{kind: :dependency_checkout, root: expanded}}
-        else
-          {:error, :not_found}
+      root ->
+        with {:ok, runtime_root} <- resolve_runtime_root(root) do
+          {:ok, %{kind: :dependency_checkout, root: runtime_root}}
         end
     end
   rescue
@@ -84,20 +93,33 @@ defmodule Favn.Dev.RuntimeSource do
   defp source_tree_root do
     root = Path.expand("../../../../../", __DIR__)
 
-    if valid_runtime_root?(root) do
-      {:ok, %{kind: :dependency_checkout, root: root}}
-    else
-      {:error, :not_found}
+    with {:ok, runtime_root} <- resolve_runtime_root(root) do
+      {:ok, %{kind: :dependency_checkout, root: runtime_root}}
     end
   end
 
   defp cwd_root do
     root = Path.expand(File.cwd!())
 
-    if valid_runtime_root?(root) do
-      {:ok, %{kind: :cwd, root: root}}
+    with {:ok, runtime_root} <- resolve_runtime_root(root) do
+      {:ok, %{kind: :cwd, root: runtime_root}}
+    end
+  end
+
+  defp candidate_roots(path) when is_binary(path) do
+    path
+    |> do_candidate_roots([])
+    |> Enum.reverse()
+  end
+
+  defp do_candidate_roots(path, acc) do
+    parent = Path.dirname(path)
+    next_acc = [path | acc]
+
+    if parent == path do
+      next_acc
     else
-      {:error, :not_found}
+      do_candidate_roots(parent, next_acc)
     end
   end
 
