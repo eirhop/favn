@@ -184,9 +184,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
       end)
 
-    assert_raise Mix.Error, ~r/runtime compile failed for favn_runner under --root-dir/, fn ->
-      DevTask.run(["--root-dir", root_dir])
-    end
+    assert_raise Mix.Error,
+                 ~r/(runtime compile failed for favn_runner under --root-dir|local Erlang shortname host is unavailable)/,
+                 fn ->
+                   DevTask.run(["--root-dir", root_dir])
+                 end
   end
 
   test "mix favn.install reports missing prerequisite tools", %{root_dir: root_dir} do

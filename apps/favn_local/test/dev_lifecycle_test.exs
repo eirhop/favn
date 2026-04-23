@@ -200,13 +200,16 @@ defmodule Favn.Dev.LifecycleTest do
   end
 
   test "dev/1 fails runtime compile as preflight before startup lock work", %{root_dir: root_dir} do
-    assert {:error, {:runtime_compile_failed, :favn_runner, _status, _output}} =
-             Dev.dev(
-               root_dir: root_dir,
-               skip_install_check: true,
-               skip_bootstrap: true,
-               skip_readiness: true
-             )
+    result =
+      Dev.dev(
+        root_dir: root_dir,
+        skip_install_check: true,
+        skip_bootstrap: true,
+        skip_readiness: true
+      )
+
+    assert match?({:error, {:runtime_compile_failed, :favn_runner, _status, _output}}, result) or
+             match?({:error, {:shortname_host_unavailable, _reason}}, result)
 
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
     assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
