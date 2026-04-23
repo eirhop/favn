@@ -178,6 +178,19 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "Favn install is already up to date"
   end
 
+  test "mix favn.dev reports runtime compile failures under root_dir", %{root_dir: root_dir} do
+    _ =
+      capture_io(fn ->
+        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+      end)
+
+    assert_raise Mix.Error,
+                 ~r/(runtime compile failed for favn_runner under --root-dir|local Erlang shortname host is unavailable)/,
+                 fn ->
+                   DevTask.run(["--root-dir", root_dir])
+                 end
+  end
+
   test "mix favn.install reports missing prerequisite tools", %{root_dir: root_dir} do
     previous_path = System.get_env("PATH")
 

@@ -29,6 +29,7 @@ apps/
 │   ├── dev_orchestrator_client_test.exs
 │   ├── dev_process_test.exs
 │   ├── dev_reload_test.exs
+│   ├── dev_runner_control_test.exs
 │   ├── dev_reset_test.exs
 │   ├── dev_state_test.exs
 │   ├── dev_status_test.exs
@@ -36,6 +37,7 @@ apps/
 │   ├── mix_tasks/
 │   │   └── favn_dev_task_test.exs
 │   ├── integration/
+│   │   ├── dev_split_root_regression_test.exs
 │   │   ├── dev_storage_verification_test.exs
 │   │   └── dev_stack_smoke_test.exs
 │   └── test_helper.exs
@@ -99,6 +101,8 @@ Notes:
 - Each owner app keeps the tests for the behavior it owns without dual-compiling namespace owners.
 - Legacy and same-BEAM view tests are deleted; supported coverage now lives in the owner-app suites.
 - The current umbrella `mix test` alias includes `apps/favn_authoring/test` (currently minimal), `apps/favn/test`, and `apps/favn_local/test` plus the runtime/storage owner apps.
+- `apps/favn_local/test/dev_runner_control_test.exs` locks the live runner manifest-registration fallback behavior used by split-root local dev startup.
+- `apps/favn_local/test/integration/dev_split_root_regression_test.exs` adds opt-in split-root startup coverage that exercises `mix favn.dev --root-dir ...` end-to-end against a workload project.
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures.
 - Shared fixture source lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.
 - batch 1 parity migration moved broad authoring/compiler/planning/window ownership into `apps/favn/test` and `apps/favn_core/test`.

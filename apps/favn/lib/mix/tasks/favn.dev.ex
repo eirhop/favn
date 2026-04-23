@@ -61,6 +61,20 @@ defmodule Mix.Tasks.Favn.Dev do
     do:
       "postgres unavailable at #{host}:#{port} (#{inspect(reason)}); start postgres or fix config and retry"
 
+  defp error_message({:runtime_compile_failed, app, status, output}),
+    do:
+      "runtime compile failed for #{app} under --root-dir (status=#{inspect(status)}): #{output}; ensure runtime root is current and compilable"
+
+  defp error_message({:runner_manifest_register_unavailable, runner_node, attempted}) do
+    details =
+      attempted
+      |> Enum.map_join(", ", fn %{module: module, function: function, arity: arity} ->
+        "#{inspect(module)}.#{function}/#{arity}"
+      end)
+
+    "runner bootstrap contract mismatch on #{inspect(runner_node)}; none of [#{details}] are exported on the live runner node"
+  end
+
   defp error_message({:web_build_failed, status, output}),
     do: "web build failed (status=#{status}): #{output}"
 
