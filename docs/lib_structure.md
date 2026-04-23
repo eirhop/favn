@@ -16,7 +16,8 @@ Top-level product docs:
 apps/
 ├── favn/lib/
 │   ├── favn/
-│   │   └── ai.ex
+│   │   ├── ai.ex
+│   │   └── sql_client.ex
 │   ├── favn.ex
 │   └── mix/tasks/
 │       ├── favn.build.orchestrator.ex
@@ -84,6 +85,11 @@ apps/
 ├── favn_runner/lib/
 │   ├── favn_runner.ex
 │   └── favn_runner/application.ex
+├── favn_sql_runtime/lib/
+│   ├── favn_sql_runtime.ex
+│   └── favn/
+│       ├── connection/
+│       └── sql/
 ├── favn_orchestrator/lib/
 │   ├── favn_orchestrator.ex
 │   └── favn_orchestrator/
@@ -217,8 +223,9 @@ Notes:
   - `apps/favn_runner/lib/favn_runner/context_builder.ex`
   - `apps/favn_runner/lib/favn_runner/worker.ex`
   - `apps/favn_runner/lib/favn_runner/event_sink.ex`
-- Connection runtime ownership moved to runner-owned files under `apps/favn_runner/lib/favn/connection/`.
-- SQL runtime execution ownership moved to runner-owned files under `apps/favn_runner/lib/favn/sql/` and `apps/favn_runner/lib/favn/sql_asset/` including `Favn.SQL.RuntimeBridge`.
+- Shared connection runtime ownership now lives in `apps/favn_sql_runtime/lib/favn/connection/`.
+- Shared SQL runtime/session contracts now live in `apps/favn_sql_runtime/lib/favn/sql/` including `Favn.SQL.Client` and `Favn.SQL.RuntimeBridge`.
+- Runner-owned SQL asset execution modules remain under `apps/favn_runner/lib/favn/sql/` and `apps/favn_runner/lib/favn/sql_asset/`.
 - Phase 7 implementation now moves DuckDB ownership into `apps/favn_duckdb/lib/` including:
   - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb.ex`
   - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/client.ex`

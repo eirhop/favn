@@ -22,6 +22,8 @@ defmodule Favn.AI do
   - To work with windows or backfills, read `Favn.Window`, then
     `Favn plan_asset_run` if you need planning details.
   - To define connection contracts, read `Favn.Connection`.
+  - To run SQL queries from plain Elixir code using named Favn connections, read
+    `Favn.SQLClient`.
   - To compile a manifest, read `Favn generate_manifest`, then
     `Favn.Manifest.Generator` if you need internal compilation details.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then

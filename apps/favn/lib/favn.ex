@@ -37,6 +37,7 @@ defmodule Favn do
   ## See also
 
   - `Favn.AI`
+  - `Favn.SQLClient`
   - task-specific DSL modules such as `Favn.Asset`, `Favn.SQLAsset`,
     `Favn.Pipeline`, and `Favn.Dev`
   """

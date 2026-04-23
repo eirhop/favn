@@ -52,6 +52,7 @@ development on top of the new boundaries.
 - pipeline definitions for scheduled or operator-triggered runs
 - local runtime workflow support for authoring, inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
+- public SQL client access for named Favn connections via `Favn.SQLClient`
 
 ## Core Concepts
 
@@ -185,6 +186,17 @@ config :favn,
 {:ok, pipeline} = Favn.get_pipeline(MyApp.Pipelines.DailySales)
 {:ok, manifest} = Favn.generate_manifest()
 ```
+
+### 7. Query a configured SQL connection from Elixir
+
+```elixir
+{:ok, session} = Favn.SQLClient.connect(:warehouse)
+{:ok, result} = Favn.SQLClient.query(session, "select 1")
+:ok = Favn.SQLClient.disconnect(session)
+```
+
+For this flow, configure `:connection_modules` and runtime `:connections` under
+`config :favn` using the `Favn.Connection` contract.
 
 ## Local Development
 

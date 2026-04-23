@@ -16,6 +16,7 @@ apps/
 │   ├── public_authoring_parity_test.exs
 │   ├── public_pipeline_parity_test.exs
 │   ├── runtime_facade_test.exs
+│   ├── sql_client_test.exs
 │   └── test_helper.exs
 ├── favn_local/test/
 │   ├── dev_build_orchestrator_test.exs
@@ -61,6 +62,8 @@ apps/
 │   └── test_helper.exs
 ├── favn_runner/test/
 │   ├── favn_runner_test.exs
+│   └── test_helper.exs
+├── favn_sql_runtime/test/
 │   └── test_helper.exs
 ├── favn_orchestrator/test/
 │   ├── events_test.exs
@@ -195,3 +198,5 @@ Notes:
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`
   - `web/favn_web/tests/e2e/mock-orchestrator-server.mjs` (deterministic local orchestrator mock used during Playwright runs)
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` now also covers thin operator smoke over `/api/web/v1/**` (runs/manifests/schedules commands + run stream relay validation)
+- SQL runtime extraction work now adds public API coverage in:
+  - `apps/favn/test/sql_client_test.exs`
