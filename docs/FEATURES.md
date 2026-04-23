@@ -4,7 +4,7 @@ This file describes the feature set that is implemented in the repository today.
 
 - Only shipped behavior belongs here.
 - Future work belongs in `docs/ROADMAP.md`.
-- Audit scope for this update: `apps/favn`, `apps/favn_authoring`, `apps/favn_core`, `apps/favn_runner`, `apps/favn_duckdb`, `apps/favn_orchestrator`, `apps/favn_storage_sqlite`, `apps/favn_storage_postgres`, `apps/favn_local`, and `web/favn_web`.
+- Audit scope for this update: `apps/favn`, `apps/favn_authoring`, `apps/favn_core`, `apps/favn_runner`, `apps/favn_sql_runtime`, `apps/favn_duckdb`, `apps/favn_orchestrator`, `apps/favn_storage_sqlite`, `apps/favn_storage_postgres`, `apps/favn_local`, and `web/favn_web`.
 
 State labels used below:
 
@@ -45,6 +45,7 @@ Implemented closeout outcomes:
 - Older multi-function asset modules are still supported through `@asset`, although new code is clearly steered toward `Favn.Asset` or `Favn.MultiAsset`. State: `compatibility-only`. Refs: `Favn.Assets`, `apps/favn_authoring/lib/favn/assets.ex`.
 - Generated multi-assets are supported when many assets share one runtime implementation but differ by config, metadata, dependencies, or relation ownership. State: `solid but still private-dev`. Refs: `Favn.MultiAsset`, `apps/favn_authoring/lib/favn/multi_asset.ex`.
 - SQL assets are supported with inline SQL or file-backed SQL, compile-time SQL analysis, tracked relation usage, relation-style SQL references, inferred dependencies from owned relation references, and table, view, and limited incremental materializations. State: `solid but still private-dev`. Refs: `Favn.SQLAsset`, `Favn.SQL`, `apps/favn_authoring/lib/favn/sql_asset.ex`, `apps/favn_authoring/lib/favn/sql.ex`.
+- Public SQL runtime access is supported through `Favn.SQLClient` for connect/query/execute/transaction/relation/columns usage from plain Elixir code against named `Favn.Connection` entries. State: `solid but still private-dev`. Refs: `Favn.SQLClient`, `Favn.SQL.Client`, `apps/favn/lib/favn/sql_client.ex`, `apps/favn_sql_runtime/lib/favn/sql/client.ex`.
 - External source relations can be declared in the catalog without becoming runnable assets. State: `solid but still private-dev`. Refs: `Favn.Source`, `apps/favn_authoring/lib/favn/source.ex`.
 - Shared relation defaults can be inherited from module structure for connection, catalog, and schema settings. State: `solid but still private-dev`. Refs: `Favn.Namespace`, `apps/favn_authoring/lib/favn/namespace.ex`.
 - Named connection definitions are supported as part of the public authoring contract. State: `solid but still private-dev`. Refs: `Favn.Connection`, `apps/favn_authoring/lib/favn/connection.ex`.
@@ -65,7 +66,7 @@ Implemented closeout outcomes:
 - A separate runner boundary is implemented. The runner can register pinned manifest versions, accept asynchronous work, wait for results, cancel work, and run synchronously through the same boundary. State: `solid but still private-dev`. Refs: `FavnRunner`, `FavnRunner.Server`, `apps/favn_runner/lib/favn_runner.ex`, `apps/favn_runner/lib/favn_runner/server.ex`.
 - Elixir assets execute through the runner using manifest-pinned runtime context instead of ad hoc orchestrator-side module discovery. State: `solid but still private-dev`. Refs: `apps/favn_runner/test/favn_runner_test.exs`, `apps/favn_orchestrator/test/orchestrator_runner_integration_test.exs`.
 - Source assets are treated as observe/no-op nodes in execution. State: `solid but still private-dev`. Refs: `apps/favn_runner/test/favn_runner_test.exs`, `Favn.Assets.Planner`.
-- SQL assets execute from manifest-carried SQL payloads, and the runner does not fall back to compiled modules when manifest data is missing. State: `needs hardening`. Refs: `apps/favn_runner/test/execution/sql_asset_test.exs`, `apps/favn_core/lib/favn/manifest/sql_execution.ex`.
+- SQL assets execute from manifest-carried SQL payloads through the shared SQL runtime client, and the runner does not fall back to compiled modules when manifest data is missing. State: `needs hardening`. Refs: `apps/favn_runner/test/execution/sql_asset_test.exs`, `apps/favn_core/lib/favn/manifest/sql_execution.ex`, `apps/favn_sql_runtime/lib/favn/sql/client.ex`.
 - Runner-side cancellation, timeout handling, and crash reporting are implemented. State: `solid but still private-dev`. Refs: `apps/favn_runner/test/server_test.exs`, `apps/favn_runner/lib/favn_runner/server.ex`.
 - DuckDB is implemented as a runner plugin with both in-process and separate-process execution modes. State: `prototype`. Refs: `FavnDuckdb`, `FavnDuckdb.Runtime`, `apps/favn_duckdb/lib/favn_duckdb.ex`, `apps/favn_duckdb/test/favn_duckdb_test.exs`.
 

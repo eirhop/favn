@@ -2,11 +2,9 @@ defmodule Favn.SQL.MaterializationPlanner do
   @moduledoc false
 
   alias Favn.RelationRef
-  alias Favn.SQL.{IncrementalWindow, Params, Render, RuntimeBridge, Session, WritePlan}
+  alias Favn.SQL.{Client, IncrementalWindow, Params, Render, Session, WritePlan}
   alias Favn.SQLAsset.{Definition, Error}
   alias Favn.Window.Runtime
-
-  @sql_runtime RuntimeBridge
 
   @spec build(Session.t(), Definition.t(), Render.t()) ::
           {:ok, WritePlan.t()} | {:error, Error.t()}
@@ -136,7 +134,7 @@ defmodule Favn.SQL.MaterializationPlanner do
         name: render.relation.name
       })
 
-    case @sql_runtime.get_relation(session, ref) do
+    case Client.relation(session, ref) do
       {:ok, nil} -> {:ok, false}
       {:ok, _relation} -> {:ok, true}
       {:error, reason} -> planning_error(render, "failed to inspect incremental target", reason)
@@ -185,7 +183,7 @@ defmodule Favn.SQL.MaterializationPlanner do
         name: render.relation.name
       })
 
-    with {:ok, columns} <- @sql_runtime.columns(session, ref),
+    with {:ok, columns} <- Client.columns(session, ref),
          :ok <- ensure_column_present(Enum.map(columns, & &1.name), column, render, :target) do
       {:ok, :ok}
     else
@@ -214,7 +212,7 @@ defmodule Favn.SQL.MaterializationPlanner do
   defp rendered_columns(%Session{} = session, %Render{} = render) do
     statement = "SELECT * FROM (#{trim_sql(render.sql)}) AS favn_incremental_probe LIMIT 0"
 
-    case @sql_runtime.query(session, statement, params: adapter_params(render.params)) do
+    case Client.query(session, statement, params: adapter_params(render.params)) do
       {:ok, %Favn.SQL.Result{columns: columns}} ->
         {:ok, columns}
 

@@ -1,11 +1,11 @@
-defmodule FavnRunner.MixProject do
+defmodule FavnSQLRuntime.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :favn_runner,
+      app: :favn_sql_runtime,
       version: "0.5.0-dev",
-      description: "Internal runner runtime scaffold for v0.5 migration",
+      description: "Shared SQL runtime contracts and client",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -18,15 +18,13 @@ defmodule FavnRunner.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
-      mod: {FavnRunner.Application, []}
+      extra_applications: [:logger]
     ]
   end
 
   defp deps do
     [
       {:favn_core, in_umbrella: true},
-      {:favn_sql_runtime, in_umbrella: true},
       {:favn_test_support, in_umbrella: true, only: :test}
     ]
   end

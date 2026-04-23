@@ -7,7 +7,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.Manifest.Version
   alias Favn.RelationRef
   alias Favn.Run.Context
-  alias Favn.SQL.RuntimeBridge, as: SQLRuntime
+  alias Favn.SQL.Client, as: SQLClient
 
   alias Favn.SQL.{
     Explain,
@@ -21,6 +21,8 @@ defmodule Favn.SQLAsset.Runtime do
 
   alias Favn.SQLAsset.{Compiler, Definition, Error, Renderer}
   alias Favn.Window.Runtime
+
+  @runner_registry FavnRunner.ConnectionRegistry
 
   @type opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
 
@@ -176,7 +178,7 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp query_render(%Render{} = rendered, statement, phase, opts) do
     with_session(rendered.connection, opts, fn session ->
-      SQLRuntime.query(session, statement, params: adapter_params(rendered.params))
+      SQLClient.query(session, statement, params: adapter_params(rendered.params))
     end)
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
@@ -185,7 +187,7 @@ defmodule Favn.SQLAsset.Runtime do
     with_session(rendered.connection, opts, fn session ->
       with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
            {:ok, result} <-
-             SQLRuntime.materialize(session, write_plan, params: adapter_params(rendered.params)) do
+             SQLClient.materialize(session, write_plan, params: adapter_params(rendered.params)) do
         {:ok, write_plan, result}
       end
     end)
@@ -246,11 +248,15 @@ defmodule Favn.SQLAsset.Runtime do
         _ -> []
       end
 
-    with {:ok, session} <- SQLRuntime.connect(connection, timeout_opts) do
+    with {:ok, session} <-
+           SQLClient.connect(
+             connection,
+             Keyword.put(timeout_opts, :registry_name, @runner_registry)
+           ) do
       try do
         fun.(session)
       after
-        _ = SQLRuntime.disconnect(session)
+        _ = SQLClient.disconnect(session)
       end
     end
   rescue
