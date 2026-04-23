@@ -24,8 +24,8 @@ defmodule FavnAuthoring.MixProject do
 
   defp deps do
     [
-      internal_dep(:favn_core, "apps/favn_core"),
-      internal_dep(:favn_test_support, "apps/favn_test_support", only: :test)
+      internal_dep(:favn_core, "../favn_core"),
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test)
     ]
   end
 
@@ -34,17 +34,9 @@ defmodule FavnAuthoring.MixProject do
       if Mix.Project.umbrella?() do
         [in_umbrella: true]
       else
-        favn_git_dep(sparse_path)
+        [path: sparse_path]
       end
 
     {app, Keyword.merge(source, opts)}
-  end
-
-  defp favn_git_dep(sparse_path) do
-    [
-      git: System.get_env("FAVN_GIT_SOURCE") || "https://github.com/eirhop/favn.git",
-      branch: System.get_env("FAVN_GIT_REF") || "main",
-      sparse: sparse_path
-    ]
   end
 end
