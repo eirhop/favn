@@ -11,7 +11,7 @@ defmodule Favn.SQL.Client do
   alias Favn.SQL.Session
   alias Favn.SQL.WritePlan
 
-  @default_registry FavnRunner.ConnectionRegistry
+  @resolution_opt_keys [:registry_name]
 
   @type operation_result :: {:ok, term()} | {:error, term()}
 
@@ -19,9 +19,11 @@ defmodule Favn.SQL.Client do
   def connect(connection, opts \\ [])
 
   def connect(connection, opts) when is_atom(connection) and is_list(opts) do
-    with {:ok, %Resolved{} = resolved} <- fetch_connection(connection, opts),
-         {:ok, conn} <- resolved.adapter.connect(resolved, opts),
-         {:ok, capabilities} <- resolved.adapter.capabilities(resolved, opts) do
+    {resolution_opts, adapter_opts} = split_connect_opts(opts)
+
+    with {:ok, %Resolved{} = resolved} <- fetch_connection(connection, resolution_opts),
+         {:ok, conn} <- resolved.adapter.connect(resolved, adapter_opts),
+         {:ok, capabilities} <- resolved.adapter.capabilities(resolved, adapter_opts) do
       {:ok,
        %Session{
          adapter: resolved.adapter,
@@ -129,14 +131,18 @@ defmodule Favn.SQL.Client do
     if function_exported?(adapter, :transaction, 3) do
       adapter.transaction(conn, fn tx_conn -> fun.(%Session{session | conn: tx_conn}) end, opts)
     else
-      fun.(session)
+      {:error, unsupported_transaction_error(session)}
     end
   end
 
-  defp fetch_connection(connection, opts) do
-    registry_name = Keyword.get(opts, :registry_name, @default_registry)
+  defp split_connect_opts(opts) do
+    Keyword.split(opts, @resolution_opt_keys)
+  end
 
-    if is_atom(registry_name) and Process.whereis(registry_name) != nil do
+  defp fetch_connection(connection, opts) do
+    registry_name = Keyword.get(opts, :registry_name)
+
+    if is_atom(registry_name) and not is_nil(registry_name) do
       fetch_from_registry(connection, registry_name)
     else
       fetch_from_config(connection)
@@ -172,6 +178,15 @@ defmodule Favn.SQL.Client do
 
   defp invalid_session_error do
     %Error{type: :invalid_config, message: "invalid SQL session", operation: :session}
+  end
+
+  defp unsupported_transaction_error(%Session{resolved: %Resolved{name: connection}}) do
+    %Error{
+      type: :unsupported_capability,
+      message: "adapter does not support transactions",
+      connection: connection,
+      operation: :transaction
+    }
   end
 
   defp normalize_runtime_error(operation, reason) do

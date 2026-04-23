@@ -6,8 +6,16 @@ defmodule Favn.SQL.RuntimeBridge do
   alias Favn.SQL.Session
   alias Favn.SQL.WritePlan
 
+  @runner_registry FavnRunner.ConnectionRegistry
+
   @spec connect(atom(), keyword()) :: {:ok, Session.t()} | {:error, term()}
-  defdelegate connect(connection, opts \\ []), to: Client
+  def connect(connection, opts \\ [])
+
+  def connect(connection, opts) when is_atom(connection) and is_list(opts) do
+    Client.connect(connection, Keyword.put_new(opts, :registry_name, @runner_registry))
+  end
+
+  def connect(connection, opts), do: Client.connect(connection, opts)
 
   @spec disconnect(Session.t()) :: :ok
   defdelegate disconnect(session), to: Client

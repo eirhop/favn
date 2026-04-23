@@ -58,6 +58,9 @@ defmodule Favn.SQLClient do
   `opts` are forwarded to the underlying SQL adapter. Common adapter options
   include timeout-related values.
 
+  Public callers should only pass adapter-facing options here. Internal runtime
+  routing controls such as `:registry_name` are not accepted by this facade.
+
   ## Example
 
       {:ok, session} = Favn.SQLClient.connect(:warehouse)
@@ -66,11 +69,27 @@ defmodule Favn.SQLClient do
   def connect(connection, opts \\ [])
 
   def connect(connection, opts) when is_atom(connection) and is_list(opts) do
-    Client.connect(connection, Keyword.put_new(opts, :registry_name, nil))
+    case Keyword.has_key?(opts, :registry_name) do
+      true ->
+        {:error,
+         ArgumentError.exception(
+           "Favn.SQLClient.connect/2 does not accept internal option :registry_name"
+         )}
+
+      false ->
+        Client.connect(connection, opts)
+    end
   end
 
-  def connect(connection, _opts),
-    do: {:error, ArgumentError.exception("invalid SQL connection name: #{inspect(connection)}")}
+  def connect(connection, _opts) when not is_atom(connection) do
+    {:error,
+     ArgumentError.exception("SQL connection name must be an atom, got: #{inspect(connection)}")}
+  end
+
+  def connect(_connection, opts) do
+    {:error,
+     ArgumentError.exception("SQL client options must be a keyword list, got: #{inspect(opts)}")}
+  end
 
   @doc """
   Closes a SQL session.
@@ -126,8 +145,9 @@ defmodule Favn.SQLClient do
   Use this when multiple statements should succeed or fail as one unit.
 
   The callback receives a session bound to the transaction connection handle.
-  If the adapter does not expose transaction support, the callback still runs,
-  but without transaction guarantees.
+  If the adapter does not expose transaction support, this returns
+  `{:error, %Favn.SQL.Error{type: :unsupported_capability}}` instead of silently
+  running without transaction guarantees.
 
   ## Example
 
@@ -217,8 +237,20 @@ defmodule Favn.SQLClient do
     end
   end
 
-  def with_connection(connection, _opts, _fun),
-    do:
-      {:error,
-       ArgumentError.exception("invalid SQL connection callback for #{inspect(connection)}")}
+  def with_connection(connection, _opts, _fun) when not is_atom(connection) do
+    {:error,
+     ArgumentError.exception("SQL connection name must be an atom, got: #{inspect(connection)}")}
+  end
+
+  def with_connection(_connection, opts, _fun) when not is_list(opts) do
+    {:error,
+     ArgumentError.exception("SQL client options must be a keyword list, got: #{inspect(opts)}")}
+  end
+
+  def with_connection(connection, _opts, fun) do
+    {:error,
+     ArgumentError.exception(
+       "with_connection/3 expects a 1-arity callback, got: #{inspect(fun)} for #{inspect(connection)}"
+     )}
+  end
 end

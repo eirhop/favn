@@ -22,6 +22,8 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.SQLAsset.{Compiler, Definition, Error, Renderer}
   alias Favn.Window.Runtime
 
+  @runner_registry FavnRunner.ConnectionRegistry
+
   @type opts :: [params: map(), runtime: map(), timeout_ms: pos_integer()]
 
   @spec run_manifest(Asset.t(), Version.t(), RunnerWork.t()) :: {:ok, map()} | {:error, Error.t()}
@@ -246,7 +248,11 @@ defmodule Favn.SQLAsset.Runtime do
         _ -> []
       end
 
-    with {:ok, session} <- SQLClient.connect(connection, timeout_opts) do
+    with {:ok, session} <-
+           SQLClient.connect(
+             connection,
+             Keyword.put(timeout_opts, :registry_name, @runner_registry)
+           ) do
       try do
         fun.(session)
       after
