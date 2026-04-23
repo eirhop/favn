@@ -36,7 +36,7 @@ defmodule Favn.SQLAsset do
         end
       end
 
-  ## Authoring contract
+  ## Contract
 
   - define exactly one `query/1` declaration
   - declare exactly one `@materialized`
@@ -44,7 +44,7 @@ defmodule Favn.SQLAsset do
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for file-backed SQL loaded at compile time
 
-  ## Supported attributes
+  ## Attributes
 
   - `@doc`: asset documentation
   - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
@@ -65,14 +65,14 @@ defmodule Favn.SQLAsset do
   - `{:incremental, strategy: :append}`
   - `{:incremental, strategy: :delete_insert, window_column: :column_name}`
 
-  Incremental notes:
+  Incremental rules:
 
   - incremental materialization requires `@window`
   - `:append` does not accept `:window_column`
   - `:delete_insert` requires `:window_column`
   - `:merge`, `:replace`, and `unique_key` are not supported in v0.4
 
-  ## Dependency inference
+  ## Dependency Inference
 
   Relation-style references such as `silver.sales.stg_orders` are the preferred
   way to reference upstream SQL inputs.
@@ -82,20 +82,20 @@ defmodule Favn.SQLAsset do
   dependency is not visible in the SQL body, when you need a non-SQL upstream,
   or when the relation cannot be resolved from owned asset metadata.
 
-  ## What gets compiled
+  ## Compiles To
 
   The DSL keeps both authored SQL and normalized SQL IR so Favn can validate
   reusable SQL definitions, placeholders, and typed relation usage at compile
   time. The final public output is still one canonical `%Favn.Asset{}` plus
   SQL-specific definition metadata used by rendering and execution.
 
-  ## Runtime context notes
+  ## Runtime Context
 
   The generated `asset/1` calls into the SQL runtime automatically. Runtime
   inputs such as window bounds and explicit `params` are resolved during render
   and execution, not inside user-authored Elixir code.
 
-  ## Common mistakes
+  ## Common Mistakes
 
   - defining more than one query
   - forgetting `@materialized`

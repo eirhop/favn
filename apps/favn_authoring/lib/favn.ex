@@ -1,8 +1,21 @@
 defmodule FavnAuthoring do
   @moduledoc """
-  Public authoring facade focused on compilation and manifest generation.
+  Authoring implementation facade for compilation and manifest generation.
 
   This facade intentionally avoids runtime and orchestrator concerns.
+
+  ## Read This Module When
+
+  - you need authoring ownership rather than the public facade
+  - you need to trace manifest generation, pipeline resolution, or planning
+  - you are debugging delegation from `Favn`
+
+  ## Related Modules
+
+  - `Favn`: public facade
+  - `Favn.Dev`: local tooling owner
+  - `Favn.Manifest.Generator`, `Favn.Pipeline.Resolver`, `Favn.Assets.Planner`:
+    deeper internals
   """
 
   alias Favn.Asset

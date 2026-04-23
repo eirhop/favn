@@ -4,6 +4,31 @@ defmodule Favn.Dev do
 
   This module is intentionally small and delegates to focused implementation
   modules under `Favn.Dev.*`.
+
+  ## Read This Module When
+
+  Read `Favn.Dev` when the task is about:
+
+  - starting or stopping the local stack
+  - checking local runtime state
+  - reloading manifests into a running local environment
+  - reading local service logs
+  - project-local packaging outputs
+
+  Read `Favn` and the DSL modules instead when the task is about asset or
+  pipeline authoring.
+
+  ## Entry Points
+
+  - `install/1`: prepare local tooling inputs and snapshots
+  - `dev/1`: start local runner, orchestrator, and web processes
+  - `status/1`: inspect current stack state
+  - `reload/1`: rebuild and republish the manifest
+  - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
+    project-local packaging flows
+
+  See `apps/favn_local/README.md` for the full local-tooling contract and `.favn/`
+  layout details.
   """
 
   alias Favn.Dev.Build.Orchestrator, as: OrchestratorBuild

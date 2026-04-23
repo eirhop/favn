@@ -1,9 +1,57 @@
 defmodule Favn.SQL do
   @moduledoc """
-  Reusable SQL authoring DSL for Phase 2.
+  Reusable SQL authoring DSL.
 
-  This module provides compile-time SQL definition support (`defsql`) and the
-  `~SQL` sigil. Runtime SQL session APIs stay in legacy/runtime-focused apps.
+  This module provides compile-time reusable SQL definitions (`defsql`) and the
+  `~SQL` sigil used by `Favn.SQLAsset`.
+
+  ## When to use it
+
+  Use `Favn.SQL` when several SQL assets share SQL fragments, CTE builders, or
+  parameterized reusable SQL definitions.
+
+  Use `Favn.SQLAsset` when authoring a concrete runnable SQL asset.
+
+  ## Features
+
+  - `~SQL` for interpolation-free SQL literals
+  - `defsql` for reusable SQL definitions with named arguments
+  - compile-time validation of imported SQL definitions
+  - compile-time template analysis before runtime execution exists
+
+  ## Example
+
+      defmodule MyApp.SQL.Reporting do
+        use Favn.SQL
+
+        defsql orders_in_window(start_at, end_at) do
+          ~SQL"select * from raw.sales.orders where inserted_at >= @start_at and inserted_at < @end_at"
+        end
+      end
+
+      defmodule MyApp.Gold.Sales.OrderSummary do
+        use MyApp.SQL.Reporting
+        use Favn.SQLAsset
+
+        @materialized :view
+
+        query do
+          ~SQL"select * from orders_in_window(@window_start, @window_end)"
+        end
+      end
+
+  ## Rules
+
+  - keep `defsql` definitions small and composable
+  - prefer `~SQL` literals over string interpolation
+  - keep runnable asset concerns such as `@materialized` and `@window` in
+    `Favn.SQLAsset`, not in the reusable SQL provider module
+
+  ## See also
+
+  - `Favn.SQLAsset`
+  - `Favn.Connection`
+  - `Favn.Window`
   """
 
   alias Favn.DSL.Compiler, as: DSLCompiler
@@ -28,6 +76,9 @@ defmodule Favn.SQL do
 
   @doc """
   Canonical SQL sigil for Favn SQL authoring.
+
+  Use this for literal SQL only. Interpolation is intentionally rejected so the
+  compiler can analyze the full SQL body deterministically.
   """
   defmacro sigil_SQL({:<<>>, _meta, parts}, modifiers) when is_list(modifiers) do
     if modifiers != [] do
@@ -68,6 +119,14 @@ defmodule Favn.SQL do
   @doc """
   Defines reusable SQL that can be referenced from SQL assets or other reusable
   SQL definitions.
+
+  Use this when you want one shared SQL definition to be imported by many SQL
+  assets.
+
+  Supported forms:
+
+  - `defsql name(args...) do ... end`
+  - `defsql name(args...), file: "path/to/file.sql"`
   """
   defmacro defsql({name, _meta, args_ast}, do: body)
            when is_atom(name) and (is_list(args_ast) or is_nil(args_ast)) do

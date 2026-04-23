@@ -1,6 +1,22 @@
 defmodule Favn.Manifest.Generator do
   @moduledoc """
   Generates canonical `%Favn.Manifest{}` values from authored module inputs.
+
+  This module owns the compilation path from authored assets, pipelines, and
+  schedules into the explicit manifest consumed by planning and runtime layers.
+
+  ## Read This Module When
+
+  Read `Favn.Manifest.Generator` when you need the exact internal path from:
+
+  - asset modules to compiled `%Favn.Asset{}` values
+  - pipeline modules to `%Favn.Pipeline.Definition{}` values
+  - schedule modules to manifest schedule entries
+  - catalog inputs to the final `%Favn.Manifest{}`
+
+  Prefer `Favn.generate_manifest/1` or `Favn.build_manifest/1` for normal usage.
+  This module is the next stop when the public facade docs are not detailed
+  enough.
   """
 
   alias Favn.Assets.DependencyInference
@@ -19,6 +35,11 @@ defmodule Favn.Manifest.Generator do
           schedule_modules: [module()]
         ]
 
+  @doc """
+  Generates a canonical manifest from authored module inputs.
+
+  This is the internal owner behind `Favn.generate_manifest/1`.
+  """
   @spec generate(opts()) :: {:ok, Manifest.t()} | {:error, term()}
   def generate(opts \\ []) when is_list(opts) do
     with {:ok, catalog} <- build_catalog(opts) do
@@ -26,6 +47,11 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
+  @doc """
+  Builds a manifest plus build-only diagnostics metadata.
+
+  This is the internal owner behind `Favn.build_manifest/1`.
+  """
   @spec build(opts()) :: {:ok, Build.t()} | {:error, term()}
   def build(opts \\ []) when is_list(opts) do
     with {:ok, catalog} <- build_catalog(opts),
@@ -34,6 +60,13 @@ defmodule Favn.Manifest.Generator do
     end
   end
 
+  @doc """
+  Compiles authored modules into an intermediate `%Favn.Manifest.Catalog{}`.
+
+  Read this function when you need the pre-manifest compilation boundary, such
+  as asset diagnostics or the split between catalog assembly and final manifest
+  graph construction.
+  """
   @spec build_catalog(opts()) :: {:ok, Catalog.t()} | {:error, term()}
   def build_catalog(opts) when is_list(opts) do
     with :ok <- validate_opts(opts),
