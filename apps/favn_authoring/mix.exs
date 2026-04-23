@@ -29,12 +29,12 @@ defmodule FavnAuthoring.MixProject do
     ]
   end
 
-  defp internal_dep(app, sparse_path, opts \\ []) do
+  defp internal_dep(app, relative_path, opts \\ []) do
     source =
       if Mix.Project.umbrella?() do
         [in_umbrella: true]
       else
-        [path: sparse_path]
+        [path: relative_path]
       end
 
     {app, Keyword.merge(source, opts)}
