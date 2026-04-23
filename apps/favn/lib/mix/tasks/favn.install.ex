@@ -39,6 +39,9 @@ defmodule Mix.Tasks.Favn.Install do
       {:error, {:web_install_failed, status, output}} ->
         Mix.raise("install failed: web dependency install failed (status=#{status}): #{output}")
 
+      {:error, {:runtime_deps_install_failed, status, output}} ->
+        Mix.raise("install failed: runtime deps install failed (status=#{status}): #{output}")
+
       {:error, reason} ->
         Mix.raise("install failed: #{inspect(reason)}")
     end

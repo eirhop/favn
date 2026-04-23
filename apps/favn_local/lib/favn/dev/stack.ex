@@ -14,6 +14,8 @@ defmodule Favn.Dev.Stack do
   alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RunnerControl
+  alias Favn.Dev.RuntimeLaunch
+  alias Favn.Dev.RuntimeWorkspace
   alias Favn.Dev.Secrets
   alias Favn.Dev.State
 
@@ -23,7 +25,7 @@ defmodule Favn.Dev.Stack do
   @spec start_foreground(root_opt()) :: :ok | {:error, term()}
   def start_foreground(opts \\ []) when is_list(opts) do
     with {:ok, startup} <- prepare_startup(opts),
-         :ok <- compile_runtime_apps(Paths.root_dir(opts), opts),
+         :ok <- compile_runtime_apps(startup.runtime, opts),
          {:ok, startup} <- initialize_stack(startup, opts),
          :ok <- bootstrap_manifest(startup, opts) do
       print_start_summary(startup)
@@ -78,25 +80,27 @@ defmodule Favn.Dev.Stack do
       with :ok <- State.ensure_layout(opts),
            :ok <- ensure_stack_not_running(opts),
            :ok <- ensure_install_ready(opts),
-           config <- Config.resolve(opts),
-           :ok <- ensure_startup_prerequisites(config),
-           {:ok, secrets} <- Secrets.resolve(config, opts),
-           {:ok, node_names} <- build_node_names(secrets, opts) do
-        {:ok, %{config: config, secrets: secrets, node_names: node_names}}
+            config <- Config.resolve(opts),
+            :ok <- ensure_startup_prerequisites(config),
+            {:ok, runtime} <- resolve_runtime(opts),
+            {:ok, secrets} <- Secrets.resolve(config, opts),
+            {:ok, node_names} <- build_node_names(secrets, opts) do
+        {:ok, %{config: config, runtime: runtime, secrets: secrets, node_names: node_names}}
       end
     end)
   end
 
   defp initialize_stack(startup, opts) do
-    %{config: config, secrets: secrets} = startup
+    %{config: config, runtime: runtime, secrets: secrets} = startup
 
     with_lock(opts, fn ->
       with :ok <- State.ensure_layout(opts),
            :ok <- ensure_stack_not_running(opts),
            {:ok, node_names} <- build_node_names(secrets, opts),
-           {:ok, services} <- start_services(config, secrets, node_names, opts),
+           {:ok, services} <- start_services(runtime, config, secrets, node_names, opts),
            :ok <- write_runtime(config, secrets, node_names, services, opts) do
-        {:ok, %{config: config, secrets: secrets, node_names: node_names, services: services}}
+        {:ok,
+         %{config: config, runtime: runtime, secrets: secrets, node_names: node_names, services: services}}
       end
     end)
   end
@@ -128,6 +132,31 @@ defmodule Favn.Dev.Stack do
       :ok
     else
       Install.ensure_ready(opts)
+    end
+  end
+
+  defp resolve_runtime(opts) do
+    case RuntimeWorkspace.read(opts) do
+      {:ok, runtime} ->
+        {:ok, runtime}
+
+      {:error, :not_found} ->
+        if Keyword.get(opts, :skip_install_check, false) do
+          root_dir = Paths.root_dir(opts)
+
+          {:ok,
+           %{
+             "materialized_root" => root_dir,
+             "orchestrator_root" => root_dir,
+             "runner_root" => root_dir,
+             "web_root" => Path.join(root_dir, "web/favn_web")
+           }}
+        else
+          {:error, :install_required}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -227,7 +256,7 @@ defmodule Favn.Dev.Stack do
     end)
   end
 
-  defp compile_runtime_apps(root_dir, opts) do
+  defp compile_runtime_apps(runtime, opts) when is_map(runtime) do
     cond do
       Keyword.get(opts, :skip_runtime_compile, false) ->
         :ok
@@ -236,30 +265,21 @@ defmodule Favn.Dev.Stack do
         :ok
 
       true ->
-        case compile_runtime_app(:favn_runner, Path.join(root_dir, "apps/favn_runner")) do
-          :ok -> compile_runtime_app(:favn_orchestrator, Path.join(root_dir, "apps/favn_orchestrator"))
-          {:error, _reason} = error -> error
+        runtime_root = runtime["materialized_root"]
+        mix = System.find_executable("mix") || "mix"
+
+        case System.cmd(mix, ["compile", "--force"],
+               cd: runtime_root,
+               env: %{
+                 "MIX_ENV" => "dev",
+                 "MIX_DEPS_PATH" => Mix.Project.deps_path() |> Path.expand(File.cwd!())
+               },
+               stderr_to_stdout: true
+             ) do
+          {_output, 0} -> :ok
+          {output, status} -> {:error, {:runtime_compile_failed, :runtime_root, status, String.trim(output)}}
         end
     end
-  end
-
-  defp compile_runtime_app(app, app_dir) when is_atom(app) and is_binary(app_dir) do
-    mix = System.find_executable("mix") || "mix"
-
-    case System.cmd(mix, ["compile", "--force"],
-           cd: app_dir,
-           env: %{"MIX_ENV" => "dev"},
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
-        :ok
-
-      {output, status} ->
-        {:error, {:runtime_compile_failed, app, status, String.trim(output)}}
-    end
-  catch
-    :error, :enoent ->
-      {:error, {:runtime_compile_failed, app, :enoent, app_dir}}
   end
 
   defp build_node_names(secrets, opts) when is_map(secrets) do
@@ -297,21 +317,19 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp start_services(config, secrets, node_names, opts) do
-    root_dir = Paths.root_dir(opts)
-
+  defp start_services(runtime, config, secrets, node_names, opts) do
     specs =
       case Keyword.get(opts, :service_specs_override) do
         list when is_list(list) and list != [] ->
           list
 
         _ ->
-          :ok = ensure_web_assets(root_dir, opts)
+          :ok = ensure_web_assets(runtime, opts)
 
           [
-            runner_spec(root_dir, node_names, secrets),
-            orchestrator_spec(root_dir, config, node_names, secrets),
-            web_spec(root_dir, config, secrets)
+            RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets),
+            RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets),
+            RuntimeLaunch.web_spec(runtime, config, opts, secrets)
           ]
       end
 
@@ -327,11 +345,11 @@ defmodule Favn.Dev.Stack do
     end)
   end
 
-  defp ensure_web_assets(root_dir, opts) do
+  defp ensure_web_assets(runtime, opts) do
     if Keyword.get(opts, :skip_web_build, false) do
       :ok
     else
-      web_cwd = Path.join(root_dir, "web/favn_web")
+      web_cwd = runtime["web_root"]
       built_index = Path.join(web_cwd, "dist/index.html")
 
       if File.exists?(built_index) do
@@ -345,130 +363,6 @@ defmodule Favn.Dev.Stack do
         end
       end
     end
-  end
-
-  defp runner_spec(root_dir, node_names, secrets) do
-    elixir = System.find_executable("elixir") || "elixir"
-    code = "Application.ensure_all_started(:favn_runner); Process.sleep(:infinity)"
-
-    %{
-      name: "runner",
-      exec: elixir,
-      args: [
-        "--sname",
-        node_names.runner_short,
-        "--cookie",
-        secrets["rpc_cookie"],
-        "-S",
-        "mix",
-        "run",
-        "--no-start",
-        "--eval",
-        code
-      ],
-      cwd: Path.join(root_dir, "apps/favn_runner"),
-      log_path: Paths.runner_log_path(root_dir),
-      env: %{"MIX_ENV" => "dev"}
-    }
-  end
-
-  defp orchestrator_spec(root_dir, config, node_names, secrets) do
-    elixir = System.find_executable("elixir") || "elixir"
-    sqlite_path = Path.expand(config.sqlite_path, root_dir)
-
-    code =
-      """
-      storage = System.get_env("FAVN_DEV_STORAGE", "memory")
-
-      cond do
-        storage == "sqlite" ->
-          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
-          Application.put_env(:favn_orchestrator, :storage_adapter_opts, database: System.get_env("FAVN_DEV_SQLITE_PATH"))
-
-        storage == "postgres" ->
-          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.Postgres)
-
-          Application.put_env(
-            :favn_orchestrator,
-            :storage_adapter_opts,
-            hostname: System.get_env("FAVN_DEV_POSTGRES_HOST"),
-            port: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_PORT", "5432")),
-            username: System.get_env("FAVN_DEV_POSTGRES_USERNAME"),
-            password: System.get_env("FAVN_DEV_POSTGRES_PASSWORD"),
-            database: System.get_env("FAVN_DEV_POSTGRES_DATABASE"),
-            ssl: System.get_env("FAVN_DEV_POSTGRES_SSL", "false") == "true",
-            pool_size: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_POOL_SIZE", "10"))
-          )
-      end
-      runner_node = String.to_atom(System.get_env("FAVN_DEV_RUNNER_NODE"))
-      Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
-      Application.put_env(:favn_orchestrator, :runner_client_opts, [runner_node: runner_node])
-      Application.ensure_all_started(:favn_orchestrator)
-      Process.sleep(:infinity)
-      """
-      |> String.trim()
-
-    %{
-      name: "orchestrator",
-      exec: elixir,
-      args: [
-        "--sname",
-        node_names.orchestrator_short,
-        "--cookie",
-        secrets["rpc_cookie"],
-        "-S",
-        "mix",
-        "run",
-        "--no-start",
-        "--eval",
-        code
-      ],
-      cwd: Path.join(root_dir, "apps/favn_orchestrator"),
-      log_path: Paths.orchestrator_log_path(root_dir),
-      env: %{
-        "MIX_ENV" => "dev",
-        "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
-        "FAVN_DEV_SQLITE_PATH" => sqlite_path,
-        "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
-        "FAVN_DEV_POSTGRES_PORT" => Integer.to_string(config.postgres.port),
-        "FAVN_DEV_POSTGRES_USERNAME" => config.postgres.username,
-        "FAVN_DEV_POSTGRES_PASSWORD" => config.postgres.password,
-        "FAVN_DEV_POSTGRES_DATABASE" => config.postgres.database,
-        "FAVN_DEV_POSTGRES_SSL" => if(config.postgres.ssl, do: "true", else: "false"),
-        "FAVN_DEV_POSTGRES_POOL_SIZE" => Integer.to_string(config.postgres.pool_size),
-        "FAVN_DEV_RUNNER_NODE" => node_names.runner_full,
-        "FAVN_ORCHESTRATOR_API_ENABLED" =>
-          if(config.orchestrator_api_enabled, do: "1", else: "0"),
-        "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
-        "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => secrets["service_token"]
-      }
-    }
-  end
-
-  defp web_spec(root_dir, config, secrets) do
-    npm = System.find_executable("npm") || "npm"
-    web_cwd = Path.join(root_dir, "web/favn_web")
-
-    %{
-      name: "web",
-      exec: npm,
-      args: [
-        "run",
-        "preview",
-        "--",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        Integer.to_string(config.web_port)
-      ],
-      cwd: web_cwd,
-      log_path: Paths.web_log_path(root_dir),
-      env: %{
-        "FAVN_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
-        "FAVN_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
-        "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"]
-      }
-    }
   end
 
   defp write_runtime(config, _secrets, node_names, services, opts) do

@@ -44,7 +44,12 @@ defmodule Favn.Dev.StorageVerificationTest do
     root_dir: root_dir
   } do
     assert {:ok, :installed} =
-             Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+             Dev.install(
+               root_dir: root_dir,
+               skip_web_install: true,
+               skip_tool_checks: true,
+               skip_runtime_deps_install: true
+             )
 
     assert :ok = Dev.ensure_install_ready(root_dir: root_dir, skip_tool_checks: true)
 
@@ -101,7 +106,12 @@ defmodule Favn.Dev.StorageVerificationTest do
       :ok
     else
       assert {:ok, :installed} =
-               Dev.install(root_dir: root_dir, skip_web_install: true, skip_tool_checks: true)
+               Dev.install(
+                 root_dir: root_dir,
+                 skip_web_install: true,
+                 skip_tool_checks: true,
+                 skip_runtime_deps_install: true
+               )
 
       postgres = [
         hostname: System.get_env("FAVN_DEV_POSTGRES_HOST", "127.0.0.1"),

@@ -200,9 +200,11 @@ mix favn.read_doc Favn generate_manifest
 
 This is now the stable public entrypoint for local iteration on the refactored architecture.
 
-When `--root-dir` points at a separate Favn runtime tree, `mix favn.dev`
-compiles the runtime-root `favn_runner` and `favn_orchestrator` apps before
-startup so the live runner/orchestrator processes do not boot stale beams.
+`mix favn.install` resolves and materializes a runtime workspace under
+`.favn/install/runtime_root`. `mix favn.dev` compiles that installed runtime
+workspace before startup so live runner/orchestrator processes do not boot
+stale internal runtime beams. `--root-dir` remains an install/runtime-source
+override for split-root workflows.
 
 If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current
@@ -247,8 +249,10 @@ Storage modes:
 - implementation is owned by `apps/favn_local`
 - `mix favn.build.runner` is rooted in the current Mix project; `--root-dir`
   must match the current project root
-- install currently records and snapshots runtime input metadata under
-  `.favn/install/runtimes/*` and caches npm data under `.favn/install/cache/npm`
+- install now materializes a runnable runtime workspace under
+  `.favn/install/runtime_root`, records runtime metadata in
+  `.favn/install/runtime.json`, and caches npm data under
+  `.favn/install/cache/npm`
 
 ## Common Public Authoring API Entry Points
 

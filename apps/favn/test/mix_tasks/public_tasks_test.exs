@@ -185,7 +185,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert_raise Mix.Error,
-                 ~r/(runtime compile failed for favn_runner under --root-dir|local Erlang shortname host is unavailable)/,
+                 ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable)/,
                  fn ->
                    DevTask.run(["--root-dir", root_dir])
                  end

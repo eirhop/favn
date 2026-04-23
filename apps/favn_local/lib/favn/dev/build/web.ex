@@ -17,7 +17,7 @@ defmodule Favn.Dev.Build.Web do
     with :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
          {:ok, install} <- State.read_install(opts),
-         web_source_root when is_binary(web_source_root) <- runtime_source_root(install, "web"),
+         web_source_root when is_binary(web_source_root) <- runtime_source_root(install),
          {build_id, root_dir} <- {build_id(), Paths.root_dir(opts)},
          build_dir <- Paths.build_web_dir(root_dir, build_id),
          dist_dir <- Paths.dist_web_dir(root_dir, build_id),
@@ -41,8 +41,8 @@ defmodule Favn.Dev.Build.Web do
     end
   end
 
-  defp runtime_source_root(install, target) when is_map(install) do
-    get_in(install, ["runtime_inputs", target, "source_root"])
+  defp runtime_source_root(install) when is_map(install) do
+    get_in(install, ["runtime", "web_root"])
   end
 
   defp build_json(build_id, source_root, opts) do

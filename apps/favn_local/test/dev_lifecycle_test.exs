@@ -208,7 +208,7 @@ defmodule Favn.Dev.LifecycleTest do
         skip_readiness: true
       )
 
-    assert match?({:error, {:runtime_compile_failed, :favn_runner, _status, _output}}, result) or
+    assert match?({:error, {:runtime_compile_failed, :runtime_root, _status, _output}}, result) or
              match?({:error, {:shortname_host_unavailable, _reason}}, result)
 
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)

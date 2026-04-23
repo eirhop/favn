@@ -25,6 +25,7 @@ defmodule Favn.Dev.State do
       Paths.install_cache_dir(root_dir),
       Paths.install_cache_npm_dir(root_dir),
       Paths.install_runtimes_dir(root_dir),
+      Paths.install_runtime_root_dir(root_dir),
       Paths.install_runtime_web_dir(root_dir),
       Paths.install_runtime_orchestrator_dir(root_dir),
       Paths.install_runtime_runner_dir(root_dir),
@@ -111,6 +112,24 @@ defmodule Favn.Dev.State do
       |> Paths.root_dir()
       |> Paths.install_path()
       |> write_json(install)
+    end
+  end
+
+  @spec read_install_runtime(root_opt()) :: {:ok, map()} | {:error, read_error()}
+  def read_install_runtime(opts \\ []) when is_list(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Paths.install_runtime_path()
+    |> read_json()
+  end
+
+  @spec write_install_runtime(map(), root_opt()) :: :ok | {:error, term()}
+  def write_install_runtime(runtime, opts \\ []) when is_map(runtime) and is_list(opts) do
+    with :ok <- ensure_layout(opts) do
+      opts
+      |> Paths.root_dir()
+      |> Paths.install_runtime_path()
+      |> write_json(runtime)
     end
   end
 
