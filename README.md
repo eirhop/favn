@@ -72,19 +72,36 @@ Favn compiles your authored modules into a manifest so planning and runtime beha
 
 ### 1. Add the dependency
 
-Favn is not published on Hex yet.
+Favn is not published on Hex yet. For private local development with the Favn
+monorepo checked out next to your project, use path dependencies:
 
 ```elixir
 def deps do
   [
-    {:favn, git: "https://github.com/eirhop/favn.git", branch: "main", subdir: "apps/favn"}
+    {:favn, path: "../favn/apps/favn"}
   ]
 end
 ```
 
-`favn` currently lives inside this umbrella repo under `apps/favn`, so the git dependency must use `subdir: "apps/favn"`.
+If your project executes DuckDB-backed SQL assets directly, add the DuckDB
+plugin from the same local checkout:
 
-For real projects, prefer pinning a tag or commit ref instead of tracking `main` directly.
+```elixir
+def deps do
+  [
+    {:favn, path: "../favn/apps/favn"},
+    {:favn_duckdb, path: "../favn/apps/favn_duckdb"}
+  ]
+end
+```
+
+Storage adapter apps such as `favn_storage_sqlite` are runtime/control-plane
+adapters, not required for ordinary consumer authoring or DuckDB execution.
+
+Multiple `git` dependencies with different `subdir` values from this monorepo
+are not the supported plugin-consumption model before Hex packaging because Mix
+checks them out as separate dependency projects. For real external consumption,
+Favn packages will be published as normal package dependencies.
 
 ### 2. Define an asset
 

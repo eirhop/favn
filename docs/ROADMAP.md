@@ -17,6 +17,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 - Finalize which public APIs are part of the stable `v1` contract and which stay internal or compatibility-only.
 - Clarify the long-term support story for `Favn.Assets`, `Favn.PublicScaffold`, and the runtime delegation helpers currently exposed from `Favn` but marked `@doc false`.
+- Define the Hex/private-Hex package plan for `favn`, optional plugins, and transitive internal apps before documenting external multi-package consumption.
 - Tighten product docs and examples so the recommended authoring and runtime entrypoints are unambiguous.
 
 ### 2. Make Deployment Outputs Real

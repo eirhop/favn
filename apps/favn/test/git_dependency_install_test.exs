@@ -69,6 +69,26 @@ defmodule Favn.GitDependencyInstallTest do
     assert {_, 0} = System.cmd("mix", ["compile"], cd: consumer_dir, stderr_to_stdout: true)
   end
 
+  test "fresh local consumer can resolve favn with plugin path dependencies", %{
+    consumer_dir: consumer_dir
+  } do
+    repo_root = Path.expand("../../..", __DIR__)
+
+    assert {_, 0} = System.cmd("mix", ["new", consumer_dir, "--sup"])
+
+    File.write!(
+      Path.join(consumer_dir, "mix.exs"),
+      consumer_mix_exs_with_plugin_paths(repo_root)
+    )
+
+    {output, status} = System.cmd("mix", ["deps.get"], cd: consumer_dir, stderr_to_stdout: true)
+
+    assert status == 0, String.slice(output, -4_000, 4_000)
+    refute output =~ "Dependencies have diverged"
+
+    assert {_, 0} = System.cmd("mix", ["compile"], cd: consumer_dir, stderr_to_stdout: true)
+  end
+
   defp consumer_mix_exs(repo_url, ref) do
     """
     defmodule FavnConsumerInstall.MixProject do
@@ -91,6 +111,35 @@ defmodule Favn.GitDependencyInstallTest do
       defp deps do
         [
           {:favn, git: \"#{repo_url}\", ref: \"#{ref}\", subdir: \"apps/favn\"}
+        ]
+      end
+    end
+    """
+  end
+
+  defp consumer_mix_exs_with_plugin_paths(repo_root) do
+    """
+    defmodule FavnConsumerInstall.MixProject do
+      use Mix.Project
+
+      def project do
+        [
+          app: :favn_consumer_install,
+          version: "0.1.0",
+          elixir: "~> 1.19",
+          start_permanent: Mix.env() == :prod,
+          deps: deps()
+        ]
+      end
+
+      def application do
+        [extra_applications: [:logger]]
+      end
+
+      defp deps do
+        [
+          {:favn, path: "#{Path.join(repo_root, "apps/favn")}"},
+          {:favn_duckdb, path: "#{Path.join(repo_root, "apps/favn_duckdb")}"}
         ]
       end
     end
