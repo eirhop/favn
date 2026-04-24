@@ -24,14 +24,14 @@ defmodule FavnStorageSqlite.MixProject do
 
   defp deps do
     [
-      internal_dep(:favn_orchestrator, "../favn_orchestrator"),
+      internal_dep(:favn_orchestrator, "../favn_orchestrator", runtime: false),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:ecto_sql, "~> 3.13.4"},
       {:ecto_sqlite3, "~> 0.22.0"}
     ]
   end
 
-  defp internal_dep(app, relative_path, opts \\ []) do
+  defp internal_dep(app, relative_path, opts) do
     source =
       if Mix.Project.umbrella?() do
         [in_umbrella: true]

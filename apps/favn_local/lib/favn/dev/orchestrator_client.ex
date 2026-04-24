@@ -78,8 +78,8 @@ defmodule Favn.Dev.OrchestratorClient do
 
   defp request(operation, method, url, service_token, body) do
     headers = [
-      {"authorization", "Bearer #{service_token}"},
-      {"content-type", "application/json"}
+      {"accept", "application/json"},
+      {"authorization", "Bearer #{service_token}"}
     ]
 
     case LocalHttpClient.request(method, url, headers, body) do

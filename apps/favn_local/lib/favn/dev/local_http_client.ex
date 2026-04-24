@@ -10,20 +10,49 @@ defmodule Favn.Dev.LocalHttpClient do
           {:ok, map() | list()}
           | {:error, {:http_error, non_neg_integer(), term()}}
           | {:error, {:connect_failed, term()}}
-          | {:error, {:timeout, :connect | :request}}
+          | {:error, {:timeout, :request}}
           | {:error, {:invalid_json, binary()}}
           | {:error, {:invalid_response, term()}}
 
   @spec request(method(), String.t(), [header()], iodata() | nil, keyword()) :: response()
   def request(method, url, headers \\ [], body \\ nil, opts \\ [])
       when method in [:get, :post] and is_binary(url) and is_list(headers) do
-    case Application.ensure_all_started(:inets) do
-      {:ok, _apps} ->
+    case ensure_httpc_available() do
+      :ok ->
         method
         |> do_request(url, headers, body, opts)
         |> normalize_response()
 
       {:error, reason} -> {:error, {:invalid_response, {:inets_start_failed, reason}}}
+    end
+  end
+
+  defp ensure_httpc_available do
+    case Application.ensure_all_started(:inets) do
+      {:ok, _apps} -> ensure_http_util_loaded()
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_http_util_loaded do
+    case :code.ensure_loaded(:http_util) do
+      {:module, :http_util} ->
+        :ok
+
+      {:error, _reason} ->
+        case :code.where_is_file(~c"http_util.beam") do
+          path when is_list(path) ->
+            path
+            |> :filename.rootname()
+            |> :code.load_abs()
+            |> case do
+              {:module, :http_util} -> :ok
+              {:error, reason} -> {:error, {:http_util_unavailable, reason}}
+            end
+
+          :non_existing ->
+            {:error, {:http_util_unavailable, :nofile}}
+        end
     end
   end
 

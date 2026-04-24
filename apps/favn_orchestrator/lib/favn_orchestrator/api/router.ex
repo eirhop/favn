@@ -5,6 +5,8 @@ defmodule FavnOrchestrator.API.Router do
 
   use Plug.Router
 
+  require Logger
+
   alias Favn.Manifest.Version
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
@@ -129,7 +131,8 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.error("manifest.list failed: #{inspect(reason)}")
         error(conn, 400, "bad_request", "Request failed")
     end
   end
@@ -168,7 +171,8 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        Logger.error("manifest.register failed: #{inspect(reason)}")
         error(conn, 400, "bad_request", "Request failed")
     end
   end

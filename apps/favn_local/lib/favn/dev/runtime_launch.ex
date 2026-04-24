@@ -45,7 +45,21 @@ defmodule Favn.Dev.RuntimeLaunch do
 
     code =
       """
-      storage = System.get_env("FAVN_DEV_STORAGE", "memory")
+      storage = System.fetch_env!("FAVN_DEV_STORAGE")
+
+      Application.put_env(
+        :favn_orchestrator,
+        :api_server,
+        enabled: System.get_env("FAVN_ORCHESTRATOR_API_ENABLED", "0") == "1",
+        port: String.to_integer(System.fetch_env!("FAVN_ORCHESTRATOR_API_PORT"))
+      )
+
+      Application.put_env(
+        :favn_orchestrator,
+        :api_service_tokens,
+        System.fetch_env!("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS")
+        |> String.split(",", trim: true)
+      )
 
       case storage do
         "memory" ->
@@ -53,46 +67,38 @@ defmodule Favn.Dev.RuntimeLaunch do
           Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
 
         "sqlite" ->
-          {:ok, _} = Application.ensure_all_started(:favn_storage_sqlite)
           Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
-          Application.put_env(:favn_orchestrator, :storage_adapter_opts, database: System.get_env("FAVN_DEV_SQLITE_PATH"))
+          Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+            database: System.fetch_env!("FAVN_DEV_SQLITE_PATH"),
+            migration_mode: :auto
+          )
+          {:ok, _} = Application.ensure_all_started(:favn_storage_sqlite)
 
         "postgres" ->
-          {:ok, _} = Application.ensure_all_started(:favn_storage_postgres)
           Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.Postgres)
 
           Application.put_env(
             :favn_orchestrator,
             :storage_adapter_opts,
-            hostname: System.get_env("FAVN_DEV_POSTGRES_HOST"),
-            port: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_PORT", "5432")),
-            username: System.get_env("FAVN_DEV_POSTGRES_USERNAME"),
-            password: System.get_env("FAVN_DEV_POSTGRES_PASSWORD"),
-            database: System.get_env("FAVN_DEV_POSTGRES_DATABASE"),
+            hostname: System.fetch_env!("FAVN_DEV_POSTGRES_HOST"),
+            port: String.to_integer(System.fetch_env!("FAVN_DEV_POSTGRES_PORT")),
+            username: System.fetch_env!("FAVN_DEV_POSTGRES_USERNAME"),
+            password: System.fetch_env!("FAVN_DEV_POSTGRES_PASSWORD"),
+            database: System.fetch_env!("FAVN_DEV_POSTGRES_DATABASE"),
             ssl: System.get_env("FAVN_DEV_POSTGRES_SSL", "false") == "true",
             pool_size: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_POOL_SIZE", "10"))
           )
+
+          {:ok, _} = Application.ensure_all_started(:favn_storage_postgres)
 
         other ->
           raise ArgumentError,
                 "unsupported FAVN_DEV_STORAGE=\#{inspect(other)}; expected memory, sqlite, or postgres"
       end
-      runner_node = String.to_atom(System.get_env("FAVN_DEV_RUNNER_NODE"))
+
+      runner_node = String.to_atom(System.fetch_env!("FAVN_DEV_RUNNER_NODE"))
       Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
       Application.put_env(:favn_orchestrator, :runner_client_opts, [runner_node: runner_node])
-      Application.put_env(
-        :favn_orchestrator,
-        :api_server,
-        enabled: System.get_env("FAVN_ORCHESTRATOR_API_ENABLED", "0") == "1",
-        port: String.to_integer(System.get_env("FAVN_ORCHESTRATOR_API_PORT", "4101"))
-      )
-
-      Application.put_env(
-        :favn_orchestrator,
-        :api_service_tokens,
-        System.get_env("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "")
-        |> String.split(",", trim: true)
-      )
 
       {:ok, _} = Application.ensure_all_started(:favn_orchestrator)
       Process.sleep(:infinity)

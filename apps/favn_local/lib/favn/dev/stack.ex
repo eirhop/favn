@@ -27,10 +27,19 @@ defmodule Favn.Dev.Stack do
   def start_foreground(opts \\ []) when is_list(opts) do
     with {:ok, startup} <- prepare_startup(opts),
          :ok <- compile_runtime_apps(startup.runtime, opts),
-         {:ok, startup} <- initialize_stack(startup, opts),
-         :ok <- bootstrap_manifest(startup, opts) do
-      print_start_summary(startup)
-      wait_foreground(startup, opts)
+         {:ok, startup} <- initialize_stack(startup, opts) do
+      case bootstrap_manifest(startup, opts) do
+        :ok ->
+          print_start_summary(startup)
+          wait_foreground(startup, opts)
+
+        {:error, reason} = error ->
+          if cleanup_required?(reason) do
+            _ = cleanup_after_failure(reason, opts, startup)
+          end
+
+          error
+      end
     else
       {:error, :stack_already_running} = error ->
         error
@@ -520,7 +529,7 @@ defmodule Favn.Dev.Stack do
         wait_for_service_exit(startup, opts)
 
       {:error, reason} ->
-        cleanup_after_failure(reason, opts)
+        cleanup_after_failure(reason, opts, startup)
         {:error, reason}
     end
   end
@@ -569,6 +578,9 @@ defmodule Favn.Dev.Stack do
       {:error, {:invalid_json, _body}} ->
         :ok
 
+      {:error, {:http_error, status, _body}} when status in 300..399 ->
+        :ok
+
       {:error, reason} ->
         if System.monotonic_time(:millisecond) >= deadline_ms do
           {:error, {:not_ready, url, reason}}
@@ -600,19 +612,19 @@ defmodule Favn.Dev.Stack do
   end
 
   defp cleanup_after_failure(reason, opts, startup \\ nil) do
-    _ =
-      with_lock(opts, fn ->
-        State.write_last_failure(
-          failure_payload(reason, startup),
-          opts
-        )
-      end)
-
     runtime =
       case with_lock(opts, fn -> State.read_runtime(opts) end) do
         {:ok, value} -> value
         _ -> %{}
       end
+
+    _ =
+      with_lock(opts, fn ->
+        State.write_last_failure(
+          failure_payload(reason, startup, runtime),
+          opts
+        )
+      end)
 
     services =
       case startup do
@@ -628,10 +640,10 @@ defmodule Favn.Dev.Stack do
     :ok
   end
 
-  defp failure_payload(reason, startup) do
+  defp failure_payload(reason, startup, runtime) do
     %{"error" => inspect(reason), "at" => DateTime.utc_now() |> DateTime.to_iso8601()}
     |> maybe_put_failure_details(reason)
-    |> maybe_put_log_paths(startup)
+    |> maybe_put_log_paths(startup, runtime)
   end
 
   defp maybe_put_failure_details(payload, %{operation: operation, method: method, url: url, reason: reason}) do
@@ -653,7 +665,15 @@ defmodule Favn.Dev.Stack do
 
   defp maybe_put_failure_details(payload, _reason), do: payload
 
-  defp maybe_put_log_paths(payload, %{services: services}) when is_map(services) do
+  defp maybe_put_log_paths(payload, startup, runtime) do
+    log_paths =
+      startup_log_paths(startup)
+      |> Map.merge(runtime_log_paths(runtime))
+
+    if map_size(log_paths) == 0, do: payload, else: Map.put(payload, "log_paths", log_paths)
+  end
+
+  defp startup_log_paths(%{services: services}) when is_map(services) do
     log_paths =
       services
       |> Enum.flat_map(fn {name, info} ->
@@ -664,10 +684,22 @@ defmodule Favn.Dev.Stack do
       end)
       |> Map.new()
 
-    if map_size(log_paths) == 0, do: payload, else: Map.put(payload, "log_paths", log_paths)
+    log_paths
   end
 
-  defp maybe_put_log_paths(payload, _startup), do: payload
+  defp startup_log_paths(_startup), do: %{}
+
+  defp runtime_log_paths(runtime) when is_map(runtime) do
+    runtime
+    |> Map.get("services", %{})
+    |> Enum.flat_map(fn {name, service} ->
+      case Map.get(service, "log_path") do
+        path when is_binary(path) -> [{name, path}]
+        _ -> []
+      end
+    end)
+    |> Map.new()
+  end
 
   defp stop_runtime(runtime, opts) do
     services = Map.get(runtime, "services", %{})
