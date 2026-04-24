@@ -44,6 +44,32 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert "preview" in web.args
   end
 
+  test "orchestrator spec handles memory storage explicitly" do
+    runtime = %{
+      "orchestrator_root" => "/tmp/favn_runtime"
+    }
+
+    config = Config.resolve(storage: :memory)
+
+    node_names = %{
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token"
+    }
+
+    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
+    code = eval_code!(orchestrator)
+
+    assert orchestrator.env["FAVN_DEV_STORAGE"] == "memory"
+    assert code =~ ~s("memory" ->)
+    assert code =~ "FavnOrchestrator.Storage.Adapter.Memory"
+    assert code =~ "unsupported FAVN_DEV_STORAGE"
+  end
+
   test "consumer code path excludes runtime-owned favn apps" do
     build_path =
       Path.join(
@@ -64,5 +90,14 @@ defmodule Favn.Dev.RuntimeLaunchTest do
              Path.join(build_path, "lib/jason/ebin"),
              Path.join(build_path, "lib/my_app/ebin")
            ]
+  end
+
+  defp eval_code!(%{args: args}) do
+    args
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.find_value(fn
+      ["--eval", code] -> code
+      _other -> nil
+    end) || flunk("expected orchestrator args to include --eval code")
   end
 end
