@@ -1,6 +1,7 @@
 defmodule Favn.Dev.OrchestratorClient do
   @moduledoc false
 
+  alias Favn.Dev.LocalHttpClient
   alias Favn.Manifest.Serializer
 
   @spec publish_manifest(String.t(), String.t(), map()) ::
@@ -8,6 +9,7 @@ defmodule Favn.Dev.OrchestratorClient do
   def publish_manifest(base_url, service_token, payload)
       when is_binary(base_url) and is_binary(service_token) and is_map(payload) do
     request_post(
+      :publish_manifest,
       base_url <> "/api/orchestrator/v1/manifests",
       service_token,
       normalize_publish_payload(payload)
@@ -18,6 +20,7 @@ defmodule Favn.Dev.OrchestratorClient do
   def activate_manifest(base_url, service_token, manifest_version_id)
       when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) do
     request_post(
+      :activate_manifest,
       base_url <> "/api/orchestrator/v1/manifests/#{manifest_version_id}/activate",
       service_token,
       %{}
@@ -27,89 +30,66 @@ defmodule Favn.Dev.OrchestratorClient do
   @spec cancel_run(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def cancel_run(base_url, service_token, run_id)
       when is_binary(base_url) and is_binary(service_token) and is_binary(run_id) do
-    request_post(base_url <> "/api/orchestrator/v1/runs/#{run_id}/cancel", service_token, %{})
+    request_post(
+      :cancel_run,
+      base_url <> "/api/orchestrator/v1/runs/#{run_id}/cancel",
+      service_token,
+      %{}
+    )
   end
 
   @spec in_flight_runs(String.t(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
   def in_flight_runs(base_url, service_token)
       when is_binary(base_url) and is_binary(service_token) do
+    url = base_url <> "/api/orchestrator/v1/runs/in-flight"
+
     with {:ok, %{"data" => %{"run_ids" => run_ids}}} <-
-           request_get(base_url <> "/api/orchestrator/v1/runs/in-flight", service_token),
-         true <- is_list(run_ids) do
+           request_get(:list_in_flight_runs, url, service_token),
+          true <- is_list(run_ids) do
       {:ok, Enum.filter(run_ids, &is_binary/1)}
     else
-      false -> {:error, :invalid_response}
+      false -> {:error, operation_error(:list_in_flight_runs, :get, url, :invalid_response)}
       {:error, _reason} = error -> error
-      _other -> {:error, :invalid_response}
+      _other -> {:error, operation_error(:list_in_flight_runs, :get, url, :invalid_response)}
     end
   end
 
-  defp request_post(url, service_token, payload) do
+  @spec health(String.t()) :: :ok | {:error, term()}
+  def health(base_url) when is_binary(base_url) do
+    url = base_url <> "/api/orchestrator/v1/health"
+
+    case LocalHttpClient.request(:get, url, [], nil, connect_timeout_ms: 1_000, timeout_ms: 2_000) do
+      {:ok, %{"data" => %{"status" => "ok"}}} -> :ok
+      {:ok, %{"status" => "ok"}} -> :ok
+      {:ok, decoded} -> {:error, operation_error(:health_check, :get, url, {:invalid_response, decoded})}
+      {:error, reason} -> {:error, operation_error(:health_check, :get, url, reason)}
+    end
+  end
+
+  defp request_post(operation, url, service_token, payload) do
     body = JSON.encode!(payload)
 
-    args = [
-      "-sS",
-      "-X",
-      "POST",
-      "-H",
-      "authorization: Bearer #{service_token}",
-      "-H",
-      "content-type: application/json",
-      "-d",
-      body,
-      "-w",
-      "\n%{http_code}",
-      url
-    ]
-
-    request(args)
+    request(operation, :post, url, service_token, body)
   end
 
-  defp request_get(url, service_token) do
-    args = [
-      "-sS",
-      "-X",
-      "GET",
-      "-H",
-      "authorization: Bearer #{service_token}",
-      "-w",
-      "\n%{http_code}",
-      url
-    ]
-
-    request(args)
+  defp request_get(operation, url, service_token) do
+    request(operation, :get, url, service_token, nil)
   end
 
-  defp request(args) do
-    case System.cmd("curl", args, stderr_to_stdout: true) do
-      {output, 0} ->
-        decode_response(output)
+  defp request(operation, method, url, service_token, body) do
+    headers = [
+      {"authorization", "Bearer #{service_token}"},
+      {"content-type", "application/json"}
+    ]
 
-      {output, status} ->
-        {:error, {:http_failed, status, output}}
+    case LocalHttpClient.request(method, url, headers, body) do
+      {:ok, decoded} -> {:ok, decoded}
+      {:error, reason} -> {:error, operation_error(operation, method, url, reason)}
     end
   end
 
-  defp decode_response(output) when is_binary(output) do
-    case String.split(output, "\n", trim: true) do
-      [] ->
-        {:error, :empty_response}
-
-      lines ->
-        status = lines |> List.last() |> String.trim()
-        body = lines |> Enum.drop(-1) |> Enum.join("\n")
-
-        with {code, ""} <- Integer.parse(status),
-             {:ok, decoded} <- JSON.decode(body) do
-          if code >= 200 and code < 300 do
-            {:ok, decoded}
-          else
-            {:error, {:http_error, code, decoded}}
-          end
-        else
-          _ -> {:error, {:invalid_response, output}}
-        end
-    end
+  defp operation_error(operation, method, url, reason) do
+    %{operation: operation, method: method, url: url, reason: reason}
   end
 
   defp normalize_publish_payload(payload) when is_map(payload) do

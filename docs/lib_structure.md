@@ -69,6 +69,7 @@ apps/
 │   │       ├── config.ex
 │   │       ├── install.ex
 │   │       ├── lock.ex
+│   │       ├── local_http_client.ex
 │   │       ├── logs.ex
 │   │       ├── node_control.ex
 │   │       ├── orchestrator_client.ex

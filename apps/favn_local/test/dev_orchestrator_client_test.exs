@@ -4,43 +4,43 @@ defmodule Favn.Dev.OrchestratorClientTest do
   alias Favn.Dev.OrchestratorClient
   alias Favn.Manifest.Version
 
-  setup do
-    root_dir =
-      Path.join(
-        System.tmp_dir!(),
-        "favn_dev_orchestrator_client_test_#{System.unique_integer([:positive])}"
-      )
+  test "in_flight_runs/2 parses run ids" do
+    {:ok, base_url, _server} = start_server(~s({"data":{"run_ids":["run_a","run_b"]}}), 200)
 
-    bin_dir = Path.join(root_dir, "bin")
-    File.mkdir_p!(bin_dir)
-
-    old_path = System.get_env("PATH")
-
-    on_exit(fn ->
-      System.put_env("PATH", old_path || "")
-      File.rm_rf(root_dir)
-    end)
-
-    %{root_dir: root_dir, bin_dir: bin_dir}
+    assert {:ok, ["run_a", "run_b"]} = OrchestratorClient.in_flight_runs(base_url, "token")
   end
 
-  test "in_flight_runs/2 parses run ids", %{bin_dir: bin_dir} do
-    write_fake_curl(bin_dir, ~s({"data":{"run_ids":["run_a","run_b"]}}), 200)
+  test "in_flight_runs/2 returns operation context on non-2xx response" do
+    {:ok, base_url, _server} = start_server(~s({"error":{"code":"bad_request"}}), 400)
 
-    assert {:ok, ["run_a", "run_b"]} =
-             OrchestratorClient.in_flight_runs("http://127.0.0.1:4101", "token")
+    assert {:error,
+            %{
+              operation: :list_in_flight_runs,
+              method: :get,
+              url: url,
+              reason: {:http_error, 400, _decoded}
+            }} = OrchestratorClient.in_flight_runs(base_url, "token")
+
+    assert url == base_url <> "/api/orchestrator/v1/runs/in-flight"
   end
 
-  test "in_flight_runs/2 returns error on non-2xx response", %{bin_dir: bin_dir} do
-    write_fake_curl(bin_dir, ~s({"error":{"code":"bad_request"}}), 400)
+  test "connect failures are structured and include operation context" do
+    base_url = "http://127.0.0.1:#{unused_port()}"
 
-    assert {:error, {:http_error, 400, _decoded}} =
-             OrchestratorClient.in_flight_runs("http://127.0.0.1:4101", "token")
+    assert {:error,
+            %{
+              operation: :list_in_flight_runs,
+              method: :get,
+              url: url,
+              reason: {:connect_failed, _reason}
+            }} = OrchestratorClient.in_flight_runs(base_url, "token")
+
+    assert url == base_url <> "/api/orchestrator/v1/runs/in-flight"
   end
 
-  test "publish_manifest/3 serializes manifest structs before JSON encoding", %{bin_dir: bin_dir} do
-    args_path = Path.join(bin_dir, "curl_args.txt")
-    write_fake_curl(bin_dir, ~s({"data":{"ok":true}}), 200, args_path)
+  test "publish_manifest/3 serializes manifest structs before JSON encoding" do
+    parent = self()
+    {:ok, base_url, _server} = start_server(~s({"data":{"ok":true}}), 200, parent: parent)
 
     manifest = %{
       schema_version: 1,
@@ -55,38 +55,114 @@ defmodule Favn.Dev.OrchestratorClientTest do
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_orchestrator_client_test")
 
     assert {:ok, %{"data" => %{"ok" => true}}} =
-             OrchestratorClient.publish_manifest("http://127.0.0.1:4101", "token", %{
+             OrchestratorClient.publish_manifest(base_url, "token", %{
                manifest_version_id: version.manifest_version_id,
                manifest: version.manifest
              })
 
-    assert {:ok, args} = File.read(args_path)
-    assert args =~ ~s("manifest_version_id":"mv_orchestrator_client_test")
-    assert args =~ ~s("manifest":{"assets":[])
-    refute args =~ ~s("__struct__")
+    assert_receive {:request_body, body}
+    assert body =~ ~s("manifest_version_id":"mv_orchestrator_client_test")
+    assert body =~ ~s("manifest":{"assets":[])
+    refute body =~ ~s("__struct__")
   end
 
-  defp write_fake_curl(bin_dir, body, status, args_path \\ nil) do
-    args_line =
-      case args_path do
-        path when is_binary(path) -> "printf '%s\n' \"$*\" > \"#{path}\""
-        _ -> ""
+  test "health/1 checks the orchestrator health endpoint" do
+    parent = self()
+    {:ok, base_url, _server} = start_server(~s({"data":{"status":"ok"}}), 200, parent: parent)
+
+    assert :ok = OrchestratorClient.health(base_url)
+    assert_receive {:request_path, "/api/orchestrator/v1/health"}
+  end
+
+  defp start_server(body, status, opts \\ []) when is_binary(body) and is_integer(status) do
+    parent = Keyword.get(opts, :parent)
+    {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_addr, port}} = :inet.sockname(listen_socket)
+
+    server =
+      spawn_link(fn ->
+        {:ok, socket} = :gen_tcp.accept(listen_socket)
+        request = receive_request(socket, "")
+        :ok = :gen_tcp.send(socket, response(status, body))
+        :ok = :gen_tcp.close(socket)
+        :ok = :gen_tcp.close(listen_socket)
+
+        if parent do
+          send(parent, {:request_path, request_path(request)})
+          send(parent, {:request_body, request_body(request)})
+        end
+      end)
+
+    {:ok, "http://127.0.0.1:#{port}", server}
+  end
+
+  defp receive_request(socket, acc) do
+    {:ok, chunk} = :gen_tcp.recv(socket, 0, 2_000)
+    acc = acc <> chunk
+
+    if request_complete?(acc) do
+      acc
+    else
+      receive_request(socket, acc)
+    end
+  end
+
+  defp request_complete?(request) do
+    case String.split(request, "\r\n\r\n", parts: 2) do
+      [headers, body] -> byte_size(body) >= content_length(headers)
+      _other -> false
+    end
+  end
+
+  defp content_length(headers) do
+    headers
+    |> String.split("\r\n")
+    |> Enum.find_value(0, fn line ->
+      case String.split(line, ":", parts: 2) do
+        [key, value] ->
+          if String.downcase(key) == "content-length" do
+            value |> String.trim() |> String.to_integer()
+          end
+
+        _other ->
+          nil
       end
+    end)
+  end
 
-    script =
-      [
-        "#!/usr/bin/env bash",
-        args_line,
-        "printf '%s\\n' '#{body}'",
-        "printf '%s\\n' '#{status}'"
-      ]
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.join("\n")
+  defp request_path(request) do
+    request
+    |> String.split("\r\n", parts: 2)
+    |> hd()
+    |> String.split(" ")
+    |> Enum.at(1)
+  end
 
-    path = Path.join(bin_dir, "curl")
-    File.write!(path, script)
-    File.chmod!(path, 0o755)
+  defp request_body(request) do
+    case String.split(request, "\r\n\r\n", parts: 2) do
+      [_headers, body] -> body
+      _other -> ""
+    end
+  end
 
-    System.put_env("PATH", bin_dir <> ":" <> (System.get_env("PATH") || ""))
+  defp response(status, body) do
+    [
+      "HTTP/1.1 #{status} #{reason(status)}\r\n",
+      "content-type: application/json\r\n",
+      "content-length: #{byte_size(body)}\r\n",
+      "connection: close\r\n",
+      "\r\n",
+      body
+    ]
+  end
+
+  defp reason(status) when status in 200..299, do: "OK"
+  defp reason(_status), do: "Error"
+
+  defp unused_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_addr, port}} = :inet.sockname(socket)
+    :ok = :gen_tcp.close(socket)
+    port
   end
 end
