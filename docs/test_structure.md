@@ -2,6 +2,10 @@
 
 This document maps the current umbrella test layout after the v0.5 refactor closeout.
 
+Standalone example tests outside the umbrella live in:
+
+- `examples/basic-workflow-tutorial/test/`
+
 ```text
 apps/
 ├── favn/test/

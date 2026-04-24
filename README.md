@@ -233,6 +233,12 @@ mix favn.read_doc Favn generate_manifest
 
 This is now the stable public entrypoint for local iteration on the refactored architecture.
 
+For a consumer-style authoring and DuckDB execution tutorial, see
+`examples/basic-workflow-tutorial`. It lives outside the umbrella apps, uses
+local path dependencies back to `apps/favn` and `apps/favn_duckdb`, and has its
+own compile/test workflow. The embedded tutorial's `mix favn.dev` local-tooling
+loop is tracked separately in issue #129.
+
 `mix favn.install` resolves and materializes a runtime workspace under
 `.favn/install/runtime_root`. `mix favn.dev` compiles that installed runtime
 workspace before startup so live runner/orchestrator processes do not boot
@@ -304,6 +310,7 @@ Storage modes:
 - `docs/REFACTOR.md` tracks the `v0.5` architecture and migration plan
 - `docs/lib_structure.md` describes the current library layout
 - `docs/test_structure.md` describes the current test layout
+- `examples/basic-workflow-tutorial` is the first end-to-end tutorial project
 
 ## AI Doc Entry Point
 
