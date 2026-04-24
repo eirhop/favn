@@ -12,6 +12,12 @@ Top-level product docs:
 - `docs/FEATURE_AUDIT_TASKLIST.md` for the current feature audit work breakdown
 - `docs/ROADMAP.md` for planned work
 
+Consumer examples:
+
+- `examples/basic-workflow-tutorial` is a standalone Mix project outside the
+  umbrella apps. Its `lib/` tree demonstrates a complete Favn workflow using
+  local path dependencies back to `apps/favn` and `apps/favn_duckdb`.
+
 ```text
 apps/
 ├── favn/lib/
