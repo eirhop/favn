@@ -10,8 +10,14 @@ defmodule Favn.SQLAsset.Compiler do
   @impl true
   def compile_assets(module) when is_atom(module) do
     case fetch_definition(module) do
-      {:ok, %Definition{asset: asset}} -> {:ok, [asset]}
-      {:error, _reason} -> {:error, :invalid_compiled_assets}
+      {:ok, %Definition{asset: asset}} ->
+        {:ok, [asset]}
+
+      {:error, {:invalid_sql_asset_definition, message}} ->
+        {:error, {:invalid_compiled_assets, message}}
+
+      {:error, _reason} ->
+        {:error, :invalid_compiled_assets}
     end
   end
 
@@ -27,6 +33,8 @@ defmodule Favn.SQLAsset.Compiler do
       _ -> {:error, :invalid_sql_asset_definition}
     end
   rescue
+    error in CompileError -> {:error, {:invalid_sql_asset_definition, Exception.message(error)}}
+    error in ArgumentError -> {:error, {:invalid_sql_asset_definition, Exception.message(error)}}
     _ -> {:error, :invalid_sql_asset_definition}
   end
 end

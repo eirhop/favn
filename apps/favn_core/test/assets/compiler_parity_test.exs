@@ -188,9 +188,19 @@ defmodule Favn.Assets.CompilerParityTest do
        end
        """},
       {"root.ex",
-       "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend"},
+       """
+       defmodule #{inspect(root)} do
+         Process.sleep(700)
+         use Favn.Namespace, relation: [connection: :warehouse]
+       end
+       """},
       {"gold.ex",
-       "defmodule #{inspect(gold)} do\n  use Favn.Namespace, relation: [schema: :gold]\nend"}
+       """
+       defmodule #{inspect(gold)} do
+         Process.sleep(700)
+         use Favn.Namespace, relation: [schema: :gold]
+       end
+       """}
     ])
 
     assert {:ok, [%Asset{relation: relation, relation_inputs: relation_inputs}]} =
@@ -211,6 +221,93 @@ defmodule Favn.Assets.CompilerParityTest do
              schema: "gold",
              name: "executive_overview"
            }
+  end
+
+  test "sql asset missing connection is reported during asset compilation" do
+    asset = Module.concat(__MODULE__, "SQLMissingConnection#{System.unique_integer([:positive])}")
+
+    compile_modules_to_path!([
+      {"sql_asset_missing_connection.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.SQLAsset
+
+         @materialized :view
+         query do
+           ~SQL\"\"\"
+           select * from orders
+           \"\"\"
+         end
+       end
+       """}
+    ])
+
+    assert {:error, {:invalid_compiled_assets, message}} = Compiler.compile_module_assets(asset)
+    assert message =~ "SQL assets require a connection"
+  end
+
+  test "sql asset missing materialization is reported during asset compilation" do
+    root =
+      Module.concat(__MODULE__, "SQLMissingMaterializedRoot#{System.unique_integer([:positive])}")
+
+    asset = Module.concat(root, MissingMaterialized)
+
+    compile_modules_to_path!([
+      {"sql_asset_missing_materialized.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.Namespace, relation: [connection: :warehouse]
+         use Favn.SQLAsset
+
+         query do
+           ~SQL\"\"\"
+           select 1 as id
+           \"\"\"
+         end
+       end
+       """}
+    ])
+
+    assert {:error, {:invalid_compiled_assets, message}} = Compiler.compile_module_assets(asset)
+    assert message =~ "Favn.SQLAsset requires one @materialized attribute"
+  end
+
+  test "sql asset finalization resolves same-batch reusable SQL imports" do
+    root = Module.concat(__MODULE__, "SQLImportRoot#{System.unique_integer([:positive])}")
+    helpers = Module.concat(root, SQLHelpers)
+    asset = Module.concat(root, ImportedSQLAsset)
+
+    compile_modules_to_path!([
+      {"sql_asset.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.Namespace, relation: [connection: :warehouse]
+         use #{inspect(helpers)}
+         use Favn.SQLAsset
+
+         @materialized :view
+         query do
+           ~SQL\"\"\"
+           select selected_id(id) as id
+           from orders
+           \"\"\"
+         end
+       end
+       """},
+      {"sql_helpers.ex",
+       """
+       defmodule #{inspect(helpers)} do
+         Process.sleep(700)
+         use Favn.SQL
+
+         defsql selected_id(value) do
+           ~SQL\"coalesce(@value, @value)\"
+         end
+       end
+       """}
+    ])
+
+    assert {:ok, [%Asset{type: :sql}]} = Compiler.compile_module_assets(asset)
   end
 
   test "multi-asset namespace inheritance is compile-order independent" do

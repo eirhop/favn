@@ -300,8 +300,6 @@ defmodule Favn.SQLAsset do
         env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_imports) |> Enum.reverse()
       )
 
-    definition = build_definition!(raw_definition)
-
     Module.put_attribute(env.module, :favn_sql_asset_generating, true)
 
     quote do
@@ -314,7 +312,12 @@ defmodule Favn.SQLAsset do
 
       @doc false
       @spec __favn_sql_asset_definition__() :: Favn.SQLAsset.Definition.t()
-      def __favn_sql_asset_definition__, do: unquote(Macro.escape(definition))
+      def __favn_sql_asset_definition__ do
+        # Intentionally finalizes outside @before_compile so namespace inheritance
+        # does not depend on same-batch parent module compile order.
+        # Do not call from DSL macros during compilation.
+        Favn.SQLAsset.finalize_raw_definition(unquote(Macro.escape(raw_definition)))
+      end
 
       @doc false
       def __favn_single_asset__, do: true
@@ -336,6 +339,12 @@ defmodule Favn.SQLAsset do
     else
       _ -> {:error, :runtime_not_available}
     end
+  end
+
+  @doc false
+  @spec finalize_raw_definition(map()) :: Definition.t()
+  def finalize_raw_definition(raw_definition) when is_map(raw_definition) do
+    build_definition!(raw_definition)
   end
 
   defp build_definition!(raw_definition) do
