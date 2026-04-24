@@ -188,9 +188,19 @@ defmodule Favn.Assets.CompilerParityTest do
        end
        """},
       {"root.ex",
-       "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse]\nend"},
+       """
+       defmodule #{inspect(root)} do
+         Process.sleep(700)
+         use Favn.Namespace, relation: [connection: :warehouse]
+       end
+       """},
       {"gold.ex",
-       "defmodule #{inspect(gold)} do\n  use Favn.Namespace, relation: [schema: :gold]\nend"}
+       """
+       defmodule #{inspect(gold)} do
+         Process.sleep(700)
+         use Favn.Namespace, relation: [schema: :gold]
+       end
+       """}
     ])
 
     assert {:ok, [%Asset{relation: relation, relation_inputs: relation_inputs}]} =
@@ -211,6 +221,29 @@ defmodule Favn.Assets.CompilerParityTest do
              schema: "gold",
              name: "executive_overview"
            }
+  end
+
+  test "sql asset missing connection is reported during asset compilation" do
+    asset = Module.concat(__MODULE__, "SQLMissingConnection#{System.unique_integer([:positive])}")
+
+    compile_modules_to_path!([
+      {"sql_asset_missing_connection.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.SQLAsset
+
+         @materialized :view
+         query do
+           ~SQL\"\"\"
+           select * from orders
+           \"\"\"
+         end
+       end
+       """}
+    ])
+
+    assert {:error, {:invalid_compiled_assets, message}} = Compiler.compile_module_assets(asset)
+    assert message =~ "SQL assets require a connection"
   end
 
   test "multi-asset namespace inheritance is compile-order independent" do

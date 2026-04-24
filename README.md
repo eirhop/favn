@@ -134,7 +134,9 @@ Namespace defaults are inherited from parent modules. Child asset modules only
 need `use Favn.Namespace` when they are adding or overriding shared relation
 defaults. `@relation true` is the normal leaf-module path, while
 `@relation [name: "..."]` is the normal way to override only the relation
-name.
+name. SQL asset namespace inheritance is finalized during explicit
+asset/manifest compilation, so parent namespace modules do not need to compile
+before child SQL asset modules in the same parallel compiler batch.
 
 ### 3. Define a downstream SQL asset
 
