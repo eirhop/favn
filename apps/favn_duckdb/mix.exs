@@ -24,9 +24,20 @@ defmodule FavnDuckdb.MixProject do
 
   defp deps do
     [
-      {:favn_runner, in_umbrella: true},
-      {:favn_sql_runtime, in_umbrella: true},
+      internal_dep(:favn_runner, "../favn_runner"),
+      internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
       {:duckdbex, "~> 0.3.21"}
     ]
+  end
+
+  defp internal_dep(app, relative_path, opts \\ []) do
+    source =
+      if Mix.Project.umbrella?() do
+        [in_umbrella: true]
+      else
+        [path: relative_path]
+      end
+
+    {app, Keyword.merge(source, opts)}
   end
 end

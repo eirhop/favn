@@ -8,7 +8,7 @@ apps/
 │   ├── boundary_defaults_test.exs
 │   ├── dsl_compiler_test.exs
 │   ├── favn_test.exs
-│   ├── git_dependency_install_test.exs
+│   ├── consumer_dependency_install_test.exs
 │   ├── manifest_generator_test.exs
 │   ├── mix_tasks/
 │   │   ├── read_doc_task_test.exs
