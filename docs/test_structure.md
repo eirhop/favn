@@ -32,6 +32,7 @@ apps/
 │   ├── dev_lifecycle_test.exs
 │   ├── dev_lock_test.exs
 │   ├── dev_logs_test.exs
+│   ├── dev_local_http_client_test.exs
 │   ├── dev_orchestrator_client_test.exs
 │   ├── dev_process_test.exs
 │   ├── dev_reload_test.exs

@@ -29,6 +29,9 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.SQLAsset.Materialization
   alias Favn.Window.Spec
 
+  @max_manifest_atom_length 128
+  @max_manifest_module_length 512
+
   @type error :: {:invalid_manifest_input, term()} | {:invalid_manifest_payload, term()}
 
   @spec manifest(map() | struct() | Build.t()) :: {:ok, Manifest.t()} | {:error, error()}
@@ -627,12 +630,16 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_module(nil), do: nil
   defp decode_module(value) when is_atom(value), do: value
+
+  defp decode_module("Elixir." <> _rest = value) when is_binary(value),
+    do: decode_manifest_module!(value)
+
   defp decode_module(value) when is_binary(value), do: decode_existing_atom!(value)
   defp decode_module(other), do: other
 
   defp decode_atom_optional(nil), do: nil
   defp decode_atom_optional(value) when is_atom(value), do: value
-  defp decode_atom_optional(value) when is_binary(value), do: decode_existing_atom!(value)
+  defp decode_atom_optional(value) when is_binary(value), do: decode_manifest_atom!(value)
   defp decode_atom_optional(other), do: other
 
   defp decode_known_atom(value, allowed) do
@@ -673,6 +680,32 @@ defmodule Favn.Manifest.Rehydrate do
       {:ok, atom} -> atom
       :error -> raise ArgumentError, "unknown atom #{inspect(value)}"
     end
+  end
+
+  defp decode_manifest_module!(value) do
+    if valid_manifest_module?(value) do
+      String.to_atom(value)
+    else
+      raise ArgumentError, "invalid module reference #{inspect(value)}"
+    end
+  end
+
+  defp decode_manifest_atom!(value) do
+    if valid_manifest_atom?(value) do
+      String.to_atom(value)
+    else
+      raise ArgumentError, "invalid atom reference #{inspect(value)}"
+    end
+  end
+
+  defp valid_manifest_module?(value) when is_binary(value) do
+    byte_size(value) <= @max_manifest_module_length and
+      Regex.match?(~r/^Elixir\.[A-Z][A-Za-z0-9_]*(\.[A-Z][A-Za-z0-9_]*)*$/, value)
+  end
+
+  defp valid_manifest_atom?(value) when is_binary(value) do
+    byte_size(value) in 1..@max_manifest_atom_length and
+      Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*[!?=]?$/, value)
   end
 
   defp maybe_existing_atom(value) when is_binary(value) do

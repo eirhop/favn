@@ -34,6 +34,11 @@ defmodule Favn.SQLiteStorageBootstrapTest do
     assert stored.id == "bootstrap-run"
   end
 
+  test "sqlite adapter does not declare orchestrator as a runtime application" do
+    assert {:ok, _apps} = Application.ensure_all_started(:favn_storage_sqlite)
+    refute :favn_orchestrator in Application.spec(:favn_storage_sqlite, :applications)
+  end
+
   defp sample_run(id, status) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 

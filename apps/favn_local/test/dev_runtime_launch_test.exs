@@ -70,6 +70,22 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert code =~ "unsupported FAVN_DEV_STORAGE"
   end
 
+  test "orchestrator spec configures storage before starting orchestrator" do
+    runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
+    config = Config.resolve(storage: :sqlite)
+    node_names = %{runner_full: "favn_runner_test@host", orchestrator_short: "favn_orchestrator_test"}
+    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+
+    code =
+      runtime
+      |> RuntimeLaunch.orchestrator_spec(config, [], node_names, secrets)
+      |> eval_code!()
+
+    assert before?(code, "Application.put_env(:favn_orchestrator, :storage_adapter", "Application.ensure_all_started(:favn_storage_sqlite)")
+    assert before?(code, "Application.ensure_all_started(:favn_storage_sqlite)", "Application.ensure_all_started(:favn_orchestrator)")
+    assert code =~ "migration_mode: :auto"
+  end
+
   test "consumer code path excludes runtime-owned favn apps" do
     build_path =
       Path.join(
@@ -99,5 +115,12 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       ["--eval", code] -> code
       _other -> nil
     end) || flunk("expected orchestrator args to include --eval code")
+  end
+
+  defp before?(text, earlier, later) do
+    earlier_index = :binary.match(text, earlier)
+    later_index = :binary.match(text, later)
+
+    match?({_, _}, earlier_index) and match?({_, _}, later_index) and elem(earlier_index, 0) < elem(later_index, 0)
   end
 end

@@ -38,6 +38,7 @@ development on top of the new boundaries.
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
 - local development tooling is available today through `mix favn.install`, `mix favn.dev`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`

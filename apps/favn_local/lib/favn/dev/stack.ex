@@ -8,6 +8,7 @@ defmodule Favn.Dev.Stack do
 
   alias Favn.Dev.Config
   alias Favn.Dev.Install
+  alias Favn.Dev.LocalHttpClient
   alias Favn.Dev.Lock
   alias Favn.Dev.NodeControl
   alias Favn.Dev.OrchestratorClient
@@ -26,10 +27,19 @@ defmodule Favn.Dev.Stack do
   def start_foreground(opts \\ []) when is_list(opts) do
     with {:ok, startup} <- prepare_startup(opts),
          :ok <- compile_runtime_apps(startup.runtime, opts),
-         {:ok, startup} <- initialize_stack(startup, opts),
-         :ok <- bootstrap_manifest(startup, opts) do
-      print_start_summary(startup)
-      wait_foreground(startup, opts)
+         {:ok, startup} <- initialize_stack(startup, opts) do
+      case bootstrap_manifest(startup, opts) do
+        :ok ->
+          print_start_summary(startup)
+          wait_foreground(startup, opts)
+
+        {:error, reason} = error ->
+          if cleanup_required?(reason) do
+            _ = cleanup_after_failure(reason, opts, startup)
+          end
+
+          error
+      end
     else
       {:error, :stack_already_running} = error ->
         error
@@ -469,7 +479,7 @@ defmodule Favn.Dev.Stack do
              runner_node_name: node_names.runner_full,
              rpc_cookie: secrets["rpc_cookie"]
            ),
-         :ok <- wait_http(config.orchestrator_base_url, 15_000),
+          :ok <- wait_orchestrator_health(config.orchestrator_base_url, 15_000),
          :ok <-
            State.write_manifest_latest(
              %{
@@ -519,7 +529,7 @@ defmodule Favn.Dev.Stack do
         wait_for_service_exit(startup, opts)
 
       {:error, reason} ->
-        cleanup_after_failure(reason, opts)
+        cleanup_after_failure(reason, opts, startup)
         {:error, reason}
     end
   end
@@ -528,47 +538,56 @@ defmodule Favn.Dev.Stack do
     if Keyword.get(opts, :skip_readiness, false) do
       :ok
     else
-      case wait_http(config.orchestrator_base_url, 15_000) do
-        :ok -> wait_http(config.web_base_url, 30_000)
+      case wait_orchestrator_health(config.orchestrator_base_url, 15_000) do
+        :ok -> wait_web_http(config.web_base_url, 30_000)
         {:error, _reason} = error -> error
       end
     end
   end
 
-  defp wait_http(url, timeout_ms) do
+  defp wait_orchestrator_health(url, timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_http(url, deadline)
+    do_wait_orchestrator_health(url, deadline)
   end
 
-  defp do_wait_http(url, deadline_ms) do
-    case http_up?(url) do
-      true ->
+  defp do_wait_orchestrator_health(url, deadline_ms) do
+    case OrchestratorClient.health(url) do
+      :ok ->
         :ok
 
-      false ->
+      {:error, reason} ->
         if System.monotonic_time(:millisecond) >= deadline_ms do
-          {:error, {:not_ready, url}}
+          {:error, {:not_ready, url, reason}}
         else
           Process.sleep(200)
-          do_wait_http(url, deadline_ms)
+          do_wait_orchestrator_health(url, deadline_ms)
         end
     end
   end
 
-  defp http_up?(url) do
-    case URI.parse(url) do
-      %URI{host: host, port: port} when is_binary(host) and is_integer(port) and port > 0 ->
-        case :gen_tcp.connect(String.to_charlist(host), port, [:binary, {:active, false}], 1_000) do
-          {:ok, socket} ->
-            :gen_tcp.close(socket)
-            true
+  defp wait_web_http(url, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_web_http(url, deadline)
+  end
 
-          {:error, _reason} ->
-            false
+  defp do_wait_web_http(url, deadline_ms) do
+    case LocalHttpClient.request(:get, url, [], nil, connect_timeout_ms: 1_000, timeout_ms: 2_000) do
+      {:ok, _decoded} ->
+        :ok
+
+      {:error, {:invalid_json, _body}} ->
+        :ok
+
+      {:error, {:http_error, status, _body}} when status in 300..399 ->
+        :ok
+
+      {:error, reason} ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          {:error, {:not_ready, url, reason}}
+        else
+          Process.sleep(200)
+          do_wait_web_http(url, deadline_ms)
         end
-
-      _other ->
-        false
     end
   end
 
@@ -593,19 +612,19 @@ defmodule Favn.Dev.Stack do
   end
 
   defp cleanup_after_failure(reason, opts, startup \\ nil) do
-    _ =
-      with_lock(opts, fn ->
-        State.write_last_failure(
-          %{"error" => inspect(reason), "at" => DateTime.utc_now() |> DateTime.to_iso8601()},
-          opts
-        )
-      end)
-
     runtime =
       case with_lock(opts, fn -> State.read_runtime(opts) end) do
         {:ok, value} -> value
         _ -> %{}
       end
+
+    _ =
+      with_lock(opts, fn ->
+        State.write_last_failure(
+          failure_payload(reason, startup, runtime),
+          opts
+        )
+      end)
 
     services =
       case startup do
@@ -619,6 +638,67 @@ defmodule Favn.Dev.Stack do
     stop_service_map(services)
     with_lock(opts, fn -> State.clear_runtime(opts) end)
     :ok
+  end
+
+  defp failure_payload(reason, startup, runtime) do
+    %{"error" => inspect(reason), "at" => DateTime.utc_now() |> DateTime.to_iso8601()}
+    |> maybe_put_failure_details(reason)
+    |> maybe_put_log_paths(startup, runtime)
+  end
+
+  defp maybe_put_failure_details(payload, %{operation: operation, method: method, url: url, reason: reason}) do
+    Map.merge(payload, %{
+      "operation" => Atom.to_string(operation),
+      "method" => method |> Atom.to_string() |> String.upcase(),
+      "url" => url,
+      "reason" => inspect(reason)
+    })
+  end
+
+  defp maybe_put_failure_details(payload, {:not_ready, url, reason}) do
+    payload
+    |> Map.put("operation", "health_check")
+    |> Map.put("method", "GET")
+    |> Map.put("url", url)
+    |> Map.put("reason", inspect(reason))
+  end
+
+  defp maybe_put_failure_details(payload, _reason), do: payload
+
+  defp maybe_put_log_paths(payload, startup, runtime) do
+    log_paths =
+      startup_log_paths(startup)
+      |> Map.merge(runtime_log_paths(runtime))
+
+    if map_size(log_paths) == 0, do: payload, else: Map.put(payload, "log_paths", log_paths)
+  end
+
+  defp startup_log_paths(%{services: services}) when is_map(services) do
+    log_paths =
+      services
+      |> Enum.flat_map(fn {name, info} ->
+        case Map.get(info, :log_path) do
+          path when is_binary(path) -> [{name, path}]
+          _ -> []
+        end
+      end)
+      |> Map.new()
+
+    log_paths
+  end
+
+  defp startup_log_paths(_startup), do: %{}
+
+  defp runtime_log_paths(runtime) when is_map(runtime) do
+    runtime
+    |> Map.get("services", %{})
+    |> Enum.flat_map(fn {name, service} ->
+      case Map.get(service, "log_path") do
+        path when is_binary(path) -> [{name, path}]
+        _ -> []
+      end
+    end)
+    |> Map.new()
   end
 
   defp stop_runtime(runtime, opts) do

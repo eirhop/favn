@@ -176,4 +176,61 @@ defmodule Favn.Manifest.VersionTest do
                params: %{}
              )
   end
+
+  test "rehydrates manifest module references without loading user modules" do
+    manifest = %{
+      "schema_version" => 1,
+      "runner_contract_version" => 1,
+      "assets" => [
+        %{
+          "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
+          "module" => "Elixir.ExternalConsumer.UnknownAsset",
+          "name" => "asset",
+          "type" => "elixir",
+          "execution" => %{"entrypoint" => "asset", "arity" => 1},
+          "depends_on" => [],
+          "config" => %{},
+          "metadata" => %{"category" => "external category", "tags" => ["external tag"]}
+        }
+      ],
+      "pipelines" => [],
+      "schedules" => [],
+      "graph" => %{
+        "nodes" => [%{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"}],
+        "edges" => [],
+        "topo_order" => [%{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"}]
+      },
+      "metadata" => %{}
+    }
+
+    assert {:error, :nofile} = Code.ensure_loaded(ExternalConsumer.UnknownAsset)
+    assert {:ok, version} = Version.new(manifest, manifest_version_id: "mv_unloaded_module")
+
+    assert hd(version.manifest.assets).module == ExternalConsumer.UnknownAsset
+    assert hd(version.manifest.graph.nodes) == {ExternalConsumer.UnknownAsset, :asset}
+    assert hd(version.manifest.assets).metadata.category == "external category"
+    assert hd(version.manifest.assets).metadata.tags == ["external tag"]
+  end
+
+  test "rejects invalid unloaded module references during rehydration" do
+    manifest = %{
+      "schema_version" => 1,
+      "runner_contract_version" => 1,
+      "assets" => [
+        %{
+          "ref" => %{"module" => "Elixir.not-a-module", "name" => "asset"},
+          "module" => "Elixir.not-a-module",
+          "name" => "asset",
+          "type" => "elixir",
+          "execution" => %{"entrypoint" => "asset", "arity" => 1}
+        }
+      ],
+      "pipelines" => [],
+      "schedules" => [],
+      "graph" => %{},
+      "metadata" => %{}
+    }
+
+    assert {:error, {:invalid_manifest_payload, %ArgumentError{}}} = Version.new(manifest)
+  end
 end

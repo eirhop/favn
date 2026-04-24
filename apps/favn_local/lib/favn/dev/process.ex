@@ -49,7 +49,7 @@ defmodule Favn.Dev.Process do
   defp send_terminate(pid) do
     case :os.type() do
       {:unix, _} ->
-        System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
+        System.cmd(unix_kill(), ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
 
       {:win32, _} ->
         System.cmd("taskkill", ["/PID", Integer.to_string(pid)], stderr_to_stdout: true)
@@ -59,7 +59,7 @@ defmodule Favn.Dev.Process do
   defp send_kill(pid) do
     case :os.type() do
       {:unix, _} ->
-        System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
+        System.cmd(unix_kill(), ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
 
       {:win32, _} ->
         System.cmd("taskkill", ["/PID", Integer.to_string(pid), "/T", "/F"],
@@ -69,10 +69,14 @@ defmodule Favn.Dev.Process do
   end
 
   defp unix_alive?(pid) do
-    case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
+    case System.cmd(unix_kill(), ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
       {_out, 0} -> true
       {_out, _status} -> false
     end
+  end
+
+  defp unix_kill do
+    System.find_executable("kill") || "/bin/kill"
   end
 
   defp windows_alive?(pid) do
