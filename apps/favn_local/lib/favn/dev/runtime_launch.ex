@@ -47,13 +47,17 @@ defmodule Favn.Dev.RuntimeLaunch do
       """
       storage = System.get_env("FAVN_DEV_STORAGE", "memory")
 
-      cond do
-        storage == "sqlite" ->
+      case storage do
+        "memory" ->
+          Application.put_env(:favn_orchestrator, :storage_adapter, FavnOrchestrator.Storage.Adapter.Memory)
+          Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+        "sqlite" ->
           {:ok, _} = Application.ensure_all_started(:favn_storage_sqlite)
           Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
           Application.put_env(:favn_orchestrator, :storage_adapter_opts, database: System.get_env("FAVN_DEV_SQLITE_PATH"))
 
-        storage == "postgres" ->
+        "postgres" ->
           {:ok, _} = Application.ensure_all_started(:favn_storage_postgres)
           Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.Postgres)
 
@@ -68,6 +72,10 @@ defmodule Favn.Dev.RuntimeLaunch do
             ssl: System.get_env("FAVN_DEV_POSTGRES_SSL", "false") == "true",
             pool_size: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_POOL_SIZE", "10"))
           )
+
+        other ->
+          raise ArgumentError,
+                "unsupported FAVN_DEV_STORAGE=\#{inspect(other)}; expected memory, sqlite, or postgres"
       end
       runner_node = String.to_atom(System.get_env("FAVN_DEV_RUNNER_NODE"))
       Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
