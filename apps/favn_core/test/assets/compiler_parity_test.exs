@@ -246,6 +246,70 @@ defmodule Favn.Assets.CompilerParityTest do
     assert message =~ "SQL assets require a connection"
   end
 
+  test "sql asset missing materialization is reported during asset compilation" do
+    root =
+      Module.concat(__MODULE__, "SQLMissingMaterializedRoot#{System.unique_integer([:positive])}")
+
+    asset = Module.concat(root, MissingMaterialized)
+
+    compile_modules_to_path!([
+      {"sql_asset_missing_materialized.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.Namespace, relation: [connection: :warehouse]
+         use Favn.SQLAsset
+
+         query do
+           ~SQL\"\"\"
+           select 1 as id
+           \"\"\"
+         end
+       end
+       """}
+    ])
+
+    assert {:error, {:invalid_compiled_assets, message}} = Compiler.compile_module_assets(asset)
+    assert message =~ "Favn.SQLAsset requires one @materialized attribute"
+  end
+
+  test "sql asset finalization resolves same-batch reusable SQL imports" do
+    root = Module.concat(__MODULE__, "SQLImportRoot#{System.unique_integer([:positive])}")
+    helpers = Module.concat(root, SQLHelpers)
+    asset = Module.concat(root, ImportedSQLAsset)
+
+    compile_modules_to_path!([
+      {"sql_asset.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.Namespace, relation: [connection: :warehouse]
+         use #{inspect(helpers)}
+         use Favn.SQLAsset
+
+         @materialized :view
+         query do
+           ~SQL\"\"\"
+           select selected_id(id) as id
+           from orders
+           \"\"\"
+         end
+       end
+       """},
+      {"sql_helpers.ex",
+       """
+       defmodule #{inspect(helpers)} do
+         Process.sleep(700)
+         use Favn.SQL
+
+         defsql selected_id(value) do
+           ~SQL\"coalesce(@value, @value)\"
+         end
+       end
+       """}
+    ])
+
+    assert {:ok, [%Asset{type: :sql}]} = Compiler.compile_module_assets(asset)
+  end
+
   test "multi-asset namespace inheritance is compile-order independent" do
     root = Module.concat(__MODULE__, "MultiRoot#{System.unique_integer([:positive])}")
     raw = Module.concat(root, Raw)

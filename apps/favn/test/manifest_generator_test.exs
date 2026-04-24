@@ -119,6 +119,51 @@ defmodule Favn.Manifest.GeneratorTest do
            ]
   end
 
+  test "generates manifest for same-batch SQL asset namespace inheritance" do
+    root = Module.concat(__MODULE__, "ParallelSQLRoot#{System.unique_integer([:positive])}")
+    gold = Module.concat(root, Gold)
+    asset = Module.concat(gold, ExecutiveOverview)
+
+    compile_modules_to_path!([
+      {"sql_asset.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.Namespace
+         use Favn.SQLAsset
+
+         @materialized :view
+         query do
+           ~SQL\"\"\"
+           select * from executive_overview
+           \"\"\"
+         end
+       end
+       """},
+      {"root.ex",
+       """
+       defmodule #{inspect(root)} do
+         Process.sleep(700)
+         use Favn.Namespace, relation: [connection: :warehouse]
+       end
+       """},
+      {"gold.ex",
+       """
+       defmodule #{inspect(gold)} do
+         Process.sleep(700)
+         use Favn.Namespace, relation: [schema: :gold]
+       end
+       """}
+    ])
+
+    assert {:ok, %Manifest{} = manifest} = Favn.generate_manifest(asset_modules: [asset])
+
+    assert [manifest_asset] = manifest.assets
+    assert manifest_asset.ref == {asset, :asset}
+    assert manifest_asset.relation.connection == :warehouse
+    assert manifest_asset.relation.schema == "gold"
+    assert manifest_asset.relation.name == "executive_overview"
+  end
+
   test "lists assets with inferred dependencies when given a module list" do
     assert {:ok, assets} =
              Favn.list_assets([RelationOrders, RelationCustomers, RelationCustomer360])
@@ -160,5 +205,29 @@ defmodule Favn.Manifest.GeneratorTest do
 
     assert version.manifest_version_id == "mv_test_facade_001"
     assert version.content_hash == hash
+  end
+
+  defp compile_modules_to_path!(entries) when is_list(entries) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_manifest_parallel_modules_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(dir)
+
+    files =
+      Enum.map(entries, fn {name, source} ->
+        file_path = Path.join(dir, name)
+        File.write!(file_path, source)
+        file_path
+      end)
+
+    Code.prepend_path(dir)
+
+    assert {:ok, _modules, _diagnostics} =
+             Kernel.ParallelCompiler.compile_to_path(files, dir, return_diagnostics: true)
+
+    :ok
   end
 end

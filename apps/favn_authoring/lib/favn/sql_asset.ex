@@ -313,6 +313,9 @@ defmodule Favn.SQLAsset do
       @doc false
       @spec __favn_sql_asset_definition__() :: Favn.SQLAsset.Definition.t()
       def __favn_sql_asset_definition__ do
+        # Intentionally finalizes outside @before_compile so namespace inheritance
+        # does not depend on same-batch parent module compile order.
+        # Do not call from DSL macros during compilation.
         Favn.SQLAsset.finalize_raw_definition(unquote(Macro.escape(raw_definition)))
       end
 
