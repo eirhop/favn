@@ -2,6 +2,7 @@ defmodule Favn.Dev.RuntimeSource do
   @moduledoc false
 
   alias Favn.Dev.Paths
+  alias Favn.Dev.RuntimeTreePolicy
 
   @type source_kind :: :root_override | :cwd | :dependency_checkout
 
@@ -9,22 +10,6 @@ defmodule Favn.Dev.RuntimeSource do
           kind: source_kind(),
           root: Path.t()
         }
-
-  @fingerprinted_entries ["mix.exs", "mix.lock", "config", "apps", "web/favn_web"]
-  @optional_fingerprinted_entries MapSet.new(["mix.exs", "mix.lock", "config"])
-
-  @ignored_fingerprint_entries MapSet.new([
-                                 ".elixir_ls",
-                                 ".favn",
-                                 ".git",
-                                 ".svelte-kit",
-                                 "_build",
-                                 "cover",
-                                 "deps",
-                                 "dist",
-                                 "node_modules",
-                                 "test-results"
-                               ])
 
   @spec resolve(keyword()) :: {:ok, t()} | {:error, term()}
   def resolve(opts) when is_list(opts) do
@@ -153,18 +138,20 @@ defmodule Favn.Dev.RuntimeSource do
            Enum.count(sorted_records, &match?({:file, _relative, _size, _sha256}, &1)),
          "directory_count" => Enum.count(sorted_records, &match?({:directory, _relative}, &1)),
          "byte_count" => byte_count(sorted_records),
-         "entries" => @fingerprinted_entries,
-         "ignored_entries" => @ignored_fingerprint_entries |> MapSet.to_list() |> Enum.sort()
+          "entries" => RuntimeTreePolicy.entries(),
+          "ignored_entries" => RuntimeTreePolicy.ignored_entries() |> Enum.sort()
        }}
     end
   end
 
   defp fingerprint_records(root) do
-    Enum.reduce_while(@fingerprinted_entries, {:ok, []}, fn relative, {:ok, acc} ->
+    optional_entries = RuntimeTreePolicy.optional_entries()
+
+    Enum.reduce_while(RuntimeTreePolicy.entries(), {:ok, []}, fn relative, {:ok, acc} ->
       path = Path.join(root, relative)
 
       cond do
-        not File.exists?(path) and MapSet.member?(@optional_fingerprinted_entries, relative) ->
+        not File.exists?(path) and relative in optional_entries ->
           {:cont, {:ok, acc}}
 
         not File.exists?(path) ->
@@ -204,7 +191,7 @@ defmodule Favn.Dev.RuntimeSource do
         Enum.reduce_while(entries, {:ok, [{:directory, normalize_relative(relative)}]}, fn entry,
                                                                                            {:ok,
                                                                                             acc} ->
-          if MapSet.member?(@ignored_fingerprint_entries, entry) do
+          if entry in RuntimeTreePolicy.ignored_entries() do
             {:cont, {:ok, acc}}
           else
             child_path = Path.join(path, entry)

@@ -20,6 +20,10 @@ defmodule Favn.Dev.InstallTest do
     File.mkdir_p!(Path.join(root_dir, "web/favn_web/dist"))
     File.write!(Path.join(root_dir, "web/favn_web/node_modules/.bin/vite"), "vite")
     File.write!(Path.join(root_dir, "web/favn_web/dist/index.html"), "built")
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_runner/_build/dev/lib/generated"))
+    File.write!(Path.join(root_dir, "apps/favn_runner/_build/dev/lib/generated/file"), "beam")
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_runner/deps/generated"))
+    File.write!(Path.join(root_dir, "apps/favn_runner/deps/generated/file"), "dep")
 
     File.write!(
       Path.join(root_dir, "apps/favn_runner/mix.exs"),
@@ -76,6 +80,12 @@ defmodule Favn.Dev.InstallTest do
            )
 
     refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root/web/favn_web/dist"))
+
+    refute File.exists?(
+             Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/_build")
+           )
+
+    refute File.exists?(Path.join(root_dir, ".favn/install/runtime_root/apps/favn_runner/deps"))
   end
 
   test "run/1 returns already_installed when fingerprint matches", %{root_dir: root_dir} do

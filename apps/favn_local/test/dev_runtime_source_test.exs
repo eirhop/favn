@@ -2,6 +2,7 @@ defmodule Favn.Dev.RuntimeSourceTest do
   use ExUnit.Case, async: true
 
   alias Favn.Dev.RuntimeSource
+  alias Favn.Dev.RuntimeTreePolicy
 
   setup do
     tmp_dir =
@@ -70,6 +71,19 @@ defmodule Favn.Dev.RuntimeSourceTest do
 
     assert get_in(first, ["runtime_source_tree", "sha256"]) ==
              get_in(second, ["runtime_source_tree", "sha256"])
+  end
+
+  test "fingerprint metadata reports the shared runtime tree policy", %{tmp_dir: tmp_dir} do
+    runtime_root = Path.join(tmp_dir, "favn")
+    create_runtime_root!(runtime_root)
+
+    assert {:ok, fingerprint} =
+             RuntimeSource.fingerprint(%{kind: :dependency_checkout, root: runtime_root})
+
+    assert get_in(fingerprint, ["runtime_source_tree", "entries"]) == RuntimeTreePolicy.entries()
+
+    assert get_in(fingerprint, ["runtime_source_tree", "ignored_entries"]) ==
+             Enum.sort(RuntimeTreePolicy.ignored_entries())
   end
 
   defp create_runtime_root!(runtime_root) do

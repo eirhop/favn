@@ -3,10 +3,10 @@ defmodule Favn.Dev.RuntimeWorkspace do
 
   alias Favn.Dev.Paths
   alias Favn.Dev.RuntimeSource
+  alias Favn.Dev.RuntimeTreePolicy
   alias Favn.Dev.State
 
   @schema_version 1
-  @ignored_entries MapSet.new([".favn", "node_modules", "dist", ".svelte-kit", "test-results"])
 
   @spec materialize(RuntimeSource.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def materialize(%{root: source_root, kind: kind}, opts) when is_list(opts) do
@@ -39,15 +39,14 @@ defmodule Favn.Dev.RuntimeWorkspace do
   end
 
   defp copy_required_entries(source_root, runtime_root) do
-    entries = ["mix.exs", "mix.lock", "config", "apps", "web/favn_web"]
-    optional = ["mix.exs", "mix.lock", "config"]
+    optional_entries = RuntimeTreePolicy.optional_entries()
 
-    Enum.reduce_while(entries, :ok, fn relative, :ok ->
+    Enum.reduce_while(RuntimeTreePolicy.entries(), :ok, fn relative, :ok ->
       source = Path.join(source_root, relative)
       destination = Path.join(runtime_root, relative)
 
       cond do
-        not File.exists?(source) and relative in optional ->
+        not File.exists?(source) and relative in optional_entries ->
           {:cont, :ok}
 
         not File.exists?(source) ->
@@ -89,7 +88,7 @@ defmodule Favn.Dev.RuntimeWorkspace do
     with :ok <- File.mkdir_p(destination),
          {:ok, entries} <- File.ls(source) do
       Enum.reduce_while(entries, :ok, fn entry, :ok ->
-        if MapSet.member?(@ignored_entries, entry) do
+        if entry in RuntimeTreePolicy.ignored_entries() do
           {:cont, :ok}
         else
           child_source = Path.join(source, entry)
