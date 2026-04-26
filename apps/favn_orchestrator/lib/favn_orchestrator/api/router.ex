@@ -166,6 +166,17 @@ defmodule FavnOrchestrator.API.Router do
       {:error, {:manifest_content_hash_mismatch, _expected, _computed}} ->
         error(conn, 422, "validation_failed", "Manifest content hash does not match payload")
 
+      {:error, {:manifest_schema_version_mismatch, _expected, _actual}} ->
+        error(conn, 422, "validation_failed", "Manifest schema version does not match payload")
+
+      {:error, {:manifest_runner_contract_version_mismatch, _expected, _actual}} ->
+        error(
+          conn,
+          422,
+          "validation_failed",
+          "Manifest runner contract version does not match payload"
+        )
+
       {:error, :manifest_version_conflict} ->
         error(
           conn,

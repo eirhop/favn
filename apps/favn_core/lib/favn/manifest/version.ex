@@ -7,6 +7,7 @@ defmodule Favn.Manifest.Version do
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Identity
   alias Favn.Manifest.Rehydrate
+  alias Favn.Manifest.Serializer
 
   @type t :: %__MODULE__{
           manifest_version_id: String.t(),
@@ -49,6 +50,7 @@ defmodule Favn.Manifest.Version do
           | {:manifest_schema_version_mismatch, pos_integer(), pos_integer()}
           | {:manifest_runner_contract_version_mismatch, pos_integer(), pos_integer()}
           | Rehydrate.error()
+          | Serializer.error()
           | Compatibility.error()
           | Identity.error()
 
@@ -59,14 +61,15 @@ defmodule Favn.Manifest.Version do
 
     with :ok <- validate_opts(opts),
          {:ok, canonical_manifest} <- Rehydrate.manifest(manifest),
-         :ok <- Compatibility.validate_manifest(canonical_manifest),
-         {:ok, schema_version} <- read_field(canonical_manifest, :schema_version),
+         {:ok, stable_manifest} <- canonicalize_manifest(canonical_manifest),
+         :ok <- Compatibility.validate_manifest(stable_manifest),
+         {:ok, schema_version} <- read_field(stable_manifest, :schema_version),
          {:ok, runner_contract_version} <-
-           read_field(canonical_manifest, :runner_contract_version),
+           read_field(stable_manifest, :runner_contract_version),
          :ok <- validate_manifest_version_id(manifest_version_id),
          :ok <- validate_serialization_format(serialization_format),
          {:ok, content_hash} <-
-           Identity.hash_manifest(canonical_manifest,
+           Identity.hash_manifest(stable_manifest,
              algorithm: Keyword.get(opts, :hash_algorithm, :sha256)
            ) do
       {:ok,
@@ -76,7 +79,7 @@ defmodule Favn.Manifest.Version do
          schema_version: schema_version,
          runner_contract_version: runner_contract_version,
          serialization_format: serialization_format,
-         manifest: canonical_manifest,
+         manifest: stable_manifest,
          inserted_at: Keyword.get(opts, :inserted_at)
        }}
     end
@@ -92,10 +95,11 @@ defmodule Favn.Manifest.Version do
   @spec from_published(map() | struct(), [published_opt()]) :: {:ok, t()} | {:error, error()}
   def from_published(manifest, opts) when is_list(opts) do
     with :ok <- validate_published_opts(opts),
+         {:ok, manifest_version_id} <- fetch_manifest_version_id(opts),
          {:ok, expected_hash} <- fetch_content_hash(opts),
          {:ok, version} <-
            new(manifest,
-             manifest_version_id: Keyword.get(opts, :manifest_version_id),
+             manifest_version_id: manifest_version_id,
              serialization_format: Keyword.get(opts, :serialization_format, "json-v1"),
              inserted_at: Keyword.get(opts, :inserted_at),
              hash_algorithm: Keyword.get(opts, :hash_algorithm, :sha256)
@@ -124,19 +128,27 @@ defmodule Favn.Manifest.Version do
          :ok <- validate_content_hash(version.content_hash),
          :ok <- validate_serialization_format(version.serialization_format),
          {:ok, canonical_manifest} <- Rehydrate.manifest(version.manifest),
-         :ok <- Compatibility.validate_manifest(canonical_manifest),
-         {:ok, schema_version} <- read_field(canonical_manifest, :schema_version),
+         {:ok, stable_manifest} <- canonicalize_manifest(canonical_manifest),
+         :ok <- Compatibility.validate_manifest(stable_manifest),
+         {:ok, schema_version} <- read_field(stable_manifest, :schema_version),
          :ok <- match_schema_version(schema_version, version.schema_version),
          {:ok, runner_contract_version} <-
-           read_field(canonical_manifest, :runner_contract_version),
+           read_field(stable_manifest, :runner_contract_version),
          :ok <-
            match_runner_contract_version(
              runner_contract_version,
              version.runner_contract_version
            ),
-         {:ok, computed_hash} <- Identity.hash_manifest(canonical_manifest),
+         {:ok, computed_hash} <- Identity.hash_manifest(stable_manifest),
          :ok <- match_content_hash(computed_hash, version.content_hash) do
-      {:ok, %{version | manifest: canonical_manifest}}
+      {:ok, %{version | manifest: stable_manifest}}
+    end
+  end
+
+  defp canonicalize_manifest(manifest) do
+    with {:ok, encoded} <- Serializer.encode_manifest(manifest),
+         {:ok, decoded} <- Serializer.decode_manifest(encoded) do
+      Rehydrate.manifest(decoded)
     end
   end
 
@@ -175,8 +187,18 @@ defmodule Favn.Manifest.Version do
 
   defp fetch_content_hash(opts) do
     case Keyword.get(opts, :content_hash) do
+      value when is_binary(value) and value != "" ->
+        with :ok <- validate_content_hash(value), do: {:ok, value}
+
+      value ->
+        {:error, {:invalid_content_hash, value}}
+    end
+  end
+
+  defp fetch_manifest_version_id(opts) do
+    case Keyword.get(opts, :manifest_version_id) do
       value when is_binary(value) and value != "" -> {:ok, value}
-      value -> {:error, {:invalid_content_hash, value}}
+      value -> {:error, {:invalid_manifest_version_id, value}}
     end
   end
 
