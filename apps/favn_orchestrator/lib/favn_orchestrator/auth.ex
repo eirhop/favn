@@ -16,6 +16,8 @@ defmodule FavnOrchestrator.Auth do
     display_name =
       Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name, "Favn Admin")
 
+    roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
+
     cond do
       not is_binary(username) or username == "" ->
         :ok
@@ -24,7 +26,7 @@ defmodule FavnOrchestrator.Auth do
         :ok
 
       true ->
-        case Store.create_actor(username, password, display_name, [:admin]) do
+        case Store.create_actor(username, password, display_name, roles) do
           {:ok, _actor} -> :ok
           {:error, :username_taken} -> :ok
           {:error, reason} -> {:error, reason}

@@ -64,6 +64,12 @@ defmodule Mix.Tasks.Favn.Run do
       {:error, {:run_wait_timeout, run_id}} ->
         Mix.raise("timed out waiting for run #{run_id}")
 
+      {:error, {:invalid_option, :timeout_ms}} ->
+        Mix.raise("--timeout-ms must be greater than 0")
+
+      {:error, {:invalid_option, :poll_interval_ms}} ->
+        Mix.raise("--poll-interval-ms must be greater than 0")
+
       {:error, reason} ->
         Mix.raise("run failed: #{inspect(reason)}")
     end

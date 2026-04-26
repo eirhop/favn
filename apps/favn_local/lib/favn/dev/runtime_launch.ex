@@ -141,7 +141,8 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => secrets["service_token"],
           "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => secrets["local_operator_username"],
           "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => secrets["local_operator_password"],
-          "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Local Operator"
+          "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Local Operator",
+          "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" => "operator"
         })
     }
   end

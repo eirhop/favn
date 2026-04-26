@@ -23,7 +23,8 @@ defmodule Favn.Dev.Run do
   def pipeline(pipeline_module, opts \\ [])
 
   def pipeline(pipeline_module, opts) when is_atom(pipeline_module) or is_binary(pipeline_module) do
-    with :ok <- ensure_running(opts),
+    with :ok <- validate_opts(opts),
+         :ok <- ensure_running(opts),
          {:ok, runtime, secrets} <- read_runtime_snapshot(opts),
          {:ok, credentials} <- local_credentials(secrets),
          {:ok, session_context} <-
@@ -49,6 +50,21 @@ defmodule Favn.Dev.Run do
   end
 
   def pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
+
+  defp validate_opts(opts) do
+    case validate_positive_integer(opts, :timeout_ms) do
+      :ok -> validate_positive_integer(opts, :poll_interval_ms)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_positive_integer(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :ok
+      {:ok, value} when is_integer(value) and value > 0 -> :ok
+      {:ok, _value} -> {:error, {:invalid_option, key}}
+    end
+  end
 
   @doc false
   @spec resolve_pipeline_target(map(), module() | String.t()) :: {:ok, map()} | {:error, term()}

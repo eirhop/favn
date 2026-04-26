@@ -23,11 +23,13 @@ defmodule FavnOrchestrator.API.RouterTest do
     previous_username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)
     previous_password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
     previous_display = Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name)
+    previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, ["test-service-token"])
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Admin User")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
 
     auth_start = ensure_auth_store_started()
     :ok = AuthStore.reset()
@@ -39,6 +41,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       restore_env(:favn_orchestrator, :auth_bootstrap_username, previous_username)
       restore_env(:favn_orchestrator, :auth_bootstrap_password, previous_password)
       restore_env(:favn_orchestrator, :auth_bootstrap_display_name, previous_display)
+      restore_env(:favn_orchestrator, :auth_bootstrap_roles, previous_roles)
       maybe_stop_auth_store(auth_start)
     end)
 
@@ -146,6 +149,18 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 401
     assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "bootstrap roles can create operator-scoped local actor" do
+    :ok = AuthStore.reset()
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "operator")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "operator-password")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Operator User")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, ["operator"])
+
+    assert :ok = Auth.bootstrap_admin()
+    assert {:ok, _session, actor} = Auth.password_login("operator", "operator-password")
+    assert actor.roles == [:operator]
   end
 
   test "lists schedules from active manifest when scheduler runtime is not running" do

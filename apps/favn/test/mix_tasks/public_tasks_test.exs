@@ -166,6 +166,16 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     end
   end
 
+  test "mix favn.run validates numeric options" do
+    assert_raise Mix.Error, ~r/--timeout-ms must be greater than 0/, fn ->
+      RunTask.run(["Example.Pipeline", "--timeout-ms", "0"])
+    end
+
+    assert_raise Mix.Error, ~r/--poll-interval-ms must be greater than 0/, fn ->
+      RunTask.run(["Example.Pipeline", "--poll-interval-ms", "0"])
+    end
+  end
+
   test "mix favn.install writes install state", %{root_dir: root_dir} do
     output =
       capture_io(fn ->
