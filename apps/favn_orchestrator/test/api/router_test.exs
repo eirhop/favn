@@ -34,7 +34,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     auth_start = ensure_auth_store_started()
     :ok = AuthStore.reset()
     Memory.reset()
-    :ok = Auth.bootstrap_admin()
+    :ok = Auth.bootstrap_configured_actor()
 
     on_exit(fn ->
       restore_env(:favn_orchestrator, :api_service_tokens, previous_tokens)
@@ -158,7 +158,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Operator User")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, ["operator"])
 
-    assert :ok = Auth.bootstrap_admin()
+    assert :ok = Auth.bootstrap_configured_actor()
     assert {:ok, _session, actor} = Auth.password_login("operator", "operator-password")
     assert actor.roles == [:operator]
   end

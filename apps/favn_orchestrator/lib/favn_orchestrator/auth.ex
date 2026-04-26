@@ -8,8 +8,8 @@ defmodule FavnOrchestrator.Auth do
   @type actor :: Store.actor()
   @type session :: Store.session()
 
-  @spec bootstrap_admin() :: :ok | {:error, term()}
-  def bootstrap_admin do
+  @spec bootstrap_configured_actor() :: :ok | {:error, term()}
+  def bootstrap_configured_actor do
     username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)
     password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
 

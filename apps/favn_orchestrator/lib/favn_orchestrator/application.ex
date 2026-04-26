@@ -28,7 +28,7 @@ defmodule FavnOrchestrator.Application do
                strategy: :one_for_one,
                name: FavnOrchestrator.Supervisor
              ),
-           :ok <- Auth.bootstrap_admin() do
+           :ok <- Auth.bootstrap_configured_actor() do
         {:ok, supervisor}
       end
     end
