@@ -7,7 +7,11 @@ defmodule FavnOrchestrator.ManifestStore do
   alias FavnOrchestrator.Storage
 
   @spec register_manifest(Version.t()) :: :ok | {:error, term()}
-  def register_manifest(%Version{} = version), do: Storage.put_manifest_version(version)
+  def register_manifest(%Version{} = version) do
+    with {:ok, verified} <- Version.verify(version) do
+      Storage.put_manifest_version(verified)
+    end
+  end
 
   @spec get_manifest(String.t()) :: {:ok, Version.t()} | {:error, term()}
   def get_manifest(manifest_version_id) when is_binary(manifest_version_id) do

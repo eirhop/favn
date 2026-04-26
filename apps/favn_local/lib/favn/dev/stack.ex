@@ -493,14 +493,18 @@ defmodule Favn.Dev.Stack do
              opts
            ),
          {:ok, _published} <-
-           OrchestratorClient.publish_manifest(
-             config.orchestrator_base_url,
-             secrets["service_token"],
-             %{
-               manifest_version_id: version.manifest_version_id,
-               manifest: version.manifest
-             }
-           ),
+            OrchestratorClient.publish_manifest(
+              config.orchestrator_base_url,
+              secrets["service_token"],
+              %{
+                manifest_version_id: version.manifest_version_id,
+                content_hash: version.content_hash,
+                schema_version: version.schema_version,
+                runner_contract_version: version.runner_contract_version,
+                serialization_format: version.serialization_format,
+                manifest: version.manifest
+              }
+            ),
          {:ok, _activated} <-
            OrchestratorClient.activate_manifest(
              config.orchestrator_base_url,

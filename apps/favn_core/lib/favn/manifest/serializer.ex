@@ -51,6 +51,13 @@ defmodule Favn.Manifest.Serializer do
 
   defp normalize_value(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
+  defp normalize_value(%MapSet{} = set) do
+    set
+    |> MapSet.to_list()
+    |> Enum.sort_by(&inspect/1)
+    |> normalize_value()
+  end
+
   defp normalize_value(%_{} = struct) do
     struct
     |> Map.from_struct()

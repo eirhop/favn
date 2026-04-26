@@ -154,6 +154,10 @@ defmodule Favn.Dev.Reload do
       token when is_binary(token) and token != "" ->
         OrchestratorClient.publish_manifest(base_url, token, %{
           manifest_version_id: version.manifest_version_id,
+          content_hash: version.content_hash,
+          schema_version: version.schema_version,
+          runner_contract_version: version.runner_contract_version,
+          serialization_format: version.serialization_format,
           manifest: version.manifest
         })
 

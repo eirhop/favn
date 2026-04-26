@@ -260,6 +260,10 @@ defmodule FavnOrchestrator.API.RouterTest do
     response =
       conn(:post, "/api/orchestrator/v1/manifests", %{
         manifest_version_id: version.manifest_version_id,
+        content_hash: version.content_hash,
+        schema_version: version.schema_version,
+        runner_contract_version: version.runner_contract_version,
+        serialization_format: version.serialization_format,
         manifest: version.manifest
       })
       |> put_req_header("authorization", "Bearer test-service-token")
@@ -280,9 +284,18 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> Map.from_struct()
       |> Map.put(:metadata, %{changed: true})
 
+    assert {:ok, conflicting_version} =
+             Version.new(conflicting_manifest,
+               manifest_version_id: version.manifest_version_id
+             )
+
     response =
       conn(:post, "/api/orchestrator/v1/manifests", %{
-        manifest_version_id: version.manifest_version_id,
+        manifest_version_id: conflicting_version.manifest_version_id,
+        content_hash: conflicting_version.content_hash,
+        schema_version: conflicting_version.schema_version,
+        runner_contract_version: conflicting_version.runner_contract_version,
+        serialization_format: conflicting_version.serialization_format,
         manifest: conflicting_manifest
       })
       |> put_req_header("authorization", "Bearer test-service-token")
@@ -290,6 +303,25 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 409
     assert %{"error" => %{"code" => "manifest_conflict"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "rejects manifest publication when supplied hash does not match payload" do
+    version = schedule_manifest_version("mv_register_hash_mismatch")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests", %{
+        manifest_version_id: version.manifest_version_id,
+        content_hash: String.duplicate("0", 64),
+        schema_version: version.schema_version,
+        runner_contract_version: version.runner_contract_version,
+        serialization_format: version.serialization_format,
+        manifest: version.manifest
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 422
+    assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
   end
 
   test "forbids non-operator manifest activation" do

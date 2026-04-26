@@ -31,10 +31,12 @@ defmodule FavnOrchestrator.Storage.ManifestCodecTest do
     version = manifest_version("mv_codec_mismatch")
     assert {:ok, record} = ManifestCodec.to_record(version)
 
-    mismatch = %{record | content_hash: "wrong_hash"}
+    mismatch = %{record | content_hash: String.duplicate("0", 64)}
 
-    assert {:error, {:manifest_content_hash_mismatch, "wrong_hash", _actual}} =
+    assert {:error, {:manifest_content_hash_mismatch, expected, _actual}} =
              ManifestCodec.from_record(mismatch)
+
+    assert expected == String.duplicate("0", 64)
   end
 
   test "preserves content hash invariant across raw decode and rehydration" do

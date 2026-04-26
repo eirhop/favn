@@ -45,4 +45,27 @@ defmodule FavnReferenceWorkload.ManifestGenerationTest do
     assert pipeline.name == :reference_workload_daily
     assert pipeline.deps == :all
   end
+
+  test "manifest content hash is stable across JSON publication boundary" do
+    assert {:ok, build} = FavnAuthoring.build_manifest()
+    assert {:ok, original} = FavnAuthoring.pin_manifest_version(build.manifest)
+    assert {:ok, public_hash} = FavnAuthoring.hash_manifest(build.manifest)
+    assert public_hash == original.content_hash
+
+    decoded =
+      build.manifest
+      |> Favn.Manifest.Serializer.encode_manifest!()
+      |> JSON.decode!()
+
+    assert {:ok, verified} =
+             Favn.Manifest.Version.from_published(decoded,
+               manifest_version_id: original.manifest_version_id,
+               content_hash: original.content_hash,
+               schema_version: original.schema_version,
+               runner_contract_version: original.runner_contract_version,
+               serialization_format: original.serialization_format
+             )
+
+    assert verified.content_hash == original.content_hash
+  end
 end

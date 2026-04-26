@@ -1,8 +1,6 @@
 defmodule FavnOrchestrator.Storage.ManifestCodec do
   @moduledoc false
 
-  alias Favn.Manifest.Identity
-  alias Favn.Manifest.Rehydrate
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
 
@@ -38,23 +36,15 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
          {:ok, content_hash} <- fetch_non_empty_binary(record, :content_hash),
          {:ok, serialization_format} <- fetch_non_empty_binary(record, :serialization_format),
          {:ok, manifest_json} <- fetch_non_empty_binary(record, :manifest_json),
-         {:ok, raw_manifest} <- Serializer.decode_manifest(manifest_json),
-         {:ok, raw_content_hash} <- Identity.hash_manifest(raw_manifest),
-         :ok <- verify_content_hash(raw_content_hash, content_hash),
-         {:ok, manifest} <- Rehydrate.manifest(raw_manifest),
-         {:ok, version} <-
-           Version.new(manifest,
-             manifest_version_id: manifest_version_id,
-             serialization_format: serialization_format,
-             inserted_at: Map.get(record, :inserted_at)
-           ),
-         :ok <- verify_schema(version.schema_version, Map.get(record, :schema_version)),
-         :ok <-
-           verify_runner_contract(
-             version.runner_contract_version,
-             Map.get(record, :runner_contract_version)
-           ) do
-      {:ok, version}
+         {:ok, raw_manifest} <- Serializer.decode_manifest(manifest_json) do
+      Version.from_published(raw_manifest,
+        manifest_version_id: manifest_version_id,
+        content_hash: content_hash,
+        schema_version: Map.get(record, :schema_version),
+        runner_contract_version: Map.get(record, :runner_contract_version),
+        serialization_format: serialization_format,
+        inserted_at: Map.get(record, :inserted_at)
+      )
     end
   end
 
@@ -64,19 +54,4 @@ defmodule FavnOrchestrator.Storage.ManifestCodec do
       value -> {:error, {:invalid_manifest_record_field, key, value}}
     end
   end
-
-  defp verify_content_hash(actual, actual), do: :ok
-
-  defp verify_content_hash(actual, expected),
-    do: {:error, {:manifest_content_hash_mismatch, expected, actual}}
-
-  defp verify_schema(actual, actual), do: :ok
-
-  defp verify_schema(actual, expected),
-    do: {:error, {:manifest_schema_mismatch, expected, actual}}
-
-  defp verify_runner_contract(actual, actual), do: :ok
-
-  defp verify_runner_contract(actual, expected),
-    do: {:error, {:manifest_runner_contract_mismatch, expected, actual}}
 end

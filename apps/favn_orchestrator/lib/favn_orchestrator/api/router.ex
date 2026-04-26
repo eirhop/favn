@@ -160,6 +160,23 @@ defmodule FavnOrchestrator.API.Router do
       {:error, {:invalid_manifest_version_id, _value}} ->
         error(conn, 422, "validation_failed", "Invalid manifest version id")
 
+      {:error, {:invalid_content_hash, _value}} ->
+        error(conn, 422, "validation_failed", "Invalid manifest content hash")
+
+      {:error, {:manifest_content_hash_mismatch, _expected, _computed}} ->
+        error(conn, 422, "validation_failed", "Manifest content hash does not match payload")
+
+      {:error, {:manifest_schema_version_mismatch, _expected, _actual}} ->
+        error(conn, 422, "validation_failed", "Manifest schema version does not match payload")
+
+      {:error, {:manifest_runner_contract_version_mismatch, _expected, _actual}} ->
+        error(
+          conn,
+          422,
+          "validation_failed",
+          "Manifest runner contract version does not match payload"
+        )
+
       {:error, :manifest_version_conflict} ->
         error(
           conn,
@@ -837,7 +854,7 @@ defmodule FavnOrchestrator.API.Router do
   defp build_manifest_version(params) when is_map(params) do
     with %{} = manifest <- Map.get(params, "manifest"),
          opts <- manifest_version_opts(params),
-         {:ok, version} <- Version.new(manifest, opts) do
+         {:ok, version} <- Version.from_published(manifest, opts) do
       {:ok, version}
     else
       nil -> {:error, {:missing_field, "manifest"}}
@@ -847,11 +864,24 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp manifest_version_opts(params) when is_map(params) do
-    case Map.get(params, "manifest_version_id") do
-      value when is_binary(value) and value != "" -> [manifest_version_id: value]
-      _other -> []
-    end
+    []
+    |> put_manifest_version_opt(:manifest_version_id, Map.get(params, "manifest_version_id"))
+    |> put_manifest_version_opt(:content_hash, Map.get(params, "content_hash"))
+    |> put_manifest_version_opt(:schema_version, Map.get(params, "schema_version"))
+    |> put_manifest_version_opt(
+      :runner_contract_version,
+      Map.get(params, "runner_contract_version")
+    )
+    |> put_manifest_version_opt(:serialization_format, Map.get(params, "serialization_format"))
   end
+
+  defp put_manifest_version_opt(opts, key, value) when is_integer(value),
+    do: Keyword.put(opts, key, value)
+
+  defp put_manifest_version_opt(opts, key, value) when is_binary(value) and value != "",
+    do: Keyword.put(opts, key, value)
+
+  defp put_manifest_version_opt(opts, _key, _value), do: opts
 
   defp fetch_actor_display_name(params, username) when is_map(params) and is_binary(username) do
     case Map.get(params, "display_name") do
