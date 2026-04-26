@@ -5,7 +5,6 @@ defmodule FavnRunner.ManifestStore do
 
   use GenServer
 
-  alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Version
 
   @type state :: %{versions: %{required(String.t()) => Version.t()}}
@@ -67,7 +66,7 @@ defmodule FavnRunner.ManifestStore do
   end
 
   defp register_version(%Version{} = version, state) do
-    with :ok <- Compatibility.validate_manifest(version.manifest) do
+    with {:ok, verified} <- Version.verify(version) do
       case Map.fetch(state.versions, version.manifest_version_id) do
         {:ok, %Version{content_hash: existing_hash}} when existing_hash == version.content_hash ->
           {:ok, state}
@@ -79,7 +78,7 @@ defmodule FavnRunner.ManifestStore do
 
         :error ->
           {:ok,
-           %{state | versions: Map.put(state.versions, version.manifest_version_id, version)}}
+           %{state | versions: Map.put(state.versions, verified.manifest_version_id, verified)}}
       end
     end
   end

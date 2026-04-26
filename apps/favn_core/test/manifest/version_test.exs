@@ -66,6 +66,46 @@ defmodule Favn.Manifest.VersionTest do
     assert version.content_hash == manifest_hash
   end
 
+  test "verifies published manifest version envelopes without minting a new identity" do
+    manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
+
+    assert {:ok, original} =
+             Version.new(manifest,
+               manifest_version_id: "mv_published_envelope",
+               inserted_at: ~U[2026-01-01 00:00:00Z]
+             )
+
+    assert {:ok, verified} =
+             Version.from_published(original.manifest,
+               manifest_version_id: original.manifest_version_id,
+               content_hash: original.content_hash,
+               schema_version: original.schema_version,
+               runner_contract_version: original.runner_contract_version,
+               serialization_format: original.serialization_format,
+               inserted_at: original.inserted_at
+             )
+
+    assert verified.manifest_version_id == original.manifest_version_id
+    assert verified.content_hash == original.content_hash
+    assert verified.schema_version == original.schema_version
+    assert verified.runner_contract_version == original.runner_contract_version
+    assert verified.serialization_format == original.serialization_format
+    assert verified.inserted_at == original.inserted_at
+  end
+
+  test "rejects published manifest version envelopes with mismatched hashes" do
+    manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
+
+    assert {:error, {:manifest_content_hash_mismatch, expected, computed}} =
+             Version.from_published(manifest,
+               manifest_version_id: "mv_bad_hash",
+               content_hash: String.duplicate("0", 64)
+             )
+
+    assert expected == String.duplicate("0", 64)
+    assert byte_size(computed) == 64
+  end
+
   test "envelope versions are derived from manifest payload" do
     manifest = %{schema_version: 1, runner_contract_version: 1, assets: []}
 
@@ -175,6 +215,58 @@ defmodule Favn.Manifest.VersionTest do
                trigger: %{kind: :manual},
                params: %{}
              )
+  end
+
+  test "keeps content hash stable across JSON roundtrip" do
+    ref = {MyApp.Assets.Roundtrip, :asset}
+
+    manifest = %Manifest{
+      schema_version: 1,
+      runner_contract_version: 1,
+      assets: [
+        %Asset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: :asset,
+          type: :elixir,
+          execution: %{entrypoint: :asset, arity: 1},
+          depends_on: [],
+          metadata: %{category: :sales, tags: [:gold]}
+        }
+      ],
+      pipelines: [
+        %Pipeline{
+          module: MyApp.Pipelines.Roundtrip,
+          name: :roundtrip,
+          selectors: [{:asset, ref}],
+          deps: :all,
+          schedule:
+            {:inline,
+             %Schedule{
+               module: MyApp.Pipelines.Roundtrip,
+               name: :roundtrip,
+               ref: {MyApp.Pipelines.Roundtrip, :roundtrip},
+               kind: :cron,
+               cron: "*/15 * * * * *",
+               timezone: "Etc/UTC",
+               missed: :skip,
+               overlap: :allow,
+               active: true,
+               origin: :inline
+             }}
+        }
+      ],
+      schedules: [],
+      graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
+      metadata: %{}
+    }
+
+    assert {:ok, original} = Version.new(manifest, manifest_version_id: "mv_roundtrip")
+    assert {:ok, encoded} = Serializer.encode_manifest(manifest)
+    assert {:ok, decoded} = Serializer.decode_manifest(encoded)
+    assert {:ok, roundtrip} = Version.new(decoded, manifest_version_id: "mv_roundtrip")
+
+    assert roundtrip.content_hash == original.content_hash
   end
 
   test "rehydrates manifest module references without loading user modules" do
