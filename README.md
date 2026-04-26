@@ -37,7 +37,7 @@ development on top of the new boundaries.
 
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
-- local development tooling is available today through `mix favn.install`, `mix favn.dev`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- local development tooling is available today through `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
@@ -226,6 +226,7 @@ Favn includes a local developer loop for running the current project with the Fa
 ```bash
 mix favn.install
 mix favn.dev
+mix favn.run MyApp.Pipelines.DailySales
 mix favn.logs
 mix favn.status
 mix favn.reload
@@ -252,6 +253,11 @@ favn.dev` validates that fingerprint and compiles the installed runtime
 workspace before startup so live runner/orchestrator processes do not boot stale
 internal runtime beams. `--root-dir` remains an install/runtime-source override
 for split-root workflows.
+
+`mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
+currently running local stack. It uses the project-local service token and local
+operator credentials generated under `.favn/secrets.json`, so tutorial and local
+smoke runs do not require hand-written private orchestrator API requests.
 
 If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current

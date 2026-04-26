@@ -74,6 +74,32 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert_receive {:request_path, "/api/orchestrator/v1/health"}
   end
 
+  test "password_login/4 returns forwarded session context" do
+    body = ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})
+    {:ok, base_url, _server} = start_server(body, 201)
+
+    assert {:ok, %{"actor_id" => "act_1", "session_id" => "sess_1"}} =
+             OrchestratorClient.password_login(base_url, "token", "user", "password-1")
+  end
+
+  test "submit_run/4 sends forwarded actor and session headers" do
+    parent = self()
+    body = ~s({"data":{"run":{"id":"run_1","status":"running"}}})
+    {:ok, base_url, _server} = start_server(body, 201, parent: parent)
+
+    assert {:ok, %{"id" => "run_1"}} =
+             OrchestratorClient.submit_run(
+               base_url,
+               "token",
+               %{"actor_id" => "act_1", "session_id" => "sess_1"},
+               %{target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"}}
+             )
+
+    assert_receive {:request_headers, headers}
+    assert headers["x-favn-actor-id"] == "act_1"
+    assert headers["x-favn-session-id"] == "sess_1"
+  end
+
   defp start_server(body, status, opts \\ []) when is_binary(body) and is_integer(status) do
     parent = Keyword.get(opts, :parent)
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
@@ -89,6 +115,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
         if parent do
           send(parent, {:request_path, request_path(request)})
+          send(parent, {:request_headers, request_headers(request)})
           send(parent, {:request_body, request_body(request)})
         end
       end)
@@ -143,6 +170,20 @@ defmodule Favn.Dev.OrchestratorClientTest do
       [_headers, body] -> body
       _other -> ""
     end
+  end
+
+  defp request_headers(request) do
+    request
+    |> String.split("\r\n\r\n", parts: 2)
+    |> hd()
+    |> String.split("\r\n")
+    |> Enum.drop(1)
+    |> Enum.reduce(%{}, fn line, acc ->
+      case String.split(line, ":", parts: 2) do
+        [key, value] -> Map.put(acc, String.downcase(key), String.trim(value))
+        _other -> acc
+      end
+    end)
   end
 
   defp response(status, body) do

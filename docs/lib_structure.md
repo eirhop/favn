@@ -36,6 +36,7 @@ apps/
 │       ├── favn.read_doc.ex
 │       ├── favn.reload.ex
 │       ├── favn.reset.ex
+│       ├── favn.run.ex
 │       ├── favn.status.ex
 │       └── favn.stop.ex
 ├── favn_authoring/lib/
@@ -77,6 +78,7 @@ apps/
 │   │       ├── process.ex
 │   │       ├── reload.ex
 │   │       ├── reset.ex
+│   │       ├── run.ex
 │   │       ├── runtime_launch.ex
 │   │       ├── runtime_source.ex
 │   │       ├── runtime_tree_policy.ex

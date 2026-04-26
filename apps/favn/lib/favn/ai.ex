@@ -31,6 +31,11 @@ defmodule Favn.AI do
   - To plan execution order, read `Favn plan_asset_run`, then
     `Favn.Assets.Planner` if needed.
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
+    The public local command surface is `mix favn.install`, `mix favn.dev`,
+    `mix favn.run`, `mix favn.status`, `mix favn.logs`, `mix favn.reload`,
+    `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
+    `mix favn.build.web`, `mix favn.build.orchestrator`,
+    `mix favn.build.single`, and `mix favn.read_doc`.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
   ## About `Favn`
@@ -59,7 +64,8 @@ defmodule Favn.AI do
   - Read `Favn.Window` whenever a task mentions backfills, daily/hourly/monthly
     processing, or incremental SQL materialization.
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
-    lifecycle or packaging, not asset authoring.
+    lifecycle, local pipeline submission, docs lookup, or packaging, not asset
+    authoring.
 
   ## Related docs outside BEAM docs
 

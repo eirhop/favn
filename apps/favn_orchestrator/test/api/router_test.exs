@@ -240,6 +240,19 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert count >= 1
   end
 
+  test "run submission without actor context returns unauthenticated" do
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        manifest_selection: %{mode: "active"}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 401
+    assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
+  end
+
   test "service token can cancel run without actor headers" do
     seed_run_events!("run_cancel_service", [1])
 

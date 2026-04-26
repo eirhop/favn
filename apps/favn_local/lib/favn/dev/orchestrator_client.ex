@@ -4,6 +4,8 @@ defmodule Favn.Dev.OrchestratorClient do
   alias Favn.Dev.LocalHttpClient
   alias Favn.Manifest.Serializer
 
+  @type session_context :: %{required(String.t()) => String.t()}
+
   @spec publish_manifest(String.t(), String.t(), map()) ::
           {:ok, map()} | {:error, term()}
   def publish_manifest(base_url, service_token, payload)
@@ -38,6 +40,72 @@ defmodule Favn.Dev.OrchestratorClient do
     )
   end
 
+  @spec password_login(String.t(), String.t(), String.t(), String.t()) ::
+          {:ok, session_context()} | {:error, term()}
+  def password_login(base_url, service_token, username, password)
+      when is_binary(base_url) and is_binary(service_token) and is_binary(username) and
+             is_binary(password) do
+    url = base_url <> "/api/orchestrator/v1/auth/password/sessions"
+
+    with {:ok, %{"data" => %{"session" => %{"id" => session_id}, "actor" => %{"id" => actor_id}}}} <-
+           request_post(:password_login, url, service_token, %{
+             username: username,
+             password: password
+           }),
+         true <- is_binary(session_id) and session_id != "",
+         true <- is_binary(actor_id) and actor_id != "" do
+      {:ok, %{"actor_id" => actor_id, "session_id" => session_id}}
+    else
+      false -> {:error, operation_error(:password_login, :post, url, :invalid_response)}
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:password_login, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec active_manifest(String.t(), String.t(), session_context()) :: {:ok, map()} | {:error, term()}
+  def active_manifest(base_url, service_token, session_context)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) do
+    url = base_url <> "/api/orchestrator/v1/manifests/active"
+
+    case request_get(:active_manifest, url, service_token, session_context) do
+      {:ok, %{"data" => data}} when is_map(data) ->
+        {:ok, data}
+
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:active_manifest, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec submit_run(String.t(), String.t(), session_context(), map()) :: {:ok, map()} | {:error, term()}
+  def submit_run(base_url, service_token, session_context, payload)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_map(payload) do
+    url = base_url <> "/api/orchestrator/v1/runs"
+
+    case request_post(:submit_run, url, service_token, payload, session_context) do
+      {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
+        {:ok, run}
+
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:submit_run, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec get_run(String.t(), String.t(), session_context(), String.t()) :: {:ok, map()} | {:error, term()}
+  def get_run(base_url, service_token, session_context, run_id)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(run_id) do
+    url = base_url <> "/api/orchestrator/v1/runs/#{run_id}"
+
+    case request_get(:get_run, url, service_token, session_context) do
+      {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
+        {:ok, run}
+
+      {:error, _reason} = error -> error
+      _other -> {:error, operation_error(:get_run, :get, url, :invalid_response)}
+    end
+  end
+
   @spec in_flight_runs(String.t(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
   def in_flight_runs(base_url, service_token)
       when is_binary(base_url) and is_binary(service_token) do
@@ -66,27 +134,35 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  defp request_post(operation, url, service_token, payload) do
+  defp request_post(operation, url, service_token, payload, session_context \\ nil) do
     body = JSON.encode!(payload)
 
-    request(operation, :post, url, service_token, body)
+    request(operation, :post, url, service_token, body, session_context)
   end
 
-  defp request_get(operation, url, service_token) do
-    request(operation, :get, url, service_token, nil)
+  defp request_get(operation, url, service_token, session_context \\ nil) do
+    request(operation, :get, url, service_token, nil, session_context)
   end
 
-  defp request(operation, method, url, service_token, body) do
+  defp request(operation, method, url, service_token, body, session_context) do
     headers = [
       {"accept", "application/json"},
       {"authorization", "Bearer #{service_token}"}
     ]
+    |> add_session_headers(session_context)
 
     case LocalHttpClient.request(method, url, headers, body) do
       {:ok, decoded} -> {:ok, decoded}
       {:error, reason} -> {:error, operation_error(operation, method, url, reason)}
     end
   end
+
+  defp add_session_headers(headers, %{"actor_id" => actor_id, "session_id" => session_id})
+       when is_binary(actor_id) and actor_id != "" and is_binary(session_id) and session_id != "" do
+    headers ++ [{"x-favn-actor-id", actor_id}, {"x-favn-session-id", session_id}]
+  end
+
+  defp add_session_headers(headers, _session_context), do: headers
 
   defp operation_error(operation, method, url, reason) do
     %{operation: operation, method: method, url: url, reason: reason}
