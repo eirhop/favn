@@ -27,7 +27,9 @@ defmodule Mix.Tasks.Favn.Build.Orchestrator do
         Mix.raise("build blocked: install required; run mix favn.install")
 
       {:error, :install_stale} ->
-        Mix.raise("build blocked: install stale; run mix favn.install --force")
+        Mix.raise(
+          "build blocked: install stale; run mix favn.install to refresh, or mix favn.install --force to rebuild"
+        )
 
       {:error, {:missing_tool, tool}} ->
         Mix.raise("build blocked: missing required tool #{tool}; run mix favn.install")
@@ -38,7 +40,9 @@ defmodule Mix.Tasks.Favn.Build.Orchestrator do
         )
 
       {:error, :missing_install_runtime_input} ->
-        Mix.raise("build blocked: install runtime input missing; run mix favn.install --force")
+        Mix.raise(
+          "build blocked: install runtime input missing; run mix favn.install to refresh, or mix favn.install --force to rebuild"
+        )
 
       {:error, reason} ->
         Mix.raise("orchestrator build failed: #{inspect(reason)}")

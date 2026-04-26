@@ -221,7 +221,7 @@ Why this matters:
 
 ## Step 5: Local tooling loop (`mix favn.*`)
 
-This project is intended to support this local loop once issue #129 is fixed:
+This project supports the local tooling loop from a consumer-style project:
 
 ```bash
 mix favn.install
@@ -233,13 +233,12 @@ mix favn.stop
 mix favn.reset
 ```
 
-Current repo limitation:
-- `mix favn.install` works from this embedded tutorial project
-- `mix favn.dev` currently fails orchestrator readiness from this nested example
-  path and is tracked in https://github.com/eirhop/favn/issues/129
-- SQLite-backed local tooling is intentionally not part of the default tutorial
-  path while `mix favn.dev --sqlite` startup is tracked separately in
-  https://github.com/eirhop/favn/issues/128
+Install freshness notes:
+- `mix favn.install` materializes the Favn runtime under `.favn/install/runtime_root`
+- source-only Favn runtime updates are detected through the install fingerprint,
+  so rerunning `mix favn.install` refreshes stale installed runtime code
+- `mix favn.install --force` remains available when you want an unconditional
+  rebuild of the installed runtime workspace
 
 ## Alternative configurations you can try
 

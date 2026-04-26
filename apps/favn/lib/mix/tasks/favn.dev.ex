@@ -31,7 +31,8 @@ defmodule Mix.Tasks.Favn.Dev do
 
   defp error_message(:install_required), do: "install required; run mix favn.install"
 
-  defp error_message(:install_stale), do: "install stale; run mix favn.install --force"
+  defp error_message(:install_stale),
+    do: "install stale; run mix favn.install to refresh, or mix favn.install --force to rebuild"
 
   defp error_message({:stack_partially_running, service_states}) do
     details =
