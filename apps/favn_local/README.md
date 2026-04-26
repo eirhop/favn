@@ -122,14 +122,19 @@ Storage selection:
 `mix favn.install`:
 
 - validates tool prerequisites (node/npm by default)
-- computes and stores an install fingerprint
+- computes and stores an install fingerprint, including a deterministic hash of
+  the copied runtime source tree while excluding generated dependency/build
+  directories
 - captures toolchain metadata
 - resolves a runnable Favn runtime workspace under `.favn/install/runtime_root`
 - records runtime source/materialization metadata in `.favn/install/runtime.json`
 - installs runtime-root Mix deps for orchestrator/runner/storage apps
 - stores npm cache under `.favn/install/cache/npm`
 
-`mix favn.dev` and build tasks validate install freshness before running.
+`mix favn.dev` and build tasks validate install freshness before running. When
+the source-tree hash changes, rerunning `mix favn.install` refreshes the
+materialized runtime; `mix favn.install --force` remains available for an
+unconditional rebuild.
 
 ### Local dev startup
 

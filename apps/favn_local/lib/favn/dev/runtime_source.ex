@@ -2,6 +2,7 @@ defmodule Favn.Dev.RuntimeSource do
   @moduledoc false
 
   alias Favn.Dev.Paths
+  alias Favn.Dev.RuntimeTreePolicy
 
   @type source_kind :: :root_override | :cwd | :dependency_checkout
 
@@ -47,19 +48,21 @@ defmodule Favn.Dev.RuntimeSource do
   def fingerprint(%{root: root}) when is_binary(root) do
     case valid_runtime_root?(root) do
       true ->
-        {:ok,
-         %{
-           "runtime_mix_lock_sha256" => file_sha256(Path.join(root, "mix.lock")),
-           "runtime_mix_exs_sha256" => file_sha256(Path.join(root, "mix.exs")),
-           "runner_mix_exs_sha256" =>
-             file_sha256(Path.join(root, "apps/favn_runner/mix.exs")),
-           "orchestrator_mix_exs_sha256" =>
-             file_sha256(Path.join(root, "apps/favn_orchestrator/mix.exs")),
-           "web_package_json_sha256" =>
-             file_sha256(Path.join(root, "web/favn_web/package.json")),
-           "web_package_lock_sha256" =>
-             file_sha256(Path.join(root, "web/favn_web/package-lock.json"))
-         }}
+        with {:ok, source_tree} <- source_tree_fingerprint(root) do
+          {:ok,
+           %{
+             "runtime_mix_lock_sha256" => file_sha256(Path.join(root, "mix.lock")),
+             "runtime_mix_exs_sha256" => file_sha256(Path.join(root, "mix.exs")),
+             "runner_mix_exs_sha256" => file_sha256(Path.join(root, "apps/favn_runner/mix.exs")),
+             "orchestrator_mix_exs_sha256" =>
+               file_sha256(Path.join(root, "apps/favn_orchestrator/mix.exs")),
+             "web_package_json_sha256" =>
+               file_sha256(Path.join(root, "web/favn_web/package.json")),
+             "web_package_lock_sha256" =>
+               file_sha256(Path.join(root, "web/favn_web/package-lock.json")),
+             "runtime_source_tree" => source_tree
+           }}
+        end
 
       false ->
         {:error, {:invalid_runtime_source_root, root}}
@@ -79,7 +82,8 @@ defmodule Favn.Dev.RuntimeSource do
 
   defp dependency_root do
     case Mix.Project.deps_paths()[:favn] do
-      nil -> {:error, :not_found}
+      nil ->
+        {:error, :not_found}
 
       root ->
         with {:ok, runtime_root} <- resolve_runtime_root(root) do
@@ -123,11 +127,133 @@ defmodule Favn.Dev.RuntimeSource do
     end
   end
 
+  defp source_tree_fingerprint(root) do
+    with {:ok, records} <- fingerprint_records(root) do
+      sorted_records = Enum.sort_by(records, &record_sort_key/1)
+
+      {:ok,
+       %{
+         "sha256" => hash_records(sorted_records),
+         "file_count" =>
+           Enum.count(sorted_records, &match?({:file, _relative, _size, _sha256}, &1)),
+         "directory_count" => Enum.count(sorted_records, &match?({:directory, _relative}, &1)),
+         "byte_count" => byte_count(sorted_records),
+          "entries" => RuntimeTreePolicy.entries(),
+          "ignored_entries" => RuntimeTreePolicy.ignored_entries() |> Enum.sort()
+       }}
+    end
+  end
+
+  defp fingerprint_records(root) do
+    optional_entries = RuntimeTreePolicy.optional_entries()
+
+    Enum.reduce_while(RuntimeTreePolicy.entries(), {:ok, []}, fn relative, {:ok, acc} ->
+      path = Path.join(root, relative)
+
+      cond do
+        not File.exists?(path) and relative in optional_entries ->
+          {:cont, {:ok, acc}}
+
+        not File.exists?(path) ->
+          {:halt, {:error, {:missing_runtime_entry, relative, path}}}
+
+        true ->
+          case collect_records(path, relative) do
+            {:ok, records} -> {:cont, {:ok, records ++ acc}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+      end
+    end)
+  end
+
+  defp collect_records(path, relative) do
+    case File.stat(path) do
+      {:ok, %{type: :directory}} ->
+        collect_directory_records(path, relative)
+
+      {:ok, %{type: :regular, size: size}} ->
+        case file_sha256_result(path) do
+          {:ok, sha256} -> {:ok, [{:file, normalize_relative(relative), size, sha256}]}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, %{type: other}} ->
+        {:error, {:unsupported_runtime_entry, path, other}}
+
+      {:error, reason} ->
+        {:error, {:stat_failed, path, reason}}
+    end
+  end
+
+  defp collect_directory_records(path, relative) do
+    case File.ls(path) do
+      {:ok, entries} ->
+        Enum.reduce_while(entries, {:ok, [{:directory, normalize_relative(relative)}]}, fn entry,
+                                                                                           {:ok,
+                                                                                            acc} ->
+          if entry in RuntimeTreePolicy.ignored_entries() do
+            {:cont, {:ok, acc}}
+          else
+            child_path = Path.join(path, entry)
+            child_relative = Path.join(relative, entry)
+
+            case collect_records(child_path, child_relative) do
+              {:ok, records} -> {:cont, {:ok, records ++ acc}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end
+        end)
+
+      {:error, reason} ->
+        {:error, {:list_failed, path, reason}}
+    end
+  end
+
+  defp record_sort_key({:directory, relative}), do: relative
+  defp record_sort_key({:file, relative, _size, _sha256}), do: relative
+
+  defp byte_count(records) do
+    Enum.reduce(records, 0, fn
+      {:file, _relative, size, _sha256}, total -> total + size
+      {:directory, _relative}, total -> total
+    end)
+  end
+
+  defp hash_records(records) do
+    records
+    |> Enum.reduce(:crypto.hash_init(:sha256), fn record, state ->
+      :crypto.hash_update(state, record_fingerprint_data(record))
+    end)
+    |> :crypto.hash_final()
+    |> Base.encode16(case: :lower)
+  end
+
+  defp record_fingerprint_data({:directory, relative}) do
+    ["directory", <<0>>, relative, <<0>>]
+  end
+
+  defp record_fingerprint_data({:file, relative, size, sha256}) do
+    ["file", <<0>>, relative, <<0>>, Integer.to_string(size), <<0>>, sha256, <<0>>]
+  end
+
+  defp normalize_relative(path) do
+    path
+    |> Path.split()
+    |> Path.join()
+  end
+
   defp file_sha256(path) do
-    case File.read(path) do
-      {:ok, bytes} -> :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
-      {:error, :enoent} -> nil
+    case file_sha256_result(path) do
+      {:ok, sha256} -> sha256
+      {:error, {:read_failed, ^path, :enoent}} -> nil
       {:error, _reason} -> nil
+    end
+  end
+
+  defp file_sha256_result(path) do
+    case File.read(path) do
+      {:ok, bytes} -> {:ok, :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)}
+      {:error, reason} -> {:error, {:read_failed, path, reason}}
     end
   end
 end

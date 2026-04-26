@@ -8,7 +8,7 @@ defmodule Favn.Dev.Install do
   alias Favn.Dev.RuntimeWorkspace
   alias Favn.Dev.State
 
-  @schema_version 2
+  @schema_version 3
 
   @type root_opt :: [root_dir: Path.t()]
 

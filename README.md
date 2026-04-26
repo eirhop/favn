@@ -240,14 +240,18 @@ This is now the stable public entrypoint for local iteration on the refactored a
 For a consumer-style authoring and DuckDB execution tutorial, see
 `examples/basic-workflow-tutorial`. It lives outside the umbrella apps, uses
 local path dependencies back to `apps/favn` and `apps/favn_duckdb`, and has its
-own compile/test workflow. The embedded tutorial's `mix favn.dev` local-tooling
-loop is tracked separately in issue #129.
+own compile/test workflow. The embedded tutorial also exercises the
+`mix favn.install` and `mix favn.dev` local-tooling loop from a consumer-style
+project.
 
 `mix favn.install` resolves and materializes a runtime workspace under
-`.favn/install/runtime_root`. `mix favn.dev` compiles that installed runtime
-workspace before startup so live runner/orchestrator processes do not boot
-stale internal runtime beams. `--root-dir` remains an install/runtime-source
-override for split-root workflows.
+`.favn/install/runtime_root`. The install fingerprint includes a deterministic
+hash of the copied runtime source tree, excluding generated dependency/build
+directories, so source-only Favn updates refresh the installed runtime. `mix
+favn.dev` validates that fingerprint and compiles the installed runtime
+workspace before startup so live runner/orchestrator processes do not boot stale
+internal runtime beams. `--root-dir` remains an install/runtime-source override
+for split-root workflows.
 
 If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current
