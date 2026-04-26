@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Install, as: InstallTask
   alias Mix.Tasks.Favn.Logs, as: LogsTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
+  alias Mix.Tasks.Favn.Run, as: RunTask
   alias Mix.Tasks.Favn.Status, as: StatusTask
 
   setup do
@@ -151,6 +152,28 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     assert output =~ "status: stale"
     assert output =~ "hint: run mix favn.stop to clear stale runtime state"
+  end
+
+  test "mix favn.run requires a pipeline module" do
+    assert_raise Mix.Error, ~r/missing pipeline module/, fn ->
+      RunTask.run([])
+    end
+  end
+
+  test "mix favn.run reports stopped local stack", %{root_dir: root_dir} do
+    assert_raise Mix.Error, ~r/stack not running; use mix favn.dev/, fn ->
+      RunTask.run(["Example.Pipeline", "--root-dir", root_dir])
+    end
+  end
+
+  test "mix favn.run validates numeric options" do
+    assert_raise Mix.Error, ~r/--timeout-ms must be greater than 0/, fn ->
+      RunTask.run(["Example.Pipeline", "--timeout-ms", "0"])
+    end
+
+    assert_raise Mix.Error, ~r/--poll-interval-ms must be greater than 0/, fn ->
+      RunTask.run(["Example.Pipeline", "--poll-interval-ms", "0"])
+    end
   end
 
   test "mix favn.install writes install state", %{root_dir: root_dir} do

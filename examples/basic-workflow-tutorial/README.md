@@ -226,6 +226,7 @@ This project supports the local tooling loop from a consumer-style project:
 ```bash
 mix favn.install
 mix favn.dev
+mix favn.run FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily
 mix favn.status
 mix favn.logs --service orchestrator --tail 200
 mix favn.reload
@@ -239,6 +240,10 @@ Install freshness notes:
   so rerunning `mix favn.install` refreshes stale installed runtime code
 - `mix favn.install --force` remains available when you want an unconditional
   rebuild of the installed runtime workspace
+
+`mix favn.run` submits the tutorial pipeline to the running local orchestrator
+using the active manifest. It is the local-stack smoke path after the servers
+start; the earlier steps remain useful for direct data-plane inspection.
 
 ## Alternative configurations you can try
 

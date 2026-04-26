@@ -65,6 +65,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     code = eval_code!(orchestrator)
 
     assert orchestrator.env["FAVN_DEV_STORAGE"] == "memory"
+    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES"] == "operator"
     assert code =~ ~s("memory" ->)
     assert code =~ "FavnOrchestrator.Storage.Adapter.Memory"
     assert code =~ "unsupported FAVN_DEV_STORAGE"

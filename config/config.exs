@@ -28,7 +28,10 @@ config :favn_orchestrator,
   auth_bootstrap_username: System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME", ""),
   auth_bootstrap_password: System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", ""),
   auth_bootstrap_display_name:
-    System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "Favn Admin")
+    System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "Favn Admin"),
+  auth_bootstrap_roles:
+    System.get_env("FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "admin")
+    |> String.split(",", trim: true)
 
 # Sample configuration:
 #

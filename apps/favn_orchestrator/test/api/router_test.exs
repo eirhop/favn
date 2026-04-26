@@ -23,22 +23,25 @@ defmodule FavnOrchestrator.API.RouterTest do
     previous_username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)
     previous_password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
     previous_display = Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name)
+    previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, ["test-service-token"])
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Admin User")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
 
     auth_start = ensure_auth_store_started()
     :ok = AuthStore.reset()
     Memory.reset()
-    :ok = Auth.bootstrap_admin()
+    :ok = Auth.bootstrap_configured_actor()
 
     on_exit(fn ->
       restore_env(:favn_orchestrator, :api_service_tokens, previous_tokens)
       restore_env(:favn_orchestrator, :auth_bootstrap_username, previous_username)
       restore_env(:favn_orchestrator, :auth_bootstrap_password, previous_password)
       restore_env(:favn_orchestrator, :auth_bootstrap_display_name, previous_display)
+      restore_env(:favn_orchestrator, :auth_bootstrap_roles, previous_roles)
       maybe_stop_auth_store(auth_start)
     end)
 
@@ -148,6 +151,18 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
   end
 
+  test "bootstrap roles can create operator-scoped local actor" do
+    :ok = AuthStore.reset()
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "operator")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "operator-password")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Operator User")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, ["operator"])
+
+    assert :ok = Auth.bootstrap_configured_actor()
+    assert {:ok, _session, actor} = Auth.password_login("operator", "operator-password")
+    assert actor.roles == [:operator]
+  end
+
   test "lists schedules from active manifest when scheduler runtime is not running" do
     version = schedule_manifest_version("mv_schedule_router")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -238,6 +253,19 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert "run_in_flight_a" in run_ids
     assert count >= 1
+  end
+
+  test "run submission without actor context returns unauthenticated" do
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        manifest_selection: %{mode: "active"}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 401
+    assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
   end
 
   test "service token can cancel run without actor headers" do

@@ -39,6 +39,7 @@ defmodule Favn.Dev do
   alias Favn.Dev.Logs
   alias Favn.Dev.Reload
   alias Favn.Dev.Reset
+  alias Favn.Dev.Run
   alias Favn.Dev.Stack
   alias Favn.Dev.Status
 
@@ -109,6 +110,12 @@ defmodule Favn.Dev do
   """
   @spec reload(lifecycle_opts()) :: :ok | {:error, term()}
   def reload(opts \\ []) when is_list(opts), do: Reload.run(opts)
+
+  @doc """
+  Submits a pipeline run to the running local stack.
+  """
+  @spec run_pipeline(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def run_pipeline(pipeline_module, opts \\ []) when is_list(opts), do: Run.pipeline(pipeline_module, opts)
 
   @doc """
   Returns local stack status for the current project.

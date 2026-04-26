@@ -8,13 +8,15 @@ defmodule FavnOrchestrator.Auth do
   @type actor :: Store.actor()
   @type session :: Store.session()
 
-  @spec bootstrap_admin() :: :ok | {:error, term()}
-  def bootstrap_admin do
+  @spec bootstrap_configured_actor() :: :ok | {:error, term()}
+  def bootstrap_configured_actor do
     username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)
     password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
 
     display_name =
       Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name, "Favn Admin")
+
+    roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
 
     cond do
       not is_binary(username) or username == "" ->
@@ -24,7 +26,7 @@ defmodule FavnOrchestrator.Auth do
         :ok
 
       true ->
-        case Store.create_actor(username, password, display_name, [:admin]) do
+        case Store.create_actor(username, password, display_name, roles) do
           {:ok, _actor} -> :ok
           {:error, :username_taken} -> :ok
           {:error, reason} -> {:error, reason}

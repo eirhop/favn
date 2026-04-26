@@ -211,6 +211,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -231,6 +234,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -262,6 +268,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -358,6 +367,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -424,6 +436,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")

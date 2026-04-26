@@ -26,6 +26,7 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 - `mix favn.install`
 - `mix favn.dev`
 - `mix favn.status`
+- `mix favn.run`
 - `mix favn.logs`
 - `mix favn.reload`
 - `mix favn.stop`
@@ -48,6 +49,7 @@ mix favn.dev
 
 ```bash
 mix favn.status
+mix favn.run MyApp.Pipelines.Daily
 mix favn.logs --service runner --tail 200
 mix favn.reload
 mix favn.stop
@@ -140,6 +142,11 @@ unconditional rebuild.
 
 `mix favn.dev` starts runner, orchestrator, and web as separate local processes
 and writes runtime state to `.favn/runtime.json`.
+
+`mix favn.run PipelineModule` submits a pipeline to the running local stack over
+the private orchestrator HTTP boundary. It logs in with the generated local
+operator credentials from `.favn/secrets.json`, resolves the active manifest's
+pipeline target ID, submits the run, and waits for terminal status by default.
 
 Before startup, `favn_local` force-compiles the installed runtime workspace
 under `.favn/install/runtime_root` so orchestrator/runner startup does not boot

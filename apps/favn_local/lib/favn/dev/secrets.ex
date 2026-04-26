@@ -18,7 +18,9 @@ defmodule Favn.Dev.Secrets do
       "service_token" => config.service_token || stored["service_token"] || random_secret(24),
       "web_session_secret" =>
         config.web_session_secret || stored["web_session_secret"] || random_secret(32),
-      "rpc_cookie" => normalize_rpc_cookie(stored["rpc_cookie"]) || random_rpc_cookie(24)
+      "rpc_cookie" => normalize_rpc_cookie(stored["rpc_cookie"]) || random_rpc_cookie(24),
+      "local_operator_username" => stored["local_operator_username"] || "favn-local-operator",
+      "local_operator_password" => stored["local_operator_password"] || random_secret(24)
     }
 
     case State.write_secrets(secrets, opts) do
