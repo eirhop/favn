@@ -19,19 +19,23 @@ defmodule FavnOrchestrator.Scheduler.Cron do
     end
   end
 
-  @spec occurrences_between(String.t(), String.t(), DateTime.t(), DateTime.t()) :: [DateTime.t()]
+  @spec occurrences_between(String.t(), String.t(), DateTime.t(), DateTime.t(), keyword()) :: [
+          DateTime.t()
+        ]
   def occurrences_between(
         cron,
         timezone,
         %DateTime{} = last_due_utc,
-        %DateTime{} = latest_due_utc
+        %DateTime{} = latest_due_utc,
+        opts \\ []
       ) do
     case parse(cron) do
       {:ok, expr} ->
         from = DateTime.shift_zone!(last_due_utc, timezone)
         to = DateTime.shift_zone!(latest_due_utc, timezone)
+        limit = occurrence_limit(opts)
 
-        collect_occurrences(expr, from, to)
+        collect_occurrences(expr, from, to, limit)
         |> Enum.map(&DateTime.shift_zone!(&1, "Etc/UTC"))
 
       :error ->
@@ -222,17 +226,30 @@ defmodule FavnOrchestrator.Scheduler.Cron do
   defp normalize_weekday(7), do: 0
   defp normalize_weekday(value), do: value
 
-  defp collect_occurrences(expr, from, to) do
+  defp occurrence_limit(opts) do
+    case Keyword.get(opts, :limit, :infinity) do
+      :infinity -> :infinity
+      limit when is_integer(limit) and limit > 0 -> limit
+      _other -> :infinity
+    end
+  end
+
+  defp collect_occurrences(expr, from, to, limit) do
     case DateTime.compare(from, to) do
       :lt ->
         from
         |> dates_until(to, :asc)
-        |> Enum.flat_map(&occurrences_on_date(expr, &1, from, to, false, :asc))
+        |> Stream.flat_map(&occurrences_on_date(expr, &1, from, to, false, :asc))
+        |> take_limit(limit)
+        |> Enum.to_list()
 
       _other ->
         []
     end
   end
+
+  defp take_limit(stream, :infinity), do: stream
+  defp take_limit(stream, limit), do: Stream.take(stream, limit)
 
   defp find_next(expr, from, to) do
     case DateTime.compare(from, to) do

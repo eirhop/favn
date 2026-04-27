@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   alias FavnOrchestrator.Storage
 
   @default_tick_ms 15_000
+  @default_max_missed_all_occurrences 1_000
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -30,10 +31,11 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   @impl true
   def init(opts) do
     tick_ms = max(Keyword.get(opts, :tick_ms, configured_tick_ms()), 100)
+    auto_tick? = Keyword.get(opts, :auto_tick?, true)
 
-    case load_runtime(tick_ms) do
+    case load_runtime(tick_ms, auto_tick?) do
       {:ok, state} ->
-        schedule_tick(next_tick_delay_ms(state.tick_ms))
+        if state.auto_tick?, do: schedule_tick(next_tick_delay_ms(state.tick_ms))
         {:ok, state}
 
       {:error, reason} ->
@@ -43,13 +45,20 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   @impl true
   def handle_call(:reload, _from, state) do
-    case load_runtime(state.tick_ms) do
+    case load_runtime(state.tick_ms, state.auto_tick?) do
       {:ok, next} ->
         {:reply, :ok, next}
 
       {:error, reason} ->
         {:reply, {:error, reason},
-         %{entries: %{}, states: %{}, tick_ms: state.tick_ms, index: nil, version: nil}}
+         %{
+           entries: %{},
+           states: %{},
+           tick_ms: state.tick_ms,
+           auto_tick?: state.auto_tick?,
+           index: nil,
+           version: nil
+         }}
     end
   end
 
@@ -70,18 +79,34 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   @impl true
   def handle_info(:tick, state) do
     next = evaluate_all(state)
-    schedule_tick(next_tick_delay_ms(next.tick_ms))
+    if next.auto_tick?, do: schedule_tick(next_tick_delay_ms(next.tick_ms))
     {:noreply, next}
   end
 
-  defp load_runtime(tick_ms) do
+  defp load_runtime(tick_ms, auto_tick?) do
     with {:ok, version, index} <- load_active_manifest_index(),
          {:ok, entries} <- ManifestEntries.discover(version, index),
          {:ok, states} <- load_states(entries) do
-      {:ok, %{entries: entries, states: states, tick_ms: tick_ms, index: index, version: version}}
+      {:ok,
+       %{
+         entries: entries,
+         states: states,
+         tick_ms: tick_ms,
+         auto_tick?: auto_tick?,
+         index: index,
+         version: version
+       }}
     else
       {:empty, reason} when reason in [:active_manifest_not_set, :manifest_version_not_found] ->
-        {:ok, %{entries: %{}, states: %{}, tick_ms: tick_ms, index: nil, version: nil}}
+        {:ok,
+         %{
+           entries: %{},
+           states: %{},
+           tick_ms: tick_ms,
+           auto_tick?: auto_tick?,
+           index: nil,
+           version: nil
+         }}
 
       {:error, reason} ->
         {:error, reason}
@@ -382,8 +407,20 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     Anchor.new!(kind, start_at, end_at, timezone: timezone)
   end
 
-  defp select_occurrences(:all, cron, timezone, last_due_at, latest_due),
-    do: Cron.occurrences_between(cron, timezone, last_due_at, latest_due)
+  defp select_occurrences(:all, cron, timezone, last_due_at, latest_due) do
+    limit = configured_max_missed_all_occurrences()
+    selected = Cron.occurrences_between(cron, timezone, last_due_at, latest_due, limit: limit + 1)
+
+    if length(selected) > limit do
+      Logger.warning(
+        "scheduler missed occurrence catch-up capped at #{limit} occurrences for #{inspect(cron)}"
+      )
+
+      Enum.take(selected, limit)
+    else
+      selected
+    end
+  end
 
   defp select_occurrences(:skip, cron, timezone, last_due_at, latest_due) do
     case Cron.last_occurrence_between(cron, timezone, last_due_at, latest_due) do
@@ -469,6 +506,19 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     case Application.get_env(:favn_orchestrator, :scheduler, []) do
       opts when is_list(opts) -> Keyword.get(opts, :tick_ms, @default_tick_ms)
       _ -> @default_tick_ms
+    end
+  end
+
+  defp configured_max_missed_all_occurrences do
+    case Application.get_env(:favn_orchestrator, :scheduler, []) do
+      opts when is_list(opts) ->
+        case Keyword.get(opts, :max_missed_all_occurrences, @default_max_missed_all_occurrences) do
+          value when is_integer(value) and value > 0 -> value
+          _other -> @default_max_missed_all_occurrences
+        end
+
+      _other ->
+        @default_max_missed_all_occurrences
     end
   end
 

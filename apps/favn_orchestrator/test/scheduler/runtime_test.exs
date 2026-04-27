@@ -1,6 +1,8 @@
 defmodule FavnOrchestrator.Scheduler.RuntimeTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Pipeline
@@ -55,6 +57,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     previous_storage_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+    previous_scheduler = Application.get_env(:favn_orchestrator, :scheduler)
 
     Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
@@ -67,6 +70,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
       restore_env(:favn_orchestrator, :storage_adapter_opts, previous_storage_opts)
       restore_env(:favn_orchestrator, :runner_client, previous_client)
       restore_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      restore_env(:favn_orchestrator, :scheduler, previous_scheduler)
       Memory.reset()
     end)
 
@@ -184,7 +188,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
 
     name = unique_runtime_name()
-    start_runtime(name)
+    start_runtime(name, auto_tick?: false)
     [entry] = Runtime.scheduled(name)
 
     running = running_run_state("run_inflight_allow", version, %{kind: :schedule})
@@ -291,13 +295,48 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert all_count >= one_count
   end
 
+  test "missed all caps high-frequency six-field catch-up per tick" do
+    Application.put_env(:favn_orchestrator, :scheduler, max_missed_all_occurrences: 3)
+
+    version =
+      scheduler_manifest_version("mv_scheduler_missed_all_cap",
+        cron: "* * * * * *",
+        missed: :all,
+        overlap: :allow
+      )
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -20, :second),
+      version: 1
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+
+    log = capture_log(fn -> assert :ok = Runtime.tick(name) end)
+
+    assert log =~ "scheduler missed occurrence catch-up capped at 3 occurrences"
+    assert {:ok, runs} = Storage.list_runs()
+    assert length(runs) == 3
+  end
+
   test "windowed scheduled pipelines carry anchor window into run pipeline context" do
     version = scheduler_manifest_version("mv_scheduler_window", window: :hour)
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
 
     name = unique_runtime_name()
-    start_supervised!({Runtime, name: name, tick_ms: 60_000})
+    start_supervised!({Runtime, name: name, tick_ms: 60_000, auto_tick?: false})
     [entry] = Runtime.scheduled(name)
 
     state = %State{
@@ -347,10 +386,12 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     Module.concat(__MODULE__, "Runtime#{System.unique_integer([:positive])}")
   end
 
-  defp start_runtime(name) do
+  defp start_runtime(name, opts \\ []) do
+    runtime_opts = Keyword.merge([name: name, tick_ms: 60_000, auto_tick?: false], opts)
+
     start_supervised!(%{
       id: {Runtime, name},
-      start: {Runtime, :start_link, [[name: name, tick_ms: 60_000]]}
+      start: {Runtime, :start_link, [runtime_opts]}
     })
   end
 

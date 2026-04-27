@@ -26,7 +26,10 @@ defmodule Favn.Triggers.Schedules do
   - `cron`: required 5-field cron expression, or a 6-field expression with a
   leading seconds field
   - `timezone`: optional IANA timezone string
-  - `missed`: `:skip | :one | :all`, defaults to `:skip`
+  - `missed`: `:skip | :one | :all`, defaults to `:skip`. Runtime `:all`
+    catch-up is capped per scheduler tick to avoid unbounded high-frequency
+    backlog submission. The orchestrator default cap is 1,000 occurrences per
+    scheduler tick.
   - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
   - `active`: boolean, defaults to `true`
   """

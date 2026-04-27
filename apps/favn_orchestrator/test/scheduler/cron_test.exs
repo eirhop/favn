@@ -50,4 +50,18 @@ defmodule FavnOrchestrator.Scheduler.CronTest do
              ~U[2026-04-04 00:00:15Z]
            ]
   end
+
+  test "occurrences_between can cap high-frequency six-field schedules" do
+    assert Cron.occurrences_between(
+             "* * * * * *",
+             "Etc/UTC",
+             ~U[2026-04-27 12:00:00Z],
+             ~U[2026-04-27 12:00:10Z],
+             limit: 3
+           ) == [
+             ~U[2026-04-27 12:00:01Z],
+             ~U[2026-04-27 12:00:02Z],
+             ~U[2026-04-27 12:00:03Z]
+           ]
+  end
 end
