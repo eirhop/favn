@@ -26,7 +26,7 @@ function loginErrorMessage(payload: unknown): string {
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.session) {
-		throw redirect(303, '/');
+		throw redirect(303, '/runs');
 	}
 
 	return {};
@@ -70,7 +70,7 @@ export const actions: Actions = {
 			setWebSessionCookie(cookies, session);
 			locals.session = session;
 
-			throw redirect(303, '/');
+			throw redirect(303, '/runs');
 		}
 
 		return fail(response.status === 401 ? 401 : 400, {

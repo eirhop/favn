@@ -99,7 +99,7 @@ describe('login page actions', () => {
 				cookies,
 				locals
 			} as never)
-		).rejects.toMatchObject({ status: 303, location: '/' });
+		).rejects.toMatchObject({ status: 303, location: '/runs' });
 
 		expect(webSessionFromLoginPayload).toHaveBeenCalledWith({
 			data: { session_id: 'sess-1', actor_id: 'actor-1' }
@@ -126,7 +126,7 @@ describe('login page actions', () => {
 				cookies,
 				locals
 			} as never)
-		).rejects.toMatchObject({ status: 303, location: '/' });
+		).rejects.toMatchObject({ status: 303, location: '/runs' });
 
 		expect(orchestratorLoginPassword).toHaveBeenCalledWith({
 			username: 'alice',

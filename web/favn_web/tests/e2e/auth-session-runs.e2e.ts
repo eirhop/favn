@@ -19,7 +19,7 @@ async function loginAsValidUser(page: Page) {
 
 async function loginAndReachHome(page: Page): Promise<void> {
 	await loginAsValidUser(page);
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/runs$/);
 }
 
 async function pageGetJson(
@@ -90,22 +90,41 @@ test.describe('auth/session/runs flow', () => {
 		await expect(page.getByLabel('Username')).toHaveValue('not-a-real-user');
 	});
 
-	test('login success redirects to / and shows actor/provider plus runs list', async ({ page }) => {
+	test('login success redirects to /runs and shows the run inspector', async ({ page }) => {
 		await loginAsValidUser(page);
 
-		await expect(page).toHaveURL(/\/$/);
-		await expect(page.getByRole('heading', { name: 'Favn web prototype' })).toBeVisible();
-		await expect(page.getByText('actor_alice')).toBeVisible();
-		await expect(page.getByText('password_local')).toBeVisible();
+		await expect(page).toHaveURL(/\/runs$/);
 		await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
+		await expect(page.getByText('local-operator')).toBeVisible();
+		await expect(page.getByText(/Active manifest:/)).toBeVisible();
 		await expect(page.getByRole('row', { name: /run_001/ })).toContainText('succeeded');
-		await expect(page.getByRole('row', { name: /run_002/ })).toContainText('running');
+		await expect(page.getByRole('row', { name: /run_002/ })).toContainText('failed');
+	});
+
+	test('login to runs list and open failed run detail', async ({ page }) => {
+		await loginAndReachHome(page);
+
+		await page
+			.getByRole('row', { name: /run_002/ })
+			.getByRole('link', { name: 'run_002' })
+			.click();
+
+		await expect(page).toHaveURL(/\/runs\/run_002$/);
+		await expect(page.getByRole('heading', { name: 'Run run_002' })).toBeVisible();
+		await expect(page.getByText('Run failed in asset Staging.CustomerOrders')).toBeVisible();
+		await expect(
+			page.getByText('DuckDB query failed: column "customer_id" not found')
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Assets' })).toBeVisible();
+		await page.getByRole('button', { name: 'Outputs' }).click();
+		await expect(page.getByText('staging.customer_orders')).toBeVisible();
 	});
 
 	test('logout returns to /login and / remains protected afterward', async ({ page }) => {
 		await loginAsValidUser(page);
-		await expect(page).toHaveURL(/\/$/);
+		await expect(page).toHaveURL(/\/runs$/);
 
+		await page.getByText('local-operator').click();
 		await page.getByRole('button', { name: 'Log out' }).click();
 
 		await expect(page).toHaveURL(/\/login$/);
@@ -147,13 +166,14 @@ test.describe('auth/session/runs flow', () => {
 
 		const runsList = await pageGetJson(page, '/api/web/v1/runs');
 		expect(runsList.status).toBe(200);
-		expect(runsList.body).toEqual({
-			data: {
+		expect(runsList.body).toMatchObject({
+			data: expect.objectContaining({
 				items: expect.arrayContaining([
 					expect.objectContaining({ id: 'run_001', status: 'succeeded' }),
-					expect.objectContaining({ id: 'run_002', status: 'running' })
+					expect.objectContaining({ id: 'run_002', status: 'failed' }),
+					expect.objectContaining({ id: 'run_003', status: 'running' })
 				])
-			}
+			})
 		});
 
 		const runDetail = await pageGetJson(page, '/api/web/v1/runs/run_001');

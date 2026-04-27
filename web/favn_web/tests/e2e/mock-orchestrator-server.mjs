@@ -9,8 +9,39 @@ const VALID_CREDENTIALS = new Map([
 ]);
 
 const RUNS = [
-	{ id: 'run_001', status: 'succeeded', target: { type: 'asset', id: 'asset.orders' } },
-	{ id: 'run_002', status: 'running', target: { type: 'pipeline', id: 'pipeline.reconcile' } }
+	{
+		id: 'run_001',
+		status: 'succeeded',
+		target: { type: 'pipeline', id: 'DailySalesPipeline' },
+		trigger: 'manual',
+		started_at: '2026-04-27T14:32:10.000Z',
+		duration_ms: 12400,
+		assets_completed: 2,
+		assets_total: 2,
+		manifest_version_id: 'manifest_v1'
+	},
+	{
+		id: 'run_002',
+		status: 'failed',
+		target: { type: 'pipeline', id: 'ImportCustomers' },
+		trigger: 'manual',
+		started_at: '2026-04-27T14:19:02.000Z',
+		duration_ms: 3100,
+		assets_completed: 3,
+		assets_total: 5,
+		manifest_version_id: 'manifest_v2'
+	},
+	{
+		id: 'run_003',
+		status: 'running',
+		target: { type: 'pipeline', id: 'BuildWarehouse' },
+		trigger: 'manual',
+		started_at: '2026-04-27T14:36:51.000Z',
+		duration_ms: 42000,
+		assets_completed: 4,
+		assets_total: 10,
+		manifest_version_id: 'manifest_v2'
+	}
 ];
 
 const RUN_DETAILS = new Map([
@@ -19,17 +50,258 @@ const RUN_DETAILS = new Map([
 		{
 			id: 'run_001',
 			status: 'succeeded',
-			target: { type: 'asset', id: 'asset.orders' },
-			manifest_version_id: 'manifest_v1'
+			target: { type: 'pipeline', id: 'DailySalesPipeline' },
+			manifest_version_id: 'manifest_v1',
+			started_at: '2026-04-27T14:32:10.000Z',
+			duration_ms: 12400,
+			assets: [
+				{
+					id: 'Raw.Crm.Customers',
+					asset: 'Raw.Crm.Customers',
+					type: 'SQL',
+					stage: 1,
+					status: 'succeeded',
+					started_at: '2026-04-27T14:32:10.000Z',
+					duration_ms: 430,
+					output: 'raw.crm_customers',
+					outputs: [
+						{
+							relation: 'raw.crm_customers',
+							type: 'table',
+							connection: 'local_duckdb',
+							rows: 10000,
+							created_at: '2026-04-27T14:32:11.000Z'
+						}
+					]
+				},
+				{
+					id: 'Raw.Crm.Orders',
+					asset: 'Raw.Crm.Orders',
+					type: 'SQL',
+					stage: 1,
+					status: 'succeeded',
+					started_at: '2026-04-27T14:32:11.000Z',
+					duration_ms: 611,
+					output: 'raw.crm_orders',
+					outputs: [
+						{
+							relation: 'raw.crm_orders',
+							type: 'table',
+							connection: 'local_duckdb',
+							rows: 42991,
+							created_at: '2026-04-27T14:32:12.000Z'
+						}
+					]
+				}
+			],
+			outputs: [
+				{
+					relation: 'raw.crm_customers',
+					type: 'table',
+					asset: 'Raw.Crm.Customers',
+					connection: 'local_duckdb',
+					rows: 10000,
+					created_at: '2026-04-27T14:32:11.000Z'
+				},
+				{
+					relation: 'raw.crm_orders',
+					type: 'table',
+					asset: 'Raw.Crm.Orders',
+					connection: 'local_duckdb',
+					rows: 42991,
+					created_at: '2026-04-27T14:32:12.000Z'
+				}
+			],
+			events: [
+				{
+					id: 'evt_001',
+					type: 'run_submitted',
+					timestamp: '2026-04-27T14:32:10.000Z',
+					message: 'DailySalesPipeline submitted by local-operator'
+				},
+				{
+					id: 'evt_002',
+					type: 'run_succeeded',
+					timestamp: '2026-04-27T14:32:22.000Z',
+					message: 'Run succeeded'
+				}
+			]
 		}
 	],
 	[
 		'run_002',
 		{
 			id: 'run_002',
+			status: 'failed',
+			target: { type: 'pipeline', id: 'ImportCustomers' },
+			manifest_version_id: 'manifest_v2',
+			started_at: '2026-04-27T14:19:02.000Z',
+			duration_ms: 3100,
+			error: 'DuckDB query failed: column "customer_id" not found',
+			assets: [
+				{
+					id: 'Raw.Crm.Customers',
+					asset: 'Raw.Crm.Customers',
+					type: 'SQL',
+					stage: 1,
+					status: 'succeeded',
+					started_at: '2026-04-27T14:19:02.000Z',
+					duration_ms: 430,
+					output: 'raw.crm_customers',
+					connection: 'local_duckdb',
+					outputs: [
+						{
+							relation: 'raw.crm_customers',
+							type: 'table',
+							connection: 'local_duckdb',
+							rows: 10000,
+							created_at: '2026-04-27T14:19:03.000Z'
+						}
+					]
+				},
+				{
+					id: 'Raw.Crm.Orders',
+					asset: 'Raw.Crm.Orders',
+					type: 'SQL',
+					stage: 1,
+					status: 'succeeded',
+					started_at: '2026-04-27T14:19:03.000Z',
+					duration_ms: 611,
+					output: 'raw.crm_orders',
+					connection: 'local_duckdb',
+					outputs: [
+						{
+							relation: 'raw.crm_orders',
+							type: 'table',
+							connection: 'local_duckdb',
+							rows: 42991,
+							created_at: '2026-04-27T14:19:04.000Z'
+						}
+					]
+				},
+				{
+					id: 'Staging.CustomerOrders',
+					asset: 'Staging.CustomerOrders',
+					type: 'SQL',
+					stage: 2,
+					status: 'failed',
+					started_at: '2026-04-27T14:19:04.000Z',
+					duration_ms: 812,
+					output: 'staging.customer_orders',
+					connection: 'local_duckdb',
+					database: '.favn/data/work.duckdb',
+					operation: 'materialize table',
+					sql: 'create or replace table staging.customer_orders as\nselect customer_id, order_date, total_amount\nfrom raw.crm_orders',
+					error: 'column "customer_id" not found',
+					outputs: [
+						{
+							relation: 'staging.customer_orders',
+							type: 'table',
+							connection: 'local_duckdb',
+							status: 'failed'
+						}
+					]
+				},
+				{
+					id: 'Staging.OrderSummary',
+					asset: 'Staging.OrderSummary',
+					type: 'SQL',
+					stage: 2,
+					status: 'cancelled',
+					output: 'staging.order_summary',
+					error: 'skipped'
+				},
+				{
+					id: 'Mart.CustomerRevenue',
+					asset: 'Mart.CustomerRevenue',
+					type: 'SQL',
+					stage: 3,
+					status: 'cancelled',
+					output: 'mart.customer_revenue',
+					error: 'skipped'
+				}
+			],
+			outputs: [
+				{
+					relation: 'raw.crm_customers',
+					type: 'table',
+					asset: 'Raw.Crm.Customers',
+					connection: 'local_duckdb',
+					rows: 10000,
+					created_at: '2026-04-27T14:19:03.000Z'
+				},
+				{
+					relation: 'raw.crm_orders',
+					type: 'table',
+					asset: 'Raw.Crm.Orders',
+					connection: 'local_duckdb',
+					rows: 42991,
+					created_at: '2026-04-27T14:19:04.000Z'
+				},
+				{
+					relation: 'staging.customer_orders',
+					type: 'table',
+					asset: 'Staging.CustomerOrders',
+					connection: 'local_duckdb',
+					status: 'failed'
+				}
+			],
+			events: [
+				{
+					id: 'evt_101',
+					type: 'run_submitted',
+					timestamp: '2026-04-27T14:19:02.000Z',
+					message: 'ImportCustomers submitted by local-operator'
+				},
+				{
+					id: 'evt_102',
+					type: 'manifest_selected',
+					timestamp: '2026-04-27T14:19:02.000Z',
+					message: 'manifest_v2'
+				},
+				{
+					id: 'evt_103',
+					type: 'asset_started',
+					timestamp: '2026-04-27T14:19:04.000Z',
+					asset_id: 'Staging.CustomerOrders',
+					message: 'Staging.CustomerOrders'
+				},
+				{
+					id: 'evt_104',
+					type: 'asset_failed',
+					timestamp: '2026-04-27T14:19:05.000Z',
+					asset_id: 'Staging.CustomerOrders',
+					message: 'Staging.CustomerOrders · column "customer_id" not found'
+				},
+				{
+					id: 'evt_105',
+					type: 'run_failed',
+					timestamp: '2026-04-27T14:19:05.000Z',
+					message: 'Run failed'
+				}
+			]
+		}
+	],
+	[
+		'run_003',
+		{
+			id: 'run_003',
 			status: 'running',
-			target: { type: 'pipeline', id: 'pipeline.reconcile' },
-			manifest_version_id: 'manifest_v2'
+			target: { type: 'pipeline', id: 'BuildWarehouse' },
+			manifest_version_id: 'manifest_v2',
+			started_at: '2026-04-27T14:36:51.000Z',
+			duration_ms: 42000,
+			assets: [
+				{
+					id: 'Raw.A',
+					asset: 'Raw.A',
+					type: 'SQL',
+					stage: 1,
+					status: 'succeeded',
+					duration_ms: 150
+				},
+				{ id: 'Raw.B', asset: 'Raw.B', type: 'SQL', stage: 1, status: 'running' }
+			]
 		}
 	]
 ]);
