@@ -246,6 +246,14 @@ mix favn.read_doc Favn generate_manifest
 
 This is now the stable public entrypoint for local iteration on the refactored architecture.
 
+`mix favn.dev` starts with the local scheduler disabled by default. This keeps
+one-time local ETL and DuckDB-backed dogfooding on the manual path unless you
+explicitly opt into active schedules. Use `mix favn.run PipelineModule` for the
+normal local execution loop, and use `mix favn.dev --scheduler` only when you
+want scheduled pipelines to run locally. `mix favn.dev --no-scheduler` is
+available when you want to make the disabled setting explicit or override local
+config.
+
 For a consumer-style authoring and DuckDB execution tutorial, see
 `examples/basic-workflow-tutorial`. It lives outside the umbrella apps, uses
 local path dependencies back to `apps/favn` and `apps/favn_duckdb`, and has its
@@ -269,10 +277,15 @@ developer loop.
 `mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
 currently running local stack. It uses the project-local service token and local
 operator credentials generated under `.favn/secrets.json`, so tutorial and local
-smoke runs do not require hand-written private orchestrator API requests. The
-local runner receives the consumer project's configured Favn connection modules,
-connection values, and runner plugins; relative connection database paths are
-resolved from the consumer project root before the runner starts.
+smoke runs do not require hand-written private orchestrator API requests. This
+manual run path is the recommended default for one-time local ETL.
+
+The local runner receives only the explicitly supported consumer `:favn` config
+needed for local execution: `:connection_modules`, `:connections`,
+`:runner_plugins`, and `:duckdb_in_process_client`. This transport is local-dev
+plumbing only; it uses a tagged payload rather than arbitrary app-env forwarding,
+normalizes relative connection database paths from the consumer project root,
+and redacts connection/plugin secrets from diagnostics.
 
 If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current
@@ -290,6 +303,7 @@ recreated before running with the closeout adapters.
 ```elixir
 config :favn, :local,
   storage: :memory,
+  scheduler: false,
   sqlite_path: ".favn/data/orchestrator.sqlite3",
   postgres: [
     hostname: "127.0.0.1",
@@ -307,6 +321,8 @@ Storage modes:
 - `mix favn.dev` uses configured storage (default `:memory`)
 - `mix favn.dev --sqlite` forces SQLite
 - `mix favn.dev --postgres` forces Postgres
+- `mix favn.dev --scheduler` enables local scheduled runs
+- `mix favn.dev --no-scheduler` disables local scheduled runs and overrides config
 
 `mix favn.build.single` defaults to SQLite and accepts
 `--storage sqlite|postgres`.

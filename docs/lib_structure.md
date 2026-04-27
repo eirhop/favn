@@ -68,6 +68,7 @@ apps/
 │   │       │   ├── single.ex
 │   │       │   └── web.ex
 │   │       ├── config.ex
+│   │       ├── consumer_config_transport.ex
 │   │       ├── install.ex
 │   │       ├── lock.ex
 │   │       ├── local_http_client.ex
@@ -126,6 +127,7 @@ Notes:
 - `apps/favn/lib/favn/ai.ex` is the AI-oriented compiled-doc starting point for choosing the right public Favn module to read next.
 - `apps/favn_authoring` now owns authoring/manifest-facing implementation internals.
 - `apps/favn_local` continues to own local lifecycle/tooling implementation internals.
+- `apps/favn_local/lib/favn/dev/consumer_config_transport.ex` owns the local-only runner transport for explicitly supported consumer `:favn` config keys and redacted diagnostics.
 - Internal compiler/manifest/planning/shared contracts are now re-centered into `apps/favn_core/lib/favn/`.
 - Phase 3 modules now owned in `apps/favn_core/lib/favn/` include:
   - `manifest.ex`

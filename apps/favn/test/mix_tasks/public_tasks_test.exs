@@ -71,6 +71,12 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     end
   end
 
+  test "mix favn.dev parses scheduler flags" do
+    assert Keyword.get(DevTask.parse_args(["--scheduler"]), :scheduler) == true
+    assert Keyword.get(DevTask.parse_args(["--no-scheduler"]), :scheduler) == false
+    assert Keyword.get(DevTask.parse_args([]), :scheduler) == nil
+  end
+
   test "mix favn.dev raises with partial runtime recovery guidance", %{root_dir: root_dir} do
     log_path = Path.join(root_dir, ".favn/logs/runner.log")
     assert :ok = File.mkdir_p(Path.dirname(log_path))

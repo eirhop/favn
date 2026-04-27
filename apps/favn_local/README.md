@@ -43,6 +43,7 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 ```bash
 mix favn.install
 mix favn.dev
+mix favn.dev --scheduler
 ```
 
 ### Inspect and iterate
@@ -93,6 +94,7 @@ config :favn, :local,
     ssl: false,
     pool_size: 10
   ],
+  scheduler: false,
   orchestrator_port: 4101,
   web_port: 4173
 ```
@@ -102,6 +104,13 @@ Storage selection:
 - default: `:memory`
 - `mix favn.dev --sqlite` forces `:sqlite`
 - `mix favn.dev --postgres` forces `:postgres`
+
+Scheduler selection:
+
+- default: disabled
+- `scheduler: true` in `config :favn, :local` enables local schedules
+- `mix favn.dev --scheduler` enables local schedules and overrides config
+- `mix favn.dev --no-scheduler` disables local schedules and overrides config
 
 ## `.favn/` layout
 
@@ -143,12 +152,24 @@ unconditional rebuild.
 `mix favn.dev` starts runner, orchestrator, and web as separate local processes
 and writes runtime state to `.favn/runtime.json`.
 
+The local scheduler is disabled by default so active pipeline schedules do not
+surprise one-time local ETL work. Manual `mix favn.run PipelineModule` is the
+recommended safe default. Scheduled tutorial or smoke flows should opt in with
+`mix favn.dev --scheduler`.
+
 `mix favn.run PipelineModule` submits a pipeline to the running local stack over
 the private orchestrator HTTP boundary. It logs in with the generated local
 operator credentials from `.favn/secrets.json`, resolves the active manifest's
 pipeline target ID, submits the run, and waits for terminal status by default.
 The local tooling HTTP client is intentionally limited to plain HTTP loopback
 URLs for Favn-managed local services.
+
+Runner-side consumer config transport is local-dev-only. It carries only
+`:connection_modules`, `:connections`, `:runner_plugins`, and
+`:duckdb_in_process_client` from the consumer project's `config :favn`. Relative
+connection database paths are expanded against the consumer project root before
+the runner starts. Secrets can be present for local use, but diagnostics redact
+connection values, tokens, passwords, database URLs, and plugin config.
 
 Before startup, `favn_local` force-compiles the installed runtime workspace
 under `.favn/install/runtime_root` so orchestrator/runner startup does not boot

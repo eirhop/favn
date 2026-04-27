@@ -13,10 +13,7 @@ defmodule Mix.Tasks.Favn.Dev do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _rest, _invalid} =
-      OptionParser.parse(args, strict: [root_dir: :string, sqlite: :boolean, postgres: :boolean])
-
-    opts = normalize_storage_flags(opts)
+    opts = parse_args(args)
 
     case Dev.dev(opts) do
       :ok ->
@@ -25,6 +22,22 @@ defmodule Mix.Tasks.Favn.Dev do
       {:error, reason} ->
         Mix.raise(error_message(reason))
     end
+  end
+
+  @doc false
+  @spec parse_args([String.t()]) :: keyword()
+  def parse_args(args) when is_list(args) do
+    {opts, _rest, _invalid} =
+      OptionParser.parse(args,
+        strict: [
+          root_dir: :string,
+          sqlite: :boolean,
+          postgres: :boolean,
+          scheduler: :boolean
+        ]
+      )
+
+    normalize_storage_flags(opts)
   end
 
   defp error_message(:stack_already_running), do: "local stack already running"

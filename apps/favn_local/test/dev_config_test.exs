@@ -15,6 +15,7 @@ defmodule Favn.Dev.ConfigTest do
     assert config.web_port == 4173
     assert config.orchestrator_base_url == "http://127.0.0.1:4101"
     assert config.web_base_url == "http://127.0.0.1:4173"
+    assert config.scheduler_enabled == false
     assert config.service_token == nil
     assert config.web_session_secret == nil
   end
@@ -26,6 +27,7 @@ defmodule Favn.Dev.ConfigTest do
         sqlite_path: ".favn/data/dev.sqlite",
         orchestrator_port: 4201,
         web_port: 4273,
+        scheduler: true,
         service_token: "dev-token"
       )
 
@@ -35,7 +37,19 @@ defmodule Favn.Dev.ConfigTest do
     assert config.web_port == 4273
     assert config.orchestrator_base_url == "http://127.0.0.1:4201"
     assert config.web_base_url == "http://127.0.0.1:4273"
+    assert config.scheduler_enabled == true
     assert config.service_token == "dev-token"
+  end
+
+  test "resolve/1 lets CLI scheduler option override local config" do
+    Application.put_env(:favn, :local, scheduler: true)
+
+    on_exit(fn ->
+      Application.delete_env(:favn, :local)
+    end)
+
+    assert Config.resolve([]).scheduler_enabled == true
+    assert Config.resolve(scheduler: false).scheduler_enabled == false
   end
 
   test "resolve/1 supports postgres storage and postgres options" do

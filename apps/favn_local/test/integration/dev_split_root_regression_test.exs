@@ -49,6 +49,7 @@ defmodule Favn.DevSplitRootRegressionTest do
       {dev_output, 0} = Task.await(dev_task, 310_000)
       assert dev_output =~ "Favn local dev stack"
       assert dev_output =~ "storage: sqlite"
+      assert dev_output =~ "scheduler: disabled"
     after
       _ = run_mix!(project_dir, ["favn.stop" | root_arg], allow_failure: true)
     end
