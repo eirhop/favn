@@ -1,10 +1,22 @@
 defmodule FavnOrchestrator.Scheduler.Cron do
   @moduledoc false
 
+  @max_lookback_seconds 525_600 * 60
+
   @spec latest_due(String.t(), String.t(), DateTime.t()) :: DateTime.t() | nil
   def latest_due(cron, timezone, %DateTime{} = now_utc) do
-    now = DateTime.shift_zone!(now_utc, timezone) |> floor_for_cron(cron)
-    find_latest(cron, now, max_lookback(cron), step_seconds(cron)) |> maybe_to_utc()
+    case parse(cron) do
+      {:ok, expr} ->
+        now = now_utc |> DateTime.shift_zone!(timezone) |> floor_for_expr(expr)
+        from = DateTime.add(now, -@max_lookback_seconds, :second)
+
+        expr
+        |> find_previous(from, now, true)
+        |> maybe_to_utc()
+
+      :error ->
+        nil
+    end
   end
 
   @spec occurrences_between(String.t(), String.t(), DateTime.t(), DateTime.t()) :: [DateTime.t()]
@@ -14,20 +26,17 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         %DateTime{} = last_due_utc,
         %DateTime{} = latest_due_utc
       ) do
-    from = DateTime.shift_zone!(last_due_utc, timezone)
-    to = DateTime.shift_zone!(latest_due_utc, timezone)
-    step = step_seconds(cron)
-    cursor = DateTime.add(floor_for_cron(from, cron), step, :second)
+    case parse(cron) do
+      {:ok, expr} ->
+        from = DateTime.shift_zone!(last_due_utc, timezone)
+        to = DateTime.shift_zone!(latest_due_utc, timezone)
 
-    Stream.unfold(cursor, fn current ->
-      if DateTime.compare(current, to) in [:lt, :eq] do
-        {current, DateTime.add(current, step, :second)}
-      else
-        nil
-      end
-    end)
-    |> Enum.filter(&matches?(cron, &1))
-    |> Enum.map(&DateTime.shift_zone!(&1, "Etc/UTC"))
+        collect_occurrences(expr, from, to)
+        |> Enum.map(&DateTime.shift_zone!(&1, "Etc/UTC"))
+
+      :error ->
+        []
+    end
   end
 
   @spec first_occurrence_between(String.t(), String.t(), DateTime.t(), DateTime.t()) ::
@@ -38,11 +47,18 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         %DateTime{} = last_due_utc,
         %DateTime{} = latest_due_utc
       ) do
-    from = DateTime.shift_zone!(last_due_utc, timezone)
-    to = DateTime.shift_zone!(latest_due_utc, timezone)
-    step = step_seconds(cron)
-    cursor = DateTime.add(floor_for_cron(from, cron), step, :second)
-    find_forward(cron, cursor, to, step)
+    case parse(cron) do
+      {:ok, expr} ->
+        from = DateTime.shift_zone!(last_due_utc, timezone)
+        to = DateTime.shift_zone!(latest_due_utc, timezone)
+
+        expr
+        |> find_next(from, to)
+        |> maybe_to_utc()
+
+      :error ->
+        nil
+    end
   end
 
   @spec last_occurrence_between(String.t(), String.t(), DateTime.t(), DateTime.t()) ::
@@ -53,174 +69,324 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         %DateTime{} = last_due_utc,
         %DateTime{} = latest_due_utc
       ) do
-    from = DateTime.shift_zone!(last_due_utc, timezone)
-    to = DateTime.shift_zone!(latest_due_utc, timezone)
-    step = step_seconds(cron)
-    cursor = floor_for_cron(to, cron)
-    find_backward_after(cron, cursor, from, step)
+    case parse(cron) do
+      {:ok, expr} ->
+        from = DateTime.shift_zone!(last_due_utc, timezone)
+        to = DateTime.shift_zone!(latest_due_utc, timezone)
+
+        expr
+        |> find_previous(from, to, false)
+        |> maybe_to_utc()
+
+      :error ->
+        nil
+    end
   end
 
   @spec matches?(String.t(), DateTime.t()) :: boolean()
   def matches?(cron, %DateTime{} = dt) when is_binary(cron) do
+    case parse(cron) do
+      {:ok, expr} -> time_matches?(expr, dt) and date_matches?(expr, DateTime.to_date(dt))
+      :error -> false
+    end
+  end
+
+  defp parse(cron) when is_binary(cron) do
     case String.split(cron, ~r/\s+/, trim: true) do
       [minute, hour, day, month, weekday] ->
-        day_match = match_field?(day, dt.day)
-        weekday_match = match_weekday?(weekday, dt)
-
-        match_field?(minute, dt.minute) and
-          match_field?(hour, dt.hour) and
-          match_field?(month, dt.month) and
-          match_day_constraints?(day, day_match, weekday, weekday_match)
+        build_expr(["0", minute, hour, day, month, weekday], 5)
 
       [second, minute, hour, day, month, weekday] ->
-        day_match = match_field?(day, dt.day)
-        weekday_match = match_weekday?(weekday, dt)
+        build_expr([second, minute, hour, day, month, weekday], 6)
 
-        match_field?(second, dt.second) and
-          match_field?(minute, dt.minute) and
-          match_field?(hour, dt.hour) and
-          match_field?(month, dt.month) and
-          match_day_constraints?(day, day_match, weekday, weekday_match)
-
-      _ ->
-        false
+      _other ->
+        :error
     end
   end
 
-  defp match_day_constraints?(day_field, day_match, weekday_field, weekday_match) do
-    day_unrestricted? = day_of_month_unrestricted?(day_field)
-    weekday_unrestricted? = day_of_week_unrestricted?(weekday_field)
+  defp parse(_cron), do: :error
 
-    cond do
-      day_unrestricted? and weekday_unrestricted? -> true
-      day_unrestricted? -> weekday_match
-      weekday_unrestricted? -> day_match
-      true -> day_match or weekday_match
+  defp build_expr([second, minute, hour, day, month, weekday], field_count) do
+    with {:ok, seconds} <- parse_field(second, 0, 59, & &1),
+         {:ok, minutes} <- parse_field(minute, 0, 59, & &1),
+         {:ok, hours} <- parse_field(hour, 0, 23, & &1),
+         {:ok, days} <- parse_field(day, 1, 31, & &1),
+         {:ok, months} <- parse_field(month, 1, 12, & &1),
+         {:ok, weekdays} <- parse_field(weekday, 0, 7, &normalize_weekday/1) do
+      {:ok,
+       %{
+         field_count: field_count,
+         seconds: seconds,
+         minutes: minutes,
+         hours: hours,
+         days: days,
+         months: months,
+         weekdays: weekdays,
+         day_unrestricted?: length(days) == 31,
+         weekday_unrestricted?: length(weekdays) == 7
+       }}
     end
   end
 
-  defp day_of_month_unrestricted?(field), do: Enum.all?(1..31, &match_field?(field, &1))
-
-  defp day_of_week_unrestricted?(field) do
-    Enum.all?(0..6, fn value ->
-      match_field?(field, value) or (value == 0 and match_field?(field, 7))
-    end)
-  end
-
-  defp match_weekday?(field, dt) do
-    weekday = Date.day_of_week(DateTime.to_date(dt))
-    cron_weekday = if weekday == 7, do: 0, else: weekday
-    match_field?(field, cron_weekday) or (cron_weekday == 0 and match_field?(field, 7))
-  end
-
-  defp match_field?(field, value) do
+  defp parse_field(field, min, max, normalize) do
     field
-    |> String.split(",", trim: true)
-    |> Enum.any?(&match_token?(&1, value))
+    |> String.split(",", trim: false)
+    |> Enum.reduce_while(MapSet.new(), fn raw_token, values ->
+      token = String.trim(raw_token)
+
+      case parse_token(token, min, max, normalize) do
+        {:ok, token_values} -> {:cont, MapSet.union(values, MapSet.new(token_values))}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      :error -> :error
+      values -> parsed_values(values)
+    end
   end
 
-  defp match_token?("*", _value), do: true
+  defp parsed_values(values) do
+    if MapSet.size(values) == 0 do
+      :error
+    else
+      {:ok, values |> MapSet.to_list() |> Enum.sort()}
+    end
+  end
 
-  defp match_token?(token, value) do
+  defp parse_token("", _min, _max, _normalize), do: :error
+
+  defp parse_token(token, min, max, normalize) do
     case String.split(token, "/", parts: 2) do
-      [base, step] ->
-        with {step_int, ""} when step_int > 0 <- Integer.parse(step),
-             true <- base_match?(base, value),
-             true <- rem(value - step_origin(base), step_int) == 0 do
-          true
-        else
-          _ -> false
+      [base] ->
+        with {:ok, values, _origin} <- parse_base(base, min, max) do
+          {:ok, Enum.map(values, normalize)}
         end
 
-      [base] ->
-        base_match?(base, value)
+      [base, step] ->
+        with {:ok, step} <- parse_positive_int(step),
+             {:ok, values, origin} <- parse_base(base, min, max) do
+          stepped =
+            values
+            |> Enum.filter(&(rem(&1 - origin, step) == 0))
+            |> Enum.map(normalize)
 
-      _ ->
-        false
+          {:ok, stepped}
+        end
+
+      _other ->
+        :error
     end
   end
 
-  defp base_match?("*", _value), do: true
+  defp parse_base("*", min, max), do: {:ok, Enum.to_list(min..max), 0}
 
-  defp base_match?(base, value) do
+  defp parse_base(base, min, max) do
     case String.split(base, "-", parts: 2) do
       [single] ->
-        parse_int(single) == value
+        with {:ok, value} <- parse_int(single), true <- value >= min and value <= max do
+          {:ok, [value], value}
+        else
+          _ -> :error
+        end
 
       [left, right] ->
-        l = parse_int(left)
-        r = parse_int(right)
-        is_integer(l) and is_integer(r) and value >= l and value <= r
+        with {:ok, first} <- parse_int(left),
+             {:ok, last} <- parse_int(right),
+             true <- first <= last,
+             true <- first >= min,
+             true <- last <= max do
+          {:ok, Enum.to_list(first..last), first}
+        else
+          _ -> :error
+        end
 
-      _ ->
-        false
-    end
-  end
-
-  defp step_origin("*"), do: 0
-
-  defp step_origin(base) do
-    case String.split(base, "-", parts: 2) do
-      [single] -> parse_int(single) || 0
-      [left, _right] -> parse_int(left) || 0
-      _ -> 0
+      _other ->
+        :error
     end
   end
 
   defp parse_int(value) do
     case Integer.parse(String.trim(value)) do
-      {int, ""} -> int
-      _ -> nil
+      {int, ""} -> {:ok, int}
+      _ -> :error
     end
   end
 
-  defp floor_for_cron(%DateTime{} = dt, cron) do
-    case cron_fields(cron) do
-      6 -> %{dt | microsecond: {0, 0}}
-      _ -> %{dt | second: 0, microsecond: {0, 0}}
+  defp parse_positive_int(value) do
+    case parse_int(value) do
+      {:ok, int} when int > 0 -> {:ok, int}
+      _other -> :error
     end
   end
+
+  defp normalize_weekday(7), do: 0
+  defp normalize_weekday(value), do: value
+
+  defp collect_occurrences(expr, from, to) do
+    case DateTime.compare(from, to) do
+      :lt ->
+        from
+        |> dates_until(to, :asc)
+        |> Enum.flat_map(&occurrences_on_date(expr, &1, from, to, false, :asc))
+
+      _other ->
+        []
+    end
+  end
+
+  defp find_next(expr, from, to) do
+    case DateTime.compare(from, to) do
+      :lt ->
+        from
+        |> dates_until(to, :asc)
+        |> Enum.reduce_while(nil, fn date, _acc ->
+          case occurrences_on_date(expr, date, from, to, false, :asc) do
+            [candidate | _rest] -> {:halt, candidate}
+            [] -> {:cont, nil}
+          end
+        end)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp find_previous(expr, from, to, include_from?) do
+    case DateTime.compare(from, to) do
+      comparison when comparison in [:lt, :eq] ->
+        to
+        |> dates_until(from, :desc)
+        |> Enum.reduce_while(nil, fn date, _acc ->
+          case occurrences_on_date(expr, date, from, to, include_from?, :desc) do
+            [candidate | _rest] -> {:halt, candidate}
+            [] -> {:cont, nil}
+          end
+        end)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp dates_until(%DateTime{} = start_dt, %DateTime{} = end_dt, direction) do
+    dates_until(DateTime.to_date(start_dt), DateTime.to_date(end_dt), direction)
+  end
+
+  defp dates_until(start_date, end_date, :asc) do
+    Stream.unfold(start_date, fn date ->
+      if Date.compare(date, end_date) in [:lt, :eq] do
+        {date, Date.add(date, 1)}
+      else
+        nil
+      end
+    end)
+  end
+
+  defp dates_until(start_date, end_date, :desc) do
+    Stream.unfold(start_date, fn date ->
+      if Date.compare(date, end_date) in [:gt, :eq] do
+        {date, Date.add(date, -1)}
+      else
+        nil
+      end
+    end)
+  end
+
+  defp occurrences_on_date(expr, date, from, to, include_from?, direction) do
+    if date_matches?(expr, date) do
+      expr
+      |> times_for_date(date, from, to, direction)
+      |> Enum.flat_map(&date_time_candidates(date, &1, from.time_zone, direction))
+      |> Enum.filter(&candidate_in_range?(&1, from, to, include_from?))
+    else
+      []
+    end
+  end
+
+  defp times_for_date(expr, date, from, to, direction) do
+    lower =
+      if Date.compare(date, DateTime.to_date(from)) == :eq,
+        do: DateTime.to_time(from),
+        else: ~T[00:00:00]
+
+    upper =
+      if Date.compare(date, DateTime.to_date(to)) == :eq,
+        do: DateTime.to_time(to),
+        else: ~T[23:59:59]
+
+    for hour <- ordered(expr.hours, direction),
+        minute <- ordered(expr.minutes, direction),
+        second <- ordered(expr.seconds, direction),
+        time = Time.new!(hour, minute, second),
+        Time.compare(time, lower) in [:gt, :eq],
+        Time.compare(time, upper) in [:lt, :eq] do
+      time
+    end
+  end
+
+  defp ordered(values, :asc), do: values
+  defp ordered(values, :desc), do: Enum.reverse(values)
+
+  defp date_time_candidates(date, time, timezone, direction) do
+    case DateTime.new(date, time, timezone) do
+      {:ok, dt} ->
+        [dt]
+
+      {:ambiguous, first, second} ->
+        order_candidates([first, second], direction)
+
+      {:gap, _before_gap, _after_gap} ->
+        []
+    end
+  end
+
+  defp order_candidates(candidates, :asc) do
+    Enum.sort(candidates, &(DateTime.compare(&1, &2) != :gt))
+  end
+
+  defp order_candidates(candidates, :desc) do
+    Enum.sort(candidates, &(DateTime.compare(&1, &2) != :lt))
+  end
+
+  defp candidate_in_range?(candidate, from, to, include_from?) do
+    lower = DateTime.compare(candidate, from)
+    upper = DateTime.compare(candidate, to)
+
+    lower_allowed? = lower == :gt or (include_from? and lower == :eq)
+    upper_allowed? = upper in [:lt, :eq]
+
+    lower_allowed? and upper_allowed?
+  end
+
+  defp time_matches?(expr, %DateTime{} = dt) do
+    dt.second in expr.seconds and dt.minute in expr.minutes and dt.hour in expr.hours
+  end
+
+  defp date_matches?(expr, date) do
+    month_match? = date.month in expr.months
+    day_match? = date.day in expr.days
+    weekday_match? = cron_weekday(date) in expr.weekdays
+
+    month_match? and
+      cond do
+        expr.day_unrestricted? and expr.weekday_unrestricted? -> true
+        expr.day_unrestricted? -> weekday_match?
+        expr.weekday_unrestricted? -> day_match?
+        true -> day_match? or weekday_match?
+      end
+  end
+
+  defp cron_weekday(date) do
+    case Date.day_of_week(date) do
+      7 -> 0
+      value -> value
+    end
+  end
+
+  defp floor_for_expr(%DateTime{} = dt, %{field_count: 6}), do: %{dt | microsecond: {0, 0}}
+
+  defp floor_for_expr(%DateTime{} = dt, _expr), do: %{dt | second: 0, microsecond: {0, 0}}
 
   defp maybe_to_utc(nil), do: nil
   defp maybe_to_utc(dt), do: DateTime.shift_zone!(dt, "Etc/UTC")
-
-  defp find_latest(_cron, _cursor, 0, _step), do: nil
-
-  defp find_latest(cron, cursor, remaining, step) do
-    if matches?(cron, cursor) do
-      cursor
-    else
-      find_latest(cron, DateTime.add(cursor, -step, :second), remaining - 1, step)
-    end
-  end
-
-  defp find_forward(cron, cursor, to, step) do
-    case DateTime.compare(cursor, to) do
-      :gt ->
-        nil
-
-      _ ->
-        if matches?(cron, cursor),
-          do: DateTime.shift_zone!(cursor, "Etc/UTC"),
-          else: find_forward(cron, DateTime.add(cursor, step, :second), to, step)
-    end
-  end
-
-  defp find_backward_after(cron, cursor, from, step) do
-    case DateTime.compare(cursor, from) do
-      :gt ->
-        if matches?(cron, cursor),
-          do: DateTime.shift_zone!(cursor, "Etc/UTC"),
-          else: find_backward_after(cron, DateTime.add(cursor, -step, :second), from, step)
-
-      _ ->
-        nil
-    end
-  end
-
-  defp step_seconds(cron), do: if(cron_fields(cron) == 6, do: 1, else: 60)
-
-  defp max_lookback(cron), do: if(cron_fields(cron) == 6, do: 86_400, else: 525_600)
-
-  defp cron_fields(cron), do: cron |> String.split(~r/\s+/, trim: true) |> length()
 end
