@@ -37,13 +37,10 @@ defmodule Favn.SQL.Admission do
   def acquire_session(_policy), do: nil
 
   @spec release_session(term()) :: :ok
-  def release_session({:held, scope, owner}) when owner == self() do
-    decrement_held(scope)
-    Limiter.release(scope)
-  end
-
-  def release_session({:borrowed, scope, owner}) when owner == self() do
-    decrement_held(scope)
+  def release_session({_kind, scope, owner}) when owner == self() do
+    if decrement_held(scope) == 0 do
+      Limiter.release(scope)
+    end
   end
 
   def release_session(_lease), do: :ok
@@ -85,8 +82,9 @@ defmodule Favn.SQL.Admission do
       try do
         fun.()
       after
-        decrement_held(scope)
-        Limiter.release(scope)
+        if decrement_held(scope) == 0 do
+          Limiter.release(scope)
+        end
       end
     end
   end
@@ -111,6 +109,7 @@ defmodule Favn.SQL.Admission do
       |> Map.new()
 
     Process.put(@permit_key, next)
+    Map.get(next, scope, 0)
   end
 
   defp held do

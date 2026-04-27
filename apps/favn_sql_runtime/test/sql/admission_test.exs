@@ -249,6 +249,23 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert :ok = Client.disconnect(session_a)
   end
 
+  test "out-of-order nested session disconnect keeps permit held", %{tracker: tracker} do
+    registry_name = :admission_out_of_order_session_registry
+    start_registry(registry_name, TrackingAdapter, tracker)
+
+    assert {:ok, session_a} = Client.connect(:warehouse, registry_name: registry_name)
+    assert {:ok, session_b} = Client.connect(:warehouse, registry_name: registry_name)
+
+    assert :ok = Client.disconnect(session_a)
+
+    blocked = Task.async(fn -> Client.connect(:warehouse, registry_name: registry_name) end)
+
+    refute Task.yield(blocked, 100)
+    assert :ok = Client.disconnect(session_b)
+    assert {:ok, {:ok, session_c}} = Task.yield(blocked, 500)
+    assert :ok = Client.disconnect(session_c)
+  end
+
   test "releases admitted session lease when adapter connect raises", %{tracker: tracker} do
     registry_name = :admission_connect_raise_registry
     start_registry(registry_name, RaisingConnectAdapter, tracker)
