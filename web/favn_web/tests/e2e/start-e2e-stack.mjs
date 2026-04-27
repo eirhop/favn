@@ -25,15 +25,24 @@ function spawnChild(label, command, args, extraEnv = {}) {
 	return child;
 }
 
-const mockServer = spawnChild('mock orchestrator', 'node', ['./tests/e2e/mock-orchestrator-server.mjs'], {
-	FAVN_ORCHESTRATOR_PORT: String(ORCHESTRATOR_PORT)
-});
-
-const previewServer = spawnChild(
-	'svelte preview',
-	'npm',
-	['run', 'preview', '--', '--host', HOST, '--port', String(PREVIEW_PORT)]
+const mockServer = spawnChild(
+	'mock orchestrator',
+	'node',
+	['./tests/e2e/mock-orchestrator-server.mjs'],
+	{
+		FAVN_ORCHESTRATOR_PORT: String(ORCHESTRATOR_PORT)
+	}
 );
+
+const previewServer = spawnChild('svelte preview', 'npm', [
+	'run',
+	'preview',
+	'--',
+	'--host',
+	HOST,
+	'--port',
+	String(PREVIEW_PORT)
+]);
 
 function handleUnexpectedExit(name, code, signal) {
 	if (shuttingDown) {

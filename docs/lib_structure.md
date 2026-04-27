@@ -265,6 +265,9 @@ Notes:
   - `apps/favn_orchestrator/lib/favn_orchestrator/auth/store.ex`
   - `apps/favn_orchestrator/priv/http_contract/v1/*.schema.json`
 - Initial separate web workspace boundary slice now includes:
+  - `web/favn_web/src/lib/components/favn/` for Favn-specific presentational Svelte components used by the prototype dashboard and login screen
+  - `web/favn_web/src/lib/components/ui/` for local shadcn-svelte-style UI primitives
+  - `web/favn_web/src/lib/utils.ts` for shared frontend utility helpers
   - `web/favn_web/src/hooks.server.ts`
   - `web/favn_web/src/lib/server/orchestrator.ts`
   - `web/favn_web/src/lib/server/web_api.ts`

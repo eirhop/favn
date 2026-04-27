@@ -1,11 +1,22 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { clearWebSessionCookie } from '$lib/server/session';
-import { orchestratorListRuns } from '$lib/server/orchestrator';
+import {
+	orchestratorGetActiveManifest,
+	orchestratorListRuns,
+	orchestratorListSchedules
+} from '$lib/server/orchestrator';
 
 type RunSummary = {
 	id: string;
 	status: string | null;
+	target: string | null;
+};
+
+type ScheduleSummary = {
+	id: string;
+	enabled: boolean | null;
+	target: string | null;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -16,6 +27,13 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function asString(value: unknown): string | null {
 	return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function targetLabel(value: unknown): string | null {
+	if (!isRecord(value)) return null;
+	const type = asString(value.type);
+	const id = asString(value.id);
+	return type && id ? `${type}:${id}` : id;
 }
 
 function normalizeRuns(payload: unknown): RunSummary[] {
@@ -29,14 +47,44 @@ function normalizeRuns(payload: unknown): RunSummary[] {
 
 	return list.map((run, index) => {
 		if (!isRecord(run)) {
-			return { id: `run-${index + 1}`, status: null };
+			return { id: `run-${index + 1}`, status: null, target: null };
 		}
 
 		const id = asString(run.id) ?? asString(run.run_id) ?? `run-${index + 1}`;
 		const status = asString(run.status);
+		const target = targetLabel(run.target);
 
-		return { id, status };
+		return { id, status, target };
 	});
+}
+
+function normalizeSchedules(payload: unknown): ScheduleSummary[] {
+	const dataObj = isRecord(payload) && isRecord(payload.data) ? payload.data : payload;
+	const list = isRecord(dataObj) && Array.isArray(dataObj.items) ? dataObj.items : [];
+
+	return list.map((schedule, index) => {
+		if (!isRecord(schedule)) {
+			return { id: `schedule-${index + 1}`, enabled: null, target: null };
+		}
+
+		return {
+			id: asString(schedule.schedule_id) ?? asString(schedule.id) ?? `schedule-${index + 1}`,
+			enabled: typeof schedule.enabled === 'boolean' ? schedule.enabled : null,
+			target: targetLabel(schedule.target)
+		};
+	});
+}
+
+function normalizeActiveManifest(payload: unknown): string | null {
+	const dataObj = isRecord(payload) && isRecord(payload.data) ? payload.data : payload;
+
+	if (!isRecord(dataObj)) return null;
+
+	if (isRecord(dataObj.manifest)) {
+		return asString(dataObj.manifest.manifest_version_id) ?? asString(dataObj.manifest.id);
+	}
+
+	return asString(dataObj.manifest_version_id) ?? asString(dataObj.id);
 }
 
 async function readJsonOr(response: Response, fallback: unknown): Promise<unknown> {
@@ -52,23 +100,33 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
 		throw redirect(303, '/login');
 	}
 
-	const response = await orchestratorListRuns(locals.session);
+	const [runsResponse, activeManifestResponse, schedulesResponse] = await Promise.all([
+		orchestratorListRuns(locals.session),
+		orchestratorGetActiveManifest(locals.session),
+		orchestratorListSchedules(locals.session)
+	]);
 
-	if (response.status === 401) {
+	if (runsResponse.status === 401) {
 		clearWebSessionCookie(cookies);
 		locals.session = null;
 		throw redirect(303, '/login');
 	}
 
-	if (!response.ok) {
-		throw error(response.status, 'Failed to load runs');
+	if (!runsResponse.ok && runsResponse.status !== 401) {
+		throw error(runsResponse.status, 'Failed to load runs');
 	}
 
-	const payload = await readJsonOr(response, []);
+	const runsPayload = runsResponse.ok ? await readJsonOr(runsResponse, []) : [];
+	const activeManifestPayload = activeManifestResponse.ok
+		? await readJsonOr(activeManifestResponse, null)
+		: null;
+	const schedulesPayload = schedulesResponse.ok ? await readJsonOr(schedulesResponse, []) : [];
 
 	return {
 		session: locals.session,
-		runs: normalizeRuns(payload)
+		runs: normalizeRuns(runsPayload),
+		activeManifestVersionId: normalizeActiveManifest(activeManifestPayload),
+		schedules: normalizeSchedules(schedulesPayload)
 	};
 };
 

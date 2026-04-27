@@ -274,6 +274,16 @@ Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
 developer loop.
 
+The local orchestrator bootstrap actor can be configured from the consumer
+project `.env` used to run `mix favn.dev`. Configure
+`FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` and
+`FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD` before startup, and set
+`FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator` when you want that local
+actor to have admin privileges. Then use those orchestrator-owned credentials
+on the web login page. If bootstrap credentials are not configured, local
+tooling keeps using the generated local operator credentials stored under
+`.favn/secrets.json`.
+
 `mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
 currently running local stack. It uses the project-local service token and local
 operator credentials generated under `.favn/secrets.json`, so tutorial and local

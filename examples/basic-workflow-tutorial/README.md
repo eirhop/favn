@@ -235,6 +235,22 @@ mix favn.stop
 mix favn.reset
 ```
 
+To choose the local web UI login credentials, add these orchestrator bootstrap
+keys to `examples/basic-workflow-tutorial/.env` before running `mix favn.dev`:
+
+```sh
+FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
+FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=admin-password
+FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Favn Admin
+FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
+```
+
+Then open the web URL printed by `mix favn.dev` and log in with that username
+and password. If you change `.env` while the stack is running, restart it with
+`mix favn.stop` and `mix favn.dev` so the orchestrator process receives the new
+bootstrap values. The web login page always uses orchestrator-owned password
+auth; it does not create local web-only admin sessions.
+
 Install freshness notes:
 - `mix favn.install` materializes the Favn runtime under `.favn/install/runtime_root`
 - source-only Favn runtime updates are detected through the install fingerprint,

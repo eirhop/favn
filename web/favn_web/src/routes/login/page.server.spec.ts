@@ -107,4 +107,99 @@ describe('login page actions', () => {
 		expect(setWebSessionCookie).toHaveBeenCalledWith(cookies, baseSession);
 		expect(locals.session).toEqual(baseSession);
 	});
+
+	it('requires a valid orchestrator response before creating a web session', async () => {
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(JSON.stringify({ data: { session_id: 'sess-1', actor_id: 'actor-1' } }), {
+				status: 201,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+		vi.mocked(webSessionFromLoginPayload).mockReturnValue(baseSession);
+
+		const cookies = {};
+		const locals = { session: null as WebSession | null };
+
+		await expect(
+			actions.default({
+				request: createRequest({ username: 'alice', password: 'good-password' }),
+				cookies,
+				locals
+			} as never)
+		).rejects.toMatchObject({ status: 303, location: '/' });
+
+		expect(orchestratorLoginPassword).toHaveBeenCalledWith({
+			username: 'alice',
+			password: 'good-password'
+		});
+		expect(setWebSessionCookie).toHaveBeenCalledWith(cookies, baseSession);
+		expect(locals.session).toEqual(
+			expect.objectContaining({ actor_id: 'actor-1', provider: 'password_local' })
+		);
+	});
+
+	it('returns orchestrator rejection instead of creating a synthetic local session', async () => {
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(JSON.stringify({ error: { message: 'Invalid credentials' } }), {
+				status: 401,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		const cookies = {};
+		const locals = { session: null as WebSession | null };
+
+		const result = await actions.default({
+			request: createRequest({ username: 'admin', password: 'admin-password' }),
+			cookies,
+			locals
+		} as never);
+
+		expect(orchestratorLoginPassword).toHaveBeenCalledWith({
+			username: 'admin',
+			password: 'admin-password'
+		});
+		expect(isActionFailure(result)).toBe(true);
+
+		if (isActionFailure(result)) {
+			expect(result.status).toBe(401);
+			expect(result.data).toEqual({
+				message: 'Invalid credentials',
+				username: 'admin'
+			});
+		}
+
+		expect(webSessionFromLoginPayload).not.toHaveBeenCalled();
+		expect(setWebSessionCookie).not.toHaveBeenCalled();
+		expect(locals.session).toBeNull();
+		expect(cookies).toEqual({});
+	});
+
+	it('returns an error when orchestrator is unavailable instead of creating a synthetic local session', async () => {
+		vi.mocked(orchestratorLoginPassword).mockRejectedValue(new Error('connection refused'));
+
+		const cookies = {};
+		const locals = { session: null as WebSession | null };
+
+		const result = await actions.default({
+			request: createRequest({ username: 'admin', password: 'admin-password' }),
+			cookies,
+			locals
+		} as never);
+
+		expect(isActionFailure(result)).toBe(true);
+
+		if (isActionFailure(result)) {
+			expect(result.status).toBe(400);
+			expect(result.data).toEqual({
+				message: 'Unable to reach orchestrator service',
+				username: 'admin'
+			});
+		}
+
+		expect(webSessionFromLoginPayload).not.toHaveBeenCalled();
+		expect(setWebSessionCookie).not.toHaveBeenCalled();
+		expect(locals.session).toBeNull();
+		expect(cookies).toEqual({});
+	});
 });

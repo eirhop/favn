@@ -6,6 +6,13 @@ defmodule Favn.Dev.RuntimeLaunch do
   alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.Paths
 
+  @orchestrator_bootstrap_env ~w(
+    FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME
+    FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD
+    FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME
+    FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES
+  )
+
   @spec runner_spec(map(), keyword(), map(), map()) :: map()
   def runner_spec(runtime, opts, node_names, secrets)
       when is_map(runtime) and is_list(opts) and is_map(node_names) and is_map(secrets) do
@@ -146,7 +153,8 @@ defmodule Favn.Dev.RuntimeLaunch do
       cwd: runtime["orchestrator_root"],
       log_path: Paths.orchestrator_log_path(Paths.root_dir(opts)),
       env:
-        Map.merge(runtime_env(), %{
+        runtime_env()
+        |> Map.merge(%{
           "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
           "FAVN_DEV_SQLITE_PATH" => sqlite_path,
           "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
@@ -167,6 +175,7 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Local Operator",
           "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" => "operator"
         })
+        |> Map.merge(orchestrator_bootstrap_env(opts))
     }
   end
 
@@ -188,6 +197,83 @@ defmodule Favn.Dev.RuntimeLaunch do
         "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"]
       }
     }
+  end
+
+  defp orchestrator_bootstrap_env(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Path.join(".env")
+    |> read_dotenv()
+    |> Map.merge(system_orchestrator_bootstrap_env())
+    |> Map.take(@orchestrator_bootstrap_env)
+  end
+
+  defp system_orchestrator_bootstrap_env do
+    @orchestrator_bootstrap_env
+    |> Enum.flat_map(fn key ->
+      case System.get_env(key) do
+        value when is_binary(value) and value != "" -> [{key, value}]
+        _missing_or_empty -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp read_dotenv(path) do
+    case File.read(path) do
+      {:ok, contents} -> parse_dotenv(contents)
+      {:error, _reason} -> %{}
+    end
+  end
+
+  defp parse_dotenv(contents) when is_binary(contents) do
+    contents
+    |> String.split(["\r\n", "\n"], trim: true)
+    |> Enum.reduce(%{}, fn line, acc ->
+      case parse_dotenv_line(line) do
+        {key, value} -> Map.put(acc, key, value)
+        :skip -> acc
+      end
+    end)
+  end
+
+  defp parse_dotenv_line(line) do
+    line = String.trim(line)
+
+    cond do
+      line == "" or String.starts_with?(line, "#") ->
+        :skip
+
+      String.starts_with?(line, "export ") ->
+        line |> String.replace_prefix("export ", "") |> parse_dotenv_line()
+
+      true ->
+        case String.split(line, "=", parts: 2) do
+          [key, value] -> {String.trim(key), unquote_dotenv_value(value)}
+          _other -> :skip
+        end
+    end
+  end
+
+  defp unquote_dotenv_value(value) do
+    value = String.trim(value)
+
+    cond do
+      String.starts_with?(value, "\"") and String.ends_with?(value, "\"") ->
+        value |> String.trim_leading("\"") |> String.trim_trailing("\"")
+
+      String.starts_with?(value, "'") and String.ends_with?(value, "'") ->
+        value |> String.trim_leading("'") |> String.trim_trailing("'")
+
+      true ->
+        value |> strip_dotenv_inline_comment() |> String.trim()
+    end
+  end
+
+  defp strip_dotenv_inline_comment(value) do
+    value
+    |> String.split(" #", parts: 2)
+    |> hd()
   end
 
   defp runtime_env do

@@ -1,6 +1,6 @@
-# sv
+# Favn Web
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit browser edge/BFF prototype for Favn. The web tier owns browser sessions and relays operator requests to the private orchestrator API.
 
 ## Creating a project
 
@@ -27,6 +27,24 @@ npm run dev
 
 # or start the server and open the app in a new browser tab
 npm run dev -- --open
+```
+
+### Environment
+
+Create a local `.env` file in `web/favn_web` when running the prototype directly:
+
+```sh
+FAVN_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101
+FAVN_ORCHESTRATOR_SERVICE_TOKEN=change-me
+FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-secret
+```
+
+Login always uses orchestrator-owned username/password auth. The web tier stores only the signed browser session derived from the orchestrator login response.
+
+### Storybook
+
+```sh
+npm run storybook
 ```
 
 ## Building
