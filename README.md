@@ -39,7 +39,7 @@ development on top of the new boundaries.
 - `{:favn, ...}` remains the one public package users should depend on
 - local development tooling is available today through `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
-- the local web UI now lands on a run inspector at `/runs` for understanding recent pipeline/asset executions, failures, outputs, and manifest context after `mix favn.run`
+- the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, and submitting the current orchestrator asset run path
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`

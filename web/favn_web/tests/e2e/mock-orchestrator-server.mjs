@@ -13,6 +13,7 @@ const RUNS = [
 		id: 'run_001',
 		status: 'succeeded',
 		target: { type: 'pipeline', id: 'DailySalesPipeline' },
+		target_refs: ['Raw.Crm.Customers:asset', 'Raw.Crm.Orders:asset'],
 		trigger: 'manual',
 		started_at: '2026-04-27T14:32:10.000Z',
 		duration_ms: 12400,
@@ -24,6 +25,11 @@ const RUNS = [
 		id: 'run_002',
 		status: 'failed',
 		target: { type: 'pipeline', id: 'ImportCustomers' },
+		target_refs: [
+			'Raw.Crm.Customers:asset',
+			'Raw.Crm.Orders:asset',
+			'Staging.CustomerOrders:asset'
+		],
 		trigger: 'manual',
 		started_at: '2026-04-27T14:19:02.000Z',
 		duration_ms: 3100,
@@ -35,6 +41,7 @@ const RUNS = [
 		id: 'run_003',
 		status: 'running',
 		target: { type: 'pipeline', id: 'BuildWarehouse' },
+		target_refs: ['Raw.A:asset', 'Raw.B:asset'],
 		trigger: 'manual',
 		started_at: '2026-04-27T14:36:51.000Z',
 		duration_ms: 42000,
@@ -511,6 +518,7 @@ function handleSubmitRun(request, response) {
 			}
 
 			const target = body.target;
+			const manifestSelection = body.manifest_selection;
 			if (
 				typeof target !== 'object' ||
 				target === null ||
@@ -524,6 +532,18 @@ function handleSubmitRun(request, response) {
 				return;
 			}
 
+			if (
+				typeof manifestSelection !== 'object' ||
+				manifestSelection === null ||
+				Array.isArray(manifestSelection) ||
+				manifestSelection.mode !== 'active'
+			) {
+				sendJson(response, 422, {
+					error: { message: 'Expected manifest_selection with mode active' }
+				});
+				return;
+			}
+
 			sendJson(response, 202, {
 				data: {
 					run_id: 'run_submitted_001',
@@ -531,7 +551,8 @@ function handleSubmitRun(request, response) {
 					target: {
 						type: target.type,
 						id: target.id
-					}
+					},
+					manifest_selection: manifestSelection
 				}
 			});
 		})
@@ -579,12 +600,22 @@ function handleGetActiveManifest(request, response) {
 		data: {
 			manifest: {
 				manifest_version_id: 'manifest_v2',
-				status: 'active'
+				status: 'active',
+				content_hash: 'sha256:manifest-v2'
 			},
-			targets: [
-				{ type: 'asset', id: 'asset.orders' },
-				{ type: 'pipeline', id: 'pipeline.reconcile' }
-			]
+			targets: {
+				manifest_version_id: 'manifest_v2',
+				assets: [
+					{ target_id: 'asset:Raw.Crm.Customers:asset', label: 'Raw.Crm.Customers:asset' },
+					{ target_id: 'asset:Raw.Crm.Orders:asset', label: 'Raw.Crm.Orders:asset' },
+					{
+						target_id: 'asset:Staging.CustomerOrders:asset',
+						label: 'Staging.CustomerOrders:asset'
+					},
+					{ target_id: 'asset:Mart.CustomerRevenue:asset', label: 'Mart.CustomerRevenue:asset' }
+				],
+				pipelines: [{ target_id: 'pipeline:DailySalesPipeline', label: 'DailySalesPipeline' }]
+			}
 		}
 	});
 }

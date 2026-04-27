@@ -213,6 +213,8 @@ Notes:
   - `web/favn_web/src/routes/page.server.spec.ts` for protected dashboard load behavior
   - `web/favn_web/src/lib/components/favn/*.stories.svelte` for component-first dashboard and login panel coverage in Storybook
   - `web/favn_web/src/lib/components/favn/RunInspectorComponentGallery.stories.svelte`, `RunsPage.stories.svelte`, and `RunDetailPage.stories.svelte` for run-inspector component/page Storybook coverage
+  - `web/favn_web/src/lib/components/favn/AssetCatalogPage.stories.svelte` and `AssetDetailPage.stories.svelte` for asset catalog/detail Storybook coverage
+  - `web/favn_web/src/lib/server/asset_catalog_views.spec.ts` for asset catalog normalization and filtering coverage
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`
   - `web/favn_web/tests/e2e/mock-orchestrator-server.mjs` (deterministic local orchestrator mock used during Playwright runs)
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` now also covers thin operator smoke over `/api/web/v1/**` (runs/manifests/schedules commands + run stream relay validation)

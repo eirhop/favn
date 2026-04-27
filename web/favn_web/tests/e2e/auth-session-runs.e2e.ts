@@ -96,7 +96,7 @@ test.describe('auth/session/runs flow', () => {
 		await expect(page).toHaveURL(/\/runs$/);
 		await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
 		await expect(page.getByText('local-operator')).toBeVisible();
-		await expect(page.getByText(/Active manifest:/)).toBeVisible();
+		await expect(page.getByText(/^Manifest manifest_v2$/)).toBeVisible();
 		await expect(page.getByRole('row', { name: /run_001/ })).toContainText('succeeded');
 		await expect(page.getByRole('row', { name: /run_002/ })).toContainText('failed');
 	});
@@ -110,14 +110,44 @@ test.describe('auth/session/runs flow', () => {
 			.click();
 
 		await expect(page).toHaveURL(/\/runs\/run_002$/);
-		await expect(page.getByRole('heading', { name: 'Run run_002' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Run details' })).toBeVisible();
+		await expect(page.getByRole('main').getByText('run_002')).toBeVisible();
 		await expect(page.getByText('Run failed in asset Staging.CustomerOrders')).toBeVisible();
 		await expect(
 			page.getByText('DuckDB query failed: column "customer_id" not found')
 		).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Assets' })).toBeVisible();
-		await page.getByRole('button', { name: 'Outputs' }).click();
-		await expect(page.getByText('staging.customer_orders')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Execution' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Outputs' })).toBeVisible();
+		await expect(page.getByRole('cell', { name: 'staging.customer_orders' }).first()).toBeVisible();
+	});
+
+	test('login to asset catalog, inspect an asset, and submit dependency run', async ({ page }) => {
+		await loginAndReachHome(page);
+
+		await page.getByRole('link', { name: 'Assets' }).click();
+		await expect(page).toHaveURL(/\/assets$/);
+		await expect(page.getByRole('heading', { name: 'Assets' })).toBeVisible();
+		await expect(page.getByRole('row', { name: /Staging\.CustomerOrders/ })).toContainText(
+			'failed'
+		);
+
+		await page
+			.getByRole('row', { name: /Staging\.CustomerOrders/ })
+			.getByRole('link', { name: 'Inspect' })
+			.click();
+
+		await expect(page).toHaveURL(/\/assets\/Staging\.CustomerOrders%3Aasset$/);
+		await expect(page.getByRole('heading', { name: 'CustomerOrders' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Asset-only run unavailable' })).toBeDisabled();
+
+		await page.getByRole('tab', { name: 'Runs' }).click();
+		await expect(page.getByText('run_002')).toBeVisible();
+
+		await page.getByRole('button', { name: 'Run with dependencies' }).click();
+		await expect(page.getByRole('dialog')).toContainText('manifest_v2');
+		await expect(page.getByRole('dialog')).toContainText('With dependencies');
+		await page.getByRole('button', { name: 'Submit run request' }).click();
+		await expect(page).toHaveURL(/\/assets\/Staging\.CustomerOrders%3Aasset$/);
 	});
 
 	test('logout returns to /login and / remains protected afterward', async ({ page }) => {
@@ -186,11 +216,15 @@ test.describe('auth/session/runs flow', () => {
 
 		const submitRun = await pagePostJson(page, '/api/web/v1/runs', {
 			target: { type: 'asset', id: 'asset.orders' },
-			manifest_selection: { active: true }
+			manifest_selection: { mode: 'active' }
 		});
 		expect(submitRun.status).toBe(202);
 		expect(submitRun.body).toEqual({
-			data: expect.objectContaining({ run_id: 'run_submitted_001', status: 'queued' })
+			data: expect.objectContaining({
+				run_id: 'run_submitted_001',
+				status: 'queued',
+				manifest_selection: { mode: 'active' }
+			})
 		});
 
 		const cancelRun = await pagePostJson(page, '/api/web/v1/runs/run_002/cancel');
@@ -221,9 +255,11 @@ test.describe('auth/session/runs flow', () => {
 		expect(activeManifest.body).toEqual({
 			data: expect.objectContaining({
 				manifest: expect.objectContaining({ manifest_version_id: 'manifest_v2', status: 'active' }),
-				targets: expect.arrayContaining([
-					expect.objectContaining({ type: 'asset', id: 'asset.orders' })
-				])
+				targets: expect.objectContaining({
+					assets: expect.arrayContaining([
+						expect.objectContaining({ target_id: 'asset:Raw.Crm.Customers:asset' })
+					])
+				})
 			})
 		});
 
