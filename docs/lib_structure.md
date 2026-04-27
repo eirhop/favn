@@ -266,10 +266,12 @@ Notes:
   - `apps/favn_orchestrator/priv/http_contract/v1/*.schema.json`
 - Initial separate web workspace boundary slice now includes:
   - `web/favn_web/src/lib/components/favn/` for Favn-specific presentational Svelte components used by the prototype dashboard and login screen
-  - `web/favn_web/src/lib/components/favn/*Run*`, `*Asset*`, `*Output*`, `*Manifest*`, and `ErrorPanel.svelte` for componentized run-inspector UI surfaces with colocated Storybook coverage
+  - `web/favn_web/src/lib/components/favn/*Run*`, `*Asset*`, `*Output*`, `*Manifest*`, and `ErrorPanel.svelte` for componentized run-inspector and asset-catalog UI surfaces with colocated Storybook coverage
   - `web/favn_web/src/lib/components/ui/` for local shadcn-svelte-style UI primitives
   - `web/favn_web/src/lib/run_view_types.ts` for normalized run inspector view types
+  - `web/favn_web/src/lib/asset_catalog_types.ts` for normalized asset catalog/detail view types
   - `web/favn_web/src/lib/server/run_views.ts` for BFF normalization from orchestrator run payloads into UI-oriented run views
+  - `web/favn_web/src/lib/server/asset_catalog_views.ts` for BFF normalization from active manifest targets and run history into UI-oriented asset catalog/detail views
   - `web/favn_web/src/lib/utils.ts` for shared frontend utility helpers
   - `web/favn_web/src/hooks.server.ts`
   - `web/favn_web/src/lib/server/orchestrator.ts`
@@ -282,6 +284,10 @@ Notes:
   - `web/favn_web/src/routes/runs/+page.svelte`
   - `web/favn_web/src/routes/runs/[run_id]/+page.server.ts`
   - `web/favn_web/src/routes/runs/[run_id]/+page.svelte`
+  - `web/favn_web/src/routes/assets/+page.server.ts`
+  - `web/favn_web/src/routes/assets/+page.svelte`
+  - `web/favn_web/src/routes/assets/[asset_ref]/+page.server.ts`
+  - `web/favn_web/src/routes/assets/[asset_ref]/+page.svelte`
   - `web/favn_web/src/routes/api/web/v1/streams/runs/+server.ts`
   - `web/favn_web/src/routes/api/web/v1/streams/runs/[run_id]/+server.ts`
   - `web/favn_web/src/routes/api/web/v1/runs/+server.ts`

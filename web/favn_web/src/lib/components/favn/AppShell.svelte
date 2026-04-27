@@ -5,6 +5,8 @@
 	import { Badge } from '$lib/components/ui/badge';
 
 	type Session = { actor_id: string; provider: string };
+	type NavHref = '/assets' | '/runs';
+	type NavItem = { label: string; href: NavHref | null; complete: boolean };
 
 	let { session, activeManifestVersionId, children } = $props<{
 		session: Session;
@@ -12,19 +14,31 @@
 		children?: import('svelte').Snippet;
 	}>();
 
-	const navItems = [
-		{ label: 'Runs', href: '/runs' },
-		{ label: 'Manifests', href: null },
-		{ label: 'Settings', href: null }
+	const navItems: NavItem[] = [
+		{ label: 'Assets', href: '/assets', complete: true },
+		{ label: 'Runs', href: '/runs', complete: true },
+		{ label: 'Manifests', href: null, complete: false },
+		{ label: 'Schedules', href: null, complete: false },
+		{ label: 'Settings', href: null, complete: false }
 	];
 
 	let currentPath = $derived(page.url.pathname);
 	let compactManifestVersionId = $derived(shortId(activeManifestVersionId));
+	let currentRootHref = $derived<NavHref>(currentPath.startsWith('/assets') ? '/assets' : '/runs');
+	let currentRootLabel = $derived(
+		navItems.find(
+			(item) => item.href && (currentPath === item.href || currentPath.startsWith(`${item.href}/`))
+		)?.label ?? 'Runs'
+	);
 
 	function shortId(value: string | null | undefined) {
 		if (!value) return 'none';
 		if (value.length <= 18) return value;
 		return `${value.slice(0, 11)}…${value.slice(-4)}`;
+	}
+
+	function navHref(value: NavHref): string {
+		return value === '/assets' ? resolve('/assets') : resolve('/runs');
 	}
 </script>
 
@@ -42,7 +56,7 @@
 						(currentPath === item.href || currentPath.startsWith(`${item.href}/`))}
 					{#if item.href}
 						<a
-							href={resolve(item.href)}
+							href={navHref(item.href)}
 							class={[
 								'flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium',
 								active
@@ -59,7 +73,7 @@
 							aria-disabled="true"
 						>
 							<span>{item.label}</span>
-							<span class="text-[10px] text-slate-400">soon</span>
+							{#if !item.complete}<span class="text-[10px] text-slate-400">soon</span>{/if}
 						</span>
 					{/if}
 				{/each}
@@ -78,8 +92,8 @@
 							<span class="text-slate-500">Local development</span>
 						</div>
 						<nav class="mt-1 truncate text-xs text-slate-500" aria-label="Breadcrumb">
-							<a href={resolve('/runs')} class="hover:text-slate-950">Runs</a>
-							{#if currentPath !== '/runs'}
+							<a href={navHref(currentRootHref)} class="hover:text-slate-950">{currentRootLabel}</a>
+							{#if currentPath !== '/runs' && currentPath !== '/assets'}
 								<span class="mx-1">/</span><span
 									title={currentPath.split('/').filter(Boolean).at(-1)}
 									>{shortId(currentPath.split('/').filter(Boolean).at(-1))}</span
