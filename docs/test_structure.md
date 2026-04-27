@@ -212,9 +212,11 @@ Notes:
   - `web/favn_web/src/routes/login/page.server.spec.ts` for orchestrator-owned login action behavior
   - `web/favn_web/src/routes/page.server.spec.ts` for protected dashboard load behavior
   - `web/favn_web/src/lib/components/favn/*.stories.svelte` for component-first dashboard and login panel coverage in Storybook
+  - `web/favn_web/src/lib/components/favn/RunInspectorComponentGallery.stories.svelte`, `RunsPage.stories.svelte`, and `RunDetailPage.stories.svelte` for run-inspector component/page Storybook coverage
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`
   - `web/favn_web/tests/e2e/mock-orchestrator-server.mjs` (deterministic local orchestrator mock used during Playwright runs)
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` now also covers thin operator smoke over `/api/web/v1/**` (runs/manifests/schedules commands + run stream relay validation)
+  - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` also covers login into the `/runs` inspector and opening a failed run detail view
 - SQL runtime admission control coverage now includes `apps/favn_sql_runtime/test/sql/admission_test.exs` for serialized versus unlimited SQL execution policies and session-scoped admission, `apps/favn_sql_runtime/test/sql/concurrency_policy_test.exs` for adapter policy callback loading, and `apps/favn_sql_runtime/test/connection/validator_test.exs` for reserved runtime connection keys.
 - SQL runtime extraction work now adds public API coverage in:
   - `apps/favn/test/sql_client_test.exs`
