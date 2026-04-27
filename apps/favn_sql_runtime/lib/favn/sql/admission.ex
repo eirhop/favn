@@ -22,6 +22,23 @@ defmodule Favn.SQL.Admission do
 
   def with_permit(%Session{}, _operation, _payload, fun) when is_function(fun, 0), do: fun.()
 
+  @spec acquire_session(ConcurrencyPolicy.t() | nil) :: term()
+  def acquire_session(%ConcurrencyPolicy{} = policy) do
+    if permit_required?(policy, :connect, nil) do
+      acquire_lease(policy)
+    end
+  end
+
+  def acquire_session(_policy), do: nil
+
+  @spec release_session(term()) :: :ok
+  def release_session({:held, scope, owner}) when owner == self() do
+    decrement_held(scope)
+    Limiter.release(scope)
+  end
+
+  def release_session(_lease), do: :ok
+
   defp permit_required?(%ConcurrencyPolicy{limit: :unlimited}, _operation, _payload), do: false
   defp permit_required?(%ConcurrencyPolicy{applies_to: :all}, _operation, _payload), do: true
 
@@ -54,8 +71,7 @@ defmodule Favn.SQL.Admission do
     if already_holding?(scope) do
       fun.()
     else
-      :ok = Limiter.acquire(scope, limit)
-      increment_held(scope)
+      _lease = acquire_lease(scope, limit)
 
       try do
         fun.()
@@ -64,6 +80,14 @@ defmodule Favn.SQL.Admission do
         Limiter.release(scope)
       end
     end
+  end
+
+  defp acquire_lease(%ConcurrencyPolicy{scope: scope, limit: limit}), do: acquire_lease(scope, limit)
+
+  defp acquire_lease(scope, limit) do
+    :ok = Limiter.acquire(scope, limit)
+    increment_held(scope)
+    {:held, scope, self()}
   end
 
   defp already_holding?(scope), do: Map.get(held(), scope, 0) > 0

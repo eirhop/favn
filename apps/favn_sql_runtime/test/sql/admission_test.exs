@@ -1,11 +1,30 @@
 defmodule FavnSQLRuntime.SQLAdmissionTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Admission, Client, ConcurrencyPolicy, Result, Session}
   alias Favn.SQL.Admission.Limiter
 
   defmodule TrackingAdapter do
+    def connect(resolved, _opts) do
+      tracker = Map.fetch!(resolved.config, :tracker)
+      bump_session(tracker, 1)
+      {:ok, %{tracker: tracker}}
+    end
+
+    def disconnect(conn, _opts) do
+      tracker = Map.fetch!(conn, :tracker)
+      bump_session(tracker, -1)
+      :ok
+    end
+
+    def capabilities(_resolved, _opts), do: {:ok, %Favn.SQL.Capabilities{}}
+
+    def default_concurrency_policy(%Resolved{} = resolved) do
+      %ConcurrencyPolicy{limit: 1, scope: {:tracker, resolved.name}, applies_to: :all}
+    end
+
     def query(conn, statement, _opts) do
       tracker = Map.fetch!(conn, :tracker)
       bump_active(tracker, 1)
@@ -40,11 +59,18 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         %{state | active: active, max_active: max(state.max_active, active)}
       end)
     end
+
+    defp bump_session(tracker, delta) do
+      Agent.update(tracker, fn state ->
+        sessions = state.sessions + delta
+        %{state | sessions: sessions, max_sessions: max(state.max_sessions, sessions)}
+      end)
+    end
   end
 
   setup do
     Limiter.reset()
-    {:ok, tracker} = Agent.start_link(fn -> %{active: 0, max_active: 0} end)
+    {:ok, tracker} = Agent.start_link(fn -> %{active: 0, max_active: 0, sessions: 0, max_sessions: 0} end)
 
     on_exit(fn ->
       Limiter.reset()
@@ -157,6 +183,34 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
     assert Enum.all?(Task.await_many(tasks, 1_000), &match?({:ok, _}, &1))
     assert Agent.get(tracker, & &1.max_active) == 1
+  end
+
+  test "holds admitted local-file sessions until disconnect", %{tracker: tracker} do
+    registry_name = :admission_session_registry
+
+    start_supervised!({Registry,
+     name: registry_name,
+     connections: %{
+       warehouse: %Resolved{
+         name: :warehouse,
+         adapter: TrackingAdapter,
+         module: __MODULE__,
+         config: %{tracker: tracker}
+       }
+     }})
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
+          {:ok, %Result{}} = Client.query(session, "select 1", [])
+          Process.sleep(50)
+          :ok = Client.disconnect(session)
+        end)
+      end
+
+    Task.await_many(tasks, 1_000)
+    assert Agent.get(tracker, & &1.max_sessions) == 1
   end
 
   defp session(tracker, policy) do

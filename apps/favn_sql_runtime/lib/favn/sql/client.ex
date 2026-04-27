@@ -24,16 +24,18 @@ defmodule Favn.SQL.Client do
     {resolution_opts, adapter_opts} = split_connect_opts(opts)
 
     with {:ok, %Resolved{} = resolved} <- fetch_connection(connection, resolution_opts),
-         {:ok, concurrency_policy} <- ConcurrencyPolicy.resolve(resolved),
-         {:ok, conn} <- resolved.adapter.connect(resolved, adapter_opts),
-         {:ok, capabilities} <- resolved.adapter.capabilities(resolved, adapter_opts) do
+          {:ok, concurrency_policy} <- ConcurrencyPolicy.resolve(resolved),
+          lease <- Admission.acquire_session(concurrency_policy),
+          {:ok, conn} <- connect_with_lease(resolved, adapter_opts, lease),
+          {:ok, capabilities} <- capabilities_with_lease(resolved, adapter_opts, conn, lease) do
       {:ok,
        %Session{
          adapter: resolved.adapter,
          resolved: resolved,
          conn: conn,
          capabilities: capabilities,
-         concurrency_policy: concurrency_policy
+         concurrency_policy: concurrency_policy,
+         admission_lease: lease
        }}
     end
   rescue
@@ -45,13 +47,18 @@ defmodule Favn.SQL.Client do
   def connect(connection, _opts), do: {:error, invalid_connection_error(connection)}
 
   @spec disconnect(Session.t()) :: :ok
-  def disconnect(%Session{adapter: adapter, conn: conn}) do
+  def disconnect(%Session{adapter: adapter, conn: conn, admission_lease: lease}) do
     _ = adapter.disconnect(conn, [])
+    Admission.release_session(lease)
     :ok
   rescue
-    _error -> :ok
+    _error ->
+      Admission.release_session(lease)
+      :ok
   catch
-    :exit, _ -> :ok
+    :exit, _ ->
+      Admission.release_session(lease)
+      :ok
   end
 
   def disconnect(_session), do: :ok
@@ -181,6 +188,30 @@ defmodule Favn.SQL.Client do
         :error -> {:error, invalid_connection_error(connection)}
       end
     end
+  end
+
+  defp connect_with_lease(%Resolved{} = resolved, adapter_opts, lease) do
+    case resolved.adapter.connect(resolved, adapter_opts) do
+      {:ok, conn} -> {:ok, conn}
+      {:error, _reason} = error -> release_lease_and_return(error, lease)
+    end
+  end
+
+  defp capabilities_with_lease(%Resolved{} = resolved, adapter_opts, conn, lease) do
+    case resolved.adapter.capabilities(resolved, adapter_opts) do
+      {:ok, capabilities} -> {:ok, capabilities}
+      {:error, _reason} = error -> disconnect_after_connect_error(resolved.adapter, conn, lease, error)
+    end
+  end
+
+  defp disconnect_after_connect_error(adapter, conn, lease, error) do
+    _ = adapter.disconnect(conn, [])
+    release_lease_and_return(error, lease)
+  end
+
+  defp release_lease_and_return(error, lease) do
+    Admission.release_session(lease)
+    error
   end
 
   defp invalid_connection_error(connection) do
