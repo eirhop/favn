@@ -47,9 +47,9 @@ defmodule Favn.Pipeline do
   leading seconds field
   - `timezone`: optional IANA timezone string
   - `missed`: `:skip | :one | :all`, defaults to `:skip`. Runtime `:all`
-    catch-up is capped per scheduler tick to avoid unbounded high-frequency
+    catch-up is capped per schedule entry per tick to avoid unbounded high-frequency
     backlog submission. The orchestrator default cap is 1,000 occurrences per
-    scheduler tick.
+    schedule entry per tick.
   - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
   - `active`: boolean, defaults to `true`
 
@@ -266,7 +266,7 @@ defmodule Favn.Pipeline do
     with a leading seconds field
   - `timezone` optional
   - `missed` optional, defaults to `:skip`; runtime `:all` catch-up is capped
-    per scheduler tick
+    per schedule entry per tick
   - `overlap` optional, defaults to `:forbid`
   - `active` optional, defaults to `true`
 

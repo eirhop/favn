@@ -327,7 +327,9 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
 
     assert log =~ "scheduler missed occurrence catch-up capped at 3 occurrences"
     assert {:ok, runs} = Storage.list_runs()
-    assert length(runs) == 3
+
+    capped_runs = Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))
+    assert length(capped_runs) == 3
   end
 
   test "windowed scheduled pipelines carry anchor window into run pipeline context" do

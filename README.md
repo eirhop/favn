@@ -66,7 +66,7 @@ Assets are the units of business work in Favn. An asset can be written as normal
 
 Pipelines select one or more target assets and describe how they should run, for example whether dependencies should be included and whether the pipeline should have a schedule.
 Cron schedules support both standard 5-field expressions and 6-field expressions with a leading seconds field, so production schedules can be defined down to seconds when needed.
-When `missed: :all` is used, scheduler catch-up is capped per tick to avoid unbounded backlog submission for high-frequency schedules. The orchestrator default cap is 1,000 occurrences per scheduler tick and can be adjusted with `config :favn_orchestrator, :scheduler, max_missed_all_occurrences: ...`.
+When `missed: :all` is used, scheduler catch-up is capped per schedule entry per tick to avoid unbounded backlog submission for high-frequency schedules. The orchestrator default cap is 1,000 occurrences per schedule entry per tick and can be adjusted with `config :favn_orchestrator, :scheduler, max_missed_all_occurrences: ...`.
 
 ### Manifests
 
