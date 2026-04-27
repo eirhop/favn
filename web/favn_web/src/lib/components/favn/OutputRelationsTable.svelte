@@ -7,7 +7,7 @@
 </script>
 
 {#if outputs.length === 0}
-	<p class="text-sm text-slate-500">No materialized outputs reported.</p>
+	<p class="text-sm text-slate-500">No materialized outputs reported by this run.</p>
 {:else}
 	<Table.Root>
 		<Table.Header>

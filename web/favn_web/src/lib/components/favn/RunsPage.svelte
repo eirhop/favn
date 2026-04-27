@@ -72,7 +72,7 @@
 
 	{#if loadError}
 		<Alert.Root variant="destructive">
-			<Alert.Title>Failed to load runs</Alert.Title>
+			<p class="mb-1 font-medium tracking-tight">Failed to load runs</p>
 			<Alert.Description>{loadError}</Alert.Description>
 		</Alert.Root>
 	{/if}
@@ -80,7 +80,7 @@
 	<Card.Root>
 		<Card.Header>
 			<div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-				<div class="flex flex-wrap gap-2" role="tablist" aria-label="Run status filters">
+				<div class="flex flex-wrap gap-2" aria-label="Run status filters">
 					{#each tabs as tab (tab)}
 						<button
 							type="button"
