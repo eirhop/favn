@@ -446,6 +446,7 @@ defmodule Favn.Dev.Stack do
       "owner_app" => "favn_local",
       "started_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "storage" => Atom.to_string(config.storage),
+      "scheduler" => if(config.scheduler_enabled, do: "enabled", else: "disabled"),
       "orchestrator_base_url" => config.orchestrator_base_url,
       "web_base_url" => config.web_base_url,
       "rpc_cookie_ref" => "secrets.rpc_cookie",
@@ -758,6 +759,7 @@ defmodule Favn.Dev.Stack do
   defp print_start_summary(%{config: config, node_names: node_names, services: services}) do
     IO.puts("Favn local dev stack")
     IO.puts("storage: #{config.storage}")
+    IO.puts("scheduler: #{if(config.scheduler_enabled, do: "enabled", else: "disabled")}")
     IO.puts("web: pid=#{services["web"].pid} url=#{config.web_base_url}")
 
     IO.puts(

@@ -246,6 +246,11 @@ Install freshness notes:
 using the active manifest. It is the local-stack smoke path after the servers
 start; the earlier steps remain useful for direct data-plane inspection.
 
+The default `mix favn.dev` path keeps the scheduler disabled so one-time local
+ETL does not run active schedules unexpectedly. To exercise the tutorial's
+15-second scheduled smoke flow, start the stack with `mix favn.dev --scheduler`
+instead.
+
 ## Alternative configurations you can try
 
 The default tutorial path keeps things simple (DuckDB + in-memory local control
@@ -314,6 +319,9 @@ Current pipeline uses `deps(:all)` so the full graph runs from the top target,
 and a `*/15 * * * * *` schedule for local scheduler smoke testing. The schedule
 uses `overlap: :forbid` because the tutorial smoke should prove the local loop,
 not stress-test concurrent DuckDB writes.
+
+Scheduled local runs require `mix favn.dev --scheduler` or `scheduler: true` in
+`config :favn, :local`; otherwise run the pipeline manually with `mix favn.run`.
 
 Possible alternatives in pipeline definitions:
 - use a narrower target asset for faster development loops

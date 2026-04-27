@@ -12,6 +12,7 @@ defmodule Favn.Dev.Config do
     :web_port,
     :orchestrator_base_url,
     :web_base_url,
+    :scheduler_enabled,
     :service_token,
     :web_session_secret
   ]
@@ -24,6 +25,7 @@ defmodule Favn.Dev.Config do
     :web_port,
     :orchestrator_base_url,
     :web_base_url,
+    :scheduler_enabled,
     :service_token,
     :web_session_secret
   ]
@@ -49,6 +51,7 @@ defmodule Favn.Dev.Config do
           web_port: pos_integer(),
           orchestrator_base_url: String.t(),
           web_base_url: String.t(),
+          scheduler_enabled: boolean(),
           service_token: String.t() | nil,
           web_session_secret: String.t() | nil
         }
@@ -92,6 +95,7 @@ defmodule Favn.Dev.Config do
       orchestrator_base_url:
         Keyword.get(merged, :orchestrator_base_url, "http://127.0.0.1:#{orchestrator_port}"),
       web_base_url: Keyword.get(merged, :web_base_url, "http://127.0.0.1:#{web_port}"),
+      scheduler_enabled: normalize_bool(Keyword.get(merged, :scheduler, false), false),
       service_token: Keyword.get(merged, :service_token),
       web_session_secret: Keyword.get(merged, :web_session_secret)
     }

@@ -3,6 +3,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
   alias Favn.Dev.Config
   alias Favn.Dev.ConsumerCodePath
+  alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.RuntimeLaunch
 
   test "runner, orchestrator, and web specs target installed runtime roots" do
@@ -180,15 +181,41 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     code = eval_code!(runner)
 
     decoded_config =
-      runner.env["FAVN_DEV_CONSUMER_FAVN_CONFIG"]
-      |> Base.decode64!()
-      |> :erlang.binary_to_term()
+      ConsumerConfigTransport.decode(runner.env["FAVN_DEV_CONSUMER_FAVN_CONFIG"])
+      |> then(fn {:ok, config} -> config end)
 
     assert {:connection_modules, [MyApp.Connections.Warehouse]} in decoded_config
     assert {:connections, [warehouse: [database: "/tmp/consumer/warehouse.duckdb"]]} in decoded_config
     assert {:runner_plugins, [{FavnDuckdb, [execution_mode: :in_process]}]} in decoded_config
     assert code =~ "FAVN_DEV_CONSUMER_FAVN_CONFIG"
+    assert code =~ "Base.decode64(encoded)"
+    assert code =~ ":erlang.binary_to_term(binary, [:safe])"
     assert before?(code, "Application.put_env(:favn, key, value)", "Application.ensure_all_started(:favn_runner)")
+  end
+
+  test "orchestrator spec disables scheduler by default" do
+    runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
+    config = Config.resolve([])
+    node_names = %{runner_full: "favn_runner_test@host", orchestrator_short: "favn_orchestrator_test"}
+    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+
+    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
+    code = eval_code!(orchestrator)
+
+    assert orchestrator.env["FAVN_DEV_SCHEDULER_ENABLED"] == "0"
+    assert code =~ "FAVN_DEV_SCHEDULER_ENABLED"
+    refute code =~ "enabled: true"
+  end
+
+  test "orchestrator spec enables scheduler when resolved config enables it" do
+    runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
+    config = Config.resolve(scheduler: true)
+    node_names = %{runner_full: "favn_runner_test@host", orchestrator_short: "favn_orchestrator_test"}
+    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+
+    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
+
+    assert orchestrator.env["FAVN_DEV_SCHEDULER_ENABLED"] == "1"
   end
 
   defp eval_code!(%{args: args}) do
