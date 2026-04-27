@@ -41,6 +41,8 @@ defmodule Favn.SQL.Admission do
     if decrement_held(scope) == 0 do
       Limiter.release(scope)
     end
+
+    :ok
   end
 
   def release_session(_lease), do: :ok
