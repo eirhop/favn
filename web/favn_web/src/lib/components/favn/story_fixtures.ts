@@ -13,7 +13,9 @@ export const failedRunSummary: RunSummaryView = {
 	assetCount: '2/5',
 	assetsCompleted: 2,
 	assetsTotal: 5,
-	manifestVersionId: 'mfv_def456'
+	manifestVersionId: 'mfv_def456',
+	manifestContentHash: 'sha256:def456789abc',
+	submitKind: 'pipeline'
 };
 
 export const runningRunSummary: RunSummaryView = {
@@ -29,7 +31,9 @@ export const runningRunSummary: RunSummaryView = {
 	assetCount: '4/10',
 	assetsCompleted: 4,
 	assetsTotal: 10,
-	manifestVersionId: 'mfv_abc123'
+	manifestVersionId: 'mfv_abc123',
+	manifestContentHash: 'sha256:abc123456789',
+	submitKind: 'pipeline'
 };
 
 export const succeededRunSummary: RunSummaryView = {
@@ -45,7 +49,9 @@ export const succeededRunSummary: RunSummaryView = {
 	assetCount: '8/8',
 	assetsCompleted: 8,
 	assetsTotal: 8,
-	manifestVersionId: 'mfv_abc123'
+	manifestVersionId: 'mfv_abc123',
+	manifestContentHash: 'sha256:abc123456789',
+	submitKind: 'pipeline'
 };
 
 export const sampleRuns: RunSummaryView[] = [
@@ -53,6 +59,24 @@ export const sampleRuns: RunSummaryView[] = [
 	failedRunSummary,
 	runningRunSummary
 ];
+
+export const realPayloadRunSummary: RunSummaryView = {
+	id: 'run_real_001',
+	status: 'succeeded',
+	target: 'Elixir.FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete (asset)',
+	targetType: 'pipeline',
+	trigger: 'manual',
+	startedAt: '10:00:00',
+	finishedAt: '10:00:03',
+	durationMs: 3250,
+	duration: '3.3s',
+	assetCount: '—',
+	assetsCompleted: 0,
+	assetsTotal: 0,
+	manifestVersionId: 'mfv_real_123',
+	manifestContentHash: 'sha256:1234567890ab',
+	submitKind: 'pipeline'
+};
 
 export const failedRunDetail: RunDetailView = {
 	...failedRunSummary,
@@ -194,4 +218,49 @@ export const failedRunDetail: RunDetailView = {
 	progressPercent: null,
 	assetCounts: { succeeded: 1, failed: 1, skipped: 1, running: 0, pending: 0 },
 	failedAssetId: 'Staging.CustomerOrders'
+};
+
+export const realPayloadRunDetail: RunDetailView = {
+	...realPayloadRunSummary,
+	raw: {
+		data: {
+			run: {
+				id: 'run_real_001',
+				status: 'ok',
+				submit_kind: 'pipeline',
+				target_refs: ['Elixir.FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete:asset'],
+				manifest_version_id: 'mfv_real_123',
+				manifest_content_hash: 'sha256:1234567890abcdef1234567890abcdef',
+				event_seq: 33
+			}
+		}
+	},
+	error: null,
+	assets: [],
+	outputs: [],
+	timeline: [
+		{
+			id: 'submitted',
+			timestamp: '10:00:00',
+			label: 'run_submitted',
+			detail: 'Elixir.FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete:asset',
+			assetId: null
+		},
+		{
+			id: 'status',
+			timestamp: '10:00:03',
+			label: 'run_succeeded',
+			detail: 'Latest projected run state · event #33',
+			assetId: null
+		}
+	],
+	metadata: [
+		{ label: 'Run id', value: 'run_real_001' },
+		{ label: 'Submit kind', value: 'pipeline' },
+		{ label: 'Manifest', value: 'mfv_real_123' },
+		{ label: 'Content hash', value: 'sha256:1234567890ab' }
+	],
+	progressPercent: null,
+	assetCounts: { succeeded: 0, failed: 0, skipped: 0, running: 0, pending: 0 },
+	failedAssetId: null
 };

@@ -10,7 +10,7 @@
 </script>
 
 <Alert.Root variant="destructive" class="bg-red-50">
-	<Alert.Title>Run failed in asset {asset}</Alert.Title>
+	<p class="mb-1 font-medium tracking-tight">Run failed in asset {asset}</p>
 	<Alert.Description>{message}</Alert.Description>
 	<div class="mt-3 flex flex-wrap gap-2">
 		<Button size="sm" variant="outline" onclick={() => oninspect?.()}>Inspect failed asset</Button>

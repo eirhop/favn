@@ -31,6 +31,12 @@ function asNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function asStringArray(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === 'string')
+		: [];
+}
+
 function asIntegerish(value: unknown): number | null {
 	if (typeof value === 'number' && Number.isFinite(value)) return value;
 	if (typeof value === 'string' && value.trim() !== '') {
@@ -66,11 +72,45 @@ function normalizeStatus(value: unknown): RunStatus {
 	}
 }
 
-function targetParts(value: unknown): { label: string; type: string } {
-	if (!isRecord(value)) return { label: 'Unknown target', type: 'unknown' };
-	const type = asString(value.type) ?? 'target';
-	const id = asString(value.id) ?? asString(value.name) ?? 'unknown';
-	return { label: id, type };
+function readableRef(value: string): string {
+	const trimmed = value.trim();
+	if (!trimmed) return trimmed;
+	const withoutPrefix = trimmed.replace(/^(asset|pipeline|target|module):/i, '');
+	const [module, suffix] = withoutPrefix.split(':');
+	return suffix ? `${module} (${suffix})` : withoutPrefix;
+}
+
+function targetTypeFromRef(value: string | null): string | null {
+	if (!value) return null;
+	const suffix = value.split(':').at(-1)?.toLowerCase();
+	if (suffix && suffix !== value.toLowerCase()) return suffix;
+	if (/pipeline/i.test(value)) return 'pipeline';
+	if (/asset/i.test(value)) return 'asset';
+	return null;
+}
+
+function targetParts(record: JsonRecord): { label: string; type: string } {
+	const target = isRecord(record.target) ? record.target : null;
+	const targetId = target ? (asString(target.id) ?? asString(target.name)) : null;
+	const submitRef = asString(record.submit_ref);
+	const targetRefs = asStringArray(record.target_refs);
+	const assetRef = asString(record.asset_ref);
+	const pipeline = isRecord(record.pipeline) ? record.pipeline : null;
+	const pipelineRef = pipeline ? (asString(pipeline.module) ?? asString(pipeline.name)) : null;
+	const submitKind = asString(record.submit_kind);
+	const rawLabel = targetId ?? submitRef ?? targetRefs[0] ?? assetRef ?? pipelineRef;
+	const label = rawLabel ? readableRef(rawLabel) : 'Unknown target';
+	const fallbackLabel = submitKind
+		? `${submitKind[0].toUpperCase()}${submitKind.slice(1)} run`
+		: label;
+	const type =
+		(target ? asString(target.type) : null) ??
+		submitKind ??
+		targetTypeFromRef(targetRefs[0] ?? null) ??
+		targetTypeFromRef(assetRef) ??
+		targetTypeFromRef(submitRef) ??
+		(pipelineRef ? 'pipeline' : 'unknown');
+	return { label: rawLabel ? label : fallbackLabel, type };
 }
 
 function firstString(record: JsonRecord, keys: string[]): string | null {
@@ -82,14 +122,32 @@ function firstString(record: JsonRecord, keys: string[]): string | null {
 }
 
 function durationMs(record: JsonRecord): number | null {
-	return asNumber(record.duration_ms) ?? asNumber(record.elapsed_ms) ?? asNumber(record.durationMs);
+	const direct =
+		asNumber(record.duration_ms) ?? asNumber(record.elapsed_ms) ?? asNumber(record.durationMs);
+	if (direct !== null) return direct;
+	const startedAt = firstString(record, ['started_at', 'startedAt']);
+	const finishedAt = firstString(record, ['finished_at', 'finishedAt']);
+	if (!startedAt || !finishedAt) return null;
+	const started = new Date(startedAt).getTime();
+	const finished = new Date(finishedAt).getTime();
+	return Number.isFinite(started) && Number.isFinite(finished) && finished >= started
+		? finished - started
+		: null;
 }
 
 function formatDuration(record: JsonRecord): string {
 	const direct = firstString(record, ['duration', 'duration_ms_label']);
 	if (direct) return direct;
 	const ms = durationMs(record);
-	if (ms === null) return '—';
+	if (ms === null) {
+		const status = normalizeStatus(record.status);
+		const startedAt = firstString(record, ['started_at', 'startedAt']);
+		const started = shortTime(startedAt);
+		if ((status === 'running' || status === 'pending' || status === 'queued') && started) {
+			return `running since ${started}`;
+		}
+		return '—';
+	}
 	if (ms < 1000) return `${ms}ms`;
 	const seconds = ms / 1000;
 	if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
@@ -125,22 +183,30 @@ function listFromPayload(payload: unknown): unknown[] {
 	return [];
 }
 
-function normalizeAssetList(
-	record: JsonRecord,
-	fallbackTarget: string,
-	fallbackStatus: RunStatus
-): AssetExecutionView[] {
+function normalizeAssetList(record: JsonRecord, fallbackStatus: RunStatus): AssetExecutionView[] {
 	const rawAssets = Array.isArray(record.assets)
 		? record.assets
 		: Array.isArray(record.asset_executions)
 			? record.asset_executions
-			: [];
+			: Array.isArray(record.asset_results)
+				? record.asset_results
+				: Array.isArray(record.node_results)
+					? record.node_results
+					: [];
 
 	const assets = rawAssets.map((asset, index) => {
 		const assetRecord = isRecord(asset) ? asset : {};
 		const name =
-			firstString(assetRecord, ['asset', 'asset_id', 'module', 'id', 'name']) ??
-			`${fallbackTarget}#${index + 1}`;
+			firstString(assetRecord, [
+				'asset',
+				'asset_id',
+				'asset_ref',
+				'target_ref',
+				'node_ref',
+				'module',
+				'id',
+				'name'
+			]) ?? `asset_${index + 1}`;
 		const rawAssetOutputs = Array.isArray(assetRecord.outputs) ? assetRecord.outputs : [];
 		const outputs = rawAssetOutputs.map((output, outputIndex) =>
 			normalizeOutputRecord(output, name, outputIndex)
@@ -153,7 +219,7 @@ function normalizeAssetList(
 			status: normalizeStatus(assetRecord.status ?? fallbackStatus),
 			stage: firstString(assetRecord, ['stage_name']) ?? `Stage ${stageNumber ?? index + 1}`,
 			stageNumber,
-			asset: name,
+			asset: readableRef(name),
 			module: firstString(assetRecord, ['module']),
 			type: firstString(assetRecord, ['type', 'asset_type']) ?? 'unknown',
 			startedAt: shortTime(firstString(assetRecord, ['started_at', 'startedAt'])),
@@ -175,61 +241,24 @@ function normalizeAssetList(
 		};
 	});
 
-	if (assets.length > 0) return assets;
-
-	return [
-		{
-			id: fallbackTarget,
-			status: fallbackStatus,
-			stage: 'Stage 1',
-			stageNumber: 1,
-			asset: fallbackTarget,
-			module: null,
-			type: fallbackTarget.startsWith('pipeline:') ? 'pipeline target' : 'asset',
-			startedAt: shortTime(firstString(record, ['started_at', 'startedAt'])),
-			finishedAt: shortTime(firstString(record, ['finished_at', 'finishedAt'])),
-			durationMs: durationMs(record),
-			duration: formatDuration(record),
-			attempt: 1,
-			output: fallbackStatus === 'succeeded' ? fallbackTarget.replace(/^asset:/, '') : null,
-			outputs: [],
-			error:
-				fallbackStatus === 'failed'
-					? 'Run failed before detailed asset errors were available.'
-					: null,
-			sql: null,
-			operation: null,
-			relation: fallbackStatus === 'succeeded' ? fallbackTarget.replace(/^asset:/, '') : null,
-			connection: null,
-			database: null
-		}
-	];
+	return assets;
 }
 
 function normalizeOutputs(record: JsonRecord, assets: AssetExecutionView[]): OutputView[] {
-	const rawOutputs = Array.isArray(record.outputs) ? record.outputs : [];
+	const rawOutputs = Array.isArray(record.outputs)
+		? record.outputs
+		: Array.isArray(record.materializations)
+			? record.materializations
+			: Array.isArray(record.output_metadata)
+				? record.output_metadata
+				: [];
 	const outputs = rawOutputs.map((output, index) =>
 		normalizeOutputRecord(output, assets[0]?.asset ?? 'unknown', index)
 	);
 
 	if (outputs.length > 0) return outputs;
 
-	return assets
-		.filter((asset) => asset.output || asset.outputs.length > 0)
-		.flatMap((asset) => {
-			if (asset.outputs.length > 0) return asset.outputs;
-			return [
-				{
-					relation: asset.output ?? asset.asset,
-					type: 'table',
-					asset: asset.asset,
-					connection: asset.connection ?? 'local',
-					rows: null,
-					updatedAt: asset.startedAt,
-					failed: asset.status === 'failed'
-				}
-			];
-		});
+	return assets.flatMap((asset) => asset.outputs);
 }
 
 function normalizeTimeline(record: JsonRecord, status: RunStatus): TimelineEventView[] {
@@ -247,22 +276,32 @@ function normalizeTimeline(record: JsonRecord, status: RunStatus): TimelineEvent
 
 	if (events.length > 0) return events;
 
-	return [
+	const fallbacks: TimelineEventView[] = [
 		{
 			id: 'submitted',
-			timestamp: shortTime(firstString(record, ['created_at', 'submitted_at'])),
+			timestamp: shortTime(firstString(record, ['created_at', 'submitted_at', 'started_at'])),
 			label: 'run_submitted',
-			detail: 'Run accepted by orchestrator',
+			detail: firstString(record, ['submit_ref']) ?? 'Run accepted by orchestrator',
 			assetId: null
 		},
 		{
 			id: 'status',
-			timestamp: shortTime(firstString(record, ['updated_at', 'started_at'])),
+			timestamp: shortTime(firstString(record, ['updated_at', 'finished_at', 'started_at'])),
 			label: `run_${status}`,
-			detail: 'Latest projected run state',
+			detail:
+				firstString(record, ['terminal_reason', 'error', 'error_message']) ??
+				`Latest projected run state${asIntegerish(record.event_seq) !== null ? ` · event #${asIntegerish(record.event_seq)}` : ''}`,
 			assetId: null
 		}
 	];
+	return fallbacks;
+}
+
+function shortHash(value: string | null): string | null {
+	if (!value) return null;
+	const [prefix, hash] = value.includes(':') ? value.split(':', 2) : ['', value];
+	const short = hash.length > 12 ? hash.slice(0, 12) : hash;
+	return prefix ? `${prefix}:${short}` : short;
 }
 
 function assetCountLabel(record: JsonRecord, assetsCompleted: number, assetsTotal: number): string {
@@ -276,7 +315,7 @@ function assetCountLabel(record: JsonRecord, assetsCompleted: number, assetsTota
 export function normalizeRunSummaries(payload: unknown): RunSummaryView[] {
 	return listFromPayload(payload).map((run, index) => {
 		const record = isRecord(run) ? run : {};
-		const target = targetParts(record.target);
+		const target = targetParts(record);
 		const assetsTotal =
 			asNumber(record.assets_total) ??
 			asNumber(record.asset_total) ??
@@ -299,7 +338,11 @@ export function normalizeRunSummaries(payload: unknown): RunSummaryView[] {
 			assetCount: assetCountLabel(record, assetsCompleted, assetsTotal),
 			assetsCompleted,
 			assetsTotal,
-			manifestVersionId: firstString(record, ['manifest_version_id', 'manifestVersionId'])
+			manifestVersionId: firstString(record, ['manifest_version_id', 'manifestVersionId']) ?? null,
+			manifestContentHash: shortHash(
+				firstString(record, ['manifest_content_hash', 'content_hash', 'manifest_hash'])
+			),
+			submitKind: firstString(record, ['submit_kind'])
 		};
 	});
 }
@@ -307,10 +350,10 @@ export function normalizeRunSummaries(payload: unknown): RunSummaryView[] {
 export function normalizeRunDetail(payload: unknown, requestedRunId: string): RunDetailView {
 	const value = runDetailPayload(payload);
 	const record = isRecord(value) ? value : {};
-	const target = targetParts(record.target);
+	const target = targetParts(record);
 	const status = normalizeStatus(record.status);
 	const id = firstString(record, ['id', 'run_id']) ?? requestedRunId;
-	const assets = normalizeAssetList(record, target.label, status);
+	const assets = normalizeAssetList(record, status);
 	const outputs = normalizeOutputs(record, assets);
 	const firstFailedAsset = assets.find((asset) => asset.status === 'failed' || asset.error);
 	const errorMessage =
@@ -343,6 +386,10 @@ export function normalizeRunDetail(payload: unknown, requestedRunId: string): Ru
 		assetsCompleted,
 		assetsTotal,
 		manifestVersionId: firstString(record, ['manifest_version_id', 'manifestVersionId']),
+		manifestContentHash: shortHash(
+			firstString(record, ['manifest_content_hash', 'content_hash', 'manifest_hash'])
+		),
+		submitKind: firstString(record, ['submit_kind']),
 		raw: payload,
 		error: errorMessage
 			? { asset: firstFailedAsset?.asset ?? target.label, message: errorMessage }
@@ -352,13 +399,17 @@ export function normalizeRunDetail(payload: unknown, requestedRunId: string): Ru
 		timeline: normalizeTimeline(record, status),
 		metadata: [
 			{ label: 'Run id', value: id },
+			{ label: 'Submit kind', value: firstString(record, ['submit_kind']) ?? 'Not available' },
 			{
 				label: 'Manifest',
 				value: firstString(record, ['manifest_version_id', 'manifestVersionId']) ?? 'Not available'
 			},
 			{
 				label: 'Content hash',
-				value: firstString(record, ['content_hash', 'manifest_hash']) ?? 'Not available'
+				value:
+					shortHash(
+						firstString(record, ['manifest_content_hash', 'content_hash', 'manifest_hash'])
+					) ?? 'Not available'
 			},
 			{ label: 'Schema version', value: String(asNumber(record.schema_version) ?? 1) },
 			{ label: 'Runner contract', value: String(asNumber(record.runner_contract_version) ?? 1) },

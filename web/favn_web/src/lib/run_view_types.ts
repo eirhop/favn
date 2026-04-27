@@ -21,6 +21,8 @@ export type RunSummaryView = {
 	assetsCompleted: number;
 	assetsTotal: number;
 	manifestVersionId: string | null;
+	manifestContentHash: string | null;
+	submitKind: string | null;
 };
 
 export type AssetExecutionView = {
