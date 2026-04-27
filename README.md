@@ -220,10 +220,10 @@ For this flow, configure `:connection_modules` and runtime `:connections` under
 `config :favn` using the `Favn.Connection` contract.
 
 DuckDB local-file connections are serialized by default inside the SQL runtime so
-local materializations do not run unsafe concurrent catalog writes against the
-same database file. Backends that support parallel writes can opt out with
-`write_concurrency: :unlimited` in their runtime connection config, while local
-DuckDB files can keep the default or set `write_concurrency: 1` explicitly.
+local sessions and materializations do not run unsafe concurrent catalog writes
+against the same database file. Backends that support parallel writes can opt out
+with `write_concurrency: :unlimited` in their runtime connection config, while
+local DuckDB files can keep the default or set `write_concurrency: 1` explicitly.
 
 ## Local Development
 

@@ -24,17 +24,8 @@ defmodule Favn.SQL.Client do
     {resolution_opts, adapter_opts} = split_connect_opts(opts)
 
     with {:ok, %Resolved{} = resolved} <- fetch_connection(connection, resolution_opts),
-         {:ok, concurrency_policy} <- ConcurrencyPolicy.resolve(resolved),
-         {:ok, conn} <- resolved.adapter.connect(resolved, adapter_opts),
-         {:ok, capabilities} <- resolved.adapter.capabilities(resolved, adapter_opts) do
-      {:ok,
-       %Session{
-         adapter: resolved.adapter,
-         resolved: resolved,
-         conn: conn,
-         capabilities: capabilities,
-         concurrency_policy: concurrency_policy
-       }}
+         {:ok, concurrency_policy} <- ConcurrencyPolicy.resolve(resolved) do
+      connect_with_admission(resolved, concurrency_policy, adapter_opts)
     end
   rescue
     error -> {:error, normalize_runtime_error(:connect, error)}
@@ -45,13 +36,18 @@ defmodule Favn.SQL.Client do
   def connect(connection, _opts), do: {:error, invalid_connection_error(connection)}
 
   @spec disconnect(Session.t()) :: :ok
-  def disconnect(%Session{adapter: adapter, conn: conn}) do
+  def disconnect(%Session{adapter: adapter, conn: conn, admission_lease: lease}) do
     _ = adapter.disconnect(conn, [])
+    Admission.release_session(lease)
     :ok
   rescue
-    _error -> :ok
+    _error ->
+      Admission.release_session(lease)
+      :ok
   catch
-    :exit, _ -> :ok
+    :exit, _ ->
+      Admission.release_session(lease)
+      :ok
   end
 
   def disconnect(_session), do: :ok
@@ -181,6 +177,74 @@ defmodule Favn.SQL.Client do
         :error -> {:error, invalid_connection_error(connection)}
       end
     end
+  end
+
+  defp connect_with_admission(%Resolved{} = resolved, concurrency_policy, adapter_opts) do
+    lease = Admission.acquire_session(concurrency_policy)
+
+    try do
+      connect_and_build_session(resolved, adapter_opts, concurrency_policy, lease)
+    rescue
+      error ->
+        Admission.release_session(lease)
+        reraise error, __STACKTRACE__
+    catch
+      kind, reason ->
+        Admission.release_session(lease)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
+
+  defp connect_and_build_session(%Resolved{} = resolved, adapter_opts, concurrency_policy, lease) do
+    case resolved.adapter.connect(resolved, adapter_opts) do
+      {:ok, conn} ->
+        build_session_with_capabilities(resolved, adapter_opts, concurrency_policy, lease, conn)
+
+      {:error, _reason} = error ->
+        release_lease_and_return(error, lease)
+
+      other ->
+        release_lease_and_return(other, lease)
+    end
+  end
+
+  defp build_session_with_capabilities(resolved, adapter_opts, concurrency_policy, lease, conn) do
+    case resolved.adapter.capabilities(resolved, adapter_opts) do
+      {:ok, capabilities} ->
+        {:ok,
+         %Session{
+           adapter: resolved.adapter,
+           resolved: resolved,
+           conn: conn,
+           capabilities: capabilities,
+           concurrency_policy: concurrency_policy,
+           admission_lease: lease
+         }}
+
+      {:error, _reason} = error ->
+        disconnect_after_connect_error(resolved.adapter, conn, lease, error)
+
+      other ->
+        disconnect_after_connect_error(resolved.adapter, conn, lease, other)
+    end
+  rescue
+    error ->
+      _ = resolved.adapter.disconnect(conn, [])
+      reraise error, __STACKTRACE__
+  catch
+    kind, reason ->
+      _ = resolved.adapter.disconnect(conn, [])
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  end
+
+  defp disconnect_after_connect_error(adapter, conn, lease, error) do
+    _ = adapter.disconnect(conn, [])
+    release_lease_and_return(error, lease)
+  end
+
+  defp release_lease_and_return(error, lease) do
+    Admission.release_session(lease)
+    error
   end
 
   defp invalid_connection_error(connection) do

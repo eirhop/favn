@@ -25,7 +25,7 @@ config :favn,
     FavnReferenceWorkload.Connections.Warehouse
   ],
   connections: [
-    warehouse: [database: ".favn/data/reference_workload.duckdb"]
+    warehouse: [database: ".favn/data/reference_workload.duckdb", write_concurrency: 1]
   ],
   local: [
     storage: :memory

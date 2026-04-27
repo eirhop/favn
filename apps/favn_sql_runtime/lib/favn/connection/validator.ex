@@ -40,7 +40,8 @@ defmodule Favn.Connection.Validator do
   defp build_config(definition, runtime_values) do
     schema_keys = Enum.map(definition.config_schema, & &1.key)
     defaults = defaults_from_schema(definition.config_schema)
-    unknown = Map.keys(runtime_values) -- schema_keys -- @reserved_runtime_keys
+    known_keys = schema_keys ++ @reserved_runtime_keys
+    unknown = Map.keys(runtime_values) -- known_keys
 
     errors =
       []

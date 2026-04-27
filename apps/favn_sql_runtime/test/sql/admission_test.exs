@@ -1,11 +1,30 @@
 defmodule FavnSQLRuntime.SQLAdmissionTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Admission, Client, ConcurrencyPolicy, Result, Session}
   alias Favn.SQL.Admission.Limiter
 
   defmodule TrackingAdapter do
+    def connect(resolved, _opts) do
+      tracker = Map.fetch!(resolved.config, :tracker)
+      bump_session(tracker, 1)
+      {:ok, %{tracker: tracker}}
+    end
+
+    def disconnect(conn, _opts) do
+      tracker = Map.fetch!(conn, :tracker)
+      bump_session(tracker, -1)
+      :ok
+    end
+
+    def capabilities(_resolved, _opts), do: {:ok, %Favn.SQL.Capabilities{}}
+
+    def default_concurrency_policy(%Resolved{} = resolved) do
+      %ConcurrencyPolicy{limit: 1, scope: {:tracker, resolved.name}, applies_to: :all}
+    end
+
     def query(conn, statement, _opts) do
       tracker = Map.fetch!(conn, :tracker)
       bump_active(tracker, 1)
@@ -40,11 +59,52 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         %{state | active: active, max_active: max(state.max_active, active)}
       end)
     end
+
+    defp bump_session(tracker, delta) do
+      Agent.update(tracker, fn state ->
+        sessions = state.sessions + delta
+        %{state | sessions: sessions, max_sessions: max(state.max_sessions, sessions)}
+      end)
+    end
+  end
+
+  defmodule RaisingConnectAdapter do
+    def connect(_resolved, _opts), do: raise("connect failed")
+    def capabilities(_resolved, _opts), do: {:ok, %Favn.SQL.Capabilities{}}
+    def disconnect(_conn, _opts), do: :ok
+
+    def default_concurrency_policy(%Resolved{} = resolved) do
+      %ConcurrencyPolicy{limit: 1, scope: {:tracker, resolved.name}, applies_to: :all}
+    end
+  end
+
+  defmodule ExitingCapabilitiesAdapter do
+    def connect(resolved, _opts) do
+      tracker = Map.fetch!(resolved.config, :tracker)
+      Agent.update(tracker, fn state ->
+        sessions = state.sessions + 1
+        %{state | sessions: sessions, max_sessions: max(state.max_sessions, sessions)}
+      end)
+
+      {:ok, %{tracker: tracker}}
+    end
+
+    def capabilities(_resolved, _opts), do: exit(:capabilities_failed)
+
+    def disconnect(conn, _opts) do
+      tracker = Map.fetch!(conn, :tracker)
+      Agent.update(tracker, fn state -> %{state | sessions: state.sessions - 1} end)
+      :ok
+    end
+
+    def default_concurrency_policy(%Resolved{} = resolved) do
+      %ConcurrencyPolicy{limit: 1, scope: {:tracker, resolved.name}, applies_to: :all}
+    end
   end
 
   setup do
     Limiter.reset()
-    {:ok, tracker} = Agent.start_link(fn -> %{active: 0, max_active: 0} end)
+    {:ok, tracker} = Agent.start_link(fn -> %{active: 0, max_active: 0, sessions: 0, max_sessions: 0} end)
 
     on_exit(fn ->
       Limiter.reset()
@@ -159,6 +219,82 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert Agent.get(tracker, & &1.max_active) == 1
   end
 
+  test "holds admitted local-file sessions until disconnect", %{tracker: tracker} do
+    registry_name = :admission_session_registry
+
+    start_registry(registry_name, TrackingAdapter, tracker)
+
+    tasks =
+      for _ <- 1..2 do
+        Task.async(fn ->
+          {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
+          {:ok, %Result{}} = Client.query(session, "select 1", [])
+          Process.sleep(50)
+          :ok = Client.disconnect(session)
+        end)
+      end
+
+    Task.await_many(tasks, 1_000)
+    assert Agent.get(tracker, & &1.max_sessions) == 1
+  end
+
+  test "same process can open nested admitted sessions", %{tracker: tracker} do
+    registry_name = :admission_nested_session_registry
+    start_registry(registry_name, TrackingAdapter, tracker)
+
+    assert {:ok, session_a} = Client.connect(:warehouse, registry_name: registry_name)
+    assert {:ok, session_b} = Client.connect(:warehouse, registry_name: registry_name)
+
+    assert :ok = Client.disconnect(session_b)
+    assert :ok = Client.disconnect(session_a)
+  end
+
+  test "out-of-order nested session disconnect keeps permit held", %{tracker: tracker} do
+    registry_name = :admission_out_of_order_session_registry
+    start_registry(registry_name, TrackingAdapter, tracker)
+
+    assert {:ok, session_a} = Client.connect(:warehouse, registry_name: registry_name)
+    assert {:ok, session_b} = Client.connect(:warehouse, registry_name: registry_name)
+
+    assert :ok = Client.disconnect(session_a)
+
+    blocked = Task.async(fn -> Client.connect(:warehouse, registry_name: registry_name) end)
+
+    refute Task.yield(blocked, 100)
+    assert :ok = Client.disconnect(session_b)
+    assert {:ok, {:ok, session_c}} = Task.yield(blocked, 500)
+    assert :ok = Client.disconnect(session_c)
+  end
+
+  test "releases admitted session lease when adapter connect raises", %{tracker: tracker} do
+    registry_name = :admission_connect_raise_registry
+    start_registry(registry_name, RaisingConnectAdapter, tracker)
+
+    assert {:error, %Favn.SQL.Error{operation: :connect}} =
+             Client.connect(:warehouse, registry_name: registry_name)
+
+    :ok = Registry.reload(connections(TrackingAdapter, tracker), registry_name: registry_name)
+
+    task = Task.async(fn -> Client.connect(:warehouse, registry_name: registry_name) end)
+    assert {:ok, {:ok, session}} = Task.yield(task, 500)
+    assert :ok = Client.disconnect(session)
+  end
+
+  test "releases admitted session lease and connection when capabilities exits", %{tracker: tracker} do
+    registry_name = :admission_capabilities_exit_registry
+    start_registry(registry_name, ExitingCapabilitiesAdapter, tracker)
+
+    assert {:error, %Favn.SQL.Error{operation: :connect}} =
+             Client.connect(:warehouse, registry_name: registry_name)
+
+    assert Agent.get(tracker, & &1.sessions) == 0
+    :ok = Registry.reload(connections(TrackingAdapter, tracker), registry_name: registry_name)
+
+    task = Task.async(fn -> Client.connect(:warehouse, registry_name: registry_name) end)
+    assert {:ok, {:ok, session}} = Task.yield(task, 500)
+    assert :ok = Client.disconnect(session)
+  end
+
   defp session(tracker, policy) do
     %Session{
       adapter: TrackingAdapter,
@@ -166,6 +302,21 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       conn: %{tracker: tracker},
       capabilities: %Favn.SQL.Capabilities{},
       concurrency_policy: policy
+    }
+  end
+
+  defp start_registry(registry_name, adapter, tracker) do
+    start_supervised!({Registry, name: registry_name, connections: connections(adapter, tracker)})
+  end
+
+  defp connections(adapter, tracker) do
+    %{
+      warehouse: %Resolved{
+        name: :warehouse,
+        adapter: adapter,
+        module: __MODULE__,
+        config: %{tracker: tracker}
+      }
     }
   end
 end
