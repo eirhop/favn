@@ -18,7 +18,7 @@ defmodule FavnLocal.MixProject do
 
   def application do
     [
-      extra_applications: [:inets, :logger, :public_key, :ssl]
+      extra_applications: [:logger]
     ]
   end
 
