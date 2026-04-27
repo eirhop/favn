@@ -116,9 +116,6 @@ function requireAuthenticatedSession(request, response) {
 	}
 
 	const session = sessions.get(sessionId);
-	if (sessionId.startsWith('web_local_admin_')) {
-		return { actorId, sessionId };
-	}
 
 	if (!session || session.actorId !== actorId) {
 		sendJson(response, 401, { error: { message: 'Unknown session' } });

@@ -267,7 +267,6 @@ Notes:
 - Initial separate web workspace boundary slice now includes:
   - `web/favn_web/src/lib/components/favn/` for Favn-specific presentational Svelte components used by the prototype dashboard and login screen
   - `web/favn_web/src/lib/components/ui/` for local shadcn-svelte-style UI primitives
-  - `web/favn_web/src/lib/server/local_admin.ts` for the prototype web-local admin fallback credential path
   - `web/favn_web/src/lib/utils.ts` for shared frontend utility helpers
   - `web/favn_web/src/hooks.server.ts`
   - `web/favn_web/src/lib/server/orchestrator.ts`

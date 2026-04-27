@@ -2,7 +2,6 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { orchestratorLoginPassword } from '$lib/server/orchestrator';
 import { setWebSessionCookie, webSessionFromLoginPayload } from '$lib/server/session';
-import { localAdminConfigured, localAdminLogin } from '$lib/server/local_admin';
 
 async function tryReadJson(response: Response): Promise<unknown> {
 	try {
@@ -30,9 +29,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		throw redirect(303, '/');
 	}
 
-	return {
-		localAdminConfigured: localAdminConfigured()
-	};
+	return {};
 };
 
 export const actions: Actions = {
@@ -73,13 +70,6 @@ export const actions: Actions = {
 			setWebSessionCookie(cookies, session);
 			locals.session = session;
 
-			throw redirect(303, '/');
-		}
-
-		const localAdminSession = localAdminLogin(username, password);
-		if (localAdminSession) {
-			setWebSessionCookie(cookies, localAdminSession);
-			locals.session = localAdminSession;
 			throw redirect(303, '/');
 		}
 

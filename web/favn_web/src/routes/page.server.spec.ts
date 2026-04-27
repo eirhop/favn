@@ -102,25 +102,7 @@ describe('home page server load', () => {
 				{ id: 'run-3', status: null, target: null }
 			],
 			activeManifestVersionId: 'manifest-v1',
-			schedules: [],
-			orchestratorWarning: null
-		});
-	});
-
-	it('keeps web-local admin session when orchestrator does not know the local session', async () => {
-		const localAdminSession = { ...authSession, provider: 'web_local_admin' };
-		vi.mocked(orchestratorListRuns).mockResolvedValue(new Response(null, { status: 401 }));
-
-		const result = await load({
-			locals: { session: localAdminSession },
-			cookies: {}
-		} as never);
-
-		expect(clearWebSessionCookie).not.toHaveBeenCalled();
-		expect(result).toMatchObject({
-			session: localAdminSession,
-			runs: [],
-			orchestratorWarning: expect.stringContaining('web-local admin')
+			schedules: []
 		});
 	});
 });

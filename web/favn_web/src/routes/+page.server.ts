@@ -106,7 +106,7 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
 		orchestratorListSchedules(locals.session)
 	]);
 
-	if (runsResponse.status === 401 && locals.session.provider !== 'web_local_admin') {
+	if (runsResponse.status === 401) {
 		clearWebSessionCookie(cookies);
 		locals.session = null;
 		throw redirect(303, '/login');
@@ -126,11 +126,7 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
 		session: locals.session,
 		runs: normalizeRuns(runsPayload),
 		activeManifestVersionId: normalizeActiveManifest(activeManifestPayload),
-		schedules: normalizeSchedules(schedulesPayload),
-		orchestratorWarning:
-			runsResponse.status === 401 && locals.session.provider === 'web_local_admin'
-				? 'Signed in with web-local admin credentials. Configure matching orchestrator credentials for live control-plane data.'
-				: null
+		schedules: normalizeSchedules(schedulesPayload)
 	};
 };
 

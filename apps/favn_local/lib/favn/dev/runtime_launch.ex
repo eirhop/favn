@@ -6,10 +6,11 @@ defmodule Favn.Dev.RuntimeLaunch do
   alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.Paths
 
-  @web_passthrough_env ~w(
-    FAVN_WEB_ADMIN_USERNAME
-    FAVN_WEB_ADMIN_PASSWORD
-    FAVN_WEB_ADMIN_SESSION_TTL_SECONDS
+  @orchestrator_bootstrap_env ~w(
+    FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME
+    FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD
+    FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME
+    FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES
   )
 
   @spec runner_spec(map(), keyword(), map(), map()) :: map()
@@ -152,7 +153,8 @@ defmodule Favn.Dev.RuntimeLaunch do
       cwd: runtime["orchestrator_root"],
       log_path: Paths.orchestrator_log_path(Paths.root_dir(opts)),
       env:
-        Map.merge(runtime_env(), %{
+        runtime_env()
+        |> Map.merge(%{
           "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
           "FAVN_DEV_SQLITE_PATH" => sqlite_path,
           "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
@@ -173,6 +175,7 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Local Operator",
           "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" => "operator"
         })
+        |> Map.merge(orchestrator_bootstrap_env(opts))
     }
   end
 
@@ -188,28 +191,25 @@ defmodule Favn.Dev.RuntimeLaunch do
       args: [vite, "preview", "--host", "127.0.0.1", "--port", Integer.to_string(config.web_port)],
       cwd: runtime["web_root"],
       log_path: Paths.web_log_path(Paths.root_dir(opts)),
-      env:
-        opts
-        |> web_local_env()
-        |> Map.merge(%{
-          "FAVN_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
-          "FAVN_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
-          "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"]
-        })
+      env: %{
+        "FAVN_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
+        "FAVN_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
+        "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"]
+      }
     }
   end
 
-  defp web_local_env(opts) do
+  defp orchestrator_bootstrap_env(opts) do
     opts
     |> Paths.root_dir()
     |> Path.join(".env")
     |> read_dotenv()
-    |> Map.merge(system_web_env())
-    |> Map.take(@web_passthrough_env)
+    |> Map.merge(system_orchestrator_bootstrap_env())
+    |> Map.take(@orchestrator_bootstrap_env)
   end
 
-  defp system_web_env do
-    @web_passthrough_env
+  defp system_orchestrator_bootstrap_env do
+    @orchestrator_bootstrap_env
     |> Enum.flat_map(fn key ->
       case System.get_env(key) do
         value when is_binary(value) and value != "" -> [{key, value}]

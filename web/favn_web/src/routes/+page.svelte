@@ -7,7 +7,6 @@
 			runs: Array<{ id: string; status: string | null; target: string | null }>;
 			schedules: Array<{ id: string; enabled: boolean | null; target: string | null }>;
 			activeManifestVersionId: string | null;
-			orchestratorWarning: string | null;
 		};
 	}>();
 </script>
@@ -17,5 +16,4 @@
 	runs={data.runs}
 	schedules={data.schedules}
 	activeManifestVersionId={data.activeManifestVersionId}
-	orchestratorWarning={data.orchestratorWarning}
 />

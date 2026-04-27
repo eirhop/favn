@@ -35,8 +35,6 @@ const baseSession: WebSession = {
 describe('login page actions', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		delete process.env.FAVN_WEB_ADMIN_USERNAME;
-		delete process.env.FAVN_WEB_ADMIN_PASSWORD;
 	});
 
 	it('returns validation failure when username or password is missing', async () => {
@@ -110,10 +108,7 @@ describe('login page actions', () => {
 		expect(locals.session).toEqual(baseSession);
 	});
 
-	it('prefers orchestrator session when credentials are valid both upstream and locally', async () => {
-		process.env.FAVN_WEB_ADMIN_USERNAME = 'alice';
-		process.env.FAVN_WEB_ADMIN_PASSWORD = 'good-password';
-
+	it('requires a valid orchestrator response before creating a web session', async () => {
 		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
 			new Response(JSON.stringify({ data: { session_id: 'sess-1', actor_id: 'actor-1' } }), {
 				status: 201,
@@ -143,9 +138,7 @@ describe('login page actions', () => {
 		);
 	});
 
-	it('sets a local admin session from .env credentials when orchestrator rejects', async () => {
-		process.env.FAVN_WEB_ADMIN_USERNAME = 'admin';
-		process.env.FAVN_WEB_ADMIN_PASSWORD = 'admin-password';
+	it('returns orchestrator rejection instead of creating a synthetic local session', async () => {
 		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
 			new Response(JSON.stringify({ error: { message: 'Invalid credentials' } }), {
 				status: 401,
@@ -156,56 +149,57 @@ describe('login page actions', () => {
 		const cookies = {};
 		const locals = { session: null as WebSession | null };
 
-		await expect(
-			actions.default({
-				request: createRequest({ username: 'admin', password: 'admin-password' }),
-				cookies,
-				locals
-			} as never)
-		).rejects.toMatchObject({ status: 303, location: '/' });
+		const result = await actions.default({
+			request: createRequest({ username: 'admin', password: 'admin-password' }),
+			cookies,
+			locals
+		} as never);
 
 		expect(orchestratorLoginPassword).toHaveBeenCalledWith({
 			username: 'admin',
 			password: 'admin-password'
 		});
+		expect(isActionFailure(result)).toBe(true);
+
+		if (isActionFailure(result)) {
+			expect(result.status).toBe(401);
+			expect(result.data).toEqual({
+				message: 'Invalid credentials',
+				username: 'admin'
+			});
+		}
+
 		expect(webSessionFromLoginPayload).not.toHaveBeenCalled();
-		expect(setWebSessionCookie).toHaveBeenCalledWith(
-			cookies,
-			expect.objectContaining({
-				actor_id: 'admin:admin',
-				provider: 'web_local_admin'
-			})
-		);
-		expect(locals.session).toEqual(
-			expect.objectContaining({ actor_id: 'admin:admin', provider: 'web_local_admin' })
-		);
+		expect(setWebSessionCookie).not.toHaveBeenCalled();
+		expect(locals.session).toBeNull();
+		expect(cookies).toEqual({});
 	});
 
-	it('sets a local admin session from .env credentials when orchestrator is unavailable', async () => {
-		process.env.FAVN_WEB_ADMIN_USERNAME = 'admin';
-		process.env.FAVN_WEB_ADMIN_PASSWORD = 'admin-password';
+	it('returns an error when orchestrator is unavailable instead of creating a synthetic local session', async () => {
 		vi.mocked(orchestratorLoginPassword).mockRejectedValue(new Error('connection refused'));
 
 		const cookies = {};
 		const locals = { session: null as WebSession | null };
 
-		await expect(
-			actions.default({
-				request: createRequest({ username: 'admin', password: 'admin-password' }),
-				cookies,
-				locals
-			} as never)
-		).rejects.toMatchObject({ status: 303, location: '/' });
-
-		expect(setWebSessionCookie).toHaveBeenCalledWith(
+		const result = await actions.default({
+			request: createRequest({ username: 'admin', password: 'admin-password' }),
 			cookies,
-			expect.objectContaining({
-				actor_id: 'admin:admin',
-				provider: 'web_local_admin'
-			})
-		);
-		expect(locals.session).toEqual(
-			expect.objectContaining({ actor_id: 'admin:admin', provider: 'web_local_admin' })
-		);
+			locals
+		} as never);
+
+		expect(isActionFailure(result)).toBe(true);
+
+		if (isActionFailure(result)) {
+			expect(result.status).toBe(400);
+			expect(result.data).toEqual({
+				message: 'Unable to reach orchestrator service',
+				username: 'admin'
+			});
+		}
+
+		expect(webSessionFromLoginPayload).not.toHaveBeenCalled();
+		expect(setWebSessionCookie).not.toHaveBeenCalled();
+		expect(locals.session).toBeNull();
+		expect(cookies).toEqual({});
 	});
 });

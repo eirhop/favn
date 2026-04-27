@@ -19,8 +19,7 @@
 		schedules: [
 			{ id: 'sched_001', enabled: true, target: 'asset:asset.orders' },
 			{ id: 'sched_002', enabled: false, target: 'pipeline:pipeline.reconcile' }
-		],
-		orchestratorWarning: null
+		]
 	};
 </script>
 
@@ -32,17 +31,5 @@
 		await expect(canvas.getByRole('heading', { name: 'Favn web prototype' })).toBeInTheDocument();
 		await expect(canvas.getByRole('row', { name: /run_001/ })).toBeInTheDocument();
 		await expect(canvas.getByText('manifest_v2')).toBeInTheDocument();
-	}}
-/>
-
-<Story
-	name="Local Admin Warning"
-	args={{
-		...baseArgs,
-		session: { actor_id: 'admin:local', provider: 'web_local_admin' },
-		runs: [],
-		schedules: [],
-		activeManifestVersionId: null,
-		orchestratorWarning: 'Signed in with web-local admin credentials.'
 	}}
 />

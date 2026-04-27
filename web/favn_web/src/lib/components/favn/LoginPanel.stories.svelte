@@ -11,11 +11,11 @@
 </script>
 
 <Story
-	name="Configured"
-	args={{ localAdminConfigured: true, form: null }}
+	name="Default"
+	args={{ form: null }}
 	play={async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
-		await expect(canvas.getByRole('heading', { name: 'Admin sign in' })).toBeInTheDocument();
+		await expect(canvas.getByRole('heading', { name: 'Operator sign in' })).toBeInTheDocument();
 		await expect(canvas.getByLabelText('Username')).toBeInTheDocument();
 		await expect(canvas.getByRole('button', { name: 'Log in' })).toBeInTheDocument();
 	}}
@@ -24,7 +24,6 @@
 <Story
 	name="With Error"
 	args={{
-		localAdminConfigured: false,
 		form: { message: 'Invalid username or password', username: 'operator' }
 	}}
 />

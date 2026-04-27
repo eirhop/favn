@@ -274,12 +274,13 @@ Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
 developer loop.
 
-The SvelteKit web prototype can read local admin fallback credentials from the
-consumer project `.env` used to run `mix favn.dev`. Configure
-`FAVN_WEB_ADMIN_USERNAME` and `FAVN_WEB_ADMIN_PASSWORD`; the optional
-`FAVN_WEB_ADMIN_SESSION_TTL_SECONDS` controls the fallback session lifetime and
-defaults to eight hours. Orchestrator-owned username/password auth remains the
-preferred path when live control-plane data is required.
+The local orchestrator bootstrap actor can be configured from the consumer
+project `.env` used to run `mix favn.dev`. Configure
+`FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` and
+`FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD` before startup, then use those
+orchestrator-owned credentials on the web login page. If bootstrap credentials
+are not configured, local tooling keeps using the generated local operator
+credentials stored under `.favn/secrets.json`.
 
 `mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
 currently running local stack. It uses the project-local service token and local

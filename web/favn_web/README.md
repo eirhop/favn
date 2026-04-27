@@ -37,15 +37,9 @@ Create a local `.env` file in `web/favn_web` when running the prototype directly
 FAVN_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101
 FAVN_ORCHESTRATOR_SERVICE_TOKEN=change-me
 FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-secret
-
-# Optional prototype fallback login handled by the web tier.
-FAVN_WEB_ADMIN_USERNAME=admin
-FAVN_WEB_ADMIN_PASSWORD=admin-password
-# Optional, defaults to 28800 seconds (8 hours).
-FAVN_WEB_ADMIN_SESSION_TTL_SECONDS=28800
 ```
 
-The preferred login path is orchestrator-owned username/password auth and it is attempted before any web-local fallback. The `FAVN_WEB_ADMIN_*` credentials are only a prototype web-local UI shell fallback for direct local runs. A web-local fallback session can render the shell, but it cannot access real orchestrator control-plane data unless the same credentials also authenticate successfully with the orchestrator and produce an orchestrator-owned session.
+Login always uses orchestrator-owned username/password auth. The web tier stores only the signed browser session derived from the orchestrator login response.
 
 ### Storybook
 

@@ -157,6 +157,22 @@ surprise one-time local ETL work. Manual `mix favn.run PipelineModule` is the
 recommended safe default. Scheduled tutorial or smoke flows should opt in with
 `mix favn.dev --scheduler`.
 
+The orchestrator process receives bootstrap actor credentials from the consumer
+project `.env` file when these keys are present:
+
+```sh
+FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
+FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=admin-password
+FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Favn Admin
+FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
+```
+
+Shell environment values for those keys override `.env` values. If they are not
+provided, local tooling keeps using the generated local operator credentials
+from `.favn/secrets.json`. These credentials are never forwarded to the web
+process; the web login page always authenticates through orchestrator-owned
+password auth.
+
 `mix favn.run PipelineModule` submits a pipeline to the running local stack over
 the private orchestrator HTTP boundary. It logs in with the generated local
 operator credentials from `.favn/secrets.json`, resolves the active manifest's

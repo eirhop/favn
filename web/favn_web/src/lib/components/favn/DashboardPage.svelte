@@ -1,5 +1,4 @@
 <script lang="ts">
-	import * as Alert from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -9,12 +8,11 @@
 	type Run = { id: string; status: string | null; target: string | null };
 	type Schedule = { id: string; enabled: boolean | null; target: string | null };
 
-	let { session, runs, schedules, activeManifestVersionId, orchestratorWarning } = $props<{
+	let { session, runs, schedules, activeManifestVersionId } = $props<{
 		session: Session;
 		runs: Run[];
 		schedules: Schedule[];
 		activeManifestVersionId: string | null;
-		orchestratorWarning: string | null;
 	}>();
 
 	const statusVariant = (
@@ -42,13 +40,6 @@
 			<Button type="submit" variant="outline">Log out</Button>
 		</form>
 	</header>
-
-	{#if orchestratorWarning}
-		<Alert.Root>
-			<Alert.Title>Prototype local admin mode</Alert.Title>
-			<Alert.Description>{orchestratorWarning}</Alert.Description>
-		</Alert.Root>
-	{/if}
 
 	<section class="grid gap-4 md:grid-cols-3">
 		<Card.Root>

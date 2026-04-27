@@ -10,9 +10,8 @@
 		username?: string;
 	};
 
-	let { form, localAdminConfigured = false } = $props<{
+	let { form } = $props<{
 		form?: LoginFormState | null;
-		localAdminConfigured?: boolean;
 	}>();
 </script>
 
@@ -20,15 +19,15 @@
 	<div class="w-full max-w-md space-y-6">
 		<div class="space-y-2 text-center">
 			<p class="text-sm font-medium tracking-[0.3em] text-slate-500 uppercase">Favn</p>
-			<h1 class="text-3xl font-semibold tracking-tight">Admin sign in</h1>
-			<p class="text-sm text-slate-600">Open the local control-plane prototype.</p>
+			<h1 class="text-3xl font-semibold tracking-tight">Operator sign in</h1>
+			<p class="text-sm text-slate-600">Access the Favn control plane through the orchestrator.</p>
 		</div>
 
 		<Card.Root>
 			<Card.Header>
 				<Card.Title>Login</Card.Title>
 				<Card.Description>
-					Use orchestrator credentials or the web-local admin configured in <code>.env</code>.
+					Use the username and password managed by the Favn orchestrator.
 				</Card.Description>
 			</Card.Header>
 			<Card.Content>
@@ -67,9 +66,7 @@
 				</form>
 			</Card.Content>
 			<Card.Footer>
-				<p class="text-xs text-slate-500">
-					Web-local admin is {localAdminConfigured ? 'configured' : 'not configured'}.
-				</p>
+				<p class="text-xs text-slate-500">Authentication is owned by the orchestrator.</p>
 			</Card.Footer>
 		</Card.Root>
 	</div>
