@@ -5,6 +5,8 @@ defmodule Favn.Connection.Validator do
   alias Favn.Connection.Error
   alias Favn.Connection.Resolved
 
+  @reserved_runtime_keys [:write_concurrency]
+
   @spec validate_definition(Definition.t()) :: :ok | {:error, [Error.t()]}
   def validate_definition(%Definition{} = definition) do
     errors =
@@ -38,7 +40,7 @@ defmodule Favn.Connection.Validator do
   defp build_config(definition, runtime_values) do
     schema_keys = Enum.map(definition.config_schema, & &1.key)
     defaults = defaults_from_schema(definition.config_schema)
-    unknown = Map.keys(runtime_values) -- schema_keys
+    unknown = Map.keys(runtime_values) -- schema_keys -- @reserved_runtime_keys
 
     errors =
       []

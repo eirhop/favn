@@ -8,7 +8,7 @@ defmodule Favn.SQL.Adapter do
 
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
-  alias Favn.SQL.{Capabilities, Column, Error, Relation, Result, WritePlan}
+  alias Favn.SQL.{Capabilities, Column, ConcurrencyPolicy, Error, Relation, Result, WritePlan}
 
   @type conn :: term()
   @type statement :: iodata()
@@ -20,6 +20,8 @@ defmodule Favn.SQL.Adapter do
   @callback disconnect(conn(), opts()) :: :ok | {:error, Error.t()}
 
   @callback capabilities(Resolved.t(), opts()) :: {:ok, Capabilities.t()} | {:error, Error.t()}
+
+  @callback default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
 
   @callback execute(conn(), statement(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   @callback query(conn(), statement(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
@@ -52,6 +54,7 @@ defmodule Favn.SQL.Adapter do
     list_schemas: 2,
     list_relations: 3,
     columns: 3,
+    default_concurrency_policy: 1,
     transaction: 3,
     materialize: 3
   ]

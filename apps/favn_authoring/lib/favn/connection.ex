@@ -47,6 +47,11 @@ defmodule Favn.Connection do
   - `secret`: boolean for redaction-sensitive values
   - `type`: one of `:string`, `:atom`, `:boolean`, `:integer`, `:float`, `:path`, `:module`, `{:in, values}`, or `{:custom, fun}`
 
+  Favn also reserves `:write_concurrency` as runtime connection config for SQL
+  admission control. Use `write_concurrency: 1` or `:single` for single-writer
+  backends, and `write_concurrency: :unlimited` for backends that safely support
+  parallel writes.
+
   ## See also
 
   - `Favn.SQLAsset`
