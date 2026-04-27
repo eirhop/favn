@@ -14,7 +14,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.{Client, ErrorMapper}
-  alias Favn.SQL.{Capabilities, Column, Error, Relation, Result, WritePlan}
+  alias Favn.SQL.{Capabilities, Column, ConcurrencyPolicy, Error, Relation, Result, WritePlan}
 
   defmodule Conn do
     @moduledoc false
@@ -90,6 +90,25 @@ defmodule Favn.SQL.Adapter.DuckDB do
          ]
        }
      }}
+  end
+
+  @impl true
+  @spec default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
+  def default_concurrency_policy(%Resolved{config: %{mode: :ducklake}} = resolved) do
+    ConcurrencyPolicy.unlimited(resolved)
+  end
+
+  def default_concurrency_policy(%Resolved{config: %{database: database}})
+      when is_binary(database) and database not in [":memory:", ""] do
+    %ConcurrencyPolicy{
+      limit: 1,
+      scope: {:duckdb_database, Path.expand(database)},
+      applies_to: :all
+    }
+  end
+
+  def default_concurrency_policy(%Resolved{} = resolved) do
+    %ConcurrencyPolicy{ConcurrencyPolicy.single_writer(resolved) | applies_to: :all}
   end
 
   @impl true

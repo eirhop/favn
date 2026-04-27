@@ -7,6 +7,8 @@ defmodule Favn.SQL.Client do
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
+  alias Favn.SQL.Admission
+  alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
   alias Favn.SQL.Session
   alias Favn.SQL.WritePlan
@@ -22,6 +24,7 @@ defmodule Favn.SQL.Client do
     {resolution_opts, adapter_opts} = split_connect_opts(opts)
 
     with {:ok, %Resolved{} = resolved} <- fetch_connection(connection, resolution_opts),
+         {:ok, concurrency_policy} <- ConcurrencyPolicy.resolve(resolved),
          {:ok, conn} <- resolved.adapter.connect(resolved, adapter_opts),
          {:ok, capabilities} <- resolved.adapter.capabilities(resolved, adapter_opts) do
       {:ok,
@@ -29,7 +32,8 @@ defmodule Favn.SQL.Client do
          adapter: resolved.adapter,
          resolved: resolved,
          conn: conn,
-         capabilities: capabilities
+         capabilities: capabilities,
+         concurrency_policy: concurrency_policy
        }}
     end
   rescue
@@ -57,8 +61,10 @@ defmodule Favn.SQL.Client do
   def capabilities(_session), do: {:error, invalid_session_error()}
 
   @spec query(Session.t(), iodata(), keyword()) :: operation_result()
-  def query(%Session{adapter: adapter, conn: conn}, statement, opts) when is_list(opts) do
-    adapter.query(conn, statement, opts)
+  def query(%Session{} = session, statement, opts) when is_list(opts) do
+    Admission.with_permit(session, :query, statement, fn ->
+      session.adapter.query(session.conn, statement, opts)
+    end)
   rescue
     error -> {:error, normalize_runtime_error(:query, error)}
   catch
@@ -68,8 +74,10 @@ defmodule Favn.SQL.Client do
   def query(_session, _statement, _opts), do: {:error, invalid_session_error()}
 
   @spec execute(Session.t(), iodata(), keyword()) :: operation_result()
-  def execute(%Session{adapter: adapter, conn: conn}, statement, opts) when is_list(opts) do
-    adapter.execute(conn, statement, opts)
+  def execute(%Session{} = session, statement, opts) when is_list(opts) do
+    Admission.with_permit(session, :execute, statement, fn ->
+      session.adapter.execute(session.conn, statement, opts)
+    end)
   rescue
     error -> {:error, normalize_runtime_error(:execute, error)}
   catch
@@ -79,9 +87,11 @@ defmodule Favn.SQL.Client do
   def execute(_session, _statement, _opts), do: {:error, invalid_session_error()}
 
   @spec materialize(Session.t(), WritePlan.t(), keyword()) :: operation_result()
-  def materialize(%Session{adapter: adapter, conn: conn}, %WritePlan{} = write_plan, opts)
+  def materialize(%Session{} = session, %WritePlan{} = write_plan, opts)
       when is_list(opts) do
-    adapter.materialize(conn, write_plan, opts)
+    Admission.with_permit(session, :materialize, write_plan, fn ->
+      session.adapter.materialize(session.conn, write_plan, opts)
+    end)
   rescue
     error -> {:error, normalize_runtime_error(:materialize, error)}
   catch
@@ -129,7 +139,9 @@ defmodule Favn.SQL.Client do
 
   defp run_transaction(%Session{adapter: adapter, conn: conn} = session, fun, opts) do
     if function_exported?(adapter, :transaction, 3) do
-      adapter.transaction(conn, fn tx_conn -> fun.(%Session{session | conn: tx_conn}) end, opts)
+      Admission.with_permit(session, :transaction, nil, fn ->
+        adapter.transaction(conn, fn tx_conn -> fun.(%Session{session | conn: tx_conn}) end, opts)
+      end)
     else
       {:error, unsupported_transaction_error(session)}
     end

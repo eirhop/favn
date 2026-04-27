@@ -3,6 +3,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
   alias Favn.Connection.Resolved
   alias Favn.SQL.Adapter.DuckDB
+  alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
   alias Favn.SQL.Relation
   alias Favn.SQL.WritePlan
@@ -360,6 +361,25 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     assert {:error,
             %Error{operation: :execute, retryable?: true, details: %{classification: :conflict}}} =
              DuckDB.execute(conn, "INSERT INTO t VALUES (1)", [])
+  end
+
+  test "local file databases default to single admitted SQL operation" do
+    resolved = %Resolved{resolved() | config: %{database: "tmp/tutorial.duckdb"}}
+
+    assert %ConcurrencyPolicy{
+             limit: 1,
+             scope: {:duckdb_database, path},
+             applies_to: :all
+           } = DuckDB.default_concurrency_policy(resolved)
+
+    assert path == Path.expand("tmp/tutorial.duckdb")
+  end
+
+  test "DuckLake mode defaults to unlimited SQL write concurrency" do
+    resolved = %Resolved{resolved() | config: %{database: "tmp/tutorial.duckdb", mode: :ducklake}}
+
+    assert %ConcurrencyPolicy{limit: :unlimited, applies_to: :writes} =
+             DuckDB.default_concurrency_policy(resolved)
   end
 
   defp resolved do
