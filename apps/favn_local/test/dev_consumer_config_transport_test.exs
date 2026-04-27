@@ -6,12 +6,21 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
   setup do
     keys = ConsumerConfigTransport.supported_keys()
     previous = Map.new(keys, fn key -> {key, Application.get_env(:favn, key, :__missing__)} end)
+    previous_encoded = System.get_env("FAVN_DEV_CONSUMER_FAVN_CONFIG")
 
     on_exit(fn ->
       Enum.each(previous, fn
         {key, :__missing__} -> Application.delete_env(:favn, key)
         {key, value} -> Application.put_env(:favn, key, value)
       end)
+
+      if previous_encoded do
+        System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", previous_encoded)
+      else
+        System.delete_env("FAVN_DEV_CONSUMER_FAVN_CONFIG")
+      end
+
+      purge_bootstrap_module()
     end)
 
     :ok
@@ -93,5 +102,46 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert code =~ "invalid FAVN_DEV_CONSUMER_FAVN_CONFIG"
     refute code =~ "decode64!"
     refute code =~ "binary_to_term()"
+  end
+
+  test "bootstrap snippet executes and applies supported config" do
+    encoded =
+      ConsumerConfigTransport.encode(
+        connection_modules: [MyApp.Connections.Warehouse],
+        runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}]
+      )
+
+    System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", encoded)
+
+    purge_bootstrap_module()
+    assert {:ok, _bindings} = Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+    assert Application.get_env(:favn, :connection_modules) == [MyApp.Connections.Warehouse]
+    assert Application.get_env(:favn, :runner_plugins) == [{FavnDuckdb, [execution_mode: :in_process]}]
+  end
+
+  test "bootstrap snippet raises a redacted structured error for bad payloads" do
+    secret = "super-secret-password"
+
+    payload = %{
+      "schema_version" => 1,
+      "entries" => [%{"key" => "connections", "value" => %{"password" => secret}}]
+    }
+
+    System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", Base.encode64(:erlang.term_to_binary(payload)))
+
+    purge_bootstrap_module()
+
+    error =
+      assert_raise RuntimeError, ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/, fn ->
+        Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+      end
+
+    refute Exception.message(error) =~ secret
+  end
+
+  defp purge_bootstrap_module do
+    :code.purge(Favn.Dev.ConsumerConfigBootstrap)
+    :code.delete(Favn.Dev.ConsumerConfigBootstrap)
+    :ok
   end
 end
