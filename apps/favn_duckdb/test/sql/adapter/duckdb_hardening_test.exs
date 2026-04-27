@@ -2,10 +2,13 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   use ExUnit.Case, async: false
 
   alias Favn.Connection.Resolved
+  alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB
+  alias Favn.SQL.Client
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
   alias Favn.SQL.Relation
+  alias Favn.SQL.Session
   alias Favn.SQL.WritePlan
 
   @events_table :favn_duckdb_adapter_hardening_events
@@ -382,12 +385,68 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
              DuckDB.default_concurrency_policy(resolved)
   end
 
+  test "same-file materializations through SQL client are admitted serially" do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_duckdb_admission_#{System.unique_integer([:positive])}.duckdb"
+      )
+
+    resolved = %Resolved{resolved() | config: %{database: path}}
+
+    {:ok, session_a} = open_session(resolved)
+    {:ok, session_b} = open_session(resolved)
+
+    on_exit(fn ->
+      Client.disconnect(session_a)
+      Client.disconnect(session_b)
+      File.rm(path)
+    end)
+
+    tasks = [
+      Task.async(fn -> Client.materialize(session_a, table_plan("concurrent_a", 1), []) end),
+      Task.async(fn -> Client.materialize(session_b, table_plan("concurrent_b", 2), []) end)
+    ]
+
+    assert Enum.all?(Task.await_many(tasks, 5_000), &match?({:ok, %Favn.SQL.Result{}}, &1))
+
+    assert {:ok, %Relation{name: "concurrent_a"}} =
+             Client.relation(session_a, RelationRef.new!(schema: "main", name: "concurrent_a"))
+
+    assert {:ok, %Relation{name: "concurrent_b"}} =
+             Client.relation(session_b, RelationRef.new!(schema: "main", name: "concurrent_b"))
+  end
+
   defp resolved do
     %Resolved{
       name: :duckdb_runtime,
       adapter: DuckDB,
       module: __MODULE__,
       config: %{database: ":memory:"}
+    }
+  end
+
+  defp open_session(%Resolved{} = resolved) do
+    with {:ok, conn} <- DuckDB.connect(resolved, []),
+         {:ok, capabilities} <- DuckDB.capabilities(resolved, []),
+         {:ok, concurrency_policy} <- ConcurrencyPolicy.resolve(resolved) do
+      {:ok,
+       %Session{
+         adapter: DuckDB,
+         resolved: resolved,
+         conn: conn,
+         capabilities: capabilities,
+         concurrency_policy: concurrency_policy
+       }}
+    end
+  end
+
+  defp table_plan(name, value) do
+    %WritePlan{
+      materialization: :table,
+      target: %Relation{schema: "main", name: name, type: :table},
+      select_sql: "SELECT #{value} AS id",
+      replace_existing?: true
     }
   end
 

@@ -97,6 +97,7 @@ apps/
 │   └── favn_runner/application.ex
 ├── favn_sql_runtime/lib/
 │   ├── favn_sql_runtime.ex
+│   ├── favn_sql_runtime/application.ex
 │   └── favn/
 │       ├── connection/
 │       └── sql/

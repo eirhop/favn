@@ -15,6 +15,25 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       {:ok, %Result{kind: :query, command: IO.iodata_to_binary(statement), rows: [], columns: []}}
     end
 
+    def relation(conn, relation_ref, _opts) do
+      tracker = Map.fetch!(conn, :tracker)
+      bump_active(tracker, 1)
+      Process.sleep(50)
+      bump_active(tracker, -1)
+
+      {:ok,
+       %Favn.SQL.Relation{schema: relation_ref.schema, name: relation_ref.name, type: :table}}
+    end
+
+    def columns(conn, _relation_ref, _opts) do
+      tracker = Map.fetch!(conn, :tracker)
+      bump_active(tracker, 1)
+      Process.sleep(50)
+      bump_active(tracker, -1)
+
+      {:ok, [%Favn.SQL.Column{name: "id", position: 1, data_type: "INTEGER"}]}
+    end
+
     defp bump_active(tracker, delta) do
       Agent.update(tracker, fn state ->
         active = state.active + delta
@@ -71,6 +90,73 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
              Admission.with_permit(session, :transaction, nil, fn ->
                Client.query(session, "create or replace table t as select 1", [])
              end)
+  end
+
+  test "releases an active permit when the holder exits", %{tracker: tracker} do
+    parent = self()
+    policy = %ConcurrencyPolicy{limit: 1, scope: {:db, :holder_down}, applies_to: :all}
+    session = session(tracker, policy)
+
+    pid =
+      spawn(fn ->
+        Admission.with_permit(session, :query, "create table held as select 1", fn ->
+          send(parent, :holder_acquired)
+
+          receive do
+            :release -> :ok
+          end
+        end)
+      end)
+
+    assert_receive :holder_acquired, 500
+    Process.exit(pid, :kill)
+
+    assert {:ok, %Result{}} = Client.query(session, "create or replace table t as select 1", [])
+  end
+
+  test "removes queued waiters when they exit before admission", %{tracker: tracker} do
+    parent = self()
+    policy = %ConcurrencyPolicy{limit: 1, scope: {:db, :waiter_down}, applies_to: :all}
+    session = session(tracker, policy)
+
+    holder =
+      spawn(fn ->
+        Admission.with_permit(session, :query, "create table held as select 1", fn ->
+          send(parent, :holder_acquired)
+
+          receive do
+            :release -> :ok
+          end
+        end)
+      end)
+
+    assert_receive :holder_acquired, 500
+
+    waiter =
+      spawn(fn ->
+        send(parent, :waiter_started)
+        _ = Client.query(session, "create or replace table queued as select 1", [])
+      end)
+
+    assert_receive :waiter_started, 500
+    Process.sleep(20)
+    Process.exit(waiter, :kill)
+    send(holder, :release)
+
+    assert {:ok, %Result{}} = Client.query(session, "create or replace table t as select 1", [])
+  end
+
+  test "applies :all policies to relation and columns metadata calls", %{tracker: tracker} do
+    session = session(tracker, %ConcurrencyPolicy{limit: 1, scope: {:db, :metadata}, applies_to: :all})
+    relation_ref = Favn.RelationRef.new!(schema: "main", name: "events")
+
+    tasks = [
+      Task.async(fn -> Client.relation(session, relation_ref) end),
+      Task.async(fn -> Client.columns(session, relation_ref) end)
+    ]
+
+    assert Enum.all?(Task.await_many(tasks, 1_000), &match?({:ok, _}, &1))
+    assert Agent.get(tracker, & &1.max_active) == 1
   end
 
   defp session(tracker, policy) do

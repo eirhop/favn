@@ -101,8 +101,10 @@ defmodule Favn.SQL.Client do
   def materialize(_session, _write_plan, _opts), do: {:error, invalid_session_error()}
 
   @spec relation(Session.t(), RelationRef.t()) :: operation_result()
-  def relation(%Session{adapter: adapter, conn: conn}, %RelationRef{} = relation_ref) do
-    adapter.relation(conn, relation_ref, [])
+  def relation(%Session{} = session, %RelationRef{} = relation_ref) do
+    Admission.with_permit(session, :relation, relation_ref, fn ->
+      session.adapter.relation(session.conn, relation_ref, [])
+    end)
   rescue
     error -> {:error, normalize_runtime_error(:relation, error)}
   catch
@@ -112,8 +114,10 @@ defmodule Favn.SQL.Client do
   def relation(_session, _relation_ref), do: {:error, invalid_session_error()}
 
   @spec columns(Session.t(), RelationRef.t()) :: operation_result()
-  def columns(%Session{adapter: adapter, conn: conn}, %RelationRef{} = relation_ref) do
-    adapter.columns(conn, relation_ref, [])
+  def columns(%Session{} = session, %RelationRef{} = relation_ref) do
+    Admission.with_permit(session, :columns, relation_ref, fn ->
+      session.adapter.columns(session.conn, relation_ref, [])
+    end)
   rescue
     error -> {:error, normalize_runtime_error(:columns, error)}
   catch

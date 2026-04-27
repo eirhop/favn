@@ -18,6 +18,7 @@ defmodule FavnSQLRuntime.MixProject do
 
   def application do
     [
+      mod: {FavnSQLRuntime.Application, []},
       extra_applications: [:logger]
     ]
   end
