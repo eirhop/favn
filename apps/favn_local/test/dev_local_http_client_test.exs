@@ -20,15 +20,19 @@ defmodule Favn.Dev.LocalHttpClientTest do
     {:ok, base_url, _server} = start_capturing_server(~s({"data":{"created":true}}), 201, self())
 
     assert {:ok, %{"data" => %{"created" => true}}} =
-             LocalHttpClient.request(:post, base_url <> "/runs?dry_run=false", [{"authorization", "Bearer token"}],
+             LocalHttpClient.request(:post, base_url <> "/runs?dry_run=false", override_headers(),
                ~s({"ok":true})
              )
 
     assert_receive {:request, request}
     assert request =~ "POST /runs?dry_run=false HTTP/1.1\r\n"
     assert request =~ "authorization: Bearer token\r\n"
+    assert request =~ "connection: close\r\n"
     assert request =~ "content-type: application/json\r\n"
     assert request =~ "content-length: 11\r\n"
+    refute request =~ "connection: keep-alive\r\n"
+    refute request =~ "content-type: text/plain\r\n"
+    refute request =~ "content-length: 999\r\n"
     assert request =~ "\r\n\r\n{\"ok\":true}"
   end
 
@@ -67,7 +71,7 @@ defmodule Favn.Dev.LocalHttpClientTest do
     server =
       spawn_link(fn ->
         {:ok, socket} = :gen_tcp.accept(listen_socket)
-        {:ok, request} = :gen_tcp.recv(socket, 0, 2_000)
+        {:ok, request} = recv_request(socket)
         if recipient, do: send(recipient, {:request, request})
         :ok = :gen_tcp.send(socket, response(status, body))
         :ok = :gen_tcp.close(socket)
@@ -75,6 +79,61 @@ defmodule Favn.Dev.LocalHttpClientTest do
       end)
 
     {:ok, "http://127.0.0.1:#{port}", server}
+  end
+
+  defp override_headers do
+    [
+      {"authorization", "Bearer token"},
+      {"connection", "keep-alive"},
+      {"content-type", "text/plain"},
+      {"content-length", "999"}
+    ]
+  end
+
+  defp recv_request(socket, buffer \\ "") do
+    case :gen_tcp.recv(socket, 0, 2_000) do
+      {:ok, chunk} ->
+        request = buffer <> chunk
+
+        if complete_request?(request) do
+          {:ok, request}
+        else
+          recv_request(socket, request)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp complete_request?(request) do
+    case :binary.split(request, "\r\n\r\n") do
+      [headers, body] -> byte_size(body) >= content_length(headers)
+      _other -> false
+    end
+  end
+
+  defp content_length(headers) do
+    headers
+    |> String.split("\r\n")
+    |> Enum.find_value(0, fn header ->
+      case String.split(header, ":", parts: 2) do
+        [key, value] -> parse_content_length(key, value)
+        _other -> nil
+      end
+    end)
+  end
+
+  defp parse_content_length(key, value) do
+    if String.downcase(key) == "content-length" do
+      value
+      |> String.trim()
+      |> Integer.parse()
+      |> case do
+        {length, ""} -> length
+        _other -> 0
+      end
+    end
   end
 
   defp response(status, body) do

@@ -4,7 +4,6 @@ defmodule Favn.Dev.LocalHttpClient do
   @default_connect_timeout_ms 1_000
   @default_timeout_ms 5_000
   @default_http_port 80
-  @loopback_hosts ["127.0.0.1", "::1", "localhost"]
 
   @type method :: :get | :post
   @type header :: {String.t(), String.t()}
@@ -43,17 +42,15 @@ defmodule Favn.Dev.LocalHttpClient do
   defp parse_target(url) do
     case URI.parse(url) do
       %URI{scheme: "http", host: host} = uri when is_binary(host) ->
-        if loopback_host?(host) do
+        with {:ok, connect_host} <- resolve_connect_host(host) do
           {:ok,
            %{
              host: host,
-             connect_host: connect_host(host),
+             connect_host: connect_host,
              host_header: host_header(host, uri.port),
              port: uri.port || @default_http_port,
              request_target: request_target(uri)
            }}
-        else
-          {:error, {:unsupported_url, :non_loopback_host}}
         end
 
       %URI{scheme: "https"} ->
@@ -70,24 +67,51 @@ defmodule Favn.Dev.LocalHttpClient do
     end
   end
 
-  defp loopback_host?(host) when host in @loopback_hosts, do: true
+  defp resolve_connect_host("localhost") do
+    addresses = resolve_localhost_addresses()
 
-  defp loopback_host?(host) do
-    case :inet.parse_address(String.to_charlist(host)) do
-      {:ok, {127, _second, _third, _fourth}} -> true
-      {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
-      _other -> false
+    cond do
+      addresses == [] ->
+        {:error, {:unsupported_url, :localhost_not_resolved}}
+
+      Enum.all?(addresses, &loopback_address?/1) ->
+        {:ok, hd(addresses)}
+
+      true ->
+        {:error, {:unsupported_url, :non_loopback_host}}
     end
   end
 
-  defp connect_host("localhost"), do: ~c"localhost"
-
-  defp connect_host(host) do
+  defp resolve_connect_host(host) do
     case :inet.parse_address(String.to_charlist(host)) do
-      {:ok, address} -> address
-      _other -> String.to_charlist(host)
+      {:ok, address} ->
+        if loopback_address?(address) do
+          {:ok, address}
+        else
+          {:error, {:unsupported_url, :non_loopback_host}}
+        end
+
+      _other ->
+        {:error, {:unsupported_url, :non_loopback_host}}
     end
   end
+
+  defp resolve_localhost_addresses do
+    ~c"localhost"
+    |> then(fn host -> resolve_addresses(host, :inet) ++ resolve_addresses(host, :inet6) end)
+    |> Enum.uniq()
+  end
+
+  defp resolve_addresses(host, family) do
+    case :inet.getaddrs(host, family) do
+      {:ok, addresses} -> addresses
+      {:error, _reason} -> []
+    end
+  end
+
+  defp loopback_address?({127, _second, _third, _fourth}), do: true
+  defp loopback_address?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_address?(_address), do: false
 
   defp host_header(host, nil), do: format_host(host)
   defp host_header(host, @default_http_port), do: format_host(host)
@@ -140,29 +164,27 @@ defmodule Favn.Dev.LocalHttpClient do
   defp request_headers(:get, target, headers, _body) do
     headers
     |> normalize_headers()
-    |> put_header("host", target.host_header)
-    |> put_header("connection", "close")
+    |> force_header("host", target.host_header)
+    |> force_header("connection", "close")
   end
 
   defp request_headers(:post, target, headers, body) do
     headers
     |> normalize_headers()
-    |> put_header("host", target.host_header)
-    |> put_header("connection", "close")
-    |> put_header("content-type", "application/json")
-    |> put_header("content-length", Integer.to_string(byte_size(body)))
+    |> force_header("host", target.host_header)
+    |> force_header("connection", "close")
+    |> force_header("content-type", "application/json")
+    |> force_header("content-length", Integer.to_string(byte_size(body)))
   end
 
   defp normalize_headers(headers) do
     Enum.map(headers, fn {key, value} -> {to_string(key), to_string(value)} end)
   end
 
-  defp put_header(headers, key, value) do
-    if Enum.any?(headers, fn {existing_key, _value} -> String.downcase(existing_key) == key end) do
-      headers
-    else
-      headers ++ [{key, value}]
-    end
+  defp force_header(headers, key, value) do
+    headers
+    |> Enum.reject(fn {existing_key, _value} -> String.downcase(existing_key) == key end)
+    |> Kernel.++([{key, value}])
   end
 
   defp header_lines(headers) do
