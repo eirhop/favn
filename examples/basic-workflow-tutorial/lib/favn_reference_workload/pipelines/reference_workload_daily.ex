@@ -24,5 +24,6 @@ defmodule FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily do
     deps(:all)
     config(requested_by: "manual")
     meta(owner: "reference-workload", purpose: :canonical_demo)
+    schedule(cron: "*/15 * * * * *", timezone: "Etc/UTC", overlap: :forbid)
   end
 end

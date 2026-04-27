@@ -23,9 +23,13 @@ defmodule Favn.Triggers.Schedules do
 
   `schedule/2` accepts:
 
-  - `cron`: required 5-field cron expression
+  - `cron`: required 5-field cron expression, or a 6-field expression with a
+  leading seconds field
   - `timezone`: optional IANA timezone string
-  - `missed`: `:skip | :one | :all`, defaults to `:skip`
+  - `missed`: `:skip | :one | :all`, defaults to `:skip`. Runtime `:all`
+    catch-up is capped per schedule entry per tick to avoid unbounded high-frequency
+    backlog submission. The orchestrator default cap is 1,000 occurrences per
+    schedule entry per tick.
   - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
   - `active`: boolean, defaults to `true`
   """
@@ -56,6 +60,9 @@ defmodule Favn.Triggers.Schedules do
         missed: :skip,
         overlap: :forbid,
         active: true
+
+  Cron expressions may use either the standard 5-field form or a 6-field form
+  with a leading seconds field for second-level schedules.
   """
   defmacro schedule(name, opts) do
     quote bind_quoted: [name: name, opts: opts] do

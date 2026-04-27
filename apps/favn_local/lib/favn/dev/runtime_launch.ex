@@ -18,6 +18,13 @@ defmodule Favn.Dev.RuntimeLaunch do
       |> String.split(delimiter, trim: true)
       |> Enum.each(&Code.prepend_path/1)
 
+      System.get_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", "")
+      |> case do
+        "" -> []
+        encoded -> encoded |> Base.decode64!() |> :erlang.binary_to_term()
+      end
+      |> Enum.each(fn {key, value} -> Application.put_env(:favn, key, value) end)
+
       {:ok, _} = Application.ensure_all_started(:favn_runner)
       Process.sleep(:infinity)
       """
@@ -48,6 +55,7 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_DEV_CONSUMER_EBIN_PATHS",
           Enum.join(consumer_ebin_paths, path_separator())
         )
+        |> Map.put("FAVN_DEV_CONSUMER_FAVN_CONFIG", encoded_consumer_favn_config(opts))
     }
   end
 
@@ -113,6 +121,7 @@ defmodule Favn.Dev.RuntimeLaunch do
       runner_node = String.to_atom(System.fetch_env!("FAVN_DEV_RUNNER_NODE"))
       Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
       Application.put_env(:favn_orchestrator, :runner_client_opts, [runner_node: runner_node])
+      Application.put_env(:favn_orchestrator, :scheduler, enabled: true, tick_ms: 15_000)
 
       {:ok, _} = Application.ensure_all_started(:favn_orchestrator)
       Process.sleep(:infinity)
@@ -191,4 +200,60 @@ defmodule Favn.Dev.RuntimeLaunch do
       _other -> ":"
     end
   end
+
+  defp encoded_consumer_favn_config(opts) do
+    root_dir = Paths.root_dir(opts)
+
+    [:connection_modules, :connections, :runner_plugins, :duckdb_in_process_client]
+    |> Enum.flat_map(fn key ->
+      case Application.fetch_env(:favn, key) do
+        {:ok, value} -> [{key, normalize_consumer_favn_config(key, value, root_dir)}]
+        :error -> []
+      end
+    end)
+    |> :erlang.term_to_binary()
+    |> Base.encode64()
+  end
+
+  defp normalize_consumer_favn_config(:connections, connections, root_dir) do
+    cond do
+      Keyword.keyword?(connections) ->
+        Keyword.new(connections, fn {name, config} -> {name, absolutize_connection_paths(config, root_dir)} end)
+
+      is_map(connections) ->
+        Map.new(connections, fn {name, config} -> {name, absolutize_connection_paths(config, root_dir)} end)
+
+      true ->
+        connections
+    end
+  end
+
+  defp normalize_consumer_favn_config(_key, value, _root_dir), do: value
+
+  defp absolutize_connection_paths(config, root_dir) when is_list(config) do
+    if Keyword.has_key?(config, :database) do
+      Keyword.update!(config, :database, &expand_relative_path(&1, root_dir))
+    else
+      config
+    end
+  end
+
+  defp absolutize_connection_paths(config, root_dir) when is_map(config) do
+    if Map.has_key?(config, :database) do
+      Map.update!(config, :database, &expand_relative_path(&1, root_dir))
+    else
+      config
+    end
+  end
+
+  defp absolutize_connection_paths(config, _root_dir), do: config
+
+  defp expand_relative_path(path, root_dir) when is_binary(path) do
+    case Path.type(path) do
+      :relative -> Path.expand(path, root_dir)
+      _other -> path
+    end
+  end
+
+  defp expand_relative_path(path, _root_dir), do: path
 end

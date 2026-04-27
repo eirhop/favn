@@ -65,6 +65,8 @@ Assets are the units of business work in Favn. An asset can be written as normal
 ### Pipelines
 
 Pipelines select one or more target assets and describe how they should run, for example whether dependencies should be included and whether the pipeline should have a schedule.
+Cron schedules support both standard 5-field expressions and 6-field expressions with a leading seconds field, so production schedules can be defined down to seconds when needed.
+When `missed: :all` is used, scheduler catch-up is capped per schedule entry per tick to avoid unbounded backlog submission for high-frequency schedules. The orchestrator default cap is 1,000 occurrences per schedule entry per tick and can be adjusted with `config :favn_orchestrator, :scheduler, max_missed_all_occurrences: ...`.
 
 ### Manifests
 
@@ -267,7 +269,10 @@ developer loop.
 `mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
 currently running local stack. It uses the project-local service token and local
 operator credentials generated under `.favn/secrets.json`, so tutorial and local
-smoke runs do not require hand-written private orchestrator API requests.
+smoke runs do not require hand-written private orchestrator API requests. The
+local runner receives the consumer project's configured Favn connection modules,
+connection values, and runner plugins; relative connection database paths are
+resolved from the consumer project root before the runner starts.
 
 If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current
@@ -312,6 +317,9 @@ Storage modes:
 - implementation is owned by `apps/favn_local`
 - `mix favn.build.runner` is rooted in the current Mix project; `--root-dir`
   must match the current project root
+- runner artifacts include the pinned manifest and compiled beams from the
+  current project app so helper modules and connection modules are available at
+  execution time
 - install now materializes a runnable runtime workspace under
   `.favn/install/runtime_root`, records runtime metadata in
   `.favn/install/runtime.json`, and caches npm data under

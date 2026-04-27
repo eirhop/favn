@@ -58,6 +58,7 @@ intent described in each module's `@moduledoc`.
   - "Canonical manual reference workload pipeline"
   - This is the one named pipeline that targets the final asset and includes
     all dependencies (`deps(:all)`).
+  - It includes a short local smoke-test schedule that is due every 15 seconds.
 
 ### Source assets (`sources` schema)
 
@@ -258,16 +259,19 @@ Current config:
 ```elixir
 config :favn,
   connections: [
-    warehouse: [database: ".favn/data/reference_workload.duckdb"]
+    warehouse: [database: ".favn/data/reference_workload.duckdb", write_concurrency: 1]
   ]
 ```
+
+The explicit `write_concurrency: 1` keeps this local DuckDB tutorial on a
+single-writer path during parallel pipeline execution.
 
 You can point this to another path, for example:
 
 ```elixir
 config :favn,
   connections: [
-    warehouse: [database: "/tmp/reference_workload.duckdb"]
+    warehouse: [database: "/tmp/reference_workload.duckdb", write_concurrency: 1]
   ]
 ```
 
@@ -306,7 +310,10 @@ Alternative:
 
 ### 4) Change pipeline behavior
 
-Current pipeline uses `deps(:all)` so the full graph runs from the top target.
+Current pipeline uses `deps(:all)` so the full graph runs from the top target,
+and a `*/15 * * * * *` schedule for local scheduler smoke testing. The schedule
+uses `overlap: :forbid` because the tutorial smoke should prove the local loop,
+not stress-test concurrent DuckDB writes.
 
 Possible alternatives in pipeline definitions:
 - use a narrower target asset for faster development loops
