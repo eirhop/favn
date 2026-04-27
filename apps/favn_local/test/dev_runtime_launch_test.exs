@@ -58,7 +58,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
              File.write(Path.join(root_dir, ".env"), """
              FAVN_WEB_ADMIN_USERNAME=admin
              FAVN_WEB_ADMIN_PASSWORD="admin-password"
-             FAVN_WEB_ADMIN_SESSION_TTL_SECONDS=60
+             FAVN_WEB_ADMIN_SESSION_TTL_SECONDS=60 # optional inline comment
              IGNORED_ENV=ignored
              """)
 

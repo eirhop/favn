@@ -45,7 +45,7 @@ FAVN_WEB_ADMIN_PASSWORD=admin-password
 FAVN_WEB_ADMIN_SESSION_TTL_SECONDS=28800
 ```
 
-The preferred login path remains orchestrator-owned username/password auth. The `FAVN_WEB_ADMIN_*` credentials are a prototype fallback for local/admin access; configure matching orchestrator credentials as well if you need live control-plane data behind the logged-in session.
+The preferred login path is orchestrator-owned username/password auth and it is attempted before any web-local fallback. The `FAVN_WEB_ADMIN_*` credentials are only a prototype web-local UI shell fallback for direct local runs. A web-local fallback session can render the shell, but it cannot access real orchestrator control-plane data unless the same credentials also authenticate successfully with the orchestrator and produce an orchestrator-owned session.
 
 ### Storybook
 

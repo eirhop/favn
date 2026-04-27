@@ -27,10 +27,18 @@ describe('home page server load', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.mocked(orchestrator.orchestratorGetActiveManifest).mockResolvedValue(
-			new Response(JSON.stringify({ data: { manifest_version_id: 'manifest-v1' } }), {
-				status: 200,
-				headers: { 'content-type': 'application/json' }
-			})
+			new Response(
+				JSON.stringify({
+					data: {
+						manifest: { manifest_version_id: 'manifest-v1' },
+						targets: [{ type: 'asset', id: 'asset.orders' }]
+					}
+				}),
+				{
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				}
+			)
 		);
 		vi.mocked(orchestrator.orchestratorListSchedules).mockResolvedValue(
 			new Response(JSON.stringify({ data: { items: [] } }), {

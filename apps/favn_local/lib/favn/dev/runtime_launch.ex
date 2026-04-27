@@ -266,8 +266,14 @@ defmodule Favn.Dev.RuntimeLaunch do
         value |> String.trim_leading("'") |> String.trim_trailing("'")
 
       true ->
-        value
+        value |> strip_dotenv_inline_comment() |> String.trim()
     end
+  end
+
+  defp strip_dotenv_inline_comment(value) do
+    value
+    |> String.split(" #", parts: 2)
+    |> hd()
   end
 
   defp runtime_env do

@@ -110,9 +110,48 @@ describe('login page actions', () => {
 		expect(locals.session).toEqual(baseSession);
 	});
 
-	it('sets a local admin session from .env credentials without calling orchestrator', async () => {
+	it('prefers orchestrator session when credentials are valid both upstream and locally', async () => {
+		process.env.FAVN_WEB_ADMIN_USERNAME = 'alice';
+		process.env.FAVN_WEB_ADMIN_PASSWORD = 'good-password';
+
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(JSON.stringify({ data: { session_id: 'sess-1', actor_id: 'actor-1' } }), {
+				status: 201,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+		vi.mocked(webSessionFromLoginPayload).mockReturnValue(baseSession);
+
+		const cookies = {};
+		const locals = { session: null as WebSession | null };
+
+		await expect(
+			actions.default({
+				request: createRequest({ username: 'alice', password: 'good-password' }),
+				cookies,
+				locals
+			} as never)
+		).rejects.toMatchObject({ status: 303, location: '/' });
+
+		expect(orchestratorLoginPassword).toHaveBeenCalledWith({
+			username: 'alice',
+			password: 'good-password'
+		});
+		expect(setWebSessionCookie).toHaveBeenCalledWith(cookies, baseSession);
+		expect(locals.session).toEqual(
+			expect.objectContaining({ actor_id: 'actor-1', provider: 'password_local' })
+		);
+	});
+
+	it('sets a local admin session from .env credentials when orchestrator rejects', async () => {
 		process.env.FAVN_WEB_ADMIN_USERNAME = 'admin';
 		process.env.FAVN_WEB_ADMIN_PASSWORD = 'admin-password';
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(JSON.stringify({ error: { message: 'Invalid credentials' } }), {
+				status: 401,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
 
 		const cookies = {};
 		const locals = { session: null as WebSession | null };
@@ -125,7 +164,39 @@ describe('login page actions', () => {
 			} as never)
 		).rejects.toMatchObject({ status: 303, location: '/' });
 
-		expect(orchestratorLoginPassword).not.toHaveBeenCalled();
+		expect(orchestratorLoginPassword).toHaveBeenCalledWith({
+			username: 'admin',
+			password: 'admin-password'
+		});
+		expect(webSessionFromLoginPayload).not.toHaveBeenCalled();
+		expect(setWebSessionCookie).toHaveBeenCalledWith(
+			cookies,
+			expect.objectContaining({
+				actor_id: 'admin:admin',
+				provider: 'web_local_admin'
+			})
+		);
+		expect(locals.session).toEqual(
+			expect.objectContaining({ actor_id: 'admin:admin', provider: 'web_local_admin' })
+		);
+	});
+
+	it('sets a local admin session from .env credentials when orchestrator is unavailable', async () => {
+		process.env.FAVN_WEB_ADMIN_USERNAME = 'admin';
+		process.env.FAVN_WEB_ADMIN_PASSWORD = 'admin-password';
+		vi.mocked(orchestratorLoginPassword).mockRejectedValue(new Error('connection refused'));
+
+		const cookies = {};
+		const locals = { session: null as WebSession | null };
+
+		await expect(
+			actions.default({
+				request: createRequest({ username: 'admin', password: 'admin-password' }),
+				cookies,
+				locals
+			} as never)
+		).rejects.toMatchObject({ status: 303, location: '/' });
+
 		expect(setWebSessionCookie).toHaveBeenCalledWith(
 			cookies,
 			expect.objectContaining({

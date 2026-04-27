@@ -48,6 +48,34 @@ export const actions: Actions = {
 			});
 		}
 
+		const response = await orchestratorLoginPassword({ username, password }).catch(
+			() =>
+				new Response(
+					JSON.stringify({ error: { message: 'Unable to reach orchestrator service' } }),
+					{
+						status: 502,
+						headers: { 'content-type': 'application/json; charset=utf-8' }
+					}
+				)
+		);
+		const payload = await tryReadJson(response);
+
+		if (response.ok) {
+			const session = webSessionFromLoginPayload(payload);
+
+			if (!session) {
+				return fail(502, {
+					message: 'Unexpected login response shape',
+					username
+				});
+			}
+
+			setWebSessionCookie(cookies, session);
+			locals.session = session;
+
+			throw redirect(303, '/');
+		}
+
 		const localAdminSession = localAdminLogin(username, password);
 		if (localAdminSession) {
 			setWebSessionCookie(cookies, localAdminSession);
@@ -55,28 +83,9 @@ export const actions: Actions = {
 			throw redirect(303, '/');
 		}
 
-		const response = await orchestratorLoginPassword({ username, password });
-		const payload = await tryReadJson(response);
-
-		if (!response.ok) {
-			return fail(response.status === 401 ? 401 : 400, {
-				message: loginErrorMessage(payload),
-				username
-			});
-		}
-
-		const session = webSessionFromLoginPayload(payload);
-
-		if (!session) {
-			return fail(502, {
-				message: 'Unexpected login response shape',
-				username
-			});
-		}
-
-		setWebSessionCookie(cookies, session);
-		locals.session = session;
-
-		throw redirect(303, '/');
+		return fail(response.status === 401 ? 401 : 400, {
+			message: loginErrorMessage(payload),
+			username
+		});
 	}
 };

@@ -77,7 +77,14 @@ function normalizeSchedules(payload: unknown): ScheduleSummary[] {
 
 function normalizeActiveManifest(payload: unknown): string | null {
 	const dataObj = isRecord(payload) && isRecord(payload.data) ? payload.data : payload;
-	return isRecord(dataObj) ? (asString(dataObj.manifest_version_id) ?? asString(dataObj.id)) : null;
+
+	if (!isRecord(dataObj)) return null;
+
+	if (isRecord(dataObj.manifest)) {
+		return asString(dataObj.manifest.manifest_version_id) ?? asString(dataObj.manifest.id);
+	}
+
+	return asString(dataObj.manifest_version_id) ?? asString(dataObj.id);
 }
 
 async function readJsonOr(response: Response, fallback: unknown): Promise<unknown> {

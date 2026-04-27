@@ -308,8 +308,14 @@ function handleGetActiveManifest(request, response) {
 
 	sendJson(response, 200, {
 		data: {
-			manifest_version_id: 'manifest_v2',
-			status: 'active'
+			manifest: {
+				manifest_version_id: 'manifest_v2',
+				status: 'active'
+			},
+			targets: [
+				{ type: 'asset', id: 'asset.orders' },
+				{ type: 'pipeline', id: 'pipeline.reconcile' }
+			]
 		}
 	});
 }

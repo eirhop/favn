@@ -197,7 +197,12 @@ test.describe('auth/session/runs flow', () => {
 		const activeManifest = await pageGetJson(page, '/api/web/v1/manifests/active');
 		expect(activeManifest.status).toBe(200);
 		expect(activeManifest.body).toEqual({
-			data: expect.objectContaining({ manifest_version_id: 'manifest_v2', status: 'active' })
+			data: expect.objectContaining({
+				manifest: expect.objectContaining({ manifest_version_id: 'manifest_v2', status: 'active' }),
+				targets: expect.arrayContaining([
+					expect.objectContaining({ type: 'asset', id: 'asset.orders' })
+				])
+			})
 		});
 
 		const activateManifest = await pagePostJson(page, '/api/web/v1/manifests/manifest_v1/activate');
