@@ -95,14 +95,11 @@ test.describe('auth/session/runs flow', () => {
 
 		await expect(page).toHaveURL(/\/$/);
 		await expect(page.getByRole('heading', { name: 'Favn web prototype' })).toBeVisible();
-		await expect(page.locator('p code').nth(0)).toHaveText('actor_alice');
-		await expect(page.locator('p code').nth(1)).toHaveText('password_local');
+		await expect(page.getByText('actor_alice')).toBeVisible();
+		await expect(page.getByText('password_local')).toBeVisible();
 		await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
-		await expect(page.locator('li')).toHaveCount(2);
-		await expect(page.locator('li').nth(0)).toContainText('run_001');
-		await expect(page.locator('li').nth(0)).toContainText('succeeded');
-		await expect(page.locator('li').nth(1)).toContainText('run_002');
-		await expect(page.locator('li').nth(1)).toContainText('running');
+		await expect(page.getByRole('row', { name: /run_001/ })).toContainText('succeeded');
+		await expect(page.getByRole('row', { name: /run_002/ })).toContainText('running');
 	});
 
 	test('logout returns to /login and / remains protected afterward', async ({ page }) => {
@@ -231,8 +228,10 @@ test.describe('auth/session/runs flow', () => {
 		});
 	});
 
-		test('run stream relay smoke includes Last-Event-ID passthrough and validation', async ({ page }) => {
-			await loginAndReachHome(page);
+	test('run stream relay smoke includes Last-Event-ID passthrough and validation', async ({
+		page
+	}) => {
+		await loginAndReachHome(page);
 
 		const invalidLastEventId = await pageGetJson(page, '/api/web/v1/streams/runs/run_002', {
 			'Last-Event-ID': 'bad value!'
@@ -245,31 +244,31 @@ test.describe('auth/session/runs flow', () => {
 			}
 		});
 
-			const stream = await page.evaluate(async () => {
-				const response = await fetch('/api/web/v1/streams/runs/run_002', {
-					headers: { 'Last-Event-ID': 'evt_123' }
-				});
+		const stream = await page.evaluate(async () => {
+			const response = await fetch('/api/web/v1/streams/runs/run_002', {
+				headers: { 'Last-Event-ID': 'evt_123' }
+			});
 
-				const reader = response.body?.getReader();
-				let body = '';
+			const reader = response.body?.getReader();
+			let body = '';
 
-				if (reader) {
-					const decoder = new TextDecoder();
-					const firstChunk = await reader.read();
+			if (reader) {
+				const decoder = new TextDecoder();
+				const firstChunk = await reader.read();
 
-					if (!firstChunk.done && firstChunk.value) {
-						body = decoder.decode(firstChunk.value);
-					}
-
-					await reader.cancel();
+				if (!firstChunk.done && firstChunk.value) {
+					body = decoder.decode(firstChunk.value);
 				}
 
-				return {
-					status: response.status,
-					contentType: response.headers.get('content-type'),
-					body
-				};
-			});
+				await reader.cancel();
+			}
+
+			return {
+				status: response.status,
+				contentType: response.headers.get('content-type'),
+				body
+			};
+		});
 
 		expect(stream.status).toBe(200);
 		expect(stream.contentType).toContain('text/event-stream');

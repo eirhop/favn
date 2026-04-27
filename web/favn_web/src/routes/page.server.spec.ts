@@ -4,8 +4,12 @@ import { orchestratorListRuns } from '$lib/server/orchestrator';
 import { clearWebSessionCookie, type WebSession } from '$lib/server/session';
 
 vi.mock('$lib/server/orchestrator', () => ({
-	orchestratorListRuns: vi.fn()
+	orchestratorListRuns: vi.fn(),
+	orchestratorGetActiveManifest: vi.fn(),
+	orchestratorListSchedules: vi.fn()
 }));
+
+const orchestrator = await import('$lib/server/orchestrator');
 
 vi.mock('$lib/server/session', () => ({
 	clearWebSessionCookie: vi.fn()
@@ -22,6 +26,18 @@ const authSession: WebSession = {
 describe('home page server load', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(orchestrator.orchestratorGetActiveManifest).mockResolvedValue(
+			new Response(JSON.stringify({ data: { manifest_version_id: 'manifest-v1' } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+		vi.mocked(orchestrator.orchestratorListSchedules).mockResolvedValue(
+			new Response(JSON.stringify({ data: { items: [] } }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
 	});
 
 	it('redirects to login when unauthenticated', async () => {
@@ -54,7 +70,11 @@ describe('home page server load', () => {
 			new Response(
 				JSON.stringify({
 					data: {
-						items: [{ id: 'run-1', status: 'completed' }, { run_id: 'run-2', status: '' }, 42]
+						items: [
+							{ id: 'run-1', status: 'completed', target: { type: 'asset', id: 'asset.orders' } },
+							{ run_id: 'run-2', status: '' },
+							42
+						]
 					}
 				}),
 				{ status: 200, headers: { 'content-type': 'application/json' } }
@@ -69,10 +89,30 @@ describe('home page server load', () => {
 		expect(result).toEqual({
 			session: authSession,
 			runs: [
-				{ id: 'run-1', status: 'completed' },
-				{ id: 'run-2', status: null },
-				{ id: 'run-3', status: null }
-			]
+				{ id: 'run-1', status: 'completed', target: 'asset:asset.orders' },
+				{ id: 'run-2', status: null, target: null },
+				{ id: 'run-3', status: null, target: null }
+			],
+			activeManifestVersionId: 'manifest-v1',
+			schedules: [],
+			orchestratorWarning: null
+		});
+	});
+
+	it('keeps web-local admin session when orchestrator does not know the local session', async () => {
+		const localAdminSession = { ...authSession, provider: 'web_local_admin' };
+		vi.mocked(orchestratorListRuns).mockResolvedValue(new Response(null, { status: 401 }));
+
+		const result = await load({
+			locals: { session: localAdminSession },
+			cookies: {}
+		} as never);
+
+		expect(clearWebSessionCookie).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			session: localAdminSession,
+			runs: [],
+			orchestratorWarning: expect.stringContaining('web-local admin')
 		});
 	});
 });

@@ -209,6 +209,9 @@ Notes:
   - `apps/favn_orchestrator/test/api/router_test.exs` now also covers schedule list/detail reads, command/authz paths, run-scoped SSE replay, and actor admin read/management authz cases
   - `apps/favn_orchestrator/test/http_contract/schema_test.exs` for orchestrator-owned machine-readable schema lock coverage
 - Initial Phase 8 `favn_web` auth/session E2E coverage now includes:
+  - `web/favn_web/src/routes/login/page.server.spec.ts` for login action behavior including the web-local admin fallback
+  - `web/favn_web/src/routes/page.server.spec.ts` for protected dashboard load behavior and local-admin orchestrator-warning behavior
+  - `web/favn_web/src/lib/components/favn/*.stories.svelte` for component-first dashboard and login panel coverage in Storybook
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`
   - `web/favn_web/tests/e2e/mock-orchestrator-server.mjs` (deterministic local orchestrator mock used during Playwright runs)
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` now also covers thin operator smoke over `/api/web/v1/**` (runs/manifests/schedules commands + run stream relay validation)

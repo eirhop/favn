@@ -6,6 +6,12 @@ defmodule Favn.Dev.RuntimeLaunch do
   alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.Paths
 
+  @web_passthrough_env ~w(
+    FAVN_WEB_ADMIN_USERNAME
+    FAVN_WEB_ADMIN_PASSWORD
+    FAVN_WEB_ADMIN_SESSION_TTL_SECONDS
+  )
+
   @spec runner_spec(map(), keyword(), map(), map()) :: map()
   def runner_spec(runtime, opts, node_names, secrets)
       when is_map(runtime) and is_list(opts) and is_map(node_names) and is_map(secrets) do
@@ -182,12 +188,86 @@ defmodule Favn.Dev.RuntimeLaunch do
       args: [vite, "preview", "--host", "127.0.0.1", "--port", Integer.to_string(config.web_port)],
       cwd: runtime["web_root"],
       log_path: Paths.web_log_path(Paths.root_dir(opts)),
-      env: %{
-        "FAVN_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
-        "FAVN_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
-        "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"]
-      }
+      env:
+        opts
+        |> web_local_env()
+        |> Map.merge(%{
+          "FAVN_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
+          "FAVN_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
+          "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"]
+        })
     }
+  end
+
+  defp web_local_env(opts) do
+    opts
+    |> Paths.root_dir()
+    |> Path.join(".env")
+    |> read_dotenv()
+    |> Map.merge(system_web_env())
+    |> Map.take(@web_passthrough_env)
+  end
+
+  defp system_web_env do
+    @web_passthrough_env
+    |> Enum.flat_map(fn key ->
+      case System.get_env(key) do
+        value when is_binary(value) and value != "" -> [{key, value}]
+        _missing_or_empty -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp read_dotenv(path) do
+    case File.read(path) do
+      {:ok, contents} -> parse_dotenv(contents)
+      {:error, _reason} -> %{}
+    end
+  end
+
+  defp parse_dotenv(contents) when is_binary(contents) do
+    contents
+    |> String.split(["\r\n", "\n"], trim: true)
+    |> Enum.reduce(%{}, fn line, acc ->
+      case parse_dotenv_line(line) do
+        {key, value} -> Map.put(acc, key, value)
+        :skip -> acc
+      end
+    end)
+  end
+
+  defp parse_dotenv_line(line) do
+    line = String.trim(line)
+
+    cond do
+      line == "" or String.starts_with?(line, "#") ->
+        :skip
+
+      String.starts_with?(line, "export ") ->
+        line |> String.replace_prefix("export ", "") |> parse_dotenv_line()
+
+      true ->
+        case String.split(line, "=", parts: 2) do
+          [key, value] -> {String.trim(key), unquote_dotenv_value(value)}
+          _other -> :skip
+        end
+    end
+  end
+
+  defp unquote_dotenv_value(value) do
+    value = String.trim(value)
+
+    cond do
+      String.starts_with?(value, "\"") and String.ends_with?(value, "\"") ->
+        value |> String.trim_leading("\"") |> String.trim_trailing("\"")
+
+      String.starts_with?(value, "'") and String.ends_with?(value, "'") ->
+        value |> String.trim_leading("'") |> String.trim_trailing("'")
+
+      true ->
+        value
+    end
   end
 
   defp runtime_env do

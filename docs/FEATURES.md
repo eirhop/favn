@@ -103,7 +103,7 @@ Implemented closeout outcomes:
 
 ### Use the web prototype
 
-- A separate SvelteKit web/BFF workspace is implemented under `web/favn_web`. It handles signed cookie sessions, login/logout, protected pages, and server-side relays to the private orchestrator API. State: `needs hardening`. Refs: `web/favn_web/src/hooks.server.ts`, `web/favn_web/src/lib/server/session.ts`, `web/favn_web/src/lib/server/orchestrator.ts`.
+- A separate SvelteKit web/BFF workspace is implemented under `web/favn_web`. It handles signed cookie sessions, login/logout, protected pages, server-side relays to the private orchestrator API, and a prototype web-local admin fallback configured through `FAVN_WEB_ADMIN_USERNAME` and `FAVN_WEB_ADMIN_PASSWORD` for direct local runs. State: `needs hardening`. Refs: `web/favn_web/src/hooks.server.ts`, `web/favn_web/src/lib/server/session.ts`, `web/favn_web/src/lib/server/orchestrator.ts`, `web/favn_web/src/lib/server/local_admin.ts`.
 - Web BFF endpoints exist for runs, manifests, schedules, and run-stream relays. State: `prototype`. Refs: `web/favn_web/src/routes/api/web/v1/**`, `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`.
 - End-to-end browser tests cover login, logout, unauthorized redirects, and basic runs, manifests, schedules, and run-stream relay behavior. State: `solid but still private-dev` as test coverage, but it covers a thin prototype rather than a mature product UI. Refs: `web/favn_web/tests/e2e/auth-session-runs.e2e.ts`.
 

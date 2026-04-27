@@ -2,6 +2,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { orchestratorLoginPassword } from '$lib/server/orchestrator';
 import { setWebSessionCookie, webSessionFromLoginPayload } from '$lib/server/session';
+import { localAdminConfigured, localAdminLogin } from '$lib/server/local_admin';
 
 async function tryReadJson(response: Response): Promise<unknown> {
 	try {
@@ -28,6 +29,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.session) {
 		throw redirect(303, '/');
 	}
+
+	return {
+		localAdminConfigured: localAdminConfigured()
+	};
 };
 
 export const actions: Actions = {
@@ -41,6 +46,13 @@ export const actions: Actions = {
 				message: 'Username and password are required',
 				username
 			});
+		}
+
+		const localAdminSession = localAdminLogin(username, password);
+		if (localAdminSession) {
+			setWebSessionCookie(cookies, localAdminSession);
+			locals.session = localAdminSession;
+			throw redirect(303, '/');
 		}
 
 		const response = await orchestratorLoginPassword({ username, password });

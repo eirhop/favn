@@ -45,6 +45,37 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert "preview" in web.args
   end
 
+  test "web spec carries local admin credentials from consumer dotenv" do
+    root_dir = Path.join(System.tmp_dir!(), "favn_web_env_#{System.unique_integer([:positive])}")
+
+    on_exit(fn ->
+      File.rm_rf(root_dir)
+    end)
+
+    assert :ok = File.mkdir_p(root_dir)
+
+    assert :ok =
+             File.write(Path.join(root_dir, ".env"), """
+             FAVN_WEB_ADMIN_USERNAME=admin
+             FAVN_WEB_ADMIN_PASSWORD="admin-password"
+             FAVN_WEB_ADMIN_SESSION_TTL_SECONDS=60
+             IGNORED_ENV=ignored
+             """)
+
+    runtime = %{
+      "web_root" => Path.join(root_dir, "web/favn_web")
+    }
+
+    config = Config.resolve([])
+    secrets = %{"service_token" => "token", "web_session_secret" => "secret"}
+    web = RuntimeLaunch.web_spec(runtime, config, [root_dir: root_dir], secrets)
+
+    assert web.env["FAVN_WEB_ADMIN_USERNAME"] == "admin"
+    assert web.env["FAVN_WEB_ADMIN_PASSWORD"] == "admin-password"
+    assert web.env["FAVN_WEB_ADMIN_SESSION_TTL_SECONDS"] == "60"
+    refute Map.has_key?(web.env, "IGNORED_ENV")
+  end
+
   test "orchestrator spec handles memory storage explicitly" do
     runtime = %{
       "orchestrator_root" => "/tmp/favn_runtime"

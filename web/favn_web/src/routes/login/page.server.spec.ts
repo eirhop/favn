@@ -35,6 +35,8 @@ const baseSession: WebSession = {
 describe('login page actions', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		delete process.env.FAVN_WEB_ADMIN_USERNAME;
+		delete process.env.FAVN_WEB_ADMIN_PASSWORD;
 	});
 
 	it('returns validation failure when username or password is missing', async () => {
@@ -106,5 +108,33 @@ describe('login page actions', () => {
 		});
 		expect(setWebSessionCookie).toHaveBeenCalledWith(cookies, baseSession);
 		expect(locals.session).toEqual(baseSession);
+	});
+
+	it('sets a local admin session from .env credentials without calling orchestrator', async () => {
+		process.env.FAVN_WEB_ADMIN_USERNAME = 'admin';
+		process.env.FAVN_WEB_ADMIN_PASSWORD = 'admin-password';
+
+		const cookies = {};
+		const locals = { session: null as WebSession | null };
+
+		await expect(
+			actions.default({
+				request: createRequest({ username: 'admin', password: 'admin-password' }),
+				cookies,
+				locals
+			} as never)
+		).rejects.toMatchObject({ status: 303, location: '/' });
+
+		expect(orchestratorLoginPassword).not.toHaveBeenCalled();
+		expect(setWebSessionCookie).toHaveBeenCalledWith(
+			cookies,
+			expect.objectContaining({
+				actor_id: 'admin:admin',
+				provider: 'web_local_admin'
+			})
+		);
+		expect(locals.session).toEqual(
+			expect.objectContaining({ actor_id: 'admin:admin', provider: 'web_local_admin' })
+		);
 	});
 });
