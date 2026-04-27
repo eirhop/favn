@@ -30,8 +30,8 @@ defmodule Favn.Dev.Build.Runner do
          dist_dir <- Paths.dist_runner_dir(root_dir, build_id),
          :ok <- File.mkdir_p(build_dir),
          :ok <- File.mkdir_p(dist_dir),
-         modules <- user_modules(version.manifest),
-         copied_modules <- copy_module_beams(modules, Path.join(dist_dir, "ebin")),
+          modules <- user_modules(version.manifest),
+          copied_modules <- copy_user_beams(modules, Path.join(dist_dir, "ebin")),
          plugins <- selected_plugins(root_dir),
          :ok <- write_manifest_cache(version, serialized_manifest, opts),
          build_json <- build_json(build_id, version, modules, plugins, copied_modules, opts),
@@ -108,11 +108,45 @@ defmodule Favn.Dev.Build.Runner do
     |> Enum.reverse()
   end
 
+  defp copy_user_beams(modules, target_dir) do
+    :ok = File.mkdir_p(target_dir)
+
+    (copy_project_app_beams(target_dir) ++ copy_module_beams(modules, target_dir))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp copy_project_app_beams(target_dir) do
+    app = Mix.Project.config()[:app]
+
+    if is_atom(app) do
+      Mix.Project.build_path()
+      |> Path.join("lib/#{app}/ebin/*.beam")
+      |> Path.wildcard()
+      |> Enum.reduce([], fn beam_path, copied ->
+        destination = Path.join(target_dir, Path.basename(beam_path))
+
+        case File.cp(beam_path, destination) do
+          :ok -> [beam_module_name(beam_path) | copied]
+          {:error, _reason} -> copied
+        end
+      end)
+    else
+      []
+    end
+  end
+
+  defp beam_module_name(beam_path) do
+    beam_path
+    |> Path.basename(".beam")
+  end
+
   defp selected_plugins(root_dir) do
     configured =
       Application.get_env(:favn, :runner_plugins, [])
       |> List.wrap()
-      |> Enum.map(&to_string/1)
+      |> Enum.map(&plugin_identifier/1)
+      |> Enum.reject(&is_nil/1)
 
     known =
       ["favn_duckdb"]
@@ -124,6 +158,13 @@ defmodule Favn.Dev.Build.Runner do
     |> Enum.uniq()
     |> Enum.sort()
   end
+
+  defp plugin_identifier({module, opts}) when is_atom(module) and is_list(opts),
+    do: Atom.to_string(module)
+
+  defp plugin_identifier(module) when is_atom(module), do: Atom.to_string(module)
+  defp plugin_identifier(app_name) when is_binary(app_name), do: app_name
+  defp plugin_identifier(_other), do: nil
 
   defp write_manifest_cache(version, serialized_manifest, opts) do
     root_dir = Paths.root_dir(opts)

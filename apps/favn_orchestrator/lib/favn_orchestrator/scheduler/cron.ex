@@ -3,8 +3,8 @@ defmodule FavnOrchestrator.Scheduler.Cron do
 
   @spec latest_due(String.t(), String.t(), DateTime.t()) :: DateTime.t() | nil
   def latest_due(cron, timezone, %DateTime{} = now_utc) do
-    now = floor_to_minute(DateTime.shift_zone!(now_utc, timezone))
-    find_latest(cron, now, 525_600) |> maybe_to_utc()
+    now = DateTime.shift_zone!(now_utc, timezone) |> floor_for_cron(cron)
+    find_latest(cron, now, max_lookback(cron), step_seconds(cron)) |> maybe_to_utc()
   end
 
   @spec occurrences_between(String.t(), String.t(), DateTime.t(), DateTime.t()) :: [DateTime.t()]
@@ -16,11 +16,12 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       ) do
     from = DateTime.shift_zone!(last_due_utc, timezone)
     to = DateTime.shift_zone!(latest_due_utc, timezone)
-    cursor = DateTime.add(floor_to_minute(from), 60, :second)
+    step = step_seconds(cron)
+    cursor = DateTime.add(floor_for_cron(from, cron), step, :second)
 
     Stream.unfold(cursor, fn current ->
       if DateTime.compare(current, to) in [:lt, :eq] do
-        {current, DateTime.add(current, 60, :second)}
+        {current, DateTime.add(current, step, :second)}
       else
         nil
       end
@@ -39,8 +40,9 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       ) do
     from = DateTime.shift_zone!(last_due_utc, timezone)
     to = DateTime.shift_zone!(latest_due_utc, timezone)
-    cursor = DateTime.add(floor_to_minute(from), 60, :second)
-    find_forward(cron, cursor, to)
+    step = step_seconds(cron)
+    cursor = DateTime.add(floor_for_cron(from, cron), step, :second)
+    find_forward(cron, cursor, to, step)
   end
 
   @spec last_occurrence_between(String.t(), String.t(), DateTime.t(), DateTime.t()) ::
@@ -53,8 +55,9 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       ) do
     from = DateTime.shift_zone!(last_due_utc, timezone)
     to = DateTime.shift_zone!(latest_due_utc, timezone)
-    cursor = floor_to_minute(to)
-    find_backward_after(cron, cursor, from)
+    step = step_seconds(cron)
+    cursor = floor_for_cron(to, cron)
+    find_backward_after(cron, cursor, from, step)
   end
 
   @spec matches?(String.t(), DateTime.t()) :: boolean()
@@ -65,6 +68,16 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         weekday_match = match_weekday?(weekday, dt)
 
         match_field?(minute, dt.minute) and
+          match_field?(hour, dt.hour) and
+          match_field?(month, dt.month) and
+          match_day_constraints?(day, day_match, weekday, weekday_match)
+
+      [second, minute, hour, day, month, weekday] ->
+        day_match = match_field?(day, dt.day)
+        weekday_match = match_weekday?(weekday, dt)
+
+        match_field?(second, dt.second) and
+          match_field?(minute, dt.minute) and
           match_field?(hour, dt.hour) and
           match_field?(month, dt.month) and
           match_day_constraints?(day, day_match, weekday, weekday_match)
@@ -161,21 +174,27 @@ defmodule FavnOrchestrator.Scheduler.Cron do
     end
   end
 
-  defp floor_to_minute(%DateTime{} = dt), do: %{dt | second: 0, microsecond: {0, 0}}
-  defp maybe_to_utc(nil), do: nil
-  defp maybe_to_utc(dt), do: DateTime.shift_zone!(dt, "Etc/UTC")
-
-  defp find_latest(_cron, _cursor, 0), do: nil
-
-  defp find_latest(cron, cursor, remaining) do
-    if matches?(cron, cursor) do
-      cursor
-    else
-      find_latest(cron, DateTime.add(cursor, -60, :second), remaining - 1)
+  defp floor_for_cron(%DateTime{} = dt, cron) do
+    case cron_fields(cron) do
+      6 -> %{dt | microsecond: {0, 0}}
+      _ -> %{dt | second: 0, microsecond: {0, 0}}
     end
   end
 
-  defp find_forward(cron, cursor, to) do
+  defp maybe_to_utc(nil), do: nil
+  defp maybe_to_utc(dt), do: DateTime.shift_zone!(dt, "Etc/UTC")
+
+  defp find_latest(_cron, _cursor, 0, _step), do: nil
+
+  defp find_latest(cron, cursor, remaining, step) do
+    if matches?(cron, cursor) do
+      cursor
+    else
+      find_latest(cron, DateTime.add(cursor, -step, :second), remaining - 1, step)
+    end
+  end
+
+  defp find_forward(cron, cursor, to, step) do
     case DateTime.compare(cursor, to) do
       :gt ->
         nil
@@ -183,19 +202,25 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       _ ->
         if matches?(cron, cursor),
           do: DateTime.shift_zone!(cursor, "Etc/UTC"),
-          else: find_forward(cron, DateTime.add(cursor, 60, :second), to)
+          else: find_forward(cron, DateTime.add(cursor, step, :second), to, step)
     end
   end
 
-  defp find_backward_after(cron, cursor, from) do
+  defp find_backward_after(cron, cursor, from, step) do
     case DateTime.compare(cursor, from) do
       :gt ->
         if matches?(cron, cursor),
           do: DateTime.shift_zone!(cursor, "Etc/UTC"),
-          else: find_backward_after(cron, DateTime.add(cursor, -60, :second), from)
+          else: find_backward_after(cron, DateTime.add(cursor, -step, :second), from, step)
 
       _ ->
         nil
     end
   end
+
+  defp step_seconds(cron), do: if(cron_fields(cron) == 6, do: 1, else: 60)
+
+  defp max_lookback(cron), do: if(cron_fields(cron) == 6, do: 86_400, else: 525_600)
+
+  defp cron_fields(cron), do: cron |> String.split(~r/\s+/, trim: true) |> length()
 end

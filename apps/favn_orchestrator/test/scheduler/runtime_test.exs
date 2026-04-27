@@ -152,6 +152,32 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert %DateTime{} = stored_state.last_submitted_due_at
   end
 
+  test "tick supports six-field cron schedules with seconds" do
+    version = scheduler_manifest_version("mv_scheduler_seconds", cron: "*/15 * * * * *")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_runtime(name)
+
+    [entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -30, :second),
+      version: 1
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+    assert :ok = Runtime.tick(name)
+
+    assert {:ok, run} = await_run_submission(version.manifest_version_id)
+    assert run.trigger[:kind] == :schedule
+  end
+
   test "overlap allow submits a new run even when one is in flight" do
     version = scheduler_manifest_version("mv_scheduler_overlap_allow", overlap: :allow)
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -396,7 +422,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
           module: MyApp.Schedules,
           name: :daily,
           ref: {MyApp.Schedules, :daily},
-          cron: "* * * * *",
+          cron: Keyword.get(opts, :cron, "* * * * *"),
           timezone: "Etc/UTC",
           missed: Keyword.get(opts, :missed, :one),
           overlap: Keyword.get(opts, :overlap, :forbid),

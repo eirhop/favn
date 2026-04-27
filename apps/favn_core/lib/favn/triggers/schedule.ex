@@ -3,6 +3,10 @@ defmodule Favn.Triggers.Schedule do
   Normalized schedule trigger definition used by pipeline resolution/runtime context.
 
   Cron is currently the only supported trigger kind.
+
+  Favn accepts both standard 5-field cron expressions and 6-field cron
+  expressions with a leading seconds field. Second-level schedules are part of
+  the normal schedule contract and are not limited to local development.
   """
 
   @type kind :: :cron
@@ -182,6 +186,14 @@ defmodule Favn.Triggers.Schedule do
     case String.split(value, ~r/\s+/, trim: true) do
       [minute, hour, day, month, weekday] ->
         cron_field_valid?(minute, 0, 59) and
+          cron_field_valid?(hour, 0, 23) and
+          cron_field_valid?(day, 1, 31) and
+          cron_field_valid?(month, 1, 12) and
+          cron_field_valid?(weekday, 0, 7)
+
+      [second, minute, hour, day, month, weekday] ->
+        cron_field_valid?(second, 0, 59) and
+          cron_field_valid?(minute, 0, 59) and
           cron_field_valid?(hour, 0, 23) and
           cron_field_valid?(day, 1, 31) and
           cron_field_valid?(month, 1, 12) and

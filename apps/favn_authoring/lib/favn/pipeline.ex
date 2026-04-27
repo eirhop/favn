@@ -43,7 +43,8 @@ defmodule Favn.Pipeline do
 
   Inline `schedule` supports:
 
-  - `cron`: required 5-field cron expression
+  - `cron`: required 5-field cron expression, or a 6-field expression with a
+  leading seconds field
   - `timezone`: optional IANA timezone string
   - `missed`: `:skip | :one | :all`, defaults to `:skip`
   - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
@@ -258,7 +259,8 @@ defmodule Favn.Pipeline do
 
   Inline options:
 
-  - `cron` required
+  - `cron` required, using either a 5-field expression or a 6-field expression
+    with a leading seconds field
   - `timezone` optional
   - `missed` optional, defaults to `:skip`
   - `overlap` optional, defaults to `:forbid`

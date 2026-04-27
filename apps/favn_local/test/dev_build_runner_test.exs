@@ -85,6 +85,40 @@ defmodule Favn.Dev.Build.RunnerTest do
     assert File.exists?(cache_path)
   end
 
+  test "build_runner/1 records configured plugin tuple identifiers", %{root_dir: root_dir} do
+    assert {:ok, :installed} =
+             Dev.install(
+               root_dir: root_dir,
+               skip_web_install: true,
+               skip_tool_checks: true,
+               skip_runtime_deps_install: true
+             )
+
+    previous_plugins = Application.get_env(:favn, :runner_plugins)
+    Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :in_process}])
+
+    on_exit(fn ->
+      if is_nil(previous_plugins) do
+        Application.delete_env(:favn, :runner_plugins)
+      else
+        Application.put_env(:favn, :runner_plugins, previous_plugins)
+      end
+    end)
+
+    assert {:ok, result} =
+             Dev.build_runner(
+               root_dir: root_dir,
+               skip_compile: true,
+               skip_tool_checks: true,
+               skip_project_root_check: true
+             )
+
+    metadata_json_path = Path.join(result.dist_dir, "metadata.json")
+    assert {:ok, metadata_json} = File.read(metadata_json_path)
+    assert {:ok, %{"plugins" => plugins}} = JSON.decode(metadata_json)
+    assert "Elixir.FavnDuckdb" in plugins
+  end
+
   test "build_runner/1 requires install", %{root_dir: root_dir} do
     assert {:error, :install_required} =
              Dev.build_runner(

@@ -149,6 +149,48 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert before?(code, "Code.prepend_path", "Application.ensure_all_started(:favn_runner)")
   end
 
+  test "runner spec carries consumer favn runtime config before runner startup" do
+    runtime = %{
+      "runner_root" => "/tmp/favn_runtime"
+    }
+
+    node_names = %{
+      runner_short: "favn_runner_test"
+    }
+
+    secrets = %{
+      "rpc_cookie" => "cookie"
+    }
+
+    previous_connection_modules = Application.get_env(:favn, :connection_modules)
+    previous_connections = Application.get_env(:favn, :connections)
+    previous_runner_plugins = Application.get_env(:favn, :runner_plugins)
+
+    Application.put_env(:favn, :connection_modules, [MyApp.Connections.Warehouse])
+    Application.put_env(:favn, :connections, warehouse: [database: "warehouse.duckdb"])
+    Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :in_process}])
+
+    on_exit(fn ->
+      restore_env(:connection_modules, previous_connection_modules)
+      restore_env(:connections, previous_connections)
+      restore_env(:runner_plugins, previous_runner_plugins)
+    end)
+
+    runner = RuntimeLaunch.runner_spec(runtime, [root_dir: "/tmp/consumer"], node_names, secrets)
+    code = eval_code!(runner)
+
+    decoded_config =
+      runner.env["FAVN_DEV_CONSUMER_FAVN_CONFIG"]
+      |> Base.decode64!()
+      |> :erlang.binary_to_term()
+
+    assert {:connection_modules, [MyApp.Connections.Warehouse]} in decoded_config
+    assert {:connections, [warehouse: [database: "/tmp/consumer/warehouse.duckdb"]]} in decoded_config
+    assert {:runner_plugins, [{FavnDuckdb, [execution_mode: :in_process]}]} in decoded_config
+    assert code =~ "FAVN_DEV_CONSUMER_FAVN_CONFIG"
+    assert before?(code, "Application.put_env(:favn, key, value)", "Application.ensure_all_started(:favn_runner)")
+  end
+
   defp eval_code!(%{args: args}) do
     args
     |> Enum.chunk_every(2, 1, :discard)
@@ -164,4 +206,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     match?({_, _}, earlier_index) and match?({_, _}, later_index) and elem(earlier_index, 0) < elem(later_index, 0)
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:favn, key)
+  defp restore_env(key, value), do: Application.put_env(:favn, key, value)
 end

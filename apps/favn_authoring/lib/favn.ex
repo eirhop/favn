@@ -25,7 +25,6 @@ defmodule FavnAuthoring do
   alias Favn.Manifest.Build
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Generator
-  alias Favn.Manifest.Identity
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
   alias Favn.Pipeline
@@ -181,7 +180,11 @@ defmodule FavnAuthoring do
   Computes the content hash for a canonical manifest payload.
   """
   @spec hash_manifest(map() | struct()) :: {:ok, String.t()} | {:error, term()}
-  def hash_manifest(manifest), do: Identity.hash_manifest(manifest)
+  def hash_manifest(manifest) do
+    with {:ok, version} <- Version.new(manifest) do
+      {:ok, version.content_hash}
+    end
+  end
 
   @doc """
   Validates manifest schema and runner contract compatibility.

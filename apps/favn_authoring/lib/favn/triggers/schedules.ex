@@ -23,7 +23,8 @@ defmodule Favn.Triggers.Schedules do
 
   `schedule/2` accepts:
 
-  - `cron`: required 5-field cron expression
+  - `cron`: required 5-field cron expression, or a 6-field expression with a
+  leading seconds field
   - `timezone`: optional IANA timezone string
   - `missed`: `:skip | :one | :all`, defaults to `:skip`
   - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
@@ -56,6 +57,9 @@ defmodule Favn.Triggers.Schedules do
         missed: :skip,
         overlap: :forbid,
         active: true
+
+  Cron expressions may use either the standard 5-field form or a 6-field form
+  with a leading seconds field for second-level schedules.
   """
   defmacro schedule(name, opts) do
     quote bind_quoted: [name: name, opts: opts] do
