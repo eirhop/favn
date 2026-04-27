@@ -34,14 +34,31 @@ defmodule Favn.SQL.ConcurrencyPolicy do
   end
 
   defp default_policy(%Resolved{adapter: adapter} = resolved) do
-    if function_exported?(adapter, :default_concurrency_policy, 1) do
-      case adapter.default_concurrency_policy(resolved) do
-        %__MODULE__{} = policy -> {:ok, policy}
-        other -> invalid_policy_error(resolved, other)
-      end
-    else
-      {:ok, unlimited(resolved)}
+    case Code.ensure_loaded(adapter) do
+      {:module, ^adapter} ->
+        if function_exported?(adapter, :default_concurrency_policy, 1) do
+          case adapter.default_concurrency_policy(resolved) do
+            %__MODULE__{} = policy -> {:ok, policy}
+            other -> invalid_policy_error(resolved, other)
+          end
+        else
+          {:ok, unlimited(resolved)}
+        end
+
+      {:error, reason} ->
+        adapter_load_error(resolved, adapter, reason)
     end
+  end
+
+  defp adapter_load_error(resolved, adapter, reason) do
+    {:error,
+     %Error{
+       type: :invalid_config,
+       message: "SQL adapter could not be loaded for concurrency policy lookup",
+       connection: resolved.name,
+       operation: :connect,
+       details: %{adapter: adapter, reason: reason}
+     }}
   end
 
   defp configured_limit(%Resolved{config: config} = resolved) when is_map(config) do

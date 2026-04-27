@@ -182,10 +182,21 @@ defmodule Favn.SQL.Admission.Limiter do
     if Process.whereis(__MODULE__) do
       :ok
     else
-      case GenServer.start(__MODULE__, %{}, name: __MODULE__) do
-        {:ok, _pid} -> :ok
-        {:error, {:already_started, _pid}} -> :ok
+      case Application.ensure_all_started(:favn_sql_runtime) do
+        {:ok, _apps} -> ensure_started_after_application_start()
+        {:error, _reason} -> start_unlinked()
       end
+    end
+  end
+
+  defp ensure_started_after_application_start do
+    if Process.whereis(__MODULE__), do: :ok, else: start_unlinked()
+  end
+
+  defp start_unlinked do
+    case GenServer.start(__MODULE__, %{}, name: __MODULE__) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
     end
   end
 end
