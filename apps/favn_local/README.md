@@ -147,6 +147,8 @@ and writes runtime state to `.favn/runtime.json`.
 the private orchestrator HTTP boundary. It logs in with the generated local
 operator credentials from `.favn/secrets.json`, resolves the active manifest's
 pipeline target ID, submits the run, and waits for terminal status by default.
+The local tooling HTTP client is intentionally limited to plain HTTP loopback
+URLs for Favn-managed local services.
 
 Before startup, `favn_local` force-compiles the installed runtime workspace
 under `.favn/install/runtime_root` so orchestrator/runner startup does not boot

@@ -254,6 +254,10 @@ workspace before startup so live runner/orchestrator processes do not boot stale
 internal runtime beams. `--root-dir` remains an install/runtime-source override
 for split-root workflows.
 
+Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
+services. They intentionally do not support remote or HTTPS URLs in the local
+developer loop.
+
 `mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
 currently running local stack. It uses the project-local service token and local
 operator credentials generated under `.favn/secrets.json`, so tutorial and local

@@ -27,6 +27,7 @@ defmodule Favn.Dev.Stack do
   def start_foreground(opts \\ []) when is_list(opts) do
     with {:ok, startup} <- prepare_startup(opts),
          :ok <- compile_runtime_apps(startup.runtime, opts),
+         :ok <- compile_project(opts),
          {:ok, startup} <- initialize_stack(startup, opts) do
       case bootstrap_manifest(startup, opts) do
         :ok ->
@@ -298,6 +299,20 @@ defmodule Favn.Dev.Stack do
     end
   end
 
+  defp compile_project(opts) do
+    if Keyword.get(opts, :skip_bootstrap, false) do
+      :ok
+    else
+      Mix.Task.reenable("compile")
+
+      case Mix.Task.run("compile", ["--force"]) do
+        _ -> :ok
+      end
+    end
+  rescue
+    error -> {:error, {:compile_failed, error}}
+  end
+
   defp build_node_names(secrets, opts) when is_map(secrets) do
     root_dir = Paths.root_dir(opts)
     suffix = Integer.to_string(:erlang.phash2(root_dir, 1_000_000))
@@ -470,9 +485,7 @@ defmodule Favn.Dev.Stack do
   defp do_bootstrap_manifest(startup, opts) do
     %{config: config, secrets: secrets, node_names: node_names} = startup
 
-    with :ok <- Mix.Task.reenable("compile"),
-         _ <- Mix.Task.run("compile", ["--force"]),
-         {:ok, build} <- FavnAuthoring.build_manifest(),
+    with {:ok, build} <- FavnAuthoring.build_manifest(),
          {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
          :ok <-
            RunnerControl.register_manifest(version,

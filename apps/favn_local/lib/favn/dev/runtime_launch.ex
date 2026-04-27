@@ -9,7 +9,19 @@ defmodule Favn.Dev.RuntimeLaunch do
   def runner_spec(runtime, opts, node_names, secrets)
       when is_map(runtime) and is_list(opts) and is_map(node_names) and is_map(secrets) do
     elixir = System.find_executable("elixir") || "elixir"
-    code = "{:ok, _} = Application.ensure_all_started(:favn_runner); Process.sleep(:infinity)"
+
+    code =
+      """
+      delimiter = if match?({:win32, _}, :os.type()), do: ";", else: ":"
+
+      System.get_env("FAVN_DEV_CONSUMER_EBIN_PATHS", "")
+      |> String.split(delimiter, trim: true)
+      |> Enum.each(&Code.prepend_path/1)
+
+      {:ok, _} = Application.ensure_all_started(:favn_runner)
+      Process.sleep(:infinity)
+      """
+      |> String.trim()
 
     base_args = [
       "--sname",
@@ -18,14 +30,11 @@ defmodule Favn.Dev.RuntimeLaunch do
       secrets["rpc_cookie"]
     ]
 
-    code_path_args =
-      opts
-      |> ConsumerCodePath.ebin_paths()
-      |> Enum.flat_map(fn path -> ["-pa", path] end)
+    consumer_ebin_paths = ConsumerCodePath.ebin_paths(opts)
 
     args =
       base_args ++
-        code_path_args ++ ["-S", "mix", "run", "--no-compile", "--no-start", "--eval", code]
+        ["-S", "mix", "run", "--no-compile", "--no-start", "--eval", code]
 
     %{
       name: "runner",
@@ -33,7 +42,12 @@ defmodule Favn.Dev.RuntimeLaunch do
       args: args,
       cwd: runtime["runner_root"],
       log_path: Paths.runner_log_path(Paths.root_dir(opts)),
-      env: runtime_env()
+      env:
+        Map.put(
+          runtime_env(),
+          "FAVN_DEV_CONSUMER_EBIN_PATHS",
+          Enum.join(consumer_ebin_paths, path_separator())
+        )
     }
   end
 
@@ -169,5 +183,12 @@ defmodule Favn.Dev.RuntimeLaunch do
 
   defp runtime_env do
     %{"MIX_ENV" => "dev"}
+  end
+
+  defp path_separator do
+    case :os.type() do
+      {:win32, _name} -> ";"
+      _other -> ":"
+    end
   end
 end

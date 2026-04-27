@@ -16,6 +16,22 @@ defmodule Favn.Dev.LocalHttpClientTest do
              LocalHttpClient.request(:get, base_url)
   end
 
+  test "sends JSON POST requests to loopback services" do
+    {:ok, base_url, _server} = start_capturing_server(~s({"data":{"created":true}}), 201, self())
+
+    assert {:ok, %{"data" => %{"created" => true}}} =
+             LocalHttpClient.request(:post, base_url <> "/runs?dry_run=false", [{"authorization", "Bearer token"}],
+               ~s({"ok":true})
+             )
+
+    assert_receive {:request, request}
+    assert request =~ "POST /runs?dry_run=false HTTP/1.1\r\n"
+    assert request =~ "authorization: Bearer token\r\n"
+    assert request =~ "content-type: application/json\r\n"
+    assert request =~ "content-length: 11\r\n"
+    assert request =~ "\r\n\r\n{\"ok\":true}"
+  end
+
   test "normalizes invalid JSON responses" do
     {:ok, base_url, _server} = start_server("not json", 200)
 
@@ -30,14 +46,29 @@ defmodule Favn.Dev.LocalHttpClientTest do
              )
   end
 
+  test "rejects non-loopback HTTP URLs before connecting" do
+    assert {:error, {:unsupported_url, :non_loopback_host}} =
+             LocalHttpClient.request(:get, "http://example.com/api")
+  end
+
+  test "rejects HTTPS URLs" do
+    assert {:error, {:unsupported_url, {:scheme, "https"}}} =
+             LocalHttpClient.request(:get, "https://127.0.0.1/api")
+  end
+
   defp start_server(body, status) when is_binary(body) and is_integer(status) do
+    start_capturing_server(body, status, nil)
+  end
+
+  defp start_capturing_server(body, status, recipient) when is_binary(body) and is_integer(status) do
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, {_addr, port}} = :inet.sockname(listen_socket)
 
     server =
       spawn_link(fn ->
         {:ok, socket} = :gen_tcp.accept(listen_socket)
-        {:ok, _request} = :gen_tcp.recv(socket, 0, 2_000)
+        {:ok, request} = :gen_tcp.recv(socket, 0, 2_000)
+        if recipient, do: send(recipient, {:request, request})
         :ok = :gen_tcp.send(socket, response(status, body))
         :ok = :gen_tcp.close(socket)
         :ok = :gen_tcp.close(listen_socket)

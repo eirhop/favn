@@ -109,6 +109,46 @@ defmodule Favn.Dev.RuntimeLaunchTest do
            ]
   end
 
+  test "runner spec prepends consumer code paths after mix initializes" do
+    runtime = %{
+      "runner_root" => "/tmp/favn_runtime"
+    }
+
+    node_names = %{
+      runner_short: "favn_runner_test"
+    }
+
+    secrets = %{
+      "rpc_cookie" => "cookie"
+    }
+
+    build_path =
+      Path.join(
+        System.tmp_dir!(),
+        "favn_runner_consumer_path_#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn ->
+      File.rm_rf(build_path)
+    end)
+
+    runtime_owned_path = Path.join(build_path, "lib/favn_runner/ebin")
+    consumer_path = Path.join(build_path, "lib/my_app/ebin")
+
+    assert :ok = File.mkdir_p(runtime_owned_path)
+    assert :ok = File.mkdir_p(consumer_path)
+
+    runner = RuntimeLaunch.runner_spec(runtime, [build_path: build_path], node_names, secrets)
+    code = eval_code!(runner)
+
+    refute "-pa" in runner.args
+    assert runner.env["FAVN_DEV_CONSUMER_EBIN_PATHS"] == consumer_path
+    refute runner.env["FAVN_DEV_CONSUMER_EBIN_PATHS"] == runtime_owned_path
+    assert code =~ "FAVN_DEV_CONSUMER_EBIN_PATHS"
+    assert code =~ "Code.prepend_path"
+    assert before?(code, "Code.prepend_path", "Application.ensure_all_started(:favn_runner)")
+  end
+
   defp eval_code!(%{args: args}) do
     args
     |> Enum.chunk_every(2, 1, :discard)
