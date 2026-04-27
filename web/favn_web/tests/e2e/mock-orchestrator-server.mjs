@@ -496,7 +496,7 @@ function handleGetRun(request, response, runId) {
 		return;
 	}
 
-	sendJson(response, 200, { data: run });
+	sendJson(response, 200, { data: { run } });
 }
 
 function handleSubmitRun(request, response) {

@@ -178,8 +178,10 @@ test.describe('auth/session/runs flow', () => {
 
 		const runDetail = await pageGetJson(page, '/api/web/v1/runs/run_001');
 		expect(runDetail.status).toBe(200);
-		expect(runDetail.body).toEqual({
-			data: expect.objectContaining({ id: 'run_001', status: 'succeeded' })
+		expect(runDetail.body).toMatchObject({
+			data: {
+				run: expect.objectContaining({ id: 'run_001', status: 'succeeded' })
+			}
 		});
 
 		const submitRun = await pagePostJson(page, '/api/web/v1/runs', {

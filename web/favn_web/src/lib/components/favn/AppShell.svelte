@@ -14,9 +14,9 @@
 
 	const navItems = [
 		{ label: 'Runs', href: '/runs', complete: true },
-		{ label: 'Manifests', href: '/runs', complete: false },
-		{ label: 'Schedules', href: '/runs', complete: false },
-		{ label: 'Settings', href: '/runs', complete: false }
+		{ label: 'Manifests', href: null, complete: false },
+		{ label: 'Schedules', href: null, complete: false },
+		{ label: 'Settings', href: null, complete: false }
 	];
 
 	let currentPath = $derived(page.url.pathname);
@@ -30,22 +30,27 @@
 				<p class="text-xs text-slate-500">Local development</p>
 			</div>
 			<nav class="space-y-1 p-3">
-				{#each navItems as item (item.href)}
-					<a
-						href={resolve('/runs')}
+				{#each navItems as item (item.label)}
+					{@const active =
+						item.href !== null &&
+						(currentPath === item.href || currentPath.startsWith(`${item.href}/`))}
+					<svelte:element
+						this={item.href ? 'a' : 'span'}
+						href={item.href === '/runs' ? resolve('/runs') : undefined}
 						class={[
 							'flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium',
-							currentPath === item.href || currentPath.startsWith(`${item.href}/`)
+							active
 								? 'bg-slate-950 text-white'
-								: 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+								: item.href
+									? 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+									: 'cursor-not-allowed text-slate-400'
 						]}
-						aria-current={currentPath === item.href || currentPath.startsWith(`${item.href}/`)
-							? 'page'
-							: undefined}
+						aria-current={active ? 'page' : undefined}
+						aria-disabled={item.href ? undefined : 'true'}
 					>
 						<span>{item.label}</span>
 						{#if !item.complete}<span class="text-[10px] opacity-70">soon</span>{/if}
-					</a>
+					</svelte:element>
 				{/each}
 			</nav>
 		</aside>

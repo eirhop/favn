@@ -17,6 +17,12 @@ function dataPayload(payload: unknown): unknown {
 	return isRecord(payload) && 'data' in payload ? payload.data : payload;
 }
 
+function runDetailPayload(payload: unknown): unknown {
+	const value = dataPayload(payload);
+	if (isRecord(value) && isRecord(value.run)) return value.run;
+	return value;
+}
+
 function asString(value: unknown): string | null {
 	return typeof value === 'string' && value.length > 0 ? value : null;
 }
@@ -36,17 +42,28 @@ function asIntegerish(value: unknown): number | null {
 
 function normalizeStatus(value: unknown): RunStatus {
 	const status = asString(value)?.toLowerCase();
-	if (
-		status === 'pending' ||
-		status === 'queued' ||
-		status === 'running' ||
-		status === 'succeeded' ||
-		status === 'failed' ||
-		status === 'cancelled'
-	) {
-		return status;
+	switch (status) {
+		case 'ok':
+		case 'succeeded':
+		case 'success':
+			return 'succeeded';
+		case 'error':
+		case 'failed':
+		case 'timed_out':
+		case 'timeout':
+			return 'failed';
+		case 'retrying':
+		case 'running':
+			return 'running';
+		case 'cancelled':
+		case 'canceled':
+			return 'cancelled';
+		case 'pending':
+		case 'queued':
+			return status;
+		default:
+			return 'unknown';
 	}
-	return 'unknown';
 }
 
 function targetParts(value: unknown): { label: string; type: string } {
@@ -288,7 +305,7 @@ export function normalizeRunSummaries(payload: unknown): RunSummaryView[] {
 }
 
 export function normalizeRunDetail(payload: unknown, requestedRunId: string): RunDetailView {
-	const value = dataPayload(payload);
+	const value = runDetailPayload(payload);
 	const record = isRecord(value) ? value : {};
 	const target = targetParts(record.target);
 	const status = normalizeStatus(record.status);
