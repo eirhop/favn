@@ -518,6 +518,7 @@ function handleSubmitRun(request, response) {
 			}
 
 			const target = body.target;
+			const manifestSelection = body.manifest_selection;
 			if (
 				typeof target !== 'object' ||
 				target === null ||
@@ -531,6 +532,18 @@ function handleSubmitRun(request, response) {
 				return;
 			}
 
+			if (
+				typeof manifestSelection !== 'object' ||
+				manifestSelection === null ||
+				Array.isArray(manifestSelection) ||
+				manifestSelection.mode !== 'active'
+			) {
+				sendJson(response, 422, {
+					error: { message: 'Expected manifest_selection with mode active' }
+				});
+				return;
+			}
+
 			sendJson(response, 202, {
 				data: {
 					run_id: 'run_submitted_001',
@@ -538,7 +551,8 @@ function handleSubmitRun(request, response) {
 					target: {
 						type: target.type,
 						id: target.id
-					}
+					},
+					manifest_selection: manifestSelection
 				}
 			});
 		})

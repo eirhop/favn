@@ -36,10 +36,6 @@
 		if (value.length <= 18) return value;
 		return `${value.slice(0, 11)}…${value.slice(-4)}`;
 	}
-
-	function navHref(value: NavHref): string {
-		return value === '/assets' ? resolve('/assets') : resolve('/runs');
-	}
 </script>
 
 <div class="min-h-screen bg-slate-50 text-slate-950">
@@ -54,9 +50,22 @@
 					{@const active =
 						item.href !== null &&
 						(currentPath === item.href || currentPath.startsWith(`${item.href}/`))}
-					{#if item.href}
+					{#if item.href === '/assets'}
 						<a
-							href={navHref(item.href)}
+							href={resolve('/assets')}
+							class={[
+								'flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium',
+								active
+									? 'bg-slate-950 text-white shadow-sm [&_*]:text-white'
+									: 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+							]}
+							aria-current={active ? 'page' : undefined}
+						>
+							<span>{item.label}</span>
+						</a>
+					{:else if item.href === '/runs'}
+						<a
+							href={resolve('/runs')}
 							class={[
 								'flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium',
 								active
@@ -92,7 +101,11 @@
 							<span class="text-slate-500">Local development</span>
 						</div>
 						<nav class="mt-1 truncate text-xs text-slate-500" aria-label="Breadcrumb">
-							<a href={navHref(currentRootHref)} class="hover:text-slate-950">{currentRootLabel}</a>
+							{#if currentRootHref === '/assets'}
+								<a href={resolve('/assets')} class="hover:text-slate-950">{currentRootLabel}</a>
+							{:else}
+								<a href={resolve('/runs')} class="hover:text-slate-950">{currentRootLabel}</a>
+							{/if}
 							{#if currentPath !== '/runs' && currentPath !== '/assets'}
 								<span class="mx-1">/</span><span
 									title={currentPath.split('/').filter(Boolean).at(-1)}

@@ -15,6 +15,13 @@ async function readJsonOr(response: Response, fallback: unknown): Promise<unknow
 	}
 }
 
+function isNoActiveManifestResponse(response: Response, payload: unknown): boolean {
+	if (response.status !== 404) return false;
+
+	const body = JSON.stringify(payload).toLowerCase();
+	return body.includes('active_manifest_not_set') || body.includes('not_found');
+}
+
 export const load: PageServerLoad = async ({ locals, cookies, url }) => {
 	if (!locals.session) throw redirect(303, '/login');
 
@@ -29,9 +36,12 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
 		throw redirect(303, '/login');
 	}
 
-	const activeManifestPayload = activeManifestResponse.ok
-		? await readJsonOr(activeManifestResponse, null)
-		: null;
+	const activeManifestPayload = await readJsonOr(activeManifestResponse, null);
+	const activeManifestLoadError =
+		activeManifestResponse.ok ||
+		isNoActiveManifestResponse(activeManifestResponse, activeManifestPayload)
+			? null
+			: `HTTP ${activeManifestResponse.status}`;
 	const runsPayload = runsResponse.ok ? await readJsonOr(runsResponse, []) : [];
 	const catalog = normalizeAssetCatalogList(activeManifestPayload, runsPayload);
 	const filteredAssets = filterAssetCatalogItems(catalog.assets, {
@@ -48,11 +58,11 @@ export const load: PageServerLoad = async ({ locals, cookies, url }) => {
 			...catalog,
 			activeManifestVersionId: catalog.manifest.versionId,
 			assets: filteredAssets,
-			loadError: activeManifestResponse.ok ? null : `HTTP ${activeManifestResponse.status}`
+			loadError: activeManifestLoadError
 		},
 		activeManifestVersionId: catalog.manifest.versionId,
 		assets: filteredAssets,
-		loadError: activeManifestResponse.ok ? null : `HTTP ${activeManifestResponse.status}`
+		loadError: activeManifestLoadError
 	};
 };
 

@@ -86,7 +86,8 @@ export const actions: Actions = {
 		const detail = await loadDetail(locals, cookies, params.asset_ref);
 		if (!detail.asset.targetId) throw error(400, 'Asset target id is not available');
 		const response = await orchestratorSubmitRun(locals.session!, {
-			target: { type: 'asset', id: detail.asset.targetId }
+			target: { type: 'asset', id: detail.asset.targetId },
+			manifest_selection: { mode: 'active' }
 		});
 
 		if (response.status === 401) {

@@ -61,7 +61,7 @@ export const mixedCatalogAssets: StoryAsset[] = [
 		name: 'AdSpendSnapshot',
 		friendlyName: 'Ad spend snapshot',
 		module: 'Favn.Demo.External.Marketing.AdSpendSnapshot',
-		health: 'unknown',
+		health: 'not_run',
 		kind: 'source',
 		domain: 'marketing',
 		lastRunAt: null,

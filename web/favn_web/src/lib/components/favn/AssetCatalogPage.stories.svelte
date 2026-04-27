@@ -31,6 +31,11 @@
 			canvas.getByText('Order line items enriched for finance controls')
 		).toBeInTheDocument();
 		await expect(canvas.queryByText('Rebuild safety stock levels')).not.toBeInTheDocument();
+
+		await userEvent.selectOptions(canvas.getByLabelText('Status'), 'all');
+		await userEvent.click(canvas.getByRole('button', { name: /Never run \/ Unknown/ }));
+		await expect(canvas.getByText('Ad spend snapshot')).toBeInTheDocument();
+		await expect(canvas.queryByText('Customer profiles')).not.toBeInTheDocument();
 	}}
 />
 

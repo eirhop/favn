@@ -61,7 +61,7 @@
 	let filteredAssets = $derived.by(() => {
 		const normalizedQuery = query.trim().toLowerCase();
 		return assets.filter((asset: AssetCatalogItem) => {
-			const matchesStatus = statusFilter === 'all' || health(asset) === statusFilter;
+			const matchesStatus = matchesStatusFilter(health(asset), statusFilter);
 			const matchesType = typeFilter === 'all' || typeLabel(asset) === typeFilter;
 			const matchesDomain = domainFilter === 'all' || domainLabel(asset) === domainFilter;
 			return (
@@ -77,7 +77,7 @@
 			if (['healthy', 'succeeded', 'success', 'ok'].includes(value)) summary.healthy += 1;
 			else if (value === 'failed' || value === 'failing') summary.failed += 1;
 			else if (value === 'running') summary.running += 1;
-			else summary.unknown += 1;
+			else if (isUnknownOrNeverRun(value)) summary.unknown += 1;
 		}
 		return summary;
 	});
@@ -139,6 +139,18 @@
 		return [...new Set(values.filter(Boolean))].sort((left, right) => left.localeCompare(right));
 	}
 
+	function isUnknownOrNeverRun(status: string): boolean {
+		return !['healthy', 'succeeded', 'success', 'ok', 'failed', 'failing', 'running'].includes(
+			status
+		);
+	}
+
+	function matchesStatusFilter(status: string, filter: string): boolean {
+		if (filter === 'all') return true;
+		if (filter === 'not_run_or_unknown') return isUnknownOrNeverRun(status);
+		return status === filter;
+	}
+
 	function clearFilters() {
 		query = '';
 		statusFilter = 'all';
@@ -162,7 +174,12 @@
 		{ label: 'Healthy', value: counts.healthy, status: 'healthy', tone: 'emerald' },
 		{ label: 'Failed', value: counts.failed, status: 'failed', tone: 'red' },
 		{ label: 'Running', value: counts.running, status: 'running', tone: 'blue' },
-		{ label: 'Never run / Unknown', value: counts.unknown, status: 'unknown', tone: 'amber' }
+		{
+			label: 'Never run / Unknown',
+			value: counts.unknown,
+			status: 'not_run_or_unknown',
+			tone: 'amber'
+		}
 	]);
 </script>
 
