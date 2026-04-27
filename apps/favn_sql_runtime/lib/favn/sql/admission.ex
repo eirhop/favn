@@ -23,9 +23,14 @@ defmodule Favn.SQL.Admission do
   def with_permit(%Session{}, _operation, _payload, fun) when is_function(fun, 0), do: fun.()
 
   @spec acquire_session(ConcurrencyPolicy.t() | nil) :: term()
-  def acquire_session(%ConcurrencyPolicy{} = policy) do
+  def acquire_session(%ConcurrencyPolicy{scope: scope} = policy) do
     if permit_required?(policy, :connect, nil) do
-      acquire_lease(policy)
+      if already_holding?(scope) do
+        increment_held(scope)
+        {:borrowed, scope, self()}
+      else
+        acquire_lease(policy)
+      end
     end
   end
 
@@ -35,6 +40,10 @@ defmodule Favn.SQL.Admission do
   def release_session({:held, scope, owner}) when owner == self() do
     decrement_held(scope)
     Limiter.release(scope)
+  end
+
+  def release_session({:borrowed, scope, owner}) when owner == self() do
+    decrement_held(scope)
   end
 
   def release_session(_lease), do: :ok
