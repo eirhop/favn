@@ -552,6 +552,6 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     month = rem(total, 12) + 1
     {:ok, new_date} = Date.new(year, month, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, dt.time_zone)
+    DateTime.from_naive!(naive, dt.time_zone, Favn.Timezone.database!())
   end
 end

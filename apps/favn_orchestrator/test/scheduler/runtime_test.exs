@@ -366,6 +366,41 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert run.metadata[:pipeline_context][:anchor_window].kind == :hour
   end
 
+  test "monthly anchor windows work in IANA timezones without global timezone config" do
+    version =
+      scheduler_manifest_version("mv_scheduler_window_month_oslo",
+        timezone: "Europe/Oslo",
+        window: :month
+      )
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    start_supervised!({Runtime, name: name, tick_ms: 60_000, auto_tick?: false})
+    [entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      version: 1
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+    assert :ok = Runtime.tick(name)
+
+    assert {:ok, run} = await_run_submission(version.manifest_version_id)
+    anchor_window = run.metadata[:pipeline_context][:anchor_window]
+
+    assert anchor_window.kind == :month
+    assert anchor_window.timezone == "Europe/Oslo"
+    assert anchor_window.start_at.time_zone == "Europe/Oslo"
+    assert anchor_window.end_at.time_zone == "Europe/Oslo"
+  end
+
   defp await_run_submission(manifest_version_id, attempts \\ 40)
 
   defp await_run_submission(manifest_version_id, attempts) when attempts > 0 do
@@ -474,7 +509,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
           name: :daily,
           ref: {MyApp.Schedules, :daily},
           cron: Keyword.get(opts, :cron, "* * * * *"),
-          timezone: "Etc/UTC",
+          timezone: Keyword.get(opts, :timezone, "Etc/UTC"),
           missed: Keyword.get(opts, :missed, :one),
           overlap: Keyword.get(opts, :overlap, :forbid),
           active: true
