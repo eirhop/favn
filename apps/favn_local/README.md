@@ -30,6 +30,7 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 - `mix favn.dev`
 - `mix favn.status`
 - `mix favn.run`
+- `mix favn.backfill`
 - `mix favn.logs`
 - `mix favn.reload`
 - `mix favn.stop`
@@ -38,6 +39,9 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 - `mix favn.build.web`
 - `mix favn.build.orchestrator`
 - `mix favn.build.single`
+
+`mix favn.backfill` is a local operator convenience over the private
+orchestrator backfill HTTP endpoints. It is not a stable external API contract.
 
 ## Typical usage
 
@@ -64,6 +68,8 @@ as already present, and changed files are left untouched.
 mix favn.status
 mix favn.run MyApp.Pipelines.Daily
 mix favn.run MyApp.Pipelines.Monthly --window month:2026-03 --timezone Europe/Oslo
+mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
+mix favn.backfill windows RUN_ID
 mix favn.logs --service runner --tail 200
 mix favn.reload
 mix favn.stop

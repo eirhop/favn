@@ -10,6 +10,7 @@ defmodule Favn.Dev do
   Read `Favn.Dev` when the task is about:
 
   - starting or stopping the local stack
+  - submitting or inspecting local operational backfills
   - bootstrapping a local sample project
   - validating local project setup
   - checking local runtime state
@@ -35,6 +36,7 @@ defmodule Favn.Dev do
   layout details.
   """
 
+  alias Favn.Dev.Backfill
   alias Favn.Dev.Build.Orchestrator, as: OrchestratorBuild
   alias Favn.Dev.Build.Runner, as: RunnerBuild
   alias Favn.Dev.Build.Single, as: SingleBuild
@@ -135,6 +137,42 @@ defmodule Favn.Dev do
   @spec run_pipeline(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_pipeline(pipeline_module, opts \\ []) when is_list(opts),
     do: Run.pipeline(pipeline_module, opts)
+
+  @doc """
+  Submits a pipeline operational backfill to the running local stack.
+  """
+  @spec submit_backfill(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def submit_backfill(pipeline_module, opts \\ []) when is_list(opts),
+    do: Backfill.submit_pipeline(pipeline_module, opts)
+
+  @doc """
+  Lists child window rows for a backfill parent run.
+  """
+  @spec list_backfill_windows(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_backfill_windows(backfill_run_id, opts \\ []) when is_list(opts),
+    do: Backfill.list_windows(backfill_run_id, opts)
+
+  @doc """
+  Lists projected coverage baselines from the local stack.
+  """
+  @spec list_coverage_baselines(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_coverage_baselines(opts \\ []) when is_list(opts),
+    do: Backfill.list_coverage_baselines(opts)
+
+  @doc """
+  Lists latest projected asset/window states from the local stack.
+  """
+  @spec list_asset_window_states(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_asset_window_states(opts \\ []) when is_list(opts),
+    do: Backfill.list_asset_window_states(opts)
+
+  @doc """
+  Reruns one failed backfill window.
+  """
+  @spec rerun_backfill_window(String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def rerun_backfill_window(backfill_run_id, window_key, opts \\ []) when is_list(opts),
+    do: Backfill.rerun_window(backfill_run_id, window_key, opts)
 
   @doc """
   Returns local stack status for the current project.

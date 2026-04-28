@@ -1,63 +1,9 @@
-defmodule FavnStoragePostgres.Migrations.CreateFoundation do
+defmodule FavnStoragePostgres.Migrations.AddBackfillState do
   @moduledoc false
 
   use Ecto.Migration
 
   def up do
-    execute("CREATE SEQUENCE IF NOT EXISTS favn_run_write_seq START 1")
-
-    create_if_not_exists table(:favn_manifest_versions, primary_key: false) do
-      add(:manifest_version_id, :string, primary_key: true)
-      add(:content_hash, :string, null: false)
-      add(:schema_version, :integer, null: false)
-      add(:runner_contract_version, :integer, null: false)
-      add(:serialization_format, :string, null: false)
-      add(:manifest_json, :text, null: false)
-      add(:inserted_at, :utc_datetime_usec)
-    end
-
-    create_if_not_exists(unique_index(:favn_manifest_versions, [:content_hash]))
-
-    create_if_not_exists table(:favn_runtime_settings, primary_key: false) do
-      add(:key, :string, primary_key: true)
-      add(:value_text, :text)
-      add(:updated_at, :utc_datetime_usec)
-    end
-
-    create_if_not_exists table(:favn_runs, primary_key: false) do
-      add(:run_id, :string, primary_key: true)
-      add(:manifest_version_id, :string, null: false)
-      add(:manifest_content_hash, :string, null: false)
-      add(:status, :string, null: false)
-      add(:event_seq, :integer, null: false)
-      add(:snapshot_hash, :string, null: false)
-      add(:updated_seq, :bigint, null: false)
-      add(:inserted_at, :utc_datetime_usec)
-      add(:updated_at, :utc_datetime_usec)
-      add(:run_blob, :binary, null: false)
-    end
-
-    create_if_not_exists(index(:favn_runs, [:status, :updated_seq]))
-
-    create_if_not_exists table(:favn_run_events, primary_key: false) do
-      add(:run_id, :string, null: false)
-      add(:sequence, :integer, null: false)
-      add(:occurred_at, :utc_datetime_usec)
-      add(:event_blob, :binary, null: false)
-    end
-
-    create_if_not_exists(unique_index(:favn_run_events, [:run_id, :sequence]))
-
-    create_if_not_exists table(:favn_scheduler_cursors, primary_key: false) do
-      add(:pipeline_module, :string, null: false)
-      add(:schedule_id, :string, null: false)
-      add(:version, :integer, null: false)
-      add(:updated_at, :utc_datetime_usec)
-      add(:state_blob, :binary, null: false)
-    end
-
-    create_if_not_exists(unique_index(:favn_scheduler_cursors, [:pipeline_module, :schedule_id]))
-
     create_if_not_exists table(:favn_pipeline_coverage_baselines, primary_key: false) do
       add(:baseline_id, :string, primary_key: true)
       add(:pipeline_module, :string, null: false)
@@ -144,11 +90,5 @@ defmodule FavnStoragePostgres.Migrations.CreateFoundation do
     drop_if_exists(table(:favn_asset_window_states))
     drop_if_exists(table(:favn_backfill_windows))
     drop_if_exists(table(:favn_pipeline_coverage_baselines))
-    drop_if_exists(table(:favn_scheduler_cursors))
-    drop_if_exists(table(:favn_run_events))
-    drop_if_exists(table(:favn_runs))
-    drop_if_exists(table(:favn_runtime_settings))
-    drop_if_exists(table(:favn_manifest_versions))
-    execute("DROP SEQUENCE IF EXISTS favn_run_write_seq")
   end
 end

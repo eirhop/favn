@@ -129,7 +129,8 @@ defmodule Favn.Storage do
     limit = Keyword.get(opts, :limit)
 
     cond do
-      not is_nil(status) and status not in [:running, :ok, :error, :cancelled, :timed_out] ->
+      not is_nil(status) and
+          status not in [:running, :ok, :partial, :error, :cancelled, :timed_out] ->
         {:error, :invalid_opts}
 
       not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
@@ -149,6 +150,7 @@ defmodule Favn.Storage do
   defp normalize_error(reason), do: {:error, {:store_error, reason}}
 
   defp normalize_status(:ok), do: :ok
+  defp normalize_status(:partial), do: :partial
   defp normalize_status(:error), do: :error
   defp normalize_status(:cancelled), do: :cancelled
   defp normalize_status(:timed_out), do: :timed_out
@@ -158,6 +160,8 @@ defmodule Favn.Storage do
   defp normalize_event_seq(_value), do: 1
 
   defp normalize_submit_kind(:pipeline), do: :pipeline
+  defp normalize_submit_kind(:backfill_asset), do: :backfill_asset
+  defp normalize_submit_kind(:backfill_pipeline), do: :backfill_pipeline
   defp normalize_submit_kind(:rerun), do: :rerun
   defp normalize_submit_kind(_submit_kind), do: :manual
 

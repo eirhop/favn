@@ -7,6 +7,9 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   alias Favn.Manifest.Version
   alias Favn.Scheduler.State, as: SchedulerState
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -18,7 +21,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           active_manifest_version_id: String.t() | nil,
           runs: %{required(String.t()) => RunState.t()},
           run_events: %{required(String.t()) => [map()]},
-          scheduler_states: %{required({module(), atom() | nil}) => map()}
+          scheduler_states: %{required({module(), atom() | nil}) => map()},
+          coverage_baselines: %{required(String.t()) => CoverageBaseline.t()},
+          backfill_windows: %{required({String.t(), module(), String.t()}) => BackfillWindow.t()},
+          asset_window_states: %{required({module(), atom(), String.t()}) => AssetWindowState.t()}
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -194,6 +200,68 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def put_coverage_baseline(%CoverageBaseline{} = baseline, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_coverage_baseline, baseline})
+  end
+
+  @impl true
+  def get_coverage_baseline(baseline_id, opts) when is_binary(baseline_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_coverage_baseline, baseline_id})
+  end
+
+  @impl true
+  def list_coverage_baselines(filters, opts) when is_list(filters) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_coverage_baselines, filters})
+  end
+
+  @impl true
+  def put_backfill_window(%BackfillWindow{} = window, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_backfill_window, window})
+  end
+
+  @impl true
+  def get_backfill_window(backfill_run_id, pipeline_module, window_key, opts)
+      when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key) and
+             is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_backfill_window, {backfill_run_id, pipeline_module, window_key}})
+  end
+
+  @impl true
+  def list_backfill_windows(filters, opts) when is_list(filters) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_backfill_windows, filters})
+  end
+
+  @impl true
+  def put_asset_window_state(%AssetWindowState{} = state, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_asset_window_state, state})
+  end
+
+  @impl true
+  def get_asset_window_state(asset_ref_module, asset_ref_name, window_key, opts)
+      when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(window_key) and
+             is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+
+    GenServer.call(
+      server,
+      {:get_asset_window_state, {asset_ref_module, asset_ref_name, window_key}}
+    )
+  end
+
+  @impl true
+  def list_asset_window_states(filters, opts) when is_list(filters) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_asset_window_states, filters})
+  end
+
+  @impl true
   def init(_args) do
     {:ok,
      %{
@@ -201,7 +269,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
        active_manifest_version_id: nil,
        runs: %{},
        run_events: %{},
-       scheduler_states: %{}
+       scheduler_states: %{},
+       coverage_baselines: %{},
+       backfill_windows: %{},
+       asset_window_states: %{}
      }}
   end
 
@@ -213,7 +284,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
        active_manifest_version_id: nil,
        runs: %{},
        run_events: %{},
-       scheduler_states: %{}
+       scheduler_states: %{},
+       coverage_baselines: %{},
+       backfill_windows: %{},
+       asset_window_states: %{}
      }}
   end
 
@@ -421,6 +495,44 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, value}, state}
   end
 
+  def handle_call({:put_coverage_baseline, %CoverageBaseline{} = baseline}, _from, state) do
+    {:reply, :ok, put_in(state, [:coverage_baselines, baseline.baseline_id], baseline)}
+  end
+
+  def handle_call({:get_coverage_baseline, baseline_id}, _from, state) do
+    {:reply, fetch_or_not_found(state.coverage_baselines, baseline_id), state}
+  end
+
+  def handle_call({:list_coverage_baselines, filters}, _from, state) do
+    {:reply, {:ok, state.coverage_baselines |> Map.values() |> filter_by(filters)}, state}
+  end
+
+  def handle_call({:put_backfill_window, %BackfillWindow{} = window}, _from, state) do
+    key = {window.backfill_run_id, window.pipeline_module, window.window_key}
+    {:reply, :ok, put_in(state, [:backfill_windows, key], window)}
+  end
+
+  def handle_call({:get_backfill_window, key}, _from, state) do
+    {:reply, fetch_or_not_found(state.backfill_windows, key), state}
+  end
+
+  def handle_call({:list_backfill_windows, filters}, _from, state) do
+    {:reply, {:ok, state.backfill_windows |> Map.values() |> filter_by(filters)}, state}
+  end
+
+  def handle_call({:put_asset_window_state, %AssetWindowState{} = window_state}, _from, state) do
+    key = {window_state.asset_ref_module, window_state.asset_ref_name, window_state.window_key}
+    {:reply, :ok, put_in(state, [:asset_window_states, key], window_state)}
+  end
+
+  def handle_call({:get_asset_window_state, key}, _from, state) do
+    {:reply, fetch_or_not_found(state.asset_window_states, key), state}
+  end
+
+  def handle_call({:list_asset_window_states, filters}, _from, state) do
+    {:reply, {:ok, state.asset_window_states |> Map.values() |> filter_by(filters)}, state}
+  end
+
   defp put_run_with_semantics(runs, %RunState{} = incoming) do
     case Map.fetch(runs, incoming.id) do
       :error ->
@@ -451,6 +563,19 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       nil -> runs
       status -> Enum.filter(runs, &(&1.status == status))
     end
+  end
+
+  defp fetch_or_not_found(values, key) do
+    case Map.fetch(values, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp filter_by(values, filters) do
+    Enum.filter(values, fn value ->
+      Enum.all?(filters, fn {key, expected} -> Map.get(value, key) == expected end)
+    end)
   end
 
   defp maybe_limit_runs(runs, run_opts) do

@@ -6,7 +6,7 @@ defmodule Favn.Run do
   alias Favn.Ref
   alias Favn.Run.AssetResult
 
-  @type status :: :running | :ok | :error | :cancelled | :timed_out
+  @type status :: :running | :ok | :partial | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
           id: String.t(),

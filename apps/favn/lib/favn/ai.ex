@@ -30,10 +30,19 @@ defmodule Favn.AI do
     `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
     windowed, also read `Favn.Window`, `Favn.Window.Policy`, and
     `Favn.Window.Request`.
-  - To work with windows or backfills, read `Favn.Window`, then
+  - To work with windows or one-off run input, read `Favn.Window`, then
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
     details.
+  - To work with operational backfill ranges, read
+    `Favn.Backfill.RangeRequest`, `Favn.Backfill.RangeResolver`, and
+    `Favn.Backfill.LookbackPolicy`. If you are wiring orchestrator-side
+    submission or projection, then read `FavnOrchestrator`,
+    `FavnOrchestrator.BackfillManager`, and the internal modules under
+    `FavnOrchestrator.Backfill.*`. If you are changing the private service HTTP
+    surface for backfills, also read `FavnOrchestrator.API.Router`. For the
+    local operator CLI, read `Favn.Dev.Backfill` and
+    `Mix.Tasks.Favn.Backfill`.
   - To define connection contracts, read `Favn.Connection`; if connection
     values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
@@ -52,9 +61,10 @@ defmodule Favn.AI do
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
     The public local command surface is `mix favn.install`, `mix favn.dev`,
     `mix favn.run`, `mix favn.status`, `mix favn.logs`, `mix favn.reload`,
-    `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
-    `mix favn.build.web`, `mix favn.build.orchestrator`,
-    `mix favn.build.single`, and `mix favn.read_doc`.
+    `mix favn.stop`, `mix favn.reset`, `mix favn.backfill`,
+    `mix favn.build.runner`, `mix favn.build.web`,
+    `mix favn.build.orchestrator`, `mix favn.build.single`, and
+    `mix favn.read_doc`.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
   ## About `Favn`
@@ -72,6 +82,17 @@ defmodule Favn.AI do
     resolution, or the exact `%Favn.Pipeline.Resolution{}` shape
   - `Favn.Assets.Planner`: when you need topological stages, dependency
     expansion, anchor windows, or backfill planning
+  - `Favn.Backfill.RangeResolver`: when operator backfill input must become
+    concrete hourly/daily/monthly/yearly anchors before submission
+  - `FavnOrchestrator.BackfillManager`: when working inside the orchestrator on
+    parent backfill runs, child run submission, and the normalized backfill
+    window ledger
+  - `FavnOrchestrator.Backfill.Projector`: when working inside the orchestrator
+    on derived backfill-window and asset-window state after child run
+    transitions
+  - `FavnOrchestrator.Backfill.CoverageProjector`: when working inside the
+    orchestrator on safe coverage baseline projection from successful run
+    metadata
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
   - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs the
@@ -92,9 +113,15 @@ defmodule Favn.AI do
     incremental SQL materialization. Read `Favn.Window.Policy` and
     `Favn.Window.Request` when the task mentions pipeline windows, scheduler
     anchor resolution, `mix favn.run --window`, or operator/API run input.
+  - Read `Favn.Backfill.RangeRequest` and `Favn.Backfill.RangeResolver` when a
+    task mentions operational backfill ranges, relative `last` ranges, baseline
+    cutover, or expanding operator intent into concrete anchors. Read
+    `FavnOrchestrator.Backfill.*` only for internal control-plane persistence,
+    projection, and parent/child orchestration work.
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
     lifecycle, local pipeline submission, docs lookup, or packaging, not asset
-    authoring.
+    authoring. Read `Favn.Dev.Backfill` for the local `mix favn.backfill`
+    workflow over the private orchestrator backfill endpoints.
 
   ## Related docs outside BEAM docs
 

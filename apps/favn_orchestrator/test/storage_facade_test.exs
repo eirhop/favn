@@ -3,6 +3,9 @@ defmodule Favn.StorageFacadeTest do
 
   alias Favn.Run
   alias Favn.Storage
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -50,6 +53,35 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def get_scheduler_state(_key, _opts), do: {:ok, nil}
+
+    @impl true
+    def put_coverage_baseline(_baseline, _opts), do: :ok
+
+    @impl true
+    def get_coverage_baseline(_baseline_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_coverage_baselines(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_backfill_window(_window, _opts), do: :ok
+
+    @impl true
+    def get_backfill_window(_backfill_run_id, _pipeline_module, _window_key, _opts),
+      do: {:error, :not_found}
+
+    @impl true
+    def list_backfill_windows(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_asset_window_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_asset_window_state(_asset_ref_module, _asset_ref_name, _window_key, _opts),
+      do: {:error, :not_found}
+
+    @impl true
+    def list_asset_window_states(_filters, _opts), do: {:ok, []}
   end
 
   defmodule LegacyShapeAdapterStub do
@@ -110,6 +142,35 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def get_scheduler_state(_key, _opts), do: {:ok, nil}
+
+    @impl true
+    def put_coverage_baseline(_baseline, _opts), do: :ok
+
+    @impl true
+    def get_coverage_baseline(_baseline_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def list_coverage_baselines(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_backfill_window(_window, _opts), do: :ok
+
+    @impl true
+    def get_backfill_window(_backfill_run_id, _pipeline_module, _window_key, _opts),
+      do: {:error, :not_found}
+
+    @impl true
+    def list_backfill_windows(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_asset_window_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_asset_window_state(_asset_ref_module, _asset_ref_name, _window_key, _opts),
+      do: {:error, :not_found}
+
+    @impl true
+    def list_asset_window_states(_filters, _opts), do: {:ok, []}
   end
 
   setup do
@@ -174,6 +235,162 @@ defmodule Favn.StorageFacadeTest do
 
     assert {:ok, []} = Storage.child_specs()
     assert_receive :child_spec_called
+  end
+
+  test "builds normalized backfill storage structs with hashed source identity" do
+    now = DateTime.utc_now()
+    start_at = ~U[2026-03-01 00:00:00Z]
+    end_at = ~U[2026-04-01 00:00:00Z]
+
+    assert {:ok, %CoverageBaseline{} = baseline} =
+             CoverageBaseline.new(%{
+               baseline_id: "baseline_1",
+               pipeline_module: MyApp.Pipelines.Monthly,
+               source_key: "orders_api",
+               segment_key_hash: "sha256:abc123",
+               segment_key_redacted: "abc***",
+               window_kind: :month,
+               timezone: "Etc/UTC",
+               coverage_until: end_at,
+               created_by_run_id: "run_full",
+               manifest_version_id: "mv_1",
+               status: :ok,
+               created_at: now,
+               updated_at: now
+             })
+
+    assert baseline.segment_key_hash == "sha256:abc123"
+    refute Map.has_key?(Map.from_struct(baseline), :segment_id)
+
+    assert {:error, {:raw_source_identity_not_allowed, :segment_id}} =
+             CoverageBaseline.new(%{
+               baseline_id: "baseline_raw",
+               pipeline_module: MyApp.Pipelines.Monthly,
+               source_key: "orders_api",
+               segment_key_hash: "sha256:abc123",
+               segment_id: "raw-source-id",
+               window_kind: :month,
+               timezone: "Etc/UTC",
+               coverage_until: end_at,
+               created_by_run_id: "run_full",
+               manifest_version_id: "mv_1",
+               status: :ok,
+               created_at: now,
+               updated_at: now
+             })
+
+    assert {:ok, %BackfillWindow{attempt_count: 0}} =
+             BackfillWindow.new(%{
+               backfill_run_id: "backfill_1",
+               pipeline_module: MyApp.Pipelines.Monthly,
+               manifest_version_id: "mv_1",
+               window_kind: :month,
+               window_start_at: start_at,
+               window_end_at: end_at,
+               timezone: "Etc/UTC",
+               window_key: "month:2026-03",
+               status: :pending,
+               updated_at: now
+             })
+
+    assert {:ok, %AssetWindowState{metadata: %{rows_written: 10}}} =
+             AssetWindowState.new(%{
+               asset_ref_module: MyApp.Assets.Orders,
+               asset_ref_name: :asset,
+               pipeline_module: MyApp.Pipelines.Monthly,
+               manifest_version_id: "mv_1",
+               window_kind: :month,
+               window_start_at: start_at,
+               window_end_at: end_at,
+               timezone: "Etc/UTC",
+               window_key: "month:2026-03",
+               status: :ok,
+               latest_run_id: "run_child",
+               latest_success_run_id: "run_child",
+               metadata: %{rows_written: 10},
+               updated_at: now
+             })
+  end
+
+  test "stores normalized backfill state through orchestrator memory facade" do
+    now = DateTime.utc_now()
+    start_at = ~U[2026-03-01 00:00:00Z]
+    end_at = ~U[2026-04-01 00:00:00Z]
+
+    {:ok, baseline} =
+      CoverageBaseline.new(%{
+        baseline_id: "baseline_facade",
+        pipeline_module: MyApp.Pipelines.Monthly,
+        source_key: "orders_api",
+        segment_key_hash: "sha256:abc123",
+        window_kind: :month,
+        timezone: "Etc/UTC",
+        coverage_until: end_at,
+        created_by_run_id: "run_full",
+        manifest_version_id: "mv_1",
+        status: :ok,
+        created_at: now,
+        updated_at: now
+      })
+
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: "backfill_facade",
+        pipeline_module: MyApp.Pipelines.Monthly,
+        manifest_version_id: "mv_1",
+        coverage_baseline_id: baseline.baseline_id,
+        window_kind: :month,
+        window_start_at: start_at,
+        window_end_at: end_at,
+        timezone: "Etc/UTC",
+        window_key: "month:2026-03",
+        status: :running,
+        latest_attempt_run_id: "run_child",
+        updated_at: now
+      })
+
+    {:ok, asset_state} =
+      AssetWindowState.new(%{
+        asset_ref_module: MyApp.Assets.Orders,
+        asset_ref_name: :asset,
+        pipeline_module: MyApp.Pipelines.Monthly,
+        manifest_version_id: "mv_1",
+        window_kind: :monthly,
+        window_start_at: start_at,
+        window_end_at: end_at,
+        timezone: "Etc/UTC",
+        window_key: "month:2026-03",
+        status: :ok,
+        latest_run_id: "run_child",
+        latest_parent_run_id: "backfill_facade",
+        latest_success_run_id: "run_child",
+        rows_written: 10,
+        metadata: %{relation: "gold.orders"},
+        updated_at: now
+      })
+
+    assert :ok = OrchestratorStorage.put_coverage_baseline(baseline)
+    assert :ok = OrchestratorStorage.put_backfill_window(window)
+    assert :ok = OrchestratorStorage.put_asset_window_state(asset_state)
+
+    assert {:ok, ^baseline} = OrchestratorStorage.get_coverage_baseline("baseline_facade")
+
+    assert {:ok, ^window} =
+             OrchestratorStorage.get_backfill_window(
+               "backfill_facade",
+               MyApp.Pipelines.Monthly,
+               "month:2026-03"
+             )
+
+    assert {:ok, ^asset_state} =
+             OrchestratorStorage.get_asset_window_state(
+               MyApp.Assets.Orders,
+               :asset,
+               "month:2026-03"
+             )
+
+    assert {:ok, [^window]} =
+             OrchestratorStorage.list_backfill_windows(status: :running)
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)

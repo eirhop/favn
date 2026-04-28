@@ -2,9 +2,13 @@ defmodule FavnStorageSqlite.Migrations do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias FavnStorageSqlite.Migrations.AddBackfillState
   alias FavnStorageSqlite.Migrations.CreateFoundation
 
-  @migrations [{20_260_415_000_000, CreateFoundation}]
+  @migrations [
+    {20_260_415_000_000, CreateFoundation},
+    {20_260_428_100_000, AddBackfillState}
+  ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 
   @spec migrate!(module()) :: :ok
@@ -29,6 +33,9 @@ defmodule FavnStorageSqlite.Migrations do
       "favn_runs",
       "favn_run_events",
       "favn_scheduler_cursors",
+      "favn_pipeline_coverage_baselines",
+      "favn_backfill_windows",
+      "favn_asset_window_states",
       "favn_counters"
     ]
 

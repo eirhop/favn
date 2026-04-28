@@ -62,7 +62,8 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec active_manifest(String.t(), String.t(), session_context()) :: {:ok, map()} | {:error, term()}
+  @spec active_manifest(String.t(), String.t(), session_context()) ::
+          {:ok, map()} | {:error, term()}
   def active_manifest(base_url, service_token, session_context)
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) do
     url = base_url <> "/api/orchestrator/v1/manifests/active"
@@ -71,12 +72,16 @@ defmodule Favn.Dev.OrchestratorClient do
       {:ok, %{"data" => data}} when is_map(data) ->
         {:ok, data}
 
-      {:error, _reason} = error -> error
-      _other -> {:error, operation_error(:active_manifest, :get, url, :invalid_response)}
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:active_manifest, :get, url, :invalid_response)}
     end
   end
 
-  @spec submit_run(String.t(), String.t(), session_context(), map()) :: {:ok, map()} | {:error, term()}
+  @spec submit_run(String.t(), String.t(), session_context(), map()) ::
+          {:ok, map()} | {:error, term()}
   def submit_run(base_url, service_token, session_context, payload)
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
              is_map(payload) do
@@ -86,12 +91,101 @@ defmodule Favn.Dev.OrchestratorClient do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
 
-      {:error, _reason} = error -> error
-      _other -> {:error, operation_error(:submit_run, :post, url, :invalid_response)}
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:submit_run, :post, url, :invalid_response)}
     end
   end
 
-  @spec get_run(String.t(), String.t(), session_context(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec submit_backfill(String.t(), String.t(), session_context(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def submit_backfill(base_url, service_token, session_context, payload)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_map(payload) do
+    url = base_url <> "/api/orchestrator/v1/backfills"
+
+    case request_post(:submit_backfill, url, service_token, payload, session_context) do
+      {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:submit_backfill, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec list_backfill_windows(String.t(), String.t(), session_context(), String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_backfill_windows(
+        base_url,
+        service_token,
+        session_context,
+        backfill_run_id,
+        filters \\ []
+      )
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(backfill_run_id) and is_list(filters) do
+    url =
+      base_url <>
+        "/api/orchestrator/v1/backfills/#{URI.encode(backfill_run_id)}/windows" <>
+        query_string(filters)
+
+    request_items(:list_backfill_windows, url, service_token, session_context)
+  end
+
+  @spec rerun_backfill_window(String.t(), String.t(), session_context(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def rerun_backfill_window(base_url, service_token, session_context, backfill_run_id, window_key)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(backfill_run_id) and is_binary(window_key) do
+    url =
+      base_url <>
+        "/api/orchestrator/v1/backfills/#{URI.encode(backfill_run_id)}/windows/rerun"
+
+    case request_post(
+           :rerun_backfill_window,
+           url,
+           service_token,
+           %{window_key: window_key},
+           session_context
+         ) do
+      {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:rerun_backfill_window, :post, url, :invalid_response)}
+    end
+  end
+
+  @spec list_coverage_baselines(String.t(), String.t(), session_context(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_coverage_baselines(base_url, service_token, session_context, filters \\ [])
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_list(filters) do
+    url = base_url <> "/api/orchestrator/v1/backfills/coverage-baselines" <> query_string(filters)
+
+    request_items(:list_coverage_baselines, url, service_token, session_context)
+  end
+
+  @spec list_asset_window_states(String.t(), String.t(), session_context(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_asset_window_states(base_url, service_token, session_context, filters \\ [])
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_list(filters) do
+    url = base_url <> "/api/orchestrator/v1/assets/window-states" <> query_string(filters)
+
+    request_items(:list_asset_window_states, url, service_token, session_context)
+  end
+
+  @spec get_run(String.t(), String.t(), session_context(), String.t()) ::
+          {:ok, map()} | {:error, term()}
   def get_run(base_url, service_token, session_context, run_id)
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
              is_binary(run_id) do
@@ -101,8 +195,11 @@ defmodule Favn.Dev.OrchestratorClient do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
 
-      {:error, _reason} = error -> error
-      _other -> {:error, operation_error(:get_run, :get, url, :invalid_response)}
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:get_run, :get, url, :invalid_response)}
     end
   end
 
@@ -113,7 +210,7 @@ defmodule Favn.Dev.OrchestratorClient do
 
     with {:ok, %{"data" => %{"run_ids" => run_ids}}} <-
            request_get(:list_in_flight_runs, url, service_token),
-          true <- is_list(run_ids) do
+         true <- is_list(run_ids) do
       {:ok, Enum.filter(run_ids, &is_binary/1)}
     else
       false -> {:error, operation_error(:list_in_flight_runs, :get, url, :invalid_response)}
@@ -127,10 +224,17 @@ defmodule Favn.Dev.OrchestratorClient do
     url = base_url <> "/api/orchestrator/v1/health"
 
     case LocalHttpClient.request(:get, url, [], nil, connect_timeout_ms: 1_000, timeout_ms: 2_000) do
-      {:ok, %{"data" => %{"status" => "ok"}}} -> :ok
-      {:ok, %{"status" => "ok"}} -> :ok
-      {:ok, decoded} -> {:error, operation_error(:health_check, :get, url, {:invalid_response, decoded})}
-      {:error, reason} -> {:error, operation_error(:health_check, :get, url, reason)}
+      {:ok, %{"data" => %{"status" => "ok"}}} ->
+        :ok
+
+      {:ok, %{"status" => "ok"}} ->
+        :ok
+
+      {:ok, decoded} ->
+        {:error, operation_error(:health_check, :get, url, {:invalid_response, decoded})}
+
+      {:error, reason} ->
+        {:error, operation_error(:health_check, :get, url, reason)}
     end
   end
 
@@ -144,12 +248,43 @@ defmodule Favn.Dev.OrchestratorClient do
     request(operation, :get, url, service_token, nil, session_context)
   end
 
+  defp request_items(operation, url, service_token, session_context) do
+    case request_get(operation, url, service_token, session_context) do
+      {:ok, %{"data" => %{"items" => items}}} when is_list(items) ->
+        {:ok, items}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(operation, :get, url, :invalid_response)}
+    end
+  end
+
+  defp query_string([]), do: ""
+
+  defp query_string(filters) when is_list(filters) do
+    params =
+      filters
+      |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+      |> Enum.map(fn {key, value} -> {Atom.to_string(key), query_value(value)} end)
+
+    case URI.encode_query(params) do
+      "" -> ""
+      query -> "?" <> query
+    end
+  end
+
+  defp query_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp query_value(value), do: to_string(value)
+
   defp request(operation, method, url, service_token, body, session_context) do
-    headers = [
-      {"accept", "application/json"},
-      {"authorization", "Bearer #{service_token}"}
-    ]
-    |> add_session_headers(session_context)
+    headers =
+      [
+        {"accept", "application/json"},
+        {"authorization", "Bearer #{service_token}"}
+      ]
+      |> add_session_headers(session_context)
 
     case LocalHttpClient.request(method, url, headers, body) do
       {:ok, decoded} -> {:ok, decoded}

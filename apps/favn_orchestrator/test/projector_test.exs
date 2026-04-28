@@ -80,4 +80,36 @@ defmodule FavnOrchestrator.ProjectorTest do
     assert run.pipeline[:submit_ref] == MyApp.Pipelines.Daily
     assert run.pipeline_context == %{id: :daily}
   end
+
+  test "projects backfill submit kinds and partial terminal status" do
+    run_state =
+      RunState.new(
+        id: "run_backfill_projected",
+        manifest_version_id: "mv_backfill_projected",
+        manifest_content_hash: "hash_backfill_projected",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}],
+        submit_kind: :backfill_pipeline,
+        metadata: %{pipeline_submit_ref: MyApp.Pipelines.Daily}
+      )
+      |> RunState.transition(status: :partial, result: %{status: :partial})
+
+    assert %Run{} = run = Projector.project_run(run_state)
+    assert run.status == :partial
+    assert run.submit_kind == :backfill_pipeline
+    assert run.finished_at == run_state.updated_at
+    assert run.terminal_reason == %{status: :partial, error: nil}
+    assert run.pipeline[:submit_ref] == MyApp.Pipelines.Daily
+
+    asset_run_state =
+      RunState.new(
+        id: "run_backfill_asset_projected",
+        manifest_version_id: "mv_backfill_projected",
+        manifest_content_hash: "hash_backfill_projected",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        submit_kind: :backfill_asset
+      )
+
+    assert Projector.project_run(asset_run_state).submit_kind == :backfill_asset
+  end
 end
