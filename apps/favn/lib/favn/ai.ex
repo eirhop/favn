@@ -27,9 +27,13 @@ defmodule Favn.AI do
   - To declare external source relations, read `Favn.Source`.
   - To share relation defaults, read `Favn.Namespace`.
   - To define a pipeline, read `Favn.Pipeline`, then
-    `Favn.Triggers.Schedules` if schedules are involved.
+    `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
+    windowed, also read `Favn.Window`, `Favn.Window.Policy`, and
+    `Favn.Window.Request`.
   - To work with windows or backfills, read `Favn.Window`, then
-    `Favn plan_asset_run` if you need planning details.
+    `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
+    for CLI/API run input, and `Favn plan_asset_run` if you need planning
+    details.
   - To define connection contracts, read `Favn.Connection`; if connection
     values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
@@ -83,8 +87,11 @@ defmodule Favn.AI do
   - For external-source ingestion, keep connector/client logic in your project,
     not in Favn. Favn owns the asset/runtime/config/SQL boundaries; your project
     owns API-specific pagination, auth, request, and response logic.
-  - Read `Favn.Window` whenever a task mentions backfills, daily/hourly/monthly
-    processing, or incremental SQL materialization.
+  - Read `Favn.Window` whenever a task mentions backfills,
+    hourly/daily/monthly/yearly processing, required runtime windows, or
+    incremental SQL materialization. Read `Favn.Window.Policy` and
+    `Favn.Window.Request` when the task mentions pipeline windows, scheduler
+    anchor resolution, `mix favn.run --window`, or operator/API run input.
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
     lifecycle, local pipeline submission, docs lookup, or packaging, not asset
     authoring.

@@ -8,7 +8,7 @@ defmodule Favn.Manifest.PipelineResolver do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Pipeline.SelectorNormalizer
-  alias Favn.Window.Anchor
+  alias Favn.Window.{Anchor, Policy}
   alias Favn.Window.Validate
 
   @type dependencies_mode :: :all | :none
@@ -79,9 +79,10 @@ defmodule Favn.Manifest.PipelineResolver do
   defp validate_opts(opts),
     do: Validate.strict_keyword_opts(opts, [:params, :trigger, :anchor_window])
 
-  defp validate_pipeline(%Pipeline{deps: deps, selectors: selectors}) do
+  defp validate_pipeline(%Pipeline{deps: deps, selectors: selectors, window: window}) do
     with :ok <- validate_deps(deps),
-         :ok <- validate_selectors(selectors) do
+         :ok <- validate_selectors(selectors),
+         :ok <- validate_window(window) do
       validate_outputs(%Pipeline{deps: deps, selectors: selectors})
     end
   end
@@ -99,6 +100,17 @@ defmodule Favn.Manifest.PipelineResolver do
   defp validate_outputs(%Pipeline{outputs: outputs}) do
     if Enum.all?(outputs, &is_atom/1), do: :ok, else: {:error, {:invalid_outputs, outputs}}
   end
+
+  defp validate_window(nil), do: :ok
+
+  defp validate_window(%Policy{} = policy) do
+    case Policy.validate(policy) do
+      {:ok, _policy} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_window(other), do: {:error, {:invalid_window_policy, other}}
 
   defp validate_params(params) when is_map(params), do: :ok
   defp validate_params(_other), do: {:error, :invalid_run_params}

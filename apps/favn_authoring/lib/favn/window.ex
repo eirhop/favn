@@ -10,16 +10,20 @@ defmodule Favn.Window do
 
   ## Window types
 
-  - `hourly/1`, `daily/1`, `monthly/1` build asset-level `%Favn.Window.Spec{}` values
+  - `hourly/1`, `daily/1`, `monthly/1`, and `yearly/1` build asset-level `%Favn.Window.Spec{}` values
+  - `%Favn.Window.Policy{}` describes a pipeline's operational window policy
+  - `%Favn.Window.Request{}` describes CLI/API run input before it is resolved
+    into an anchor window
   - `anchor/4` builds a run-level `%Favn.Window.Anchor{}`
   - `runtime/5` builds a concrete `%Favn.Window.Runtime{}` for one execution node
 
   ## Spec options
 
-  `hourly/1`, `daily/1`, and `monthly/1` accept these keyword options:
+  `hourly/1`, `daily/1`, `monthly/1`, and `yearly/1` accept these keyword options:
 
   - `lookback`: non-negative integer, defaults to `0`
   - `refresh_from`: lower or equal-granularity refresh boundary
+  - `required`: boolean, defaults to `false`; when `true`, planning must supply a runtime window
   - `timezone`: IANA timezone string, defaults to `"Etc/UTC"`
 
   Supported `refresh_from` values:
@@ -27,6 +31,7 @@ defmodule Favn.Window do
   - hourly: `nil | :hour`
   - daily: `nil | :hour | :day`
   - monthly: `nil | :day | :month`
+  - yearly: `nil | :month | :year`
 
   ## Anchor/runtime options
 
@@ -61,8 +66,13 @@ defmodule Favn.Window do
   ## When to use what
 
   - use spec helpers in asset DSLs such as `@window Favn.Window.daily(...)`
+  - use `required: true` when an asset must not run without `ctx.window`
+  - use pipeline `window :hourly | :daily | :monthly | :yearly` to declare the
+    default operational policy for a pipeline
   - use anchor windows when operators or pipelines request a run range
   - use runtime windows when testing or working with resolved execution nodes
+  - use `Favn.Window.Request` for parsing operator/CLI/API input such as
+    `month:2026-03`
   """
 
   alias Favn.Window.{Anchor, Runtime, Spec}
@@ -76,6 +86,7 @@ defmodule Favn.Window do
 
   - `lookback`
   - `refresh_from: :hour`
+  - `required`
   - `timezone`
 
   ## Example
@@ -92,6 +103,7 @@ defmodule Favn.Window do
 
   - `lookback`
   - `refresh_from: :hour | :day`
+  - `required`
   - `timezone`
 
   ## Examples
@@ -110,6 +122,7 @@ defmodule Favn.Window do
 
   - `lookback`
   - `refresh_from: :day | :month`
+  - `required`
   - `timezone`
 
   ## Example
@@ -118,6 +131,19 @@ defmodule Favn.Window do
   """
   @spec monthly(keyword()) :: Spec.t()
   def monthly(opts \\ []), do: Spec.new!(:month, opts)
+
+  @doc """
+  Builds a yearly window spec.
+
+  Supported options:
+
+  - `lookback`
+  - `refresh_from: :month | :year`
+  - `required`
+  - `timezone`
+  """
+  @spec yearly(keyword()) :: Spec.t()
+  def yearly(opts \\ []), do: Spec.new!(:year, opts)
 
   @doc """
   Builds a named anchor window.

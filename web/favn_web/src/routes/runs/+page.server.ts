@@ -4,6 +4,7 @@ import { clearWebSessionCookie } from '$lib/server/session';
 import { orchestratorGetActiveManifest, orchestratorListRuns } from '$lib/server/orchestrator';
 import { normalizeRunSummaries } from '$lib/server/run_views';
 import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
+import { normalizePipelineTargets } from '$lib/pipeline_run_submission';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -55,6 +56,7 @@ export const load: PageServerLoad = async (event) => {
 		session: locals.session,
 		runs: normalizeRunSummaries(runsPayload),
 		activeManifestVersionId: normalizeActiveManifest(activeManifestPayload),
+		pipelineTargets: normalizePipelineTargets(activeManifestPayload),
 		loadError: runsResponse.ok ? null : `HTTP ${runsResponse.status}`
 	};
 };

@@ -2,6 +2,7 @@ import type {
 	AssetExecutionView,
 	OutputView,
 	RunDetailView,
+	RunWindowInfoView,
 	RunStatus,
 	RunSummaryView,
 	TimelineEventView
@@ -35,6 +36,115 @@ function asStringArray(value: unknown): string[] {
 	return Array.isArray(value)
 		? value.filter((item): item is string => typeof item === 'string')
 		: [];
+}
+
+function compactAtom(value: string): string {
+	return value.replace(/^:/, '').replace(/^Elixir\./, '');
+}
+
+function humanizeKey(value: string): string {
+	return compactAtom(value)
+		.replace(/_/g, ' ')
+		.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatUnknown(value: unknown): string | null {
+	if (value === null || value === undefined || value === '') return null;
+	if (typeof value === 'string') return compactAtom(value);
+	if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+	if (!isRecord(value)) return null;
+
+	const entries = Object.entries(value)
+		.map(([key, entryValue]) => {
+			const formatted = formatUnknown(entryValue);
+			return formatted ? `${humanizeKey(key)}: ${formatted}` : null;
+		})
+		.filter((entry): entry is string => Boolean(entry));
+
+	return entries.length > 0 ? entries.join(' · ') : null;
+}
+
+function formatWindow(value: unknown): string | null {
+	if (typeof value === 'string') return compactAtom(value);
+	if (!isRecord(value)) return formatUnknown(value);
+
+	const kind = asString(value.kind) ?? asString(value.policy) ?? asString(value.window_kind);
+	const mode = asString(value.mode);
+	const anchor =
+		asString(value.anchor) ??
+		asString(value.value) ??
+		asString(value.key) ??
+		asString(value.window) ??
+		asString(value.anchor_window);
+	const timezone = asString(value.timezone) ?? asString(value.tz);
+	const start = asString(value.start) ?? asString(value.start_at) ?? asString(value.from);
+	const end = asString(value.end) ?? asString(value.end_at) ?? asString(value.to);
+	const allowFullLoad =
+		typeof value.allow_full_load === 'boolean'
+			? value.allow_full_load
+			: typeof value.allowFullLoad === 'boolean'
+				? value.allowFullLoad
+				: null;
+
+	const pieces: string[] = [];
+	if (kind) pieces.push(compactAtom(kind));
+	if (mode && mode !== 'single') pieces.push(compactAtom(mode));
+	if (anchor) pieces.push(compactAtom(anchor));
+	if (start || end) pieces.push([start, end].filter(Boolean).join(' → '));
+	if (timezone) pieces.push(timezone);
+	if (allowFullLoad !== null) pieces.push(`full load ${allowFullLoad ? 'allowed' : 'blocked'}`);
+
+	return pieces.length > 0 ? pieces.join(' · ') : formatUnknown(value);
+}
+
+function nestedRecord(record: JsonRecord, key: string): JsonRecord | null {
+	return isRecord(record[key]) ? record[key] : null;
+}
+
+function findPipelineContext(record: JsonRecord): JsonRecord | null {
+	const metadata = nestedRecord(record, 'metadata');
+	return (
+		nestedRecord(record, 'pipeline_context') ??
+		(metadata ? nestedRecord(metadata, 'pipeline_context') : null) ??
+		(metadata ? nestedRecord(metadata, 'pipelineContext') : null) ??
+		nestedRecord(record, 'pipelineContext')
+	);
+}
+
+function normalizeWindowInfo(record: JsonRecord, assets: AssetExecutionView[]): RunWindowInfoView {
+	const pipeline = nestedRecord(record, 'pipeline');
+	const pipelineContext = findPipelineContext(record);
+	const pipelinePolicy =
+		formatWindow(pipeline?.window_policy) ??
+		formatWindow(pipeline?.windowPolicy) ??
+		formatWindow(pipeline?.policy) ??
+		formatWindow(pipeline?.window_kind) ??
+		formatWindow(record.window_policy) ??
+		null;
+	const requestedAnchorWindow =
+		formatWindow(pipeline?.anchor_window) ??
+		formatWindow(pipelineContext?.anchor_window) ??
+		formatWindow(pipelineContext?.requested_window) ??
+		formatWindow(record.anchor_window) ??
+		formatWindow(record.requested_window) ??
+		formatWindow(record.window_request) ??
+		null;
+	const resolvedAnchorWindow =
+		formatWindow(pipeline?.window) ??
+		formatWindow(pipelineContext?.window) ??
+		formatWindow(pipelineContext?.resolved_window) ??
+		formatWindow(record.resolved_window) ??
+		formatWindow(record.window) ??
+		null;
+
+	return {
+		pipelinePolicy,
+		requestedAnchorWindow,
+		resolvedAnchorWindow,
+		assetWindows: assets
+			.filter((asset) => asset.window)
+			.map((asset) => ({ asset: asset.asset, window: asset.window! }))
+	};
 }
 
 function asIntegerish(value: unknown): number | null {
@@ -192,7 +302,11 @@ function normalizeAssetList(record: JsonRecord, fallbackStatus: RunStatus): Asse
 				? record.asset_results
 				: Array.isArray(record.node_results)
 					? record.node_results
-					: [];
+					: Array.isArray(record.nodes)
+						? record.nodes
+						: Array.isArray(record.asset_runs)
+							? record.asset_runs
+							: [];
 
 	const assets = rawAssets.map((asset, index) => {
 		const assetRecord = isRecord(asset) ? asset : {};
@@ -214,6 +328,11 @@ function normalizeAssetList(record: JsonRecord, fallbackStatus: RunStatus): Asse
 		const relation =
 			firstString(assetRecord, ['output', 'relation']) ?? outputs[0]?.relation ?? null;
 		const stageNumber = asIntegerish(assetRecord.stage) ?? asIntegerish(assetRecord.stage_number);
+		const runtimeWindow =
+			formatWindow(assetRecord.window) ??
+			formatWindow(assetRecord.runtime_window) ??
+			formatWindow(assetRecord.anchor_window) ??
+			null;
 		return {
 			id: firstString(assetRecord, ['id', 'asset_id']) ?? name,
 			status: normalizeStatus(assetRecord.status ?? fallbackStatus),
@@ -237,7 +356,8 @@ function normalizeAssetList(record: JsonRecord, fallbackStatus: RunStatus): Asse
 				firstString(assetRecord, ['connection', 'connection_name']) ??
 				outputs[0]?.connection ??
 				null,
-			database: firstString(assetRecord, ['database', 'database_path'])
+			database: firstString(assetRecord, ['database', 'database_path']),
+			window: runtimeWindow
 		};
 	});
 
@@ -354,6 +474,7 @@ export function normalizeRunDetail(payload: unknown, requestedRunId: string): Ru
 	const status = normalizeStatus(record.status);
 	const id = firstString(record, ['id', 'run_id']) ?? requestedRunId;
 	const assets = normalizeAssetList(record, status);
+	const windowInfo = normalizeWindowInfo(record, assets);
 	const outputs = normalizeOutputs(record, assets);
 	const firstFailedAsset = assets.find((asset) => asset.status === 'failed' || asset.error);
 	const errorMessage =
@@ -419,6 +540,7 @@ export function normalizeRunDetail(payload: unknown, requestedRunId: string): Ru
 		progressPercent:
 			status === 'running' ? Math.round((assetsCompleted / Math.max(assetsTotal, 1)) * 100) : null,
 		assetCounts,
-		failedAssetId: firstFailedAsset?.id ?? null
+		failedAssetId: firstFailedAsset?.id ?? null,
+		windowInfo
 	};
 }

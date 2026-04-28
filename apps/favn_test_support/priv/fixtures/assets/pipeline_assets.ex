@@ -72,7 +72,7 @@ defmodule Favn.Test.Fixtures.Pipelines.SimplePipeline do
     meta(owner: "data-platform", domain: :sales)
 
     schedule({Schedules, :daily_default})
-    window(:calendar_day)
+    window(:day)
     source(:snowflake_primary)
     outputs([:warehouse_gold])
   end

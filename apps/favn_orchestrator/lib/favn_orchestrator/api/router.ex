@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.API.Router do
   require Logger
 
   alias Favn.Manifest.Version
+  alias Favn.Window.Policy
+  alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
 
@@ -448,6 +450,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :invalid_pipeline_target} ->
         error(conn, 422, "validation_failed", "Invalid pipeline target id")
+
+      {:error, reason} when is_tuple(reason) ->
+        maybe_window_policy_error(conn, reason)
 
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
@@ -964,7 +969,8 @@ defmodule FavnOrchestrator.API.Router do
   defp submit_run_from_request(params) do
     with {:ok, target} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
-         {:ok, dependencies} <- fetch_dependencies(params, target) do
+         {:ok, dependencies} <- fetch_dependencies(params, target),
+         {:ok, window_request} <- fetch_window_request(params, target) do
       case target do
         %{type: "asset", id: target_id} ->
           FavnOrchestrator.submit_asset_run_for_manifest(manifest_version_id, target_id,
@@ -972,11 +978,34 @@ defmodule FavnOrchestrator.API.Router do
           )
 
         %{type: "pipeline", id: target_id} ->
-          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id)
+          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id,
+            window_request: window_request
+          )
 
         _ ->
           {:error, :invalid_target}
       end
+    end
+  end
+
+  defp fetch_window_request(params, %{type: "asset"}) when is_map(params) do
+    if Map.has_key?(params, "window") do
+      {:error, :invalid_window_request}
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp fetch_window_request(params, %{type: "pipeline"}) when is_map(params) do
+    case Map.get(params, "window") do
+      nil ->
+        {:ok, nil}
+
+      %{} = window ->
+        WindowRequest.from_value(window)
+
+      _other ->
+        {:error, :invalid_window_request}
     end
   end
 
@@ -1073,6 +1102,46 @@ defmodule FavnOrchestrator.API.Router do
     |> put_resp_content_type("application/json")
     |> send_resp(status, body)
   end
+
+  defp maybe_window_policy_error(conn, reason) do
+    case window_policy_error(reason) do
+      {:ok, message, details} -> error(conn, 422, "validation_failed", message, details)
+      :error -> error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  defp window_policy_error({:missing_window_request, kind}) do
+    {:ok, "Pipeline requires an explicit #{kind} window", %{kind: atom_name(kind)}}
+  end
+
+  defp window_policy_error({:full_load_not_allowed, kind}) do
+    {:ok, "Pipeline does not allow full-load submissions for #{kind} windows",
+     %{kind: atom_name(kind)}}
+  end
+
+  defp window_policy_error({:window_kind_mismatch, expected, actual}) do
+    {:ok, "Window kind #{actual} does not match pipeline policy #{expected}",
+     %{expected: atom_name(expected), actual: atom_name(actual)}}
+  end
+
+  defp window_policy_error({:window_request_without_policy, kind}) do
+    {:ok, "Window request #{kind} was provided for a pipeline without a window policy",
+     %{kind: atom_name(kind)}}
+  end
+
+  defp window_policy_error({:invalid_window_request, reason}) do
+    {:ok, "Invalid window request", %{reason: inspect(reason)}}
+  end
+
+  defp window_policy_error({:invalid_window_value, kind, value}) do
+    {:ok, "Invalid #{kind} window value", %{kind: atom_name(kind), value: value}}
+  end
+
+  defp window_policy_error({:invalid_timezone, timezone}) do
+    {:ok, "Invalid window timezone", %{timezone: timezone}}
+  end
+
+  defp window_policy_error(_reason), do: :error
 
   defp request_id(conn) do
     case get_resp_header(conn, "x-request-id") do
@@ -1171,7 +1240,7 @@ defmodule FavnOrchestrator.API.Router do
       overlap: atom_name(entry.overlap),
       missed: atom_name(entry.missed),
       active: entry.active,
-      window: atom_name(entry.window),
+      window: window_policy_dto(entry.window),
       schedule_fingerprint: entry.schedule_fingerprint,
       manifest_version_id: entry.manifest_version_id,
       manifest_content_hash: entry.manifest_content_hash,
@@ -1286,6 +1355,17 @@ defmodule FavnOrchestrator.API.Router do
 
   defp atom_name(nil), do: nil
   defp atom_name(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp window_policy_dto(nil), do: nil
+
+  defp window_policy_dto(%Policy{} = policy) do
+    %{
+      kind: atom_name(policy.kind),
+      anchor: atom_name(policy.anchor),
+      timezone: policy.timezone,
+      allow_full_load: policy.allow_full_load
+    }
+  end
 
   defp module_name(nil), do: nil
   defp module_name(value) when is_atom(value), do: Atom.to_string(value)

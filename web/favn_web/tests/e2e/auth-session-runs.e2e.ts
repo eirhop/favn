@@ -7,6 +7,8 @@ const VALID_PASSWORD = 'password123';
 const FAVN_WEB_SESSION_COOKIE = 'favn_web_session';
 const BASE_URL = 'http://127.0.0.1:4173';
 const SESSION_SECRET = 'playwright-session-secret';
+const INVALID_RUN_TARGET_MESSAGE =
+	'Expected target with type "asset"|"pipeline", non-empty id, optional dependencies "all"|"none" for asset targets only, and optional window { mode: "single", kind: "hour"|"day"|"month"|"year", value, timezone? } for pipeline targets only';
 
 function encodeSessionCookie(payload: Record<string, unknown>): string {
 	return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
@@ -285,8 +287,7 @@ test.describe('auth/session/runs flow', () => {
 		expect(pipelineSubmitWithDependencies.body).toEqual({
 			error: {
 				code: 'validation_failed',
-				message:
-					'Expected target with type "asset"|"pipeline", non-empty id, and optional dependencies "all"|"none" for asset targets only'
+				message: INVALID_RUN_TARGET_MESSAGE
 			}
 		});
 

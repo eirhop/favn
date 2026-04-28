@@ -170,6 +170,45 @@ defmodule Favn.Assets.GraphPlannerParityTest do
            end)
   end
 
+  test "planner counts civil daily windows across DST ranges" do
+    module_name = Module.concat(__MODULE__, "DailyDSTRoot#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(module_name)} do
+        use Favn.Assets
+
+        @asset true
+        @window Favn.Window.daily(timezone: "Europe/Oslo")
+        def target(_ctx), do: :ok
+      end
+      """,
+      "test/assets/graph_planner_parity_test.exs"
+    )
+
+    assert {:ok, index} = GraphIndex.index_for_modules([module_name])
+
+    range = %{
+      kind: :day,
+      start_at:
+        DateTime.from_naive!(~N[2026-03-28 00:00:00], "Europe/Oslo", Favn.Timezone.database!()),
+      end_at:
+        DateTime.from_naive!(~N[2026-03-30 00:00:00], "Europe/Oslo", Favn.Timezone.database!()),
+      timezone: "Europe/Oslo"
+    }
+
+    assert DateTime.diff(range.end_at, range.start_at, :hour) == 47
+
+    assert {:ok, plan} =
+             Planner.plan({module_name, :target},
+               graph_index: index,
+               dependencies: :all,
+               anchor_ranges: [range]
+             )
+
+    assert length(plan.target_node_keys) == 2
+  end
+
   test "graph index and planner include relation-inferred SQL dependencies" do
     assert {:ok, index} =
              GraphIndex.index_for_modules([

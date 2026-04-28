@@ -205,39 +205,61 @@ defmodule Favn.Assets.Planner do
   end
 
   defp build_windowed_graph(index, anchors) do
-    ref_nodes =
-      Enum.reduce(index.topo_order, %{}, fn ref, acc ->
-        asset = Map.fetch!(index.assets_by_ref, ref)
-        Map.put(acc, ref, build_ref_nodes(ref, asset, anchors))
-      end)
-
-    nodes =
-      index.topo_order
-      |> Enum.flat_map(fn ref ->
-        Enum.map(Map.fetch!(ref_nodes, ref), fn node ->
-          upstream = build_edges(node, index.upstream |> Map.fetch!(ref), ref_nodes)
-          downstream = build_edges(node, index.downstream |> Map.fetch!(ref), ref_nodes)
-          Map.merge(node, %{upstream: upstream, downstream: downstream})
+    with {:ok, ref_nodes} <- build_ref_nodes_by_ref(index, anchors) do
+      nodes =
+        index.topo_order
+        |> Enum.flat_map(fn ref ->
+          Enum.map(Map.fetch!(ref_nodes, ref), fn node ->
+            upstream = build_edges(node, index.upstream |> Map.fetch!(ref), ref_nodes)
+            downstream = build_edges(node, index.downstream |> Map.fetch!(ref), ref_nodes)
+            Map.merge(node, %{upstream: upstream, downstream: downstream})
+          end)
         end)
-      end)
 
-    {:ok, %{nodes: nodes, ref_nodes: ref_nodes}}
+      {:ok, %{nodes: nodes, ref_nodes: ref_nodes}}
+    end
   end
 
-  defp build_ref_nodes(ref, _asset, []), do: [%{ref: ref, node_key: {ref, nil}, window: nil}]
+  defp build_ref_nodes_by_ref(index, anchors) do
+    Enum.reduce_while(index.topo_order, {:ok, %{}}, fn ref, {:ok, acc} ->
+      asset = Map.fetch!(index.assets_by_ref, ref)
 
-  defp build_ref_nodes(ref, %{window_spec: nil}, _anchors),
-    do: [%{ref: ref, node_key: {ref, nil}, window: nil}]
-
-  defp build_ref_nodes(ref, %{window_spec: %Spec{} = spec}, anchors) when is_list(anchors) do
-    anchors
-    |> Enum.flat_map(&expand_windows(&1, spec))
-    |> Enum.uniq_by(& &1.key)
-    |> Enum.sort_by(&window_sort_key/1)
-    |> Enum.map(fn runtime_window ->
-      %{ref: ref, node_key: {ref, runtime_window.key}, window: runtime_window}
+      case build_ref_nodes(ref, asset, anchors) do
+        {:ok, nodes} -> {:cont, {:ok, Map.put(acc, ref, nodes)}}
+        {:error, _reason} = error -> {:halt, error}
+      end
     end)
   end
+
+  defp build_ref_nodes(ref, asset, []) do
+    case asset_window_spec(asset) do
+      %Spec{required: true} -> {:error, {:required_window_missing, ref}}
+      _other -> {:ok, [%{ref: ref, node_key: {ref, nil}, window: nil}]}
+    end
+  end
+
+  defp build_ref_nodes(ref, asset, anchors) when is_list(anchors) do
+    case asset_window_spec(asset) do
+      nil ->
+        {:ok, [%{ref: ref, node_key: {ref, nil}, window: nil}]}
+
+      %Spec{} = spec ->
+        nodes =
+          anchors
+          |> Enum.flat_map(&expand_windows(&1, spec))
+          |> Enum.uniq_by(& &1.key)
+          |> Enum.sort_by(&window_sort_key/1)
+          |> Enum.map(fn runtime_window ->
+            %{ref: ref, node_key: {ref, runtime_window.key}, window: runtime_window}
+          end)
+
+        {:ok, nodes}
+    end
+  end
+
+  defp asset_window_spec(%{window_spec: %Spec{} = spec}), do: spec
+  defp asset_window_spec(%{window: %Spec{} = spec}), do: spec
+  defp asset_window_spec(_asset), do: nil
 
   defp expand_windows(%Anchor{} = anchor_window, %Spec{} = spec) do
     count =
@@ -261,8 +283,9 @@ defmodule Favn.Assets.Planner do
 
     case kind do
       :hour -> max(div(DateTime.diff(end_floor, start_floor, :second), 3600), 1)
-      :day -> max(div(DateTime.diff(end_floor, start_floor, :second), 86_400), 1)
+      :day -> max(Date.diff(DateTime.to_date(end_floor), DateTime.to_date(start_floor)), 1)
       :month -> max(month_diff(start_floor, end_floor), 1)
+      :year -> max(DateTime.to_date(end_floor).year - DateTime.to_date(start_floor).year, 1)
     end
   end
 
@@ -281,14 +304,20 @@ defmodule Favn.Assets.Planner do
   defp floor_to_kind(datetime, :month, timezone),
     do: datetime |> DateTime.shift_zone!(timezone) |> floor_month()
 
+  defp floor_to_kind(datetime, :year, timezone),
+    do: datetime |> DateTime.shift_zone!(timezone) |> floor_year()
+
   defp floor_hour(%DateTime{} = dt), do: %{dt | minute: 0, second: 0, microsecond: {0, 0}}
   defp floor_day(%DateTime{} = dt), do: %{dt | hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
 
   defp floor_month(%DateTime{} = dt),
     do: %{dt | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
 
+  defp floor_year(%DateTime{} = dt),
+    do: %{dt | month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
+
   defp shift_kind(datetime, :hour, count), do: DateTime.add(datetime, count * 3600, :second)
-  defp shift_kind(datetime, :day, count), do: DateTime.add(datetime, count, :day)
+  defp shift_kind(datetime, :day, count), do: shift_day(datetime, count)
 
   defp shift_kind(%DateTime{} = datetime, :month, count) do
     date = DateTime.to_date(datetime)
@@ -297,7 +326,20 @@ defmodule Favn.Assets.Planner do
     month = rem(total, 12) + 1
     {:ok, new_date} = Date.new(year, month, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, datetime.time_zone)
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
+  end
+
+  defp shift_kind(%DateTime{} = datetime, :year, count) do
+    date = DateTime.to_date(datetime)
+    {:ok, new_date} = Date.new(date.year + count, 1, 1)
+    {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
+  end
+
+  defp shift_day(%DateTime{} = datetime, count) do
+    date = datetime |> DateTime.to_date() |> Date.add(count)
+    {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00])
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
   end
 
   defp window_sort_key(%Runtime{key: key}), do: {key.start_at_us, Key.encode(key)}

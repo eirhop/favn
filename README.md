@@ -39,7 +39,7 @@ development on top of the new boundaries.
 - `{:favn, ...}` remains the one public package users should depend on
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
-- the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, and submitting the current orchestrator asset run path
+- the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, submitting active-manifest pipeline runs with explicit window requests, and submitting the current orchestrator asset run path
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
@@ -48,7 +48,7 @@ development on top of the new boundaries.
 
 ## What Favn Gives You
 
-- Elixir DSLs for single assets, multi-assets, SQL assets, namespaces, schedules, and pipelines
+- Elixir DSLs for single assets, multi-assets, SQL assets, namespaces, schedules, pipeline window policies, and pipelines
 - explicit dependency modeling between assets
 - compile-time manifest generation for authored business code
 - deterministic planning from selected targets and dependency rules
@@ -205,9 +205,15 @@ defmodule MyApp.Pipelines.DailySales do
     asset MyApp.Warehouse.Gold.Sales.OrderSummary
     deps :all
     schedule cron: "0 2 * * *", timezone: "Etc/UTC"
+    window :daily
   end
 end
 ```
+
+Windowed pipelines support `:hourly`, `:daily`, `:monthly`, and `:yearly`
+policies. Manual local runs pass the concrete requested window, while scheduled
+windowed runs resolve the previous complete period in the schedule timezone.
+Pipelines without a `window` clause run without an anchor window.
 
 ### 5. Configure authored modules
 
@@ -272,7 +278,7 @@ mix deps.get
 mix favn.doctor
 mix favn.install
 mix favn.dev
-mix favn.run MyApp.Pipelines.DailySales
+mix favn.run MyApp.Pipelines.DailySales --window day:2026-04-27 --timezone Europe/Oslo
 mix favn.logs
 mix favn.status
 mix favn.reload

@@ -5,6 +5,7 @@ defmodule FavnOrchestrator do
 
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias Favn.Window.Policy
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Projector
@@ -26,7 +27,8 @@ defmodule FavnOrchestrator do
 
   @type manifest_target_option :: %{
           required(:target_id) => String.t(),
-          required(:label) => String.t()
+          required(:label) => String.t(),
+          optional(:window) => map() | nil
         }
 
   @type manifest_targets :: %{
@@ -447,10 +449,28 @@ defmodule FavnOrchestrator do
 
       %{
         target_id: target_id_for_pipeline(target_module),
-        label: inspect(target_module)
+        label: inspect(target_module),
+        window: window_policy_dto(pipeline.window)
       }
     end)
     |> Enum.sort_by(& &1.label)
+  end
+
+  defp window_policy_dto(nil), do: nil
+
+  defp window_policy_dto(%Policy{} = policy) do
+    %{
+      kind: Atom.to_string(policy.kind),
+      anchor: Atom.to_string(policy.anchor),
+      timezone: policy.timezone,
+      allow_full_load: policy.allow_full_load
+    }
+  end
+
+  defp window_policy_dto(policy) do
+    policy
+    |> Policy.from_value!()
+    |> window_policy_dto()
   end
 
   defp resolve_asset_target_ref(%Version{} = version, target_id) when is_binary(target_id) do

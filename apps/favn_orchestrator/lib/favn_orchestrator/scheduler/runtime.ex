@@ -6,7 +6,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   alias Favn.Manifest.Index
   alias Favn.Manifest.PipelineResolver
   alias Favn.Scheduler.State
-  alias Favn.Window.Anchor
+  alias Favn.Window.Policy
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.Scheduler.ManifestEntries
@@ -358,6 +358,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
              manifest_version_id: version.manifest_version_id,
              trigger: trigger,
              dependencies: resolution.dependencies,
+             anchor_window: anchor_window,
              _pipeline_context: resolution.pipeline_ctx,
              _submit_ref: entry.module,
              _submit_kind: :pipeline
@@ -401,11 +402,14 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   defp maybe_anchor_window(nil, _due_at, _timezone), do: nil
 
-  defp maybe_anchor_window(kind, due_at, timezone) when kind in [:hour, :day, :month] do
-    local = DateTime.shift_zone!(due_at, timezone, Favn.Timezone.database!())
-    start_at = floor_kind(local, kind)
-    end_at = shift_kind(start_at, kind)
-    Anchor.new!(kind, start_at, end_at, timezone: timezone)
+  defp maybe_anchor_window(%Policy{} = policy, due_at, timezone) do
+    case Policy.resolve_scheduled(policy, due_at, timezone) do
+      {:ok, anchor_window} ->
+        anchor_window
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid scheduled window policy: #{inspect(reason)}"
+    end
   end
 
   defp select_occurrences(entry, :all, cron, timezone, last_due_at, latest_due) do
@@ -534,24 +538,5 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     now = DateTime.utc_now()
     ms_to_next_minute = 60_000 - now.second * 1_000 - div(elem(now.microsecond, 0), 1_000)
     max(100, min(base_tick_ms, ms_to_next_minute))
-  end
-
-  defp floor_kind(dt, :hour), do: %{dt | minute: 0, second: 0, microsecond: {0, 0}}
-  defp floor_kind(dt, :day), do: %{dt | hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp floor_kind(dt, :month),
-    do: %{dt | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp shift_kind(dt, :hour), do: DateTime.add(dt, 3600, :second, Favn.Timezone.database!())
-  defp shift_kind(dt, :day), do: DateTime.add(dt, 1, :day, Favn.Timezone.database!())
-
-  defp shift_kind(%DateTime{} = dt, :month) do
-    date = DateTime.to_date(dt)
-    total = date.year * 12 + date.month
-    year = div(total, 12)
-    month = rem(total, 12) + 1
-    {:ok, new_date} = Date.new(year, month, 1)
-    {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, dt.time_zone, Favn.Timezone.database!())
   end
 end

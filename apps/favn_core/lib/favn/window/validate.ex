@@ -1,10 +1,10 @@
 defmodule Favn.Window.Validate do
   @moduledoc false
 
-  @type kind :: :hour | :day | :month
+  @type kind :: :hour | :day | :month | :year
 
   @spec kind(kind()) :: :ok | {:error, term()}
-  def kind(kind) when kind in [:hour, :day, :month], do: :ok
+  def kind(kind) when kind in [:hour, :day, :month, :year], do: :ok
   def kind(kind), do: {:error, {:invalid_kind, kind}}
 
   @spec timezone(String.t()) :: :ok | {:error, term()}

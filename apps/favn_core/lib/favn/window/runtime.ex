@@ -6,7 +6,7 @@ defmodule Favn.Window.Runtime do
   alias Favn.Window.Key
   alias Favn.Window.Validate
 
-  @type kind :: :hour | :day | :month
+  @type kind :: :hour | :day | :month | :year
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -70,7 +70,8 @@ defmodule Favn.Window.Runtime do
   end
 
   defp validate_key(%{kind: kind, start_at_us: start_at_us, timezone: timezone})
-       when kind in [:hour, :day, :month] and is_integer(start_at_us) and is_binary(timezone) do
+       when kind in [:hour, :day, :month, :year] and is_integer(start_at_us) and
+              is_binary(timezone) do
     Key.validate(%{kind: kind, start_at_us: start_at_us, timezone: timezone})
   end
 

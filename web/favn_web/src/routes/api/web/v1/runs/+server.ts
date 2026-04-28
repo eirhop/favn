@@ -1,47 +1,7 @@
 import type { RequestHandler } from './$types';
 import { orchestratorListRuns, orchestratorSubmitRun } from '$lib/server/orchestrator';
+import { parseSubmitPayload } from '$lib/server/run_submit_payload';
 import { jsonError, readJsonBody, relayJson, requireSession } from '$lib/server/web_api';
-
-function parseSubmitPayload(value: Record<string, unknown>): {
-	target: { type: 'asset' | 'pipeline'; id: string };
-	manifest_selection?: unknown;
-	dependencies?: 'all' | 'none';
-} | null {
-	const targetValue = value.target;
-
-	if (typeof targetValue !== 'object' || targetValue === null || Array.isArray(targetValue)) {
-		return null;
-	}
-
-	const target = targetValue as Record<string, unknown>;
-
-	const type = target.type;
-	const id = typeof target.id === 'string' ? target.id.trim() : target.id;
-
-	if ((type !== 'asset' && type !== 'pipeline') || typeof id !== 'string' || id.length === 0) {
-		return null;
-	}
-
-	const dependencies = value.dependencies;
-	if (
-		'dependencies' in value &&
-		dependencies !== undefined &&
-		dependencies !== 'all' &&
-		dependencies !== 'none'
-	) {
-		return null;
-	}
-
-	if (type === 'pipeline' && 'dependencies' in value && dependencies !== undefined) {
-		return null;
-	}
-
-	return {
-		target: { type, id },
-		...('manifest_selection' in value ? { manifest_selection: value.manifest_selection } : {}),
-		...(dependencies === 'all' || dependencies === 'none' ? { dependencies } : {})
-	};
-}
 
 export const GET: RequestHandler = async (event) => {
 	const unauthorized = await requireSession(event);
@@ -65,7 +25,7 @@ export const POST: RequestHandler = async (event) => {
 		return jsonError(
 			422,
 			'validation_failed',
-			'Expected target with type "asset"|"pipeline", non-empty id, and optional dependencies "all"|"none" for asset targets only'
+			'Expected target with type "asset"|"pipeline", non-empty id, optional dependencies "all"|"none" for asset targets only, and optional window { mode: "single", kind: "hour"|"day"|"month"|"year", value, timezone? } for pipeline targets only'
 		);
 	}
 

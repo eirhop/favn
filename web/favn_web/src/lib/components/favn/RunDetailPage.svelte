@@ -23,6 +23,14 @@
 			run.assets.find((asset: AssetExecutionView) => asset.error) ??
 			null
 	);
+	let windowItems = $derived(
+		[
+			{ label: 'Pipeline policy', value: run.windowInfo.pipelinePolicy },
+			{ label: 'Requested anchor', value: run.windowInfo.requestedAnchorWindow },
+			{ label: 'Resolved anchor', value: run.windowInfo.resolvedAnchorWindow }
+		].filter((item) => item.value)
+	);
+	let hasWindowInfo = $derived(windowItems.length > 0 || run.windowInfo.assetWindows.length > 0);
 	let summaryItems = $derived([
 		{ label: 'Status', value: run.status, status: true },
 		{ label: 'Target', value: run.target, title: run.target, wide: true },
@@ -147,6 +155,58 @@
 					</dl>
 				</Card.Content>
 			</Card.Root>
+
+			{#if hasWindowInfo}
+				<Card.Root>
+					<Card.Header>
+						<h2 class="text-lg font-semibold tracking-tight">Window context</h2>
+						<Card.Description>
+							Pipeline anchor and runtime windows reported by the orchestrator.
+						</Card.Description>
+					</Card.Header>
+					<Card.Content class="space-y-4">
+						{#if windowItems.length > 0}
+							<dl class="grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
+								{#each windowItems as item (item.label)}
+									<div class="min-w-0 rounded-lg border bg-slate-50/70 p-3">
+										<dt class="text-xs font-medium tracking-wide text-slate-500 uppercase">
+											{item.label}
+										</dt>
+										<dd class="mt-1 break-words text-slate-900">{item.value}</dd>
+									</div>
+								{/each}
+							</dl>
+						{/if}
+
+						{#if run.windowInfo.assetWindows.length > 0}
+							<div class="space-y-2">
+								<div class="flex items-center gap-2">
+									<h3 class="text-sm font-semibold text-slate-900">Asset/runtime windows</h3>
+									<Badge variant="outline">{run.windowInfo.assetWindows.length}</Badge>
+								</div>
+								<div class="overflow-hidden rounded-lg border">
+									<table class="w-full text-left text-sm">
+										<thead class="bg-slate-50 text-xs tracking-wide text-slate-500 uppercase">
+											<tr>
+												<th class="px-3 py-2 font-medium">Asset</th>
+												<th class="px-3 py-2 font-medium">Window</th>
+											</tr>
+										</thead>
+										<tbody class="divide-y">
+											{#each run.windowInfo.assetWindows as item (item.asset + item.window)}
+												<tr>
+													<td class="px-3 py-2 font-medium text-slate-900">{item.asset}</td>
+													<td class="px-3 py-2 text-slate-700">{item.window}</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							</div>
+						{/if}
+					</Card.Content>
+				</Card.Root>
+			{/if}
 
 			{#if run.error}
 				<ErrorPanel

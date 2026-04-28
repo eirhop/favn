@@ -263,6 +263,35 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"data" => %{"activated" => true}} = Jason.decode!(response.resp_body)
   end
 
+  test "active manifest target payload exposes pipeline window policy" do
+    version = schedule_manifest_version("mv_active_window_targets")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/manifests/active")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"targets" => %{"pipelines" => [pipeline]}}} =
+             Jason.decode!(response.resp_body)
+
+    assert pipeline["target_id"] == "pipeline:Elixir.MyApp.Pipelines.DailyOrders"
+
+    assert pipeline["window"] == %{
+             "kind" => "day",
+             "anchor" => "previous_complete_period",
+             "timezone" => nil,
+             "allow_full_load" => false
+           }
+  end
+
   test "lists in-flight run ids for reload guard" do
     seed_run_events!("run_in_flight_a", [1])
 
@@ -369,6 +398,59 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 422
     assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission reports missing pipeline window request clearly" do
+    version = schedule_manifest_version("mv_pipeline_window_missing")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Pipeline requires an explicit day window"
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission reports pipeline window kind mismatch clearly" do
+    version = schedule_manifest_version("mv_pipeline_window_mismatch")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        window: %{mode: "single", kind: "month", value: "2026-03"}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Window kind month does not match pipeline policy day"
+             }
+           } = Jason.decode!(response.resp_body)
   end
 
   test "service token can cancel run without actor headers" do

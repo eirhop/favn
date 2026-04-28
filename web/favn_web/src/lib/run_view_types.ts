@@ -46,6 +46,14 @@ export type AssetExecutionView = {
 	relation: string | null;
 	connection: string | null;
 	database: string | null;
+	window: string | null;
+};
+
+export type RunWindowInfoView = {
+	pipelinePolicy: string | null;
+	requestedAnchorWindow: string | null;
+	resolvedAnchorWindow: string | null;
+	assetWindows: Array<{ asset: string; window: string }>;
 };
 
 export type OutputView = {
@@ -82,4 +90,5 @@ export type RunDetailView = RunSummaryView & {
 		pending: number;
 	};
 	failedAssetId: string | null;
+	windowInfo: RunWindowInfoView;
 };

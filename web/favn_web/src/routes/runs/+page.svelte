@@ -8,5 +8,5 @@
 </script>
 
 <AppShell session={data.session} activeManifestVersionId={data.activeManifestVersionId}>
-	<RunsPage runs={data.runs} loadError={data.loadError} />
+	<RunsPage runs={data.runs} loadError={data.loadError} pipelineTargets={data.pipelineTargets} />
 </AppShell>
