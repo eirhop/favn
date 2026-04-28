@@ -4,18 +4,19 @@ defmodule FavnReferenceWorkload.Client.FakeAPI do
 
   This simulates an external service returning JSON-shaped rows.
 
-  The client does not need runtime context in this example, so raw assets call
-  it with only the dataset they want to fetch.
+  Most datasets need only the dataset name. The source-system orders path also
+  accepts a narrow source config map so the tutorial can show resolved runtime
+  config flowing from `ctx.config` without passing the full runtime context.
 
   Best-practice point shown here:
 
   - do not pass full `ctx` into helpers unless they actually need runtime data
-  - this fake client is only responsible for returning rows, so `dataset` is
-    enough input
+  - pass only the narrow source config a client actually needs
   - keeping the API small makes the client easier to understand and reuse
   """
 
   @type dataset :: :customers | :products | :orders | :order_items | :payments
+  @type source_config :: %{required(:segment_id) => String.t(), optional(atom()) => term()}
 
   @spec fetch_rows(dataset()) :: {:ok, [map()]} | {:error, term()}
   def fetch_rows(dataset)
@@ -24,6 +25,18 @@ defmodule FavnReferenceWorkload.Client.FakeAPI do
   end
 
   def fetch_rows(_dataset), do: {:error, :invalid_dataset}
+
+  @spec fetch_rows(dataset(), source_config()) :: {:ok, [map()]} | {:error, term()}
+  def fetch_rows(:orders, %{segment_id: "source-failure"}) do
+    {:error, {:source_unavailable, :orders}}
+  end
+
+  def fetch_rows(:orders, %{segment_id: segment_id}) when is_binary(segment_id),
+    do: {:ok, rows_for(:orders)}
+
+  def fetch_rows(:orders, _source_config), do: {:error, :missing_segment_id}
+
+  def fetch_rows(dataset, _source_config), do: fetch_rows(dataset)
 
   defp rows_for(:customers) do
     [

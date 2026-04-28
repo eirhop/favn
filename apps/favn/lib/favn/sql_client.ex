@@ -7,6 +7,11 @@ defmodule Favn.SQLClient do
   for example in tooling, maintenance tasks, one-off inspections, or custom
   application logic that still uses the same Favn connection contracts.
 
+  One important use case is source-system raw landing from an Elixir
+  `Favn.Asset`: fetch records with a project-owned source client, then use
+  `Favn.SQLClient` to create/update the owned raw relation before downstream SQL
+  assets transform it.
+
   This client resolves connection configuration from your normal `config :favn`
   setup and runs through the same shared SQL runtime contracts that back SQL
   asset execution.
@@ -24,6 +29,19 @@ defmodule Favn.SQLClient do
       {:ok, session} = Favn.SQLClient.connect(:warehouse)
       {:ok, result} = Favn.SQLClient.query(session, "select 1")
       :ok = Favn.SQLClient.disconnect(session)
+
+  ## Raw landing from an asset
+
+      Favn.SQLClient.with_connection(:warehouse, [], fn session ->
+        with {:ok, _} <- Favn.SQLClient.execute(session, "create schema if not exists raw"),
+             {:ok, _} <- Favn.SQLClient.execute(session, raw_landing_sql()) do
+          :ok
+        end
+      end)
+
+  For source-system assets, declare source IDs and tokens with
+  `Favn.Asset.source_config/2`, read them from `ctx.config`, and return only
+  redacted or hashed source identity metadata.
 
   ## Functions and when to use them
 
