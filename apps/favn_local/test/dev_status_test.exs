@@ -30,10 +30,25 @@ defmodule Favn.Dev.StatusTest do
     runtime = %{
       "storage" => "memory",
       "active_manifest_version_id" => "mv_test",
+      "orchestrator_base_url" => "http://127.0.0.1:4101",
+      "web_base_url" => "http://127.0.0.1:4173",
+      "node_names" => %{
+        "runner" => "favn_runner_test@localhost",
+        "orchestrator" => "favn_orchestrator_test@localhost",
+        "control" => "favn_local_ctl_test@localhost"
+      },
       "services" => %{
         "web" => %{"pid" => pid},
-        "orchestrator" => %{"pid" => pid},
-        "runner" => %{"pid" => pid}
+        "orchestrator" => %{
+          "pid" => pid,
+          "node_name" => "favn_orchestrator_test@localhost",
+          "distribution_port" => 45_002
+        },
+        "runner" => %{
+          "pid" => pid,
+          "node_name" => "favn_runner_test@localhost",
+          "distribution_port" => 45_001
+        }
       }
     }
 
@@ -46,6 +61,13 @@ defmodule Favn.Dev.StatusTest do
     assert status.services.web.status == :running
     assert status.services.orchestrator.status == :running
     assert status.services.runner.status == :running
+    assert status.user_urls.web == "http://127.0.0.1:4173"
+    assert status.user_urls.orchestrator_api == "http://127.0.0.1:4101"
+    assert status.internal_control.runner_node.node_name == "favn_runner_test@localhost"
+    assert status.internal_control.runner_node.distribution_port == 45_001
+    assert status.internal_control.orchestrator_node.node_name == "favn_orchestrator_test@localhost"
+    assert status.internal_control.orchestrator_node.distribution_port == 45_002
+    assert status.internal_control.control_node == "favn_local_ctl_test@localhost"
   end
 
   test "inspect_stack/1 reports stale when runtime exists but services are dead", %{

@@ -54,12 +54,35 @@ defmodule FavnOrchestrator.Application do
     if Keyword.get(api_opts, :enabled, false) do
       [
         {Plug.Cowboy,
-         scheme: :http,
-         plug: FavnOrchestrator.API.Router,
-         options: [port: Keyword.get(api_opts, :port, 4101)]}
+         scheme: :http, plug: FavnOrchestrator.API.Router, options: api_server_options(api_opts)}
       ]
     else
       []
     end
   end
+
+  defp api_server_options(api_opts) do
+    api_opts
+    |> Keyword.get(:bind_ip, Keyword.get(api_opts, :host))
+    |> normalize_bind_ip()
+    |> case do
+      nil -> [port: Keyword.get(api_opts, :port, 4101)]
+      bind_ip -> [port: Keyword.get(api_opts, :port, 4101), ip: bind_ip]
+    end
+  end
+
+  defp normalize_bind_ip(nil), do: nil
+  defp normalize_bind_ip(ip) when is_tuple(ip) and tuple_size(ip) == 4, do: ip
+
+  defp normalize_bind_ip(host) when is_binary(host) do
+    host
+    |> String.split(".", parts: 4)
+    |> Enum.map(&Integer.parse/1)
+    |> case do
+      [{a, ""}, {b, ""}, {c, ""}, {d, ""}] -> {a, b, c, d}
+      _other -> nil
+    end
+  end
+
+  defp normalize_bind_ip(_other), do: nil
 end

@@ -78,10 +78,11 @@ defmodule Favn.Dev.LifecycleTest do
     ]
 
     assert {:error, {:start_failed, "orchestrator", _reason}} =
-             Dev.dev(
-               root_dir: root_dir,
-               web_port: free_port(),
-               service_specs_override: failing_specs,
+              Dev.dev(
+                root_dir: root_dir,
+                orchestrator_port: free_port(),
+                web_port: free_port(),
+                service_specs_override: failing_specs,
                skip_install_check: true,
                skip_bootstrap: true,
                skip_readiness: true
@@ -206,10 +207,11 @@ defmodule Favn.Dev.LifecycleTest do
 
     try do
       assert {:error, {:port_conflict, :web, ^port}} =
-               Dev.dev(
-                 root_dir: root_dir,
-                 web_port: port,
-                 skip_runtime_compile: true,
+                Dev.dev(
+                  root_dir: root_dir,
+                  web_port: port,
+                  orchestrator_port: free_port(),
+                  skip_runtime_compile: true,
                  skip_install_check: true,
                  skip_bootstrap: true,
                  skip_readiness: true
@@ -221,10 +223,11 @@ defmodule Favn.Dev.LifecycleTest do
 
   test "dev/1 returns explicit postgres unavailable diagnostics", %{root_dir: root_dir} do
     assert {:error, {:postgres_unavailable, "127.0.0.1", 1, _reason}} =
-             Dev.dev(
-               root_dir: root_dir,
-               web_port: free_port(),
-               storage: :postgres,
+              Dev.dev(
+                root_dir: root_dir,
+                orchestrator_port: free_port(),
+                web_port: free_port(),
+                storage: :postgres,
                postgres: [
                  hostname: "127.0.0.1",
                  port: 1,
@@ -243,10 +246,11 @@ defmodule Favn.Dev.LifecycleTest do
 
   test "dev/1 returns explicit postgres misconfiguration diagnostics", %{root_dir: root_dir} do
     assert {:error, {:postgres_misconfigured, :hostname}} =
-             Dev.dev(
-               root_dir: root_dir,
-               web_port: free_port(),
-               storage: :postgres,
+              Dev.dev(
+                root_dir: root_dir,
+                orchestrator_port: free_port(),
+                web_port: free_port(),
+                storage: :postgres,
                postgres: [
                  hostname: "",
                  port: 5432,
@@ -267,6 +271,8 @@ defmodule Favn.Dev.LifecycleTest do
     result =
       Dev.dev(
         root_dir: root_dir,
+        orchestrator_port: free_port(),
+        web_port: free_port(),
         skip_install_check: true,
         skip_bootstrap: true,
         skip_readiness: true
@@ -284,6 +290,8 @@ defmodule Favn.Dev.LifecycleTest do
       Task.async(fn ->
         Dev.dev(
           root_dir: root_dir,
+          orchestrator_port: free_port(),
+          web_port: free_port(),
           skip_install_check: true,
           skip_bootstrap: true,
           skip_readiness: true,

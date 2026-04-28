@@ -193,7 +193,12 @@ defmodule Favn.Dev.Stack do
 
   defp ensure_port_available(service, port)
        when is_atom(service) and is_integer(port) and port > 0 do
-    case :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, false}]) do
+    case :gen_tcp.listen(port, [
+           :binary,
+           {:active, false},
+           {:reuseaddr, false},
+           {:ip, {127, 0, 0, 1}}
+         ]) do
       {:ok, socket} ->
         :ok = :gen_tcp.close(socket)
         :ok
@@ -344,7 +349,10 @@ defmodule Favn.Dev.Stack do
         :ok
 
       _ ->
-        NodeControl.ensure_local_node_started(secrets["rpc_cookie"], name: control_short)
+        NodeControl.ensure_local_node_started(secrets["rpc_cookie"],
+          name: control_short,
+          distribution_port: RuntimeLaunch.distribution_port(:control, opts)
+        )
     end
   end
 
@@ -461,8 +469,16 @@ defmodule Favn.Dev.Stack do
 
           service =
             case name do
-              "runner" -> Map.put(service, "node_name", node_names.runner_full)
-              "orchestrator" -> Map.put(service, "node_name", node_names.orchestrator_full)
+              "runner" ->
+                service
+                |> Map.put("node_name", node_names.runner_full)
+                |> Map.put("distribution_port", RuntimeLaunch.distribution_port(:runner, opts))
+
+              "orchestrator" ->
+                service
+                |> Map.put("node_name", node_names.orchestrator_full)
+                |> Map.put("distribution_port", RuntimeLaunch.distribution_port(:orchestrator, opts))
+
               _ -> service
             end
 
@@ -760,13 +776,21 @@ defmodule Favn.Dev.Stack do
     IO.puts("Favn local dev stack")
     IO.puts("storage: #{config.storage}")
     IO.puts("scheduler: #{if(config.scheduler_enabled, do: "enabled", else: "disabled")}")
+    IO.puts("local URLs:")
     IO.puts("web: pid=#{services["web"].pid} url=#{config.web_base_url}")
 
     IO.puts(
-      "orchestrator: pid=#{services["orchestrator"].pid} url=#{config.orchestrator_base_url}"
+      "orchestrator API: pid=#{services["orchestrator"].pid} url=#{config.orchestrator_base_url}"
     )
 
-    IO.puts("runner: pid=#{services["runner"].pid} node=#{node_names.runner_full}")
+    IO.puts("internal control plane:")
+    IO.puts("runner node: pid=#{services["runner"].pid} node=#{node_names.runner_full}")
+
+    IO.puts(
+      "orchestrator node: pid=#{services["orchestrator"].pid} node=#{node_names.orchestrator_full}"
+    )
+
+    IO.puts("control node: node=#{node_names.control_full}")
     IO.puts("logs: web=#{services["web"].log_path}")
     IO.puts("logs: orchestrator=#{services["orchestrator"].log_path}")
     IO.puts("logs: runner=#{services["runner"].log_path}")
