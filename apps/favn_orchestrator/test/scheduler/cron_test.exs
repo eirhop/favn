@@ -64,4 +64,51 @@ defmodule FavnOrchestrator.Scheduler.CronTest do
              ~U[2026-04-27 12:00:03Z]
            ]
   end
+
+  test "capped high-frequency occurrence generation does not need a full day of candidates" do
+    assert Cron.occurrences_between(
+             "* * * * * *",
+             "Etc/UTC",
+             ~U[2026-04-27 00:00:00Z],
+             ~U[2026-04-28 00:00:00Z],
+             limit: 3
+           ) == [
+             ~U[2026-04-27 00:00:01Z],
+             ~U[2026-04-27 00:00:02Z],
+             ~U[2026-04-27 00:00:03Z]
+           ]
+  end
+
+  test "spring-forward gap skips nonexistent local scheduled times" do
+    cron = "30 2 * * *"
+    timezone = "Europe/Oslo"
+    before_gap = ~U[2026-03-28 01:30:00Z]
+    after_gap = ~U[2026-03-30 00:30:00Z]
+
+    assert Cron.latest_due(cron, timezone, ~U[2026-03-29 01:30:00Z]) == before_gap
+    assert Cron.first_occurrence_between(cron, timezone, before_gap, after_gap) == after_gap
+    assert Cron.last_occurrence_between(cron, timezone, before_gap, after_gap) == after_gap
+    assert Cron.occurrences_between(cron, timezone, before_gap, after_gap) == [after_gap]
+  end
+
+  test "autumn ambiguous hour includes both local occurrences in deterministic order" do
+    cron = "30 2 * * *"
+    timezone = "Europe/Oslo"
+    previous_day = ~U[2026-10-24 00:30:00Z]
+    first_ambiguous = ~U[2026-10-25 00:30:00Z]
+    second_ambiguous = ~U[2026-10-25 01:30:00Z]
+
+    assert Cron.latest_due(cron, timezone, ~U[2026-10-25 02:45:00Z]) == second_ambiguous
+
+    assert Cron.first_occurrence_between(cron, timezone, previous_day, second_ambiguous) ==
+             first_ambiguous
+
+    assert Cron.last_occurrence_between(cron, timezone, previous_day, second_ambiguous) ==
+             second_ambiguous
+
+    assert Cron.occurrences_between(cron, timezone, previous_day, second_ambiguous) == [
+             first_ambiguous,
+             second_ambiguous
+           ]
+  end
 end

@@ -215,6 +215,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
       true ->
         selected =
           select_occurrences(
+            entry,
             entry.schedule.missed,
             entry.schedule.cron,
             entry.schedule.timezone,
@@ -401,19 +402,24 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp maybe_anchor_window(nil, _due_at, _timezone), do: nil
 
   defp maybe_anchor_window(kind, due_at, timezone) when kind in [:hour, :day, :month] do
-    local = DateTime.shift_zone!(due_at, timezone)
+    local = DateTime.shift_zone!(due_at, timezone, Favn.Timezone.database!())
     start_at = floor_kind(local, kind)
     end_at = shift_kind(start_at, kind)
     Anchor.new!(kind, start_at, end_at, timezone: timezone)
   end
 
-  defp select_occurrences(:all, cron, timezone, last_due_at, latest_due) do
+  defp select_occurrences(entry, :all, cron, timezone, last_due_at, latest_due) do
     limit = configured_max_missed_all_occurrences()
     selected = Cron.occurrences_between(cron, timezone, last_due_at, latest_due, limit: limit + 1)
 
     if length(selected) > limit do
       Logger.warning(
-        "scheduler missed occurrence catch-up capped at #{limit} occurrences for #{inspect(cron)}"
+        "scheduler missed occurrence catch-up capped " <>
+          "pipeline=#{inspect(entry.module)} " <>
+          "schedule_id=#{inspect(entry.schedule.name)} " <>
+          "schedule_ref=#{inspect(entry.schedule.ref)} " <>
+          "cron=#{inspect(cron)} " <>
+          "cap=#{limit} selected=#{limit} observed=#{length(selected)}"
       )
 
       Enum.take(selected, limit)
@@ -422,14 +428,14 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     end
   end
 
-  defp select_occurrences(:skip, cron, timezone, last_due_at, latest_due) do
+  defp select_occurrences(_entry, :skip, cron, timezone, last_due_at, latest_due) do
     case Cron.last_occurrence_between(cron, timezone, last_due_at, latest_due) do
       nil -> []
       due_at -> [due_at]
     end
   end
 
-  defp select_occurrences(:one, cron, timezone, last_due_at, latest_due) do
+  defp select_occurrences(_entry, :one, cron, timezone, last_due_at, latest_due) do
     case Cron.first_occurrence_between(cron, timezone, last_due_at, latest_due) do
       nil -> []
       due_at -> [due_at]
@@ -536,8 +542,8 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp floor_kind(dt, :month),
     do: %{dt | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
 
-  defp shift_kind(dt, :hour), do: DateTime.add(dt, 3600, :second)
-  defp shift_kind(dt, :day), do: DateTime.add(dt, 1, :day)
+  defp shift_kind(dt, :hour), do: DateTime.add(dt, 3600, :second, Favn.Timezone.database!())
+  defp shift_kind(dt, :day), do: DateTime.add(dt, 1, :day, Favn.Timezone.database!())
 
   defp shift_kind(%DateTime{} = dt, :month) do
     date = DateTime.to_date(dt)
@@ -546,6 +552,6 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     month = rem(total, 12) + 1
     {:ok, new_date} = Date.new(year, month, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, dt.time_zone)
+    DateTime.from_naive!(naive, dt.time_zone, Favn.Timezone.database!())
   end
 end

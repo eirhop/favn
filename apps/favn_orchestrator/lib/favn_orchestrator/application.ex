@@ -12,7 +12,8 @@ defmodule FavnOrchestrator.Application do
 
   @impl true
   def start(_type, _args) do
-    with :ok <- APIConfig.validate(),
+    with _timezone_database <- Favn.Timezone.database!(),
+         :ok <- APIConfig.validate(),
          {:ok, storage_children} <- Storage.child_specs() do
       children =
         storage_children ++

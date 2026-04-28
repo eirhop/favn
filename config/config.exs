@@ -9,6 +9,10 @@
 # move said applications out of the umbrella.
 import Config
 
+if Mix.env() == :test do
+  config :tzdata, :autoupdate, :disabled
+end
+
 config :favn_orchestrator,
   api_server: [
     enabled: System.get_env("FAVN_ORCHESTRATOR_API_ENABLED") in ["1", "true", "TRUE"],
