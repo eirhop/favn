@@ -16,7 +16,7 @@ defmodule Favn.Dev.RuntimeLaunch do
   @loopback_host "127.0.0.1"
   @loopback_ip_flag "{127,0,0,1}"
   @distribution_port_base 45_000
-  @distribution_port_span 6_000
+  @distribution_port_span 20_000
 
   @spec distribution_port(:runner | :orchestrator | :control, keyword()) :: pos_integer()
   def distribution_port(service, opts) when service in [:runner, :orchestrator, :control] do
@@ -306,7 +306,7 @@ defmodule Favn.Dev.RuntimeLaunch do
   end
 
   defp runtime_env do
-    %{"MIX_ENV" => "dev"}
+    %{"MIX_ENV" => "dev", "ERL_EPMD_ADDRESS" => @loopback_host}
   end
 
   defp distributed_erlang_args(service, opts) do

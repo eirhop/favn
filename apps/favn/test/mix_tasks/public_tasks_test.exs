@@ -125,6 +125,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         "orchestrator" => "favn_orchestrator_task@localhost",
         "control" => "favn_local_ctl_task@localhost"
       },
+      "distribution_ports" => %{
+        "runner" => 45_101,
+        "orchestrator" => 45_102,
+        "control" => 45_103
+      },
       "services" => %{
         "web" => %{"pid" => pid},
         "orchestrator" => %{
@@ -160,7 +165,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~
              "orchestrator node: running pid=#{pid} node=favn_orchestrator_task@localhost distribution_port=45102"
 
-    assert output =~ "control node: favn_local_ctl_task@localhost"
+    assert output =~ "control node: node=favn_local_ctl_task@localhost distribution_port=45103"
   end
 
   test "mix favn.status reports stale runtime hint", %{root_dir: root_dir} do

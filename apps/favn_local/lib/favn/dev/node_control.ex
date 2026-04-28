@@ -37,6 +37,7 @@ defmodule Favn.Dev.NodeControl do
   end
 
   defp configure_loopback_distribution(opts) do
+    System.put_env("ERL_EPMD_ADDRESS", "127.0.0.1")
     Application.put_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
 
     case Keyword.get(opts, :distribution_port) do

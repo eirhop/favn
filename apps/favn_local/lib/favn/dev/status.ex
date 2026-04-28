@@ -124,21 +124,30 @@ defmodule Favn.Dev.Status do
     %{
       runner_node: internal_node(runtime, services, "runner"),
       orchestrator_node: internal_node(runtime, services, "orchestrator"),
-      control_node: get_in(runtime, ["node_names", "control"])
+      control_node: %{
+        node_name: get_in(runtime, ["node_names", "control"]),
+        distribution_port: get_in(runtime, ["distribution_ports", "control"])
+      }
     }
   end
 
   defp internal_node(runtime, services, key) do
     %{
       node_name: get_in(runtime, ["services", key, "node_name"]) || get_in(runtime, ["node_names", key]),
-      distribution_port: get_in(runtime, ["services", key, "distribution_port"]),
+      distribution_port:
+        get_in(runtime, ["services", key, "distribution_port"]) ||
+          get_in(runtime, ["distribution_ports", key]),
       status: Map.fetch!(services, String.to_existing_atom(key)).status,
       pid: Map.fetch!(services, String.to_existing_atom(key)).pid
     }
   end
 
   defp default_internal_control do
-    %{runner_node: nil, orchestrator_node: nil, control_node: nil}
+    %{
+      runner_node: nil,
+      orchestrator_node: nil,
+      control_node: %{node_name: nil, distribution_port: nil}
+    }
   end
 
   defp default_service_states do

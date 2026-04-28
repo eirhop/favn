@@ -35,7 +35,7 @@ defmodule Mix.Tasks.Favn.Status do
       "orchestrator node: #{format_internal_node(status.internal_control.orchestrator_node)}"
     )
 
-    IO.puts("control node: #{status.internal_control.control_node || "n/a"}")
+    IO.puts("control node: #{format_control_node(status.internal_control.control_node)}")
 
     case status.stack_status do
       :partial -> IO.puts("hint: run mix favn.stop to clean up partial/dead services")
@@ -60,5 +60,12 @@ defmodule Mix.Tasks.Favn.Status do
     port = node.distribution_port || "n/a"
 
     "#{node.status} pid=#{pid} node=#{name} distribution_port=#{port}"
+  end
+
+  defp format_control_node(node) do
+    name = node.node_name || "n/a"
+    port = node.distribution_port || "n/a"
+
+    "node=#{name} distribution_port=#{port}"
   end
 end

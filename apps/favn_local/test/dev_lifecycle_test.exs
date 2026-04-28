@@ -8,6 +8,7 @@ defmodule Favn.Dev.LifecycleTest do
   alias Favn.Dev.NodeControl
   alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
+  alias Favn.Dev.RuntimeLaunch
   alias Favn.Dev.State
 
   @run_real_stack_lifecycle? System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" and
@@ -221,9 +222,34 @@ defmodule Favn.Dev.LifecycleTest do
     end
   end
 
+  test "dev/1 preflights deterministic distribution ports", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+    port = RuntimeLaunch.distribution_port(:runner, root_dir: root_dir)
+
+    {:ok, socket} =
+      :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, false}, {:ip, {127, 0, 0, 1}}])
+
+    try do
+      assert {:error, {:port_conflict, :runner_distribution, ^port}} =
+               Dev.dev(
+                 root_dir: root_dir,
+                 orchestrator_port: free_port(),
+                 web_port: free_port(),
+                 skip_runtime_compile: true,
+                 skip_install_check: true,
+                 skip_bootstrap: true,
+                 skip_readiness: true
+               )
+    after
+      :ok = :gen_tcp.close(socket)
+    end
+  end
+
   test "dev/1 returns explicit postgres unavailable diagnostics", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+
     assert {:error, {:postgres_unavailable, "127.0.0.1", 1, _reason}} =
-              Dev.dev(
+             Dev.dev(
                 root_dir: root_dir,
                 orchestrator_port: free_port(),
                 web_port: free_port(),
@@ -245,8 +271,10 @@ defmodule Favn.Dev.LifecycleTest do
   end
 
   test "dev/1 returns explicit postgres misconfiguration diagnostics", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+
     assert {:error, {:postgres_misconfigured, :hostname}} =
-              Dev.dev(
+             Dev.dev(
                 root_dir: root_dir,
                 orchestrator_port: free_port(),
                 web_port: free_port(),
@@ -413,5 +441,35 @@ defmodule Favn.Dev.LifecycleTest do
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp root_with_free_distribution_ports(base_root, attempt \\ 0)
+
+  defp root_with_free_distribution_ports(_base_root, 50), do: raise("could not find free distribution ports")
+
+  defp root_with_free_distribution_ports(base_root, attempt) do
+    root_dir = Path.join(base_root, "dist_#{attempt}")
+    ports = [
+      RuntimeLaunch.distribution_port(:runner, root_dir: root_dir),
+      RuntimeLaunch.distribution_port(:orchestrator, root_dir: root_dir),
+      RuntimeLaunch.distribution_port(:control, root_dir: root_dir)
+    ]
+
+    if Enum.all?(ports, &port_free?/1) do
+      root_dir
+    else
+      root_with_free_distribution_ports(base_root, attempt + 1)
+    end
+  end
+
+  defp port_free?(port) do
+    case :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, false}, {:ip, {127, 0, 0, 1}}]) do
+      {:ok, socket} ->
+        :ok = :gen_tcp.close(socket)
+        true
+
+      {:error, _reason} ->
+        false
+    end
   end
 end

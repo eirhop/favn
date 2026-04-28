@@ -84,6 +84,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert orchestrator_erl =~ "inet_dist_use_interface {127,0,0,1}"
     assert orchestrator_erl =~ "inet_dist_listen_min #{orchestrator_port}"
     assert orchestrator_erl =~ "inet_dist_listen_max #{orchestrator_port}"
+    assert runner.env["ERL_EPMD_ADDRESS"] == "127.0.0.1"
+    assert orchestrator.env["ERL_EPMD_ADDRESS"] == "127.0.0.1"
     assert orchestrator.env["FAVN_ORCHESTRATOR_API_BIND_IP"] == "127.0.0.1"
     assert code =~ "bind_ip: api_bind_ip"
     assert web.args == [hd(web.args), "preview", "--host", "127.0.0.1", "--port", "4173"]
