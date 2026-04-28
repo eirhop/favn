@@ -350,8 +350,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
     params = Keyword.get(opts, :params, [])
 
     with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
-      Enum.reduce_while(statements, {:ok, 0}, fn statement, {:ok, count} ->
-        statement_params = statement_params(plan, statement, params)
+      schema_setup_count = length(schema_setup_statements(plan))
+
+      statements
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, 0}, fn {statement, index}, {:ok, count} ->
+        statement_params =
+          materialization_statement_params(plan, statement, params, index, schema_setup_count)
 
         case execute(conn, statement, params: statement_params) do
           {:ok, _} -> {:cont, {:ok, count + 1}}
@@ -644,6 +649,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp statement_params(_plan, _statement, params), do: params
+
+  defp materialization_statement_params(_plan, _statement, _params, index, schema_setup_count)
+       when index < schema_setup_count,
+       do: []
+
+  defp materialization_statement_params(plan, statement, params, _index, _schema_setup_count),
+    do: statement_params(plan, statement, params)
 
   defp normalize_window_column(options) do
     options
