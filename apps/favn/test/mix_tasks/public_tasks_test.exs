@@ -224,9 +224,17 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert {:ok, _toolchain} = State.read_toolchain(root_dir: root_dir)
   end
 
-  test "mix favn.init requires duckdb sample flags", %{root_dir: root_dir} do
+  test "mix favn.init requires duckdb sample flags" do
     assert_raise Mix.Error, ~r/missing required option\(s\): --duckdb, --sample/, fn ->
-      InitTask.run(["--root-dir", root_dir])
+      InitTask.run([])
+    end
+  end
+
+  test "mix favn.init rejects root-dir because it targets the current Mix project", %{
+    root_dir: root_dir
+  } do
+    assert_raise Mix.Error, ~r/usage: mix favn.init --duckdb --sample/, fn ->
+      InitTask.run(["--root-dir", root_dir, "--duckdb", "--sample"])
     end
   end
 
@@ -255,8 +263,10 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     )
 
     output =
-      capture_io(fn ->
-        InitTask.run(["--root-dir", root_dir, "--duckdb", "--sample"])
+      File.cd!(root_dir, fn ->
+        capture_io(fn ->
+          InitTask.run(["--duckdb", "--sample"])
+        end)
       end)
 
     assert output =~ "Favn local bootstrap complete"
@@ -264,15 +274,12 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert File.exists?(Path.join(root_dir, "lib/favn/pipelines/local_smoke.ex"))
   end
 
-  test "mix favn.doctor reports invalid setup", %{root_dir: root_dir} do
-    output =
-      capture_io(fn ->
-        assert_raise Mix.Error, ~r/Favn doctor found/, fn ->
-          DoctorTask.run(["--root-dir", root_dir, "--skip-compile"])
-        end
-      end)
-
-    assert output =~ "error: mix project"
+  test "mix favn.doctor rejects root-dir because it checks the current Mix project", %{
+    root_dir: root_dir
+  } do
+    assert_raise Mix.Error, ~r/usage: mix favn.doctor/, fn ->
+      DoctorTask.run(["--root-dir", root_dir, "--skip-compile"])
+    end
   end
 
   test "mix favn.install reports already up to date", %{root_dir: root_dir} do

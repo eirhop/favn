@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Favn.Doctor do
 
   alias Favn.Dev
 
-  @switches [root_dir: :string, skip_compile: :boolean]
+  @switches [skip_compile: :boolean]
 
   @impl Mix.Task
   def run(args) do

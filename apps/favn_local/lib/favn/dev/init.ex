@@ -101,19 +101,29 @@ defmodule Favn.Dev.Init do
     config_path = Path.join([project.root_dir, "config", "config.exs"])
     block = config_block(project)
 
-    with :ok <- File.mkdir_p(Path.dirname(config_path)) do
-      cond do
-        File.exists?(config_path) and config_marker_present?(config_path) ->
-          {:ok, add_path(empty_result(), :existing, relative(project.root_dir, config_path))}
+    case File.mkdir_p(Path.dirname(config_path)) do
+      :ok -> append_config_block(config_path, block, project)
+      {:error, reason} -> {:error, {:write_failed, config_path, reason}}
+    end
+  end
 
-        File.exists?(config_path) ->
-          File.write(config_path, "\n" <> block, [:append])
-          {:ok, add_path(empty_result(), :updated, relative(project.root_dir, config_path))}
+  defp append_config_block(config_path, block, project) do
+    cond do
+      File.exists?(config_path) and config_marker_present?(config_path) ->
+        {:ok, add_path(empty_result(), :existing, relative(project.root_dir, config_path))}
 
-        true ->
-          File.write(config_path, "import Config\n\n" <> block)
-          {:ok, add_path(empty_result(), :created, relative(project.root_dir, config_path))}
-      end
+      File.exists?(config_path) ->
+        write_config(config_path, "\n" <> block, [:append], project, :updated)
+
+      true ->
+        write_config(config_path, "import Config\n\n" <> block, [], project, :created)
+    end
+  end
+
+  defp write_config(config_path, content, modes, project, status) do
+    case File.write(config_path, content, modes) do
+      :ok -> {:ok, add_path(empty_result(), status, relative(project.root_dir, config_path))}
+      {:error, reason} -> {:error, {:write_failed, config_path, reason}}
     end
   end
 
@@ -156,8 +166,13 @@ defmodule Favn.Dev.Init do
           global: false
         )
 
-      :ok = File.write(project.mix_exs, updated)
-      {:ok, add_path(empty_result(), :updated, relative(project.root_dir, project.mix_exs))}
+      case File.write(project.mix_exs, updated) do
+        :ok ->
+          {:ok, add_path(empty_result(), :updated, relative(project.root_dir, project.mix_exs))}
+
+        {:error, reason} ->
+          {:error, {:write_failed, project.mix_exs, reason}}
+      end
     else
       warning =
         "could not add #{dep_line} automatically; add it to defp deps/0 before running the DuckDB sample"
@@ -297,18 +312,20 @@ defmodule Favn.Dev.Init do
 
       @meta owner: "local", category: :orders, tags: [:sample, :raw]
       @relation true
-      def asset(_ctx) do
-        SQLClient.with_connection(:warehouse, [], fn session ->
-          with {:ok, _} <- SQLClient.execute(session, "create schema if not exists raw"),
-               {:ok, _} <- SQLClient.execute(session, orders_sql()) do
+      def asset(ctx) do
+        relation = ctx.asset.relation
+
+        SQLClient.with_connection(relation.connection, [], fn session ->
+          with {:ok, _} <- SQLClient.execute(session, create_schema_sql(relation)),
+               {:ok, _} <- SQLClient.execute(session, orders_sql(relation)) do
             :ok
           end
         end)
       end
 
-      defp orders_sql do
+      defp orders_sql(relation) do
         """
-        create or replace table raw.orders as
+        create or replace table \#{qualified_relation(relation)} as
         select *
         from (
           values
@@ -317,6 +334,18 @@ defmodule Favn.Dev.Init do
             (3, 'Query Co', date '2026-01-02', 1575)
         ) as orders(order_id, customer_name, order_date, amount_cents)
         """
+      end
+
+      defp create_schema_sql(relation) do
+        ["create schema if not exists ", quote_ident(relation.schema)]
+      end
+
+      defp qualified_relation(relation) do
+        [quote_ident(relation.schema), ".", quote_ident(relation.name)]
+      end
+
+      defp quote_ident(value) do
+        [~s("), String.replace(to_string(value), ~s("), ~s("")), ~s(")]
       end
     end
     '''

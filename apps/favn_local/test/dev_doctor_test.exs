@@ -89,4 +89,20 @@ defmodule Favn.Dev.DoctorTest do
     assert Enum.any?(checks, &(&1.name == "asset_modules" and &1.status == :error))
     assert Enum.any?(checks, &(&1.name == "manifest" and &1.status == :ok))
   end
+
+  test "reports malformed config without crashing", %{root_dir: root_dir} do
+    Application.put_env(:favn, :asset_modules, :not_a_list)
+    Application.put_env(:favn, :pipeline_modules, ["not_a_module"])
+    Application.put_env(:favn, :connection_modules, [__MODULE__])
+    Application.put_env(:favn, :connections, %{warehouse: []})
+    Application.put_env(:favn, :runner_plugins, [{"not_a_module", %{}}])
+
+    assert {:error, checks} = Doctor.run(root_dir: root_dir)
+
+    assert Enum.any?(checks, &(&1.name == "asset_modules" and &1.status == :error))
+    assert Enum.any?(checks, &(&1.name == "pipeline_modules" and &1.status == :error))
+    assert Enum.any?(checks, &(&1.name == "connections" and &1.status == :error))
+    assert Enum.any?(checks, &(&1.name == "runner_plugins" and &1.status == :error))
+    assert Enum.any?(checks, &(&1.name == "manifest" and &1.status == :error))
+  end
 end

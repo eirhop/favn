@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Favn.Init do
 
   alias Favn.Dev
 
-  @switches [duckdb: :boolean, sample: :boolean, root_dir: :string]
+  @switches [duckdb: :boolean, sample: :boolean]
 
   @impl Mix.Task
   def run(args) do
