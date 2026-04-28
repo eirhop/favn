@@ -209,12 +209,12 @@ defmodule FavnOrchestrator.RunManager do
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, 0)
     timeout_ms = Keyword.get(opts, :timeout_ms, 5_000)
     dependencies = Keyword.get(opts, :dependencies, :all)
-    metadata_with_selection = Map.put(metadata, :asset_dependencies, dependencies)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_metadata(metadata),
          :ok <- validate_dependencies(dependencies),
+         metadata_with_selection = Map.put(metadata, :asset_dependencies, dependencies),
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
          :ok <- validate_timeout_ms(timeout_ms),

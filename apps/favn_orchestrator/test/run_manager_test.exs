@@ -571,6 +571,15 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.manifest_version_id == "mv_active"
   end
 
+  test "asset run rejects invalid metadata without crashing run manager" do
+    version = manifest_version("mv_invalid_asset_metadata")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_invalid_asset_metadata")
+
+    assert {:error, :invalid_run_metadata} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
+  end
+
   test "submits multi-target pipeline run in one run plan" do
     version = manifest_version("mv_pipeline_multi")
     assert :ok = FavnOrchestrator.register_manifest(version)
