@@ -14,6 +14,8 @@ defmodule Favn.Dev.NodeControl do
         :ok
 
       false ->
+        :ok = configure_loopback_distribution(opts)
+
         name =
           opts
           |> Keyword.get(:name, "favn_local_ctl_#{:erlang.unique_integer([:positive])}")
@@ -31,6 +33,20 @@ defmodule Favn.Dev.NodeControl do
           {:error, reason} ->
             {:error, {:shortname_host_unavailable, reason}}
         end
+    end
+  end
+
+  defp configure_loopback_distribution(opts) do
+    System.put_env("ERL_EPMD_ADDRESS", "127.0.0.1")
+    Application.put_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+    case Keyword.get(opts, :distribution_port) do
+      port when is_integer(port) and port > 0 ->
+        Application.put_env(:kernel, :inet_dist_listen_min, port)
+        Application.put_env(:kernel, :inet_dist_listen_max, port)
+
+      _missing ->
+        :ok
     end
   end
 

@@ -13,6 +13,23 @@ defmodule Favn.Dev.RuntimeLaunch do
     FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES
   )
 
+  @loopback_host "127.0.0.1"
+  @loopback_ip_flag "{127,0,0,1}"
+  @distribution_port_base 45_000
+  @distribution_port_span 20_000
+
+  @spec distribution_port(:runner | :orchestrator | :control, keyword()) :: pos_integer()
+  def distribution_port(service, opts) when service in [:runner, :orchestrator, :control] do
+    root_dir = Paths.root_dir(opts)
+    base = @distribution_port_base + :erlang.phash2(root_dir, @distribution_port_span)
+
+    case service do
+      :runner -> base
+      :orchestrator -> base + 1
+      :control -> base + 2
+    end
+  end
+
   @spec runner_spec(map(), keyword(), map(), map()) :: map()
   def runner_spec(runtime, opts, node_names, secrets)
       when is_map(runtime) and is_list(opts) and is_map(node_names) and is_map(secrets) do
@@ -33,12 +50,14 @@ defmodule Favn.Dev.RuntimeLaunch do
       """
       |> String.trim()
 
-    base_args = [
-      "--sname",
-      node_names.runner_short,
-      "--cookie",
-      secrets["rpc_cookie"]
-    ]
+    base_args =
+      distributed_erlang_args(:runner, opts) ++
+        [
+          "--sname",
+          node_names.runner_short,
+          "--cookie",
+          secrets["rpc_cookie"]
+        ]
 
     consumer_ebin_paths = ConsumerCodePath.ebin_paths(opts)
 
@@ -72,11 +91,18 @@ defmodule Favn.Dev.RuntimeLaunch do
       """
       storage = System.fetch_env!("FAVN_DEV_STORAGE")
 
+      api_bind_ip =
+        System.fetch_env!("FAVN_ORCHESTRATOR_API_BIND_IP")
+        |> String.split(".", parts: 4)
+        |> Enum.map(&String.to_integer/1)
+        |> List.to_tuple()
+
       Application.put_env(
         :favn_orchestrator,
         :api_server,
         enabled: System.get_env("FAVN_ORCHESTRATOR_API_ENABLED", "0") == "1",
-        port: String.to_integer(System.fetch_env!("FAVN_ORCHESTRATOR_API_PORT"))
+        port: String.to_integer(System.fetch_env!("FAVN_ORCHESTRATOR_API_PORT")),
+        bind_ip: api_bind_ip
       )
 
       Application.put_env(
@@ -137,19 +163,21 @@ defmodule Favn.Dev.RuntimeLaunch do
     %{
       name: "orchestrator",
       exec: elixir,
-      args: [
-        "--sname",
-        node_names.orchestrator_short,
-        "--cookie",
-        secrets["rpc_cookie"],
-        "-S",
-        "mix",
-        "run",
-        "--no-compile",
-        "--no-start",
-        "--eval",
-        code
-      ],
+      args:
+        distributed_erlang_args(:orchestrator, opts) ++
+          [
+            "--sname",
+            node_names.orchestrator_short,
+            "--cookie",
+            secrets["rpc_cookie"],
+            "-S",
+            "mix",
+            "run",
+            "--no-compile",
+            "--no-start",
+            "--eval",
+            code
+          ],
       cwd: runtime["orchestrator_root"],
       log_path: Paths.orchestrator_log_path(Paths.root_dir(opts)),
       env:
@@ -169,6 +197,7 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_ORCHESTRATOR_API_ENABLED" =>
             if(config.orchestrator_api_enabled, do: "1", else: "0"),
           "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
+          "FAVN_ORCHESTRATOR_API_BIND_IP" => @loopback_host,
           "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => secrets["service_token"],
           "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => secrets["local_operator_username"],
           "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => secrets["local_operator_password"],
@@ -188,7 +217,7 @@ defmodule Favn.Dev.RuntimeLaunch do
     %{
       name: "web",
       exec: node,
-      args: [vite, "preview", "--host", "127.0.0.1", "--port", Integer.to_string(config.web_port)],
+      args: [vite, "preview", "--host", @loopback_host, "--port", Integer.to_string(config.web_port)],
       cwd: runtime["web_root"],
       log_path: Paths.web_log_path(Paths.root_dir(opts)),
       env: %{
@@ -277,7 +306,17 @@ defmodule Favn.Dev.RuntimeLaunch do
   end
 
   defp runtime_env do
-    %{"MIX_ENV" => "dev"}
+    %{"MIX_ENV" => "dev", "ERL_EPMD_ADDRESS" => @loopback_host}
+  end
+
+  defp distributed_erlang_args(service, opts) do
+    port = distribution_port(service, opts)
+
+    [
+      "--erl",
+      "-kernel inet_dist_use_interface #{@loopback_ip_flag} " <>
+        "-kernel inet_dist_listen_min #{port} -kernel inet_dist_listen_max #{port}"
+    ]
   end
 
   defp path_separator do

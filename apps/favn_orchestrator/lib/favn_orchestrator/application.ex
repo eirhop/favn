@@ -55,12 +55,24 @@ defmodule FavnOrchestrator.Application do
     if Keyword.get(api_opts, :enabled, false) do
       [
         {Plug.Cowboy,
-         scheme: :http,
-         plug: FavnOrchestrator.API.Router,
-         options: [port: Keyword.get(api_opts, :port, 4101)]}
+         scheme: :http, plug: FavnOrchestrator.API.Router, options: api_server_options(api_opts)}
       ]
     else
       []
+    end
+  end
+
+  defp api_server_options(api_opts) do
+    case APIConfig.bind_ip(api_opts) do
+      {:ok, bind_ip} ->
+        bind_ip
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid orchestrator API bind config: #{inspect(reason)}"
+    end
+    |> case do
+      nil -> [port: Keyword.get(api_opts, :port, 4101)]
+      bind_ip -> [port: Keyword.get(api_opts, :port, 4101), ip: bind_ip]
     end
   end
 end

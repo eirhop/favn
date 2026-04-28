@@ -92,7 +92,7 @@ defmodule Favn.Dev.Stack do
            :ok <- ensure_stack_not_running(opts),
            :ok <- ensure_install_ready(opts),
            config <- Config.resolve(opts),
-           :ok <- ensure_startup_prerequisites(config),
+           :ok <- ensure_startup_prerequisites(config, opts),
            {:ok, runtime} <- resolve_runtime(opts),
            {:ok, secrets} <- Secrets.resolve(config, opts),
            {:ok, node_names} <- build_node_names(secrets, opts) do
@@ -116,7 +116,8 @@ defmodule Favn.Dev.Stack do
            runtime: runtime,
            secrets: secrets,
            node_names: node_names,
-           services: services
+            distribution_ports: distribution_ports(opts),
+            services: services
          }}
       end
     end)
@@ -177,23 +178,37 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp ensure_startup_prerequisites(config) do
-    case ensure_ports_available(config) do
+  defp ensure_startup_prerequisites(config, opts) do
+    case ensure_ports_available(config, opts) do
       :ok -> ensure_storage_ready(config)
       {:error, _reason} = error -> error
     end
   end
 
-  defp ensure_ports_available(config) do
-    case ensure_port_available(:orchestrator, config.orchestrator_port) do
-      :ok -> ensure_port_available(:web, config.web_port)
-      {:error, _reason} = error -> error
-    end
+  defp ensure_ports_available(config, opts) do
+    [
+      {:orchestrator, config.orchestrator_port},
+      {:web, config.web_port},
+      {:runner_distribution, RuntimeLaunch.distribution_port(:runner, opts)},
+      {:orchestrator_distribution, RuntimeLaunch.distribution_port(:orchestrator, opts)},
+      {:control_distribution, RuntimeLaunch.distribution_port(:control, opts)}
+    ]
+    |> Enum.reduce_while(:ok, fn {service, port}, :ok ->
+      case ensure_port_available(service, port) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp ensure_port_available(service, port)
        when is_atom(service) and is_integer(port) and port > 0 do
-    case :gen_tcp.listen(port, [:binary, {:active, false}, {:reuseaddr, false}]) do
+    case :gen_tcp.listen(port, [
+           :binary,
+           {:active, false},
+           {:reuseaddr, false},
+           {:ip, {127, 0, 0, 1}}
+         ]) do
       {:ok, socket} ->
         :ok = :gen_tcp.close(socket)
         :ok
@@ -344,7 +359,10 @@ defmodule Favn.Dev.Stack do
         :ok
 
       _ ->
-        NodeControl.ensure_local_node_started(secrets["rpc_cookie"], name: control_short)
+        NodeControl.ensure_local_node_started(secrets["rpc_cookie"],
+          name: control_short,
+          distribution_port: RuntimeLaunch.distribution_port(:control, opts)
+        )
     end
   end
 
@@ -455,14 +473,27 @@ defmodule Favn.Dev.Stack do
         "orchestrator" => node_names.orchestrator_full,
         "control" => node_names.control_full
       },
+      "distribution_ports" => %{
+        "runner" => distribution_ports(opts).runner,
+        "orchestrator" => distribution_ports(opts).orchestrator,
+        "control" => distribution_ports(opts).control
+      },
       "services" =>
         Map.new(services, fn {name, info} ->
           service = %{"pid" => info.pid, "log_path" => info.log_path}
 
           service =
             case name do
-              "runner" -> Map.put(service, "node_name", node_names.runner_full)
-              "orchestrator" -> Map.put(service, "node_name", node_names.orchestrator_full)
+              "runner" ->
+                service
+                |> Map.put("node_name", node_names.runner_full)
+                |> Map.put("distribution_port", distribution_ports(opts).runner)
+
+              "orchestrator" ->
+                service
+                |> Map.put("node_name", node_names.orchestrator_full)
+                |> Map.put("distribution_port", distribution_ports(opts).orchestrator)
+
               _ -> service
             end
 
@@ -756,17 +787,32 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp print_start_summary(%{config: config, node_names: node_names, services: services}) do
+  defp print_start_summary(%{
+         config: config,
+         node_names: node_names,
+         distribution_ports: distribution_ports,
+         services: services
+       }) do
     IO.puts("Favn local dev stack")
     IO.puts("storage: #{config.storage}")
     IO.puts("scheduler: #{if(config.scheduler_enabled, do: "enabled", else: "disabled")}")
+    IO.puts("local URLs:")
     IO.puts("web: pid=#{services["web"].pid} url=#{config.web_base_url}")
 
     IO.puts(
-      "orchestrator: pid=#{services["orchestrator"].pid} url=#{config.orchestrator_base_url}"
+      "orchestrator API: pid=#{services["orchestrator"].pid} url=#{config.orchestrator_base_url}"
     )
 
-    IO.puts("runner: pid=#{services["runner"].pid} node=#{node_names.runner_full}")
+    IO.puts("internal control plane:")
+    IO.puts("runner node: pid=#{services["runner"].pid} node=#{node_names.runner_full}")
+
+    IO.puts(
+      "orchestrator node: pid=#{services["orchestrator"].pid} node=#{node_names.orchestrator_full}"
+    )
+
+    IO.puts(
+      "control node: node=#{node_names.control_full} distribution_port=#{distribution_ports.control}"
+    )
     IO.puts("logs: web=#{services["web"].log_path}")
     IO.puts("logs: orchestrator=#{services["orchestrator"].log_path}")
     IO.puts("logs: runner=#{services["runner"].log_path}")
@@ -774,6 +820,14 @@ defmodule Favn.Dev.Stack do
 
   defp with_lock(opts, fun) when is_function(fun, 0) do
     Lock.with_lock(opts, fun)
+  end
+
+  defp distribution_ports(opts) do
+    %{
+      runner: RuntimeLaunch.distribution_port(:runner, opts),
+      orchestrator: RuntimeLaunch.distribution_port(:orchestrator, opts),
+      control: RuntimeLaunch.distribution_port(:control, opts)
+    }
   end
 
   defp datetime(nil), do: nil

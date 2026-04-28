@@ -45,6 +45,52 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert "preview" in web.args
   end
 
+  test "runtime specs bind local HTTP and distributed Erlang to loopback" do
+    root_dir = "/tmp/favn_loopback_launch"
+
+    runtime = %{
+      "runner_root" => "/tmp/favn_runtime",
+      "orchestrator_root" => "/tmp/favn_runtime",
+      "web_root" => "/tmp/favn_runtime/web/favn_web"
+    }
+
+    config = Config.resolve(orchestrator_port: 4101, web_port: 4173)
+
+    node_names = %{
+      runner_short: "favn_runner_test",
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token",
+      "web_session_secret" => "secret"
+    }
+
+    opts = [root_dir: root_dir]
+    runner = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
+    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
+    web = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+    runner_port = RuntimeLaunch.distribution_port(:runner, opts)
+    orchestrator_port = RuntimeLaunch.distribution_port(:orchestrator, opts)
+    runner_erl = erl_flag!(runner)
+    orchestrator_erl = erl_flag!(orchestrator)
+    code = eval_code!(orchestrator)
+
+    assert runner_erl =~ "inet_dist_use_interface {127,0,0,1}"
+    assert runner_erl =~ "inet_dist_listen_min #{runner_port}"
+    assert runner_erl =~ "inet_dist_listen_max #{runner_port}"
+    assert orchestrator_erl =~ "inet_dist_use_interface {127,0,0,1}"
+    assert orchestrator_erl =~ "inet_dist_listen_min #{orchestrator_port}"
+    assert orchestrator_erl =~ "inet_dist_listen_max #{orchestrator_port}"
+    assert runner.env["ERL_EPMD_ADDRESS"] == "127.0.0.1"
+    assert orchestrator.env["ERL_EPMD_ADDRESS"] == "127.0.0.1"
+    assert orchestrator.env["FAVN_ORCHESTRATOR_API_BIND_IP"] == "127.0.0.1"
+    assert code =~ "bind_ip: api_bind_ip"
+    assert web.args == [hd(web.args), "preview", "--host", "127.0.0.1", "--port", "4173"]
+  end
+
   test "orchestrator spec carries bootstrap credentials from consumer dotenv and shell env" do
     root_dir = Path.join(System.tmp_dir!(), "favn_orchestrator_env_#{System.unique_integer([:positive])}")
     previous_env = snapshot_system_env(bootstrap_env_keys())
@@ -303,6 +349,15 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       ["--eval", code] -> code
       _other -> nil
     end) || flunk("expected orchestrator args to include --eval code")
+  end
+
+  defp erl_flag!(%{args: args}) do
+    args
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.find_value(fn
+      ["--erl", flags] -> flags
+      _other -> nil
+    end) || flunk("expected args to include --erl flags")
   end
 
   defp before?(text, earlier, later) do

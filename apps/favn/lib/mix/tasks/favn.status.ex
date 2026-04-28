@@ -21,9 +21,21 @@ defmodule Mix.Tasks.Favn.Status do
     IO.puts("status: #{status.stack_status}")
     IO.puts("storage: #{status.storage}")
     IO.puts("manifest: #{status.active_manifest_version_id || "none"}")
-    IO.puts("web: #{format_service(status.services.web)}")
-    IO.puts("orchestrator: #{format_service(status.services.orchestrator)}")
-    IO.puts("runner: #{format_service(status.services.runner)}")
+    IO.puts("local URLs:")
+    IO.puts("web: #{format_service(status.services.web)} url=#{status.user_urls.web}")
+
+    IO.puts(
+      "orchestrator API: #{format_service(status.services.orchestrator)} url=#{status.user_urls.orchestrator_api}"
+    )
+
+    IO.puts("internal control plane:")
+    IO.puts("runner node: #{format_internal_node(status.internal_control.runner_node)}")
+
+    IO.puts(
+      "orchestrator node: #{format_internal_node(status.internal_control.orchestrator_node)}"
+    )
+
+    IO.puts("control node: #{format_control_node(status.internal_control.control_node)}")
 
     case status.stack_status do
       :partial -> IO.puts("hint: run mix favn.stop to clean up partial/dead services")
@@ -38,5 +50,22 @@ defmodule Mix.Tasks.Favn.Status do
   defp format_service(service) do
     pid = service.pid || "n/a"
     "#{service.status} pid=#{pid}"
+  end
+
+  defp format_internal_node(nil), do: "n/a"
+
+  defp format_internal_node(node) do
+    pid = node.pid || "n/a"
+    name = node.node_name || "n/a"
+    port = node.distribution_port || "n/a"
+
+    "#{node.status} pid=#{pid} node=#{name} distribution_port=#{port}"
+  end
+
+  defp format_control_node(node) do
+    name = node.node_name || "n/a"
+    port = node.distribution_port || "n/a"
+
+    "node=#{name} distribution_port=#{port}"
   end
 end

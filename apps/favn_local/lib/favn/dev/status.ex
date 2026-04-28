@@ -26,6 +26,8 @@ defmodule Favn.Dev.Status do
           storage: config.storage,
           orchestrator_url: config.orchestrator_base_url,
           web_url: config.web_base_url,
+          user_urls: user_urls(config.orchestrator_base_url, config.web_base_url),
+          internal_control: default_internal_control(),
           services: default_service_states(),
           active_manifest_version_id: nil,
           last_failure: normalize_last_failure(State.read_last_failure(opts))
@@ -37,6 +39,8 @@ defmodule Favn.Dev.Status do
           storage: config.storage,
           orchestrator_url: config.orchestrator_base_url,
           web_url: config.web_base_url,
+          user_urls: user_urls(config.orchestrator_base_url, config.web_base_url),
+          internal_control: default_internal_control(),
           services: default_service_states(),
           active_manifest_version_id: nil,
           last_failure: normalize_last_failure(State.read_last_failure(opts)),
@@ -58,6 +62,12 @@ defmodule Favn.Dev.Status do
       storage: runtime["storage"] || config.storage,
       orchestrator_url: runtime["orchestrator_base_url"] || config.orchestrator_base_url,
       web_url: runtime["web_base_url"] || config.web_base_url,
+      user_urls:
+        user_urls(
+          runtime["orchestrator_base_url"] || config.orchestrator_base_url,
+          runtime["web_base_url"] || config.web_base_url
+        ),
+      internal_control: internal_control(runtime, services),
       services: services,
       active_manifest_version_id:
         runtime["active_manifest_version_id"] || manifest_from_cache(opts),
@@ -105,6 +115,40 @@ defmodule Favn.Dev.Status do
 
   defp normalize_last_failure({:ok, failure}), do: failure
   defp normalize_last_failure({:error, _reason}), do: nil
+
+  defp user_urls(orchestrator_url, web_url) do
+    %{web: web_url, orchestrator_api: orchestrator_url}
+  end
+
+  defp internal_control(runtime, services) do
+    %{
+      runner_node: internal_node(runtime, services, "runner"),
+      orchestrator_node: internal_node(runtime, services, "orchestrator"),
+      control_node: %{
+        node_name: get_in(runtime, ["node_names", "control"]),
+        distribution_port: get_in(runtime, ["distribution_ports", "control"])
+      }
+    }
+  end
+
+  defp internal_node(runtime, services, key) do
+    %{
+      node_name: get_in(runtime, ["services", key, "node_name"]) || get_in(runtime, ["node_names", key]),
+      distribution_port:
+        get_in(runtime, ["services", key, "distribution_port"]) ||
+          get_in(runtime, ["distribution_ports", key]),
+      status: Map.fetch!(services, String.to_existing_atom(key)).status,
+      pid: Map.fetch!(services, String.to_existing_atom(key)).pid
+    }
+  end
+
+  defp default_internal_control do
+    %{
+      runner_node: nil,
+      orchestrator_node: nil,
+      control_node: %{node_name: nil, distribution_port: nil}
+    }
+  end
 
   defp default_service_states do
     %{

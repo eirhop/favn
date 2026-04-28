@@ -118,10 +118,30 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     runtime = %{
       "storage" => "memory",
       "active_manifest_version_id" => "mv_task_test",
+      "orchestrator_base_url" => "http://127.0.0.1:4101",
+      "web_base_url" => "http://127.0.0.1:4173",
+      "node_names" => %{
+        "runner" => "favn_runner_task@localhost",
+        "orchestrator" => "favn_orchestrator_task@localhost",
+        "control" => "favn_local_ctl_task@localhost"
+      },
+      "distribution_ports" => %{
+        "runner" => 45_101,
+        "orchestrator" => 45_102,
+        "control" => 45_103
+      },
       "services" => %{
         "web" => %{"pid" => pid},
-        "orchestrator" => %{"pid" => pid},
-        "runner" => %{"pid" => pid}
+        "orchestrator" => %{
+          "pid" => pid,
+          "node_name" => "favn_orchestrator_task@localhost",
+          "distribution_port" => 45_102
+        },
+        "runner" => %{
+          "pid" => pid,
+          "node_name" => "favn_runner_task@localhost",
+          "distribution_port" => 45_101
+        }
       }
     }
 
@@ -134,9 +154,18 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     assert output =~ "Favn local dev stack"
     assert output =~ "manifest: mv_task_test"
-    assert output =~ "web:"
-    assert output =~ "orchestrator:"
-    assert output =~ "runner:"
+    assert output =~ "local URLs:"
+    assert output =~ "web: running pid=#{pid} url=http://127.0.0.1:4173"
+    assert output =~ "orchestrator API: running pid=#{pid} url=http://127.0.0.1:4101"
+    assert output =~ "internal control plane:"
+
+    assert output =~
+             "runner node: running pid=#{pid} node=favn_runner_task@localhost distribution_port=45101"
+
+    assert output =~
+             "orchestrator node: running pid=#{pid} node=favn_orchestrator_task@localhost distribution_port=45102"
+
+    assert output =~ "control node: node=favn_local_ctl_task@localhost distribution_port=45103"
   end
 
   test "mix favn.status reports stale runtime hint", %{root_dir: root_dir} do
@@ -213,11 +242,25 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
       end)
 
-    assert_raise Mix.Error,
-                 ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable)/,
-                 fn ->
-                   DevTask.run(["--root-dir", root_dir])
-                 end
+    previous_local = Application.get_env(:favn, :local, :__missing__)
+
+    try do
+      Application.put_env(:favn, :local,
+        orchestrator_port: free_port(),
+        web_port: free_port()
+      )
+
+      assert_raise Mix.Error,
+                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable)/,
+                   fn ->
+                     DevTask.run(["--root-dir", root_dir])
+                   end
+    after
+      case previous_local do
+        :__missing__ -> Application.delete_env(:favn, :local)
+        value -> Application.put_env(:favn, :local, value)
+      end
+    end
   end
 
   test "mix favn.install reports missing prerequisite tools", %{root_dir: root_dir} do
@@ -340,7 +383,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     previous_local = Application.get_env(:favn, :local, :__missing__)
 
     try do
-      Application.put_env(:favn, :local, web_port: port)
+      Application.put_env(:favn, :local, orchestrator_port: free_port(), web_port: port)
 
       assert_raise Mix.Error,
                    ~r/port conflict: web cannot bind port #{port}; free the port and retry/,
@@ -372,6 +415,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         :favn,
         :local,
         storage: :postgres,
+        orchestrator_port: free_port(),
         web_port: web_port,
         postgres: [
           hostname: "127.0.0.1",
