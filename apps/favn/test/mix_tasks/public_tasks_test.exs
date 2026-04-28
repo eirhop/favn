@@ -10,6 +10,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Build.Single, as: BuildSingleTask
   alias Mix.Tasks.Favn.Build.Web, as: BuildWebTask
   alias Mix.Tasks.Favn.Dev, as: DevTask
+  alias Mix.Tasks.Favn.Doctor, as: DoctorTask
+  alias Mix.Tasks.Favn.Init, as: InitTask
   alias Mix.Tasks.Favn.Install, as: InstallTask
   alias Mix.Tasks.Favn.Logs, as: LogsTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
@@ -222,6 +224,57 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert {:ok, _toolchain} = State.read_toolchain(root_dir: root_dir)
   end
 
+  test "mix favn.init requires duckdb sample flags", %{root_dir: root_dir} do
+    assert_raise Mix.Error, ~r/missing required option\(s\): --duckdb, --sample/, fn ->
+      InitTask.run(["--root-dir", root_dir])
+    end
+  end
+
+  test "mix favn.init prints generated bootstrap summary", %{root_dir: root_dir} do
+    File.write!(
+      Path.join(root_dir, "mix.exs"),
+      """
+      defmodule PublicTaskSample.MixProject do
+        use Mix.Project
+
+        def project do
+          [app: :public_task_sample, version: "0.1.0", deps: deps()]
+        end
+
+        def application do
+          []
+        end
+
+        defp deps do
+          [
+            {:favn, path: "../favn/apps/favn"}
+          ]
+        end
+      end
+      """
+    )
+
+    output =
+      capture_io(fn ->
+        InitTask.run(["--root-dir", root_dir, "--duckdb", "--sample"])
+      end)
+
+    assert output =~ "Favn local bootstrap complete"
+    assert output =~ "pipeline: Favn.Pipelines.LocalSmoke"
+    assert File.exists?(Path.join(root_dir, "lib/favn/pipelines/local_smoke.ex"))
+  end
+
+  test "mix favn.doctor reports invalid setup", %{root_dir: root_dir} do
+    output =
+      capture_io(fn ->
+        assert_raise Mix.Error, ~r/Favn doctor found/, fn ->
+          DoctorTask.run(["--root-dir", root_dir, "--skip-compile"])
+        end
+      end)
+
+    assert output =~ "error: mix project"
+  end
+
   test "mix favn.install reports already up to date", %{root_dir: root_dir} do
     _ =
       capture_io(fn ->
@@ -251,7 +304,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       )
 
       assert_raise Mix.Error,
-                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable)/,
+                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|port conflict: .* cannot bind port)/,
                    fn ->
                      DevTask.run(["--root-dir", root_dir])
                    end

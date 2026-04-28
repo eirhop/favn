@@ -31,6 +31,8 @@ apps/
 │       ├── favn.build.single.ex
 │       ├── favn.build.web.ex
 │       ├── favn.dev.ex
+│       ├── favn.doctor.ex
+│       ├── favn.init.ex
 │       ├── favn.install.ex
 │       ├── favn.logs.ex
 │       ├── favn.read_doc.ex
@@ -69,6 +71,8 @@ apps/
 │   │       │   └── web.ex
 │   │       ├── config.ex
 │   │       ├── consumer_config_transport.ex
+│   │       ├── doctor.ex
+│   │       ├── init.ex
 │   │       ├── install.ex
 │   │       ├── lock.ex
 │   │       ├── local_http_client.ex
@@ -128,6 +132,7 @@ Notes:
 - `apps/favn_authoring` now owns authoring/manifest-facing implementation internals.
 - `apps/favn_local` continues to own local lifecycle/tooling implementation internals.
 - `apps/favn_local/lib/favn/dev/consumer_config_transport.ex` owns the local-only runner transport for explicitly supported consumer `:favn` config keys and redacted diagnostics.
+- `apps/favn_local/lib/favn/dev/init.ex` owns the idempotent `mix favn.init --duckdb --sample` local consumer scaffold, while `apps/favn_local/lib/favn/dev/doctor.ex` owns setup validation before running local tooling.
 - Internal compiler/manifest/planning/shared contracts are now re-centered into `apps/favn_core/lib/favn/`.
 - Phase 3 modules now owned in `apps/favn_core/lib/favn/` include:
   - `manifest.ex`

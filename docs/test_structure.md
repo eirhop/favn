@@ -29,6 +29,8 @@ apps/
 │   ├── dev_build_web_test.exs
 │   ├── dev_config_test.exs
 │   ├── dev_consumer_config_transport_test.exs
+│   ├── dev_doctor_test.exs
+│   ├── dev_init_test.exs
 │   ├── dev_install_test.exs
 │   ├── dev_lifecycle_test.exs
 │   ├── dev_lock_test.exs
@@ -123,6 +125,8 @@ Notes:
 - `apps/favn_local/test/dev_runner_control_test.exs` locks the live runner manifest-registration fallback behavior used by split-root local dev startup.
 - `apps/favn_local/test/dev_runtime_launch_test.exs` locks service-spec generation against installed runtime workspace roots.
 - `apps/favn_local/test/dev_consumer_config_transport_test.exs` locks the local-only consumer config transport schema, path normalization, module atom roundtrips, decode failures, and redaction behavior.
+- `apps/favn_local/test/dev_init_test.exs` locks generated DuckDB sample content, idempotent init behavior, dependency insertion, and manifest compilation for the generated smoke path.
+- `apps/favn_local/test/dev_doctor_test.exs` locks local setup validation for configured modules, connections, plugins, and manifest generation.
 - `apps/favn_local/test/integration/dev_split_root_regression_test.exs` adds split-root startup coverage that exercises `mix favn.dev --root-dir ...` end-to-end against a workload project whenever the configured workload project exists.
 - `apps/favn_test_support` is the shared home for cross-app fixtures, helpers, builders, and file fixtures.
 - Shared fixture source lives under `apps/favn_test_support/priv/fixtures/assets/` and is loaded via `FavnTestSupport.Fixtures`.

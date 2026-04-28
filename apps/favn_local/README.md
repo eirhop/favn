@@ -11,6 +11,7 @@ for Favn.
 `favn_local` owns:
 
 - local stack lifecycle implementation (`dev`, `stop`, `status`, `reload`)
+- local project bootstrap and validation (`init`, `doctor`)
 - install/reset/log tooling (`install`, `reset`, `logs`)
 - project-local packaging flows (`build.runner`, `build.web`,
   `build.orchestrator`, `build.single`)
@@ -24,6 +25,8 @@ compile logic remains in `favn_authoring`.
 These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 
 - `mix favn.install`
+- `mix favn.init`
+- `mix favn.doctor`
 - `mix favn.dev`
 - `mix favn.status`
 - `mix favn.run`
@@ -41,10 +44,19 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 ### First-time local setup
 
 ```bash
+mix favn.init --duckdb --sample
+mix deps.get
+mix favn.doctor
 mix favn.install
 mix favn.dev
 mix favn.dev --scheduler
 ```
+
+`mix favn.init --duckdb --sample` generates a minimal DuckDB-backed consumer
+sample: connection module, namespace modules, raw Elixir load asset, downstream
+SQL asset, a `deps(:all)` pipeline, local Favn config, and `.env.example` values
+for local web login. Generated files are idempotent: matching files are reported
+as already present, and changed files are left untouched.
 
 ### Inspect and iterate
 

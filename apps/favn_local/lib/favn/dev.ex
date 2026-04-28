@@ -10,6 +10,8 @@ defmodule Favn.Dev do
   Read `Favn.Dev` when the task is about:
 
   - starting or stopping the local stack
+  - bootstrapping a local sample project
+  - validating local project setup
   - checking local runtime state
   - reloading manifests into a running local environment
   - reading local service logs
@@ -21,6 +23,8 @@ defmodule Favn.Dev do
   ## Entry Points
 
   - `install/1`: prepare local tooling inputs and snapshots
+  - `init/1`: generate a local DuckDB sample project scaffold
+  - `doctor/1`: validate local project setup before running
   - `dev/1`: start local runner, orchestrator, and web processes
   - `status/1`: inspect current stack state
   - `reload/1`: rebuild and republish the manifest
@@ -35,6 +39,8 @@ defmodule Favn.Dev do
   alias Favn.Dev.Build.Runner, as: RunnerBuild
   alias Favn.Dev.Build.Single, as: SingleBuild
   alias Favn.Dev.Build.Web, as: WebBuild
+  alias Favn.Dev.Doctor
+  alias Favn.Dev.Init
   alias Favn.Dev.Install
   alias Favn.Dev.Logs
   alias Favn.Dev.Reload
@@ -45,6 +51,18 @@ defmodule Favn.Dev do
 
   @type status_opts :: [root_dir: Path.t()]
   @type lifecycle_opts :: [root_dir: Path.t()]
+
+  @doc """
+  Bootstraps local Favn files in the current Mix project.
+  """
+  @spec init(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
+  def init(opts \\ []) when is_list(opts), do: Init.run(opts)
+
+  @doc """
+  Validates local Favn project setup.
+  """
+  @spec doctor(lifecycle_opts()) :: {:ok, [map()]} | {:error, [map()]}
+  def doctor(opts \\ []) when is_list(opts), do: Doctor.run(opts)
 
   @doc """
   Resolves and validates local install inputs used by dev tooling.
@@ -115,7 +133,8 @@ defmodule Favn.Dev do
   Submits a pipeline run to the running local stack.
   """
   @spec run_pipeline(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_pipeline(pipeline_module, opts \\ []) when is_list(opts), do: Run.pipeline(pipeline_module, opts)
+  def run_pipeline(pipeline_module, opts \\ []) when is_list(opts),
+    do: Run.pipeline(pipeline_module, opts)
 
   @doc """
   Returns local stack status for the current project.
