@@ -225,7 +225,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
         :incremental -> incremental_statements(target, plan)
       end
 
-    {:ok, plan.pre_statements ++ statements ++ plan.post_statements}
+    {:ok,
+     schema_setup_statements(plan) ++ plan.pre_statements ++ statements ++ plan.post_statements}
   rescue
     _ ->
       {:error,
@@ -401,7 +402,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp split_materialization_statements(%WritePlan{} = plan, statements) do
-    pre_count = length(plan.pre_statements)
+    pre_count = length(schema_setup_statements(plan)) + length(plan.pre_statements)
     post_count = length(plan.post_statements)
 
     {pre, rest} = Enum.split(statements, pre_count)
@@ -429,6 +430,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
     create_table_statement(target, empty_plan)
   end
+
+  defp schema_setup_statements(%WritePlan{target: %Relation{schema: schema}})
+       when is_binary(schema) and schema not in ["", "main"] do
+    [["CREATE SCHEMA IF NOT EXISTS ", quote_ident(schema)]]
+  end
+
+  defp schema_setup_statements(%WritePlan{}), do: []
 
   defp appender_rows(%WritePlan{} = plan, opts) do
     plan.options

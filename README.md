@@ -172,7 +172,9 @@ end
 Relation-style SQL references are the primary authoring path. When a reference
 resolves to an owned asset relation on the same connection, Favn infers the
 dependency automatically, so `@depends` is only needed for dependencies that
-are not visible in SQL or cannot be resolved from owned relations.
+are not visible in SQL or cannot be resolved from owned relations. DuckDB-backed
+SQL materialization creates the owned target schema when needed before creating
+the table or view.
 
 ### 4. Define a pipeline
 

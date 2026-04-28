@@ -33,7 +33,7 @@ from first principles.
 You are modeling a fake commerce company called `Northbeam Outfitters`.
 
 The graph has 15 assets:
-- `sources`: static lookup inputs
+- `sources`: static lookup seed tables
 - `raw`: synthetic generated base tables
 - `stg`: cleaned and joined analytics tables
 - `gold`: business-facing summary tables
@@ -60,17 +60,20 @@ intent described in each module's `@moduledoc`.
     all dependencies (`deps(:all)`).
   - It includes a short local smoke-test schedule that is due every 15 seconds.
 
-### Source assets (`sources` schema)
+### Seed assets (`sources` schema)
 
 - `FavnReferenceWorkload.Warehouse.Sources.CountryRegions`
-  - "External region lookup source used by synthetic customer generation"
-  - Treat this as a lookup table the rest of the graph can read.
+  - "Deterministic region lookup seed used by synthetic customer generation"
+  - Creates the `sources.country_regions` lookup table the rest of the graph can
+    read.
 - `FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog`
-  - "External channel lookup source used by synthetic order generation"
-  - Another lookup table used to keep generated orders realistic.
+  - "Deterministic channel lookup seed used by synthetic order generation"
+  - Creates the `sources.channel_catalog` lookup table used to keep generated
+    orders realistic.
 
-These are `Favn.Source` assets, so they model available data relations but are
-not transformation logic.
+These are normal Elixir `Favn.Asset` modules because the tutorial owns the seed
+data. Use `Favn.Source` only when a relation is managed outside Favn and should
+be observed, not created, by the workload.
 
 ### Raw assets (`raw` schema)
 

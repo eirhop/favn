@@ -1,22 +1,33 @@
 defmodule FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog do
   @moduledoc """
-  External channel lookup source used by synthetic order generation.
+  Deterministic channel lookup seed used by synthetic order generation.
 
-  Like `CountryRegions`, this is a `Favn.Source` module. It models a source
-  relation in the graph so downstream SQL can depend on it.
+  Like `CountryRegions`, this is a small Elixir seed asset. It creates the
+  lookup table that downstream raw assets read when validating synthetic orders.
 
   In plain terms: this is a declared lookup table for valid acquisition
-  channels.
+  channels, and this asset owns creating it for the tutorial workload.
 
   Alternative:
 
-  - Keep it as a source relation when the data is externally managed.
-  - Convert it to a SQL asset if you want Favn to generate/populate it.
+  - Use `Favn.Source` when the data is externally managed and should not be
+    created by the workload.
+  - Convert it to a SQL asset if you want to author the seed data as SQL.
   """
 
   use Favn.Namespace
-  use Favn.Source
+  use Favn.Asset
 
-  @meta owner: "reference-workload", category: :reference_data, tags: [:source]
+  alias FavnReferenceWorkload.Client.DuckDBJSONLoader
+
+  @meta owner: "reference-workload", category: :reference_data, tags: [:seed]
   @relation true
+  def asset(ctx) do
+    DuckDBJSONLoader.replace_relation_from_sql(ctx.asset.relation, """
+    select channel_code
+    from (
+      values ('organic_search'), ('paid_social'), ('email'), ('affiliate')
+    ) as t(channel_code)
+    """)
+  end
 end

@@ -417,6 +417,74 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
              Client.relation(session_b, RelationRef.new!(schema: "main", name: "concurrent_b"))
   end
 
+  test "table materialization creates missing target schema" do
+    path = tmp_duckdb_path("schema_table")
+    resolved = %Resolved{resolved() | config: %{database: path}}
+    {:ok, session} = open_session(resolved)
+
+    on_exit(fn ->
+      Client.disconnect(session)
+      File.rm(path)
+    end)
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+             Client.materialize(session, table_plan("analytics", "daily_revenue", 1), [])
+
+    assert {:ok, %Relation{schema: "analytics", name: "daily_revenue", type: :table}} =
+             Client.relation(
+               session,
+               RelationRef.new!(schema: "analytics", name: "daily_revenue")
+             )
+  end
+
+  test "view materialization creates missing target schema" do
+    path = tmp_duckdb_path("schema_view")
+    resolved = %Resolved{resolved() | config: %{database: path}}
+    {:ok, session} = open_session(resolved)
+
+    on_exit(fn ->
+      Client.disconnect(session)
+      File.rm(path)
+    end)
+
+    plan = %WritePlan{
+      materialization: :view,
+      target: %Relation{schema: "mart", name: "active_customers", type: :view},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} = Client.materialize(session, plan, [])
+
+    assert {:ok, %Relation{schema: "mart", name: "active_customers", type: :view}} =
+             Client.relation(session, RelationRef.new!(schema: "mart", name: "active_customers"))
+  end
+
+  test "appender materialization creates missing target schema before opening appender" do
+    path = tmp_duckdb_path("schema_appender")
+    resolved = %Resolved{resolved() | config: %{database: path}}
+    {:ok, session} = open_session(resolved)
+
+    on_exit(fn ->
+      Client.disconnect(session)
+      File.rm(path)
+    end)
+
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{schema: "bulk", name: "events", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true,
+      options: %{appender_rows: [[1], [2]]}
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize, command: "appender", rows_affected: 2}} =
+             Client.materialize(session, plan, [])
+
+    assert {:ok, %Relation{schema: "bulk", name: "events", type: :table}} =
+             Client.relation(session, RelationRef.new!(schema: "bulk", name: "events"))
+  end
+
   defp resolved do
     %Resolved{
       name: :duckdb_runtime,
@@ -442,12 +510,23 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   defp table_plan(name, value) do
+    table_plan("main", name, value)
+  end
+
+  defp table_plan(schema, name, value) do
     %WritePlan{
       materialization: :table,
-      target: %Relation{schema: "main", name: name, type: :table},
+      target: %Relation{schema: schema, name: name, type: :table},
       select_sql: "SELECT #{value} AS id",
       replace_existing?: true
     }
+  end
+
+  defp tmp_duckdb_path(name) do
+    Path.join(
+      System.tmp_dir!(),
+      "favn_duckdb_#{name}_#{System.unique_integer([:positive])}.duckdb"
+    )
   end
 
   defp last_result_ref! do
