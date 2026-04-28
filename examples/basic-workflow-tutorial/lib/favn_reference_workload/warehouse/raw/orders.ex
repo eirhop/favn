@@ -68,7 +68,6 @@ defmodule FavnReferenceWorkload.Warehouse.Raw.Orders do
       order_id,
       customer_id,
       channel_code,
-      source_segment_id,
       cast(order_date as date) as order_date
     from __RAW_JSON_SOURCE__
     where customer_id in (

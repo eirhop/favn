@@ -66,6 +66,8 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
       refute inspect(result) =~ "private-token"
 
       assert {:ok, 6} = relation_count("raw", "orders")
+      refute raw_orders_contains_value?("northbeam-private-segment")
+      refute raw_orders_has_column?("source_segment_id")
     end)
   end
 
@@ -161,12 +163,53 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
     {:ok, version} = Favn.pin_manifest_version(manifest)
     :ok = FavnRunner.register_manifest(version)
 
-    FavnRunner.run(%RunnerWork{
-      run_id: "raw-orders-#{System.unique_integer([:positive])}",
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      asset_ref: {FavnReferenceWorkload.Warehouse.Raw.Orders, :asset}
-    })
+    FavnRunner.run(
+      %RunnerWork{
+        run_id: "raw-orders-#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {FavnReferenceWorkload.Warehouse.Raw.Orders, :asset}
+      },
+      timeout: 15_000
+    )
+  end
+
+  defp raw_orders_contains_value?(value) do
+    with {:ok, session} <- SQLClient.connect(:warehouse),
+         {:ok, result} <-
+           SQLClient.query(
+             session,
+             """
+             select 1
+             from raw.orders
+             where cast(order_id as varchar) = ?
+                or cast(customer_id as varchar) = ?
+                or channel_code = ?
+                or cast(order_date as varchar) = ?
+             limit 1
+             """,
+             params: List.duplicate(value, 4)
+           ) do
+      SQLClient.disconnect(session)
+      result.rows != []
+    else
+      {:error, reason} -> flunk("failed to inspect raw orders values: #{inspect(reason)}")
+    end
+  end
+
+  defp raw_orders_has_column?(column_name) do
+    with {:ok, session} <- SQLClient.connect(:warehouse),
+         {:ok, result} <-
+           SQLClient.query(
+             session,
+             "select 1 from information_schema.columns where table_schema = ? and table_name = ? and column_name = ? limit 1",
+             params: ["raw", "orders", column_name]
+           ) do
+      SQLClient.disconnect(session)
+      result.rows != []
+    else
+      {:error, reason} -> flunk("failed to inspect raw orders columns: #{inspect(reason)}")
+    end
   end
 
   defp assert_successful_asset_return(:ok), do: :ok
