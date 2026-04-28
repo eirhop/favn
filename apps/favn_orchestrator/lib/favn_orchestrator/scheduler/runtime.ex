@@ -215,6 +215,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
       true ->
         selected =
           select_occurrences(
+            entry,
             entry.schedule.missed,
             entry.schedule.cron,
             entry.schedule.timezone,
@@ -407,13 +408,18 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     Anchor.new!(kind, start_at, end_at, timezone: timezone)
   end
 
-  defp select_occurrences(:all, cron, timezone, last_due_at, latest_due) do
+  defp select_occurrences(entry, :all, cron, timezone, last_due_at, latest_due) do
     limit = configured_max_missed_all_occurrences()
     selected = Cron.occurrences_between(cron, timezone, last_due_at, latest_due, limit: limit + 1)
 
     if length(selected) > limit do
       Logger.warning(
-        "scheduler missed occurrence catch-up capped at #{limit} occurrences for #{inspect(cron)}"
+        "scheduler missed occurrence catch-up capped " <>
+          "pipeline=#{inspect(entry.module)} " <>
+          "schedule_id=#{inspect(entry.schedule.name)} " <>
+          "schedule_ref=#{inspect(entry.schedule.ref)} " <>
+          "cron=#{inspect(cron)} " <>
+          "cap=#{limit} selected=#{limit} observed=#{length(selected)}"
       )
 
       Enum.take(selected, limit)
@@ -422,14 +428,14 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     end
   end
 
-  defp select_occurrences(:skip, cron, timezone, last_due_at, latest_due) do
+  defp select_occurrences(_entry, :skip, cron, timezone, last_due_at, latest_due) do
     case Cron.last_occurrence_between(cron, timezone, last_due_at, latest_due) do
       nil -> []
       due_at -> [due_at]
     end
   end
 
-  defp select_occurrences(:one, cron, timezone, last_due_at, latest_due) do
+  defp select_occurrences(_entry, :one, cron, timezone, last_due_at, latest_due) do
     case Cron.first_occurrence_between(cron, timezone, last_due_at, latest_due) do
       nil -> []
       due_at -> [due_at]

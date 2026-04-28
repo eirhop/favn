@@ -325,7 +325,15 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
 
     log = capture_log(fn -> assert :ok = Runtime.tick(name) end)
 
-    assert log =~ "scheduler missed occurrence catch-up capped at 3 occurrences"
+    assert log =~ "scheduler missed occurrence catch-up capped"
+    assert log =~ "pipeline=MyApp.Pipelines.Daily"
+    assert log =~ "schedule_id=:daily"
+    assert log =~ "schedule_ref={MyApp.Schedules, :daily}"
+    assert log =~ "cron=\"* * * * * *\""
+    assert log =~ "cap=3"
+    assert log =~ "selected=3"
+    assert log =~ "observed=4"
+
     assert {:ok, runs} = Storage.list_runs()
 
     capped_runs = Enum.filter(runs, &(&1.manifest_version_id == version.manifest_version_id))

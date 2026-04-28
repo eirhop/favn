@@ -239,7 +239,7 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       :lt ->
         from
         |> dates_until(to, :asc)
-        |> Stream.flat_map(&occurrences_on_date(expr, &1, from, to, false, :asc))
+        |> Stream.flat_map(&occurrences_on_date_stream(expr, &1, from, to, false, :asc))
         |> take_limit(limit)
         |> Enum.to_list()
 
@@ -257,9 +257,9 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         from
         |> dates_until(to, :asc)
         |> Enum.reduce_while(nil, fn date, _acc ->
-          case occurrences_on_date(expr, date, from, to, false, :asc) do
-            [candidate | _rest] -> {:halt, candidate}
-            [] -> {:cont, nil}
+          case first_occurrence_on_date(expr, date, from, to, false, :asc) do
+            %DateTime{} = candidate -> {:halt, candidate}
+            nil -> {:cont, nil}
           end
         end)
 
@@ -274,9 +274,9 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         to
         |> dates_until(from, :desc)
         |> Enum.reduce_while(nil, fn date, _acc ->
-          case occurrences_on_date(expr, date, from, to, include_from?, :desc) do
-            [candidate | _rest] -> {:halt, candidate}
-            [] -> {:cont, nil}
+          case first_occurrence_on_date(expr, date, from, to, include_from?, :desc) do
+            %DateTime{} = candidate -> {:halt, candidate}
+            nil -> {:cont, nil}
           end
         end)
 
@@ -309,18 +309,24 @@ defmodule FavnOrchestrator.Scheduler.Cron do
     end)
   end
 
-  defp occurrences_on_date(expr, date, from, to, include_from?, direction) do
+  defp first_occurrence_on_date(expr, date, from, to, include_from?, direction) do
+    expr
+    |> occurrences_on_date_stream(date, from, to, include_from?, direction)
+    |> Enum.find(fn _candidate -> true end)
+  end
+
+  defp occurrences_on_date_stream(expr, date, from, to, include_from?, direction) do
     if date_matches?(expr, date) do
       expr
-      |> times_for_date(date, from, to, direction)
-      |> Enum.flat_map(&date_time_candidates(date, &1, from.time_zone, direction))
-      |> Enum.filter(&candidate_in_range?(&1, from, to, include_from?))
+      |> times_for_date_stream(date, from, to, direction)
+      |> Stream.flat_map(&date_time_candidates(date, &1, from.time_zone, direction))
+      |> Stream.filter(&candidate_in_range?(&1, from, to, include_from?))
     else
-      []
+      Stream.reject([], fn _value -> true end)
     end
   end
 
-  defp times_for_date(expr, date, from, to, direction) do
+  defp times_for_date_stream(expr, date, from, to, direction) do
     lower =
       if Date.compare(date, DateTime.to_date(from)) == :eq,
         do: DateTime.to_time(from),
@@ -331,14 +337,20 @@ defmodule FavnOrchestrator.Scheduler.Cron do
         do: DateTime.to_time(to),
         else: ~T[23:59:59]
 
-    for hour <- ordered(expr.hours, direction),
-        minute <- ordered(expr.minutes, direction),
-        second <- ordered(expr.seconds, direction),
-        time = Time.new!(hour, minute, second),
-        Time.compare(time, lower) in [:gt, :eq],
-        Time.compare(time, upper) in [:lt, :eq] do
-      time
-    end
+    expr.hours
+    |> ordered(direction)
+    |> Stream.flat_map(fn hour ->
+      expr.minutes
+      |> ordered(direction)
+      |> Stream.flat_map(fn minute ->
+        expr.seconds
+        |> ordered(direction)
+        |> Stream.map(&Time.new!(hour, minute, &1))
+      end)
+    end)
+    |> Stream.filter(fn time ->
+      Time.compare(time, lower) in [:gt, :eq] and Time.compare(time, upper) in [:lt, :eq]
+    end)
   end
 
   defp ordered(values, :asc), do: values

@@ -18,7 +18,7 @@ defmodule FavnOrchestrator.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto],
+      extra_applications: [:logger, :crypto, :tzdata],
       mod: {FavnOrchestrator.Application, []}
     ]
   end
@@ -29,7 +29,8 @@ defmodule FavnOrchestrator.MixProject do
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:phoenix_pubsub, "~> 2.2"},
       {:plug_cowboy, "~> 2.7"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:tzdata, "~> 1.1"}
     ]
   end
 
