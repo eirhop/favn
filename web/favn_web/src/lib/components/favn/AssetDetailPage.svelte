@@ -3,7 +3,11 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import StatusBadge from './StatusBadge.svelte';
-	import type { AssetDetailPageData, AssetDetailView } from '$lib/asset_catalog_types';
+	import type {
+		AssetDetailPageData,
+		AssetDetailView,
+		AssetRuntimeConfigEntry
+	} from '$lib/asset_catalog_types';
 
 	type RunScope = 'asset' | 'with_dependencies';
 	type Tab = 'overview' | 'lineage' | 'runs' | 'raw';
@@ -60,6 +64,10 @@
 		> | null;
 		const columns = schema?.columns ?? schema?.fields;
 		return Array.isArray(columns) ? (columns as Array<Record<string, unknown>>) : [];
+	});
+	let runtimeConfig = $derived.by(() => {
+		const value = asset.runtimeConfig ?? asset.runtime_config ?? [];
+		return Array.isArray(value) ? (value as AssetRuntimeConfigEntry[]) : [];
 	});
 	let notes = $derived.by(() => {
 		const source =
@@ -154,6 +162,12 @@
 			(candidate) => candidate !== null && candidate !== undefined && candidate !== ''
 		);
 		return found === undefined ? '—' : String(found);
+	}
+
+	function runtimeStatusClass(status: string) {
+		if (status === 'present') return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
+		if (status === 'missing') return 'bg-red-50 text-red-700 ring-red-200';
+		return 'bg-slate-50 text-slate-700 ring-slate-200';
 	}
 
 	function tabClass(tab: Tab) {
@@ -362,6 +376,57 @@
 				</Card.Content>
 			</Card.Root>
 		</div>
+
+		<Card.Root>
+			<Card.Header><h2 class="text-xl font-semibold tracking-tight">Runtime config</h2></Card.Header
+			>
+			<Card.Content>
+				{#if runtimeConfig.length === 0}
+					<p class="rounded-lg border border-dashed p-6 text-sm text-slate-500">
+						No runtime config refs were reported for this asset.
+					</p>
+				{:else}
+					<div class="overflow-hidden rounded-lg border">
+						<table class="w-full text-sm">
+							<thead class="bg-slate-50 text-left text-xs text-slate-500 uppercase">
+								<tr>
+									<th class="px-3 py-2">Config path</th>
+									<th class="px-3 py-2">Env key</th>
+									<th class="px-3 py-2">Status</th>
+									<th class="px-3 py-2">Flags</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each runtimeConfig as entry (`${entry.path}:${entry.key}`)}
+									<tr class="border-t">
+										<td class="px-3 py-2 font-mono text-xs break-all">{entry.path}</td>
+										<td class="px-3 py-2 font-mono text-xs break-all">{entry.key}</td>
+										<td class="px-3 py-2">
+											<span
+												class={[
+													'inline-flex rounded-full px-2 py-1 text-xs font-medium ring-1',
+													runtimeStatusClass(entry.status)
+												]}
+											>
+												{entry.status}
+											</span>
+										</td>
+										<td class="px-3 py-2 text-slate-600">
+											{entry.required ? 'required' : 'optional'} · {entry.secret
+												? 'secret'
+												: 'not secret'}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+					<p class="mt-3 text-xs text-slate-500">
+						Secret values are never displayed; only env key presence is shown.
+					</p>
+				{/if}
+			</Card.Content>
+		</Card.Root>
 
 		<Card.Root>
 			<Card.Header

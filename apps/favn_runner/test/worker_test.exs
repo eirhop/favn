@@ -7,6 +7,7 @@ defmodule FavnRunner.WorkerTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
+  alias Favn.RuntimeConfig.Ref
 
   test "worker sends runner result for crashing asset invocation" do
     asset =
@@ -84,6 +85,54 @@ defmodule FavnRunner.WorkerTest do
              {:unsupported_entrypoint_arity, 2, expected: 1}
   end
 
+  test "worker resolves runtime config into context before asset invocation" do
+    previous_segment = System.get_env("FAVN_TEST_SEGMENT_ID")
+    previous_token = System.get_env("FAVN_TEST_TOKEN")
+
+    try do
+      System.put_env("FAVN_TEST_SEGMENT_ID", "segment-123")
+      System.put_env("FAVN_TEST_TOKEN", "secret-token")
+
+      result =
+        run_single_asset(FavnRunner.WorkerTest.ConfigAsset,
+          runtime_config: %{
+            source_system: %{
+              segment_id: Ref.env!("FAVN_TEST_SEGMENT_ID"),
+              token: Ref.secret_env!("FAVN_TEST_TOKEN")
+            }
+          }
+        )
+
+      assert result.status == :ok
+      assert [%{meta: %{segment_id: "segment-123", token_seen?: true}}] = result.asset_results
+    after
+      restore_env("FAVN_TEST_SEGMENT_ID", previous_segment)
+      restore_env("FAVN_TEST_TOKEN", previous_token)
+    end
+  end
+
+  test "worker fails before invocation when required runtime config is missing" do
+    previous = System.get_env("FAVN_TEST_MISSING_REQUIRED")
+
+    try do
+      System.delete_env("FAVN_TEST_MISSING_REQUIRED")
+
+      result =
+        run_single_asset(FavnRunner.WorkerTest.ConfigAsset,
+          runtime_config: %{
+            source_system: %{segment_id: Ref.env!("FAVN_TEST_MISSING_REQUIRED")}
+          }
+        )
+
+      assert result.status == :error
+      assert [%{error: error}] = result.asset_results
+      assert error.type == :missing_env
+      assert error.message == "missing_env FAVN_TEST_MISSING_REQUIRED"
+    after
+      restore_env("FAVN_TEST_MISSING_REQUIRED", previous)
+    end
+  end
+
   defp assert_throw_exit_result(module, expected_kind) do
     result = run_single_asset(module)
     assert result.status == :error
@@ -99,7 +148,8 @@ defmodule FavnRunner.WorkerTest do
         module: module,
         name: :asset,
         type: :elixir,
-        execution: Keyword.get(opts, :execution, %{entrypoint: :asset, arity: 1})
+        execution: Keyword.get(opts, :execution, %{entrypoint: :asset, arity: 1}),
+        runtime_config: Keyword.get(opts, :runtime_config, %{})
       }
 
     manifest =
@@ -141,6 +191,9 @@ defmodule FavnRunner.WorkerTest do
     assert_receive {:runner_result, ^execution_id, %RunnerResult{} = result}, 2_000
     result
   end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 end
 
 defmodule FavnRunner.WorkerTest.CrashingAsset do
@@ -166,4 +219,15 @@ end
 defmodule FavnRunner.WorkerTest.UnsupportedArityAsset do
   @spec asset(Favn.Run.Context.t(), term()) :: :ok
   def asset(_ctx, _value), do: :ok
+end
+
+defmodule FavnRunner.WorkerTest.ConfigAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(ctx) do
+    {:ok,
+     %{
+       segment_id: ctx.config.source_system.segment_id,
+       token_seen?: Map.get(ctx.config.source_system, :token) == "secret-token"
+     }}
+  end
 end

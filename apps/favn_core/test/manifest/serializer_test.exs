@@ -3,6 +3,7 @@ defmodule Favn.Manifest.SerializerTest do
 
   alias Favn.Manifest.Build
   alias Favn.Manifest.Serializer
+  alias Favn.RuntimeConfig.Ref
 
   test "encodes canonical json with sorted keys" do
     manifest = %{schema_version: 1, runner_contract_version: 1, z: 1, a: 2}
@@ -35,5 +36,29 @@ defmodule Favn.Manifest.SerializerTest do
     assert {:ok, decoded} = Serializer.decode_manifest(encoded)
     assert decoded["schema_version"] == 1
     refute Map.has_key?(decoded, "diagnostics")
+  end
+
+  test "encodes runtime config refs without resolved values" do
+    manifest = %{
+      schema_version: 1,
+      runner_contract_version: 1,
+      assets: [
+        %{
+          ref: {__MODULE__, :asset},
+          runtime_config: %{
+            source_system: %{
+              segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID"),
+              token: Ref.secret_env!("SOURCE_SYSTEM_TOKEN")
+            }
+          }
+        }
+      ]
+    }
+
+    assert {:ok, encoded} = Serializer.encode_manifest(manifest)
+    assert encoded =~ "SOURCE_SYSTEM_SEGMENT_ID"
+    assert encoded =~ "SOURCE_SYSTEM_TOKEN"
+    assert encoded =~ ~s|"secret?":true|
+    refute encoded =~ "resolved-token-value"
   end
 end

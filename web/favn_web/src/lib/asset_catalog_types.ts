@@ -22,6 +22,17 @@ export type AssetCatalogRunSummary = {
 	raw: unknown;
 };
 
+export type AssetRuntimeConfigStatus = 'present' | 'missing' | 'unknown';
+
+export type AssetRuntimeConfigEntry = {
+	path: string;
+	provider: string;
+	key: string;
+	secret: boolean;
+	required: boolean;
+	status: AssetRuntimeConfigStatus;
+};
+
 export type AssetCatalogItem = {
 	ref: string;
 	targetId?: string;
@@ -37,6 +48,7 @@ export type AssetCatalogItem = {
 	downstreamCount?: number;
 	manifestVersionId?: string | null;
 	manifestContentHash?: string | null;
+	runtimeConfig?: AssetRuntimeConfigEntry[];
 	runActions?: AssetCatalogRunAction[];
 	rawTarget?: unknown;
 };

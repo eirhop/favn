@@ -19,6 +19,24 @@ export const successfulAssetWithRuns = {
 			duration: '12.4s'
 		},
 		manifestVersionId: 'mfv_2026_04_27',
+		runtimeConfig: [
+			{
+				path: 'source_system.segment_id',
+				provider: 'env',
+				key: 'SOURCE_SYSTEM_SEGMENT_ID',
+				secret: false,
+				required: true,
+				status: 'present'
+			},
+			{
+				path: 'source_system.token',
+				provider: 'env',
+				key: 'SOURCE_SYSTEM_TOKEN',
+				secret: true,
+				required: true,
+				status: 'missing'
+			}
+		],
 		type: 'SQL asset',
 		kind: 'table materialization',
 		domain: 'Revenue',

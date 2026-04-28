@@ -1,6 +1,7 @@
 import type {
 	AssetCatalogDetailView,
 	AssetCatalogFilters,
+	AssetRuntimeConfigEntry,
 	AssetCatalogItem,
 	AssetCatalogListView,
 	AssetCatalogRunAction,
@@ -33,6 +34,59 @@ function firstString(record: JsonRecord, keys: string[]): string | null {
 		if (value) return value;
 	}
 	return null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+	if (typeof value === 'boolean') return value;
+	if (typeof value === 'string') {
+		const normalized = value.trim().toLowerCase();
+		if (['true', 'yes', '1'].includes(normalized)) return true;
+		if (['false', 'no', '0'].includes(normalized)) return false;
+	}
+	return null;
+}
+
+function normalizeProvider(value: unknown): string | null {
+	const provider = asString(value)?.replace(/^:/, '').toLowerCase();
+	return provider ?? null;
+}
+
+function runtimeConfigSource(target: JsonRecord): unknown {
+	return (
+		target.runtime_config ?? target.runtimeConfig ?? target.config_refs ?? target.configRefs ?? null
+	);
+}
+
+function runtimeConfigEntry(path: string[], value: JsonRecord): AssetRuntimeConfigEntry | null {
+	const provider = normalizeProvider(value.provider);
+	const key = firstString(value, ['key', 'env_key', 'envKey', 'name']);
+	if (!provider || !key) return null;
+
+	const status =
+		provider === 'env' ? (process.env[key] === undefined ? 'missing' : 'present') : 'unknown';
+
+	return {
+		path: path.join('.'),
+		provider,
+		key,
+		secret:
+			asBoolean(value['secret?'] ?? value.secret ?? value.is_secret ?? value.isSecret) ?? false,
+		required:
+			asBoolean(value['required?'] ?? value.required ?? value.is_required ?? value.isRequired) ??
+			false,
+		status
+	};
+}
+
+function normalizeRuntimeConfig(value: unknown, path: string[] = []): AssetRuntimeConfigEntry[] {
+	if (!isRecord(value)) return [];
+
+	const direct = runtimeConfigEntry(path, value);
+	if (direct) return [direct];
+
+	return Object.entries(value).flatMap(([key, child]) =>
+		normalizeRuntimeConfig(child, [...path, key])
+	);
 }
 
 function normalizeStatus(value: unknown): RunStatus {
@@ -189,6 +243,7 @@ function normalizeTargetRecord(target: unknown, index: number): AssetCatalogItem
 			'manifest_hash',
 			'hash'
 		]),
+		runtimeConfig: normalizeRuntimeConfig(runtimeConfigSource(record)),
 		runActions: [],
 		rawTarget: target
 	};
@@ -196,10 +251,13 @@ function normalizeTargetRecord(target: unknown, index: number): AssetCatalogItem
 
 function assetTargets(activeManifestPayload: unknown): unknown[] {
 	const data = activeManifestData(activeManifestPayload);
+	const manifestAssetsByRef = manifestAssetLookup(activeManifestPayload);
 	if (Array.isArray(data.targets)) {
 		return data.targets
 			.filter((target) => isRecord(target) && target.type === 'asset')
 			.map((target) => ({
+				...(manifestAssetsByRef.get(assetLookupKey(target)) ?? {}),
+				...target,
 				target_id: firstString(target, ['target_id', 'targetId', 'id']),
 				label: firstString(target, ['label', 'name', 'id']),
 				type: firstString(target, ['kind', 'asset_type']) ?? 'asset'
@@ -207,7 +265,44 @@ function assetTargets(activeManifestPayload: unknown): unknown[] {
 	}
 
 	const targets = activeManifestTargets(activeManifestPayload);
-	return Array.isArray(targets.assets) ? targets.assets : [];
+	return Array.isArray(targets.assets)
+		? targets.assets.map((target) =>
+				isRecord(target)
+					? {
+							...(manifestAssetsByRef.get(assetLookupKey(target)) ?? {}),
+							...target
+						}
+					: target
+			)
+		: Array.from(manifestAssetsByRef.values());
+}
+
+function assetLookupKey(target: JsonRecord): string {
+	const value = firstString(target, [
+		'target_id',
+		'targetId',
+		'id',
+		'ref',
+		'asset_ref',
+		'assetRef',
+		'label'
+	]);
+	const normalized = normalizeAssetRefParts(value);
+	return normalized.ref ?? normalized.targetId ?? value ?? '';
+}
+
+function manifestAssetLookup(activeManifestPayload: unknown): Map<string, JsonRecord> {
+	const manifest = activeManifestSummary(activeManifestPayload);
+	const lookup = new Map<string, JsonRecord>();
+	if (!isRecord(manifest) || !Array.isArray(manifest.assets)) return lookup;
+
+	for (const asset of manifest.assets) {
+		if (!isRecord(asset)) continue;
+		const key = assetLookupKey(asset);
+		if (key) lookup.set(key, asset);
+	}
+
+	return lookup;
 }
 
 function runTargetRecord(run: JsonRecord): JsonRecord | null {

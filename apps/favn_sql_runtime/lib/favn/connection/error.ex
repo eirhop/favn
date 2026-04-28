@@ -13,6 +13,7 @@ defmodule Favn.Connection.Error do
           | :invalid_definition
           | :duplicate_name
           | :missing_required
+          | :missing_env
           | :unknown_keys
           | :invalid_type
           | :invalid_adapter

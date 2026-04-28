@@ -54,7 +54,9 @@ defmodule FavnRunner.Worker do
           execute_source_asset(asset)
 
         :elixir ->
-          execute_elixir_asset(asset, ContextBuilder.build(work, asset, execution_id))
+          with {:ok, context} <- ContextBuilder.build(work, asset, execution_id) do
+            execute_elixir_asset(asset, context)
+          end
 
         :sql ->
           execute_sql_asset(asset, version, work)

@@ -50,6 +50,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Harden the manifest-pinned SQL execution path enough for the `v1` support promise, especially around runtime payload handling and backend failure behavior.
 - Decide whether DuckDB/plugin execution is part of the core `v1` production promise or remains explicitly experimental beyond `v1`.
 - Make the supported-versus-experimental line explicit in user-facing docs.
+- Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
 
 ## Later / Future Ideas
 

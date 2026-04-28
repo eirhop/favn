@@ -6,27 +6,32 @@ defmodule FavnRunner.ContextBuilder do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Asset
   alias Favn.Run.Context
+  alias Favn.RuntimeConfig.Resolver, as: RuntimeConfigResolver
 
-  @spec build(RunnerWork.t(), Asset.t(), String.t()) :: Context.t()
+  @spec build(RunnerWork.t(), Asset.t(), String.t()) :: {:ok, Context.t()} | {:error, term()}
   def build(%RunnerWork{} = work, %Asset{} = asset, execution_id) when is_binary(execution_id) do
     run_id = work.run_id || execution_id
     stage = normalized_stage(work.metadata)
     attempt = normalized_attempt(work.metadata)
     max_attempts = normalized_max_attempts(work.metadata)
 
-    %Context{
-      run_id: run_id,
-      target_refs: [asset.ref],
-      current_ref: asset.ref,
-      asset: %{ref: asset.ref, relation: asset.relation, config: asset.config || %{}},
-      params: normalized_map(work.params),
-      window: Map.get(work.trigger, :window),
-      pipeline: Map.get(work.trigger, :pipeline),
-      run_started_at: DateTime.utc_now(),
-      stage: stage,
-      attempt: attempt,
-      max_attempts: max_attempts
-    }
+    with {:ok, runtime_config} <- RuntimeConfigResolver.resolve_asset(asset.runtime_config || %{}) do
+      {:ok,
+       %Context{
+         run_id: run_id,
+         target_refs: [asset.ref],
+         current_ref: asset.ref,
+         asset: %{ref: asset.ref, relation: asset.relation, config: asset.config || %{}},
+         config: runtime_config,
+         params: normalized_map(work.params),
+         window: Map.get(work.trigger, :window),
+         pipeline: Map.get(work.trigger, :pipeline),
+         run_started_at: DateTime.utc_now(),
+         stage: stage,
+         attempt: attempt,
+         max_attempts: max_attempts
+       }}
+    end
   end
 
   defp normalized_map(map) when is_map(map), do: map

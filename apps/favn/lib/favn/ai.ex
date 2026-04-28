@@ -12,6 +12,8 @@ defmodule Favn.AI do
 
   - To author one Elixir asset, read `Favn.Asset`, then `Favn.Namespace` and
     `Favn.Window` if needed.
+  - To declare required runtime configuration or secrets for assets, read
+    `Favn.Asset` and `Favn.RuntimeConfig.Ref`.
   - To author one SQL asset, read `Favn.SQLAsset`, then `Favn.SQL`,
     `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as needed.
   - To author many similar assets in one module, read `Favn.MultiAsset`.
@@ -21,7 +23,9 @@ defmodule Favn.AI do
     `Favn.Triggers.Schedules` if schedules are involved.
   - To work with windows or backfills, read `Favn.Window`, then
     `Favn plan_asset_run` if you need planning details.
-  - To define connection contracts, read `Favn.Connection`.
+  - To define connection contracts, read `Favn.Connection`; if connection
+    values come from environment variables or secrets, also read
+    `Favn.RuntimeConfig.Ref`.
   - To run SQL queries from plain Elixir code using named Favn connections, read
     `Favn.SQLClient`.
   - To compile a manifest, read `Favn generate_manifest`, then
@@ -53,6 +57,8 @@ defmodule Favn.AI do
     resolution, or the exact `%Favn.Pipeline.Resolution{}` shape
   - `Favn.Assets.Planner`: when you need topological stages, dependency
     expansion, anchor windows, or backfill planning
+  - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
+    required environment values and secret environment values
 
   ## Working Style
 

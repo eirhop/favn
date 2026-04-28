@@ -5,6 +5,11 @@ defmodule Favn.DSLCompilerTest do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
     use Favn.Asset
 
+    source_config(:source_system,
+      segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
+      token: secret_env!("SOURCE_SYSTEM_TOKEN")
+    )
+
     @meta owner: "data", category: :sales, tags: [:raw]
     @relation true
     def asset(_ctx), do: :ok
@@ -54,6 +59,8 @@ defmodule Favn.DSLCompilerTest do
 
     assert {:ok, [asset]} = Favn.list_assets([RawCustomers])
     assert asset.ref == {RawCustomers, :asset}
+    assert asset.runtime_config.source_system.segment_id.key == "SOURCE_SYSTEM_SEGMENT_ID"
+    assert asset.runtime_config.source_system.token.secret? == true
 
     assert {:ok, fetched} = Favn.get_asset(RawCustomers)
     assert fetched.ref == {RawCustomers, :asset}

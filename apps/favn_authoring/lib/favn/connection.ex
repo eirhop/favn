@@ -7,6 +7,8 @@ defmodule Favn.Connection do
 
   Provider modules return static connection metadata from `definition/0`. Host
   applications then supply runtime values through `config :favn, connections: [...]`.
+  Runtime values may be literals or `Favn.RuntimeConfig.Ref` values that resolve
+  from the runner environment before adapter connection.
 
   ## Minimal example
 
@@ -52,10 +54,27 @@ defmodule Favn.Connection do
   backends, and `write_concurrency: :unlimited` for backends that safely support
   parallel writes.
 
+  ## Runtime Environment Values
+
+      config :favn,
+        connection_modules: [MyApp.Connections.Warehouse],
+        connections: [
+          warehouse: [
+            database: Favn.RuntimeConfig.Ref.env!("WAREHOUSE_DB_PATH"),
+            password: Favn.RuntimeConfig.Ref.secret_env!("WAREHOUSE_PASSWORD")
+          ]
+        ]
+
+  The connection loader resolves these refs before calling the adapter. A missing
+  required value returns a structured Favn error such as
+  `missing_env WAREHOUSE_PASSWORD`. Secret values are passed to the adapter but
+  redacted from inspection payloads.
+
   ## See also
 
   - `Favn.SQLAsset`
   - `Favn.SQL`
+  - `Favn.RuntimeConfig.Ref`
   """
 
   alias Favn.Connection.Definition

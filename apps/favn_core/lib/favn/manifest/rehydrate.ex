@@ -12,6 +12,7 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.SQLExecution
   alias Favn.RelationRef
+  alias Favn.RuntimeConfig.Ref, as: RuntimeConfigRef
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.Template
 
@@ -74,6 +75,7 @@ defmodule Favn.Manifest.Rehydrate do
       window: value |> field_value(:window) |> build_window_spec(),
       materialization: value |> field_value(:materialization) |> decode_materialization(),
       relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
+      runtime_config: value |> field_value(:runtime_config, %{}) |> build_runtime_config(),
       sql_execution: value |> field_value(:sql_execution) |> build_sql_execution(),
       metadata: value |> field_value(:metadata, %{}) |> build_metadata()
     }
@@ -206,6 +208,35 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_relation_input(other), do: other
+
+  defp build_runtime_config(values) when is_map(values) do
+    Map.new(values, fn {scope, fields} ->
+      {decode_atom_optional(scope), build_runtime_config_fields(fields)}
+    end)
+  end
+
+  defp build_runtime_config(_other), do: %{}
+
+  defp build_runtime_config_fields(fields) when is_map(fields) do
+    Map.new(fields, fn {field, value} ->
+      {decode_atom_optional(field), build_runtime_config_ref(value)}
+    end)
+  end
+
+  defp build_runtime_config_fields(_other), do: %{}
+
+  defp build_runtime_config_ref(%RuntimeConfigRef{} = ref), do: ref
+
+  defp build_runtime_config_ref(value) when is_map(value) do
+    %RuntimeConfigRef{
+      provider: value |> field_value(:provider) |> decode_known_atom([:env]),
+      key: field_value(value, :key),
+      secret?: field_value(value, :secret?, field_value(value, :secret, false)),
+      required?: field_value(value, :required?, field_value(value, :required, true))
+    }
+  end
+
+  defp build_runtime_config_ref(other), do: other
 
   defp build_sql_execution(nil), do: nil
 
