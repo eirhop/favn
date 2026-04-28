@@ -36,35 +36,38 @@
 				{ status: 200, headers: { 'content-type': 'application/json' } }
 			) as unknown as Response;
 
-		await expect(canvas.getByRole('heading', { name: 'Customer revenue' })).toBeInTheDocument();
-		await expect(canvas.getByText('SOURCE_SYSTEM_TOKEN')).toBeInTheDocument();
-		await expect(canvas.getAllByText('declared')[0]).toBeInTheDocument();
-		await expect(canvas.getByText('required · secret')).toBeInTheDocument();
-		await expect(
-			canvas.getByRole('heading', { name: 'Latest materialization' })
-		).toBeInTheDocument();
-		await expect(canvas.getByText('42 / —')).toBeInTheDocument();
-		await userEvent.click(canvas.getByRole('button', { name: 'Load data preview' }));
-		await expect(canvas.getByText('Some metadata is unavailable')).toBeInTheDocument();
-		await expect(canvas.getByText('INTEGER')).toBeInTheDocument();
-		await expect(canvas.getAllByText('1').length).toBeGreaterThan(0);
-		await userEvent.click(canvas.getByRole('tab', { name: 'Lineage' }));
-		await expect(canvas.getByText('MyApp.Assets.Raw.Customers')).toBeInTheDocument();
-		await userEvent.click(canvas.getByRole('tab', { name: 'Runs' }));
-		await expect(canvas.getAllByRole('link', { name: 'Inspect' })[0]).toHaveAttribute(
-			'href',
-			'/runs/run_01HAPPY'
-		);
-		await userEvent.click(canvas.getByRole('button', { name: 'Run with dependencies' }));
-		await expect(canvas.getByRole('dialog')).toHaveTextContent('mfv_2026_04_27');
-		await expect(canvas.getByRole('dialog')).toHaveTextContent('With dependencies');
-		await userEvent.click(canvas.getByRole('button', { name: 'Submit run request' }));
-		await expect(args.onrun).toHaveBeenCalledWith({
-			scope: 'with_dependencies',
-			assetRef: 'MyApp.Assets.Mart.CustomerRevenue',
-			manifestVersionId: 'mfv_2026_04_27'
-		});
-		globalThis.fetch = originalFetch;
+		try {
+			await expect(canvas.getByRole('heading', { name: 'Customer revenue' })).toBeInTheDocument();
+			await expect(canvas.getByText('SOURCE_SYSTEM_TOKEN')).toBeInTheDocument();
+			await expect(canvas.getAllByText('declared')[0]).toBeInTheDocument();
+			await expect(canvas.getByText('required · secret')).toBeInTheDocument();
+			await expect(
+				canvas.getByRole('heading', { name: 'Latest materialization' })
+			).toBeInTheDocument();
+			await expect(canvas.getByText('42 / —')).toBeInTheDocument();
+			await userEvent.click(canvas.getByRole('button', { name: 'Load data preview' }));
+			await expect(canvas.getByText('Some metadata is unavailable')).toBeInTheDocument();
+			await expect(canvas.getByText('INTEGER')).toBeInTheDocument();
+			await expect(canvas.getAllByText('1').length).toBeGreaterThan(0);
+			await userEvent.click(canvas.getByRole('tab', { name: 'Lineage' }));
+			await expect(canvas.getByText('MyApp.Assets.Raw.Customers')).toBeInTheDocument();
+			await userEvent.click(canvas.getByRole('tab', { name: 'Runs' }));
+			await expect(canvas.getAllByRole('link', { name: 'Inspect' })[0]).toHaveAttribute(
+				'href',
+				'/runs/run_01HAPPY'
+			);
+			await userEvent.click(canvas.getByRole('button', { name: 'Run with dependencies' }));
+			await expect(canvas.getByRole('dialog')).toHaveTextContent('mfv_2026_04_27');
+			await expect(canvas.getByRole('dialog')).toHaveTextContent('With dependencies');
+			await userEvent.click(canvas.getByRole('button', { name: 'Submit run request' }));
+			await expect(args.onrun).toHaveBeenCalledWith({
+				scope: 'with_dependencies',
+				assetRef: 'MyApp.Assets.Mart.CustomerRevenue',
+				manifestVersionId: 'mfv_2026_04_27'
+			});
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
 	}}
 />
 

@@ -8,11 +8,15 @@ defmodule FavnRunner.Inspection do
   alias Favn.SQL.Client
   alias Favn.SQL.Result
 
+  @include_items [:relation, :columns, :row_count, :sample, :table_metadata]
+  @runner_registry FavnRunner.ConnectionRegistry
+
   @spec inspect_relation(RelationInspectionRequest.t(), Favn.Manifest.Version.t()) ::
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, version) do
     with {:ok, asset, relation_ref} <- resolve_relation(request, version),
-         {:ok, session} <- Client.connect(relation_ref.connection) do
+         {:ok, session} <-
+           Client.connect(relation_ref.connection, registry_name: @runner_registry) do
       try do
         {:ok, inspect_with_session(request, asset, relation_ref, session)}
       after
@@ -51,7 +55,7 @@ defmodule FavnRunner.Inspection do
   end
 
   defp inspect_with_session(request, asset, relation_ref, session) do
-    include = MapSet.new(request.include)
+    include = normalize_include(request.include)
 
     %RelationInspectionResult{
       asset_ref: inspection_asset_ref(asset),
@@ -66,8 +70,17 @@ defmodule FavnRunner.Inspection do
     |> maybe_table_metadata(session, relation_ref, include)
   end
 
+  @spec normalize_include(term()) :: [atom()]
+  defp normalize_include(include) when is_list(include) do
+    include
+    |> Enum.filter(&(&1 in @include_items))
+    |> Enum.uniq()
+  end
+
+  defp normalize_include(_include), do: []
+
   defp maybe_relation(result, session, relation_ref, include) do
-    if MapSet.member?(include, :relation),
+    if :relation in include,
       do: fetch_relation(result, session, relation_ref),
       else: result
   end
@@ -80,7 +93,7 @@ defmodule FavnRunner.Inspection do
   end
 
   defp maybe_columns(result, session, relation_ref, include) do
-    if MapSet.member?(include, :columns),
+    if :columns in include,
       do: fetch_columns(result, session, relation_ref),
       else: result
   end
@@ -93,7 +106,7 @@ defmodule FavnRunner.Inspection do
   end
 
   defp maybe_row_count(result, session, relation_ref, include) do
-    if MapSet.member?(include, :row_count),
+    if :row_count in include,
       do: fetch_row_count(result, session, relation_ref),
       else: result
   end
@@ -106,7 +119,7 @@ defmodule FavnRunner.Inspection do
   end
 
   defp maybe_sample(result, session, relation_ref, include, limit) do
-    if MapSet.member?(include, :sample),
+    if :sample in include,
       do: fetch_sample(result, session, relation_ref, limit),
       else: result
   end
@@ -125,7 +138,7 @@ defmodule FavnRunner.Inspection do
   end
 
   defp maybe_table_metadata(result, session, relation_ref, include) do
-    if MapSet.member?(include, :table_metadata),
+    if :table_metadata in include,
       do: fetch_table_metadata(result, session, relation_ref),
       else: result
   end
