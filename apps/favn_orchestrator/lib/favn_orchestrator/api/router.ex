@@ -12,6 +12,9 @@ defmodule FavnOrchestrator.API.Router do
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
 
   plug(Plug.RequestId)
 
@@ -532,6 +535,172 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
+  post "/api/orchestrator/v1/backfills" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, params} <- fetch_json_body(conn),
+         {:ok, run_id} <- submit_backfill_from_request(params),
+         {:ok, run} <- FavnOrchestrator.get_run(run_id) do
+      Auth.put_audit(%{
+        action: "backfill.submit",
+        actor_id: actor.id,
+        session_id: header(conn, "x-favn-session-id"),
+        resource_type: "run",
+        resource_id: run_id,
+        outcome: "accepted",
+        service_identity: service_identity(conn)
+      })
+
+      data(conn, 201, %{run: run_summary_dto(run)})
+    else
+      {:error, :invalid_target} ->
+        error(conn, 422, "validation_failed", "Invalid backfill target request")
+
+      {:error, :invalid_manifest_selection} ->
+        error(conn, 422, "validation_failed", "Invalid manifest selection")
+
+      {:error, :invalid_backfill_range_request} ->
+        error(conn, 422, "validation_failed", "Invalid backfill range request")
+
+      {:error, reason} when is_tuple(reason) ->
+        maybe_backfill_range_error(conn, reason)
+
+      {:error, :active_manifest_not_set} ->
+        error(conn, 404, "not_found", "Active manifest is not set")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  get "/api/orchestrator/v1/backfills/:backfill_run_id/windows" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
+         {:ok, windows} <-
+           FavnOrchestrator.list_backfill_windows(
+             backfill_window_filters(conn.params, backfill_run_id)
+           ) do
+      data(conn, 200, %{items: Enum.map(windows, &backfill_window_dto/1)})
+    else
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  post "/api/orchestrator/v1/backfills/:backfill_run_id/windows/rerun" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, params} <- fetch_json_body(conn),
+         {:ok, window_key} <- fetch_required_string(params, "window_key"),
+         {:ok, window} <- find_backfill_window(backfill_run_id, window_key),
+         {:ok, rerun_id} <-
+           FavnOrchestrator.rerun_backfill_window(
+             backfill_run_id,
+             window.pipeline_module,
+             window.window_key
+           ),
+         {:ok, run} <- FavnOrchestrator.get_run(rerun_id) do
+      Auth.put_audit(%{
+        action: "backfill.window.rerun",
+        actor_id: actor.id,
+        session_id: header(conn, "x-favn-session-id"),
+        resource_type: "run",
+        resource_id: rerun_id,
+        outcome: "accepted",
+        service_identity: service_identity(conn)
+      })
+
+      data(conn, 201, %{run: run_summary_dto(run)})
+    else
+      {:error, {:missing_field, field}} ->
+        error(conn, 422, "validation_failed", "Missing required field", %{field: field})
+
+      {:error, :not_found} ->
+        error(conn, 404, "not_found", "Backfill window was not found")
+
+      {:error, :backfill_window_not_rerunnable} ->
+        error(conn, 409, "conflict", "Backfill window is not rerunnable")
+
+      {:error, :backfill_window_has_no_attempt} ->
+        error(conn, 409, "conflict", "Backfill window has no attempt to rerun")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  get "/api/orchestrator/v1/backfills/coverage-baselines" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
+         {:ok, baselines} <-
+           FavnOrchestrator.list_coverage_baselines(coverage_baseline_filters(conn.params)) do
+      data(conn, 200, %{items: Enum.map(baselines, &coverage_baseline_dto/1)})
+    else
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  get "/api/orchestrator/v1/assets/window-states" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
+         {:ok, filters} <- asset_window_state_filters(conn.params),
+         {:ok, states} <- FavnOrchestrator.list_asset_window_states(filters) do
+      data(conn, 200, %{items: Enum.map(states, &asset_window_state_dto/1)})
+    else
+      {:error, :invalid_asset_ref} ->
+        error(conn, 422, "validation_failed", "Invalid asset ref filter")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
   get "/api/orchestrator/v1/streams/runs" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
@@ -988,6 +1157,103 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
+  defp submit_backfill_from_request(params) do
+    with {:ok, %{type: "pipeline", id: target_id}} <- fetch_target(params),
+         {:ok, manifest_version_id} <- select_manifest_version(params),
+         {:ok, range_request} <- fetch_backfill_range_request(params) do
+      FavnOrchestrator.submit_pipeline_backfill_for_manifest(
+        manifest_version_id,
+        target_id,
+        backfill_submit_opts(params, range_request)
+      )
+    else
+      {:ok, _target} -> {:error, :invalid_target}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp fetch_backfill_range_request(params) when is_map(params) do
+    case Map.get(params, "range") || Map.get(params, "range_request") do
+      %{} = range -> {:ok, range}
+      nil -> {:error, :invalid_backfill_range_request}
+      _other -> {:error, :invalid_backfill_range_request}
+    end
+  end
+
+  defp backfill_submit_opts(params, range_request) when is_map(params) do
+    []
+    |> Keyword.put(:range_request, range_request)
+    |> maybe_put_string_opt(:coverage_baseline_id, Map.get(params, "coverage_baseline_id"))
+    |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
+    |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
+    |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
+    |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
+  end
+
+  defp backfill_window_filters(params, backfill_run_id) when is_map(params) do
+    []
+    |> Keyword.put(:backfill_run_id, backfill_run_id)
+    |> maybe_put_existing_atom_opt(:pipeline_module, Map.get(params, "pipeline_module"))
+    |> maybe_put_string_opt(:window_key, Map.get(params, "window_key"))
+    |> maybe_put_atom_opt(:status, Map.get(params, "status"))
+  end
+
+  defp coverage_baseline_filters(params) when is_map(params) do
+    []
+    |> maybe_put_existing_atom_opt(:pipeline_module, Map.get(params, "pipeline_module"))
+    |> maybe_put_string_opt(:source_key, Map.get(params, "source_key"))
+    |> maybe_put_string_opt(:segment_key_hash, Map.get(params, "segment_key_hash"))
+    |> maybe_put_atom_opt(:status, Map.get(params, "status"))
+  end
+
+  defp asset_window_state_filters(params) when is_map(params) do
+    with {:ok, opts} <- maybe_put_asset_ref_filters([], params) do
+      {:ok,
+       opts
+       |> maybe_put_existing_atom_opt(:pipeline_module, Map.get(params, "pipeline_module"))
+       |> maybe_put_string_opt(:window_key, Map.get(params, "window_key"))
+       |> maybe_put_atom_opt(:status, Map.get(params, "status"))}
+    end
+  end
+
+  defp maybe_put_asset_ref_filters(opts, params) do
+    module = Map.get(params, "asset_ref_module")
+    name = Map.get(params, "asset_ref_name")
+
+    case {module, name} do
+      {nil, nil} ->
+        {:ok, opts}
+
+      {module, name} when is_binary(module) and is_binary(name) ->
+        with {:ok, module_atom} <- existing_atom(module),
+             {:ok, name_atom} <- existing_atom(name) do
+          {:ok,
+           opts
+           |> Keyword.put(:asset_ref_module, module_atom)
+           |> Keyword.put(:asset_ref_name, name_atom)}
+        else
+          {:error, :invalid_existing_atom} -> {:error, :invalid_asset_ref}
+        end
+
+      _other ->
+        {:error, :invalid_asset_ref}
+    end
+  end
+
+  defp find_backfill_window(backfill_run_id, window_key) do
+    with {:ok, windows} <-
+           FavnOrchestrator.list_backfill_windows(
+             backfill_run_id: backfill_run_id,
+             window_key: window_key
+           ) do
+      case windows do
+        [window] -> {:ok, window}
+        [] -> {:error, :not_found}
+        [window | _rest] -> {:ok, window}
+      end
+    end
+  end
+
   defp fetch_window_request(params, %{type: "asset"}) when is_map(params) do
     if Map.has_key?(params, "window") do
       {:error, :invalid_window_request}
@@ -1077,6 +1343,53 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_int_opt(opts, _key, _value), do: opts
 
+  defp maybe_put_string_opt(opts, key, value) when is_binary(value) and value != "",
+    do: Keyword.put(opts, key, value)
+
+  defp maybe_put_string_opt(opts, _key, _value), do: opts
+
+  defp maybe_put_map_opt(opts, key, value) when is_map(value), do: Keyword.put(opts, key, value)
+  defp maybe_put_map_opt(opts, _key, _value), do: opts
+
+  defp maybe_put_positive_int_opt(opts, key, value) when is_integer(value) and value > 0,
+    do: Keyword.put(opts, key, value)
+
+  defp maybe_put_positive_int_opt(opts, _key, _value), do: opts
+
+  defp maybe_put_non_neg_int_opt(opts, key, value) when is_integer(value) and value >= 0,
+    do: Keyword.put(opts, key, value)
+
+  defp maybe_put_non_neg_int_opt(opts, _key, _value), do: opts
+
+  defp maybe_put_atom_opt(opts, key, value) when is_binary(value) and value != "" do
+    Keyword.put(opts, key, String.to_atom(value))
+  end
+
+  defp maybe_put_atom_opt(opts, _key, _value), do: opts
+
+  defp maybe_put_existing_atom_opt(opts, key, value) when is_binary(value) and value != "" do
+    case existing_atom(value) do
+      {:ok, atom} -> Keyword.put(opts, key, atom)
+      {:error, :invalid_existing_atom} -> opts
+    end
+  end
+
+  defp maybe_put_existing_atom_opt(opts, _key, _value), do: opts
+
+  defp existing_atom(value) when is_binary(value) do
+    {:ok, String.to_existing_atom(value)}
+  rescue
+    ArgumentError -> existing_elixir_module_atom(value)
+  end
+
+  defp existing_elixir_module_atom("Elixir." <> _module), do: {:error, :invalid_existing_atom}
+
+  defp existing_elixir_module_atom(value) do
+    {:ok, String.to_existing_atom("Elixir." <> value)}
+  rescue
+    ArgumentError -> {:error, :invalid_existing_atom}
+  end
+
   defp data(conn, status, payload) do
     body = Jason.encode!(%{data: payload})
 
@@ -1142,6 +1455,35 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp window_policy_error(_reason), do: :error
+
+  defp maybe_backfill_range_error(conn, reason) do
+    case backfill_range_error(reason) do
+      {:ok, message, details} -> error(conn, 422, "validation_failed", message, details)
+      :error -> error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  defp backfill_range_error({:invalid_backfill_range_request, value}) do
+    {:ok, "Invalid backfill range request", %{value: inspect(value)}}
+  end
+
+  defp backfill_range_error({:missing_backfill_reference, _opts}) do
+    {:ok, "Backfill range request is missing a relative reference", %{}}
+  end
+
+  defp backfill_range_error({:invalid_last_request, value}) do
+    {:ok, "Invalid relative backfill range", %{value: inspect(value)}}
+  end
+
+  defp backfill_range_error({:invalid_window_policy_kind, kind}) do
+    {:ok, "Invalid backfill window kind", %{kind: inspect(kind)}}
+  end
+
+  defp backfill_range_error({:invalid_timezone, timezone}) do
+    {:ok, "Invalid backfill timezone", %{timezone: timezone}}
+  end
+
+  defp backfill_range_error(_reason), do: :error
 
   defp request_id(conn) do
     case get_resp_header(conn, "x-request-id") do
@@ -1311,6 +1653,76 @@ defmodule FavnOrchestrator.API.Router do
       asset_ref: ref_to_string(event.asset_ref),
       stage: event.stage,
       data: normalize_data(event.data)
+    }
+  end
+
+  defp backfill_window_dto(%BackfillWindow{} = window) do
+    %{
+      backfill_run_id: window.backfill_run_id,
+      child_run_id: window.child_run_id,
+      pipeline_module: module_name(window.pipeline_module),
+      manifest_version_id: window.manifest_version_id,
+      coverage_baseline_id: window.coverage_baseline_id,
+      window_kind: atom_name(window.window_kind),
+      window_start_at: datetime(window.window_start_at),
+      window_end_at: datetime(window.window_end_at),
+      timezone: window.timezone,
+      window_key: window.window_key,
+      status: atom_name(window.status),
+      attempt_count: window.attempt_count,
+      latest_attempt_run_id: window.latest_attempt_run_id,
+      last_success_run_id: window.last_success_run_id,
+      last_error: inspect_term(window.last_error),
+      errors: Enum.map(window.errors, &inspect_term/1),
+      metadata: normalize_data(window.metadata),
+      started_at: datetime(window.started_at),
+      finished_at: datetime(window.finished_at),
+      created_at: datetime(window.created_at),
+      updated_at: datetime(window.updated_at)
+    }
+  end
+
+  defp coverage_baseline_dto(%CoverageBaseline{} = baseline) do
+    %{
+      baseline_id: baseline.baseline_id,
+      pipeline_module: module_name(baseline.pipeline_module),
+      source_key: baseline.source_key,
+      segment_key_hash: baseline.segment_key_hash,
+      segment_key_redacted: baseline.segment_key_redacted,
+      window_kind: atom_name(baseline.window_kind),
+      timezone: baseline.timezone,
+      coverage_start_at: datetime(baseline.coverage_start_at),
+      coverage_until: datetime(baseline.coverage_until),
+      created_by_run_id: baseline.created_by_run_id,
+      manifest_version_id: baseline.manifest_version_id,
+      status: atom_name(baseline.status),
+      errors: Enum.map(baseline.errors, &inspect_term/1),
+      metadata: normalize_data(baseline.metadata),
+      created_at: datetime(baseline.created_at),
+      updated_at: datetime(baseline.updated_at)
+    }
+  end
+
+  defp asset_window_state_dto(%AssetWindowState{} = state) do
+    %{
+      asset_ref_module: module_name(state.asset_ref_module),
+      asset_ref_name: atom_name(state.asset_ref_name),
+      pipeline_module: module_name(state.pipeline_module),
+      manifest_version_id: state.manifest_version_id,
+      window_kind: atom_name(state.window_kind),
+      window_start_at: datetime(state.window_start_at),
+      window_end_at: datetime(state.window_end_at),
+      timezone: state.timezone,
+      window_key: state.window_key,
+      status: atom_name(state.status),
+      latest_run_id: state.latest_run_id,
+      latest_parent_run_id: state.latest_parent_run_id,
+      latest_success_run_id: state.latest_success_run_id,
+      latest_error: inspect_term(state.latest_error),
+      errors: Enum.map(state.errors, &inspect_term/1),
+      rows_written: state.rows_written,
+      metadata: normalize_data(state.metadata),
+      updated_at: datetime(state.updated_at)
     }
   end
 

@@ -2,9 +2,13 @@ defmodule FavnStoragePostgres.Migrations do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias FavnStoragePostgres.Migrations.AddBackfillState
   alias FavnStoragePostgres.Migrations.CreateFoundation
 
-  @migrations [{20_260_415_100_000, CreateFoundation}]
+  @migrations [
+    {20_260_415_100_000, CreateFoundation},
+    {20_260_428_100_000, AddBackfillState}
+  ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 
   @spec migrate!(module()) :: :ok
@@ -29,6 +33,9 @@ defmodule FavnStoragePostgres.Migrations do
       "public.favn_runs",
       "public.favn_run_events",
       "public.favn_scheduler_cursors",
+      "public.favn_pipeline_coverage_baselines",
+      "public.favn_backfill_windows",
+      "public.favn_asset_window_states",
       "public.favn_run_write_seq"
     ]
 

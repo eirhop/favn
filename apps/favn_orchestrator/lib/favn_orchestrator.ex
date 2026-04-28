@@ -5,7 +5,9 @@ defmodule FavnOrchestrator do
 
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias Favn.Window.Anchor
   alias Favn.Window.Policy
+  alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Projector
@@ -180,6 +182,118 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Submits a parent pipeline backfill run and child pipeline runs for each resolved anchor.
+
+  This control-plane entrypoint is used by the private HTTP surface and internal
+  callers. It resolves `:range_request` through `Favn.Backfill.RangeResolver`,
+  persists a parent `:backfill_pipeline` run, creates one normalized backfill
+  window row per anchor, and submits one child pipeline run per window.
+
+  Required options:
+
+  - `:range_request` - `Favn.Backfill.RangeRequest.t/0`, map, or keyword input.
+
+  Common options:
+
+  - `:manifest_version_id` - defaults to the active manifest.
+  - `:coverage_baseline_id` - associates requested windows with a projected
+    coverage baseline.
+  - `:metadata` - user metadata merged into the parent run metadata.
+  - `:max_attempts`, `:retry_backoff_ms`, and `:timeout_ms` - forwarded to child
+    runs.
+  """
+  @spec submit_pipeline_backfill(module(), keyword()) :: {:ok, run_id()} | {:error, term()}
+  def submit_pipeline_backfill(pipeline_module, opts \\ [])
+
+  def submit_pipeline_backfill(pipeline_module, opts)
+      when is_atom(pipeline_module) and is_list(opts) do
+    BackfillManager.submit_pipeline_backfill(pipeline_module, opts)
+  end
+
+  def submit_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
+
+  @doc """
+  Submits one pipeline backfill by manifest-scoped target id.
+  """
+  @spec submit_pipeline_backfill_for_manifest(String.t(), String.t(), keyword()) ::
+          {:ok, run_id()} | {:error, term()}
+  def submit_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id) do
+      submit_pipeline_backfill(
+        pipeline_module,
+        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      )
+    end
+  end
+
+  @doc """
+  Lists normalized backfill-window ledger rows.
+  """
+  @spec list_backfill_windows(keyword()) ::
+          {:ok, [FavnOrchestrator.Backfill.BackfillWindow.t()]} | {:error, term()}
+  def list_backfill_windows(filters \\ []) when is_list(filters) do
+    Storage.list_backfill_windows(filters)
+  end
+
+  @doc """
+  Lists projected coverage baselines.
+  """
+  @spec list_coverage_baselines(keyword()) ::
+          {:ok, [FavnOrchestrator.Backfill.CoverageBaseline.t()]} | {:error, term()}
+  def list_coverage_baselines(filters \\ []) when is_list(filters) do
+    Storage.list_coverage_baselines(filters)
+  end
+
+  @doc """
+  Lists latest asset/window states.
+  """
+  @spec list_asset_window_states(keyword()) ::
+          {:ok, [FavnOrchestrator.Backfill.AssetWindowState.t()]} | {:error, term()}
+  def list_asset_window_states(filters \\ []) when is_list(filters) do
+    Storage.list_asset_window_states(filters)
+  end
+
+  @doc """
+  Reruns the latest attempt for one failed backfill window.
+  """
+  @spec rerun_backfill_window(String.t(), module(), String.t(), keyword()) ::
+          {:ok, run_id()} | {:error, term()}
+  def rerun_backfill_window(backfill_run_id, pipeline_module, window_key, opts \\ [])
+      when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key) and
+             is_list(opts) do
+    with {:ok, window} <-
+           Storage.get_backfill_window(backfill_run_id, pipeline_module, window_key),
+         :ok <- ensure_window_rerunnable(window),
+         source_run_id when is_binary(source_run_id) <- window.latest_attempt_run_id,
+         {:ok, anchor} <-
+           Anchor.new(window.window_kind, window.window_start_at, window.window_end_at,
+             timezone: window.timezone
+           ) do
+      rerun(
+        source_run_id,
+        opts
+        |> Keyword.put(:anchor_window, anchor)
+        |> Keyword.put(:parent_run_id, backfill_run_id)
+        |> Keyword.put(:root_run_id, backfill_run_id)
+        |> Keyword.put(:trigger, %{
+          kind: :backfill,
+          backfill_run_id: backfill_run_id,
+          window_key: window_key,
+          rerun: true
+        })
+        |> Keyword.update(:metadata, %{backfill_window_rerun: true}, fn metadata ->
+          Map.merge(metadata, %{backfill_window_rerun: true})
+        end)
+      )
+    else
+      nil -> {:error, :backfill_window_has_no_attempt}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Requests cancellation for one run and forwards cancellation to the runner when work is in flight.
   """
   @spec cancel_run(run_id(), map()) :: :ok | {:error, term()}
@@ -194,6 +308,12 @@ defmodule FavnOrchestrator do
   def rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
     RunManager.rerun(source_run_id, opts)
   end
+
+  defp ensure_window_rerunnable(%FavnOrchestrator.Backfill.BackfillWindow{status: status})
+       when status in [:error, :cancelled, :timed_out, :partial],
+       do: :ok
+
+  defp ensure_window_rerunnable(_window), do: {:error, :backfill_window_not_rerunnable}
 
   @doc """
   Returns one persisted run snapshot.

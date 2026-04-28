@@ -291,6 +291,9 @@ defmodule FavnOrchestrator.RunManager do
           trigger: trigger,
           metadata: metadata,
           submit_kind: :pipeline,
+          parent_run_id: Keyword.get(opts, :parent_run_id),
+          root_run_id: Keyword.get(opts, :root_run_id),
+          lineage_depth: Keyword.get(opts, :lineage_depth, 0),
           max_attempts: max_attempts,
           retry_backoff_ms: retry_backoff_ms,
           timeout_ms: timeout_ms
@@ -309,7 +312,7 @@ defmodule FavnOrchestrator.RunManager do
 
     with :ok <- validate_trigger(trigger),
          :ok <- validate_params(params),
-         {:ok, request} <- WindowRequest.from_value(window_request),
+         {:ok, request} <- normalize_pipeline_window_request(anchor_window, window_request),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
@@ -356,6 +359,13 @@ defmodule FavnOrchestrator.RunManager do
         :ok -> {:ok, anchor_window}
         error -> error
       end)
+
+  defp normalize_pipeline_window_request(nil, window_request),
+    do: WindowRequest.from_value(window_request)
+
+  defp normalize_pipeline_window_request(anchor_window, _window_request) do
+    with :ok <- validate_anchor_window(anchor_window), do: {:ok, nil}
+  end
 
   defp validate_target_refs(refs) when is_list(refs) do
     if refs == [] do
@@ -423,13 +433,17 @@ defmodule FavnOrchestrator.RunManager do
          {:ok, index} <- Index.build_from_version(version),
          {:ok, _asset} <- Index.fetch_asset(index, rerun_asset_ref),
          :ok <- ensure_assets_exist(index, rerun_targets),
+         anchor_window <- Keyword.get(opts, :anchor_window),
+         :ok <- validate_anchor_window(anchor_window),
          {:ok, plan} <-
            Planner.plan(rerun_targets,
              graph_index: index.graph_index,
-             dependencies: rerun_dependencies
+             dependencies: rerun_dependencies,
+             anchor_window: anchor_window
            ) do
       rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
-      root_run_id = source_run.root_run_id || source_run.id
+      parent_run_id = Keyword.get(opts, :parent_run_id, source_run.id)
+      root_run_id = Keyword.get(opts, :root_run_id, source_run.root_run_id || source_run.id)
       metadata_with_source = Map.put(metadata, :source_run_id, source_run.id)
 
       metadata_with_replay =
@@ -460,7 +474,7 @@ defmodule FavnOrchestrator.RunManager do
           metadata: metadata_with_replay,
           submit_kind: :rerun,
           rerun_of_run_id: rerun_of_run_id,
-          parent_run_id: source_run.id,
+          parent_run_id: parent_run_id,
           root_run_id: root_run_id,
           lineage_depth: source_run.lineage_depth + 1,
           max_attempts: max_attempts,
@@ -592,7 +606,7 @@ defmodule FavnOrchestrator.RunManager do
   defp validate_timeout_ms(_value), do: {:error, :invalid_timeout_ms}
 
   defp build_cancel_snapshots(%RunState{status: status}, _reason)
-       when status in [:ok, :error, :cancelled, :timed_out] do
+       when status in [:ok, :partial, :error, :cancelled, :timed_out] do
     {:error, :run_already_terminal}
   end
 

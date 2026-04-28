@@ -100,6 +100,46 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert headers["x-favn-session-id"] == "sess_1"
   end
 
+  test "backfill list helpers parse item responses and encode filters" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"items":[{"baseline_id":"base_1"}]}}), 200, parent: parent)
+
+    assert {:ok, [%{"baseline_id" => "base_1"}]} =
+             OrchestratorClient.list_coverage_baselines(
+               base_url,
+               "token",
+               %{"actor_id" => "act_1", "session_id" => "sess_1"},
+               pipeline_module: "MyApp.Pipeline",
+               status: "ok"
+             )
+
+    assert_receive {:request_path,
+                    "/api/orchestrator/v1/backfills/coverage-baselines?pipeline_module=MyApp.Pipeline&status=ok"}
+  end
+
+  test "asset window states helper parses item responses" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}]}}), 200,
+        parent: parent
+      )
+
+    assert {:ok, [%{"window_key" => "day:2026-01-01:Etc/UTC"}]} =
+             OrchestratorClient.list_asset_window_states(
+               base_url,
+               "token",
+               %{"actor_id" => "act_1", "session_id" => "sess_1"},
+               asset_ref_module: "MyApp.Asset",
+               asset_ref_name: "asset"
+             )
+
+    assert_receive {:request_path,
+                    "/api/orchestrator/v1/assets/window-states?asset_ref_module=MyApp.Asset&asset_ref_name=asset"}
+  end
+
   defp start_server(body, status, opts \\ []) when is_binary(body) and is_integer(status) do
     parent = Keyword.get(opts, :parent)
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])

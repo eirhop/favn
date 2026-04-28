@@ -57,6 +57,64 @@ defmodule FavnOrchestrator.HTTPContract.SchemaTest do
     })
   end
 
+  test "backfill window schema locks expected keys" do
+    schema = load_schema!("backfill-window.schema.json")
+
+    assert_required_keys(schema, %{
+      "backfill_run_id" => "run_backfill",
+      "pipeline_module" => "Elixir.MyApp.Pipelines.Daily",
+      "manifest_version_id" => "mv_123",
+      "window_kind" => "day",
+      "window_start_at" => "2026-01-01T00:00:00Z",
+      "window_end_at" => "2026-01-02T00:00:00Z",
+      "timezone" => "Etc/UTC",
+      "window_key" => "day:Etc/UTC:2026-01-01T00:00:00Z",
+      "status" => "error",
+      "attempt_count" => 1,
+      "latest_attempt_run_id" => "run_child",
+      "last_success_run_id" => nil,
+      "updated_at" => "2026-01-01T00:00:00Z"
+    })
+  end
+
+  test "coverage baseline schema locks expected keys" do
+    schema = load_schema!("coverage-baseline.schema.json")
+
+    assert_required_keys(schema, %{
+      "baseline_id" => "baseline_123",
+      "pipeline_module" => "Elixir.MyApp.Pipelines.Daily",
+      "source_key" => "orders",
+      "segment_key_hash" => "hash",
+      "window_kind" => "day",
+      "timezone" => "Etc/UTC",
+      "coverage_until" => "2026-01-01T00:00:00Z",
+      "created_by_run_id" => "run_baseline",
+      "manifest_version_id" => "mv_123",
+      "status" => "ok",
+      "created_at" => "2026-01-01T00:00:00Z",
+      "updated_at" => "2026-01-01T00:00:00Z"
+    })
+  end
+
+  test "asset window state schema locks expected keys" do
+    schema = load_schema!("asset-window-state.schema.json")
+
+    assert_required_keys(schema, %{
+      "asset_ref_module" => "Elixir.MyApp.Assets.Orders",
+      "asset_ref_name" => "asset",
+      "pipeline_module" => "Elixir.MyApp.Pipelines.Daily",
+      "manifest_version_id" => "mv_123",
+      "window_kind" => "day",
+      "window_start_at" => "2026-01-01T00:00:00Z",
+      "window_end_at" => "2026-01-02T00:00:00Z",
+      "timezone" => "Etc/UTC",
+      "window_key" => "day:Etc/UTC:2026-01-01T00:00:00Z",
+      "status" => "ok",
+      "latest_run_id" => "run_child",
+      "updated_at" => "2026-01-01T00:00:00Z"
+    })
+  end
+
   defp load_schema!(file_name) do
     path = Path.join(@contract_dir, file_name)
     {:ok, body} = File.read(path)

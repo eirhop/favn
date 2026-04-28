@@ -1,0 +1,186 @@
+defmodule FavnOrchestrator.BackfillManagerTest do
+  use ExUnit.Case, async: false
+
+  @moduletag capture_log: true
+
+  alias Favn.Contracts.RunnerResult
+  alias Favn.Manifest
+  alias Favn.Manifest.Asset
+  alias Favn.Manifest.Pipeline
+  alias Favn.Manifest.Version
+  alias Favn.Window.Key, as: WindowKey
+  alias Favn.Window.Policy
+  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.Adapter.Memory
+
+  defmodule RunnerClientStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      submit_log = Keyword.fetch!(opts, :submit_log)
+      Agent.update(submit_log, fn submissions -> [work | submissions] end)
+      {:ok, "exec_#{work.run_id}"}
+    end
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      {:ok, %RunnerResult{status: :ok, asset_results: [], metadata: %{stub: true}}}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+  end
+
+  setup do
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    Memory.reset()
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      Memory.reset()
+
+      if Process.alive?(submit_log) do
+        Agent.stop(submit_log)
+      end
+    end)
+
+    {:ok, submit_log: submit_log}
+  end
+
+  test "submits parent pipeline backfill, ledger rows, and child runs", %{submit_log: submit_log} do
+    version = manifest_version("mv_backfill_submit")
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, parent_run_id} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_parent",
+               range_request: %{
+                 kind: :day,
+                 from: "2026-04-26",
+                 to: "2026-04-27",
+                 timezone: "Etc/UTC"
+               },
+               lookback: %{days: 7},
+               timeout_ms: 1_000,
+               max_attempts: 2,
+               retry_backoff_ms: 10,
+               coverage_baseline_id: "baseline_1"
+             )
+
+    assert parent_run_id == "run_backfill_parent"
+    assert {:ok, parent} = Storage.get_run(parent_run_id)
+    assert parent.submit_kind == :backfill_pipeline
+    assert parent.status == :running
+    assert parent.runner_execution_id == nil
+    assert parent.metadata.backfill.lookback == %{days: 7}
+    assert parent.metadata.backfill.coverage_baseline_id == "baseline_1"
+    assert parent.metadata.backfill.requested_count == 2
+
+    assert {:ok, parent_events} = Storage.list_run_events(parent_run_id)
+    assert Enum.map(parent_events, & &1.event_type) == [:run_created, :backfill_started]
+    refute Enum.any?(parent_events, &(&1.event_type == :run_started))
+
+    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert length(windows) == 2
+    assert Enum.all?(windows, &(&1.status in [:running, :ok]))
+    assert Enum.all?(windows, &(&1.attempt_count == 1))
+    assert Enum.all?(windows, &(&1.pipeline_module == MyApp.Pipelines.Daily))
+    assert Enum.all?(windows, &(&1.manifest_version_id == version.manifest_version_id))
+    assert Enum.all?(windows, &(&1.coverage_baseline_id == "baseline_1"))
+    assert Enum.all?(windows, &is_binary(&1.window_key))
+    assert Enum.all?(windows, &(&1.child_run_id == &1.latest_attempt_run_id))
+
+    child_run_ids = windows |> Enum.map(& &1.child_run_id) |> Enum.sort()
+    refute Enum.member?(child_run_ids, nil)
+
+    assert {:ok, all_runs} = Storage.list_runs()
+
+    children =
+      all_runs
+      |> Enum.filter(&(&1.parent_run_id == parent_run_id))
+      |> Enum.sort_by(& &1.id)
+
+    assert Enum.map(children, & &1.id) == child_run_ids
+    assert length(children) == 2
+    assert Enum.all?(children, &(&1.root_run_id == parent_run_id))
+    assert Enum.all?(children, &(&1.lineage_depth == 1))
+    assert Enum.all?(children, &(&1.trigger.kind == :backfill))
+    assert Enum.all?(children, &(&1.trigger.backfill_run_id == parent_run_id))
+    assert Enum.all?(children, &(&1.target_refs == [{MyApp.Assets.Gold, :asset}]))
+
+    child_window_keys = Enum.map(children, & &1.trigger.window_key) |> Enum.sort()
+    ledger_window_keys = Enum.map(windows, & &1.window_key) |> Enum.sort()
+    assert child_window_keys == ledger_window_keys
+
+    child_anchor_keys =
+      children
+      |> Enum.map(& &1.metadata.pipeline_context.anchor_window.key)
+      |> Enum.map(&WindowKey.encode/1)
+      |> Enum.sort()
+
+    assert child_anchor_keys == ledger_window_keys
+
+    eventually(fn ->
+      submissions = Agent.get(submit_log, & &1)
+      assert length(submissions) == 4
+      refute Enum.any?(submissions, &(&1.run_id == parent_run_id))
+      assert submissions |> Enum.map(& &1.run_id) |> Enum.uniq() |> Enum.sort() == child_run_ids
+    end)
+  end
+
+  defp eventually(fun, attempts \\ 20)
+
+  defp eventually(fun, attempts) when attempts > 0 do
+    fun.()
+  rescue
+    ExUnit.AssertionError ->
+      Process.sleep(25)
+      eventually(fun, attempts - 1)
+  end
+
+  defp eventually(fun, 0), do: fun.()
+
+  defp manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Asset{
+          ref: {MyApp.Assets.Raw, :asset},
+          module: MyApp.Assets.Raw,
+          name: :asset
+        },
+        %Asset{
+          ref: {MyApp.Assets.Gold, :asset},
+          module: MyApp.Assets.Gold,
+          name: :asset,
+          depends_on: [{MyApp.Assets.Raw, :asset}]
+        }
+      ],
+      pipelines: [
+        %Pipeline{
+          module: MyApp.Pipelines.Daily,
+          name: :daily,
+          selectors: [{:asset, {MyApp.Assets.Gold, :asset}}],
+          deps: :all,
+          window: Policy.new!(:day),
+          metadata: %{}
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+end

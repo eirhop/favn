@@ -37,7 +37,7 @@ development on top of the new boundaries.
 
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
-- local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
 - the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, submitting active-manifest pipeline runs with explicit window requests, and submitting the current orchestrator asset run path
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
@@ -45,6 +45,7 @@ development on top of the new boundaries.
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
 - single-node assembly packaging now includes `mix favn.build.single` with topology-preserving assembly output under `.favn/dist/single/<build_id>/` (see `OPERATOR_NOTES.md` in each artifact)
+- operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev
 
 ## What Favn Gives You
 
@@ -215,6 +216,12 @@ policies. Manual local runs pass the concrete requested window, while scheduled
 windowed runs resolve the previous complete period in the schedule timezone.
 Pipelines without a `window` clause run without an anchor window.
 
+Operational backfill foundations can resolve explicit or relative ranges into
+the same concrete window anchors and submit one child pipeline run per resolved
+window through the orchestrator. Local development can submit explicit
+operational backfills and inspect their control-plane state with
+`mix favn.backfill`.
+
 ### 5. Configure authored modules
 
 ```elixir
@@ -279,6 +286,8 @@ mix favn.doctor
 mix favn.install
 mix favn.dev
 mix favn.run MyApp.Pipelines.DailySales --window day:2026-04-27 --timezone Europe/Oslo
+mix favn.backfill submit MyApp.Pipelines.DailySales --from 2026-04-01 --to 2026-04-07 --kind day
+mix favn.backfill windows RUN_ID
 mix favn.logs
 mix favn.status
 mix favn.reload
@@ -363,6 +372,12 @@ currently running local stack. It uses the project-local service token and local
 operator credentials generated under `.favn/secrets.json`, so tutorial and local
 smoke runs do not require hand-written private orchestrator API requests. This
 manual run path is the recommended default for one-time local ETL.
+
+`mix favn.backfill` exposes the local operational-backfill workflow for running
+local stacks. Use `submit` for explicit pipeline ranges, `windows RUN_ID` to
+inspect child windows, `coverage-baselines` and `asset-window-states` to inspect
+projected backfill state, and `rerun-window RUN_ID --window-key KEY` for failed
+window reruns.
 
 The local runner receives only the explicitly supported consumer `:favn` config
 needed for local execution: `:connection_modules`, `:connections`,
@@ -464,6 +479,7 @@ mix favn.read_doc Favn generate_manifest
 mix favn.read_doc Favn.Asset
 mix favn.read_doc Favn.SQLAsset
 mix favn.read_doc Favn.Pipeline
+mix favn.read_doc Favn.Backfill.RangeRequest
 mix favn.read_doc Favn.Dev
 ```
 

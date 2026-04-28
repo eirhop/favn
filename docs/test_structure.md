@@ -65,6 +65,8 @@ apps/
 │   ├── assets/
 │   │   ├── compiler_parity_test.exs
 │   │   └── graph_planner_parity_test.exs
+│   ├── backfill/
+│   │   └── range_resolver_test.exs
 │   ├── pipeline/
 │   │   └── resolver_parity_test.exs
 │   ├── manifest/
@@ -81,6 +83,9 @@ apps/
 │   │   └── concurrency_policy_test.exs
 │   └── test_helper.exs
 ├── favn_orchestrator/test/
+│   ├── backfill_manager_test.exs
+│   ├── backfill_projector_test.exs
+│   ├── coverage_projector_test.exs
 │   ├── events_test.exs
 │   ├── manifest_store_test.exs
 │   ├── orchestrator_runner_integration_test.exs
@@ -122,6 +127,7 @@ Notes:
 - Each owner app keeps the tests for the behavior it owns without dual-compiling namespace owners.
 - Legacy and same-BEAM view tests are deleted; supported coverage now lives in the owner-app suites.
 - The current umbrella `mix test` alias includes `apps/favn_authoring/test` (currently minimal), `apps/favn/test`, and `apps/favn_local/test` plus the runtime/storage owner apps.
+- `apps/favn/test/mix_tasks/public_tasks_test.exs` includes coverage for `mix favn.backfill` argument parsing and stopped-stack errors.
 - `apps/favn_local/test/dev_runner_control_test.exs` locks the live runner manifest-registration fallback behavior used by split-root local dev startup.
 - `apps/favn_local/test/dev_runtime_launch_test.exs` locks service-spec generation against installed runtime workspace roots.
 - `apps/favn_local/test/dev_consumer_config_transport_test.exs` locks the local-only consumer config transport schema, path normalization, module atom roundtrips, decode failures, and redaction behavior.
@@ -186,6 +192,7 @@ Notes:
   - `apps/favn_runner/test/worker_test.exs` expanded failure-shape coverage (`raise`/`throw`/`exit`/invalid return/arity mismatch)
   - `apps/favn_runner/test/server_test.exs` expanded execution timeout/not-found/input-validation behavior
   - `apps/favn_runner/test/execution/sql_asset_test.exs` expanded manifest SQL runtime failure-path coverage
+- Issue 168 coverage now includes `apps/favn_core/test/backfill/range_resolver_test.exs` for pure explicit and relative range expansion, `apps/favn_orchestrator/test/backfill_manager_test.exs` for parent/child backfill submission, `apps/favn_orchestrator/test/backfill_projector_test.exs` for child backfill ledger updates, parent status projection, and asset window state upserts, `apps/favn_orchestrator/test/coverage_projector_test.exs` for projecting safe successful-run coverage metadata into coverage baselines, and `apps/favn/test/mix_tasks/public_tasks_test.exs` for public `mix favn.backfill` argument parsing and stopped-stack diagnostics.
 - Control-plane/runtime-state parity migration batch 3 expanded owner-app coverage with:
   - `apps/favn_orchestrator/test/orchestrator_runner_integration_test.exs`
   - `apps/favn_orchestrator/test/projector_test.exs`

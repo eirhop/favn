@@ -5,13 +5,22 @@ defmodule Favn.Storage.Adapter do
 
   This contract operates on orchestrator control-plane data, not projected
   `%Favn.Run{}` values. Use `Favn.Storage` for the public run API.
+
+  Backfill callbacks persist normalized read models owned by the orchestrator:
+  coverage baselines, per-window backfill ledger rows, and latest asset/window
+  state. Adapters should preserve the same upsert and filtering semantics across
+  memory, SQLite, and Postgres.
   """
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
 
   @type adapter_opts :: keyword()
   @type list_opts :: Favn.list_runs_opts()
+  @type filter_opts :: keyword()
   @type error :: :not_found | :invalid_opts | term()
   @type scheduler_key :: {module(), atom() | nil}
 
@@ -39,4 +48,25 @@ defmodule Favn.Storage.Adapter do
 
   @callback get_scheduler_state(scheduler_key(), adapter_opts()) ::
               {:ok, map() | nil} | {:error, error()}
+
+  @callback put_coverage_baseline(CoverageBaseline.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_coverage_baseline(String.t(), adapter_opts()) ::
+              {:ok, CoverageBaseline.t()} | {:error, error()}
+  @callback list_coverage_baselines(filter_opts(), adapter_opts()) ::
+              {:ok, [CoverageBaseline.t()]} | {:error, error()}
+
+  @callback put_backfill_window(BackfillWindow.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_backfill_window(String.t(), module(), String.t(), adapter_opts()) ::
+              {:ok, BackfillWindow.t()} | {:error, error()}
+  @callback list_backfill_windows(filter_opts(), adapter_opts()) ::
+              {:ok, [BackfillWindow.t()]} | {:error, error()}
+
+  @callback put_asset_window_state(AssetWindowState.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_asset_window_state(module(), atom(), String.t(), adapter_opts()) ::
+              {:ok, AssetWindowState.t()} | {:error, error()}
+  @callback list_asset_window_states(filter_opts(), adapter_opts()) ::
+              {:ok, [AssetWindowState.t()]} | {:error, error()}
 end

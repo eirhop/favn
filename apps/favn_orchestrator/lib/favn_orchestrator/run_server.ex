@@ -62,6 +62,16 @@ defmodule FavnOrchestrator.RunServer do
   defp execute_plan(%RunState{submit_kind: :pipeline} = run_state, %Version{} = version),
     do: execute_pipeline_parallel_once(run_state, version)
 
+  defp execute_plan(%RunState{submit_kind: submit_kind} = run_state, %Version{})
+       when submit_kind in [:backfill_asset, :backfill_pipeline] do
+    snapshot_update(run_state,
+      status: :error,
+      error: {:unsupported_submit_kind, submit_kind},
+      runner_execution_id: nil,
+      result: %{status: :error, asset_results: [], metadata: run_state.metadata}
+    )
+  end
+
   defp execute_plan(
          %RunState{submit_kind: :rerun, metadata: metadata} = run_state,
          %Version{} = version

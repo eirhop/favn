@@ -1,10 +1,19 @@
 defmodule FavnOrchestrator.Storage do
   @moduledoc """
   Storage facade for orchestrator control-plane state.
+
+  This facade stores authoritative run snapshots/events and normalized derived
+  read models used by operational backfills: coverage baselines, backfill-window
+  ledger rows, and latest asset/window state. Public run reads should continue
+  to go through `FavnOrchestrator`; storage calls are for runtime internals and
+  adapter implementations.
   """
 
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter, as: StorageAdapter
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -87,6 +96,59 @@ defmodule FavnOrchestrator.Storage do
   def get_scheduler_state({module, schedule_id} = key) when is_atom(module) do
     _ = schedule_id
     adapter_call(fn adapter, opts -> adapter.get_scheduler_state(key, opts) end)
+  end
+
+  @spec put_coverage_baseline(CoverageBaseline.t()) :: :ok | {:error, term()}
+  def put_coverage_baseline(%CoverageBaseline{} = baseline) do
+    adapter_call(fn adapter, opts -> adapter.put_coverage_baseline(baseline, opts) end)
+  end
+
+  @spec get_coverage_baseline(String.t()) :: {:ok, CoverageBaseline.t()} | {:error, term()}
+  def get_coverage_baseline(baseline_id) when is_binary(baseline_id) do
+    adapter_call(fn adapter, opts -> adapter.get_coverage_baseline(baseline_id, opts) end)
+  end
+
+  @spec list_coverage_baselines(keyword()) :: {:ok, [CoverageBaseline.t()]} | {:error, term()}
+  def list_coverage_baselines(filters \\ []) when is_list(filters) do
+    adapter_call(fn adapter, opts -> adapter.list_coverage_baselines(filters, opts) end)
+  end
+
+  @spec put_backfill_window(BackfillWindow.t()) :: :ok | {:error, term()}
+  def put_backfill_window(%BackfillWindow{} = window) do
+    adapter_call(fn adapter, opts -> adapter.put_backfill_window(window, opts) end)
+  end
+
+  @spec get_backfill_window(String.t(), module(), String.t()) ::
+          {:ok, BackfillWindow.t()} | {:error, term()}
+  def get_backfill_window(backfill_run_id, pipeline_module, window_key)
+      when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key) do
+    adapter_call(fn adapter, opts ->
+      adapter.get_backfill_window(backfill_run_id, pipeline_module, window_key, opts)
+    end)
+  end
+
+  @spec list_backfill_windows(keyword()) :: {:ok, [BackfillWindow.t()]} | {:error, term()}
+  def list_backfill_windows(filters \\ []) when is_list(filters) do
+    adapter_call(fn adapter, opts -> adapter.list_backfill_windows(filters, opts) end)
+  end
+
+  @spec put_asset_window_state(AssetWindowState.t()) :: :ok | {:error, term()}
+  def put_asset_window_state(%AssetWindowState{} = state) do
+    adapter_call(fn adapter, opts -> adapter.put_asset_window_state(state, opts) end)
+  end
+
+  @spec get_asset_window_state(module(), atom(), String.t()) ::
+          {:ok, AssetWindowState.t()} | {:error, term()}
+  def get_asset_window_state(asset_ref_module, asset_ref_name, window_key)
+      when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(window_key) do
+    adapter_call(fn adapter, opts ->
+      adapter.get_asset_window_state(asset_ref_module, asset_ref_name, window_key, opts)
+    end)
+  end
+
+  @spec list_asset_window_states(keyword()) :: {:ok, [AssetWindowState.t()]} | {:error, term()}
+  def list_asset_window_states(filters \\ []) when is_list(filters) do
+    adapter_call(fn adapter, opts -> adapter.list_asset_window_states(filters, opts) end)
   end
 
   @spec adapter_module() :: module()

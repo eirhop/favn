@@ -29,6 +29,7 @@ apps/
 │   │   └── sql_client.ex
 │   ├── favn.ex
 │   └── mix/tasks/
+│       ├── favn.backfill.ex
 │       ├── favn.build.orchestrator.ex
 │       ├── favn.build.runner.ex
 │       ├── favn.build.single.ex
@@ -67,6 +68,7 @@ apps/
 │   ├── favn/
 │   │   ├── dev.ex
 │   │   └── dev/
+│   │       ├── backfill.ex
 │   │       ├── build/
 │   │       │   ├── orchestrator.ex
 │   │       │   ├── runner.ex
@@ -134,10 +136,14 @@ Notes:
 - `apps/favn/lib/favn/ai.ex` is the AI-oriented compiled-doc starting point for choosing the right public Favn module to read next.
 - `apps/favn_authoring` now owns authoring/manifest-facing implementation internals.
 - `apps/favn_local` continues to own local lifecycle/tooling implementation internals.
+- `apps/favn_local/lib/favn/dev/backfill.ex` owns the local operational-backfill workflow behind `mix favn.backfill`, including active-manifest pipeline target resolution, local operator authentication, submission, state reads, and failed-window rerun forwarding.
 - `apps/favn_local/lib/favn/dev/consumer_config_transport.ex` owns the local-only runner transport for explicitly supported consumer `:favn` config keys and redacted diagnostics.
 - `apps/favn_local/lib/favn/dev/init.ex` owns the idempotent `mix favn.init --duckdb --sample` local consumer scaffold, while `apps/favn_local/lib/favn/dev/doctor.ex` owns setup validation before running local tooling.
 - Internal compiler/manifest/planning/shared contracts are now re-centered into `apps/favn_core/lib/favn/`.
 - Phase 3 modules now owned in `apps/favn_core/lib/favn/` include:
+  - `backfill/lookback_policy.ex`
+  - `backfill/range_request.ex`
+  - `backfill/range_resolver.ex`
   - `manifest.ex`
   - `ref.ex`
   - `relation_ref.ex`
@@ -214,6 +220,17 @@ Notes:
   - `projector.ex`
   - `run_manager.ex`
   - `run_server.ex`
+- Issue 168 storage-contract preparation added orchestrator-owned normalized backfill persistence shapes under `apps/favn_orchestrator/lib/favn_orchestrator/backfill/`.
+  - `coverage_baseline.ex`
+  - `coverage_projector.ex`
+  - `backfill_window.ex`
+  - `asset_window_state.ex`
+  - `projector.ex`
+- Issue 168 pure backfill planning added `apps/favn_core/lib/favn/backfill/` for range requests, range resolution, and lookback-policy normalization.
+- Issue 168 parent/child backfill submission added `apps/favn_orchestrator/lib/favn_orchestrator/backfill_manager.ex` as the orchestrator-owned internal submitter used by the orchestrator facade and private HTTP API for pipeline backfills.
+- Issue 168 storage persistence added backfill-state migration modules in the SQL storage apps.
+  - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_backfill_state.ex`
+  - `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_backfill_state.ex`
 - Phase 5 scheduler/runtime expansion added:
   - `scheduler/cron.ex`
   - `scheduler/manifest_entries.ex`
@@ -281,6 +298,8 @@ Notes:
   - `apps/favn_orchestrator/lib/favn_orchestrator/auth.ex`
   - `apps/favn_orchestrator/lib/favn_orchestrator/auth/store.ex`
   - `apps/favn_orchestrator/priv/http_contract/v1/*.schema.json`
+- Issue 168 local operator tooling added `apps/favn/lib/mix/tasks/favn.backfill.ex` and `apps/favn_local/lib/favn/dev/backfill.ex` for public local backfill submit, window inspection, coverage-baseline reads, asset/window state reads, and failed-window reruns through the private local orchestrator HTTP API.
+- Issue 168 private HTTP contract coverage added backfill-oriented schemas under `apps/favn_orchestrator/priv/http_contract/v1/` for backfill windows, coverage baselines, and asset/window state.
 - Initial separate web workspace boundary slice now includes:
   - `web/favn_web/src/lib/components/favn/` for Favn-specific presentational Svelte components used by the prototype dashboard and login screen
   - `web/favn_web/src/lib/components/favn/*Run*`, `*Asset*`, `*Output*`, `*Manifest*`, and `ErrorPanel.svelte` for componentized run-inspector and asset-catalog UI surfaces with colocated Storybook coverage
