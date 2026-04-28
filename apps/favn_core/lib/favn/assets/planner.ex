@@ -283,7 +283,7 @@ defmodule Favn.Assets.Planner do
 
     case kind do
       :hour -> max(div(DateTime.diff(end_floor, start_floor, :second), 3600), 1)
-      :day -> max(div(DateTime.diff(end_floor, start_floor, :second), 86_400), 1)
+      :day -> max(Date.diff(DateTime.to_date(end_floor), DateTime.to_date(start_floor)), 1)
       :month -> max(month_diff(start_floor, end_floor), 1)
       :year -> max(DateTime.to_date(end_floor).year - DateTime.to_date(start_floor).year, 1)
     end
@@ -326,20 +326,20 @@ defmodule Favn.Assets.Planner do
     month = rem(total, 12) + 1
     {:ok, new_date} = Date.new(year, month, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, datetime.time_zone)
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
   end
 
   defp shift_kind(%DateTime{} = datetime, :year, count) do
     date = DateTime.to_date(datetime)
     {:ok, new_date} = Date.new(date.year + count, 1, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, datetime.time_zone)
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
   end
 
   defp shift_day(%DateTime{} = datetime, count) do
     date = datetime |> DateTime.to_date() |> Date.add(count)
     {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00])
-    DateTime.from_naive!(naive, datetime.time_zone)
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
   end
 
   defp window_sort_key(%Runtime{key: key}), do: {key.start_at_us, Key.encode(key)}

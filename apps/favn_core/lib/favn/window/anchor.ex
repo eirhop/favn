@@ -131,19 +131,19 @@ defmodule Favn.Window.Anchor do
     month = rem(total, 12) + 1
     {:ok, new_date} = Date.new(year, month, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, datetime.time_zone)
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
   end
 
   defp shift_kind(%DateTime{} = datetime, :year, count) do
     date = DateTime.to_date(datetime)
     {:ok, new_date} = Date.new(date.year + count, 1, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, datetime.time_zone)
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
   end
 
   defp shift_day(%DateTime{} = datetime, count) do
     date = datetime |> DateTime.to_date() |> Date.add(count)
     {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00])
-    DateTime.from_naive!(naive, datetime.time_zone)
+    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
   end
 end

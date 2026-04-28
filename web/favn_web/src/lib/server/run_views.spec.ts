@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { parseSubmitPayload } from './run_submit_payload';
 import { normalizeRunDetail, normalizeRunSummaries } from './run_views';
-import { parseSubmitPayload } from '../../routes/api/web/v1/runs/+server';
 
 describe('run view normalizers', () => {
 	it('normalizes run lists from the orchestrator items envelope', () => {
