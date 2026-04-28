@@ -655,13 +655,26 @@ function handleGetActiveManifest(request, response) {
 			targets: {
 				manifest_version_id: activeManifestVersionId,
 				assets: [
-					{ target_id: 'asset:Raw.Crm.Customers:asset', label: 'Raw.Crm.Customers:asset' },
-					{ target_id: 'asset:Raw.Crm.Orders:asset', label: 'Raw.Crm.Orders:asset' },
+					{
+						target_id: 'asset:Raw.Crm.Customers:asset',
+						label: 'Raw.Crm.Customers:asset',
+						manifest_version_id: 'manifest_v2'
+					},
+					{
+						target_id: 'asset:Raw.Crm.Orders:asset',
+						label: 'Raw.Crm.Orders:asset',
+						manifest_version_id: 'manifest_v2'
+					},
 					{
 						target_id: 'asset:Staging.CustomerOrders:asset',
-						label: 'Staging.CustomerOrders:asset'
+						label: 'Staging.CustomerOrders:asset',
+						manifest_version_id: 'manifest_v2'
 					},
-					{ target_id: 'asset:Mart.CustomerRevenue:asset', label: 'Mart.CustomerRevenue:asset' }
+					{
+						target_id: 'asset:Mart.CustomerRevenue:asset',
+						label: 'Mart.CustomerRevenue:asset',
+						manifest_version_id: 'manifest_v2'
+					}
 				],
 				pipelines: [{ target_id: 'pipeline:DailySalesPipeline', label: 'DailySalesPipeline' }]
 			}

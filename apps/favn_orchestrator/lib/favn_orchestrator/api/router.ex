@@ -964,7 +964,7 @@ defmodule FavnOrchestrator.API.Router do
   defp submit_run_from_request(params) do
     with {:ok, target} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
-         {:ok, dependencies} <- fetch_dependencies(params) do
+         {:ok, dependencies} <- fetch_dependencies(params, target) do
       case target do
         %{type: "asset", id: target_id} ->
           FavnOrchestrator.submit_asset_run_for_manifest(manifest_version_id, target_id,
@@ -972,9 +972,7 @@ defmodule FavnOrchestrator.API.Router do
           )
 
         %{type: "pipeline", id: target_id} ->
-          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id,
-            dependencies: dependencies
-          )
+          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id)
 
         _ ->
           {:error, :invalid_target}
@@ -982,7 +980,15 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp fetch_dependencies(params) when is_map(params) do
+  defp fetch_dependencies(params, %{type: "pipeline"}) when is_map(params) do
+    if Map.has_key?(params, "dependencies") do
+      {:error, :invalid_dependencies}
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp fetch_dependencies(params, %{type: "asset"}) when is_map(params) do
     case Map.get(params, "dependencies", "all") do
       "all" -> {:ok, :all}
       "none" -> {:ok, :none}

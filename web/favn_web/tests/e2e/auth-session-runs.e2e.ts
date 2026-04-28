@@ -276,6 +276,20 @@ test.describe('auth/session/runs flow', () => {
 			})
 		});
 
+		const pipelineSubmitWithDependencies = await pagePostJson(page, '/api/web/v1/runs', {
+			target: { type: 'pipeline', id: 'pipeline.reconcile' },
+			manifest_selection: { mode: 'active' },
+			dependencies: 'all'
+		});
+		expect(pipelineSubmitWithDependencies.status).toBe(422);
+		expect(pipelineSubmitWithDependencies.body).toEqual({
+			error: {
+				code: 'validation_failed',
+				message:
+					'Expected target with type "asset"|"pipeline", non-empty id, and optional dependencies "all"|"none" for asset targets only'
+			}
+		});
+
 		const cancelRun = await pagePostJson(page, '/api/web/v1/runs/run_002/cancel');
 		expect(cancelRun.status).toBe(200);
 		expect(cancelRun.body).toEqual({

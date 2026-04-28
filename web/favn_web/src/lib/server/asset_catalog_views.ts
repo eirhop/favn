@@ -182,8 +182,13 @@ function normalizeTargetRecord(target: unknown, index: number): AssetCatalogItem
 		lastRun: null,
 		upstreamCount: asNumber(record.upstream_count) ?? 0,
 		downstreamCount: asNumber(record.downstream_count) ?? 0,
-		manifestVersionId: null,
-		manifestContentHash: null,
+		manifestVersionId: firstString(record, ['manifest_version_id', 'manifestVersionId']),
+		manifestContentHash: firstString(record, [
+			'content_hash',
+			'manifest_content_hash',
+			'manifest_hash',
+			'hash'
+		]),
 		runActions: [],
 		rawTarget: target
 	};
@@ -343,8 +348,8 @@ export function normalizeAssetCatalogList(
 			health: healthFromRun(lastRun),
 			lastRun,
 			runsCount: runs.length,
-			manifestVersionId: versionId,
-			manifestContentHash: contentHash,
+			manifestVersionId: asset.manifestVersionId ?? versionId,
+			manifestContentHash: asset.manifestContentHash ?? contentHash,
 			runActions: runActions(asset)
 		};
 	});

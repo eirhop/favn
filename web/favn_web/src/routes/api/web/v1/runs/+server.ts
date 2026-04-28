@@ -32,6 +32,10 @@ function parseSubmitPayload(value: Record<string, unknown>): {
 		return null;
 	}
 
+	if (type === 'pipeline' && 'dependencies' in value && dependencies !== undefined) {
+		return null;
+	}
+
 	return {
 		target: { type, id },
 		...('manifest_selection' in value ? { manifest_selection: value.manifest_selection } : {}),
@@ -61,7 +65,7 @@ export const POST: RequestHandler = async (event) => {
 		return jsonError(
 			422,
 			'validation_failed',
-			'Expected target with type "asset"|"pipeline", non-empty id, and optional dependencies "all"|"none"'
+			'Expected target with type "asset"|"pipeline", non-empty id, and optional dependencies "all"|"none" for asset targets only'
 		);
 	}
 

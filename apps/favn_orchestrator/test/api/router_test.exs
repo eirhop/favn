@@ -350,6 +350,27 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
   end
 
+  test "run submission rejects request-level dependency mode for pipeline targets" do
+    version = schedule_manifest_version("mv_pipeline_dependency_rejected")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        dependencies: "none"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+    assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
+  end
+
   test "service token can cancel run without actor headers" do
     seed_run_events!("run_cancel_service", [1])
 

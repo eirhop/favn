@@ -120,6 +120,34 @@ describe('asset catalog view normalizers', () => {
 		expect(catalog.capabilityNotes.map((note) => note.key)).toContain('dependencies');
 	});
 
+	it('prefers asset target manifest metadata when exposed by the backend', () => {
+		const catalog = normalizeAssetCatalogList(
+			{
+				data: {
+					manifest: { manifest_version_id: 'mfv_active', content_hash: 'sha256:active' },
+					targets: {
+						assets: [
+							{
+								target_id: 'asset:Elixir.FavnDemo.Raw.Orders:asset',
+								manifest_version_id: 'mfv_target',
+								content_hash: 'sha256:target'
+							}
+						],
+						pipelines: []
+					}
+				}
+			},
+			{ data: { items: [] } }
+		);
+
+		expect(catalog.assets[0]).toEqual(
+			expect.objectContaining({
+				manifestVersionId: 'mfv_target',
+				manifestContentHash: 'sha256:target'
+			})
+		);
+	});
+
 	it('normalizes robust asset labels and target ids', () => {
 		expect(normalizeAssetRefParts('{Elixir.Foo.Bar, :asset}')).toEqual({
 			ref: 'Elixir.Foo.Bar:asset',

@@ -209,6 +209,7 @@ defmodule FavnOrchestrator.RunManager do
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, 0)
     timeout_ms = Keyword.get(opts, :timeout_ms, 5_000)
     dependencies = Keyword.get(opts, :dependencies, :all)
+    metadata_with_selection = Map.put(metadata, :asset_dependencies, dependencies)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
@@ -233,7 +234,7 @@ defmodule FavnOrchestrator.RunManager do
           plan: plan,
           params: params,
           trigger: trigger,
-          metadata: metadata,
+          metadata: metadata_with_selection,
           submit_kind: :manual,
           max_attempts: max_attempts,
           retry_backoff_ms: retry_backoff_ms,
@@ -415,7 +416,10 @@ defmodule FavnOrchestrator.RunManager do
             pipeline_dependencies: rerun_dependencies
           })
         else
-          Map.put(metadata_with_source, :replay_mode, :exact_replay)
+          Map.merge(metadata_with_source, %{
+            replay_mode: :exact_replay,
+            asset_dependencies: rerun_dependencies
+          })
         end
 
       run_state =
@@ -454,12 +458,28 @@ defmodule FavnOrchestrator.RunManager do
       replay_asset_ref = List.first(replay_targets) || source_run.asset_ref
 
       replay_dependencies =
-        normalize_dependencies(Map.get(source_run.metadata, :pipeline_dependencies))
+        normalize_dependencies(metadata_value(source_run.metadata, :pipeline_dependencies))
 
       {replay_asset_ref, replay_targets, replay_dependencies}
     else
-      {source_run.asset_ref, [source_run.asset_ref], :all}
+      replay_dependencies = normalize_asset_dependencies(source_run)
+
+      {source_run.asset_ref, [source_run.asset_ref], replay_dependencies}
     end
+  end
+
+  defp normalize_asset_dependencies(%RunState{} = source_run) do
+    case metadata_value(source_run.metadata, :asset_dependencies) do
+      nil -> normalize_dependencies(plan_dependencies(source_run.plan))
+      value -> normalize_dependencies(value)
+    end
+  end
+
+  defp plan_dependencies(%Favn.Plan{dependencies: dependencies}), do: dependencies
+  defp plan_dependencies(_plan), do: :all
+
+  defp metadata_value(metadata, key) when is_map(metadata) and is_atom(key) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
   end
 
   defp pipeline_origin?(%RunState{submit_kind: :pipeline}), do: true
@@ -467,12 +487,16 @@ defmodule FavnOrchestrator.RunManager do
   defp pipeline_origin?(%RunState{metadata: metadata}) when is_map(metadata) do
     Map.get(metadata, :replay_submit_kind) == :pipeline or
       is_map(Map.get(metadata, :pipeline_context)) or
-      is_atom(Map.get(metadata, :pipeline_submit_ref)) or
+      present_atom?(Map.get(metadata, :pipeline_submit_ref)) or
       (is_list(Map.get(metadata, :pipeline_target_refs)) and
          Map.get(metadata, :pipeline_target_refs) != [])
   end
 
+  defp present_atom?(value) when is_atom(value) and not is_nil(value), do: true
+  defp present_atom?(_value), do: false
+
   defp normalize_dependencies(:none), do: :none
+  defp normalize_dependencies("none"), do: :none
   defp normalize_dependencies(_value), do: :all
 
   defp resolve_manifest_version_id(opts) when is_list(opts) do

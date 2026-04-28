@@ -99,14 +99,21 @@ export const actions: Actions = {
 		}
 
 		const detail = await loadDetail(locals, cookies, params.asset_ref);
-		const submittedTargetId = targetId ?? detail.asset.targetId;
-		if (!submittedTargetId) throw error(400, 'Asset target id is not available');
+		const expectedTargetId = detail.asset.targetId;
+		const expectedManifestVersionId = detail.asset.manifestVersionId;
+
+		if (!expectedTargetId) throw error(400, 'Asset target id is not available');
+		if (targetId !== expectedTargetId)
+			throw error(400, 'Submitted asset target does not match detail');
+		if (!manifestVersionId) throw error(400, 'Manifest version id is required');
+		if (!expectedManifestVersionId) throw error(400, 'Asset manifest version id is not available');
+		if (manifestVersionId !== expectedManifestVersionId) {
+			throw error(400, 'Submitted manifest version does not match detail');
+		}
 
 		const response = await orchestratorSubmitRun(locals.session!, {
-			target: { type: 'asset', id: submittedTargetId },
-			manifest_selection: manifestVersionId
-				? { mode: 'version', manifest_version_id: manifestVersionId }
-				: { mode: 'active' },
+			target: { type: 'asset', id: targetId },
+			manifest_selection: { mode: 'version', manifest_version_id: manifestVersionId },
 			dependencies: 'all'
 		});
 

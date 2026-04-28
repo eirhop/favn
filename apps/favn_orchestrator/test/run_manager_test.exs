@@ -1083,6 +1083,25 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert rerun.lineage_depth == source_run.lineage_depth + 1
   end
 
+  test "asset rerun preserves original dependency mode" do
+    version = manifest_version("mv_rerun_asset_dependency_scope")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_rerun_asset_dependency_scope")
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, dependencies: :none)
+
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+    assert source_run.plan.dependencies == :none
+    assert source_run.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
+
+    assert {:ok, rerun_id} = FavnOrchestrator.rerun(source_run_id)
+    assert {:ok, rerun} = await_terminal_run(rerun_id)
+
+    assert rerun.plan.dependencies == :none
+    assert rerun.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
+  end
+
   test "pipeline rerun replays original target selection" do
     version = manifest_version("mv_rerun_pipeline_replay")
     assert :ok = FavnOrchestrator.register_manifest(version)
