@@ -1341,6 +1341,8 @@ defmodule FavnOrchestrator.API.Router do
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
       finished_at: datetime(run.finished_at),
+      target_refs: Enum.map(List.wrap(run.target_refs), &ref_to_string/1),
+      asset_results: asset_results_dto(run.asset_results),
       error: inspect_term(run.error)
     }
   end

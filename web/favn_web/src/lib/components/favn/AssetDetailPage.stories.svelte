@@ -20,6 +20,22 @@
 	args={{ data: successfulAssetWithRuns, onrun: fn() }}
 	play={async ({ canvasElement, userEvent, args }) => {
 		const canvas = within(canvasElement);
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					data: {
+						inspection: {
+							row_count: 1,
+							warnings: [{ code: 'metadata_partial', message: 'Some metadata is unavailable' }],
+							columns: [{ name: 'id', data_type: 'INTEGER' }],
+							sample: { limit: 20, columns: ['id'], rows: [{ id: 1 }] }
+						}
+					}
+				}),
+				{ status: 200, headers: { 'content-type': 'application/json' } }
+			) as unknown as Response;
+
 		await expect(canvas.getByRole('heading', { name: 'Customer revenue' })).toBeInTheDocument();
 		await expect(canvas.getByText('SOURCE_SYSTEM_TOKEN')).toBeInTheDocument();
 		await expect(canvas.getAllByText('declared')[0]).toBeInTheDocument();
@@ -28,6 +44,10 @@
 			canvas.getByRole('heading', { name: 'Latest materialization' })
 		).toBeInTheDocument();
 		await expect(canvas.getByText('42 / —')).toBeInTheDocument();
+		await userEvent.click(canvas.getByRole('button', { name: 'Load data preview' }));
+		await expect(canvas.getByText('Some metadata is unavailable')).toBeInTheDocument();
+		await expect(canvas.getByText('INTEGER')).toBeInTheDocument();
+		await expect(canvas.getAllByText('1').length).toBeGreaterThan(0);
 		await userEvent.click(canvas.getByRole('tab', { name: 'Lineage' }));
 		await expect(canvas.getByText('MyApp.Assets.Raw.Customers')).toBeInTheDocument();
 		await userEvent.click(canvas.getByRole('tab', { name: 'Runs' }));
@@ -44,6 +64,7 @@
 			assetRef: 'MyApp.Assets.Mart.CustomerRevenue',
 			manifestVersionId: 'mfv_2026_04_27'
 		});
+		globalThis.fetch = originalFetch;
 	}}
 />
 

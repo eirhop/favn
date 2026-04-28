@@ -316,7 +316,7 @@ describe('asset catalog view normalizers', () => {
 							asset_results: [
 								{
 									target_id: 'asset:Elixir.FavnDemo.Gold.OrderSummary:asset',
-									metadata: {
+									meta: {
 										rows_written: 12,
 										rows_affected: 14,
 										loaded_at: '2026-04-27T11:01:01Z',

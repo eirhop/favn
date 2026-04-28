@@ -403,6 +403,61 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert run["trigger"] == %{"type" => "manual"}
   end
 
+  test "run list exposes per-asset metadata for asset catalog summaries" do
+    now = DateTime.utc_now()
+
+    run_state =
+      RunState.new(
+        id: "run_list_metadata",
+        manifest_version_id: "mv_list_metadata",
+        manifest_content_hash: "hash_list_metadata",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}]
+      )
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          status: :ok,
+          asset_results: [
+            %Favn.Run.AssetResult{
+              ref: {MyApp.Assets.Gold, :asset},
+              stage: 0,
+              status: :ok,
+              started_at: now,
+              finished_at: now,
+              duration_ms: 10,
+              meta: %{rows_written: 3, relation: "gold.orders"},
+              error: nil,
+              attempt_count: 1,
+              max_attempts: 1,
+              attempts: []
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run_state)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/runs")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"items" => runs}} = Jason.decode!(response.resp_body)
+    run = Enum.find(runs, &(&1["id"] == "run_list_metadata"))
+    assert run["target_refs"] == ["Elixir.MyApp.Assets.Gold:asset"]
+
+    assert [%{"asset_ref" => "Elixir.MyApp.Assets.Gold:asset", "meta" => meta}] =
+             run["asset_results"]
+
+    assert meta == %{"rows_written" => 3, "relation" => "gold.orders"}
+  end
+
   test "inspection endpoint dispatches to runner and caps sample limit" do
     version = dependency_manifest_version("mv_inspection")
     assert :ok = FavnOrchestrator.register_manifest(version)

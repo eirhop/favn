@@ -88,8 +88,17 @@
 		return Array.isArray(columns) ? (columns as Array<Record<string, unknown>>) : [];
 	});
 	let inspectionRows = $derived.by(() => {
+		const sample = inspection?.sample;
+		const sampleRecord =
+			sample && typeof sample === 'object' && !Array.isArray(sample)
+				? (sample as Record<string, unknown>)
+				: null;
 		const rows =
-			inspection?.sample_rows ?? inspection?.sampleRows ?? inspection?.rows ?? inspection?.samples;
+			inspection?.sample_rows ??
+			inspection?.sampleRows ??
+			inspection?.rows ??
+			inspection?.samples ??
+			sampleRecord?.rows;
 		return Array.isArray(rows) ? rows.slice(0, 20) : [];
 	});
 	let inspectionRowKeys = $derived.by(() => {
@@ -105,11 +114,11 @@
 	});
 	let inspectionWarnings = $derived.by(() => {
 		const warnings = inspection?.warnings ?? inspection?.diagnostics;
-		return Array.isArray(warnings) ? warnings.map((warning) => String(warning)) : [];
+		return Array.isArray(warnings) ? warnings.map(formatDiagnostic) : [];
 	});
 	let inspectionErrors = $derived.by(() => {
 		const errors = inspection?.errors;
-		return Array.isArray(errors) ? errors.map((entry) => String(entry)) : [];
+		return Array.isArray(errors) ? errors.map(formatDiagnostic) : [];
 	});
 	let notes = $derived.by(() => {
 		const source =
@@ -211,6 +220,14 @@
 		if (typeof candidate === 'string') return candidate;
 		if (typeof candidate === 'number' || typeof candidate === 'boolean') return String(candidate);
 		return JSON.stringify(candidate);
+	}
+
+	function formatDiagnostic(candidate: unknown): string {
+		if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+			const record = candidate as Record<string, unknown>;
+			return value(record.message, record.code, jsonValue(record));
+		}
+		return jsonValue(candidate);
 	}
 
 	function rowValue(row: unknown, key: string): string {

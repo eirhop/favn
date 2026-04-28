@@ -462,6 +462,7 @@ function materializationMetadata(
 	result: JsonRecord,
 	run: AssetCatalogRunSummary
 ): JsonRecord | null {
+	if (isRecord(result.meta)) return result.meta;
 	if (isRecord(result.metadata)) return result.metadata;
 	if (isRecord(result.result) && isRecord(result.result.metadata)) return result.result.metadata;
 	if (isRecord(run.raw) && isRecord(run.raw.metadata)) return run.raw.metadata;
