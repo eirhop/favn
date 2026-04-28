@@ -3,6 +3,7 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
 
   alias Favn.Run.Context
   alias Favn.SQLClient
+  alias Favn.Contracts.RunnerWork
 
   @duckdb_path ".favn/data/reference_workload.duckdb"
   @terminal_ref {FavnReferenceWorkload.Warehouse.Ops.ReferenceWorkloadComplete, :asset}
@@ -35,8 +36,8 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
           assert {:ok, _result} = Favn.materialize(asset)
 
         :elixir ->
-          ctx = %Context{asset: %{relation: asset.relation}}
-          assert :ok = apply(asset.module, :asset, [ctx])
+          ctx = %Context{asset: %{relation: asset.relation}, config: source_config()}
+          assert_successful_asset_return(apply(asset.module, :asset, [ctx]))
       end
     end)
 
@@ -45,6 +46,50 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
     assert {:ok, 4} = relation_count("sources", "channel_catalog")
     assert {:ok, 6} = relation_count("raw", "customers")
     assert {:ok, 7} = relation_count("stg", "order_facts")
+  end
+
+  test "raw orders source-system asset returns structured landing metadata" do
+    with_source_env("northbeam-private-segment", "private-token", fn ->
+      assert :ok = prepare_order_prerequisites()
+      assert {:ok, result} = run_orders_asset()
+
+      assert result.status == :ok
+      assert [%{meta: meta}] = result.asset_results
+
+      assert meta.rows_written == 6
+      assert meta.mode == :full_refresh
+      assert meta.relation == "raw.orders"
+      assert %DateTime{} = meta.loaded_at
+      assert meta.source.system == :reference_source
+      assert meta.source.segment_id_hash == hash_identity("northbeam-private-segment")
+      refute inspect(result) =~ "northbeam-private-segment"
+      refute inspect(result) =~ "private-token"
+
+      assert {:ok, 6} = relation_count("raw", "orders")
+    end)
+  end
+
+  test "raw orders source config fails before source fetch when required env is missing" do
+    with_source_env(nil, "private-token", fn ->
+      assert {:ok, result} = run_orders_asset()
+
+      assert result.status == :error
+      assert [%{error: error}] = result.asset_results
+      assert error.type == :missing_env
+      assert error.message == "missing_env FAVN_REFERENCE_SOURCE_SEGMENT_ID"
+    end)
+  end
+
+  test "raw orders source client failures are returned as asset failure diagnostics" do
+    with_source_env("source-failure", "private-token", fn ->
+      assert :ok = prepare_order_prerequisites()
+      assert {:ok, result} = run_orders_asset()
+
+      assert result.status == :error
+      assert [%{error: error}] = result.asset_results
+      assert error.reason == {:source_unavailable, :orders}
+      refute inspect(result) =~ "private-token"
+    end)
   end
 
   defp relation_count(schema, relation) do
@@ -87,5 +132,70 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
       and table_name = ?
     limit 1
     """
+  end
+
+  defp prepare_order_prerequisites do
+    for ref <- [
+          {FavnReferenceWorkload.Warehouse.Sources.CountryRegions, :asset},
+          {FavnReferenceWorkload.Warehouse.Sources.ChannelCatalog, :asset},
+          {FavnReferenceWorkload.Warehouse.Raw.Customers, :asset}
+        ] do
+      assert {:ok, asset} = Favn.get_asset(ref)
+
+      case asset.type do
+        :sql ->
+          assert {:ok, _result} = Favn.materialize(asset)
+
+        :elixir ->
+          ctx = %Context{asset: %{relation: asset.relation}, config: source_config()}
+          assert_successful_asset_return(apply(asset.module, :asset, [ctx]))
+      end
+    end
+
+    :ok
+  end
+
+  defp run_orders_asset do
+    {:ok, _started} = Application.ensure_all_started(:favn_runner)
+    {:ok, manifest} = Favn.generate_manifest()
+    {:ok, version} = Favn.pin_manifest_version(manifest)
+    :ok = FavnRunner.register_manifest(version)
+
+    FavnRunner.run(%RunnerWork{
+      run_id: "raw-orders-#{System.unique_integer([:positive])}",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: {FavnReferenceWorkload.Warehouse.Raw.Orders, :asset}
+    })
+  end
+
+  defp assert_successful_asset_return(:ok), do: :ok
+  defp assert_successful_asset_return({:ok, meta}) when is_map(meta), do: :ok
+
+  defp source_config do
+    %{source_system: %{segment_id: "northbeam-demo-segment", token: "direct-test-token"}}
+  end
+
+  defp with_source_env(segment_id, token, fun) do
+    previous_segment = System.get_env("FAVN_REFERENCE_SOURCE_SEGMENT_ID")
+    previous_token = System.get_env("FAVN_REFERENCE_SOURCE_TOKEN")
+
+    try do
+      put_or_delete_env("FAVN_REFERENCE_SOURCE_SEGMENT_ID", segment_id)
+      put_or_delete_env("FAVN_REFERENCE_SOURCE_TOKEN", token)
+      fun.()
+    after
+      put_or_delete_env("FAVN_REFERENCE_SOURCE_SEGMENT_ID", previous_segment)
+      put_or_delete_env("FAVN_REFERENCE_SOURCE_TOKEN", previous_token)
+    end
+  end
+
+  defp put_or_delete_env(key, nil), do: System.delete_env(key)
+  defp put_or_delete_env(key, value), do: System.put_env(key, value)
+
+  defp hash_identity(value) do
+    :sha256
+    |> :crypto.hash(to_string(value))
+    |> Base.encode16(case: :lower)
   end
 end

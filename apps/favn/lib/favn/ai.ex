@@ -14,6 +14,13 @@ defmodule Favn.AI do
     `Favn.Window` if needed.
   - To declare required runtime configuration or secrets for assets, read
     `Favn.Asset` and `Favn.RuntimeConfig.Ref`.
+  - To author a source-system raw landing asset, read `Favn.Asset`, then
+    `Favn.SQLClient`, `Favn.Namespace`, and the standalone tutorial at
+    `examples/basic-workflow-tutorial`. The canonical pattern is: declare
+    source IDs/tokens with `source_config/2`, read resolved values from
+    `ctx.config`, call a source client outside the asset, write raw rows through
+    `Favn.SQLClient`, and return structured metadata with row counts, relation,
+    load mode, timestamp, and hashed source identity.
   - To author one SQL asset, read `Favn.SQLAsset`, then `Favn.SQL`,
     `Favn.Connection`, `Favn.Namespace`, and `Favn.Window` as needed.
   - To author many similar assets in one module, read `Favn.MultiAsset`.
@@ -67,6 +74,9 @@ defmodule Favn.AI do
     assets.
   - Read `Favn.Namespace` whenever relation naming, connection defaults, or SQL
     relation references are involved.
+  - For external-source ingestion, keep connector/client logic in your project,
+    not in Favn. Favn owns the asset/runtime/config/SQL boundaries; your project
+    owns API-specific pagination, auth, request, and response logic.
   - Read `Favn.Window` whenever a task mentions backfills, daily/hourly/monthly
     processing, or incremental SQL materialization.
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
@@ -78,6 +88,9 @@ defmodule Favn.AI do
   - `README.md`: top-level product overview and quickstart
   - `docs/FEATURES.md`: implemented feature set only
   - `docs/ROADMAP.md`: planned work only
+  - `examples/basic-workflow-tutorial`: standalone consumer-style tutorial with
+    the canonical source-system raw landing example in
+    `FavnReferenceWorkload.Warehouse.Raw.Orders`
   - `docs/lib_structure.md`: ownership and folder map
   """
 end

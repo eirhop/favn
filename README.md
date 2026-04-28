@@ -154,6 +154,13 @@ the values before asset execution and exposes them through `ctx.config`, failing
 the run early with diagnostics such as `missing_env SOURCE_SYSTEM_TOKEN` when a
 required value is absent.
 
+For source-system raw landing assets, keep the source client outside the asset,
+read source IDs/tokens through `ctx.config`, write raw rows through
+`Favn.SQLClient`, and return structured metadata such as row counts, mode,
+relation, load timestamp, and hashed source identity. The standalone tutorial in
+`examples/basic-workflow-tutorial` shows this pattern with a full-refresh raw
+orders asset followed by SQL transformations.
+
 ### 3. Define a downstream SQL asset
 
 ```elixir
@@ -307,7 +314,10 @@ For a consumer-style authoring and DuckDB execution tutorial, see
 local path dependencies back to `apps/favn` and `apps/favn_duckdb`, and has its
 own compile/test workflow. The embedded tutorial also exercises the
 `mix favn.install` and `mix favn.dev` local-tooling loop from a consumer-style
-project.
+project. Its raw orders asset is the canonical source-system landing example:
+it resolves a source segment and token through `ctx.config`, calls a small source
+client, lands JSON rows into DuckDB through `Favn.SQLClient`, and returns
+structured run metadata for inspection.
 
 `mix favn.install` resolves and materializes a runtime workspace under
 `.favn/install/runtime_root`. The install fingerprint includes a deterministic

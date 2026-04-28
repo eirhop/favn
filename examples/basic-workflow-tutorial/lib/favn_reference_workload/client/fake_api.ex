@@ -16,6 +16,7 @@ defmodule FavnReferenceWorkload.Client.FakeAPI do
   """
 
   @type dataset :: :customers | :products | :orders | :order_items | :payments
+  @type source_config :: %{required(:segment_id) => String.t(), optional(atom()) => term()}
 
   @spec fetch_rows(dataset()) :: {:ok, [map()]} | {:error, term()}
   def fetch_rows(dataset)
@@ -24,6 +25,24 @@ defmodule FavnReferenceWorkload.Client.FakeAPI do
   end
 
   def fetch_rows(_dataset), do: {:error, :invalid_dataset}
+
+  @spec fetch_rows(dataset(), source_config()) :: {:ok, [map()]} | {:error, term()}
+  def fetch_rows(:orders, %{segment_id: "source-failure"}) do
+    {:error, {:source_unavailable, :orders}}
+  end
+
+  def fetch_rows(:orders, %{segment_id: segment_id}) when is_binary(segment_id) do
+    rows =
+      :orders
+      |> rows_for()
+      |> Enum.map(&Map.put(&1, "source_segment_id", segment_id))
+
+    {:ok, rows}
+  end
+
+  def fetch_rows(:orders, _source_config), do: {:error, :missing_segment_id}
+
+  def fetch_rows(dataset, _source_config), do: fetch_rows(dataset)
 
   defp rows_for(:customers) do
     [

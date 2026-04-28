@@ -85,8 +85,11 @@ be observed, not created, by the workload.
   - "Deterministic product ingest from a simulated API JSON payload"
   - Loads product JSON rows into `raw.products` through `read_json(...)`.
 - `FavnReferenceWorkload.Warehouse.Raw.Orders`
-  - "Deterministic order ingest from a simulated API JSON payload"
-  - Loads order JSON rows and checks customer/channel lookups exist.
+  - "Deterministic source-system order ingest from a simulated API JSON payload"
+  - Resolves source runtime config from `ctx.config`, calls the fake source
+    client with a narrow config map, loads order JSON rows through
+    `Favn.SQLClient`, checks customer/channel lookups exist, and returns
+    structured run metadata.
 - `FavnReferenceWorkload.Warehouse.Raw.OrderItems`
   - "Deterministic order-item ingest from a simulated API JSON payload"
   - Loads item JSON rows and ensures order/product references are valid.
@@ -98,12 +101,21 @@ All raw modules are `Favn.Asset` Elixir assets. They simulate an external API
 client returning JSON and then load those JSON payloads into concrete DuckDB
 `raw.*` tables with `read_json(...)`.
 
+`Raw.Orders` is the canonical source-system raw landing example. It declares
+`source_config :source_system`, reads the resolved source segment and token from
+`ctx.config.source_system`, keeps the fake source client outside the asset, lands
+rows into the owned raw relation, and returns metadata with `rows_written`,
+`mode`, `relation`, `loaded_at`, and a SHA-256 `segment_id_hash`. The raw segment
+ID and token are intentionally not returned in metadata.
+
 Best-practice shape shown here:
 - reusable clients live under `examples/basic-workflow-tutorial/lib/favn_reference_workload/client/`
 - assets keep `use Favn.Namespace` minimal and inherit namespace defaults from
   parent modules
 - assets pass only `ctx.asset.relation` into the DuckDB client instead of the
   whole runtime context
+- source-system assets pass only the resolved source config to source clients,
+  not the whole runtime context
 
 ### Staging assets (`stg` schema)
 
@@ -247,6 +259,18 @@ FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=admin-password
 FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Favn Admin
 FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
 ```
+
+The source-system raw landing example also needs deterministic local source
+credentials when it runs through the runner:
+
+```sh
+FAVN_REFERENCE_SOURCE_SEGMENT_ID=northbeam-demo-segment
+FAVN_REFERENCE_SOURCE_TOKEN=local-demo-token
+```
+
+These values are resolved by the runner into `ctx.config`; they are not embedded
+in the manifest. The returned run metadata includes only a hash of the segment
+identity, never the raw segment ID or token.
 
 Then open the web URL printed by `mix favn.dev` and log in with that username
 and password. If you change `.env` while the stack is running, restart it with

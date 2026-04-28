@@ -71,6 +71,57 @@ defmodule Favn.Asset do
   not resolved values. Missing required environment variables fail before asset
   code runs with a structured error such as `missing_env SOURCE_SYSTEM_TOKEN`.
 
+  ## Source-system raw landing pattern
+
+  A common Elixir asset shape is landing records from an external source system
+  into a raw SQL relation before downstream `Favn.SQLAsset` transformations run.
+
+  Keep the source client and SQL landing helper in your own application, not in
+  Favn. The asset should coordinate the boundary:
+
+      defmodule MyApp.Warehouse.Raw.SourceItems do
+        use Favn.Namespace
+        use Favn.Asset
+
+        alias MyApp.SourceClient
+        alias MyApp.RawLanding
+
+        source_config :source_system,
+          segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
+          token: secret_env!("SOURCE_SYSTEM_TOKEN")
+
+        @relation true
+        def asset(ctx) do
+          relation = ctx.asset.relation
+          source_config = ctx.config.source_system
+
+          with {:ok, rows} <- SourceClient.fetch_all(source_config),
+               :ok <- RawLanding.replace_rows(relation, rows) do
+            {:ok,
+             %{
+               rows_written: length(rows),
+               mode: :full_refresh,
+               relation: Enum.join([relation.schema, relation.name], "."),
+               loaded_at: DateTime.utc_now(),
+               source: %{
+                 system: :source_system,
+                 segment_id_hash: hash_identity(source_config.segment_id)
+               }
+             }}
+          end
+        end
+      end
+
+  Important rules for this pattern:
+
+  - read source IDs and tokens from `ctx.config`, not `System.get_env/1`
+  - pass only the narrow source config to source clients, not the full `ctx`
+  - write raw rows through `Favn.SQLClient` in your landing helper
+  - return structured metadata that run inspection can display
+  - hash or redact source identities; never return raw segment IDs or tokens
+
+  See `examples/basic-workflow-tutorial` for the canonical working example.
+
   `@depends` supports:
 
   - `Other.SingleAssetModule`
@@ -112,6 +163,7 @@ defmodule Favn.Asset do
   - `Favn.SQLAsset`
   - `Favn.MultiAsset`
   - `Favn.Namespace`
+  - `Favn.SQLClient`
   """
 
   alias Favn.Asset.Dependency

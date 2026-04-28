@@ -10,6 +10,7 @@ Top-level product docs:
 
 - `docs/FEATURES.md` for implemented capabilities
 - `docs/FEATURE_AUDIT_TASKLIST.md` for the current feature audit work breakdown
+- `docs/ISSUE_171_SOURCE_RAW_LANDING_PLAN.md` for the planned source-system raw landing dogfooding pattern
 - `docs/ROADMAP.md` for planned work
 
 Consumer examples:

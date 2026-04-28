@@ -6,6 +6,7 @@ defmodule Favn.Timezone do
   @spec database!() :: module()
   def database! do
     database = Application.get_env(:favn_core, :time_zone_database, @default_database)
+    start_default_database(database)
 
     if valid_database?(database) do
       database
@@ -33,6 +34,13 @@ defmodule Favn.Timezone do
   end
 
   defp valid_database?(_database), do: false
+
+  defp start_default_database(@default_database) do
+    _ = Application.ensure_all_started(:tzdata)
+    :ok
+  end
+
+  defp start_default_database(_database), do: :ok
 
   defp resolves_timezone?(timezone, database) do
     case DateTime.new(~D[2026-01-01], ~T[00:00:00], timezone, database) do
