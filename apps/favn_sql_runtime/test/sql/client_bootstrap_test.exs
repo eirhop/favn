@@ -38,6 +38,12 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
              operation: :bootstrap,
              connection: name
            }}
+
+        :raise ->
+          raise "bootstrap boom"
+
+        :exit ->
+          exit(:bootstrap_boom)
       end
     end
 
@@ -73,7 +79,7 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
 
     defp record(event) do
       if :ets.whereis(@events_table) != :undefined do
-        :ets.insert(@events_table, {System.unique_integer([:positive]), event})
+        :ets.insert(@events_table, {System.unique_integer([:positive, :monotonic]), event})
       end
     end
   end
@@ -118,7 +124,7 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
 
     defp record(event) do
       if :ets.whereis(@events_table) != :undefined do
-        :ets.insert(@events_table, {System.unique_integer([:positive]), event})
+        :ets.insert(@events_table, {System.unique_integer([:positive, :monotonic]), event})
       end
     end
   end
@@ -165,6 +171,34 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     Application.put_env(:favn, :sql_bootstrap_mode, :error)
 
     assert {:error, %Error{operation: :bootstrap, connection: :warehouse}} =
+             Client.connect(:warehouse, registry_name: registry_name)
+
+    assert [
+             {:connect, :warehouse, conn},
+             {:bootstrap, :warehouse, conn},
+             {:disconnect, conn}
+           ] = events()
+  end
+
+  test "disconnects when bootstrap raises", %{registry_name: registry_name} do
+    start_registry(registry_name, AdapterWithBootstrap)
+    Application.put_env(:favn, :sql_bootstrap_mode, :raise)
+
+    assert {:error, %Error{operation: :connect}} =
+             Client.connect(:warehouse, registry_name: registry_name)
+
+    assert [
+             {:connect, :warehouse, conn},
+             {:bootstrap, :warehouse, conn},
+             {:disconnect, conn}
+           ] = events()
+  end
+
+  test "disconnects when bootstrap exits", %{registry_name: registry_name} do
+    start_registry(registry_name, AdapterWithBootstrap)
+    Application.put_env(:favn, :sql_bootstrap_mode, :exit)
+
+    assert {:error, %Error{operation: :connect}} =
              Client.connect(:warehouse, registry_name: registry_name)
 
     assert [

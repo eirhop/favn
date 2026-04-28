@@ -64,7 +64,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
 
     defp record(event) do
       if :ets.whereis(@events_table) != :undefined do
-        :ets.insert(@events_table, {System.unique_integer([:positive]), event})
+        :ets.insert(@events_table, {System.unique_integer([:positive, :monotonic]), event})
       end
     end
   end
@@ -129,7 +129,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
               connection: :warehouse,
               message: "DuckDB connection bootstrap failed at attach_lake",
               details: %{
-                step: :attach_lake,
+                step: "attach_lake",
                 bootstrap_kind: :ducklake_attach,
                 statement: safe_statement,
                 reason: reason,
@@ -138,6 +138,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
             }} = DuckDB.bootstrap(conn, resolved(), [])
 
     refute safe_statement =~ secret_metadata
+    refute safe_statement =~ "abfss://lake@storageaccount.dfs.core.windows.net/raw"
     refute reason =~ secret_metadata
     refute inspect(adapter_details) =~ secret_metadata
     assert safe_statement =~ "redacted"
@@ -161,6 +162,35 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
             }} = DuckDB.bootstrap(conn, resolved, [])
 
     assert reason =~ "unsupported_extension"
+  end
+
+  test "malformed bootstrap config returns structured invalid config errors" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    invalid_configs = [
+      [extensions: :bad],
+      [secrets: [azure_adls: :bad]],
+      [:not_a_keyword_tuple],
+      [secrets: [:not_a_secret_tuple]],
+      [attach: :bad]
+    ]
+
+    for duckdb_bootstrap <- invalid_configs do
+      resolved = %Resolved{
+        resolved()
+        | config: %{database: ":memory:", duckdb_bootstrap: duckdb_bootstrap}
+      }
+
+      assert {:error,
+              %Error{
+                type: :invalid_config,
+                operation: :bootstrap,
+                connection: :warehouse,
+                details: %{reason: reason}
+              }} = DuckDB.bootstrap(conn, resolved, [])
+
+      assert is_binary(reason)
+    end
   end
 
   defp resolved do

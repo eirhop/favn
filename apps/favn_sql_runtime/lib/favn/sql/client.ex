@@ -209,7 +209,7 @@ defmodule Favn.SQL.Client do
   end
 
   defp bootstrap_and_build_session(resolved, adapter_opts, concurrency_policy, lease, conn) do
-    case bootstrap_connection(resolved, conn, adapter_opts) do
+    case bootstrap_connection_with_cleanup(resolved, conn, adapter_opts) do
       :ok ->
         build_session_with_capabilities(resolved, adapter_opts, concurrency_policy, lease, conn)
 
@@ -219,6 +219,18 @@ defmodule Favn.SQL.Client do
       other ->
         disconnect_after_connect_error(resolved.adapter, conn, lease, other)
     end
+  end
+
+  defp bootstrap_connection_with_cleanup(resolved, conn, adapter_opts) do
+    bootstrap_connection(resolved, conn, adapter_opts)
+  rescue
+    error ->
+      _ = resolved.adapter.disconnect(conn, [])
+      reraise error, __STACKTRACE__
+  catch
+    kind, reason ->
+      _ = resolved.adapter.disconnect(conn, [])
+      :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
   defp bootstrap_connection(%Resolved{adapter: adapter} = resolved, conn, adapter_opts) do

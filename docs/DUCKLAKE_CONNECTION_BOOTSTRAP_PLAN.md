@@ -167,6 +167,28 @@ Runner SQL asset errors should continue wrapping this as `Favn.SQLAsset.Error` w
 - Existing local config transport tests should be extended if redacted diagnostics include nested `duckdb_bootstrap` config.
 - `apps/favn_sql_runtime/test/connection/validator_test.exs`: recursive nested runtime ref resolution and secret redaction metadata if the preferred nested-ref path is chosen.
 
+## Manual Integration Verification
+
+The automated tests lock the bootstrap lifecycle, generated DuckDB statements,
+malformed-config diagnostics, cleanup behavior, and redaction. They intentionally
+do not install remote DuckDB extensions or connect to Azure/PostgreSQL by default.
+
+Before relying on this for the first dogfooding pipeline, verify manually from a
+consumer project with real credentials:
+
+```bash
+export AZURE_STORAGE_ACCOUNT=...
+export DUCKLAKE_POSTGRES_DSN=...
+export DUCKLAKE_DATA_PATH=abfss://...
+
+mix favn.dev
+mix favn.run MyWork.Pipelines.SourceToDuckLake --wait
+```
+
+Then confirm that `Favn.SQLClient.connect(:warehouse)` can query the attached
+DuckLake catalog after bootstrap, and that an intentionally bad attach value
+reports `operation: :bootstrap` with a failing step and redacted metadata.
+
 After Elixir changes, run the repository-required checks:
 
 ```bash

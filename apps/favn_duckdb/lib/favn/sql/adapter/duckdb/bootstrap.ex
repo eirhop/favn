@@ -8,7 +8,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   @config_key :duckdb_bootstrap
   @extension_names [:ducklake, :postgres, :azure]
 
-  @type step :: %{id: atom(), kind: atom(), statement: iodata(), safe_statement: iodata()}
+  @type step :: %{id: String.t(), kind: atom(), statement: iodata(), safe_statement: iodata()}
 
   @spec schema_field() :: Favn.Connection.Definition.field()
   def schema_field do
@@ -18,7 +18,14 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   @spec validate_config(term()) :: :ok | {:error, term()}
   def validate_config(nil), do: :ok
   def validate_config([]), do: :ok
-  def validate_config(value) when is_map(value) or is_list(value), do: :ok
+
+  def validate_config(value) when is_map(value) or is_list(value) do
+    case normalize_config(value) do
+      {:ok, _config} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def validate_config(_value), do: {:error, :expected_duckdb_bootstrap_keyword_or_map}
 
   @spec run(DuckDB.Conn.t(), Resolved.t(), keyword()) :: :ok | {:error, Error.t()}
@@ -62,9 +69,8 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   end
 
   defp normalize_config(config) do
-    normalized = keywordize(config)
-
-    with {:ok, extensions} <- normalize_extensions(Keyword.get(normalized, :extensions, [])),
+    with {:ok, normalized} <- normalize_keyword_config(config, :bootstrap),
+         {:ok, extensions} <- normalize_extensions(Keyword.get(normalized, :extensions, [])),
          {:ok, secrets} <- normalize_secrets(Keyword.get(normalized, :secrets, [])),
          {:ok, attach} <- normalize_attach(Keyword.get(normalized, :attach)),
          {:ok, use_catalog} <- normalize_optional_identifier(Keyword.get(normalized, :use)) do
@@ -73,9 +79,8 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   end
 
   defp normalize_extensions(config) do
-    extensions = keywordize(config)
-
-    with {:ok, install} <- normalize_extension_list(Keyword.get(extensions, :install, [])),
+    with {:ok, extensions} <- normalize_keyword_config(config, :extensions),
+         {:ok, install} <- normalize_extension_list(Keyword.get(extensions, :install, [])),
          {:ok, load} <- normalize_extension_list(Keyword.get(extensions, :load, [])) do
       {:ok, %{install: install, load: load}}
     end
@@ -109,28 +114,31 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   defp normalize_extension_name(name), do: {:error, {:unsupported_extension, name}}
 
-  defp normalize_secrets(config) when is_map(config) or is_list(config) do
-    config
-    |> keywordize()
-    |> Enum.reduce_while({:ok, []}, fn {name, secret_config}, {:ok, acc} ->
-      with {:ok, identifier} <- normalize_identifier(name),
-           {:ok, secret} <- normalize_secret(identifier, secret_config) do
-        {:cont, {:ok, [secret | acc]}}
-      else
-        {:error, reason} -> {:halt, {:error, reason}}
+  defp normalize_secrets(config) do
+    with {:ok, secrets} <- normalize_keyword_config(config, :secrets) do
+      secrets
+      |> Enum.reduce_while({:ok, []}, fn {name, secret_config}, {:ok, acc} ->
+        with {:ok, identifier} <- normalize_identifier(name),
+             {:ok, secret} <- normalize_secret(identifier, secret_config) do
+          {:cont, {:ok, [secret | acc]}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, secrets} -> {:ok, Enum.reverse(secrets)}
+        {:error, reason} -> {:error, reason}
       end
-    end)
-    |> case do
-      {:ok, secrets} -> {:ok, Enum.reverse(secrets)}
-      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp normalize_secrets(_config), do: {:error, :invalid_secrets}
-
   defp normalize_secret(name, config) do
-    secret = keywordize(config)
+    with {:ok, secret} <- normalize_keyword_config(config, {:secret, name}) do
+      normalize_secret_config(name, secret)
+    end
+  end
 
+  defp normalize_secret_config(name, secret) do
     case {Keyword.get(secret, :type), Keyword.get(secret, :provider)} do
       {:azure, :credential_chain} ->
         account_name = Keyword.get(secret, :account_name)
@@ -149,10 +157,9 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   defp normalize_attach(nil), do: {:ok, nil}
 
-  defp normalize_attach(config) when is_map(config) or is_list(config) do
-    attach = keywordize(config)
-
-    with {:ok, name} <- normalize_identifier(Keyword.get(attach, :name)),
+  defp normalize_attach(config) do
+    with {:ok, attach} <- normalize_keyword_config(config, :attach),
+         {:ok, name} <- normalize_identifier(Keyword.get(attach, :name)),
          :ok <- require_value(attach, :metadata),
          :ok <- require_value(attach, :data_path) do
       case Keyword.get(attach, :type) do
@@ -171,10 +178,25 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     end
   end
 
-  defp normalize_attach(_config), do: {:error, :invalid_attach}
-
   defp normalize_optional_identifier(nil), do: {:ok, nil}
   defp normalize_optional_identifier(value), do: normalize_identifier(value)
+
+  defp normalize_keyword_config(nil, _context), do: {:ok, []}
+
+  defp normalize_keyword_config(config, _context) when is_map(config) do
+    if Enum.all?(Map.keys(config), &is_atom/1) do
+      {:ok, Map.to_list(config)}
+    else
+      {:error, :invalid_bootstrap_map_keys}
+    end
+  end
+
+  defp normalize_keyword_config(config, _context) when is_list(config) do
+    if Keyword.keyword?(config), do: {:ok, config}, else: {:error, :invalid_bootstrap_keyword}
+  end
+
+  defp normalize_keyword_config(_config, context),
+    do: {:error, {:invalid_bootstrap_config, context}}
 
   defp require_value(keyword, key) do
     if present_string?(Keyword.get(keyword, key)) do
@@ -256,7 +278,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
       " AS ",
       quote_ident(name),
       " (TYPE ducklake, DATA_PATH ",
-      quote_literal(data_path),
+      quote_literal(:redacted),
       ")"
     ]
 
@@ -266,7 +288,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
         kind: :ducklake_attach,
         statement: statement,
         safe_statement: safe_statement,
-        sensitive_values: [metadata]
+        sensitive_values: [metadata, data_path]
       }
     ]
   end
@@ -288,7 +310,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   end
 
   defp step_id(kind, name) do
-    String.to_atom("#{kind}_#{name}")
+    "#{kind}_#{name}"
   end
 
   defp normalize_identifier(value) when is_atom(value),
@@ -303,10 +325,6 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   end
 
   defp normalize_identifier(value), do: {:error, {:invalid_identifier, value}}
-
-  defp keywordize(value) when is_map(value), do: Map.to_list(value)
-  defp keywordize(value) when is_list(value), do: value
-  defp keywordize(value), do: value
 
   defp present_string?(value), do: is_binary(value) and value != ""
 
