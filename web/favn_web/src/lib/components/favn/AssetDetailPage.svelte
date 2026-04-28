@@ -6,6 +6,7 @@
 	import type {
 		AssetDetailPageData,
 		AssetDetailView,
+		AssetMaterializationSummary,
 		AssetRuntimeConfigEntry
 	} from '$lib/asset_catalog_types';
 
@@ -13,6 +14,7 @@
 	type Tab = 'overview' | 'lineage' | 'runs' | 'raw';
 	type RunLike = Record<string, unknown>;
 	type ItemLike = string | Record<string, unknown>;
+	type InspectionPayload = Record<string, unknown>;
 
 	let {
 		data,
@@ -31,6 +33,9 @@
 	let activeTab: Tab = $state('overview');
 	let pendingScope: RunScope | null = $state(null);
 	let copied = $state<string | null>(null);
+	let inspection = $state.raw<InspectionPayload | null>(null);
+	let inspectionLoading = $state(false);
+	let inspectionError = $state<string | null>(null);
 
 	let pageData = $derived((data ?? {}) as Record<string, unknown>);
 	let detail = $derived((pageData.detail ?? null) as Record<string, unknown> | null);
@@ -68,6 +73,43 @@
 	let runtimeConfig = $derived.by(() => {
 		const value = asset.runtimeConfig ?? asset.runtime_config ?? [];
 		return Array.isArray(value) ? (value as AssetRuntimeConfigEntry[]) : [];
+	});
+	let latestMaterialization = $derived(
+		(asset.latestMaterialization ??
+			asset.latest_materialization ??
+			null) as AssetMaterializationSummary | null
+	);
+	let inspectionColumns = $derived.by(() => {
+		const schema = (inspection?.schema ?? inspection?.schema_metadata ?? inspection) as Record<
+			string,
+			unknown
+		> | null;
+		const columns = schema?.columns ?? schema?.fields;
+		return Array.isArray(columns) ? (columns as Array<Record<string, unknown>>) : [];
+	});
+	let inspectionRows = $derived.by(() => {
+		const rows =
+			inspection?.sample_rows ?? inspection?.sampleRows ?? inspection?.rows ?? inspection?.samples;
+		return Array.isArray(rows) ? rows.slice(0, 20) : [];
+	});
+	let inspectionRowKeys = $derived.by(() => {
+		const keys: string[] = [];
+		for (const row of inspectionRows) {
+			if (row && typeof row === 'object' && !Array.isArray(row)) {
+				for (const key of Object.keys(row)) {
+					if (!keys.includes(key)) keys.push(key);
+				}
+			}
+		}
+		return keys.slice(0, 20);
+	});
+	let inspectionWarnings = $derived.by(() => {
+		const warnings = inspection?.warnings ?? inspection?.diagnostics;
+		return Array.isArray(warnings) ? warnings.map((warning) => String(warning)) : [];
+	});
+	let inspectionErrors = $derived.by(() => {
+		const errors = inspection?.errors;
+		return Array.isArray(errors) ? errors.map((entry) => String(entry)) : [];
 	});
 	let notes = $derived.by(() => {
 		const source =
@@ -162,6 +204,69 @@
 			(candidate) => candidate !== null && candidate !== undefined && candidate !== ''
 		);
 		return found === undefined ? '—' : String(found);
+	}
+
+	function jsonValue(candidate: unknown): string {
+		if (candidate === null || candidate === undefined || candidate === '') return '—';
+		if (typeof candidate === 'string') return candidate;
+		if (typeof candidate === 'number' || typeof candidate === 'boolean') return String(candidate);
+		return JSON.stringify(candidate);
+	}
+
+	function rowValue(row: unknown, key: string): string {
+		if (!row || typeof row !== 'object' || Array.isArray(row)) return jsonValue(row);
+		return jsonValue((row as Record<string, unknown>)[key]);
+	}
+
+	function inspectionFromPayload(payload: unknown): InspectionPayload | null {
+		if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+		const record = payload as Record<string, unknown>;
+		const data = record.data;
+		if (data && typeof data === 'object' && !Array.isArray(data) && 'inspection' in data) {
+			const inspectionPayload = (data as Record<string, unknown>).inspection;
+			return inspectionPayload &&
+				typeof inspectionPayload === 'object' &&
+				!Array.isArray(inspectionPayload)
+				? (inspectionPayload as InspectionPayload)
+				: null;
+		}
+		const direct = record.inspection;
+		if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
+			return direct as InspectionPayload;
+		}
+		return record;
+	}
+
+	async function loadInspection() {
+		if (!manifestVersionId || !targetId) return;
+
+		inspectionLoading = true;
+		inspectionError = null;
+
+		try {
+			const response = await fetch(
+				resolve(
+					`/api/web/v1/manifests/${encodeURIComponent(manifestVersionId)}/assets/${encodeURIComponent(
+						targetId
+					)}/inspection?limit=20`
+				),
+				{ headers: { accept: 'application/json' } }
+			);
+			const payload = (await response.json()) as unknown;
+			if (!response.ok) {
+				const message =
+					payload && typeof payload === 'object' && 'error' in payload
+						? jsonValue((payload as Record<string, unknown>).error)
+						: 'Inspection request failed';
+				throw new Error(message);
+			}
+			inspection = inspectionFromPayload(payload);
+		} catch (error) {
+			inspection = null;
+			inspectionError = error instanceof Error ? error.message : 'Inspection request failed';
+		} finally {
+			inspectionLoading = false;
+		}
 	}
 
 	function runtimeStatusClass(status: string) {
@@ -458,6 +563,151 @@
 								{/each}
 							</tbody>
 						</table>
+					</div>
+				{/if}
+			</Card.Content>
+		</Card.Root>
+
+		<Card.Root>
+			<Card.Header>
+				<div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+					<div>
+						<h2 class="text-xl font-semibold tracking-tight">Latest materialization</h2>
+						<Card.Description>
+							Relation metadata and a safe preview loaded through the web BFF.
+						</Card.Description>
+					</div>
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={!manifestVersionId || !targetId || inspectionLoading}
+						onclick={loadInspection}
+					>
+						{inspectionLoading ? 'Loading preview…' : 'Load data preview'}
+					</Button>
+				</div>
+			</Card.Header>
+			<Card.Content class="space-y-4">
+				{#if latestMaterialization}
+					<div class="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+						<div>
+							<span class="text-slate-500">Relation</span>
+							<p class="font-mono text-xs break-all">{jsonValue(latestMaterialization.relation)}</p>
+						</div>
+						<div>
+							<span class="text-slate-500">Rows written / affected</span>
+							<p>
+								{value(latestMaterialization.rowsWritten)} / {value(
+									latestMaterialization.rowsAffected
+								)}
+							</p>
+						</div>
+						<div>
+							<span class="text-slate-500">Loaded / materialized</span>
+							<p>
+								{value(latestMaterialization.loadedAt)} / {value(
+									latestMaterialization.materializedAt
+								)}
+							</p>
+						</div>
+						<div>
+							<span class="text-slate-500">Window</span>
+							<p class="font-mono text-xs break-all">{jsonValue(latestMaterialization.window)}</p>
+						</div>
+					</div>
+					<details class="rounded-lg border bg-slate-50 p-3 text-sm">
+						<summary class="cursor-pointer font-medium">Raw materialization metadata</summary>
+						<pre class="mt-3 max-h-64 overflow-auto text-xs whitespace-pre-wrap">{jsonValue(
+								latestMaterialization.metadata
+							)}</pre>
+					</details>
+				{:else}
+					<p class="rounded-lg border border-dashed p-6 text-sm text-slate-500">
+						No materialization metadata was reported for matching recent runs.
+					</p>
+				{/if}
+
+				{#if inspectionError}
+					<p
+						class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+						role="alert"
+					>
+						{inspectionError}
+					</p>
+				{/if}
+
+				{#if inspection}
+					<div class="space-y-4 rounded-lg border p-4">
+						<div class="flex flex-wrap gap-4 text-sm">
+							<div>
+								<span class="text-slate-500">Row count</span>
+								<p class="font-medium">{value(inspection.row_count, inspection.rowCount)}</p>
+							</div>
+							<div>
+								<span class="text-slate-500">Preview limit</span>
+								<p class="font-medium">20 rows max</p>
+							</div>
+						</div>
+
+						{#each inspectionWarnings as warning (warning)}
+							<p class="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+								{warning}
+							</p>
+						{/each}
+						{#each inspectionErrors as entry (entry)}
+							<p class="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+								{entry}
+							</p>
+						{/each}
+
+						{#if inspectionColumns.length > 0}
+							<div class="overflow-hidden rounded-lg border">
+								<table class="w-full text-sm">
+									<thead class="bg-slate-50 text-left text-xs text-slate-500 uppercase">
+										<tr><th class="px-3 py-2">Column</th><th class="px-3 py-2">Type</th></tr>
+									</thead>
+									<tbody>
+										{#each inspectionColumns as column (String(column.name ?? column.field ?? column.id))}
+											<tr class="border-t">
+												<td class="px-3 py-2 font-mono text-xs"
+													>{value(column.name, column.field, column.id)}</td
+												>
+												<td class="px-3 py-2"
+													>{value(column.type, column.dataType, column.data_type)}</td
+												>
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
+						{/if}
+
+						{#if inspectionRows.length > 0}
+							<div class="overflow-auto rounded-lg border">
+								<table class="w-full text-sm">
+									<thead class="bg-slate-50 text-left text-xs text-slate-500 uppercase">
+										<tr>
+											{#each inspectionRowKeys as key (key)}<th class="px-3 py-2">{key}</th>{/each}
+										</tr>
+									</thead>
+									<tbody>
+										{#each inspectionRows as row, rowIndex (`row-${rowIndex}`)}
+											<tr class="border-t">
+												{#each inspectionRowKeys as key (key)}
+													<td class="px-3 py-2 font-mono text-xs whitespace-nowrap"
+														>{rowValue(row, key)}</td
+													>
+												{/each}
+											</tr>
+										{/each}
+									</tbody>
+								</table>
+							</div>
+						{:else}
+							<p class="rounded-lg border border-dashed p-4 text-sm text-slate-500">
+								No sample rows were returned for this preview.
+							</p>
+						{/if}
 					</div>
 				{/if}
 			</Card.Content>

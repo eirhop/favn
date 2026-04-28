@@ -42,6 +42,10 @@ defmodule Favn.SQL.Adapter do
   @callback list_relations(conn(), binary() | nil, opts()) ::
               {:ok, [Relation.t()]} | {:error, Error.t()}
   @callback columns(conn(), RelationRef.t(), opts()) :: {:ok, [Column.t()]} | {:error, Error.t()}
+  @callback row_count(conn(), RelationRef.t(), opts()) ::
+              {:ok, non_neg_integer()} | {:error, Error.t()}
+  @callback sample(conn(), RelationRef.t(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
+  @callback table_metadata(conn(), RelationRef.t(), opts()) :: {:ok, map()} | {:error, Error.t()}
 
   @callback transaction(conn(), (conn() -> {:ok, term()} | {:error, Error.t()}), opts()) ::
               {:ok, term()} | {:error, Error.t()}
@@ -56,6 +60,9 @@ defmodule Favn.SQL.Adapter do
     list_schemas: 2,
     list_relations: 3,
     columns: 3,
+    row_count: 3,
+    sample: 3,
+    table_metadata: 3,
     default_concurrency_policy: 1,
     transaction: 3,
     materialize: 3

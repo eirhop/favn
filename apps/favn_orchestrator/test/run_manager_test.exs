@@ -32,6 +32,9 @@ defmodule FavnOrchestrator.RunManagerTest do
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
 
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
     defp asset_result(execution_id, status) do
       ref = execution_ref(execution_id)
 
@@ -102,6 +105,9 @@ defmodule FavnOrchestrator.RunManagerTest do
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
 
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
     defp asset_result(execution_id, status, error) do
       ref = execution_ref(execution_id)
 
@@ -164,6 +170,9 @@ defmodule FavnOrchestrator.RunManagerTest do
       Agent.update(cancel_log, fn values -> [{execution_id, reason} | values] end)
       :ok
     end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
 
     defp asset_result(execution_id, status) do
       ref = execution_ref(execution_id)
@@ -241,6 +250,9 @@ defmodule FavnOrchestrator.RunManagerTest do
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
 
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
     defp asset_result(execution_id, status, error) do
       ref = execution_ref(execution_id)
 
@@ -294,6 +306,9 @@ defmodule FavnOrchestrator.RunManagerTest do
       :ok
     end
 
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
     defp execution_id(work) do
       {module, name} = work.asset_ref
       "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
@@ -331,6 +346,9 @@ defmodule FavnOrchestrator.RunManagerTest do
       Agent.update(cancel_log, fn values -> [{execution_id, reason} | values] end)
       :ok
     end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
 
     defp asset_result(execution_id, status) do
       ref = execution_ref(execution_id)
@@ -382,6 +400,9 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
 
     defp asset_result(execution_id, status) do
       ref = execution_ref(execution_id)
@@ -450,6 +471,9 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
 
     defp asset_result(execution_id, status, error) do
       ref = execution_ref(execution_id)

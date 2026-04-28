@@ -5,9 +5,11 @@ defmodule FavnRunner.Server do
 
   use GenServer
 
+  alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias FavnRunner.Inspection
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestStore
   alias FavnRunner.Worker
@@ -74,6 +76,13 @@ defmodule FavnRunner.Server do
   end
 
   def cancel_work(_execution_id, _reason, _opts), do: {:error, :invalid_cancel_args}
+
+  @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::
+          {:ok, term()} | {:error, term()}
+  def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:inspect_relation, request}, Keyword.get(opts, :timeout, 15_000))
+  end
 
   @impl true
   def init(_args) do
@@ -156,6 +165,18 @@ defmodule FavnRunner.Server do
       :error ->
         {:reply, {:error, :execution_not_found}, state}
     end
+  end
+
+  def handle_call({:inspect_relation, %RelationInspectionRequest{} = request}, _from, state) do
+    reply =
+      with {:ok, version} <-
+             ManifestStore.fetch(request.manifest_version_id, request.manifest_content_hash,
+               server: FavnRunner.ManifestStore
+             ) do
+        Inspection.inspect_relation(request, version)
+      end
+
+    {:reply, reply, state}
   end
 
   @impl true

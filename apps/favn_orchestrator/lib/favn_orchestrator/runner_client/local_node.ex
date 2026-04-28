@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
 
   @behaviour Favn.Contracts.RunnerClient
 
+  alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -38,6 +40,13 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   def cancel_work(execution_id, reason \\ %{}, opts \\ [])
       when is_binary(execution_id) and is_map(reason) and is_list(opts) do
     dispatch(opts, :cancel_work, [execution_id, reason, opts])
+  end
+
+  @impl true
+  @spec inspect_relation(RelationInspectionRequest.t(), [opt()]) ::
+          {:ok, RelationInspectionResult.t()} | {:error, term()}
+  def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
+    dispatch(opts, :inspect_relation, [request, opts])
   end
 
   defp dispatch(opts, function, args)

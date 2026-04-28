@@ -3,6 +3,8 @@ defmodule FavnOrchestrator do
   Orchestrator control-plane facade for manifest-pinned run submission.
   """
 
+  alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias Favn.Window.Policy
@@ -28,6 +30,13 @@ defmodule FavnOrchestrator do
   @type manifest_target_option :: %{
           required(:target_id) => String.t(),
           required(:label) => String.t(),
+          optional(:asset_ref) => String.t(),
+          optional(:type) => String.t(),
+          optional(:relation) => map() | nil,
+          optional(:metadata) => map(),
+          optional(:runtime_config) => map(),
+          optional(:depends_on) => [String.t()],
+          optional(:materialization) => map() | nil,
           optional(:window) => map() | nil
         }
 
@@ -177,6 +186,28 @@ defmodule FavnOrchestrator do
   def submit_pipeline_run(pipeline_module, opts)
       when is_atom(pipeline_module) and is_list(opts) do
     RunManager.submit_pipeline_module_run(pipeline_module, opts)
+  end
+
+  @doc """
+  Inspects one manifest-owned asset relation through the configured runner boundary.
+  """
+  @spec inspect_manifest_asset(String.t(), String.t(), keyword()) ::
+          {:ok, term()} | {:error, term()}
+  def inspect_manifest_asset(manifest_version_id, target_id, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, asset_ref} <- resolve_asset_target_ref(version, target_id),
+         :ok <- validate_runner_client(configured_runner_client()),
+         :ok <- configured_runner_client().register_manifest(version, configured_runner_opts()) do
+      request = %RelationInspectionRequest{
+        manifest_version_id: manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: asset_ref,
+        sample_limit: Keyword.get(opts, :sample_limit, 20)
+      }
+
+      configured_runner_client().inspect_relation(request, configured_runner_opts())
+    end
   end
 
   @doc """
@@ -435,7 +466,15 @@ defmodule FavnOrchestrator do
 
       %{
         target_id: target_id_for_asset(target_ref),
-        label: inspect(target_ref)
+        label: inspect(target_ref),
+        asset_ref: ref_to_string(target_ref),
+        type: atom_name(asset.type),
+        relation: relation_dto(asset.relation),
+        metadata: normalize_map(asset.metadata),
+        runtime_config: normalize_data(asset.runtime_config),
+        depends_on: Enum.map(List.wrap(asset.depends_on), &ref_to_string/1),
+        materialization: normalize_data(asset.materialization),
+        window: normalize_data(asset.window)
       }
     end)
     |> Enum.sort_by(& &1.label)
@@ -473,6 +512,46 @@ defmodule FavnOrchestrator do
     |> window_policy_dto()
   end
 
+  defp relation_dto(nil), do: nil
+
+  defp relation_dto(relation) do
+    case Favn.RelationRef.new!(relation) do
+      ref ->
+        %{
+          connection: atom_name(ref.connection),
+          catalog: ref.catalog,
+          schema: ref.schema,
+          name: ref.name
+        }
+    end
+  rescue
+    ArgumentError -> normalize_data(relation)
+  end
+
+  defp normalize_map(value) when is_map(value), do: value
+  defp normalize_map(_value), do: %{}
+
+  defp normalize_data(%Favn.RuntimeConfig.Ref{} = ref) do
+    %{
+      provider: atom_name(ref.provider),
+      key: ref.key,
+      secret: ref.secret?,
+      required: ref.required?
+    }
+  end
+
+  defp normalize_data(value) when is_map(value) do
+    value
+    |> Enum.map(fn {key, val} -> {to_string(key), normalize_data(val)} end)
+    |> Map.new()
+  end
+
+  defp normalize_data(value) when is_list(value), do: Enum.map(value, &normalize_data/1)
+  defp normalize_data({module, name}), do: ref_to_string({module, name})
+  defp normalize_data(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp normalize_data(value) when is_atom(value), do: atom_name(value)
+  defp normalize_data(value), do: value
+
   defp resolve_asset_target_ref(%Version{} = version, target_id) when is_binary(target_id) do
     case Enum.find(
            List.wrap(version.manifest.assets),
@@ -501,6 +580,38 @@ defmodule FavnOrchestrator do
   defp target_id_for_pipeline(module) when is_atom(module) do
     "pipeline:" <> Atom.to_string(module)
   end
+
+  defp configured_runner_client do
+    Application.get_env(:favn_orchestrator, :runner_client, nil)
+  end
+
+  defp configured_runner_opts do
+    Application.get_env(:favn_orchestrator, :runner_client_opts, [])
+  end
+
+  defp validate_runner_client(module) when is_atom(module) do
+    callbacks = RunnerClient.behaviour_info(:callbacks)
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <-
+           Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end) do
+      :ok
+    else
+      _ -> {:error, :runner_client_not_available}
+    end
+  end
+
+  defp validate_runner_client(_module), do: {:error, :runner_client_not_available}
+
+  defp ref_to_string({module, name}) when is_atom(module) and is_atom(name) do
+    Atom.to_string(module) <> ":" <> Atom.to_string(name)
+  end
+
+  defp ref_to_string(value), do: inspect(value)
+
+  defp atom_name(nil), do: nil
+  defp atom_name(value) when is_atom(value), do: Atom.to_string(value)
+  defp atom_name(value), do: to_string(value)
 
   defp list_count(value) when is_list(value), do: length(value)
   defp list_count(_value), do: 0

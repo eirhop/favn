@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
     def submit_work(_work, _opts), do: {:ok, "exec_1"}
     def await_result(_execution_id, _timeout, _opts), do: {:ok, %RunnerResult{status: :ok}}
     def cancel_work(_execution_id, _reason, _opts), do: :ok
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
   end
 
   test "dispatches runner calls to configured runner module" do
@@ -39,6 +40,9 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
     assert {:ok, "exec_1"} = LocalNode.submit_work(work, opts)
     assert {:ok, %RunnerResult{status: :ok}} = LocalNode.await_result("exec_1", 1_000, opts)
     assert :ok = LocalNode.cancel_work("exec_1", %{}, opts)
+
+    assert {:error, :not_supported} =
+             LocalNode.inspect_relation(%Favn.Contracts.RelationInspectionRequest{}, opts)
   end
 
   test "returns error when runner module is missing" do

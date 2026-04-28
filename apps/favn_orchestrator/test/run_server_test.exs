@@ -38,6 +38,9 @@ defmodule FavnOrchestrator.RunServerTest do
 
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
   end
 
   setup do

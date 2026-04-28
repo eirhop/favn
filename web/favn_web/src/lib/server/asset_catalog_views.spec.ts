@@ -280,6 +280,80 @@ describe('asset catalog view normalizers', () => {
 		expect(detail!.capabilityNotes.map((note) => note.key)).toContain('asset_only_runs');
 	});
 
+	it('normalizes target relation data and latest asset result materialization metadata', () => {
+		const detail = normalizeAssetCatalogDetail(
+			{
+				data: {
+					manifest: { manifest_version_id: 'mfv_active', content_hash: 'sha256:active' },
+					targets: {
+						assets: [
+							{
+								target_id: 'asset:Elixir.FavnDemo.Gold.OrderSummary:asset',
+								asset_ref: 'Elixir.FavnDemo.Gold.OrderSummary:asset',
+								type: 'asset',
+								relation: { connection: 'warehouse', schema: 'gold', name: 'order_summary' },
+								materialization: 'table',
+								window: { kind: 'day' },
+								metadata: { owner: 'analytics' },
+								runtime_config: {
+									warehouse: { provider: 'env', key: 'WAREHOUSE_TOKEN', secret: true }
+								}
+							}
+						],
+						pipelines: []
+					}
+				}
+			},
+			{
+				data: {
+					items: [
+						{
+							id: 'run_materialized',
+							status: 'ok',
+							started_at: '2026-04-27T11:00:00Z',
+							finished_at: '2026-04-27T11:01:00Z',
+							target_refs: ['asset:Elixir.FavnDemo.Gold.OrderSummary:asset'],
+							asset_results: [
+								{
+									target_id: 'asset:Elixir.FavnDemo.Gold.OrderSummary:asset',
+									metadata: {
+										rows_written: 12,
+										rows_affected: 14,
+										loaded_at: '2026-04-27T11:01:01Z',
+										materialized_at: '2026-04-27T11:01:02Z',
+										relation: 'gold.order_summary'
+									},
+									window: { kind: 'day', value: '2026-04-27' }
+								}
+							]
+						}
+					]
+				}
+			},
+			'asset:Elixir.FavnDemo.Gold.OrderSummary:asset'
+		);
+
+		expect(detail?.asset.relation).toEqual({
+			connection: 'warehouse',
+			schema: 'gold',
+			name: 'order_summary'
+		});
+		expect(detail?.asset.runtimeConfig).toEqual([
+			expect.objectContaining({ path: 'warehouse', key: 'WAREHOUSE_TOKEN', secret: true })
+		]);
+		expect(detail?.asset.latestMaterialization).toEqual(
+			expect.objectContaining({
+				relation: 'gold.order_summary',
+				materialization: 'table',
+				rowsWritten: 12,
+				rowsAffected: 14,
+				loadedAt: '2026-04-27T11:01:01Z',
+				materializedAt: '2026-04-27T11:01:02Z',
+				window: { kind: 'day', value: '2026-04-27' }
+			})
+		);
+	});
+
 	it('filters by status, domain, kind, and text', () => {
 		const catalog = normalizeAssetCatalogList(activeManifestPayload, runsPayload);
 

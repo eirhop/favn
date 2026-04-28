@@ -154,6 +154,7 @@ Notes:
   - `apps/favn_core/test/contracts/runner_client_test.exs`
   - `apps/favn_core/test/manifest/index_test.exs`
   - `apps/favn_core/test/manifest/pipeline_resolver_test.exs`
+- Safe local inspection coverage currently extends the runner client contract lock, orchestrator API router tests for manifest target/run-detail/inspection payloads, DuckDB adapter tests for row count/sample behavior, and web asset catalog normalization/unit coverage.
 - Initial Phase 5 orchestrator runtime tests now include:
   - `apps/favn_orchestrator/test/integration/storage_adapter_contract_test.exs`
   - `apps/favn_orchestrator/test/storage/manifest_codec_test.exs`

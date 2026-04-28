@@ -7,7 +7,9 @@ defmodule FavnOrchestrator.API.Router do
 
   require Logger
 
+  alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest.Version
+  alias Favn.Run.AssetResult
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
@@ -244,6 +246,55 @@ defmodule FavnOrchestrator.API.Router do
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
       {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  get "/api/orchestrator/v1/manifests/:manifest_version_id/assets/:target_id/inspection" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
+         {:ok, sample_limit} <- inspection_sample_limit(conn.params),
+         {:ok, result} <-
+           FavnOrchestrator.inspect_manifest_asset(manifest_version_id, target_id,
+             sample_limit: sample_limit
+           ) do
+      data(conn, 200, %{inspection: inspection_result_dto(result)})
+    else
+      {:error, :manifest_version_not_found} ->
+        error(conn, 404, "not_found", "Manifest version was not found")
+
+      {:error, :invalid_asset_target} ->
+        error(conn, 404, "not_found", "Asset target was not found")
+
+      {:error, reason}
+      when reason in [
+             :asset_not_found,
+             :asset_relation_not_found,
+             :relation_connection_missing,
+             :invalid_relation,
+             :invalid_inspection_target
+           ] ->
+        error(conn, 422, "validation_failed", "Asset relation is not inspectable", %{
+          reason: atom_name(reason)
+        })
+
+      {:error, :invalid_sample_limit} ->
+        error(conn, 422, "validation_failed", "Invalid sample limit")
+
+      {:error, :runner_client_not_available} ->
+        error(conn, 503, "service_unavailable", "Runner inspection is not available")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, reason} ->
+        Logger.error("inspection failed: #{inspect(reason)}")
         error(conn, 400, "bad_request", "Request failed")
     end
   end
@@ -1077,6 +1128,23 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_int_opt(opts, _key, _value), do: opts
 
+  defp inspection_sample_limit(params) when is_map(params) do
+    value = Map.get(params, "sample_limit") || Map.get(params, "limit") || "20"
+
+    case value do
+      int when is_integer(int) and int >= 0 -> {:ok, min(int, 20)}
+      value when is_binary(value) -> parse_sample_limit(value)
+      _ -> {:error, :invalid_sample_limit}
+    end
+  end
+
+  defp parse_sample_limit(value) do
+    case Integer.parse(value) do
+      {int, ""} when int >= 0 -> {:ok, min(int, 20)}
+      _ -> {:error, :invalid_sample_limit}
+    end
+  end
+
   defp data(conn, status, payload) do
     body = Jason.encode!(%{data: payload})
 
@@ -1293,8 +1361,58 @@ defmodule FavnOrchestrator.API.Router do
       parent_run_id: run.parent_run_id,
       root_run_id: run.root_run_id,
       target_refs: Enum.map(List.wrap(run.target_refs), &ref_to_string/1),
+      params: normalize_data(run.params),
+      trigger: normalize_data(run.trigger),
+      metadata: normalize_data(run.metadata),
+      result: normalize_data(run.result),
+      pipeline: normalize_data(run.pipeline),
+      pipeline_context: normalize_data(run.pipeline_context),
+      asset_results: asset_results_dto(run.asset_results),
+      node_results: node_results_dto(run.node_results),
       error: inspect_term(run.error)
     }
+  end
+
+  defp asset_results_dto(results) when is_map(results) do
+    results
+    |> Map.values()
+    |> Enum.map(&asset_result_dto/1)
+    |> Enum.sort_by(&{&1.stage || 0, &1.asset_ref || ""})
+  end
+
+  defp asset_result_dto(%AssetResult{} = result) do
+    %{
+      asset_ref: ref_to_string(result.ref),
+      stage: result.stage,
+      status: atom_name(result.status),
+      started_at: datetime(result.started_at),
+      finished_at: datetime(result.finished_at),
+      duration_ms: result.duration_ms,
+      meta: normalize_data(result.meta),
+      error: normalize_data(result.error),
+      attempt_count: result.attempt_count,
+      max_attempts: result.max_attempts,
+      attempts: normalize_data(result.attempts),
+      next_retry_at: datetime(result.next_retry_at)
+    }
+  end
+
+  defp asset_result_dto(result) when is_map(result) do
+    result
+    |> normalize_data()
+    |> Map.put_new("asset_ref", ref_to_string(Map.get(result, :ref) || Map.get(result, "ref")))
+  end
+
+  defp asset_result_dto(result), do: %{asset_ref: nil, error: inspect_term(result)}
+
+  defp node_results_dto(results) when is_map(results) do
+    results
+    |> Enum.map(fn {node_key, result} ->
+      %{
+        node_key: normalize_data(node_key),
+        result: asset_result_dto(result)
+      }
+    end)
   end
 
   defp run_event_dto(event) do
@@ -1314,11 +1432,70 @@ defmodule FavnOrchestrator.API.Router do
     }
   end
 
+  defp inspection_result_dto(%RelationInspectionResult{} = result) do
+    %{
+      asset_ref: ref_to_string(result.asset_ref),
+      relation_ref: relation_ref_dto(result.relation_ref),
+      relation: sql_relation_dto(result.relation),
+      columns: Enum.map(List.wrap(result.columns), &sql_column_dto/1),
+      row_count: result.row_count,
+      sample: normalize_data(result.sample),
+      table_metadata: normalize_data(result.table_metadata),
+      adapter: module_name(result.adapter),
+      inspected_at: datetime(result.inspected_at),
+      warnings: normalize_data(result.warnings),
+      error: normalize_data(result.error)
+    }
+  end
+
+  defp inspection_result_dto(result), do: normalize_data(result)
+
+  defp relation_ref_dto(nil), do: nil
+
+  defp relation_ref_dto(%Favn.RelationRef{} = ref) do
+    %{
+      connection: atom_name(ref.connection),
+      catalog: ref.catalog,
+      schema: ref.schema,
+      name: ref.name
+    }
+  end
+
+  defp sql_relation_dto(nil), do: nil
+
+  defp sql_relation_dto(%{__struct__: _struct} = relation) do
+    %{
+      catalog: Map.get(relation, :catalog),
+      schema: Map.get(relation, :schema),
+      name: Map.get(relation, :name),
+      type: atom_name(Map.get(relation, :type)),
+      metadata: normalize_data(Map.get(relation, :metadata, %{}))
+    }
+  end
+
+  defp sql_relation_dto(relation), do: normalize_data(relation)
+
+  defp sql_column_dto(%{__struct__: _struct} = column) do
+    %{
+      name: Map.get(column, :name),
+      position: Map.get(column, :position),
+      data_type: Map.get(column, :data_type),
+      nullable: Map.get(column, :nullable?),
+      default: normalize_data(Map.get(column, :default)),
+      comment: Map.get(column, :comment),
+      metadata: normalize_data(Map.get(column, :metadata, %{}))
+    }
+  end
+
+  defp sql_column_dto(column), do: normalize_data(column)
+
   defp audit_dto(entry) do
     entry
     |> normalize_data()
     |> Map.update(:occurred_at, nil, &datetime/1)
   end
+
+  defp normalize_data(%AssetResult{} = value), do: asset_result_dto(value)
 
   defp normalize_data(value) when is_map(value) do
     value

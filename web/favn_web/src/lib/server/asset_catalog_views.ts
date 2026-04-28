@@ -6,6 +6,7 @@ import type {
 	AssetCatalogListView,
 	AssetCatalogRunAction,
 	AssetCatalogRunSummary,
+	AssetMaterializationSummary,
 	AssetHealth
 } from '$lib/asset_catalog_types';
 import type { RunStatus } from '$lib/run_view_types';
@@ -26,6 +27,14 @@ function asString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function firstNumber(record: JsonRecord, keys: string[]): number | null {
+	for (const key of keys) {
+		const value = asNumber(record[key]);
+		if (value !== null) return value;
+	}
+	return null;
 }
 
 function firstString(record: JsonRecord, keys: string[]): string | null {
@@ -271,6 +280,11 @@ function normalizeTargetRecord(target: unknown, index: number): AssetCatalogItem
 			'hash'
 		]),
 		runtimeConfig: normalizeRuntimeConfig(runtimeConfigSource(record)),
+		relation: record.relation ?? null,
+		materialization: record.materialization ?? null,
+		window: record.window ?? null,
+		metadata: record.metadata ?? null,
+		latestMaterialization: null,
 		runActions: [],
 		rawTarget: safeRawTarget(target)
 	};
@@ -421,6 +435,83 @@ function runTimestamp(run: AssetCatalogRunSummary): number {
 	return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function resultList(record: JsonRecord, keys: string[]): JsonRecord[] {
+	for (const key of keys) {
+		const value = record[key];
+		if (Array.isArray(value)) return value.filter(isRecord);
+		if (isRecord(value)) return Object.values(value).filter(isRecord);
+	}
+	return [];
+}
+
+function assetResultForRun(
+	run: AssetCatalogRunSummary,
+	asset: AssetCatalogItem
+): JsonRecord | null {
+	if (!isRecord(run.raw)) return null;
+	const candidates = resultList(run.raw, [
+		'asset_results',
+		'assetResults',
+		'node_results',
+		'nodeResults'
+	]);
+	return candidates.find((candidate) => runMatchesAsset(candidate, asset)) ?? null;
+}
+
+function materializationMetadata(
+	result: JsonRecord,
+	run: AssetCatalogRunSummary
+): JsonRecord | null {
+	if (isRecord(result.metadata)) return result.metadata;
+	if (isRecord(result.result) && isRecord(result.result.metadata)) return result.result.metadata;
+	if (isRecord(run.raw) && isRecord(run.raw.metadata)) return run.raw.metadata;
+	if (isRecord(run.raw) && isRecord(run.raw.result) && isRecord(run.raw.result.metadata)) {
+		return run.raw.result.metadata;
+	}
+	return null;
+}
+
+function latestMaterializationForAsset(
+	runs: AssetCatalogRunSummary[],
+	asset: AssetCatalogItem
+): AssetMaterializationSummary | null {
+	for (const run of runs) {
+		const result = assetResultForRun(run, asset);
+		if (!result) continue;
+
+		const metadata = materializationMetadata(result, run);
+		const resultPayload = isRecord(result.result) ? result.result : null;
+		const runRaw = isRecord(run.raw) ? run.raw : null;
+
+		return {
+			relation: result.relation ?? metadata?.relation ?? asset.relation ?? null,
+			materialization:
+				result.materialization ?? metadata?.materialization ?? asset.materialization ?? null,
+			rowsWritten: metadata
+				? firstNumber(metadata, ['rows_written', 'rowsWritten', 'written_rows', 'writtenRows'])
+				: null,
+			rowsAffected: metadata
+				? firstNumber(metadata, ['rows_affected', 'rowsAffected', 'affected_rows', 'affectedRows'])
+				: null,
+			loadedAt: metadata
+				? firstString(metadata, ['loaded_at', 'loadedAt', 'load_timestamp', 'loadTimestamp'])
+				: null,
+			materializedAt: metadata
+				? firstString(metadata, [
+						'materialized_at',
+						'materializedAt',
+						'materialization_at',
+						'materializationAt'
+					])
+				: null,
+			window: result.window ?? resultPayload?.window ?? runRaw?.window ?? asset.window ?? null,
+			metadata
+		};
+	}
+
+	return null;
+}
+
 function recentRunsForAsset(
 	runsPayload: unknown,
 	asset: AssetCatalogItem
@@ -469,6 +560,7 @@ export function normalizeAssetCatalogList(
 			...asset,
 			health: healthFromRun(lastRun),
 			lastRun,
+			latestMaterialization: latestMaterializationForAsset(runs, asset),
 			runsCount: runs.length,
 			manifestVersionId: asset.manifestVersionId ?? versionId,
 			manifestContentHash: asset.manifestContentHash ?? contentHash,
@@ -559,7 +651,8 @@ export function normalizeAssetCatalogDetail(
 		asset: {
 			...asset,
 			lastRun: recentRuns[0] ?? asset.lastRun,
-			health: healthFromRun(recentRuns[0] ?? asset.lastRun)
+			health: healthFromRun(recentRuns[0] ?? asset.lastRun),
+			latestMaterialization: latestMaterializationForAsset(recentRuns, asset)
 		},
 		overview: [
 			{ label: 'Ref', value: asset.ref },
