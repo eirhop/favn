@@ -54,6 +54,23 @@ defmodule Favn.Connection do
   backends, and `write_concurrency: :unlimited` for backends that safely support
   parallel writes.
 
+  DuckDB connections that need DuckLake session setup can include the DuckDB-owned
+  bootstrap schema field:
+
+      %Favn.Connection.Definition{
+        name: :warehouse,
+        adapter: Favn.SQL.Adapter.DuckDB,
+        config_schema: [
+          %{key: :database, required: true, type: :path},
+          Favn.SQL.Adapter.DuckDB.bootstrap_schema_field()
+        ]
+      }
+
+  Runtime config can then provide `:duckdb_bootstrap` for extension install/load,
+  Azure credential-chain secret creation, DuckLake attach, and catalog selection.
+  `Favn.RuntimeConfig.Ref.secret_env!/1` values inside nested bootstrap config are
+  resolved before adapter connection and redacted from diagnostics.
+
   ## Runtime Environment Values
 
       config :favn,

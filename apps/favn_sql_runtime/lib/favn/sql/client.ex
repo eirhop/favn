@@ -198,13 +198,34 @@ defmodule Favn.SQL.Client do
   defp connect_and_build_session(%Resolved{} = resolved, adapter_opts, concurrency_policy, lease) do
     case resolved.adapter.connect(resolved, adapter_opts) do
       {:ok, conn} ->
-        build_session_with_capabilities(resolved, adapter_opts, concurrency_policy, lease, conn)
+        bootstrap_and_build_session(resolved, adapter_opts, concurrency_policy, lease, conn)
 
       {:error, _reason} = error ->
         release_lease_and_return(error, lease)
 
       other ->
         release_lease_and_return(other, lease)
+    end
+  end
+
+  defp bootstrap_and_build_session(resolved, adapter_opts, concurrency_policy, lease, conn) do
+    case bootstrap_connection(resolved, conn, adapter_opts) do
+      :ok ->
+        build_session_with_capabilities(resolved, adapter_opts, concurrency_policy, lease, conn)
+
+      {:error, _reason} = error ->
+        disconnect_after_connect_error(resolved.adapter, conn, lease, error)
+
+      other ->
+        disconnect_after_connect_error(resolved.adapter, conn, lease, other)
+    end
+  end
+
+  defp bootstrap_connection(%Resolved{adapter: adapter} = resolved, conn, adapter_opts) do
+    if function_exported?(adapter, :bootstrap, 3) do
+      adapter.bootstrap(conn, resolved, adapter_opts)
+    else
+      :ok
     end
   end
 

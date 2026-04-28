@@ -56,6 +56,7 @@ development on top of the new boundaries.
 - local runtime workflow support for authoring, inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
+- DuckDB connection bootstrap for DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckLake attach, and catalog selection
 
 ## Core Concepts
 
@@ -244,6 +245,15 @@ local sessions and materializations do not run unsafe concurrent catalog writes
 against the same database file. Backends that support parallel writes can opt out
 with `write_concurrency: :unlimited` in their runtime connection config, while
 local DuckDB files can keep the default or set `write_concurrency: 1` explicitly.
+
+DuckDB connections can also declare `duckdb_bootstrap` runtime config when a
+session needs setup before SQLClient or SQL asset execution. This is the
+recommended path for local DuckLake dogfooding with Azure Data Lake Storage and a
+PostgreSQL metadata catalog. Add `Favn.SQL.Adapter.DuckDB.bootstrap_schema_field/0`
+to the connection module schema, then configure extension install/load, Azure
+credential-chain secret creation, DuckLake attach, and `USE` under the named
+connection. Secret runtime refs are resolved on the runner side and redacted from
+diagnostics.
 
 ## Local Development
 

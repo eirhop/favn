@@ -11,6 +11,7 @@ Top-level product docs:
 - `docs/FEATURES.md` for implemented capabilities
 - `docs/FEATURE_AUDIT_TASKLIST.md` for the current feature audit work breakdown
 - `docs/ROADMAP.md` for planned work
+- `docs/DUCKLAKE_CONNECTION_BOOTSTRAP_PLAN.md` for issue 170 implementation planning
 
 Consumer examples:
 
@@ -252,6 +253,7 @@ Notes:
 - Runner-owned SQL asset execution modules remain under `apps/favn_runner/lib/favn/sql/` and `apps/favn_runner/lib/favn/sql_asset/`.
 - Phase 7 implementation now moves DuckDB ownership into `apps/favn_duckdb/lib/` including:
   - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb.ex`
+  - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/bootstrap.ex`
   - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/client.ex`
   - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/client/duckdbex.ex`
   - `apps/favn_duckdb/lib/favn/sql/adapter/duckdb/error_mapper.ex`
