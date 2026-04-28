@@ -752,7 +752,7 @@ Test strategy follow-up:
 Post-v0.5 local-tooling follow-up ideas:
 
 - watch mode / auto-reload
-- doctor / environment validation
+- broader environment validation beyond the current local setup doctor
 - clean/reset local state
 - log tail helpers
 - restart single service

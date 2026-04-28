@@ -37,7 +37,7 @@ development on top of the new boundaries.
 
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
-- local development tooling is available today through `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
 - the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, and submitting the current orchestrator asset run path
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
@@ -235,6 +235,9 @@ local DuckDB files can keep the default or set `write_concurrency: 1` explicitly
 Favn includes a local developer loop for running the current project with the Favn runtime stack.
 
 ```bash
+mix favn.init --duckdb --sample
+mix deps.get
+mix favn.doctor
 mix favn.install
 mix favn.dev
 mix favn.run MyApp.Pipelines.DailySales
@@ -248,6 +251,33 @@ mix favn.read_doc Favn generate_manifest
 ```
 
 This is now the stable public entrypoint for local iteration on the refactored architecture.
+
+For a fresh standalone Mix consumer project with local path dependencies back to
+this checkout, `mix favn.init --duckdb --sample` generates the first dogfooding
+path: a DuckDB connection module, raw and gold namespace modules, one Elixir raw
+load asset, one SQL business output asset, a `deps(:all)` pipeline, local Favn
+config, and `.env.example` web-login credentials. The task also adds a local
+`favn_duckdb` path dependency when it can recognize the project's `defp deps/0`
+shape. Rerun `mix deps.get`, then use `mix favn.doctor` before starting the
+stack.
+
+The generated pipeline is `MyApp.Pipelines.LocalSmoke` for a project whose OTP
+app is `:my_app`:
+
+```bash
+mix favn.install
+mix favn.dev
+mix favn.run MyApp.Pipelines.LocalSmoke --wait
+```
+
+After the run, inspect `/runs` and `/assets` in the local web UI. The generated
+DuckDB output can also be queried from the consumer project:
+
+```elixir
+{:ok, session} = Favn.SQLClient.connect(:warehouse)
+{:ok, result} = Favn.SQLClient.query(session, "select * from gold.order_summary")
+:ok = Favn.SQLClient.disconnect(session)
+```
 
 `mix favn.dev` starts with the local scheduler disabled by default. This keeps
 one-time local ETL and DuckDB-backed dogfooding on the manual path unless you
