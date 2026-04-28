@@ -128,6 +128,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
 
@@ -290,6 +293,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -306,6 +312,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -327,6 +336,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -346,6 +358,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -393,6 +408,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -421,6 +439,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :invalid_manifest_selection} ->
         error(conn, 422, "validation_failed", "Invalid manifest selection")
+
+      {:error, :invalid_dependencies} ->
+        error(conn, 422, "validation_failed", "Invalid dependency mode")
 
       {:error, :invalid_asset_target} ->
         error(conn, 422, "validation_failed", "Invalid asset target id")
@@ -942,17 +963,32 @@ defmodule FavnOrchestrator.API.Router do
 
   defp submit_run_from_request(params) do
     with {:ok, target} <- fetch_target(params),
-         {:ok, manifest_version_id} <- select_manifest_version(params) do
+         {:ok, manifest_version_id} <- select_manifest_version(params),
+         {:ok, dependencies} <- fetch_dependencies(params) do
       case target do
         %{type: "asset", id: target_id} ->
-          FavnOrchestrator.submit_asset_run_for_manifest(manifest_version_id, target_id)
+          FavnOrchestrator.submit_asset_run_for_manifest(manifest_version_id, target_id,
+            dependencies: dependencies
+          )
 
         %{type: "pipeline", id: target_id} ->
-          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id)
+          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id,
+            dependencies: dependencies
+          )
 
         _ ->
           {:error, :invalid_target}
       end
+    end
+  end
+
+  defp fetch_dependencies(params) when is_map(params) do
+    case Map.get(params, "dependencies", "all") do
+      "all" -> {:ok, :all}
+      "none" -> {:ok, :none}
+      :all -> {:ok, :all}
+      :none -> {:ok, :none}
+      _other -> {:error, :invalid_dependencies}
     end
   end
 

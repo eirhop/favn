@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   import Plug.Conn
   import Plug.Test
 
+  alias Favn.Contracts.RunnerResult
   alias Favn.Manifest
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
@@ -18,14 +19,36 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   @opts Router.init([])
 
+  defmodule RunnerClientStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      {:ok, %RunnerResult{status: :ok, asset_results: [], metadata: %{}}}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+  end
+
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_client_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
     previous_username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)
     previous_password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
     previous_display = Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name)
     previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, ["test-service-token"])
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Admin User")
@@ -38,6 +61,8 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     on_exit(fn ->
       restore_env(:favn_orchestrator, :api_service_tokens, previous_tokens)
+      restore_env(:favn_orchestrator, :runner_client, previous_client)
+      restore_env(:favn_orchestrator, :runner_client_opts, previous_client_opts)
       restore_env(:favn_orchestrator, :auth_bootstrap_username, previous_username)
       restore_env(:favn_orchestrator, :auth_bootstrap_password, previous_password)
       restore_env(:favn_orchestrator, :auth_bootstrap_display_name, previous_display)
@@ -266,6 +291,63 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 401
     assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "read endpoints return unauthenticated for invalid forwarded actor sessions" do
+    response =
+      conn(:get, "/api/orchestrator/v1/runs")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", "actor_stale")
+      |> put_req_header("x-favn-session-id", "session_stale")
+      |> Router.call(@opts)
+
+    assert response.status == 401
+    assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission accepts explicit asset dependency mode" do
+    version = dependency_manifest_version("mv_dependency_scope")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        dependencies: "none"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 201
+    assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(response.resp_body)
+    assert {:ok, run} = FavnOrchestrator.get_run(run_id)
+    assert run.manifest_version_id == "mv_dependency_scope"
+    assert run.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
+  end
+
+  test "run submission rejects invalid dependency mode" do
+    version = dependency_manifest_version("mv_invalid_dependency_scope")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        dependencies: "downstream"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+    assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
   end
 
   test "service token can cancel run without actor headers" do
@@ -574,6 +656,27 @@ defmodule FavnOrchestrator.API.RouterTest do
           outputs: [:asset],
           config: %{},
           metadata: %{}
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp dependency_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.Raw, :asset},
+          module: MyApp.Assets.Raw,
+          name: :asset
+        },
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.Gold, :asset},
+          module: MyApp.Assets.Gold,
+          name: :asset,
+          depends_on: [{MyApp.Assets.Raw, :asset}]
         }
       ]
     }

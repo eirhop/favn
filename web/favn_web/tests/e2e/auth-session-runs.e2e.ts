@@ -1,13 +1,47 @@
 import { expect, test, type Page } from '@playwright/test';
+import { createHmac } from 'node:crypto';
 
 const VALID_USERNAME = 'alice';
 const VALID_PASSWORD = 'password123';
 
 const FAVN_WEB_SESSION_COOKIE = 'favn_web_session';
 const BASE_URL = 'http://127.0.0.1:4173';
+const SESSION_SECRET = 'playwright-session-secret';
 
 function encodeSessionCookie(payload: Record<string, unknown>): string {
 	return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function signedSessionCookie(payload: Record<string, unknown>): string {
+	const encoded = encodeSessionCookie(payload);
+	const signature = createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
+	return `${encoded}.${signature}`;
+}
+
+async function addSessionCookie(page: Page, value: string): Promise<void> {
+	await page.context().addCookies([
+		{
+			name: FAVN_WEB_SESSION_COOKIE,
+			value,
+			domain: '127.0.0.1',
+			path: '/'
+		}
+	]);
+}
+
+async function hasSessionCookie(page: Page): Promise<boolean> {
+	const cookies = await page.context().cookies(BASE_URL);
+	return cookies.some((cookie) => cookie.name === FAVN_WEB_SESSION_COOKIE);
+}
+
+async function setMockActiveManifest(manifestVersionId: string): Promise<void> {
+	const response = await fetch('http://127.0.0.1:4101/__mock/active-manifest', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ manifest_version_id: manifestVersionId })
+	});
+
+	expect(response.status).toBe(200);
 }
 
 async function loginAsValidUser(page: Page) {
@@ -146,6 +180,7 @@ test.describe('auth/session/runs flow', () => {
 		await page.getByRole('button', { name: 'Run with dependencies' }).click();
 		await expect(page.getByRole('dialog')).toContainText('manifest_v2');
 		await expect(page.getByRole('dialog')).toContainText('With dependencies');
+		await setMockActiveManifest('manifest_v3');
 		await page.getByRole('button', { name: 'Submit run request' }).click();
 		await expect(page).toHaveURL(/\/assets\/Staging\.CustomerOrders%3Aasset$/);
 	});
@@ -171,24 +206,36 @@ test.describe('auth/session/runs flow', () => {
 			issued_at: '1999-12-31T00:00:00.000Z'
 		});
 
-		await page.context().addCookies([
-			{
-				name: FAVN_WEB_SESSION_COOKIE,
-				value: expiredCookie,
-				domain: '127.0.0.1',
-				path: '/'
-			}
-		]);
+		await addSessionCookie(page, expiredCookie);
 
 		await page.goto('/');
 
 		await expect(page).toHaveURL(/\/login$/);
 		await expect
 			.poll(async () => {
-				const cookies = await page.context().cookies('http://127.0.0.1:4173');
-				return cookies.some((cookie) => cookie.name === FAVN_WEB_SESSION_COOKIE);
+				return hasSessionCookie(page);
 			})
 			.toBe(false);
+	});
+
+	test('stale signed session cookie redirects /runs to /login and clears cookie', async ({
+		page
+	}) => {
+		await addSessionCookie(
+			page,
+			signedSessionCookie({
+				session_id: 'sess_stale_signed',
+				actor_id: 'actor_stale_signed',
+				provider: 'password_local',
+				expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+				issued_at: new Date().toISOString()
+			})
+		);
+
+		await page.goto('/runs');
+
+		await expect(page).toHaveURL(/\/login$/);
+		await expect.poll(() => hasSessionCookie(page)).toBe(false);
 	});
 
 	test('web BFF operator API smoke for runs, manifests, and schedules', async ({ page }) => {
@@ -216,14 +263,16 @@ test.describe('auth/session/runs flow', () => {
 
 		const submitRun = await pagePostJson(page, '/api/web/v1/runs', {
 			target: { type: 'asset', id: 'asset.orders' },
-			manifest_selection: { mode: 'active' }
+			manifest_selection: { mode: 'active' },
+			dependencies: 'none'
 		});
 		expect(submitRun.status).toBe(202);
 		expect(submitRun.body).toEqual({
 			data: expect.objectContaining({
 				run_id: 'run_submitted_001',
 				status: 'queued',
-				manifest_selection: { mode: 'active' }
+				manifest_selection: { mode: 'active' },
+				dependencies: 'none'
 			})
 		});
 
@@ -352,5 +401,31 @@ test.describe('auth/session/runs flow', () => {
 				message: 'Authentication required'
 			}
 		});
+	});
+
+	test('stale signed session cookie returns BFF 401 envelope and clears cookie', async ({
+		page
+	}) => {
+		await addSessionCookie(
+			page,
+			signedSessionCookie({
+				session_id: 'sess_stale_bff',
+				actor_id: 'actor_stale_bff',
+				provider: 'password_local',
+				expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+				issued_at: new Date().toISOString()
+			})
+		);
+
+		const response = await page.request.get(`${BASE_URL}/api/web/v1/runs`);
+
+		expect(response.status()).toBe(401);
+		expect(await response.json()).toEqual({
+			error: {
+				code: 'unauthorized',
+				message: 'Authentication required'
+			}
+		});
+		await expect.poll(() => hasSessionCookie(page)).toBe(false);
 	});
 });

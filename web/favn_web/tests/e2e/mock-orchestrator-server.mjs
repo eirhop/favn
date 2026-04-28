@@ -318,6 +318,8 @@ const MANIFESTS = [
 	{ manifest_version_id: 'manifest_v2', status: 'active' }
 ];
 
+let activeManifestVersionId = 'manifest_v2';
+
 const SCHEDULES = [
 	{ schedule_id: 'sched_001', enabled: true, target: { type: 'asset', id: 'asset.orders' } },
 	{
@@ -452,6 +454,7 @@ function handleLogin(request, response) {
 			const sessionId = `sess_${randomUUID()}`;
 			const issuedAt = new Date().toISOString();
 			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			activeManifestVersionId = 'manifest_v2';
 
 			sessions.set(sessionId, {
 				actorId,
@@ -492,6 +495,25 @@ function handleRuns(request, response) {
 	});
 }
 
+function handleMe(request, response) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	sendJson(response, 200, {
+		data: {
+			actor: {
+				actor_id: session.actorId,
+				provider: 'password_local'
+			},
+			session: {
+				session_id: session.sessionId,
+				actor_id: session.actorId,
+				provider: 'password_local'
+			}
+		}
+	});
+}
+
 function handleGetRun(request, response, runId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
@@ -519,6 +541,7 @@ function handleSubmitRun(request, response) {
 
 			const target = body.target;
 			const manifestSelection = body.manifest_selection;
+			const dependencies = body.dependencies;
 			if (
 				typeof target !== 'object' ||
 				target === null ||
@@ -532,14 +555,39 @@ function handleSubmitRun(request, response) {
 				return;
 			}
 
+			if (dependencies !== undefined && dependencies !== 'all' && dependencies !== 'none') {
+				sendJson(response, 422, {
+					error: { message: 'Expected dependencies all or none' }
+				});
+				return;
+			}
+
+			const validManifestSelection =
+				typeof manifestSelection === 'object' &&
+				manifestSelection !== null &&
+				!Array.isArray(manifestSelection) &&
+				(manifestSelection.mode === 'active' ||
+					(manifestSelection.mode === 'version' &&
+						typeof manifestSelection.manifest_version_id === 'string'));
+
+			if (!validManifestSelection) {
+				sendJson(response, 422, {
+					error: { message: 'Expected manifest_selection with mode active or version' }
+				});
+				return;
+			}
+
 			if (
-				typeof manifestSelection !== 'object' ||
-				manifestSelection === null ||
-				Array.isArray(manifestSelection) ||
-				manifestSelection.mode !== 'active'
+				target.id === 'asset:Staging.CustomerOrders:asset' &&
+				(dependencies !== 'all' ||
+					manifestSelection.mode !== 'version' ||
+					manifestSelection.manifest_version_id !== 'manifest_v2')
 			) {
 				sendJson(response, 422, {
-					error: { message: 'Expected manifest_selection with mode active' }
+					error: {
+						message:
+							'Expected asset detail run to pin submitted manifest_v2 and include dependencies all'
+					}
 				});
 				return;
 			}
@@ -552,7 +600,8 @@ function handleSubmitRun(request, response) {
 						type: target.type,
 						id: target.id
 					},
-					manifest_selection: manifestSelection
+					manifest_selection: manifestSelection,
+					...(dependencies ? { dependencies } : {})
 				}
 			});
 		})
@@ -599,12 +648,12 @@ function handleGetActiveManifest(request, response) {
 	sendJson(response, 200, {
 		data: {
 			manifest: {
-				manifest_version_id: 'manifest_v2',
+				manifest_version_id: activeManifestVersionId,
 				status: 'active',
-				content_hash: 'sha256:manifest-v2'
+				content_hash: `sha256:${activeManifestVersionId}`
 			},
 			targets: {
-				manifest_version_id: 'manifest_v2',
+				manifest_version_id: activeManifestVersionId,
 				assets: [
 					{ target_id: 'asset:Raw.Crm.Customers:asset', label: 'Raw.Crm.Customers:asset' },
 					{ target_id: 'asset:Raw.Crm.Orders:asset', label: 'Raw.Crm.Orders:asset' },
@@ -618,6 +667,22 @@ function handleGetActiveManifest(request, response) {
 			}
 		}
 	});
+}
+
+function handleSetActiveManifest(request, response) {
+	readJsonBody(request)
+		.then((body) => {
+			if (!body || typeof body.manifest_version_id !== 'string') {
+				sendJson(response, 422, { error: { message: 'Expected manifest_version_id' } });
+				return;
+			}
+
+			activeManifestVersionId = body.manifest_version_id;
+			sendJson(response, 200, { data: { manifest_version_id: activeManifestVersionId } });
+		})
+		.catch(() => {
+			sendJson(response, 500, { error: { message: 'Mock server error' } });
+		});
 }
 
 function handleActivateManifest(request, response, manifestVersionId) {
@@ -683,6 +748,16 @@ const server = createServer((request, response) => {
 
 	if (method === 'POST' && url.pathname === '/api/orchestrator/v1/auth/password/sessions') {
 		handleLogin(request, response);
+		return;
+	}
+
+	if (method === 'POST' && url.pathname === '/__mock/active-manifest') {
+		handleSetActiveManifest(request, response);
+		return;
+	}
+
+	if (method === 'GET' && url.pathname === '/api/orchestrator/v1/me') {
+		handleMe(request, response);
 		return;
 	}
 

@@ -275,6 +275,7 @@ Notes:
   - `web/favn_web/src/lib/utils.ts` for shared frontend utility helpers
   - `web/favn_web/src/hooks.server.ts`
   - `web/favn_web/src/lib/server/orchestrator.ts`
+  - `web/favn_web/src/lib/server/session_guard.ts`
   - `web/favn_web/src/lib/server/web_api.ts`
   - `web/favn_web/src/lib/server/session.ts`
   - `web/favn_web/src/routes/login/+page.server.ts`
