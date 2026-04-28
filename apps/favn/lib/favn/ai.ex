@@ -33,6 +33,10 @@ defmodule Favn.AI do
   - To define connection contracts, read `Favn.Connection`; if connection
     values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
+  - To configure DuckDB/DuckLake connection bootstrap for extension loading,
+    Azure credential-chain secrets, DuckLake attach, or ADLS paths, read
+    `Favn.Connection`, `Favn.RuntimeConfig.Ref`, and
+    `Favn.SQL.Adapter.DuckDB`.
   - To run SQL queries from plain Elixir code using named Favn connections, read
     `Favn.SQLClient`.
   - To compile a manifest, read `Favn generate_manifest`, then
@@ -66,6 +70,8 @@ defmodule Favn.AI do
     expansion, anchor windows, or backfill planning
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
+  - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs the
+    `bootstrap_schema_field/0` helper for DuckLake session setup
 
   ## Working Style
 

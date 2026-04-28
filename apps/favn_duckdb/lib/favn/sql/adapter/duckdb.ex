@@ -2,18 +2,69 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @moduledoc """
   DuckDB implementation of `Favn.SQL.Adapter` backed by `duckdbex`.
 
-  This module is internal to Favn runtime SQL execution and must not be exposed
-  as an external API contract.
+  Most functions in this module are internal runtime adapter callbacks. The one
+  supported authoring helper is `bootstrap_schema_field/0`, which can be used in
+  a `Favn.Connection.Definition` when a DuckDB connection needs session setup
+  before `Favn.SQLClient` or `Favn.SQLAsset` execution.
 
   Bulk ingestion paths should prefer the DuckDB Appender path for substantial
   insert workloads instead of repeated prepared inserts.
+
+  ## DuckLake bootstrap example
+
+      defmodule MyApp.Connections.Warehouse do
+        @behaviour Favn.Connection
+
+        @impl true
+        def definition do
+          %Favn.Connection.Definition{
+            name: :warehouse,
+            adapter: Favn.SQL.Adapter.DuckDB,
+            config_schema: [
+              %{key: :database, required: true, type: :path},
+              Favn.SQL.Adapter.DuckDB.bootstrap_schema_field()
+            ]
+          }
+        end
+      end
+
+      config :favn,
+        connections: [
+          warehouse: [
+            database: ":memory:",
+            write_concurrency: :unlimited,
+            duckdb_bootstrap: [
+              extensions: [
+                install: [:ducklake, :postgres, :azure],
+                load: [:ducklake, :postgres, :azure]
+              ],
+              secrets: [
+                azure_adls: [
+                  type: :azure,
+                  provider: :credential_chain,
+                  account_name: Favn.RuntimeConfig.Ref.env!("AZURE_STORAGE_ACCOUNT")
+                ]
+              ],
+              attach: [
+                name: :lake,
+                type: :ducklake,
+                metadata: Favn.RuntimeConfig.Ref.secret_env!("DUCKLAKE_POSTGRES_DSN"),
+                data_path: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_DATA_PATH")
+              ],
+              use: :lake
+            ]
+          ]
+        ]
+
+  Bootstrap failures return `Favn.SQL.Error` values with `operation: :bootstrap`,
+  the failing step id, and redacted diagnostics.
   """
 
   @behaviour Favn.SQL.Adapter
 
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
-  alias Favn.SQL.Adapter.DuckDB.{Client, ErrorMapper}
+  alias Favn.SQL.Adapter.DuckDB.{Bootstrap, Client, ErrorMapper}
   alias Favn.SQL.{Capabilities, Column, ConcurrencyPolicy, Error, Relation, Result, WritePlan}
 
   defmodule Conn do
@@ -55,6 +106,20 @@ defmodule Favn.SQL.Adapter.DuckDB do
         {:error, reason}
     end
   end
+
+  @impl true
+  @spec bootstrap(Conn.t(), Resolved.t(), opts()) :: :ok | {:error, Error.t()}
+  def bootstrap(%Conn{} = conn, %Resolved{} = resolved, opts),
+    do: Bootstrap.run(conn, resolved, opts)
+
+  @spec bootstrap_schema_field() :: Favn.Connection.Definition.field()
+  @doc """
+  Returns the connection schema field for DuckDB bootstrap runtime config.
+
+  Add this field to a `Favn.Connection.Definition.config_schema` when the named
+  DuckDB connection should accept `:duckdb_bootstrap` runtime config.
+  """
+  def bootstrap_schema_field, do: Bootstrap.schema_field()
 
   @impl true
   @spec disconnect(Conn.t(), opts()) :: :ok

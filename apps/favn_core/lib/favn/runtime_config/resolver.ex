@@ -59,6 +59,47 @@ defmodule Favn.RuntimeConfig.Resolver do
     end
   end
 
+  def resolve_value(%_{} = value, _opts), do: {:ok, value}
+
+  def resolve_value(value, opts) when is_map(value) do
+    value
+    |> Enum.reduce_while({:ok, %{}}, fn {key, child}, {:ok, acc} ->
+      case resolve_value(child, opts) do
+        {:ok, resolved} -> {:cont, {:ok, Map.put(acc, key, resolved)}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  def resolve_value(value, opts) when is_list(value) do
+    value
+    |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
+      case resolve_value(child, opts) do
+        {:ok, resolved} -> {:cont, {:ok, [resolved | acc]}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, resolved} -> {:ok, Enum.reverse(resolved)}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
+  def resolve_value(value, opts) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.reduce_while({:ok, []}, fn child, {:ok, acc} ->
+      case resolve_value(child, opts) do
+        {:ok, resolved} -> {:cont, {:ok, [resolved | acc]}}
+        {:error, %Error{} = error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, resolved} -> {:ok, resolved |> Enum.reverse() |> List.to_tuple()}
+      {:error, %Error{} = error} -> {:error, error}
+    end
+  end
+
   def resolve_value(value, _opts), do: {:ok, value}
 
   @spec present?(Ref.t()) :: boolean()

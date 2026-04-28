@@ -17,6 +17,7 @@ defmodule Favn.SQL.Adapter do
           :schema_exists | :relation | :list_schemas | :list_relations | :columns
 
   @callback connect(Resolved.t(), opts()) :: {:ok, conn()} | {:error, Error.t()}
+  @callback bootstrap(conn(), Resolved.t(), opts()) :: :ok | {:error, Error.t()}
   @callback disconnect(conn(), opts()) :: :ok | {:error, Error.t()}
 
   @callback capabilities(Resolved.t(), opts()) :: {:ok, Capabilities.t()} | {:error, Error.t()}
@@ -49,6 +50,7 @@ defmodule Favn.SQL.Adapter do
 
   @optional_callbacks [
     ping: 2,
+    bootstrap: 3,
     schema_exists?: 3,
     relation: 3,
     list_schemas: 2,

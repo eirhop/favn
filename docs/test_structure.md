@@ -202,6 +202,7 @@ Notes:
 - Phase 10 closeout added payload-codec coverage plus explicit scheduler-version expectations across the orchestrator/runtime storage suites.
 - Shared test setup used by owner apps now lives in `apps/favn_test_support/lib/favn_test_support/test_setup.ex` (`Favn.TestSetup`).
 - DuckDB plugin parity migration batch 2 expanded owner-app coverage with:
+  - `apps/favn_duckdb/test/sql/adapter/duckdb_bootstrap_test.exs` for DuckDB/DuckLake connection bootstrap statement order, diagnostics, and redaction
   - `apps/favn_duckdb/test/sql/adapter/duckdb_hardening_test.exs` for DuckDB adapter transaction/appender/resource-cleanup hardening semantics
   - `apps/favn_duckdb/test/favn_duckdb_test.exs` expanded runtime option-default and invalid-handle behavior
 - Phase 8 web/orchestrator boundary test additions are tracked in `docs/refactor/PHASE_8_TODO.md`.
@@ -224,7 +225,7 @@ Notes:
   - `web/favn_web/tests/e2e/mock-orchestrator-server.mjs` (deterministic local orchestrator mock used during Playwright runs)
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` now also covers thin operator smoke over `/api/web/v1/**` (runs/manifests/schedules commands + run stream relay validation)
   - `web/favn_web/tests/e2e/auth-session-runs.e2e.ts` also covers login into the `/runs` inspector and opening a failed run detail view
-- SQL runtime admission control coverage now includes `apps/favn_sql_runtime/test/sql/admission_test.exs` for serialized versus unlimited SQL execution policies and session-scoped admission, `apps/favn_sql_runtime/test/sql/concurrency_policy_test.exs` for adapter policy callback loading, and `apps/favn_sql_runtime/test/connection/validator_test.exs` for reserved runtime connection keys.
+- SQL runtime admission/bootstrap coverage now includes `apps/favn_sql_runtime/test/sql/admission_test.exs` for serialized versus unlimited SQL execution policies and session-scoped admission, `apps/favn_sql_runtime/test/sql/concurrency_policy_test.exs` for adapter policy callback loading, `apps/favn_sql_runtime/test/sql/client_bootstrap_test.exs` for optional adapter bootstrap lifecycle behavior, and `apps/favn_sql_runtime/test/connection/validator_test.exs` for reserved runtime connection keys plus nested runtime config refs.
 - Runtime config contract coverage now includes `apps/favn/test/dsl_compiler_test.exs` for asset DSL declarations, `apps/favn_core/test/manifest/serializer_test.exs` for manifest-safe serialization, `apps/favn_core/test/value_objects_test.exs` for invalid declaration errors, `apps/favn_runner/test/worker_test.exs` for runner `ctx.config` resolution, missing-env failures, and returned metadata redaction, and `apps/favn_runner/test/connection/loader_test.exs` for connection env ref resolution.
 - SQL runtime extraction work now adds public API coverage in:
   - `apps/favn/test/sql_client_test.exs`

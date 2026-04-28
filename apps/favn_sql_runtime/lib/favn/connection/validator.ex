@@ -106,15 +106,37 @@ defmodule Favn.Connection.Validator do
       |> Enum.filter(&Map.get(&1, :secret, false))
       |> Enum.map(& &1.key)
 
-    runtime_secret_fields =
+    top_level_runtime_secret_fields =
       values
       |> Enum.filter(fn {_key, value} -> match?(%Favn.RuntimeConfig.Ref{secret?: true}, value) end)
       |> Enum.map(&elem(&1, 0))
 
-    (schema_secret_fields ++ runtime_secret_fields)
+    nested_runtime_secret_fields =
+      values
+      |> Enum.filter(fn {_key, value} -> nested_secret_ref?(value) end)
+      |> Enum.map(&elem(&1, 0))
+
+    (schema_secret_fields ++ top_level_runtime_secret_fields ++ nested_runtime_secret_fields)
     |> Enum.uniq()
     |> Enum.sort()
   end
+
+  defp nested_secret_ref?(%Favn.RuntimeConfig.Ref{secret?: true}), do: true
+  defp nested_secret_ref?(%Favn.RuntimeConfig.Ref{}), do: false
+
+  defp nested_secret_ref?(value) when is_map(value) do
+    Enum.any?(value, fn {_key, child} -> nested_secret_ref?(child) end)
+  end
+
+  defp nested_secret_ref?(value) when is_list(value), do: Enum.any?(value, &nested_secret_ref?/1)
+
+  defp nested_secret_ref?(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.any?(&nested_secret_ref?/1)
+  end
+
+  defp nested_secret_ref?(_value), do: false
 
   defp validate_name(errors, %Definition{name: name, module: module}) do
     if is_atom(name) do
