@@ -3,6 +3,7 @@ defmodule FavnRunner.ConnectionLoaderTest do
 
   alias Favn.Connection.Definition
   alias Favn.Connection.Loader
+  alias Favn.RuntimeConfig.Ref
 
   defmodule FakeAdapter do
   end
@@ -96,6 +97,52 @@ defmodule FavnRunner.ConnectionLoaderTest do
 
     assert {:error, errors} = Loader.load()
     assert Enum.any?(errors, &(&1.type == :unknown_keys))
+  end
+
+  test "loader resolves runtime env refs before validation" do
+    previous_db = System.get_env("FAVN_TEST_WAREHOUSE_DB")
+    previous_password = System.get_env("FAVN_TEST_WAREHOUSE_PASSWORD")
+
+    try do
+      System.put_env("FAVN_TEST_WAREHOUSE_DB", "/tmp/env-warehouse.duckdb")
+      System.put_env("FAVN_TEST_WAREHOUSE_PASSWORD", "env-secret")
+
+      Application.put_env(:favn, :connection_modules, [WarehouseConnection])
+
+      Application.put_env(:favn, :connections,
+        warehouse: [
+          database: Ref.env!("FAVN_TEST_WAREHOUSE_DB"),
+          password: Ref.secret_env!("FAVN_TEST_WAREHOUSE_PASSWORD")
+        ]
+      )
+
+      assert {:ok, resolved} = Loader.load()
+      assert resolved.warehouse.config.database == "/tmp/env-warehouse.duckdb"
+      assert resolved.warehouse.config.password == "env-secret"
+      assert resolved.warehouse.secret_fields == [:password]
+    after
+      restore_system_env("FAVN_TEST_WAREHOUSE_DB", previous_db)
+      restore_system_env("FAVN_TEST_WAREHOUSE_PASSWORD", previous_password)
+    end
+  end
+
+  test "loader reports missing env refs as structured connection errors" do
+    previous = System.get_env("FAVN_TEST_WAREHOUSE_MISSING")
+
+    try do
+      System.delete_env("FAVN_TEST_WAREHOUSE_MISSING")
+      Application.put_env(:favn, :connection_modules, [WarehouseConnection])
+
+      Application.put_env(:favn, :connections,
+        warehouse: [database: Ref.env!("FAVN_TEST_WAREHOUSE_MISSING")]
+      )
+
+      assert {:error, errors} = Loader.load()
+      assert Enum.any?(errors, &(&1.type == :missing_env))
+      assert Enum.any?(errors, &(&1.message == "missing_env FAVN_TEST_WAREHOUSE_MISSING"))
+    after
+      restore_system_env("FAVN_TEST_WAREHOUSE_MISSING", previous)
+    end
   end
 
   test "loader resolves valid connection modules even when currently unloaded" do
@@ -203,4 +250,7 @@ defmodule FavnRunner.ConnectionLoaderTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
   defp restore_env(key, value), do: Application.put_env(:favn, key, value)
+
+  defp restore_system_env(key, nil), do: System.delete_env(key)
+  defp restore_system_env(key, value), do: System.put_env(key, value)
 end

@@ -138,6 +138,11 @@ Notes:
   - `manifest.ex`
   - `ref.ex`
   - `relation_ref.ex`
+  - `runtime_config/error.ex`
+  - `runtime_config/ref.ex`
+  - `runtime_config/redactor.ex`
+  - `runtime_config/requirements.ex`
+  - `runtime_config/resolver.ex`
   - `timezone.ex`
   - `diagnostic.ex`
   - `asset/dependency.ex`
@@ -242,6 +247,7 @@ Notes:
   - `apps/favn_runner/lib/favn_runner/worker.ex`
   - `apps/favn_runner/lib/favn_runner/event_sink.ex`
 - Shared connection runtime ownership now lives in `apps/favn_sql_runtime/lib/favn/connection/`.
+- Runtime configuration references and resolution helpers now live in `apps/favn_core/lib/favn/runtime_config/`; authoring declares references, manifests serialize references only, and runner/connection runtime code resolves values at execution time.
 - Shared SQL runtime/session contracts now live in `apps/favn_sql_runtime/lib/favn/sql/` including `Favn.SQL.Client`, `Favn.SQL.RuntimeBridge`, `Favn.SQL.ConcurrencyPolicy`, and `Favn.SQL.Admission`.
 - Runner-owned SQL asset execution modules remain under `apps/favn_runner/lib/favn/sql/` and `apps/favn_runner/lib/favn/sql_asset/`.
 - Phase 7 implementation now moves DuckDB ownership into `apps/favn_duckdb/lib/` including:

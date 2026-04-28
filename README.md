@@ -128,8 +128,12 @@ defmodule MyApp.Warehouse.Raw.Sales.Orders do
 
   @doc "Load raw orders"
   @meta owner: "data-platform", category: :sales, tags: [:raw]
+  source_config :source_system,
+    segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
+    token: secret_env!("SOURCE_SYSTEM_TOKEN")
   @relation true
-  def asset(_ctx) do
+  def asset(ctx) do
+    _segment_id = ctx.config.source_system.segment_id
     :ok
   end
 end
@@ -142,6 +146,13 @@ defaults. `@relation true` is the normal leaf-module path, while
 name. SQL asset namespace inheritance is finalized during explicit
 asset/manifest compilation, so parent namespace modules do not need to compile
 before child SQL asset modules in the same parallel compiler batch.
+
+Assets can declare required runtime configuration with `source_config/2`,
+`env!/1`, and `secret_env!/1`. Manifests record the required environment keys
+and secret flags, but never embed resolved runtime values. The runner resolves
+the values before asset execution and exposes them through `ctx.config`, failing
+the run early with diagnostics such as `missing_env SOURCE_SYSTEM_TOKEN` when a
+required value is absent.
 
 ### 3. Define a downstream SQL asset
 
@@ -223,6 +234,10 @@ config :favn,
 
 For this flow, configure `:connection_modules` and runtime `:connections` under
 `config :favn` using the `Favn.Connection` contract.
+
+Connection runtime values can also use `Favn.RuntimeConfig.Ref.env!/1` and
+`Favn.RuntimeConfig.Ref.secret_env!/1` when values should be resolved from the
+runner environment just before adapter connection.
 
 DuckDB local-file connections are serialized by default inside the SQL runtime so
 local sessions and materializations do not run unsafe concurrent catalog writes

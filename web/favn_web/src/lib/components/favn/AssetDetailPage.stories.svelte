@@ -21,6 +21,9 @@
 	play={async ({ canvasElement, userEvent, args }) => {
 		const canvas = within(canvasElement);
 		await expect(canvas.getByRole('heading', { name: 'Customer revenue' })).toBeInTheDocument();
+		await expect(canvas.getByText('SOURCE_SYSTEM_TOKEN')).toBeInTheDocument();
+		await expect(canvas.getAllByText('declared')[0]).toBeInTheDocument();
+		await expect(canvas.getByText('required · secret')).toBeInTheDocument();
 		await userEvent.click(canvas.getByRole('tab', { name: 'Lineage' }));
 		await expect(canvas.getByText('MyApp.Assets.Raw.Customers')).toBeInTheDocument();
 		await userEvent.click(canvas.getByRole('tab', { name: 'Runs' }));

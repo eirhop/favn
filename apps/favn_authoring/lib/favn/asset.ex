@@ -50,6 +50,27 @@ defmodule Favn.Asset do
   - `@window`: one `Favn.Window.*` spec
   - `@relation`: optional owned relation declaration
 
+  ## Runtime Config
+
+  Use `source_config/2` for runtime values that must be resolved by the runner
+  instead of read directly with `System.get_env/1` inside asset code:
+
+      source_config :source_system,
+        segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
+        token: secret_env!("SOURCE_SYSTEM_TOKEN")
+
+      def asset(ctx) do
+        segment_id = ctx.config.source_system.segment_id
+        token = ctx.config.source_system.token
+
+        MyApp.Client.fetch_orders(segment_id, token)
+        :ok
+      end
+
+  The manifest records required environment variable names and secret flags, but
+  not resolved values. Missing required environment variables fail before asset
+  code runs with a structured error such as `missing_env SOURCE_SYSTEM_TOKEN`.
+
   `@depends` supports:
 
   - `Other.SingleAssetModule`
@@ -75,6 +96,7 @@ defmodule Favn.Asset do
 
   - `ctx.asset` for canonical asset metadata
   - `ctx.asset.config` for compiled config when present
+  - `ctx.config` for resolved runtime config declared with `source_config/2`
   - `ctx.asset.relation` for owned relation identity
   - `ctx.window` for resolved runtime windows on windowed assets
 
@@ -98,6 +120,7 @@ defmodule Favn.Asset do
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Ref
   alias Favn.RelationRef
+  alias Favn.RuntimeConfig.Requirements
   alias Favn.SQLAsset.Materialization
   alias Favn.Window.Spec
 
@@ -107,11 +130,51 @@ defmodule Favn.Asset do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
+      Module.register_attribute(__MODULE__, :runtime_config, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_single_asset_raw, persist: false)
 
+      import Favn.Asset, only: [source_config: 2, env!: 1, secret_env!: 1]
+
       @on_definition Favn.Asset
       @before_compile Favn.Asset
+    end
+  end
+
+  @doc """
+  Declares runtime configuration required by this asset.
+
+  Values are resolved by the runner at execution time and exposed through
+  `ctx.config`. Runtime values are not embedded in the manifest.
+  """
+  defmacro source_config(scope, fields) do
+    quote bind_quoted: [scope: scope, fields: fields] do
+      {runtime_config_scope, runtime_config_fields} =
+        if is_atom(scope), do: {scope, fields}, else: {fields, scope}
+
+      Module.put_attribute(
+        __MODULE__,
+        :runtime_config,
+        %{runtime_config_scope => runtime_config_fields}
+      )
+    end
+  end
+
+  @doc """
+  Declares a required environment variable runtime config value.
+  """
+  defmacro env!(key) when is_binary(key) do
+    quote do
+      Favn.RuntimeConfig.Ref.env!(unquote(key))
+    end
+  end
+
+  @doc """
+  Declares a required secret environment variable runtime config value.
+  """
+  defmacro secret_env!(key) when is_binary(key) do
+    quote do
+      Favn.RuntimeConfig.Ref.secret_env!(unquote(key))
     end
   end
 
@@ -160,17 +223,18 @@ defmodule Favn.Asset do
     case {
       Module.get_attribute(env.module, :depends),
       Module.get_attribute(env.module, :meta),
+      Module.get_attribute(env.module, :runtime_config),
       Module.get_attribute(env.module, :window),
       Module.get_attribute(env.module, :relation)
     } do
-      {[], nil, [], []} ->
+      {[], nil, [], [], []} ->
         :ok
 
       _ ->
         DSLCompiler.compile_error!(
           env.file,
           env.line,
-          "@depends/@meta/@window/@relation must be attached to def asset(ctx)"
+          "@depends/@meta/@window/@relation and source_config/2 must be attached to def asset(ctx)"
         )
     end
 
@@ -208,6 +272,7 @@ defmodule Favn.Asset do
           relation: RelationRef.t() | nil,
           materialization: Favn.SQLAsset.Materialization.t() | nil,
           relation_inputs: [RelationInput.t()],
+          runtime_config: Requirements.declarations(),
           diagnostics: [Diagnostic.t()]
         }
 
@@ -235,6 +300,7 @@ defmodule Favn.Asset do
     relation: nil,
     materialization: nil,
     relation_inputs: [],
+    runtime_config: %{},
     diagnostics: []
   ]
 
@@ -257,6 +323,7 @@ defmodule Favn.Asset do
     validate_config!(asset.config)
     validate_window_spec!(asset.window_spec)
     validate_relation!(asset.relation)
+    validate_runtime_config!(asset.runtime_config)
     validate_type!(asset.type)
     validate_materialization!(asset.materialization)
 
@@ -353,6 +420,16 @@ defmodule Favn.Asset do
     raise ArgumentError, "asset config must be a map, got: #{inspect(config)}"
   end
 
+  defp validate_runtime_config!(runtime_config) when is_map(runtime_config) do
+    Requirements.normalize!(runtime_config)
+    :ok
+  end
+
+  defp validate_runtime_config!(runtime_config) do
+    raise ArgumentError,
+          "asset runtime_config must be a map, got: #{inspect(runtime_config)}"
+  end
+
   defp validate_window_spec!(nil), do: :ok
 
   defp validate_window_spec!(%Spec{} = spec) do
@@ -401,12 +478,14 @@ defmodule Favn.Asset do
 
     depends = env.module |> Module.get_attribute(:depends) |> Enum.reverse()
     meta = Module.get_attribute(env.module, :meta)
+    runtime_config = env.module |> Module.get_attribute(:runtime_config) |> Enum.reverse()
     window = env.module |> Module.get_attribute(:window) |> Enum.reverse()
     relation = env.module |> Module.get_attribute(:relation) |> Enum.reverse()
     validate_relation_attr!(relation, env)
 
     Module.delete_attribute(env.module, :depends)
     Module.delete_attribute(env.module, :meta)
+    Module.delete_attribute(env.module, :runtime_config)
     Module.delete_attribute(env.module, :window)
     Module.delete_attribute(env.module, :relation)
 
@@ -419,6 +498,7 @@ defmodule Favn.Asset do
       line: env.line,
       depends: depends,
       meta: meta,
+      runtime_config: runtime_config,
       window: window,
       relation: relation
     })
@@ -427,6 +507,7 @@ defmodule Favn.Asset do
   defp build_single_asset!(raw_asset) do
     depends_on = normalize_single_asset_depends!(raw_asset.depends, raw_asset)
     meta = normalize_single_asset_meta!(raw_asset.meta, raw_asset)
+    runtime_config = normalize_single_asset_runtime_config!(raw_asset.runtime_config, raw_asset)
     window_spec = normalize_single_asset_window!(raw_asset.window, raw_asset)
 
     asset = %__MODULE__{
@@ -443,6 +524,7 @@ defmodule Favn.Asset do
       meta: meta,
       depends_on: depends_on,
       config: %{},
+      runtime_config: runtime_config,
       window_spec: window_spec
     }
 
@@ -492,6 +574,25 @@ defmodule Favn.Asset do
   rescue
     error in ArgumentError ->
       DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
+  end
+
+  defp normalize_single_asset_runtime_config!([], _raw_asset), do: %{}
+
+  defp normalize_single_asset_runtime_config!(entries, raw_asset) do
+    entries
+    |> Enum.reduce(%{}, &Map.merge(&2, &1))
+    |> normalize_runtime_config_entry_order()
+    |> Requirements.normalize!()
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
+  end
+
+  defp normalize_runtime_config_entry_order(%{} = declarations) do
+    Map.new(declarations, fn
+      {scope, fields} when is_atom(scope) -> {scope, fields}
+      {fields, scope} when is_atom(scope) -> {scope, fields}
+    end)
   end
 
   defp normalize_single_asset_window!([], _raw_asset), do: nil

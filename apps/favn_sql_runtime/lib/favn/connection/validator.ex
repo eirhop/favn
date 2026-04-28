@@ -4,6 +4,7 @@ defmodule Favn.Connection.Validator do
   alias Favn.Connection.Definition
   alias Favn.Connection.Error
   alias Favn.Connection.Resolved
+  alias Favn.RuntimeConfig.Resolver, as: RuntimeConfigResolver
 
   @reserved_runtime_keys [:write_concurrency]
 
@@ -43,34 +44,76 @@ defmodule Favn.Connection.Validator do
     known_keys = schema_keys ++ @reserved_runtime_keys
     unknown = Map.keys(runtime_values) -- known_keys
 
-    errors =
-      []
-      |> maybe_add_unknown_keys_error(definition, unknown)
-      |> validate_required(definition, defaults, runtime_values)
-      |> validate_types(definition, defaults, runtime_values)
+    merged = Map.merge(defaults, runtime_values)
 
-    if errors == [] do
-      required_keys =
-        definition.config_schema
-        |> Enum.filter(&Map.get(&1, :required, false))
-        |> Enum.map(& &1.key)
+    with [] <- maybe_add_unknown_keys_error([], definition, unknown),
+         {:ok, resolved_values} <- resolve_runtime_refs(definition, merged) do
+      errors =
+        []
+        |> validate_required(definition, %{}, resolved_values)
+        |> validate_types(definition, %{}, resolved_values)
 
-      secret_fields =
-        definition.config_schema
-        |> Enum.filter(&Map.get(&1, :secret, false))
-        |> Enum.map(& &1.key)
+      if errors == [] do
+        required_keys =
+          definition.config_schema
+          |> Enum.filter(&Map.get(&1, :required, false))
+          |> Enum.map(& &1.key)
 
-      merged = Map.merge(defaults, runtime_values)
-      {:ok, merged, required_keys, secret_fields, schema_keys}
+        secret_fields = secret_fields(definition.config_schema, merged)
+
+        {:ok, resolved_values, required_keys, secret_fields, schema_keys}
+      else
+        {:error, Enum.reverse(errors)}
+      end
     else
-      {:error, Enum.reverse(errors)}
+      errors when is_list(errors) -> {:error, Enum.reverse(errors)}
+      {:error, errors} when is_list(errors) -> {:error, Enum.reverse(errors)}
     end
+  end
+
+  defp resolve_runtime_refs(definition, values) when is_map(values) do
+    values
+    |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case RuntimeConfigResolver.resolve_value(value, scope: definition.name, field: key) do
+        {:ok, resolved} ->
+          {:cont, {:ok, Map.put(acc, key, resolved)}}
+
+        {:error, error} ->
+          {:halt, {:error, [connection_runtime_config_error(definition, key, error)]}}
+      end
+    end)
+  end
+
+  defp connection_runtime_config_error(definition, key, error) do
+    %Error{
+      type: error.type,
+      module: definition.module,
+      connection: definition.name,
+      details: %{key: key, provider: error.provider, env: error.key, secret?: error.secret?},
+      message: error.message
+    }
   end
 
   defp defaults_from_schema(schema) do
     Enum.reduce(schema, %{}, fn field, acc ->
       if Map.has_key?(field, :default), do: Map.put(acc, field.key, field.default), else: acc
     end)
+  end
+
+  defp secret_fields(schema, values) do
+    schema_secret_fields =
+      schema
+      |> Enum.filter(&Map.get(&1, :secret, false))
+      |> Enum.map(& &1.key)
+
+    runtime_secret_fields =
+      values
+      |> Enum.filter(fn {_key, value} -> match?(%Favn.RuntimeConfig.Ref{secret?: true}, value) end)
+      |> Enum.map(&elem(&1, 0))
+
+    (schema_secret_fields ++ runtime_secret_fields)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp validate_name(errors, %Definition{name: name, module: module}) do

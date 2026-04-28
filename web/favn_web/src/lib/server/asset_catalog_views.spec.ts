@@ -148,6 +148,81 @@ describe('asset catalog view normalizers', () => {
 		);
 	});
 
+	it('normalizes runtime config refs as declarations without checking web process env', () => {
+		const previousSegment = process.env.SOURCE_SYSTEM_SEGMENT_ID;
+		const previousToken = process.env.SOURCE_SYSTEM_TOKEN;
+		process.env.SOURCE_SYSTEM_SEGMENT_ID = 'segment-123';
+		process.env.SOURCE_SYSTEM_TOKEN = 'super-secret-token';
+
+		try {
+			const catalog = normalizeAssetCatalogList(
+				{
+					data: {
+						manifest: { manifest_version_id: 'mfv_active', content_hash: 'sha256:active' },
+						targets: {
+							assets: [
+								{
+									target_id: 'asset:Elixir.FavnDemo.Raw.Orders:asset',
+									runtime_config: {
+										source_system: {
+											segment_id: {
+												provider: ':env',
+												key: 'SOURCE_SYSTEM_SEGMENT_ID',
+												'secret?': false,
+												'required?': true
+											},
+											token: {
+												provider: 'env',
+												key: 'SOURCE_SYSTEM_TOKEN',
+												secret: true,
+												required: true,
+												value: 'super-secret-token'
+											}
+										}
+									}
+								}
+							],
+							pipelines: []
+						}
+					}
+				},
+				{ data: { items: [] } }
+			);
+
+			expect(catalog.assets[0].runtimeConfig).toEqual([
+				expect.objectContaining({
+					path: 'source_system.segment_id',
+					provider: 'env',
+					key: 'SOURCE_SYSTEM_SEGMENT_ID',
+					secret: false,
+					required: true,
+					status: 'declared'
+				}),
+				expect.objectContaining({
+					path: 'source_system.token',
+					provider: 'env',
+					key: 'SOURCE_SYSTEM_TOKEN',
+					secret: true,
+					required: true,
+					status: 'declared'
+				})
+			]);
+			expect(catalog.assets[0].runtimeConfig?.map((entry) => entry.status)).toEqual([
+				'declared',
+				'declared'
+			]);
+			expect(JSON.stringify(catalog.assets[0])).not.toContain('segment-123');
+			expect(JSON.stringify(catalog.assets[0])).not.toContain('super-secret-token');
+			expect(JSON.stringify(catalog.assets[0].runtimeConfig)).not.toContain('present');
+			expect(JSON.stringify(catalog.assets[0].runtimeConfig)).not.toContain('missing');
+		} finally {
+			if (previousSegment === undefined) delete process.env.SOURCE_SYSTEM_SEGMENT_ID;
+			else process.env.SOURCE_SYSTEM_SEGMENT_ID = previousSegment;
+			if (previousToken === undefined) delete process.env.SOURCE_SYSTEM_TOKEN;
+			else process.env.SOURCE_SYSTEM_TOKEN = previousToken;
+		}
+	});
+
 	it('normalizes robust asset labels and target ids', () => {
 		expect(normalizeAssetRefParts('{Elixir.Foo.Bar, :asset}')).toEqual({
 			ref: 'Elixir.Foo.Bar:asset',

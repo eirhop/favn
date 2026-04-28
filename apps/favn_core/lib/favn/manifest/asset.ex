@@ -7,6 +7,7 @@ defmodule Favn.Manifest.Asset do
   """
 
   alias Favn.Manifest.SQLExecution
+  alias Favn.RuntimeConfig.Requirements
   alias Favn.SQLAsset.Compiler
 
   @type t :: %__MODULE__{
@@ -24,6 +25,7 @@ defmodule Favn.Manifest.Asset do
           window: map() | struct() | nil,
           materialization: map() | struct() | nil,
           relation_inputs: [map() | struct()],
+          runtime_config: Requirements.declarations(),
           sql_execution: SQLExecution.t() | nil,
           metadata: map()
         }
@@ -40,6 +42,7 @@ defmodule Favn.Manifest.Asset do
     window: nil,
     materialization: nil,
     relation_inputs: [],
+    runtime_config: %{},
     sql_execution: nil,
     metadata: %{}
   ]
@@ -58,6 +61,7 @@ defmodule Favn.Manifest.Asset do
       window: Map.get(asset, :window_spec),
       materialization: Map.get(asset, :materialization),
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
+      runtime_config: normalize_runtime_config(Map.get(asset, :runtime_config, %{})),
       sql_execution: build_sql_execution(asset),
       metadata: normalize_map(Map.get(asset, :meta, %{}))
     }
@@ -85,6 +89,9 @@ defmodule Favn.Manifest.Asset do
 
   defp normalize_map(value) when is_map(value), do: value
   defp normalize_map(_other), do: %{}
+
+  defp normalize_runtime_config(value) when is_map(value), do: Requirements.normalize!(value)
+  defp normalize_runtime_config(_other), do: %{}
 
   defp compare_refs({left_module, left_name}, {right_module, right_name}) do
     left = {Atom.to_string(left_module), Atom.to_string(left_name)}
