@@ -35,6 +35,8 @@ defmodule FavnOrchestrator.HTTPContract.SchemaTest do
       "event_seq" => 1,
       "started_at" => "2026-01-01T00:00:00Z",
       "finished_at" => nil,
+      "target_refs" => [],
+      "asset_results" => [],
       "error" => nil
     })
   end

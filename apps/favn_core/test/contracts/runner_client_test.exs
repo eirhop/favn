@@ -8,6 +8,7 @@ defmodule Favn.Contracts.RunnerClientTest do
              [
                await_result: 3,
                cancel_work: 3,
+               inspect_relation: 2,
                register_manifest: 2,
                submit_work: 2
              ]

@@ -39,7 +39,7 @@ development on top of the new boundaries.
 - `{:favn, ...}` remains the one public package users should depend on
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
-- the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, submitting active-manifest pipeline runs with explicit window requests, and submitting the current orchestrator asset run path
+- the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, loading safe relation previews for manifest-owned relations, submitting active-manifest pipeline runs with explicit window requests, and submitting the current orchestrator asset run path
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
@@ -53,7 +53,7 @@ development on top of the new boundaries.
 - compile-time manifest generation for authored business code
 - deterministic planning from selected targets and dependency rules
 - pipeline definitions for scheduled or operator-triggered runs
-- local runtime workflow support for authoring, inspection, and orchestration
+- local runtime workflow support for authoring, safe landed-data inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
 - DuckDB connection bootstrap for DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckLake attach, and catalog selection
@@ -308,8 +308,11 @@ mix favn.dev
 mix favn.run MyApp.Pipelines.LocalSmoke --wait
 ```
 
-After the run, inspect `/runs` and `/assets` in the local web UI. The generated
-DuckDB output can also be queried from the consumer project:
+After the run, inspect `/runs` and `/assets` in the local web UI. Asset detail
+pages show latest materialization metadata when available and can load a safe
+read-only preview for manifest-owned SQL relations: columns, row count, and up to
+20 sample rows. The generated DuckDB output can also be queried from the
+consumer project:
 
 ```elixir
 {:ok, session} = Favn.SQLClient.connect(:warehouse)

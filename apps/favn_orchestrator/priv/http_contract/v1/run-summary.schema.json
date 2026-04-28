@@ -11,6 +11,8 @@
     "event_seq",
     "started_at",
     "finished_at",
+    "target_refs",
+    "asset_results",
     "error"
   ],
   "additionalProperties": false,
@@ -22,6 +24,8 @@
     "event_seq": { "type": "integer", "minimum": 1 },
     "started_at": { "type": ["string", "null"] },
     "finished_at": { "type": ["string", "null"] },
+    "target_refs": { "type": "array", "items": { "type": "string" } },
+    "asset_results": { "type": "array", "items": { "type": "object" } },
     "error": {}
   }
 }

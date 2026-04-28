@@ -7,6 +7,8 @@ defmodule Favn.Contracts.RunnerClient do
   concrete runner implementation app.
   """
 
+  alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -21,4 +23,7 @@ defmodule Favn.Contracts.RunnerClient do
               {:ok, RunnerResult.t()} | {:error, term()}
 
   @callback cancel_work(execution_id(), map(), keyword()) :: :ok | {:error, term()}
+
+  @callback inspect_relation(RelationInspectionRequest.t(), keyword()) ::
+              {:ok, RelationInspectionResult.t()} | {:error, term()}
 end

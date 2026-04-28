@@ -3,6 +3,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
+  alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -164,6 +165,27 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert [asset_result] = result.asset_results
     assert asset_result.status == :error
     assert %{type: :backend_execution_failed, phase: :materialize} = asset_result.error
+  end
+
+  test "inspection normalizes malformed include values at the runner boundary" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    version = register_sql_manifest!(ref)
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      asset_ref: ref,
+      include: nil
+    }
+
+    assert {:ok, result} = FavnRunner.Inspection.inspect_relation(request, version)
+    assert result.asset_ref == ref
+    assert result.relation_ref.name == "manifest_sql_asset"
+    assert result.relation == nil
+    assert result.columns == []
+    assert result.row_count == nil
+    assert result.sample == nil
+    assert result.table_metadata == %{}
+    assert result.warnings == []
   end
 
   defp register_sql_manifest!(ref) do

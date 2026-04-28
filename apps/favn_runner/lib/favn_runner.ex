@@ -5,6 +5,8 @@ defmodule FavnRunner do
 
   @behaviour Favn.Contracts.RunnerClient
 
+  alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -55,6 +57,15 @@ defmodule FavnRunner do
   end
 
   def cancel_work(_execution_id, _reason, _opts), do: {:error, :invalid_cancel_args}
+
+  @doc """
+  Runs one safe read-only relation inspection request through the runner boundary.
+  """
+  @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::
+          {:ok, RelationInspectionResult.t()} | {:error, term()}
+  def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
+    Server.inspect_relation(request, opts)
+  end
 
   @doc """
   Runs one work request synchronously through the same runner server boundary.

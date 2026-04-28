@@ -68,7 +68,25 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     @impl true
     def columns(result_ref) do
       record({:columns, result_ref})
-      ["value"]
+
+      sql = result_sql(result_ref)
+
+      if is_binary(sql) and String.contains?(sql, "count(*) AS row_count") do
+        ["row_count"]
+      else
+        ["value"]
+      end
+    end
+
+    defp result_sql(result_ref) do
+      if :ets.whereis(@events_table) != :undefined do
+        @events_table
+        |> :ets.tab2list()
+        |> Enum.find_value(fn
+          {_key, {:result_ref, ^result_ref, sql}} -> sql
+          _other -> nil
+        end)
+      end
     end
 
     @impl true
@@ -246,6 +264,35 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     assert Enum.any?(events(), fn
              {:release, ^result_ref} -> true
+             _ -> false
+           end)
+  end
+
+  test "row_count uses adapter-owned quoted relation SQL" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:ok, 1} =
+             DuckDB.row_count(conn, %RelationRef{schema: "raw data", name: "orders"}, [])
+
+    assert Enum.any?(events(), fn
+             {:query, _conn_ref, "SELECT count(*) AS row_count FROM \"raw data\".\"orders\""} ->
+               true
+
+             _ ->
+               false
+           end)
+  end
+
+  test "sample caps limits and uses adapter-owned quoted relation SQL" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:ok, result} =
+             DuckDB.sample(conn, %RelationRef{schema: "raw", name: "orders"}, limit: 100)
+
+    assert result.rows == [%{"value" => 1}]
+
+    assert Enum.any?(events(), fn
+             {:query, _conn_ref, "SELECT * FROM \"raw\".\"orders\" LIMIT 20"} -> true
              _ -> false
            end)
   end

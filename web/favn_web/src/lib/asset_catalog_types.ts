@@ -22,6 +22,17 @@ export type AssetCatalogRunSummary = {
 	raw: unknown;
 };
 
+export type AssetMaterializationSummary = {
+	relation: unknown | null;
+	materialization: unknown | null;
+	rowsWritten: number | null;
+	rowsAffected: number | null;
+	loadedAt: string | null;
+	materializedAt: string | null;
+	window: unknown | null;
+	metadata: unknown | null;
+};
+
 export type AssetRuntimeConfigStatus = 'declared';
 
 export type AssetRuntimeConfigEntry = {
@@ -49,6 +60,11 @@ export type AssetCatalogItem = {
 	manifestVersionId?: string | null;
 	manifestContentHash?: string | null;
 	runtimeConfig?: AssetRuntimeConfigEntry[];
+	relation?: unknown | null;
+	materialization?: unknown | null;
+	window?: unknown | null;
+	metadata?: unknown | null;
+	latestMaterialization?: AssetMaterializationSummary | null;
 	runActions?: AssetCatalogRunAction[];
 	rawTarget?: unknown;
 };

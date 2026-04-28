@@ -369,6 +369,53 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   @impl true
+  @spec row_count(Conn.t(), RelationRef.t(), opts()) ::
+          {:ok, non_neg_integer()} | {:error, Error.t()}
+  def row_count(%Conn{} = conn, %RelationRef{} = ref, _opts) do
+    sql = ["SELECT count(*) AS row_count FROM ", qualified_relation_ref(ref)]
+
+    with {:ok, result} <- query(conn, sql, []) do
+      count =
+        result.rows
+        |> List.first(%{})
+        |> Map.get("row_count", 0)
+        |> normalize_integer()
+
+      {:ok, count || 0}
+    end
+  end
+
+  @impl true
+  @spec sample(Conn.t(), RelationRef.t(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
+  def sample(%Conn{} = conn, %RelationRef{} = ref, opts) do
+    limit = opts |> Keyword.get(:limit, 20) |> clamp_sample_limit()
+    sql = ["SELECT * FROM ", qualified_relation_ref(ref), " LIMIT ", Integer.to_string(limit)]
+    query(conn, sql, [])
+  end
+
+  @impl true
+  @spec table_metadata(Conn.t(), RelationRef.t(), opts()) :: {:ok, map()} | {:error, Error.t()}
+  def table_metadata(%Conn{} = conn, %RelationRef{} = ref, _opts) do
+    with {:ok, relation} <- relation(conn, ref, []) do
+      metadata =
+        case relation do
+          %Relation{} = relation ->
+            %{
+              type: relation.type,
+              catalog: relation.catalog,
+              schema: relation.schema,
+              name: relation.name
+            }
+
+          nil ->
+            %{}
+        end
+
+      {:ok, metadata}
+    end
+  end
+
+  @impl true
   @spec transaction(Conn.t(), (Conn.t() -> {:ok, term()} | {:error, Error.t()}), opts()) ::
           {:ok, term()} | {:error, Error.t()}
   def transaction(%Conn{} = conn, fun, _opts) when is_function(fun, 1) do
@@ -821,6 +868,26 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   defp qualified_relation(%Relation{schema: schema, name: name}),
     do: [quote_ident(schema), ".", quote_ident(name)]
+
+  defp qualified_relation_ref(%RelationRef{catalog: nil, schema: nil, name: name}) do
+    quote_ident(name)
+  end
+
+  defp qualified_relation_ref(%RelationRef{catalog: nil, schema: schema, name: name}) do
+    [quote_ident(schema), ".", quote_ident(name)]
+  end
+
+  defp qualified_relation_ref(%RelationRef{catalog: catalog, schema: nil, name: name}) do
+    [quote_ident(catalog), ".", quote_ident(name)]
+  end
+
+  defp qualified_relation_ref(%RelationRef{catalog: catalog, schema: schema, name: name}) do
+    [quote_ident(catalog), ".", quote_ident(schema), ".", quote_ident(name)]
+  end
+
+  defp clamp_sample_limit(limit) when is_integer(limit) and limit >= 0 and limit <= 20, do: limit
+  defp clamp_sample_limit(limit) when is_integer(limit) and limit > 20, do: 20
+  defp clamp_sample_limit(_limit), do: 20
 
   defp quote_ident(identifier), do: ["\"", String.replace(identifier, "\"", "\"\""), "\""]
   defp quote_literal(value), do: ["'", String.replace(value, "'", "''"), "'"]

@@ -173,6 +173,23 @@ export function orchestratorActivateManifest(
 	);
 }
 
+export function orchestratorGetAssetInspection(
+	session: WebSession,
+	manifestVersionId: string,
+	targetId: string,
+	limit: number
+): Promise<Response> {
+	const integerLimit = Number.isFinite(limit) ? Math.trunc(limit) : 20;
+	const cappedLimit = Math.min(Math.max(integerLimit, 1), 20);
+	const pathname = `/api/orchestrator/v1/manifests/${encodeURIComponent(
+		manifestVersionId
+	)}/assets/${encodeURIComponent(targetId)}/inspection?limit=${cappedLimit}`;
+
+	return orchestratorAuthed(pathname, session, {
+		headers: { accept: 'application/json' }
+	});
+}
+
 export function orchestratorListSchedules(session: WebSession): Promise<Response> {
 	return orchestratorAuthed('/api/orchestrator/v1/schedules', session, {
 		headers: { accept: 'application/json' }

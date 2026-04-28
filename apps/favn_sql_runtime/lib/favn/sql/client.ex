@@ -122,6 +122,61 @@ defmodule Favn.SQL.Client do
 
   def columns(_session, _relation_ref), do: {:error, invalid_session_error()}
 
+  @spec row_count(Session.t(), RelationRef.t()) :: operation_result()
+  def row_count(%Session{} = session, %RelationRef{} = relation_ref) do
+    if function_exported?(session.adapter, :row_count, 3) do
+      Admission.with_permit(session, :row_count, relation_ref, fn ->
+        session.adapter.row_count(session.conn, relation_ref, [])
+      end)
+    else
+      {:error, unsupported_introspection_error(session, :row_count)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:row_count, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:row_count, reason)}
+  end
+
+  def row_count(_session, _relation_ref), do: {:error, invalid_session_error()}
+
+  @spec sample(Session.t(), RelationRef.t(), keyword()) :: operation_result()
+  def sample(session, relation_ref, opts \\ [])
+
+  def sample(%Session{} = session, %RelationRef{} = relation_ref, opts) when is_list(opts) do
+    with {:ok, limit} <- sample_limit(opts) do
+      if function_exported?(session.adapter, :sample, 3) do
+        Admission.with_permit(session, :sample, relation_ref, fn ->
+          session.adapter.sample(session.conn, relation_ref, limit: limit)
+        end)
+      else
+        {:error, unsupported_introspection_error(session, :sample)}
+      end
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:sample, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:sample, reason)}
+  end
+
+  def sample(_session, _relation_ref, _opts), do: {:error, invalid_session_error()}
+
+  @spec table_metadata(Session.t(), RelationRef.t()) :: operation_result()
+  def table_metadata(%Session{} = session, %RelationRef{} = relation_ref) do
+    if function_exported?(session.adapter, :table_metadata, 3) do
+      Admission.with_permit(session, :table_metadata, relation_ref, fn ->
+        session.adapter.table_metadata(session.conn, relation_ref, [])
+      end)
+    else
+      {:error, unsupported_introspection_error(session, :table_metadata)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(:table_metadata, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(:table_metadata, reason)}
+  end
+
+  def table_metadata(_session, _relation_ref), do: {:error, invalid_session_error()}
+
   @spec transaction(Session.t(), (Session.t() -> operation_result()), keyword()) ::
           operation_result()
   def transaction(session, fun, opts \\ [])
@@ -300,6 +355,35 @@ defmodule Favn.SQL.Client do
       connection: connection,
       operation: :transaction
     }
+  end
+
+  defp unsupported_introspection_error(%Session{resolved: %Resolved{name: connection}}, operation) do
+    %Error{
+      type: :unsupported_capability,
+      message: "adapter does not support #{operation}",
+      connection: connection,
+      operation: operation
+    }
+  end
+
+  defp sample_limit(opts) do
+    limit = Keyword.get(opts, :limit, 20)
+
+    cond do
+      is_integer(limit) and limit >= 0 and limit <= 20 ->
+        {:ok, limit}
+
+      is_integer(limit) and limit > 20 ->
+        {:ok, 20}
+
+      true ->
+        {:error,
+         %Error{
+           type: :invalid_config,
+           message: "sample limit must be a non-negative integer",
+           operation: :sample
+         }}
+    end
   end
 
   defp normalize_runtime_error(operation, reason) do

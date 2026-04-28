@@ -19,6 +19,25 @@ export const successfulAssetWithRuns = {
 			duration: '12.4s'
 		},
 		manifestVersionId: 'mfv_2026_04_27',
+		latestMaterialization: {
+			relation: {
+				connection: 'warehouse',
+				catalog: 'gold',
+				schema: 'mart',
+				name: 'customer_revenue'
+			},
+			materialization: 'table',
+			rowsWritten: 42,
+			rowsAffected: null,
+			loadedAt: '2026-04-27T14:32:22Z',
+			materializedAt: '2026-04-27T14:32:23Z',
+			window: { kind: 'day', value: '2026-04-27' },
+			metadata: {
+				rows_written: 42,
+				loaded_at: '2026-04-27T14:32:22Z',
+				relation: 'gold.mart.customer_revenue'
+			}
+		},
 		runtimeConfig: [
 			{
 				path: 'source_system.segment_id',

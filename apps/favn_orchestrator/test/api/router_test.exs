@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
+  alias Favn.RuntimeConfig.Ref
   alias FavnOrchestrator
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
@@ -35,6 +36,20 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(request, _opts) do
+      {:ok,
+       %Favn.Contracts.RelationInspectionResult{
+         asset_ref: request.asset_ref,
+         relation_ref: %Favn.RelationRef{connection: :warehouse, schema: "raw", name: "orders"},
+         relation: %Favn.SQL.Relation{schema: "raw", name: "orders", type: :table},
+         columns: [%Favn.SQL.Column{name: "id", position: 1, data_type: "INTEGER"}],
+         row_count: 2,
+         sample: %{limit: request.sample_limit, columns: ["id"], rows: [%{"id" => 1}]},
+         inspected_at: ~U[2026-01-01 00:00:00Z]
+       }}
+    end
   end
 
   setup do
@@ -290,6 +305,181 @@ defmodule FavnOrchestrator.API.RouterTest do
              "timezone" => nil,
              "allow_full_load" => false
            }
+  end
+
+  test "active manifest asset targets expose relation and runtime metadata" do
+    version = dependency_manifest_version("mv_asset_target_metadata")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/manifests/active")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"targets" => %{"assets" => assets}}} =
+             Jason.decode!(response.resp_body)
+
+    gold = Enum.find(assets, &(&1["target_id"] == "asset:Elixir.MyApp.Assets.Gold:asset"))
+    assert gold["asset_ref"] == "Elixir.MyApp.Assets.Gold:asset"
+    assert gold["type"] == "sql"
+
+    assert gold["relation"] == %{
+             "connection" => "warehouse",
+             "catalog" => nil,
+             "schema" => "gold",
+             "name" => "orders"
+           }
+
+    assert gold["depends_on"] == ["Elixir.MyApp.Assets.Raw:asset"]
+    assert %{"source_system" => %{"segment_id" => segment_id}} = gold["runtime_config"]
+    assert segment_id["provider"] == "env"
+    assert segment_id["secret"] == false
+  end
+
+  test "run detail exposes stored per-asset result metadata" do
+    now = DateTime.utc_now()
+
+    run_state =
+      RunState.new(
+        id: "run_detail_metadata",
+        manifest_version_id: "mv_detail_metadata",
+        manifest_content_hash: "hash_detail_metadata",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}],
+        metadata: %{source: :test},
+        params: %{limit: 1},
+        trigger: %{type: :manual}
+      )
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          status: :ok,
+          asset_results: [
+            %Favn.Run.AssetResult{
+              ref: {MyApp.Assets.Gold, :asset},
+              stage: 0,
+              status: :ok,
+              started_at: now,
+              finished_at: now,
+              duration_ms: 10,
+              meta: %{rows_written: 2, relation: "gold.orders"},
+              error: nil,
+              attempt_count: 1,
+              max_attempts: 1,
+              attempts: []
+            }
+          ],
+          metadata: %{runner: true}
+        }
+      )
+
+    assert :ok = Storage.put_run(run_state)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/runs/run_detail_metadata")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"run" => run}} = Jason.decode!(response.resp_body)
+    assert run["metadata"] == %{"source" => "test"}
+
+    assert [%{"asset_ref" => "Elixir.MyApp.Assets.Gold:asset", "meta" => meta}] =
+             run["asset_results"]
+
+    assert meta == %{"rows_written" => 2, "relation" => "gold.orders"}
+    assert run["params"] == %{"limit" => 1}
+    assert run["trigger"] == %{"type" => "manual"}
+  end
+
+  test "run list exposes per-asset metadata for asset catalog summaries" do
+    now = DateTime.utc_now()
+
+    run_state =
+      RunState.new(
+        id: "run_list_metadata",
+        manifest_version_id: "mv_list_metadata",
+        manifest_content_hash: "hash_list_metadata",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}]
+      )
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          status: :ok,
+          asset_results: [
+            %Favn.Run.AssetResult{
+              ref: {MyApp.Assets.Gold, :asset},
+              stage: 0,
+              status: :ok,
+              started_at: now,
+              finished_at: now,
+              duration_ms: 10,
+              meta: %{rows_written: 3, relation: "gold.orders"},
+              error: nil,
+              attempt_count: 1,
+              max_attempts: 1,
+              attempts: []
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run_state)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/runs")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"items" => runs}} = Jason.decode!(response.resp_body)
+    run = Enum.find(runs, &(&1["id"] == "run_list_metadata"))
+    assert run["target_refs"] == ["Elixir.MyApp.Assets.Gold:asset"]
+
+    assert [%{"asset_ref" => "Elixir.MyApp.Assets.Gold:asset", "meta" => meta}] =
+             run["asset_results"]
+
+    assert meta == %{"rows_written" => 3, "relation" => "gold.orders"}
+  end
+
+  test "inspection endpoint dispatches to runner and caps sample limit" do
+    version = dependency_manifest_version("mv_inspection")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(
+        :get,
+        "/api/orchestrator/v1/manifests/mv_inspection/assets/asset:Elixir.MyApp.Assets.Gold:asset/inspection?limit=100"
+      )
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"inspection" => inspection}} = Jason.decode!(response.resp_body)
+    assert inspection["asset_ref"] == "Elixir.MyApp.Assets.Gold:asset"
+    assert inspection["row_count"] == 2
+    assert inspection["sample"]["limit"] == 20
+    assert [%{"name" => "id", "data_type" => "INTEGER"}] = inspection["columns"]
   end
 
   test "lists in-flight run ids for reload guard" do
@@ -773,13 +963,19 @@ defmodule FavnOrchestrator.API.RouterTest do
         %Favn.Manifest.Asset{
           ref: {MyApp.Assets.Raw, :asset},
           module: MyApp.Assets.Raw,
-          name: :asset
+          name: :asset,
+          type: :elixir,
+          relation: %{connection: :warehouse, schema: "raw", name: "orders"}
         },
         %Favn.Manifest.Asset{
           ref: {MyApp.Assets.Gold, :asset},
           module: MyApp.Assets.Gold,
           name: :asset,
-          depends_on: [{MyApp.Assets.Raw, :asset}]
+          type: :sql,
+          depends_on: [{MyApp.Assets.Raw, :asset}],
+          relation: %{connection: :warehouse, schema: "gold", name: "orders"},
+          runtime_config: %{source_system: %{segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID")}},
+          metadata: %{owner: "analytics"}
         }
       ]
     }

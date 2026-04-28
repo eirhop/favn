@@ -11,6 +11,7 @@ Top-level product docs:
 - `docs/FEATURES.md` for implemented capabilities
 - `docs/FEATURE_AUDIT_TASKLIST.md` for the current feature audit work breakdown
 - `docs/ISSUE_171_SOURCE_RAW_LANDING_PLAN.md` for the source-system raw landing implementation plan and reference notes
+- `docs/ISSUE_172_LOCAL_INSPECTION_PANEL_PLAN.md` for the planned safe local landed-data inspection panel implementation
 - `docs/ISSUE_173_PIPELINE_WINDOW_POLICY_PLAN.md` for the planned pipeline window policy implementation
 - `docs/ROADMAP.md` for planned work
 - `docs/DUCKLAKE_CONNECTION_BOOTSTRAP_PLAN.md` for issue 170 implementation planning
@@ -192,9 +193,12 @@ Notes:
   - `contracts/runner_work.ex`
   - `contracts/runner_result.ex`
   - `contracts/runner_event.ex`
+  - `contracts/relation_inspection_request.ex`
+  - `contracts/relation_inspection_result.ex`
 - Intended steady-state ownership is now: `favn` public surface, `favn_core` internal compiler/manifest/planning/contracts, `favn_runner` execution, `favn_orchestrator` control plane plus auth/authz/audit, and a separate `favn_web` tier outside the umbrella talking to orchestrator over a remote boundary.
 - Phase 3 populated `apps/favn_core/lib/favn/` with canonical manifest schema/versioning, serializer/hash/compatibility logic, graph/planning helpers, SQL helper internals, and shared runner/orchestrator contract structs.
 - Phase 4 implementation grew `apps/favn_runner/lib/favn_runner/` around a small execution-owned set of modules such as a runner server, manifest store/resolver, worker supervision, and context builder.
+- Runner-owned local inspection now includes `apps/favn_runner/lib/favn_runner/inspection.ex` for safe read-only relation previews against pinned manifest assets.
 - Phase 4 implementation moved `Favn.Run.Context` and `Favn.Run.AssetResult` out of `favn_legacy` into `apps/favn_core/lib/favn/run/`, while runner-owned connection and SQL runtime modules moved into `apps/favn_runner/lib/favn/` under preserved `Favn.*` names.
 - Initial Phase 5 implementation added manifest-native orchestrator planning helpers and shared runner-client behaviour in `apps/favn_core/lib/favn/`:
   - `contracts/runner_client.ex`
