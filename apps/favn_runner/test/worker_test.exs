@@ -1,6 +1,7 @@
 defmodule FavnRunner.WorkerTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Contracts.RunnerEvent
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
@@ -156,11 +157,72 @@ defmodule FavnRunner.WorkerTest do
       assert meta.config.source_system.segment_id == "segment-456"
       assert meta.config.source_system.token == :redacted
       assert meta.nested.source_system.token == :redacted
+      assert meta.debug_ctx.config.source_system.token == :redacted
       assert attempt_meta.config.source_system.token == :redacted
       refute inspect(result) =~ "leaked-secret-token"
     after
       restore_env("FAVN_TEST_LEAK_SEGMENT_ID", previous_segment)
       restore_env("FAVN_TEST_LEAK_TOKEN", previous_token)
+    end
+  end
+
+  test "worker redacts declared secret runtime config from returned errors and events" do
+    previous = System.get_env("FAVN_TEST_ERROR_TOKEN")
+
+    try do
+      System.put_env("FAVN_TEST_ERROR_TOKEN", "error-secret-token")
+
+      result =
+        run_single_asset(FavnRunner.WorkerTest.ErrorLeakAsset,
+          runtime_config: %{source_system: %{token: Ref.secret_env!("FAVN_TEST_ERROR_TOKEN")}}
+        )
+
+      assert result.status == :error
+
+      assert result.error.reason ==
+               {:auth_failed, "redacted", %{source_system: %{token: :redacted}}}
+
+      assert [%{error: error, attempts: [%{error: attempt_error}]}] = result.asset_results
+      assert error == result.error
+      assert attempt_error == result.error
+
+      assert_receive {:runner_event, _execution_id,
+                      %RunnerEvent{event_type: :asset_failed} = event},
+                     2_000
+
+      assert event.payload.error == result.error
+      refute inspect(result) =~ "error-secret-token"
+      refute inspect(event) =~ "error-secret-token"
+    after
+      restore_env("FAVN_TEST_ERROR_TOKEN", previous)
+      flush_runner_events()
+    end
+  end
+
+  test "worker redacts declared secret runtime config from raised error messages" do
+    previous = System.get_env("FAVN_TEST_RAISE_TOKEN")
+
+    try do
+      System.put_env("FAVN_TEST_RAISE_TOKEN", "raise-secret-token")
+
+      result =
+        run_single_asset(FavnRunner.WorkerTest.RaiseLeakAsset,
+          runtime_config: %{source_system: %{token: Ref.secret_env!("FAVN_TEST_RAISE_TOKEN")}}
+        )
+
+      assert result.status == :error
+      assert result.error.message == "request failed with token redacted"
+      assert result.error.reason.message == "request failed with token redacted"
+      refute inspect(result) =~ "raise-secret-token"
+
+      assert_receive {:runner_event, _execution_id,
+                      %RunnerEvent{event_type: :asset_failed} = event},
+                     2_000
+
+      refute inspect(event) =~ "raise-secret-token"
+    after
+      restore_env("FAVN_TEST_RAISE_TOKEN", previous)
+      flush_runner_events()
     end
   end
 
@@ -225,6 +287,14 @@ defmodule FavnRunner.WorkerTest do
 
   defp restore_env(key, nil), do: System.delete_env(key)
   defp restore_env(key, value), do: System.put_env(key, value)
+
+  defp flush_runner_events do
+    receive do
+      {:runner_event, _execution_id, %RunnerEvent{}} -> flush_runner_events()
+    after
+      0 -> :ok
+    end
+  end
 end
 
 defmodule FavnRunner.WorkerTest.CrashingAsset do
@@ -266,6 +336,21 @@ end
 defmodule FavnRunner.WorkerTest.ConfigLeakAsset do
   @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
   def asset(ctx) do
-    {:ok, %{config: ctx.config, nested: %{source_system: ctx.config.source_system}}}
+    {:ok,
+     %{config: ctx.config, nested: %{source_system: ctx.config.source_system}, debug_ctx: ctx}}
+  end
+end
+
+defmodule FavnRunner.WorkerTest.ErrorLeakAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:error, term()}
+  def asset(ctx) do
+    {:error, {:auth_failed, ctx.config.source_system.token, ctx.config}}
+  end
+end
+
+defmodule FavnRunner.WorkerTest.RaiseLeakAsset do
+  @spec asset(Favn.Run.Context.t()) :: no_return()
+  def asset(ctx) do
+    raise "request failed with token #{ctx.config.source_system.token}"
   end
 end

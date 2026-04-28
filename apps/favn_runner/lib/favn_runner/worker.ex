@@ -56,7 +56,9 @@ defmodule FavnRunner.Worker do
 
         :elixir ->
           with {:ok, context} <- ContextBuilder.build(work, asset, execution_id) do
-            execute_elixir_asset(asset, context)
+            asset
+            |> execute_elixir_asset(context)
+            |> redact_execution_result(asset, context)
           end
 
         :sql ->
@@ -120,6 +122,14 @@ defmodule FavnRunner.Worker do
       true ->
         invoke_asset(asset.module, entrypoint, context)
     end
+  end
+
+  defp redact_execution_result({:ok, meta}, %Asset{} = asset, %Context{} = context) do
+    {:ok, RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.config)}
+  end
+
+  defp redact_execution_result({:error, error}, %Asset{} = asset, %Context{} = context) do
+    {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.config)}
   end
 
   defp invoke_asset(module, entrypoint, %Context{} = context) do

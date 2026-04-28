@@ -8,11 +8,17 @@ defmodule Favn.RuntimeConfig.Redactor do
 
   @redacted :redacted
 
-  @spec redact(term(), Requirements.declarations()) :: term()
-  def redact(value, declarations) when is_map(declarations) do
+  @spec redact(term(), Requirements.declarations(), map()) :: term()
+  def redact(value, declarations, resolved_config \\ %{}) when is_map(declarations) do
     secret_fields = secret_fields(declarations)
     secret_scopes = secret_scopes(declarations)
-    redact_value(value, secret_fields, secret_scopes)
+    secret_values = secret_values(secret_scopes, resolved_config)
+
+    if MapSet.size(secret_fields) == 0 and secret_values == [] do
+      value
+    else
+      redact_value(value, secret_fields, secret_scopes, secret_values)
+    end
   end
 
   defp secret_fields(declarations) do
@@ -37,9 +43,37 @@ defmodule Favn.RuntimeConfig.Redactor do
     end)
   end
 
-  defp redact_value(%_{} = value, _secret_fields, _secret_scopes), do: value
+  defp secret_values(secret_scopes, resolved_config) when is_map(resolved_config) do
+    secret_scopes
+    |> Enum.flat_map(fn {scope, fields} ->
+      case Map.get(resolved_config, scope) do
+        values when is_map(values) ->
+          fields
+          |> Enum.map(&Map.get(values, &1))
+          |> Enum.filter(&redactable_secret?/1)
 
-  defp redact_value(value, secret_fields, secret_scopes) when is_map(value) do
+        _other ->
+          []
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp redactable_secret?(value), do: is_binary(value) and value != ""
+
+  defp redact_value(%DateTime{} = value, _secret_fields, _secret_scopes, _secret_values),
+    do: value
+
+  defp redact_value(%_{} = value, secret_fields, secret_scopes, secret_values) do
+    struct = value.__struct__
+
+    value
+    |> Map.from_struct()
+    |> redact_value(secret_fields, secret_scopes, secret_values)
+    |> Map.put(:__struct__, struct)
+  end
+
+  defp redact_value(value, secret_fields, secret_scopes, secret_values) when is_map(value) do
     value
     |> Enum.map(fn {key, child} ->
       cond do
@@ -52,29 +86,41 @@ defmodule Favn.RuntimeConfig.Redactor do
              child,
              Map.fetch!(secret_scopes, normalize_key(key)),
              secret_fields,
-             secret_scopes
+             secret_scopes,
+             secret_values
            )}
 
         true ->
-          {key, redact_value(child, secret_fields, secret_scopes)}
+          {key, redact_value(child, secret_fields, secret_scopes, secret_values)}
       end
     end)
     |> Map.new()
   end
 
-  defp redact_value(values, secret_fields, secret_scopes) when is_list(values) do
-    Enum.map(values, &redact_value(&1, secret_fields, secret_scopes))
+  defp redact_value(values, secret_fields, secret_scopes, secret_values) when is_list(values) do
+    Enum.map(values, &redact_value(&1, secret_fields, secret_scopes, secret_values))
   end
 
-  defp redact_value(value, _secret_fields, _secret_scopes), do: value
+  defp redact_value(value, secret_fields, secret_scopes, secret_values) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&redact_value(&1, secret_fields, secret_scopes, secret_values))
+    |> List.to_tuple()
+  end
 
-  defp redact_scope(value, scope_secret_fields, secret_fields, secret_scopes) do
+  defp redact_value(value, _secret_fields, _secret_scopes, secret_values) when is_binary(value) do
+    Enum.reduce(secret_values, value, &String.replace(&2, &1, Atom.to_string(@redacted)))
+  end
+
+  defp redact_value(value, _secret_fields, _secret_scopes, _secret_values), do: value
+
+  defp redact_scope(value, scope_secret_fields, secret_fields, secret_scopes, secret_values) do
     value
     |> Enum.map(fn {key, child} ->
       if MapSet.member?(scope_secret_fields, normalize_key(key)) do
         {key, @redacted}
       else
-        {key, redact_value(child, secret_fields, secret_scopes)}
+        {key, redact_value(child, secret_fields, secret_scopes, secret_values)}
       end
     end)
     |> Map.new()
