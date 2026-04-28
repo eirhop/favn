@@ -26,18 +26,29 @@ defmodule FavnReferenceWorkload.Client.DuckDBJSONLoader do
     with {:ok, payload_path} <- write_payload(dataset, rows),
          {:ok, session} <- SQLClient.connect(relation.connection) do
       result =
-        with {:ok, _} <-
-               SQLClient.query(
-                 session,
-                 "create schema if not exists #{relation.schema}",
-                 []
-               ),
+        with {:ok, _} <- SQLClient.query(session, create_schema_sql(relation), []),
              {:ok, _} <-
                SQLClient.query(
                  session,
                  replace_table_sql(relation, payload_path, select_sql),
                  []
                ) do
+          :ok
+        else
+          {:error, reason} -> {:error, reason}
+        end
+
+      SQLClient.disconnect(session)
+      result
+    end
+  end
+
+  @spec replace_relation_from_sql(RelationRef.t(), iodata()) :: :ok | {:error, term()}
+  def replace_relation_from_sql(%RelationRef{} = relation, select_sql) do
+    with {:ok, session} <- SQLClient.connect(relation.connection) do
+      result =
+        with {:ok, _} <- SQLClient.query(session, create_schema_sql(relation), []),
+             {:ok, _} <- SQLClient.query(session, replace_table_sql(relation, select_sql), []) do
           :ok
         else
           {:error, reason} -> {:error, reason}
@@ -62,15 +73,29 @@ defmodule FavnReferenceWorkload.Client.DuckDBJSONLoader do
   defp replace_table_sql(%RelationRef{} = relation, payload_path, select_sql) do
     source_sql = read_json_sql(payload_path)
 
-    """
-    create or replace table #{relation.schema}.#{relation.name} as
-    #{IO.iodata_to_binary(select_sql)}
-    """
+    relation
+    |> replace_table_sql(IO.iodata_to_binary(select_sql))
     |> String.replace("__RAW_JSON_SOURCE__", source_sql)
   end
+
+  defp replace_table_sql(%RelationRef{} = relation, select_sql) do
+    schema = quote_ident(relation.schema)
+    name = quote_ident(relation.name)
+
+    """
+    create or replace table #{schema}.#{name} as
+    #{IO.iodata_to_binary(select_sql)}
+    """
+  end
+
+  defp create_schema_sql(%RelationRef{} = relation),
+    do: ["create schema if not exists ", quote_ident(relation.schema)]
 
   defp read_json_sql(payload_path) do
     escaped = String.replace(payload_path, "'", "''")
     "read_json('#{escaped}', auto_detect = true)"
   end
+
+  defp quote_ident(identifier),
+    do: ["\"", String.replace(to_string(identifier), "\"", "\"\""), "\""]
 end

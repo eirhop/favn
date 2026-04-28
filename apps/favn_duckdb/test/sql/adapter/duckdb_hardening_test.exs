@@ -36,8 +36,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     end
 
     @impl true
-    def query(conn_ref, sql, _params) do
+    def query(conn_ref, sql, params) do
       record({:query, conn_ref, sql})
+      record({:query_params, sql, params})
 
       case {mode(:query_mode, :ok), String.starts_with?(sql, "INSERT")} do
         {:error, true} ->
@@ -417,6 +418,136 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
              Client.relation(session_b, RelationRef.new!(schema: "main", name: "concurrent_b"))
   end
 
+  test "table materialization creates missing target schema" do
+    path = tmp_duckdb_path("schema_table")
+    resolved = %Resolved{resolved() | config: %{database: path}}
+    {:ok, session} = open_session(resolved)
+
+    on_exit(fn ->
+      Client.disconnect(session)
+      File.rm(path)
+    end)
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+             Client.materialize(session, table_plan("analytics", "daily_revenue", 1), [])
+
+    assert {:ok, %Relation{schema: "analytics", name: "daily_revenue", type: :table}} =
+             Client.relation(
+               session,
+               RelationRef.new!(schema: "analytics", name: "daily_revenue")
+             )
+  end
+
+  test "table materialization creates missing target schema without passing select params to schema setup" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{schema: "analytics", name: "parameterized_daily_revenue", type: :table},
+      select_sql: "SELECT ? AS id",
+      replace_existing?: true
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+             DuckDB.materialize(conn, plan, params: [42])
+
+    assert_schema_setup_has_no_params(~s(CREATE SCHEMA IF NOT EXISTS "analytics"))
+
+    assert_statement_has_params(
+      ~s(CREATE OR REPLACE TABLE "analytics"."parameterized_daily_revenue"),
+      [42]
+    )
+  end
+
+  test "view materialization creates missing target schema" do
+    path = tmp_duckdb_path("schema_view")
+    resolved = %Resolved{resolved() | config: %{database: path}}
+    {:ok, session} = open_session(resolved)
+
+    on_exit(fn ->
+      Client.disconnect(session)
+      File.rm(path)
+    end)
+
+    plan = %WritePlan{
+      materialization: :view,
+      target: %Relation{schema: "mart", name: "active_customers", type: :view},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} = Client.materialize(session, plan, [])
+
+    assert {:ok, %Relation{schema: "mart", name: "active_customers", type: :view}} =
+             Client.relation(session, RelationRef.new!(schema: "mart", name: "active_customers"))
+  end
+
+  test "view materialization creates missing target schema without passing select params to schema setup" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :view,
+      target: %Relation{schema: "mart", name: "parameterized_active_customers", type: :view},
+      select_sql: "SELECT ? AS id",
+      replace_existing?: true
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+             DuckDB.materialize(conn, plan, params: [7])
+
+    assert_schema_setup_has_no_params(~s(CREATE SCHEMA IF NOT EXISTS "mart"))
+
+    assert_statement_has_params(
+      ~s(CREATE OR REPLACE VIEW "mart"."parameterized_active_customers"),
+      [7]
+    )
+  end
+
+  test "incremental bootstrap creates missing target schema without passing select params to schema setup" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :incremental,
+      strategy: :append,
+      mode: :bootstrap,
+      target: %Relation{schema: "snapshots", name: "orders", type: :table},
+      select_sql: "SELECT ? AS id",
+      replace_existing?: true,
+      bootstrap?: true
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize}} =
+             DuckDB.materialize(conn, plan, params: [99])
+
+    assert_schema_setup_has_no_params(~s(CREATE SCHEMA IF NOT EXISTS "snapshots"))
+    assert_statement_has_params(~s(CREATE OR REPLACE TABLE "snapshots"."orders"), [99])
+  end
+
+  test "appender materialization creates missing target schema before opening appender" do
+    path = tmp_duckdb_path("schema_appender")
+    resolved = %Resolved{resolved() | config: %{database: path}}
+    {:ok, session} = open_session(resolved)
+
+    on_exit(fn ->
+      Client.disconnect(session)
+      File.rm(path)
+    end)
+
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{schema: "bulk", name: "events", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true,
+      options: %{appender_rows: [[1], [2]]}
+    }
+
+    assert {:ok, %Favn.SQL.Result{kind: :materialize, command: "appender", rows_affected: 2}} =
+             Client.materialize(session, plan, [])
+
+    assert {:ok, %Relation{schema: "bulk", name: "events", type: :table}} =
+             Client.relation(session, RelationRef.new!(schema: "bulk", name: "events"))
+  end
+
   defp resolved do
     %Resolved{
       name: :duckdb_runtime,
@@ -442,12 +573,23 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   defp table_plan(name, value) do
+    table_plan("main", name, value)
+  end
+
+  defp table_plan(schema, name, value) do
     %WritePlan{
       materialization: :table,
-      target: %Relation{schema: "main", name: name, type: :table},
+      target: %Relation{schema: schema, name: name, type: :table},
       select_sql: "SELECT #{value} AS id",
       replace_existing?: true
     }
+  end
+
+  defp tmp_duckdb_path(name) do
+    Path.join(
+      System.tmp_dir!(),
+      "favn_duckdb_#{name}_#{System.unique_integer([:positive])}.duckdb"
+    )
   end
 
   defp last_result_ref! do
@@ -468,5 +610,22 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     |> :ets.tab2list()
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(&elem(&1, 1))
+  end
+
+  defp assert_schema_setup_has_no_params(statement_prefix) do
+    assert Enum.any?(events(), fn
+             {:query_params, statement, []} -> String.starts_with?(statement, statement_prefix)
+             _ -> false
+           end)
+  end
+
+  defp assert_statement_has_params(statement_prefix, params) do
+    assert Enum.any?(events(), fn
+             {:query_params, statement, ^params} ->
+               String.starts_with?(statement, statement_prefix)
+
+             _ ->
+               false
+           end)
   end
 end

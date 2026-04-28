@@ -225,7 +225,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
         :incremental -> incremental_statements(target, plan)
       end
 
-    {:ok, plan.pre_statements ++ statements ++ plan.post_statements}
+    {:ok,
+     schema_setup_statements(plan) ++ plan.pre_statements ++ statements ++ plan.post_statements}
   rescue
     _ ->
       {:error,
@@ -349,8 +350,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
     params = Keyword.get(opts, :params, [])
 
     with {:ok, statements} <- materialization_statements(plan, %Capabilities{}, opts) do
-      Enum.reduce_while(statements, {:ok, 0}, fn statement, {:ok, count} ->
-        statement_params = statement_params(plan, statement, params)
+      schema_setup_count = length(schema_setup_statements(plan))
+
+      statements
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, 0}, fn {statement, index}, {:ok, count} ->
+        statement_params =
+          materialization_statement_params(plan, statement, params, index, schema_setup_count)
 
         case execute(conn, statement, params: statement_params) do
           {:ok, _} -> {:cont, {:ok, count + 1}}
@@ -401,7 +407,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp split_materialization_statements(%WritePlan{} = plan, statements) do
-    pre_count = length(plan.pre_statements)
+    pre_count = length(schema_setup_statements(plan)) + length(plan.pre_statements)
     post_count = length(plan.post_statements)
 
     {pre, rest} = Enum.split(statements, pre_count)
@@ -429,6 +435,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
     create_table_statement(target, empty_plan)
   end
+
+  defp schema_setup_statements(%WritePlan{target: %Relation{schema: schema}})
+       when is_binary(schema) and schema not in ["", "main"] do
+    [["CREATE SCHEMA IF NOT EXISTS ", quote_ident(schema)]]
+  end
+
+  defp schema_setup_statements(%WritePlan{}), do: []
 
   defp appender_rows(%WritePlan{} = plan, opts) do
     plan.options
@@ -636,6 +649,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp statement_params(_plan, _statement, params), do: params
+
+  defp materialization_statement_params(_plan, _statement, _params, index, schema_setup_count)
+       when index < schema_setup_count,
+       do: []
+
+  defp materialization_statement_params(plan, statement, params, _index, _schema_setup_count),
+    do: statement_params(plan, statement, params)
 
   defp normalize_window_column(options) do
     options
