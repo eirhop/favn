@@ -42,8 +42,14 @@ defmodule Favn.RuntimeConfig.Requirements do
 
   defp normalize_declaration_order(declarations) do
     Map.new(declarations, fn
-      {scope, fields} when is_atom(scope) -> {scope, fields}
-      {fields, scope} when is_atom(scope) -> {scope, fields}
+      {scope, fields} when is_atom(scope) ->
+        {scope, fields}
+
+      {fields, scope} when is_atom(scope) ->
+        {scope, fields}
+
+      {scope, _fields} ->
+        raise ArgumentError, "runtime config scope must be an atom, got: #{inspect(scope)}"
     end)
   end
 

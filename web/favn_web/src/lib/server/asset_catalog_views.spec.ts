@@ -148,11 +148,11 @@ describe('asset catalog view normalizers', () => {
 		);
 	});
 
-	it('normalizes runtime config refs into env-key presence diagnostics without values', () => {
+	it('normalizes runtime config refs as declarations without checking web process env', () => {
 		const previousSegment = process.env.SOURCE_SYSTEM_SEGMENT_ID;
 		const previousToken = process.env.SOURCE_SYSTEM_TOKEN;
 		process.env.SOURCE_SYSTEM_SEGMENT_ID = 'segment-123';
-		delete process.env.SOURCE_SYSTEM_TOKEN;
+		process.env.SOURCE_SYSTEM_TOKEN = 'super-secret-token';
 
 		try {
 			const catalog = normalizeAssetCatalogList(
@@ -175,7 +175,8 @@ describe('asset catalog view normalizers', () => {
 												provider: 'env',
 												key: 'SOURCE_SYSTEM_TOKEN',
 												secret: true,
-												required: true
+												required: true,
+												value: 'super-secret-token'
 											}
 										}
 									}
@@ -195,7 +196,7 @@ describe('asset catalog view normalizers', () => {
 					key: 'SOURCE_SYSTEM_SEGMENT_ID',
 					secret: false,
 					required: true,
-					status: 'present'
+					status: 'declared'
 				}),
 				expect.objectContaining({
 					path: 'source_system.token',
@@ -203,10 +204,17 @@ describe('asset catalog view normalizers', () => {
 					key: 'SOURCE_SYSTEM_TOKEN',
 					secret: true,
 					required: true,
-					status: 'missing'
+					status: 'declared'
 				})
 			]);
-			expect(JSON.stringify(catalog.assets[0].runtimeConfig)).not.toContain('segment-123');
+			expect(catalog.assets[0].runtimeConfig?.map((entry) => entry.status)).toEqual([
+				'declared',
+				'declared'
+			]);
+			expect(JSON.stringify(catalog.assets[0])).not.toContain('segment-123');
+			expect(JSON.stringify(catalog.assets[0])).not.toContain('super-secret-token');
+			expect(JSON.stringify(catalog.assets[0].runtimeConfig)).not.toContain('present');
+			expect(JSON.stringify(catalog.assets[0].runtimeConfig)).not.toContain('missing');
 		} finally {
 			if (previousSegment === undefined) delete process.env.SOURCE_SYSTEM_SEGMENT_ID;
 			else process.env.SOURCE_SYSTEM_SEGMENT_ID = previousSegment;

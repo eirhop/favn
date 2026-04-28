@@ -26,7 +26,7 @@ export const successfulAssetWithRuns = {
 				key: 'SOURCE_SYSTEM_SEGMENT_ID',
 				secret: false,
 				required: true,
-				status: 'present'
+				status: 'declared'
 			},
 			{
 				path: 'source_system.token',
@@ -34,7 +34,7 @@ export const successfulAssetWithRuns = {
 				key: 'SOURCE_SYSTEM_TOKEN',
 				secret: true,
 				required: true,
-				status: 'missing'
+				status: 'declared'
 			}
 		],
 		type: 'SQL asset',

@@ -165,8 +165,7 @@
 	}
 
 	function runtimeStatusClass(status: string) {
-		if (status === 'present') return 'bg-emerald-50 text-emerald-700 ring-emerald-200';
-		if (status === 'missing') return 'bg-red-50 text-red-700 ring-red-200';
+		if (status === 'declared') return 'bg-blue-50 text-blue-700 ring-blue-200';
 		return 'bg-slate-50 text-slate-700 ring-slate-200';
 	}
 
@@ -378,7 +377,10 @@
 		</div>
 
 		<Card.Root>
-			<Card.Header><h2 class="text-xl font-semibold tracking-tight">Runtime config</h2></Card.Header
+			<Card.Header
+				><h2 class="text-xl font-semibold tracking-tight">
+					Runtime config declarations
+				</h2></Card.Header
 			>
 			<Card.Content>
 				{#if runtimeConfig.length === 0}
@@ -391,8 +393,9 @@
 							<thead class="bg-slate-50 text-left text-xs text-slate-500 uppercase">
 								<tr>
 									<th class="px-3 py-2">Config path</th>
-									<th class="px-3 py-2">Env key</th>
-									<th class="px-3 py-2">Status</th>
+									<th class="px-3 py-2">Provider</th>
+									<th class="px-3 py-2">Key</th>
+									<th class="px-3 py-2">Declaration</th>
 									<th class="px-3 py-2">Flags</th>
 								</tr>
 							</thead>
@@ -400,6 +403,7 @@
 								{#each runtimeConfig as entry (`${entry.path}:${entry.key}`)}
 									<tr class="border-t">
 										<td class="px-3 py-2 font-mono text-xs break-all">{entry.path}</td>
+										<td class="px-3 py-2 font-mono text-xs break-all">{entry.provider}</td>
 										<td class="px-3 py-2 font-mono text-xs break-all">{entry.key}</td>
 										<td class="px-3 py-2">
 											<span
@@ -422,7 +426,8 @@
 						</table>
 					</div>
 					<p class="mt-3 text-xs text-slate-500">
-						Secret values are never displayed; only env key presence is shown.
+						Secret values are never displayed. Runtime values are resolved by the runner; this web
+						view only shows declared config refs and does not preflight runner environment presence.
 					</p>
 				{/if}
 			</Card.Content>

@@ -1,6 +1,9 @@
 defmodule Favn.ValueObjectsTest do
   use ExUnit.Case, async: true
 
+  alias Favn.RuntimeConfig.Ref
+  alias Favn.RuntimeConfig.Requirements
+
   test "builds canonical asset refs" do
     assert Favn.Ref.new(MyApp.Asset, :asset) == {MyApp.Asset, :asset}
   end
@@ -19,5 +22,11 @@ defmodule Favn.ValueObjectsTest do
     refute Favn.Timezone.valid_identifier?("../etc/passwd")
     refute Favn.Timezone.valid_identifier?("/etc/passwd")
     refute Favn.Timezone.valid_identifier?("Not/AZone")
+  end
+
+  test "runtime config requirements return clean errors for invalid scopes" do
+    assert_raise ArgumentError, "runtime config scope must be an atom, got: \"source\"", fn ->
+      Requirements.normalize!(%{"source" => %{token: Ref.secret_env!("SOURCE_TOKEN")}})
+    end
   end
 end

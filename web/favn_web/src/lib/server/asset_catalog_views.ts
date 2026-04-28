@@ -62,11 +62,8 @@ function runtimeConfigEntry(path: string[], value: JsonRecord): AssetRuntimeConf
 	const key = firstString(value, ['key', 'env_key', 'envKey', 'name']);
 	if (!provider || !key) return null;
 
-	const status =
-		provider === 'env' ? (process.env[key] === undefined ? 'missing' : 'present') : 'unknown';
-
 	return {
-		path: path.join('.'),
+		path: path.length > 0 ? path.join('.') : 'runtime_config',
 		provider,
 		key,
 		secret:
@@ -74,7 +71,7 @@ function runtimeConfigEntry(path: string[], value: JsonRecord): AssetRuntimeConf
 		required:
 			asBoolean(value['required?'] ?? value.required ?? value.is_required ?? value.isRequired) ??
 			false,
-		status
+		status: 'declared'
 	};
 }
 
@@ -87,6 +84,36 @@ function normalizeRuntimeConfig(value: unknown, path: string[] = []): AssetRunti
 	return Object.entries(value).flatMap(([key, child]) =>
 		normalizeRuntimeConfig(child, [...path, key])
 	);
+}
+
+function safeRuntimeConfigRaw(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(safeRuntimeConfigRaw);
+	if (!isRecord(value)) return value;
+
+	const direct = runtimeConfigEntry([], value);
+	if (direct) {
+		return {
+			provider: direct.provider,
+			key: direct.key,
+			secret: direct.secret,
+			required: direct.required,
+			status: direct.status
+		};
+	}
+
+	return Object.fromEntries(
+		Object.entries(value).map(([key, child]) => [key, safeRuntimeConfigRaw(child)])
+	);
+}
+
+function safeRawTarget(target: unknown): unknown {
+	if (!isRecord(target)) return target;
+
+	const sanitized: JsonRecord = { ...target };
+	for (const key of ['runtime_config', 'runtimeConfig', 'config_refs', 'configRefs']) {
+		if (key in sanitized) sanitized[key] = safeRuntimeConfigRaw(sanitized[key]);
+	}
+	return sanitized;
 }
 
 function normalizeStatus(value: unknown): RunStatus {
@@ -245,7 +272,7 @@ function normalizeTargetRecord(target: unknown, index: number): AssetCatalogItem
 		]),
 		runtimeConfig: normalizeRuntimeConfig(runtimeConfigSource(record)),
 		runActions: [],
-		rawTarget: target
+		rawTarget: safeRawTarget(target)
 	};
 }
 

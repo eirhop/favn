@@ -133,6 +133,37 @@ defmodule FavnRunner.WorkerTest do
     end
   end
 
+  test "worker redacts declared secret runtime config from returned metadata" do
+    previous_segment = System.get_env("FAVN_TEST_LEAK_SEGMENT_ID")
+    previous_token = System.get_env("FAVN_TEST_LEAK_TOKEN")
+
+    try do
+      System.put_env("FAVN_TEST_LEAK_SEGMENT_ID", "segment-456")
+      System.put_env("FAVN_TEST_LEAK_TOKEN", "leaked-secret-token")
+
+      result =
+        run_single_asset(FavnRunner.WorkerTest.ConfigLeakAsset,
+          runtime_config: %{
+            source_system: %{
+              segment_id: Ref.env!("FAVN_TEST_LEAK_SEGMENT_ID"),
+              token: Ref.secret_env!("FAVN_TEST_LEAK_TOKEN")
+            }
+          }
+        )
+
+      assert result.status == :ok
+      assert [%{meta: meta, attempts: [%{meta: attempt_meta}]}] = result.asset_results
+      assert meta.config.source_system.segment_id == "segment-456"
+      assert meta.config.source_system.token == :redacted
+      assert meta.nested.source_system.token == :redacted
+      assert attempt_meta.config.source_system.token == :redacted
+      refute inspect(result) =~ "leaked-secret-token"
+    after
+      restore_env("FAVN_TEST_LEAK_SEGMENT_ID", previous_segment)
+      restore_env("FAVN_TEST_LEAK_TOKEN", previous_token)
+    end
+  end
+
   defp assert_throw_exit_result(module, expected_kind) do
     result = run_single_asset(module)
     assert result.status == :error
@@ -229,5 +260,12 @@ defmodule FavnRunner.WorkerTest.ConfigAsset do
        segment_id: ctx.config.source_system.segment_id,
        token_seen?: Map.get(ctx.config.source_system, :token) == "secret-token"
      }}
+  end
+end
+
+defmodule FavnRunner.WorkerTest.ConfigLeakAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(ctx) do
+    {:ok, %{config: ctx.config, nested: %{source_system: ctx.config.source_system}}}
   end
 end

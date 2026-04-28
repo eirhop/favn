@@ -22,7 +22,7 @@ export type AssetCatalogRunSummary = {
 	raw: unknown;
 };
 
-export type AssetRuntimeConfigStatus = 'present' | 'missing' | 'unknown';
+export type AssetRuntimeConfigStatus = 'declared';
 
 export type AssetRuntimeConfigEntry = {
 	path: string;

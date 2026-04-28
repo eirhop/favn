@@ -10,6 +10,7 @@ defmodule FavnRunner.Worker do
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.Context
+  alias Favn.RuntimeConfig.Redactor, as: RuntimeConfigRedactor
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
   alias FavnRunner.EventSink
@@ -169,6 +170,8 @@ defmodule FavnRunner.Worker do
   end
 
   defp asset_result(%Asset{} = asset, started_at, finished_at, status, meta, error) do
+    meta = RuntimeConfigRedactor.redact(meta, asset.runtime_config || %{})
+
     %AssetResult{
       ref: asset.ref,
       stage: 0,

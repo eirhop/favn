@@ -140,6 +140,7 @@ Notes:
   - `relation_ref.ex`
   - `runtime_config/error.ex`
   - `runtime_config/ref.ex`
+  - `runtime_config/redactor.ex`
   - `runtime_config/requirements.ex`
   - `runtime_config/resolver.ex`
   - `timezone.ex`
