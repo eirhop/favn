@@ -451,6 +451,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :invalid_pipeline_target} ->
         error(conn, 422, "validation_failed", "Invalid pipeline target id")
 
+      {:error, reason} when is_tuple(reason) ->
+        maybe_window_policy_error(conn, reason)
+
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
 
@@ -1099,6 +1102,46 @@ defmodule FavnOrchestrator.API.Router do
     |> put_resp_content_type("application/json")
     |> send_resp(status, body)
   end
+
+  defp maybe_window_policy_error(conn, reason) do
+    case window_policy_error(reason) do
+      {:ok, message, details} -> error(conn, 422, "validation_failed", message, details)
+      :error -> error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  defp window_policy_error({:missing_window_request, kind}) do
+    {:ok, "Pipeline requires an explicit #{kind} window", %{kind: atom_name(kind)}}
+  end
+
+  defp window_policy_error({:full_load_not_allowed, kind}) do
+    {:ok, "Pipeline does not allow full-load submissions for #{kind} windows",
+     %{kind: atom_name(kind)}}
+  end
+
+  defp window_policy_error({:window_kind_mismatch, expected, actual}) do
+    {:ok, "Window kind #{actual} does not match pipeline policy #{expected}",
+     %{expected: atom_name(expected), actual: atom_name(actual)}}
+  end
+
+  defp window_policy_error({:window_request_without_policy, kind}) do
+    {:ok, "Window request #{kind} was provided for a pipeline without a window policy",
+     %{kind: atom_name(kind)}}
+  end
+
+  defp window_policy_error({:invalid_window_request, reason}) do
+    {:ok, "Invalid window request", %{reason: inspect(reason)}}
+  end
+
+  defp window_policy_error({:invalid_window_value, kind, value}) do
+    {:ok, "Invalid #{kind} window value", %{kind: atom_name(kind), value: value}}
+  end
+
+  defp window_policy_error({:invalid_timezone, timezone}) do
+    {:ok, "Invalid window timezone", %{timezone: timezone}}
+  end
+
+  defp window_policy_error(_reason), do: :error
 
   defp request_id(conn) do
     case get_resp_header(conn, "x-request-id") do

@@ -65,17 +65,17 @@ defmodule Favn.Window.Request do
   def from_value(nil), do: {:ok, nil}
   def from_value(%__MODULE__{} = request), do: validate(request)
 
-  def from_value(value) when is_map(value) do
-    mode = value |> field_value(:mode, :single) |> decode_mode()
+  def from_value(input) when is_map(input) do
+    mode = input |> field_value(:mode, :single) |> decode_mode()
 
     case mode do
       :full_load ->
         {:ok, full_load()}
 
       :single ->
-        with {:ok, kind} <- field_value(value, :kind) |> decode_kind(),
-             value <- field_value(value, :value),
-             timezone <- field_value(value, :timezone),
+        with {:ok, kind} <- field_value(input, :kind) |> decode_kind(),
+             value <- field_value(input, :value),
+             timezone <- field_value(input, :timezone),
              :ok <- validate_optional_timezone(timezone),
              :ok <- validate_value(kind, value) do
           {:ok, %__MODULE__{mode: :single, kind: kind, value: value, timezone: timezone}}
@@ -173,8 +173,9 @@ defmodule Favn.Window.Request do
 
   defp bounds(:day, value, timezone) do
     with {:ok, date} <- Date.from_iso8601(value),
-         {:ok, start_at} <- datetime(date.year, date.month, date.day, 0, timezone) do
-      {:ok, start_at, DateTime.add(start_at, 1, :day)}
+         {:ok, start_at} <- datetime(date.year, date.month, date.day, 0, timezone),
+         {:ok, end_at} <- local_midnight(Date.add(date, 1), timezone) do
+      {:ok, start_at, end_at}
     end
   end
 
@@ -218,6 +219,10 @@ defmodule Favn.Window.Request do
     month = rem(total, 12) + 1
     {:ok, shifted} = datetime(year, month, 1, 0, datetime.time_zone)
     shifted
+  end
+
+  defp local_midnight(%Date{} = date, timezone) do
+    datetime(date.year, date.month, date.day, 0, timezone)
   end
 
   defp field_value(value, field, default \\ nil) when is_map(value) do

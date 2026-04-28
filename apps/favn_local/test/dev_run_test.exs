@@ -123,7 +123,46 @@ defmodule Favn.Dev.RunTest do
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, timezone: "Europe/Oslo")
 
     assert {:error, {:invalid_window_request, {:invalid_window_value, :month, "2026-99"}}} =
-             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, window: "month:2026-99")
+              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, window: "month:2026-99")
+  end
+
+  test "run_pipeline/2 surfaces orchestrator validation messages", %{root_dir: root_dir} do
+    {:ok, base_url, _server} =
+      start_server([
+        {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+        {200,
+         ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
+        {422,
+         ~s({"error":{"code":"validation_failed","message":"Pipeline requires an explicit month window"}})}
+      ])
+
+    pid = :os.getpid() |> List.to_string() |> String.to_integer()
+
+    assert :ok =
+             State.write_runtime(
+               %{
+                 "orchestrator_base_url" => base_url,
+                 "services" => %{
+                   "web" => %{"pid" => pid},
+                   "orchestrator" => %{"pid" => pid},
+                   "runner" => %{"pid" => pid}
+                 }
+               },
+               root_dir: root_dir
+             )
+
+    assert :ok =
+             State.write_secrets(
+               %{
+                 "service_token" => "token",
+                 "local_operator_username" => "operator",
+                 "local_operator_password" => "operator-password"
+               },
+               root_dir: root_dir
+             )
+
+    assert {:error, {:orchestrator_validation_failed, "Pipeline requires an explicit month window"}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
   end
 
   defp start_server(responses) when is_list(responses) do

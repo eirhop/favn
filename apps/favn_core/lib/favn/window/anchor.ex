@@ -122,7 +122,7 @@ defmodule Favn.Window.Anchor do
       |> Map.merge(%{month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}})
 
   defp shift_kind(datetime, :hour, count), do: DateTime.add(datetime, count * 3600, :second)
-  defp shift_kind(datetime, :day, count), do: DateTime.add(datetime, count, :day)
+  defp shift_kind(datetime, :day, count), do: shift_day(datetime, count)
 
   defp shift_kind(%DateTime{} = datetime, :month, count) do
     date = DateTime.to_date(datetime)
@@ -138,6 +138,12 @@ defmodule Favn.Window.Anchor do
     date = DateTime.to_date(datetime)
     {:ok, new_date} = Date.new(date.year + count, 1, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
+    DateTime.from_naive!(naive, datetime.time_zone)
+  end
+
+  defp shift_day(%DateTime{} = datetime, count) do
+    date = datetime |> DateTime.to_date() |> Date.add(count)
+    {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00])
     DateTime.from_naive!(naive, datetime.time_zone)
   end
 end

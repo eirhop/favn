@@ -247,9 +247,14 @@ defmodule Favn.Window.Policy do
     do: %{datetime | month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
 
   defp shift_kind(datetime, :hour, count), do: DateTime.add(datetime, count * 3600, :second)
-  defp shift_kind(datetime, :day, count), do: DateTime.add(datetime, count, :day)
+  defp shift_kind(datetime, :day, count), do: shift_day(datetime, count)
   defp shift_kind(datetime, :month, count), do: shift_month(datetime, count)
   defp shift_kind(datetime, :year, count), do: shift_year(datetime, count)
+
+  defp shift_day(%DateTime{} = datetime, count) do
+    date = datetime |> DateTime.to_date() |> Date.add(count)
+    datetime_from_date!(date.year, date.month, date.day, datetime.time_zone)
+  end
 
   defp shift_month(%DateTime{} = datetime, count) do
     date = DateTime.to_date(datetime)
@@ -266,7 +271,7 @@ defmodule Favn.Window.Policy do
 
   defp datetime_from_date!(year, month, day, timezone) do
     {:ok, date} = Date.new(year, month, day)
-    {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00.000000])
+    {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00])
     DateTime.from_naive!(naive, timezone, Favn.Timezone.database!())
   end
 end

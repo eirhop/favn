@@ -573,7 +573,10 @@ defmodule FavnOrchestrator.RunServer do
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
       params: run_state.params,
-      trigger: Map.put(run_state.trigger, :window, node.window),
+      trigger:
+        run_state.trigger
+        |> Map.put(:window, node.window)
+        |> maybe_put_pipeline_trigger(Map.get(run_state.metadata, :pipeline_context)),
       metadata:
         Map.merge(work_metadata(run_state.metadata), %{
           attempt: attempt,
@@ -583,6 +586,11 @@ defmodule FavnOrchestrator.RunServer do
         })
     }
   end
+
+  defp maybe_put_pipeline_trigger(trigger, pipeline_context) when is_map(pipeline_context),
+    do: Map.put(trigger, :pipeline, pipeline_context)
+
+  defp maybe_put_pipeline_trigger(trigger, _pipeline_context), do: trigger
 
   defp with_inflight_execution(%RunState{} = run_state, execution_id, metadata) do
     ids =

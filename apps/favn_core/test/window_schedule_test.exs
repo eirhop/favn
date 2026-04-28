@@ -197,4 +197,43 @@ defmodule Favn.WindowTest do
     assert {:error, {:missing_window_request, :month}} =
              Policy.resolve_manual(Policy.new!(:monthly), nil)
   end
+
+  test "day windows use local civil midnights across DST transitions" do
+    assert {:ok, spring_request} = Request.parse("day:2026-03-29", timezone: "Europe/Oslo")
+    assert {:ok, spring_anchor} = Policy.resolve_manual(Policy.new!(:daily), spring_request)
+
+    assert DateTime.compare(
+             spring_anchor.start_at,
+             DateTime.from_naive!(
+               ~N[2026-03-29 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+           ) == :eq
+
+    assert DateTime.compare(
+             spring_anchor.end_at,
+             DateTime.from_naive!(
+               ~N[2026-03-30 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+           ) == :eq
+
+    assert DateTime.diff(spring_anchor.end_at, spring_anchor.start_at, :hour) == 23
+
+    assert {:ok, autumn_request} = Request.parse("day:2026-10-25", timezone: "Europe/Oslo")
+    assert {:ok, autumn_anchor} = Policy.resolve_manual(Policy.new!(:daily), autumn_request)
+
+    assert DateTime.compare(
+             autumn_anchor.end_at,
+             DateTime.from_naive!(
+               ~N[2026-10-26 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+           ) == :eq
+
+    assert DateTime.diff(autumn_anchor.end_at, autumn_anchor.start_at, :hour) == 25
+  end
 end

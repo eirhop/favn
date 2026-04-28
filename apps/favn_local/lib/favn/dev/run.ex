@@ -159,7 +159,10 @@ defmodule Favn.Dev.Run do
         }
         |> maybe_put_window(window_request)
 
-        OrchestratorClient.submit_run(base_url, service_token, session_context, payload)
+        case OrchestratorClient.submit_run(base_url, service_token, session_context, payload) do
+          {:ok, _run} = ok -> ok
+          {:error, reason} -> {:error, unwrap_submit_error(reason)}
+        end
 
       _other ->
         {:error, :invalid_pipeline_target}
@@ -176,6 +179,15 @@ defmodule Favn.Dev.Run do
       timezone: request.timezone
     })
   end
+
+  defp unwrap_submit_error(%{operation: :submit_run, reason: {:http_error, 422, payload}}) do
+    case get_in(payload, ["error", "message"]) do
+      message when is_binary(message) and message != "" -> {:orchestrator_validation_failed, message}
+      _other -> {:orchestrator_validation_failed, inspect(payload)}
+    end
+  end
+
+  defp unwrap_submit_error(reason), do: reason
 
   defp maybe_wait(run, runtime, service_token, session_context, opts) do
     case {Keyword.get(opts, :wait, true), run} do

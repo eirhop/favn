@@ -79,6 +79,8 @@ defmodule Mix.Tasks.Favn.Run do
   defp error_message({:invalid_window_request, reason}),
     do: "invalid --window value: #{inspect(reason)}"
 
+  defp error_message({:orchestrator_validation_failed, message}), do: message
+
   defp error_message(reason), do: "run failed: #{inspect(reason)}"
 
   defp print_run(run, pipeline_module) do
