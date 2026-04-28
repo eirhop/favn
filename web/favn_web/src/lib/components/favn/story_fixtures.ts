@@ -116,7 +116,8 @@ export const failedRunDetail: RunDetailView = {
 			operation: 'materialize table',
 			relation: 'raw.crm_customers',
 			connection: 'local_duckdb',
-			database: '.favn/data/work.duckdb'
+			database: '.favn/data/work.duckdb',
+			window: null
 		},
 		{
 			id: 'Staging.CustomerOrders',
@@ -148,7 +149,8 @@ export const failedRunDetail: RunDetailView = {
 			operation: 'materialize table',
 			relation: 'staging.customer_orders',
 			connection: 'local_duckdb',
-			database: '.favn/data/work.duckdb'
+			database: '.favn/data/work.duckdb',
+			window: null
 		},
 		{
 			id: 'Mart.CustomerRevenue',
@@ -170,7 +172,8 @@ export const failedRunDetail: RunDetailView = {
 			operation: null,
 			relation: 'mart.customer_revenue',
 			connection: 'local_duckdb',
-			database: '.favn/data/work.duckdb'
+			database: '.favn/data/work.duckdb',
+			window: null
 		}
 	],
 	outputs: [
@@ -217,7 +220,13 @@ export const failedRunDetail: RunDetailView = {
 	],
 	progressPercent: null,
 	assetCounts: { succeeded: 1, failed: 1, skipped: 1, running: 0, pending: 0 },
-	failedAssetId: 'Staging.CustomerOrders'
+	failedAssetId: 'Staging.CustomerOrders',
+	windowInfo: {
+		pipelinePolicy: null,
+		requestedAnchorWindow: null,
+		resolvedAnchorWindow: null,
+		assetWindows: []
+	}
 };
 
 export const realPayloadRunDetail: RunDetailView = {
@@ -262,5 +271,11 @@ export const realPayloadRunDetail: RunDetailView = {
 	],
 	progressPercent: null,
 	assetCounts: { succeeded: 0, failed: 0, skipped: 0, running: 0, pending: 0 },
-	failedAssetId: null
+	failedAssetId: null,
+	windowInfo: {
+		pipelinePolicy: null,
+		requestedAnchorWindow: null,
+		resolvedAnchorWindow: null,
+		assetWindows: []
+	}
 };

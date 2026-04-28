@@ -8,7 +8,7 @@ defmodule Favn.Window.Anchor do
   alias Favn.Window.Key
   alias Favn.Window.Validate
 
-  @type kind :: :hour | :day | :month
+  @type kind :: :hour | :day | :month | :year
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -115,6 +115,12 @@ defmodule Favn.Window.Anchor do
       |> DateTime.shift_zone!(timezone)
       |> Map.merge(%{day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}})
 
+  defp floor_to_kind(datetime, :year, timezone),
+    do:
+      datetime
+      |> DateTime.shift_zone!(timezone)
+      |> Map.merge(%{month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}})
+
   defp shift_kind(datetime, :hour, count), do: DateTime.add(datetime, count * 3600, :second)
   defp shift_kind(datetime, :day, count), do: DateTime.add(datetime, count, :day)
 
@@ -124,6 +130,13 @@ defmodule Favn.Window.Anchor do
     year = div(total, 12)
     month = rem(total, 12) + 1
     {:ok, new_date} = Date.new(year, month, 1)
+    {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
+    DateTime.from_naive!(naive, datetime.time_zone)
+  end
+
+  defp shift_kind(%DateTime{} = datetime, :year, count) do
+    date = DateTime.to_date(datetime)
+    {:ok, new_date} = Date.new(date.year + count, 1, 1)
     {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
     DateTime.from_naive!(naive, datetime.time_zone)
   end

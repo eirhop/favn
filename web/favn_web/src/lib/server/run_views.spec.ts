@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeRunDetail, normalizeRunSummaries } from './run_views';
+import { parseSubmitPayload } from '../../routes/api/web/v1/runs/+server';
 
 describe('run view normalizers', () => {
 	it('normalizes run lists from the orchestrator items envelope', () => {
@@ -199,5 +200,76 @@ describe('run view normalizers', () => {
 		expect(detail.assets).toEqual([]);
 		expect(detail.outputs).toEqual([]);
 		expect(detail.timeline).toContainEqual(expect.objectContaining({ label: 'run_succeeded' }));
+	});
+
+	it('normalizes pipeline and asset runtime window context defensively', () => {
+		const detail = normalizeRunDetail(
+			{
+				data: {
+					run: {
+						id: 'run_windowed',
+						status: 'ok',
+						submit_kind: 'pipeline',
+						pipeline: {
+							module: 'Elixir.FavnDemo.Pipelines.Daily',
+							window_policy: {
+								kind: 'day',
+								anchor: 'previous_complete',
+								timezone: 'Europe/Oslo',
+								allow_full_load: false
+							},
+							anchor_window: {
+								mode: 'single',
+								kind: 'day',
+								value: '2026-04-27',
+								timezone: 'Europe/Oslo'
+							},
+							window: ':day:2026-04-27'
+						},
+						assets: [
+							{
+								id: 'Raw.Orders',
+								status: 'ok',
+								window: { kind: 'day', value: '2026-04-27', timezone: 'Europe/Oslo' }
+							}
+						]
+					}
+				}
+			},
+			'run_windowed'
+		);
+
+		expect(detail.windowInfo).toEqual({
+			pipelinePolicy: 'day · previous_complete · Europe/Oslo · full load blocked',
+			requestedAnchorWindow: 'day · 2026-04-27 · Europe/Oslo',
+			resolvedAnchorWindow: 'day:2026-04-27',
+			assetWindows: [{ asset: 'Raw.Orders', window: 'day · 2026-04-27 · Europe/Oslo' }]
+		});
+		expect(detail.assets[0].window).toBe('day · 2026-04-27 · Europe/Oslo');
+	});
+
+	it('accepts window payloads for pipeline submissions only', () => {
+		expect(
+			parseSubmitPayload({
+				target: { type: 'pipeline', id: 'DailySales' },
+				window: { mode: 'single', kind: 'day', value: '2026-04-27', timezone: 'Europe/Oslo' }
+			})
+		).toEqual({
+			target: { type: 'pipeline', id: 'DailySales' },
+			window: { mode: 'single', kind: 'day', value: '2026-04-27', timezone: 'Europe/Oslo' }
+		});
+
+		expect(
+			parseSubmitPayload({
+				target: { type: 'asset', id: 'Raw.Orders' },
+				window: { mode: 'single', kind: 'day', value: '2026-04-27' }
+			})
+		).toBeNull();
+		expect(
+			parseSubmitPayload({
+				target: { type: 'pipeline', id: 'DailySales' },
+				window: { mode: 'range', kind: 'day', value: '2026-04-27' }
+			})
+		).toBeNull();
 	});
 });

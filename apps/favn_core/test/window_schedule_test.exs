@@ -3,6 +3,8 @@ defmodule Favn.WindowTest do
 
   alias Favn.Window.Anchor
   alias Favn.Window.Key
+  alias Favn.Window.Policy
+  alias Favn.Window.Request
   alias Favn.Window.Runtime
   alias Favn.Window.Spec
 
@@ -10,6 +12,7 @@ defmodule Favn.WindowTest do
     assert {:ok, %Spec{kind: :hour, lookback: 0, timezone: "Etc/UTC"}} = Spec.new(:hour)
     assert {:ok, %Spec{kind: :day, lookback: 2}} = Spec.new(:day, lookback: 2)
     assert {:ok, %Spec{kind: :month, refresh_from: :day}} = Spec.new(:month, refresh_from: :day)
+    assert {:ok, %Spec{kind: :year, required: true}} = Spec.new(:year, required: true)
 
     start_at = ~U[2026-01-01 00:00:00Z]
     end_at = ~U[2026-01-02 00:00:00Z]
@@ -111,5 +114,87 @@ defmodule Favn.WindowTest do
              Anchor.expand_range(:month, ~U[2026-01-01 00:00:00Z], ~U[2026-04-01 00:00:00Z])
 
     assert length(monthly_anchors) == 3
+
+    assert {:ok, yearly_anchors} =
+             Anchor.expand_range(:year, ~U[2024-01-01 00:00:00Z], ~U[2026-01-01 00:00:00Z])
+
+    assert length(yearly_anchors) == 2
+  end
+
+  test "pipeline window policies normalize aliases and resolve scheduled anchors" do
+    assert {:ok, %Policy{kind: :month, anchor: :previous_complete_period}} =
+             Policy.new(:monthly)
+
+    due_at =
+      DateTime.from_naive!(~N[2026-05-01 03:00:00], "Europe/Oslo", Favn.Timezone.database!())
+
+    assert {:ok, anchor} =
+             Policy.resolve_scheduled(Policy.new!(:monthly), due_at, "Europe/Oslo")
+
+    assert anchor.kind == :month
+    assert anchor.timezone == "Europe/Oslo"
+
+    assert DateTime.compare(
+             anchor.start_at,
+             DateTime.from_naive!(
+               ~N[2026-04-01 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+           ) == :eq
+
+    assert DateTime.compare(
+             anchor.end_at,
+             DateTime.from_naive!(
+               ~N[2026-05-01 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+           ) == :eq
+
+    assert {:error, {:invalid_window_policy_kind, :weekly}} = Policy.new(:weekly)
+  end
+
+  test "manual window requests parse hour day month and year" do
+    assert {:ok, %Request{kind: :hour, value: "2026-04-27T13"}} =
+             Request.parse("hour:2026-04-27T13")
+
+    assert {:ok, %Request{kind: :day, value: "2026-04-27"}} =
+             Request.parse("day:2026-04-27")
+
+    assert {:ok, %Request{kind: :month, value: "2026-04"}} =
+             Request.parse("month:2026-04")
+
+    assert {:ok, %Request{kind: :year, value: "2026"}} = Request.parse("year:2026")
+
+    assert {:ok, request} = Request.parse("month:2026-03", timezone: "Europe/Oslo")
+    assert {:ok, anchor} = Policy.resolve_manual(Policy.new!(:monthly), request)
+
+    assert DateTime.compare(
+             anchor.start_at,
+             DateTime.from_naive!(
+               ~N[2026-03-01 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+           ) == :eq
+
+    assert DateTime.compare(
+             anchor.end_at,
+             DateTime.from_naive!(
+               ~N[2026-04-01 00:00:00],
+               "Europe/Oslo",
+               Favn.Timezone.database!()
+             )
+           ) == :eq
+
+    assert {:error, {:window_kind_mismatch, :month, :day}} =
+             Policy.resolve_manual(
+               Policy.new!(:monthly),
+               Request.parse("day:2026-03-01") |> elem(1)
+             )
+
+    assert {:error, {:missing_window_request, :month}} =
+             Policy.resolve_manual(Policy.new!(:monthly), nil)
   end
 end

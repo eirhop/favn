@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Scheduler.ManifestEntries do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
+  alias Favn.Window.Policy
 
   @spec discover(Version.t(), Index.t()) ::
           {:ok, %{optional(module()) => map()}} | {:error, term()}
@@ -54,8 +55,12 @@ defmodule FavnOrchestrator.Scheduler.ManifestEntries do
 
   defp validate_window_for_schedule(nil, _schedule), do: :ok
 
-  defp validate_window_for_schedule(window, %Schedule{}) when window in [:hour, :day, :month],
-    do: :ok
+  defp validate_window_for_schedule(%Policy{} = policy, %Schedule{}) do
+    case Policy.validate(policy) do
+      {:ok, _policy} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
 
   defp validate_window_for_schedule(window, %Schedule{}),
     do: {:error, {:invalid_scheduler_window, window}}

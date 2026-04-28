@@ -41,6 +41,10 @@ FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-secret
 
 Login always uses orchestrator-owned username/password auth. The web tier stores only the signed browser session derived from the orchestrator login response.
 
+### Operator UI
+
+The protected `/runs` page lists recent runs and includes a compact manual pipeline submission card. Pipeline targets come from the active manifest. Windowed pipelines require one explicit hour/day/month/year window unless their policy explicitly allows a full-load submission.
+
 ### Storybook
 
 ```sh

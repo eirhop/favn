@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.API.Router do
   require Logger
 
   alias Favn.Manifest.Version
+  alias Favn.Window.Policy
+  alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
 
@@ -964,7 +966,8 @@ defmodule FavnOrchestrator.API.Router do
   defp submit_run_from_request(params) do
     with {:ok, target} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
-         {:ok, dependencies} <- fetch_dependencies(params, target) do
+         {:ok, dependencies} <- fetch_dependencies(params, target),
+         {:ok, window_request} <- fetch_window_request(params, target) do
       case target do
         %{type: "asset", id: target_id} ->
           FavnOrchestrator.submit_asset_run_for_manifest(manifest_version_id, target_id,
@@ -972,11 +975,34 @@ defmodule FavnOrchestrator.API.Router do
           )
 
         %{type: "pipeline", id: target_id} ->
-          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id)
+          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id,
+            window_request: window_request
+          )
 
         _ ->
           {:error, :invalid_target}
       end
+    end
+  end
+
+  defp fetch_window_request(params, %{type: "asset"}) when is_map(params) do
+    if Map.has_key?(params, "window") do
+      {:error, :invalid_window_request}
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp fetch_window_request(params, %{type: "pipeline"}) when is_map(params) do
+    case Map.get(params, "window") do
+      nil ->
+        {:ok, nil}
+
+      %{} = window ->
+        WindowRequest.from_value(window)
+
+      _other ->
+        {:error, :invalid_window_request}
     end
   end
 
@@ -1171,7 +1197,7 @@ defmodule FavnOrchestrator.API.Router do
       overlap: atom_name(entry.overlap),
       missed: atom_name(entry.missed),
       active: entry.active,
-      window: atom_name(entry.window),
+      window: window_policy_dto(entry.window),
       schedule_fingerprint: entry.schedule_fingerprint,
       manifest_version_id: entry.manifest_version_id,
       manifest_content_hash: entry.manifest_content_hash,
@@ -1286,6 +1312,17 @@ defmodule FavnOrchestrator.API.Router do
 
   defp atom_name(nil), do: nil
   defp atom_name(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp window_policy_dto(nil), do: nil
+
+  defp window_policy_dto(%Policy{} = policy) do
+    %{
+      kind: atom_name(policy.kind),
+      anchor: atom_name(policy.anchor),
+      timezone: policy.timezone,
+      allow_full_load: policy.allow_full_load
+    }
+  end
 
   defp module_name(nil), do: nil
   defp module_name(value) when is_atom(value), do: Atom.to_string(value)

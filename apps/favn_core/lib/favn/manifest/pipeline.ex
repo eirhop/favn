@@ -3,13 +3,15 @@ defmodule Favn.Manifest.Pipeline do
   Canonical persisted descriptor for one pipeline definition.
   """
 
+  alias Favn.Window.Policy
+
   @type t :: %__MODULE__{
           module: module() | nil,
           name: atom() | nil,
           selectors: [term()],
           deps: :all | :none,
           schedule: term(),
-          window: atom() | nil,
+          window: Favn.Window.Policy.t() | nil,
           source: atom() | nil,
           outputs: [atom()],
           config: map(),
@@ -35,7 +37,7 @@ defmodule Favn.Manifest.Pipeline do
       selectors: normalize_list(Map.get(definition, :selectors, [])),
       deps: normalize_deps(Map.get(definition, :deps, :all)),
       schedule: Map.get(definition, :schedule),
-      window: Map.get(definition, :window),
+      window: Policy.from_value!(Map.get(definition, :window)),
       source: Map.get(definition, :source),
       outputs: normalize_atom_list(Map.get(definition, :outputs, [])),
       config: normalize_map(Map.get(definition, :config, %{})),

@@ -7,6 +7,7 @@ defmodule Favn.Dev.Run do
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.State
   alias Favn.Dev.Status
+  alias Favn.Window.Request, as: WindowRequest
 
   @terminal_statuses ["ok", "error", "cancelled", "timed_out"]
   @default_timeout_ms 60_000
@@ -14,7 +15,9 @@ defmodule Favn.Dev.Run do
 
   @type run_opts :: [
           root_dir: Path.t(),
-          wait: boolean(),
+           wait: boolean(),
+          window: String.t(),
+          timezone: String.t(),
           timeout_ms: non_neg_integer(),
           poll_interval_ms: pos_integer()
         ]
@@ -24,6 +27,7 @@ defmodule Favn.Dev.Run do
 
   def pipeline(pipeline_module, opts) when is_atom(pipeline_module) or is_binary(pipeline_module) do
     with :ok <- validate_opts(opts),
+         {:ok, window_request} <- parse_window_request(opts),
          :ok <- ensure_running(opts),
          {:ok, runtime, secrets} <- read_runtime_snapshot(opts),
          {:ok, credentials} <- local_credentials(secrets),
@@ -40,9 +44,15 @@ defmodule Favn.Dev.Run do
              credentials.service_token,
              session_context
            ),
-         {:ok, target} <- resolve_pipeline_target(active_manifest, pipeline_module),
-         {:ok, run} <-
-           submit_pipeline_run(base_url(runtime, opts), credentials.service_token, session_context, target),
+          {:ok, target} <- resolve_pipeline_target(active_manifest, pipeline_module),
+          {:ok, run} <-
+            submit_pipeline_run(
+              base_url(runtime, opts),
+              credentials.service_token,
+              session_context,
+              target,
+              window_request
+            ),
          {:ok, final_run} <- maybe_wait(run, runtime, credentials.service_token, session_context, opts),
          :ok <- ensure_success(final_run, Keyword.get(opts, :wait, true)) do
       {:ok, final_run}
@@ -52,10 +62,21 @@ defmodule Favn.Dev.Run do
   def pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
 
   defp validate_opts(opts) do
-    case validate_positive_integer(opts, :timeout_ms) do
-      :ok -> validate_positive_integer(opts, :poll_interval_ms)
+    case validate_timezone_without_window(opts) do
+      :ok ->
+        case validate_positive_integer(opts, :timeout_ms) do
+          :ok -> validate_positive_integer(opts, :poll_interval_ms)
+          {:error, _reason} = error -> error
+        end
+
       {:error, _reason} = error -> error
     end
+  end
+
+  defp validate_timezone_without_window(opts) do
+    if Keyword.has_key?(opts, :timezone) and not Keyword.has_key?(opts, :window),
+      do: {:error, {:invalid_option, :timezone_without_window}},
+      else: :ok
   end
 
   defp validate_positive_integer(opts, key) do
@@ -110,17 +131,50 @@ defmodule Favn.Dev.Run do
     runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
   end
 
-  defp submit_pipeline_run(base_url, service_token, session_context, target) do
+  defp parse_window_request(opts) do
+    case Keyword.fetch(opts, :window) do
+      :error ->
+        {:ok, nil}
+
+      {:ok, value} ->
+        parse_opts =
+          case Keyword.fetch(opts, :timezone) do
+            {:ok, timezone} -> [timezone: timezone]
+            :error -> []
+          end
+
+        case WindowRequest.parse(value, parse_opts) do
+          {:ok, request} -> {:ok, request}
+          {:error, reason} -> {:error, {:invalid_window_request, reason}}
+        end
+    end
+  end
+
+  defp submit_pipeline_run(base_url, service_token, session_context, target, window_request) do
     case target do
       %{"target_id" => target_id} when is_binary(target_id) and target_id != "" ->
-        OrchestratorClient.submit_run(base_url, service_token, session_context, %{
+        payload = %{
           target: %{type: "pipeline", id: target_id},
           manifest_selection: %{mode: "active"}
-        })
+        }
+        |> maybe_put_window(window_request)
+
+        OrchestratorClient.submit_run(base_url, service_token, session_context, payload)
 
       _other ->
         {:error, :invalid_pipeline_target}
     end
+  end
+
+  defp maybe_put_window(payload, nil), do: payload
+
+  defp maybe_put_window(payload, %WindowRequest{} = request) do
+    Map.put(payload, :window, %{
+      mode: Atom.to_string(request.mode),
+      kind: Atom.to_string(request.kind),
+      value: request.value,
+      timezone: request.timezone
+    })
   end
 
   defp maybe_wait(run, runtime, service_token, session_context, opts) do

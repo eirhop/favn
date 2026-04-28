@@ -9,7 +9,7 @@ defmodule Favn.Window.Key do
   alias Favn.Window.{Anchor, Runtime}
   alias Favn.Window.Validate
 
-  @type kind :: :hour | :day | :month
+  @type kind :: :hour | :day | :month | :year
 
   @type t :: %{
           kind: kind(),
@@ -52,7 +52,8 @@ defmodule Favn.Window.Key do
 
   @spec encode(t()) :: String.t()
   def encode(%{kind: kind, start_at_us: start_at_us, timezone: timezone})
-      when kind in [:hour, :day, :month] and is_integer(start_at_us) and is_binary(timezone) do
+      when kind in [:hour, :day, :month, :year] and is_integer(start_at_us) and
+             is_binary(timezone) do
     dt = DateTime.from_unix!(start_at_us, :microsecond)
     "#{kind}:#{timezone}:#{DateTime.to_iso8601(dt)}"
   end
@@ -93,5 +94,6 @@ defmodule Favn.Window.Key do
   defp decode_kind("hour"), do: {:ok, :hour}
   defp decode_kind("day"), do: {:ok, :day}
   defp decode_kind("month"), do: {:ok, :month}
+  defp decode_kind("year"), do: {:ok, :year}
   defp decode_kind(other), do: {:error, {:invalid_kind, other}}
 end

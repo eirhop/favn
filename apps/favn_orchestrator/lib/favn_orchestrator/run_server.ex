@@ -123,7 +123,7 @@ defmodule FavnOrchestrator.RunServer do
       stage_groups = pipeline_stage_groups(run_state)
 
       stage_groups
-      |> Enum.reduce_while({run_state, []}, fn {stage, refs}, {current_run, acc_results} ->
+      |> Enum.reduce_while({run_state, []}, fn {stage, node_keys}, {current_run, acc_results} ->
         if externally_cancelled?(current_run.id) do
           {:halt, cancelled_terminal(current_run, acc_results)}
         else
@@ -131,7 +131,7 @@ defmodule FavnOrchestrator.RunServer do
                  current_run,
                  version,
                  stage,
-                 refs,
+                 node_keys,
                  runner_client,
                  runner_opts
                ) do
@@ -170,18 +170,18 @@ defmodule FavnOrchestrator.RunServer do
          %RunState{} = run_state,
          %Version{} = version,
          stage,
-         refs,
+         node_keys,
          runner_client,
          runner_opts
        ) do
-    run_stage_attempt(run_state, version, stage, refs, 1, runner_client, runner_opts, [])
+    run_stage_attempt(run_state, version, stage, node_keys, 1, runner_client, runner_opts, [])
   end
 
   defp run_stage_attempt(
          %RunState{} = run_state,
          %Version{} = version,
          stage,
-         refs,
+         node_keys,
          attempt,
          runner_client,
          runner_opts,
@@ -195,7 +195,7 @@ defmodule FavnOrchestrator.RunServer do
                run_state,
                version,
                stage,
-               refs,
+               node_keys,
                attempt,
                runner_client,
                runner_opts
@@ -216,8 +216,8 @@ defmodule FavnOrchestrator.RunServer do
           {:ok, next_run, next_acc_results}
         else
           run_after_schedule =
-            Enum.reduce(retry_refs, next_run, fn ref, current ->
-              schedule_retry_for_ref(current, ref, stage, attempt)
+            Enum.reduce(retry_refs, next_run, fn node_key, current ->
+              schedule_retry_for_ref(current, node_key, stage, attempt)
             end)
 
           run_stage_attempt(
@@ -239,14 +239,15 @@ defmodule FavnOrchestrator.RunServer do
          %RunState{} = run_state,
          %Version{} = version,
          stage,
-         refs,
+         node_keys,
          attempt,
          runner_client,
          runner_opts
        ) do
-    refs
-    |> Enum.reduce_while({:ok, run_state, []}, fn asset_ref, {:ok, current_run, acc} ->
-      work = stage_work(current_run, version, asset_ref, stage, attempt)
+    node_keys
+    |> Enum.reduce_while({:ok, run_state, []}, fn node_key, {:ok, current_run, acc} ->
+      work = stage_work(current_run, version, node_key, stage, attempt)
+      asset_ref = work.asset_ref
 
       case runner_client.submit_work(work, runner_opts) do
         {:ok, execution_id} ->
@@ -260,7 +261,13 @@ defmodule FavnOrchestrator.RunServer do
                  max_attempts: current_run.max_attempts
                }) do
             :ok ->
-              entry = %{asset_ref: asset_ref, execution_id: execution_id, stage: stage}
+              entry = %{
+                asset_ref: asset_ref,
+                node_key: node_key,
+                execution_id: execution_id,
+                stage: stage
+              }
+
               {:cont, {:ok, updated_run, acc ++ [entry]}}
 
             {:error, :external_cancel} ->
@@ -377,7 +384,7 @@ defmodule FavnOrchestrator.RunServer do
             {:cont, {:ok, next_run, next_results, retry_refs}}
 
           :retry ->
-            {:cont, {:ok, next_run, next_results, retry_refs ++ [entry.asset_ref]}}
+            {:cont, {:ok, next_run, next_results, retry_refs ++ [entry.node_key]}}
 
           :error ->
             {:halt, {:error, next_run, next_results}}
@@ -520,7 +527,9 @@ defmodule FavnOrchestrator.RunServer do
     end
   end
 
-  defp schedule_retry_for_ref(%RunState{} = run_state, asset_ref, stage, attempt) do
+  defp schedule_retry_for_ref(%RunState{} = run_state, node_key, stage, attempt) do
+    asset_ref = node_asset_ref(run_state, node_key)
+
     retrying =
       RunState.transition(run_state,
         status: :running,
@@ -546,7 +555,17 @@ defmodule FavnOrchestrator.RunServer do
     end
   end
 
-  defp stage_work(%RunState{} = run_state, %Version{} = version, asset_ref, stage, attempt) do
+  defp node_asset_ref(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
+    case Map.fetch(nodes, node_key) do
+      {:ok, node} -> node.ref
+      :error -> elem(node_key, 0)
+    end
+  end
+
+  defp stage_work(%RunState{} = run_state, %Version{} = version, node_key, stage, attempt) do
+    node = Map.fetch!(run_state.plan.nodes, node_key)
+    asset_ref = node.ref
+
     %RunnerWork{
       run_id: run_state.id,
       manifest_version_id: version.manifest_version_id,
@@ -554,13 +573,13 @@ defmodule FavnOrchestrator.RunServer do
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
       params: run_state.params,
-      trigger: run_state.trigger,
+      trigger: Map.put(run_state.trigger, :window, node.window),
       metadata:
         Map.merge(work_metadata(run_state.metadata), %{
           attempt: attempt,
           max_attempts: run_state.max_attempts,
           stage: stage,
-          node_key: {asset_ref, nil}
+          node_key: node_key
         })
     }
   end
@@ -638,17 +657,7 @@ defmodule FavnOrchestrator.RunServer do
   defp pipeline_stage_groups(%RunState{plan: %Favn.Plan{} = plan}) do
     plan.node_stages
     |> Enum.with_index()
-    |> Enum.map(fn {node_keys, stage} ->
-      refs =
-        node_keys
-        |> Enum.map(fn
-          {ref, _window} -> ref
-          ref -> ref
-        end)
-        |> Enum.uniq()
-
-      {stage, refs}
-    end)
+    |> Enum.map(fn {node_keys, stage} -> {stage, node_keys} end)
   end
 
   defp cancelled_terminal(%RunState{} = run_state, acc_results) do

@@ -107,6 +107,12 @@ export function orchestratorSubmitRun(
 		target: { type: 'asset' | 'pipeline'; id: string };
 		manifest_selection?: unknown;
 		dependencies?: 'all' | 'none';
+		window?: {
+			mode: 'single';
+			kind: 'hour' | 'day' | 'month' | 'year';
+			value: string;
+			timezone?: string | null;
+		};
 	}
 ): Promise<Response> {
 	return orchestratorAuthed('/api/orchestrator/v1/runs', session, {

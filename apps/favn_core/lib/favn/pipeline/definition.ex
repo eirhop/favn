@@ -27,7 +27,7 @@ defmodule Favn.Pipeline.Definition do
           config: map(),
           meta: map(),
           schedule: schedule_clause(),
-          window: atom() | nil,
+          window: Favn.Window.Policy.t() | nil,
           source: atom() | nil,
           outputs: [atom()]
         }

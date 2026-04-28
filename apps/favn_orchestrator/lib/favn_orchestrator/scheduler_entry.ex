@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.SchedulerEntry do
 
   alias Favn.Manifest.Schedule
   alias Favn.Scheduler.State
+  alias Favn.Window.Policy
 
   @type t :: %__MODULE__{
           pipeline_module: module(),
@@ -14,7 +15,7 @@ defmodule FavnOrchestrator.SchedulerEntry do
           overlap: atom() | nil,
           missed: atom() | nil,
           active: boolean(),
-          window: atom() | nil,
+          window: Policy.t() | nil,
           schedule_fingerprint: String.t() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,

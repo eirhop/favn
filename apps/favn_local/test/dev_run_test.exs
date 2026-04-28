@@ -118,6 +118,14 @@ defmodule Favn.Dev.RunTest do
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, poll_interval_ms: -1)
   end
 
+  test "run_pipeline/2 validates local window options before submission", %{root_dir: root_dir} do
+    assert {:error, {:invalid_option, :timezone_without_window}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, timezone: "Europe/Oslo")
+
+    assert {:error, {:invalid_window_request, {:invalid_window_value, :month, "2026-99"}}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, window: "month:2026-99")
+  end
+
   defp start_server(responses) when is_list(responses) do
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, {_addr, port}} = :inet.sockname(listen_socket)

@@ -36,7 +36,7 @@ defmodule Favn.PublicPipelineParityTest do
     assert resolution.target_refs == [{SalesAssets, :sales_daily}]
     assert resolution.dependencies == :all
     assert resolution.pipeline_ctx.schedule.ref == {Schedules, :daily_default}
-    assert resolution.pipeline_ctx.window == :calendar_day
+    assert resolution.pipeline_ctx.window.kind == :day
     assert resolution.pipeline_ctx.outputs == [:warehouse_gold]
   end
 
@@ -291,7 +291,7 @@ defmodule Favn.PublicPipelineParityTest do
                    """)
                  end
 
-    assert_raise ArgumentError, ~r/pipeline clause `window` must be an atom/, fn ->
+    assert_raise ArgumentError, ~r/pipeline clause `window` is invalid/, fn ->
       Code.compile_string("""
       defmodule InvalidWindowPipeline do
         use Favn.Pipeline

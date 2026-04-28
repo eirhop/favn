@@ -10,6 +10,9 @@ defmodule FavnOrchestrator.RunManager do
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
+  alias Favn.Window.Anchor
+  alias Favn.Window.Policy
+  alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunState
@@ -254,11 +257,13 @@ defmodule FavnOrchestrator.RunManager do
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, 0)
     timeout_ms = Keyword.get(opts, :timeout_ms, 5_000)
     dependencies = Keyword.get(opts, :dependencies, :all)
+    anchor_window = Keyword.get(opts, :anchor_window)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_metadata(metadata),
          :ok <- validate_dependencies(dependencies),
+         :ok <- validate_anchor_window(anchor_window),
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
          :ok <- validate_timeout_ms(timeout_ms),
@@ -267,7 +272,11 @@ defmodule FavnOrchestrator.RunManager do
          {:ok, index} <- Index.build_from_version(version),
          :ok <- ensure_assets_exist(index, target_refs),
          {:ok, plan} <-
-           Planner.plan(target_refs, graph_index: index.graph_index, dependencies: dependencies) do
+           Planner.plan(target_refs,
+             graph_index: index.graph_index,
+             dependencies: dependencies,
+             anchor_window: anchor_window
+           ) do
       primary_ref = List.first(plan.target_refs)
 
       run_state =
@@ -296,18 +305,22 @@ defmodule FavnOrchestrator.RunManager do
     trigger = Keyword.get(opts, :trigger, %{kind: :pipeline})
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
+    window_request = Keyword.get(opts, :window_request)
 
     with :ok <- validate_trigger(trigger),
          :ok <- validate_params(params),
+         {:ok, request} <- WindowRequest.from_value(window_request),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
+         {:ok, resolved_anchor_window} <-
+           resolve_pipeline_anchor_window(pipeline, anchor_window, request),
          {:ok, resolution} <-
            PipelineResolver.resolve(index, pipeline,
              trigger: trigger,
              params: params,
-             anchor_window: anchor_window
+             anchor_window: resolved_anchor_window
            ) do
       metadata =
         opts
@@ -326,11 +339,23 @@ defmodule FavnOrchestrator.RunManager do
         |> Keyword.put(:manifest_version_id, version.manifest_version_id)
         |> Keyword.put(:trigger, trigger)
         |> Keyword.put(:params, params)
+        |> Keyword.put(:anchor_window, resolved_anchor_window)
         |> Keyword.put(:dependencies, resolution.dependencies)
         |> Keyword.put(:metadata, metadata)
       )
     end
   end
+
+  defp resolve_pipeline_anchor_window(%Pipeline{} = pipeline, nil, request),
+    do: Policy.resolve_manual(pipeline.window, request)
+
+  defp resolve_pipeline_anchor_window(_pipeline, anchor_window, _request),
+    do:
+      validate_anchor_window(anchor_window)
+      |> then(fn
+        :ok -> {:ok, anchor_window}
+        error -> error
+      end)
 
   defp validate_target_refs(refs) when is_list(refs) do
     if refs == [] do
@@ -550,6 +575,12 @@ defmodule FavnOrchestrator.RunManager do
   defp validate_dependencies(:all), do: :ok
   defp validate_dependencies(:none), do: :ok
   defp validate_dependencies(_value), do: {:error, :invalid_dependencies}
+
+  defp validate_anchor_window(nil), do: :ok
+
+  defp validate_anchor_window(%Anchor{} = anchor), do: Anchor.validate(anchor)
+
+  defp validate_anchor_window(_value), do: {:error, :invalid_anchor_window}
 
   defp validate_max_attempts(value) when is_integer(value) and value > 0, do: :ok
   defp validate_max_attempts(_value), do: {:error, :invalid_max_attempts}

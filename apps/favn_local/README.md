@@ -63,6 +63,7 @@ as already present, and changed files are left untouched.
 ```bash
 mix favn.status
 mix favn.run MyApp.Pipelines.Daily
+mix favn.run MyApp.Pipelines.Monthly --window month:2026-03 --timezone Europe/Oslo
 mix favn.logs --service runner --tail 200
 mix favn.reload
 mix favn.stop
@@ -189,6 +190,9 @@ password auth.
 the private orchestrator HTTP boundary. It logs in with the generated local
 operator credentials from `.favn/secrets.json`, resolves the active manifest's
 pipeline target ID, submits the run, and waits for terminal status by default.
+Windowed pipelines accept explicit local run windows with `--window
+hour:YYYY-MM-DDTHH`, `--window day:YYYY-MM-DD`, `--window month:YYYY-MM`, or
+`--window year:YYYY`, plus optional `--timezone`.
 The local tooling HTTP client is intentionally limited to plain HTTP loopback
 URLs for Favn-managed local services.
 

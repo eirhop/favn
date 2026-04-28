@@ -10,7 +10,7 @@ defmodule Favn.Pipeline.Resolver do
   alias Favn.Pipeline.Resolution
   alias Favn.Pipeline.SelectorNormalizer
   alias Favn.Triggers.Schedule
-  alias Favn.Window.Anchor
+  alias Favn.Window.{Anchor, Policy}
 
   @type schedule_lookup :: (module(), atom() -> {:ok, Schedule.unresolved_t()} | {:error, term()})
 
@@ -92,7 +92,14 @@ defmodule Favn.Pipeline.Resolver do
   defp validate_selectors(selectors) when is_list(selectors), do: :ok
 
   defp validate_window(nil), do: :ok
-  defp validate_window(value) when is_atom(value), do: :ok
+
+  defp validate_window(%Policy{} = policy) do
+    case Policy.validate(policy) do
+      {:ok, _policy} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp validate_window(value), do: {:error, {:invalid_window, value}}
 
   defp validate_source(nil), do: :ok

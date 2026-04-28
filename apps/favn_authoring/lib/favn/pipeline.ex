@@ -35,7 +35,7 @@ defmodule Favn.Pipeline do
   - `meta map_or_keyword`: descriptive metadata for operators and tooling
   - `schedule {Module, :name}`: reference a named schedule
   - `schedule cron: ..., ...`: declare an inline schedule
-  - `window atom`: attach a named pipeline window
+  - `window atom`: attach a pipeline window policy
   - `source atom`: attach a named pipeline source
   - `outputs [atom, ...]`: attach named outputs
 
@@ -52,6 +52,22 @@ defmodule Favn.Pipeline do
     schedule entry per tick.
   - `overlap`: `:forbid | :allow | :queue_one`, defaults to `:forbid`
   - `active`: boolean, defaults to `true`
+
+  ## Window Policies
+
+  `window` supports `:hourly`, `:daily`, `:monthly`, and `:yearly` aliases plus
+  canonical `:hour`, `:day`, `:month`, and `:year` values.
+
+  A windowed pipeline expects manual runs to provide a concrete window request,
+  for example `mix favn.run MyApp.Pipelines.Monthly --window month:2026-03`.
+  Scheduled windowed runs resolve the previous complete period in the schedule
+  timezone. Pipelines without a `window` clause submit no anchor window and are
+  the normal full-load path.
+
+  Assets can mark their asset-level window spec as required with
+  `@window Favn.Window.monthly(required: true)`. Planning fails before runner
+  execution if a required-window asset is selected without a resolved anchor
+  window.
 
   ## Expanded Example
 
@@ -142,11 +158,14 @@ defmodule Favn.Pipeline do
 
   - `Favn`
   - `Favn.Window`
+  - `Favn.Window.Policy`
+  - `Favn.Window.Request`
   - `Favn.Triggers.Schedules`
   """
 
   alias Favn.Pipeline.Definition
   alias Favn.Triggers.Schedule
+  alias Favn.Window.Policy
 
   @type fetch_error :: :not_pipeline_module | :pipeline_not_defined
 
@@ -289,9 +308,10 @@ defmodule Favn.Pipeline do
   end
 
   @doc """
-  Declares the named pipeline window to use at runtime.
+  Declares the pipeline window policy to use at runtime.
 
-  The value must be an atom understood by your runtime or surrounding app.
+  Supported values are `:hourly`, `:daily`, `:monthly`, and `:yearly`
+  plus their canonical forms `:hour`, `:day`, `:month`, and `:year`.
 
   ## Example
 
@@ -301,8 +321,24 @@ defmodule Favn.Pipeline do
     quote bind_quoted: [name: name] do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "window")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_window, "window")
-      Favn.Pipeline.validate_atom_clause!(name, "window")
-      @favn_pipeline_window name
+      @favn_pipeline_window Favn.Pipeline.normalize_window_clause!(name, [])
+    end
+  end
+
+  @doc """
+  Declares a pipeline window policy with options.
+
+  Supported options:
+
+  - `anchor: :previous_complete_period`
+  - `timezone: "Etc/UTC"`
+  - `allow_full_load: true | false`
+  """
+  defmacro window(name, opts) do
+    quote bind_quoted: [name: name, opts: opts] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "window")
+      Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_window, "window")
+      @favn_pipeline_window Favn.Pipeline.normalize_window_clause!(name, opts)
     end
   end
 
@@ -570,5 +606,21 @@ defmodule Favn.Pipeline do
   def normalize_schedule_clause!(value) do
     raise ArgumentError,
           "pipeline clause `schedule` must be `{Module, :name}` or keyword options, got: #{inspect(value)}"
+  end
+
+  @doc false
+  def normalize_window_clause!(name, opts) when is_list(opts) do
+    case Policy.new(name, opts) do
+      {:ok, policy} ->
+        policy
+
+      {:error, reason} ->
+        raise ArgumentError, "pipeline clause `window` is invalid: #{inspect(reason)}"
+    end
+  end
+
+  def normalize_window_clause!(_name, opts) do
+    raise ArgumentError,
+          "pipeline clause `window` options must be a keyword list, got: #{inspect(opts)}"
   end
 end

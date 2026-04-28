@@ -28,7 +28,7 @@ defmodule Favn.Manifest.Rehydrate do
   }
 
   alias Favn.SQLAsset.Materialization
-  alias Favn.Window.Spec
+  alias Favn.Window.{Policy, Spec}
 
   @max_manifest_atom_length 128
   @max_manifest_module_length 512
@@ -112,10 +112,11 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_window_spec(%Spec{} = value), do: value
 
   defp build_window_spec(value) when is_map(value) do
-    kind = value |> field_value(:kind) |> decode_known_atom([:hour, :day, :month])
+    kind = value |> field_value(:kind) |> decode_known_atom([:hour, :day, :month, :year])
 
     opts = [
       lookback: field_value(value, :lookback, 0),
+      required: field_value(value, :required, false),
       timezone: field_value(value, :timezone, "Etc/UTC")
     ]
 
@@ -128,7 +129,7 @@ defmodule Favn.Manifest.Rehydrate do
           Keyword.put(
             opts,
             :refresh_from,
-            decode_known_atom(refresh_from, [:hour, :day, :month])
+            decode_known_atom(refresh_from, [:hour, :day, :month, :year])
           )
       end
 
@@ -437,7 +438,7 @@ defmodule Favn.Manifest.Rehydrate do
       selectors: value |> field_value(:selectors, []) |> build_selectors(),
       deps: value |> field_value(:deps, :all) |> decode_known_atom([:all, :none]),
       schedule: value |> field_value(:schedule) |> decode_pipeline_schedule(),
-      window: value |> field_value(:window) |> decode_known_atom_optional([:hour, :day, :month]),
+      window: value |> field_value(:window) |> build_window_policy(),
       source: value |> field_value(:source) |> decode_atom_optional(),
       outputs: value |> field_value(:outputs, []) |> build_atom_list(),
       config: value |> field_value(:config, %{}) |> plain_map(),
@@ -446,6 +447,10 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_pipeline(other), do: other
+
+  defp build_window_policy(nil), do: nil
+  defp build_window_policy(%Policy{} = policy), do: policy
+  defp build_window_policy(value), do: Policy.from_value!(value)
 
   defp build_selectors(values) when is_list(values), do: Enum.map(values, &decode_selector/1)
   defp build_selectors(_other), do: []

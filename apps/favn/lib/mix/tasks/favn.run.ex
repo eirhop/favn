@@ -17,6 +17,8 @@ defmodule Mix.Tasks.Favn.Run do
   @switches [
     root_dir: :string,
     wait: :boolean,
+    window: :string,
+    timezone: :string,
     timeout_ms: :integer,
     poll_interval_ms: :integer
   ]
@@ -49,31 +51,35 @@ defmodule Mix.Tasks.Favn.Run do
         print_run(run, pipeline_module)
         Mix.raise("run finished with status #{run["status"] || inspect(run[:status])}")
 
-      {:error, {:pipeline_not_found, requested, available}} ->
-        Mix.raise(pipeline_not_found_message(requested, available))
-
-      {:error, :stack_not_running} ->
-        Mix.raise("stack not running; use mix favn.dev")
-
-      {:error, :stack_not_healthy} ->
-        Mix.raise("stack not healthy; use mix favn.stop then mix favn.dev")
-
-      {:error, :missing_local_operator_credentials} ->
-        Mix.raise("local operator credentials are missing; run mix favn.stop then mix favn.dev")
-
-      {:error, {:run_wait_timeout, run_id}} ->
-        Mix.raise("timed out waiting for run #{run_id}")
-
-      {:error, {:invalid_option, :timeout_ms}} ->
-        Mix.raise("--timeout-ms must be greater than 0")
-
-      {:error, {:invalid_option, :poll_interval_ms}} ->
-        Mix.raise("--poll-interval-ms must be greater than 0")
-
       {:error, reason} ->
-        Mix.raise("run failed: #{inspect(reason)}")
+        Mix.raise(error_message(reason))
     end
   end
+
+  defp error_message({:pipeline_not_found, requested, available}),
+    do: pipeline_not_found_message(requested, available)
+
+  defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
+
+  defp error_message(:stack_not_healthy),
+    do: "stack not healthy; use mix favn.stop then mix favn.dev"
+
+  defp error_message(:missing_local_operator_credentials),
+    do: "local operator credentials are missing; run mix favn.stop then mix favn.dev"
+
+  defp error_message({:run_wait_timeout, run_id}), do: "timed out waiting for run #{run_id}"
+  defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :poll_interval_ms}),
+    do: "--poll-interval-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :timezone_without_window}),
+    do: "--timezone requires --window"
+
+  defp error_message({:invalid_window_request, reason}),
+    do: "invalid --window value: #{inspect(reason)}"
+
+  defp error_message(reason), do: "run failed: #{inspect(reason)}"
 
   defp print_run(run, pipeline_module) do
     IO.puts("Submitted pipeline run")
