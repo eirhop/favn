@@ -56,6 +56,7 @@ apps/
 │   └── test_helper.exs
 ├── favn_core/test/
 │   ├── favn_core_test.exs
+│   ├── schedule_test.exs
 │   ├── value_objects_test.exs
 │   ├── window_schedule_test.exs
 │   ├── asset_and_dsl_test.exs
