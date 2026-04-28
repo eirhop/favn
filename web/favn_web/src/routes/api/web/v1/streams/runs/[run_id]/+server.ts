@@ -1,6 +1,6 @@
 import type { RequestHandler } from './$types';
 import { orchestratorAuthed } from '$lib/server/orchestrator';
-import { jsonError } from '$lib/server/web_api';
+import { jsonError, requireSession } from '$lib/server/web_api';
 
 function normalizeLastEventId(value: string | null): string | null {
 	if (!value) return null;
@@ -15,10 +15,11 @@ function normalizeLastEventId(value: string | null): string | null {
 	return trimmed;
 }
 
-export const GET: RequestHandler = async ({ locals, request, params }) => {
-	if (!locals.session) {
-		return jsonError(401, 'unauthorized', 'Authentication required');
-	}
+export const GET: RequestHandler = async (event) => {
+	const unauthorized = await requireSession(event);
+	if (unauthorized) return unauthorized;
+
+	const { locals, request, params } = event;
 
 	const requestedLastEventId = request.headers.get('last-event-id');
 	const lastEventId = normalizeLastEventId(requestedLastEventId);

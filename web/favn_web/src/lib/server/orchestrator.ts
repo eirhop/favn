@@ -103,7 +103,11 @@ export function orchestratorGetRun(session: WebSession, runId: string): Promise<
 
 export function orchestratorSubmitRun(
 	session: WebSession,
-	payload: { target: { type: 'asset' | 'pipeline'; id: string }; manifest_selection?: unknown }
+	payload: {
+		target: { type: 'asset' | 'pipeline'; id: string };
+		manifest_selection?: unknown;
+		dependencies?: 'all' | 'none';
+	}
 ): Promise<Response> {
 	return orchestratorAuthed('/api/orchestrator/v1/runs', session, {
 		method: 'POST',

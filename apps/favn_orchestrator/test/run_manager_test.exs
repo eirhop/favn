@@ -571,6 +571,15 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.manifest_version_id == "mv_active"
   end
 
+  test "asset run rejects invalid metadata without crashing run manager" do
+    version = manifest_version("mv_invalid_asset_metadata")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_invalid_asset_metadata")
+
+    assert {:error, :invalid_run_metadata} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
+  end
+
   test "submits multi-target pipeline run in one run plan" do
     version = manifest_version("mv_pipeline_multi")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1081,6 +1090,25 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert rerun.parent_run_id == source_run_id
     assert rerun.root_run_id == source_run_id
     assert rerun.lineage_depth == source_run.lineage_depth + 1
+  end
+
+  test "asset rerun preserves original dependency mode" do
+    version = manifest_version("mv_rerun_asset_dependency_scope")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_rerun_asset_dependency_scope")
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, dependencies: :none)
+
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+    assert source_run.plan.dependencies == :none
+    assert source_run.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
+
+    assert {:ok, rerun_id} = FavnOrchestrator.rerun(source_run_id)
+    assert {:ok, rerun} = await_terminal_run(rerun_id)
+
+    assert rerun.plan.dependencies == :none
+    assert rerun.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
   end
 
   test "pipeline rerun replays original target selection" do

@@ -3,6 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { clearWebSessionCookie } from '$lib/server/session';
 import { orchestratorGetActiveManifest, orchestratorListRuns } from '$lib/server/orchestrator';
 import { normalizeRunSummaries } from '$lib/server/run_views';
+import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -31,17 +32,17 @@ async function readJsonOr(response: Response, fallback: unknown): Promise<unknow
 	}
 }
 
-export const load: PageServerLoad = async ({ locals, cookies }) => {
-	if (!locals.session) throw redirect(303, '/login');
+export const load: PageServerLoad = async (event) => {
+	const { locals, cookies } = event;
+	const session = await requireProtectedPageSession(event);
 
 	const [runsResponse, activeManifestResponse] = await Promise.all([
-		orchestratorListRuns(locals.session),
-		orchestratorGetActiveManifest(locals.session)
+		orchestratorListRuns(session),
+		orchestratorGetActiveManifest(session)
 	]);
 
-	if (runsResponse.status === 401) {
-		clearWebSessionCookie(cookies);
-		locals.session = null;
+	if (runsResponse.status === 401 || activeManifestResponse.status === 401) {
+		clearLocalSession({ locals, cookies });
 		throw redirect(303, '/login');
 	}
 

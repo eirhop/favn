@@ -1,5 +1,6 @@
 import type { RequestHandler } from './$types';
 import { orchestratorAuthed } from '$lib/server/orchestrator';
+import { jsonError, requireSession } from '$lib/server/web_api';
 
 function normalizeLastEventId(value: string | null): string | null {
 	if (!value) return null;
@@ -14,19 +15,20 @@ function normalizeLastEventId(value: string | null): string | null {
 	return trimmed;
 }
 
-export const GET: RequestHandler = async ({ locals, request }) => {
-	if (!locals.session) {
-		return new Response('Unauthorized', { status: 401 });
-	}
+export const GET: RequestHandler = async (event) => {
+	const unauthorized = await requireSession(event);
+	if (unauthorized) return unauthorized;
+
+	const { locals, request } = event;
 
 	const requestedLastEventId = request.headers.get('last-event-id');
 	const lastEventId = normalizeLastEventId(requestedLastEventId);
 
 	if (requestedLastEventId && !lastEventId) {
-		return new Response('Invalid Last-Event-ID', { status: 400 });
+		return jsonError(400, 'validation_failed', 'Invalid Last-Event-ID');
 	}
 
-	const upstream = await orchestratorAuthed('/api/orchestrator/v1/streams/runs', locals.session, {
+	const upstream = await orchestratorAuthed('/api/orchestrator/v1/streams/runs', locals.session!, {
 		method: 'GET',
 		headers: {
 			accept: 'text/event-stream',

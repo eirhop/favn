@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { clearWebSessionCookie } from '$lib/server/session';
 import { orchestratorGetActiveManifest, orchestratorListRuns } from '$lib/server/orchestrator';
+import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
 import {
 	filterAssetCatalogItems,
 	normalizeAssetCatalogList
@@ -22,17 +23,17 @@ function isNoActiveManifestResponse(response: Response, payload: unknown): boole
 	return body.includes('active_manifest_not_set') || body.includes('not_found');
 }
 
-export const load: PageServerLoad = async ({ locals, cookies, url }) => {
-	if (!locals.session) throw redirect(303, '/login');
+export const load: PageServerLoad = async (event) => {
+	const { locals, cookies, url } = event;
+	const session = await requireProtectedPageSession(event);
 
 	const [activeManifestResponse, runsResponse] = await Promise.all([
-		orchestratorGetActiveManifest(locals.session),
-		orchestratorListRuns(locals.session)
+		orchestratorGetActiveManifest(session),
+		orchestratorListRuns(session)
 	]);
 
 	if (activeManifestResponse.status === 401 || runsResponse.status === 401) {
-		clearWebSessionCookie(cookies);
-		locals.session = null;
+		clearLocalSession({ locals, cookies });
 		throw redirect(303, '/login');
 	}
 

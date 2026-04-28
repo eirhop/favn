@@ -269,8 +269,11 @@ defmodule FavnOrchestrator.Projector do
   defp pipeline_origin?(%RunState{metadata: metadata}) when is_map(metadata) do
     Map.get(metadata, :replay_submit_kind) == :pipeline or
       is_map(Map.get(metadata, :pipeline_context)) or
-      is_atom(Map.get(metadata, :pipeline_submit_ref)) or
+      present_atom?(Map.get(metadata, :pipeline_submit_ref)) or
       (is_list(Map.get(metadata, :pipeline_target_refs)) and
          Map.get(metadata, :pipeline_target_refs) != [])
   end
+
+  defp present_atom?(value) when is_atom(value) and not is_nil(value), do: true
+  defp present_atom?(_value), do: false
 end

@@ -5,6 +5,7 @@ import { jsonError, readJsonBody, relayJson, requireSession } from '$lib/server/
 function parseSubmitPayload(value: Record<string, unknown>): {
 	target: { type: 'asset' | 'pipeline'; id: string };
 	manifest_selection?: unknown;
+	dependencies?: 'all' | 'none';
 } | null {
 	const targetValue = value.target;
 
@@ -21,14 +22,29 @@ function parseSubmitPayload(value: Record<string, unknown>): {
 		return null;
 	}
 
+	const dependencies = value.dependencies;
+	if (
+		'dependencies' in value &&
+		dependencies !== undefined &&
+		dependencies !== 'all' &&
+		dependencies !== 'none'
+	) {
+		return null;
+	}
+
+	if (type === 'pipeline' && 'dependencies' in value && dependencies !== undefined) {
+		return null;
+	}
+
 	return {
 		target: { type, id },
-		...('manifest_selection' in value ? { manifest_selection: value.manifest_selection } : {})
+		...('manifest_selection' in value ? { manifest_selection: value.manifest_selection } : {}),
+		...(dependencies === 'all' || dependencies === 'none' ? { dependencies } : {})
 	};
 }
 
 export const GET: RequestHandler = async (event) => {
-	const unauthorized = requireSession(event);
+	const unauthorized = await requireSession(event);
 	if (unauthorized) return unauthorized;
 
 	const upstream = await orchestratorListRuns(event.locals.session!);
@@ -36,7 +52,7 @@ export const GET: RequestHandler = async (event) => {
 };
 
 export const POST: RequestHandler = async (event) => {
-	const unauthorized = requireSession(event);
+	const unauthorized = await requireSession(event);
 	if (unauthorized) return unauthorized;
 
 	const body = await readJsonBody(event.request);
@@ -49,7 +65,7 @@ export const POST: RequestHandler = async (event) => {
 		return jsonError(
 			422,
 			'validation_failed',
-			'Expected target with type "asset"|"pipeline" and non-empty id'
+			'Expected target with type "asset"|"pipeline", non-empty id, and optional dependencies "all"|"none" for asset targets only'
 		);
 	}
 

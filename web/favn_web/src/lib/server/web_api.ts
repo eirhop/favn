@@ -1,4 +1,5 @@
 import type { RequestEvent } from '@sveltejs/kit';
+import { validateWebSession } from './session_guard';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -13,10 +14,10 @@ export function jsonError(status: number, code: string, message: string): Respon
 	});
 }
 
-export function requireSession(event: RequestEvent): Response | null {
-	if (event.locals.session) {
-		return null;
-	}
+export async function requireSession(event: RequestEvent): Promise<Response | null> {
+	const session = await validateWebSession(event);
+
+	if (session) return null;
 
 	return jsonError(401, 'unauthorized', 'Authentication required');
 }
