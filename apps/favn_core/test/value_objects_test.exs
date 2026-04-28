@@ -14,7 +14,10 @@ defmodule Favn.ValueObjectsTest do
   end
 
   test "validates timezone identifiers" do
+    assert Favn.Timezone.valid_identifier?("Etc/UTC")
+    assert Favn.Timezone.valid_identifier?("Europe/Oslo")
     refute Favn.Timezone.valid_identifier?("../etc/passwd")
     refute Favn.Timezone.valid_identifier?("/etc/passwd")
+    refute Favn.Timezone.valid_identifier?("Not/AZone")
   end
 end

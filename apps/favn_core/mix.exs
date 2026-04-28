@@ -18,13 +18,14 @@ defmodule FavnCore.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :tzdata]
     ]
   end
 
   defp deps do
     [
       {:jason, "~> 1.4"},
+      {:tzdata, "~> 1.1"},
       internal_dep(:favn_test_support, "../favn_test_support", only: :test)
     ]
   end

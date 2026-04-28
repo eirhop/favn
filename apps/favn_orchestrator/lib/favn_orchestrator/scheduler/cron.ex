@@ -7,8 +7,8 @@ defmodule FavnOrchestrator.Scheduler.Cron do
   def latest_due(cron, timezone, %DateTime{} = now_utc) do
     case parse(cron) do
       {:ok, expr} ->
-        now = now_utc |> DateTime.shift_zone!(timezone) |> floor_for_expr(expr)
-        from = DateTime.add(now, -@max_lookback_seconds, :second)
+        now = now_utc |> shift_zone!(timezone) |> floor_for_expr(expr)
+        from = DateTime.add(now, -@max_lookback_seconds, :second, Favn.Timezone.database!())
 
         expr
         |> find_previous(from, now, true)
@@ -31,12 +31,12 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       ) do
     case parse(cron) do
       {:ok, expr} ->
-        from = DateTime.shift_zone!(last_due_utc, timezone)
-        to = DateTime.shift_zone!(latest_due_utc, timezone)
+        from = shift_zone!(last_due_utc, timezone)
+        to = shift_zone!(latest_due_utc, timezone)
         limit = occurrence_limit(opts)
 
         collect_occurrences(expr, from, to, limit)
-        |> Enum.map(&DateTime.shift_zone!(&1, "Etc/UTC"))
+        |> Enum.map(&shift_zone!(&1, "Etc/UTC"))
 
       :error ->
         []
@@ -53,8 +53,8 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       ) do
     case parse(cron) do
       {:ok, expr} ->
-        from = DateTime.shift_zone!(last_due_utc, timezone)
-        to = DateTime.shift_zone!(latest_due_utc, timezone)
+        from = shift_zone!(last_due_utc, timezone)
+        to = shift_zone!(latest_due_utc, timezone)
 
         expr
         |> find_next(from, to)
@@ -75,8 +75,8 @@ defmodule FavnOrchestrator.Scheduler.Cron do
       ) do
     case parse(cron) do
       {:ok, expr} ->
-        from = DateTime.shift_zone!(last_due_utc, timezone)
-        to = DateTime.shift_zone!(latest_due_utc, timezone)
+        from = shift_zone!(last_due_utc, timezone)
+        to = shift_zone!(latest_due_utc, timezone)
 
         expr
         |> find_previous(from, to, false)
@@ -357,7 +357,7 @@ defmodule FavnOrchestrator.Scheduler.Cron do
   defp ordered(values, :desc), do: Enum.reverse(values)
 
   defp date_time_candidates(date, time, timezone, direction) do
-    case DateTime.new(date, time, timezone) do
+    case DateTime.new(date, time, timezone, Favn.Timezone.database!()) do
       {:ok, dt} ->
         [dt]
 
@@ -417,5 +417,9 @@ defmodule FavnOrchestrator.Scheduler.Cron do
   defp floor_for_expr(%DateTime{} = dt, _expr), do: %{dt | second: 0, microsecond: {0, 0}}
 
   defp maybe_to_utc(nil), do: nil
-  defp maybe_to_utc(dt), do: DateTime.shift_zone!(dt, "Etc/UTC")
+  defp maybe_to_utc(dt), do: shift_zone!(dt, "Etc/UTC")
+
+  defp shift_zone!(%DateTime{} = datetime, timezone) do
+    DateTime.shift_zone!(datetime, timezone, Favn.Timezone.database!())
+  end
 end

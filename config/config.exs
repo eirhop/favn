@@ -9,8 +9,6 @@
 # move said applications out of the umbrella.
 import Config
 
-config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase
-
 if Mix.env() == :test do
   config :tzdata, :autoupdate, :disabled
 end

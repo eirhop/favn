@@ -402,7 +402,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp maybe_anchor_window(nil, _due_at, _timezone), do: nil
 
   defp maybe_anchor_window(kind, due_at, timezone) when kind in [:hour, :day, :month] do
-    local = DateTime.shift_zone!(due_at, timezone)
+    local = DateTime.shift_zone!(due_at, timezone, Favn.Timezone.database!())
     start_at = floor_kind(local, kind)
     end_at = shift_kind(start_at, kind)
     Anchor.new!(kind, start_at, end_at, timezone: timezone)
@@ -542,8 +542,8 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp floor_kind(dt, :month),
     do: %{dt | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
 
-  defp shift_kind(dt, :hour), do: DateTime.add(dt, 3600, :second)
-  defp shift_kind(dt, :day), do: DateTime.add(dt, 1, :day)
+  defp shift_kind(dt, :hour), do: DateTime.add(dt, 3600, :second, Favn.Timezone.database!())
+  defp shift_kind(dt, :day), do: DateTime.add(dt, 1, :day, Favn.Timezone.database!())
 
   defp shift_kind(%DateTime{} = dt, :month) do
     date = DateTime.to_date(dt)
