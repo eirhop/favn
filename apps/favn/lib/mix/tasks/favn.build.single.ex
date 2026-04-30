@@ -8,12 +8,11 @@ defmodule Mix.Tasks.Favn.Build.Single do
   """
 
   alias Favn.Dev
+  alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
-    {opts, _rest, _invalid} =
-      OptionParser.parse(args, strict: [root_dir: :string, storage: :string])
-
+    opts = CLIArgs.parse_no_args!("favn.build.single", args, root_dir: :string, storage: :string)
     opts = normalize_storage(opts)
 
     case Dev.build_single(opts) do

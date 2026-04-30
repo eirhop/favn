@@ -8,10 +8,11 @@ defmodule Mix.Tasks.Favn.Reset do
   """
 
   alias Favn.Dev
+  alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
-    {opts, _rest, _invalid} = OptionParser.parse(args, strict: [root_dir: :string])
+    opts = CLIArgs.parse_no_args!("favn.reset", args, root_dir: :string)
 
     case Dev.reset(opts) do
       :ok ->

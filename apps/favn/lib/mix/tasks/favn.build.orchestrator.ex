@@ -8,10 +8,11 @@ defmodule Mix.Tasks.Favn.Build.Orchestrator do
   """
 
   alias Favn.Dev
+  alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
-    {opts, _rest, _invalid} = OptionParser.parse(args, strict: [root_dir: :string])
+    opts = CLIArgs.parse_no_args!("favn.build.orchestrator", args, root_dir: :string)
 
     case Dev.build_orchestrator(opts) do
       {:ok, %{build_id: build_id, dist_dir: dist_dir}} ->

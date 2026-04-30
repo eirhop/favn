@@ -8,18 +8,17 @@ defmodule Mix.Tasks.Favn.Install do
   """
 
   alias Favn.Dev
+  alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
-    {opts, _rest, _invalid} =
-      OptionParser.parse(args,
-        strict: [
-          root_dir: :string,
-          force: :boolean,
-          skip_web_install: :boolean,
-          skip_tool_checks: :boolean,
-          skip_runtime_deps_install: :boolean
-        ]
+    opts =
+      CLIArgs.parse_no_args!("favn.install", args,
+        root_dir: :string,
+        force: :boolean,
+        skip_web_install: :boolean,
+        skip_tool_checks: :boolean,
+        skip_runtime_deps_install: :boolean
       )
 
     case Dev.install(opts) do

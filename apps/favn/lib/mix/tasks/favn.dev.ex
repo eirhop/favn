@@ -10,6 +10,7 @@ defmodule Mix.Tasks.Favn.Dev do
   """
 
   alias Favn.Dev
+  alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
@@ -27,14 +28,12 @@ defmodule Mix.Tasks.Favn.Dev do
   @doc false
   @spec parse_args([String.t()]) :: keyword()
   def parse_args(args) when is_list(args) do
-    {opts, _rest, _invalid} =
-      OptionParser.parse(args,
-        strict: [
-          root_dir: :string,
-          sqlite: :boolean,
-          postgres: :boolean,
-          scheduler: :boolean
-        ]
+    opts =
+      CLIArgs.parse_no_args!("favn.dev", args,
+        root_dir: :string,
+        sqlite: :boolean,
+        postgres: :boolean,
+        scheduler: :boolean
       )
 
     normalize_storage_flags(opts)
