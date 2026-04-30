@@ -630,27 +630,27 @@ defmodule Favn.Storage.Adapter.SQLite do
          created_at,
          updated_at
        ]) do
-    with {:ok, errors} <- decode_payload(errors_blob),
+    with {:ok, pipeline_module} <- existing_atom(pipeline_module),
+         {:ok, errors} <- decode_payload(errors_blob),
          {:ok, metadata} <- decode_payload(metadata_blob) do
-      {:ok,
-       %CoverageBaseline{
-         baseline_id: baseline_id,
-         pipeline_module: decode_atom(pipeline_module),
-         source_key: source_key,
-         segment_key_hash: segment_key_hash,
-         segment_key_redacted: segment_key_redacted,
-         window_kind: decode_atom(window_kind),
-         timezone: timezone,
-         coverage_start_at: decode_datetime(coverage_start_at),
-         coverage_until: decode_datetime(coverage_until),
-         created_by_run_id: created_by_run_id,
-         manifest_version_id: manifest_version_id,
-         status: decode_atom(status),
-         errors: errors,
-         metadata: metadata,
-         created_at: decode_datetime(created_at),
-         updated_at: decode_datetime(updated_at)
-       }}
+      CoverageBaseline.new(%{
+        baseline_id: baseline_id,
+        pipeline_module: pipeline_module,
+        source_key: source_key,
+        segment_key_hash: segment_key_hash,
+        segment_key_redacted: segment_key_redacted,
+        window_kind: window_kind,
+        timezone: timezone,
+        coverage_start_at: decode_datetime(coverage_start_at),
+        coverage_until: decode_datetime(coverage_until),
+        created_by_run_id: created_by_run_id,
+        manifest_version_id: manifest_version_id,
+        status: status,
+        errors: errors,
+        metadata: metadata,
+        created_at: decode_datetime(created_at),
+        updated_at: decode_datetime(updated_at)
+      })
     end
   end
 
@@ -677,33 +677,33 @@ defmodule Favn.Storage.Adapter.SQLite do
          created_at,
          updated_at
        ]) do
-    with {:ok, last_error} <- decode_payload(last_error_blob),
+    with {:ok, pipeline_module} <- existing_atom(pipeline_module),
+         {:ok, last_error} <- decode_payload(last_error_blob),
          {:ok, errors} <- decode_payload(errors_blob),
          {:ok, metadata} <- decode_payload(metadata_blob) do
-      {:ok,
-       %BackfillWindow{
-         backfill_run_id: backfill_run_id,
-         child_run_id: child_run_id,
-         pipeline_module: decode_atom(pipeline_module),
-         manifest_version_id: manifest_version_id,
-         coverage_baseline_id: coverage_baseline_id,
-         window_kind: decode_atom(window_kind),
-         window_start_at: decode_datetime(window_start_at),
-         window_end_at: decode_datetime(window_end_at),
-         timezone: timezone,
-         window_key: window_key,
-         status: decode_atom(status),
-         attempt_count: attempt_count,
-         latest_attempt_run_id: latest_attempt_run_id,
-         last_success_run_id: last_success_run_id,
-         last_error: last_error,
-         errors: errors,
-         metadata: metadata,
-         started_at: decode_datetime(started_at),
-         finished_at: decode_datetime(finished_at),
-         created_at: decode_datetime(created_at),
-         updated_at: decode_datetime(updated_at)
-       }}
+      BackfillWindow.new(%{
+        backfill_run_id: backfill_run_id,
+        child_run_id: child_run_id,
+        pipeline_module: pipeline_module,
+        manifest_version_id: manifest_version_id,
+        coverage_baseline_id: coverage_baseline_id,
+        window_kind: window_kind,
+        window_start_at: decode_datetime(window_start_at),
+        window_end_at: decode_datetime(window_end_at),
+        timezone: timezone,
+        window_key: window_key,
+        status: status,
+        attempt_count: attempt_count,
+        latest_attempt_run_id: latest_attempt_run_id,
+        last_success_run_id: last_success_run_id,
+        last_error: last_error,
+        errors: errors,
+        metadata: metadata,
+        started_at: decode_datetime(started_at),
+        finished_at: decode_datetime(finished_at),
+        created_at: decode_datetime(created_at),
+        updated_at: decode_datetime(updated_at)
+      })
     end
   end
 
@@ -727,30 +727,32 @@ defmodule Favn.Storage.Adapter.SQLite do
          metadata_blob,
          updated_at
        ]) do
-    with {:ok, latest_error} <- decode_payload(latest_error_blob),
+    with {:ok, asset_ref_module} <- existing_atom(asset_ref_module),
+         {:ok, asset_ref_name} <- existing_atom(asset_ref_name),
+         {:ok, pipeline_module} <- existing_atom(pipeline_module),
+         {:ok, latest_error} <- decode_payload(latest_error_blob),
          {:ok, errors} <- decode_payload(errors_blob),
          {:ok, metadata} <- decode_payload(metadata_blob) do
-      {:ok,
-       %AssetWindowState{
-         asset_ref_module: decode_atom(asset_ref_module),
-         asset_ref_name: decode_atom(asset_ref_name),
-         pipeline_module: decode_atom(pipeline_module),
-         manifest_version_id: manifest_version_id,
-         window_kind: decode_atom(window_kind),
-         window_start_at: decode_datetime(window_start_at),
-         window_end_at: decode_datetime(window_end_at),
-         timezone: timezone,
-         window_key: window_key,
-         status: decode_atom(status),
-         latest_run_id: latest_run_id,
-         latest_parent_run_id: latest_parent_run_id,
-         latest_success_run_id: latest_success_run_id,
-         latest_error: latest_error,
-         rows_written: rows_written,
-         errors: errors,
-         metadata: metadata,
-         updated_at: decode_datetime(updated_at)
-       }}
+      AssetWindowState.new(%{
+        asset_ref_module: asset_ref_module,
+        asset_ref_name: asset_ref_name,
+        pipeline_module: pipeline_module,
+        manifest_version_id: manifest_version_id,
+        window_kind: window_kind,
+        window_start_at: decode_datetime(window_start_at),
+        window_end_at: decode_datetime(window_end_at),
+        timezone: timezone,
+        window_key: window_key,
+        status: status,
+        latest_run_id: latest_run_id,
+        latest_parent_run_id: latest_parent_run_id,
+        latest_success_run_id: latest_success_run_id,
+        latest_error: latest_error,
+        rows_written: rows_written,
+        errors: errors,
+        metadata: metadata,
+        updated_at: decode_datetime(updated_at)
+      })
     end
   end
 
@@ -804,10 +806,10 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp encode_atom(value) when is_atom(value), do: Atom.to_string(value)
 
-  defp decode_atom(value) when is_binary(value) do
-    String.to_existing_atom(value)
+  defp existing_atom(value) when is_binary(value) do
+    {:ok, String.to_existing_atom(value)}
   rescue
-    ArgumentError -> {:unknown_atom, value}
+    ArgumentError -> {:error, {:unknown_atom, value}}
   end
 
   defp encode_datetime(nil), do: nil

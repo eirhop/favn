@@ -716,29 +716,26 @@ defmodule Favn.Storage.Adapter.Postgres do
          updated_at
        ]) do
     with {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, window_kind} <- existing_atom(window_kind),
-         {:ok, status} <- existing_atom(status),
          {:ok, errors} <- decode_payload(errors_payload),
          {:ok, metadata} <- decode_payload(metadata_payload) do
-      {:ok,
-       %CoverageBaseline{
-         baseline_id: baseline_id,
-         pipeline_module: pipeline_module,
-         source_key: source_key,
-         segment_key_hash: segment_key_hash,
-         segment_key_redacted: segment_key_redacted,
-         window_kind: window_kind,
-         timezone: timezone,
-         coverage_start_at: coverage_start_at,
-         coverage_until: coverage_until,
-         created_by_run_id: created_by_run_id,
-         manifest_version_id: manifest_version_id,
-         status: status,
-         errors: errors,
-         metadata: metadata,
-         created_at: created_at,
-         updated_at: updated_at
-       }}
+      CoverageBaseline.new(%{
+        baseline_id: baseline_id,
+        pipeline_module: pipeline_module,
+        source_key: source_key,
+        segment_key_hash: segment_key_hash,
+        segment_key_redacted: segment_key_redacted,
+        window_kind: window_kind,
+        timezone: timezone,
+        coverage_start_at: coverage_start_at,
+        coverage_until: coverage_until,
+        created_by_run_id: created_by_run_id,
+        manifest_version_id: manifest_version_id,
+        status: status,
+        errors: errors,
+        metadata: metadata,
+        created_at: created_at,
+        updated_at: updated_at
+      })
     end
   end
 
@@ -766,35 +763,32 @@ defmodule Favn.Storage.Adapter.Postgres do
          updated_at
        ]) do
     with {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, window_kind} <- existing_atom(window_kind),
-         {:ok, status} <- existing_atom(status),
          {:ok, last_error} <- decode_payload(last_error_payload),
          {:ok, errors} <- decode_payload(errors_payload),
          {:ok, metadata} <- decode_payload(metadata_payload) do
-      {:ok,
-       %BackfillWindow{
-         backfill_run_id: backfill_run_id,
-         child_run_id: child_run_id,
-         pipeline_module: pipeline_module,
-         manifest_version_id: manifest_version_id,
-         coverage_baseline_id: coverage_baseline_id,
-         window_kind: window_kind,
-         window_start_at: window_start_at,
-         window_end_at: window_end_at,
-         timezone: timezone,
-         window_key: window_key,
-         status: status,
-         attempt_count: attempt_count,
-         latest_attempt_run_id: latest_attempt_run_id,
-         last_success_run_id: last_success_run_id,
-         last_error: last_error,
-         errors: errors,
-         metadata: metadata,
-         started_at: started_at,
-         finished_at: finished_at,
-         created_at: created_at,
-         updated_at: updated_at
-       }}
+      BackfillWindow.new(%{
+        backfill_run_id: backfill_run_id,
+        child_run_id: child_run_id,
+        pipeline_module: pipeline_module,
+        manifest_version_id: manifest_version_id,
+        coverage_baseline_id: coverage_baseline_id,
+        window_kind: window_kind,
+        window_start_at: window_start_at,
+        window_end_at: window_end_at,
+        timezone: timezone,
+        window_key: window_key,
+        status: status,
+        attempt_count: attempt_count,
+        latest_attempt_run_id: latest_attempt_run_id,
+        last_success_run_id: last_success_run_id,
+        last_error: last_error,
+        errors: errors,
+        metadata: metadata,
+        started_at: started_at,
+        finished_at: finished_at,
+        created_at: created_at,
+        updated_at: updated_at
+      })
     end
   end
 
@@ -821,32 +815,29 @@ defmodule Favn.Storage.Adapter.Postgres do
     with {:ok, asset_ref_module} <- existing_atom(asset_ref_module),
          {:ok, asset_ref_name} <- existing_atom(asset_ref_name),
          {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, window_kind} <- existing_atom(window_kind),
-         {:ok, status} <- existing_atom(status),
          {:ok, latest_error} <- decode_payload(latest_error_payload),
          {:ok, errors} <- decode_payload(errors_payload),
          {:ok, metadata} <- decode_payload(metadata_payload) do
-      {:ok,
-       %AssetWindowState{
-         asset_ref_module: asset_ref_module,
-         asset_ref_name: asset_ref_name,
-         pipeline_module: pipeline_module,
-         manifest_version_id: manifest_version_id,
-         window_kind: window_kind,
-         window_start_at: window_start_at,
-         window_end_at: window_end_at,
-         timezone: timezone,
-         window_key: window_key,
-         status: status,
-         latest_run_id: latest_run_id,
-         latest_parent_run_id: latest_parent_run_id,
-         latest_success_run_id: latest_success_run_id,
-         latest_error: latest_error,
-         rows_written: rows_written,
-         errors: errors,
-         metadata: metadata,
-         updated_at: updated_at
-       }}
+      AssetWindowState.new(%{
+        asset_ref_module: asset_ref_module,
+        asset_ref_name: asset_ref_name,
+        pipeline_module: pipeline_module,
+        manifest_version_id: manifest_version_id,
+        window_kind: window_kind,
+        window_start_at: window_start_at,
+        window_end_at: window_end_at,
+        timezone: timezone,
+        window_key: window_key,
+        status: status,
+        latest_run_id: latest_run_id,
+        latest_parent_run_id: latest_parent_run_id,
+        latest_success_run_id: latest_success_run_id,
+        latest_error: latest_error,
+        rows_written: rows_written,
+        errors: errors,
+        metadata: metadata,
+        updated_at: updated_at
+      })
     end
   end
 
