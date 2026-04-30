@@ -8,23 +8,27 @@ defmodule Favn.Dev.Secrets do
 
   @spec resolve(Config.t(), root_opt()) :: {:ok, map()} | {:error, term()}
   def resolve(%Config{} = config, opts \\ []) when is_list(opts) do
-    stored =
-      case State.read_secrets(opts) do
-        {:ok, secrets} -> secrets
-        {:error, _reason} -> %{}
+    with {:ok, stored} <- read_stored(opts) do
+      secrets = %{
+        "service_token" => config.service_token || stored["service_token"] || random_secret(24),
+        "web_session_secret" =>
+          config.web_session_secret || stored["web_session_secret"] || random_secret(32),
+        "rpc_cookie" => normalize_rpc_cookie(stored["rpc_cookie"]) || random_rpc_cookie(24),
+        "local_operator_username" => stored["local_operator_username"] || "favn-local-operator",
+        "local_operator_password" => stored["local_operator_password"] || random_secret(24)
+      }
+
+      case State.write_secrets(secrets, opts) do
+        :ok -> {:ok, secrets}
+        {:error, reason} -> {:error, reason}
       end
+    end
+  end
 
-    secrets = %{
-      "service_token" => config.service_token || stored["service_token"] || random_secret(24),
-      "web_session_secret" =>
-        config.web_session_secret || stored["web_session_secret"] || random_secret(32),
-      "rpc_cookie" => normalize_rpc_cookie(stored["rpc_cookie"]) || random_rpc_cookie(24),
-      "local_operator_username" => stored["local_operator_username"] || "favn-local-operator",
-      "local_operator_password" => stored["local_operator_password"] || random_secret(24)
-    }
-
-    case State.write_secrets(secrets, opts) do
-      :ok -> {:ok, secrets}
+  defp read_stored(opts) do
+    case State.read_secrets(opts) do
+      {:ok, secrets} -> {:ok, secrets}
+      {:error, :not_found} -> {:ok, %{}}
       {:error, reason} -> {:error, reason}
     end
   end
