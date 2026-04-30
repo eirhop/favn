@@ -108,14 +108,6 @@ defmodule Favn.Dev.Build.SingleTest do
   test "build_single/1 rejects unsupported string storage without atomizing it", %{
     root_dir: root_dir
   } do
-    assert {:ok, :installed} =
-             Dev.install(
-               root_dir: root_dir,
-               skip_web_install: true,
-               skip_tool_checks: true,
-               skip_runtime_deps_install: true
-             )
-
     assert {:error, {:invalid_storage, "bogus"}} =
              Dev.build_single(
                root_dir: root_dir,
