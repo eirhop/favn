@@ -181,6 +181,37 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     end
   end
 
+  for {option, invalid_value, reason} <- [
+        {:max_attempts, 0, :invalid_max_attempts},
+        {:retry_backoff_ms, -1, :invalid_retry_backoff_ms},
+        {:timeout_ms, 0, :invalid_timeout_ms}
+      ] do
+    @option option
+    @invalid_value invalid_value
+    @reason reason
+
+    test "rejects invalid #{@option} option before persisting parent state" do
+      version = manifest_version("mv_backfill_invalid_#{@option}")
+      run_id = "run_backfill_invalid_#{@option}"
+
+      assert :ok = FavnOrchestrator.register_manifest(version)
+      assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+      opts =
+        Keyword.put(
+          [run_id: run_id, range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"}],
+          @option,
+          @invalid_value
+        )
+
+      assert {:error, @reason} =
+               FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily, opts)
+
+      assert {:error, :not_found} = Storage.get_run(run_id)
+      assert [] = list_backfill_windows(backfill_run_id: run_id)
+    end
+  end
+
   test "rejects oversized ranges before parent or windows are persisted" do
     version = manifest_version("mv_backfill_max_windows")
 
