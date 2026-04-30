@@ -332,6 +332,43 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert window.timezone == "Europe/Oslo"
   end
 
+  test "coverage baseline timezone defaults explicit range timezone when omitted" do
+    version = manifest_version("mv_backfill_explicit_baseline_timezone")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = put_baseline("baseline_explicit_oslo", timezone: "Europe/Oslo")
+
+    assert {:ok, parent_run_id} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_explicit_baseline_timezone",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+               coverage_baseline_id: "baseline_explicit_oslo"
+             )
+
+    assert {:ok, [window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert window.timezone == "Europe/Oslo"
+  end
+
+  test "coverage baseline timezone defaults relative range with explicit reference when omitted" do
+    version = manifest_version("mv_backfill_relative_ref_baseline_timezone")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = put_baseline("baseline_relative_ref_oslo", timezone: "Europe/Oslo")
+
+    assert {:ok, parent_run_id} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_relative_ref_baseline_timezone",
+               range_request: %{
+                 "last" => [1, "day"],
+                 "relative_to" => "2026-04-28T00:00:00Z"
+               },
+               coverage_baseline_id: "baseline_relative_ref_oslo"
+             )
+
+    assert {:ok, [window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert window.timezone == "Europe/Oslo"
+  end
+
   test "empty relative references still allow coverage baseline id resolution" do
     version = manifest_version("mv_backfill_empty_reference")
     assert :ok = FavnOrchestrator.register_manifest(version)

@@ -233,7 +233,10 @@ defmodule FavnOrchestrator.BackfillManager do
     else
       with {:ok, baseline} <- fetch_coverage_baseline(coverage_baseline_id),
            :ok <- validate_coverage_baseline(baseline, pipeline_module, range_request) do
-        {:ok, maybe_apply_coverage_baseline(range_request, baseline)}
+        {:ok,
+         range_request
+         |> maybe_apply_coverage_baseline(baseline)
+         |> put_default_timezone(baseline.timezone)}
       end
     end
   end
@@ -362,9 +365,7 @@ defmodule FavnOrchestrator.BackfillManager do
   defp maybe_apply_coverage_baseline(range_request, baseline) do
     if relative_last_request?(range_request) and
          not has_meaningful_relative_reference?(range_request) do
-      range_request
-      |> put_baseline(baseline)
-      |> put_default_timezone(baseline.timezone)
+      put_baseline(range_request, baseline)
     else
       range_request
     end
