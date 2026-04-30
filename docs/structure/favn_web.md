@@ -1,0 +1,18 @@
+# favn_web
+
+Purpose: separate SvelteKit web/BFF workspace for browser UI, signed cookie
+sessions, server-side relays to the private orchestrator API, and local operator
+surfaces.
+
+Code:
+- `web/favn_web/src/`
+- Favn components under `web/favn_web/src/lib/components/favn/`
+- BFF/server helpers under `web/favn_web/src/lib/server/`
+- web API routes under `web/favn_web/src/routes/api/web/v1/`
+
+Tests:
+- `web/favn_web/src/**/*.spec.ts`
+- `web/favn_web/tests/e2e/`
+- Storybook stories under `web/favn_web/src/lib/components/favn/*.stories.svelte`
+
+Use the `web-dev` agent for changes in this workspace.

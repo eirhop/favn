@@ -456,8 +456,7 @@ Phase 6 implementation should update at least:
 - `README.md`
 - `docs/REFACTOR.md`
 - `docs/FEATURES.md`
-- `docs/lib_structure.md`
-- `docs/test_structure.md`
+- `docs/structure/`
 - adapter app READMEs under `apps/favn_storage_sqlite/` and `apps/favn_storage_postgres/`
 
 The docs must make these points explicit:

@@ -86,8 +86,7 @@ Current implementation status: core Phase 4 runner execution boundary is impleme
 - [x] Update `README.md` once `favn_runner` owns real execution paths.
 - [x] Update `docs/REFACTOR.md` Phase 4 status as slices land.
 - [x] Update `docs/FEATURES.md` checkboxes as runner slices complete.
-- [x] Update `docs/lib_structure.md` with new runner-owned modules.
-- [x] Update `docs/test_structure.md` with new runner test layout.
+- [x] Update structure docs with new runner-owned modules and tests.
 
 ## Verification
 

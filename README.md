@@ -461,9 +461,7 @@ Storage modes:
 
 - `docs/FEATURES.md` tracks the implemented feature set today
 - `docs/ROADMAP.md` tracks planned next work and later ideas
-- `docs/REFACTOR.md` tracks the `v0.5` architecture and migration plan
-- `docs/lib_structure.md` describes the current library layout
-- `docs/test_structure.md` describes the current test layout
+- `docs/structure/` maps current ownership, code layout, and test layout by app
 - `examples/basic-workflow-tutorial` is the first end-to-end tutorial project
 
 ## AI Doc Entry Point

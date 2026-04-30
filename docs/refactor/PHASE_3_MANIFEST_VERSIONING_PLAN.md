@@ -511,8 +511,7 @@ Phase 3 implementation should update at least:
 - `README.md`
 - `docs/REFACTOR.md`
 - `docs/FEATURES.md`
-- `docs/lib_structure.md`
-- `docs/test_structure.md`
+- `docs/structure/`
 
 Phase 3 implementation should keep the following honest:
 
