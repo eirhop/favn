@@ -492,10 +492,6 @@ Storage modes:
 - `Favn.build_manifest/0,1`
 - `Favn.plan_asset_run/2`
 
-Pipeline and schedule fetches return explicit not-defined errors for missing or
-invalid definitions, while exceptions raised by generated implementation code are
-preserved for diagnostics.
-
 ## Documentation
 
 - `docs/FEATURES.md` tracks the implemented feature set today
