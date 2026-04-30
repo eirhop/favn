@@ -720,7 +720,7 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_manifest_module!(value) do
     if valid_manifest_module?(value) do
-      String.to_atom(value)
+      decode_existing_atom!(value)
     else
       raise ArgumentError, "invalid module reference #{inspect(value)}"
     end
@@ -728,7 +728,7 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_manifest_atom!(value) do
     if valid_manifest_atom?(value) do
-      String.to_atom(value)
+      decode_existing_atom!(value)
     else
       raise ArgumentError, "invalid atom reference #{inspect(value)}"
     end

@@ -325,4 +325,31 @@ defmodule Favn.Manifest.VersionTest do
 
     assert {:error, {:invalid_manifest_payload, %ArgumentError{}}} = Version.new(manifest)
   end
+
+  test "rejects unknown manifest module atoms without creating them" do
+    module = "Elixir.ExternalConsumer.UnknownAsset#{System.unique_integer([:positive])}"
+
+    manifest = %{
+      "schema_version" => 1,
+      "runner_contract_version" => 1,
+      "assets" => [
+        %{
+          "ref" => %{"module" => module, "name" => "asset"},
+          "module" => module,
+          "name" => "asset",
+          "type" => "elixir",
+          "execution" => %{"entrypoint" => "asset", "arity" => 1}
+        }
+      ],
+      "pipelines" => [],
+      "schedules" => [],
+      "graph" => %{},
+      "metadata" => %{}
+    }
+
+    assert {:error, {:invalid_manifest_payload, %ArgumentError{message: message}}} =
+             Version.new(manifest)
+
+    assert message == "unknown atom #{inspect(module)}"
+  end
 end
