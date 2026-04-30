@@ -48,7 +48,7 @@
 			{}) as Record<string, unknown>
 	);
 	let rawPayload = $derived(asset.raw ?? pageData.raw ?? asset);
-	let rawJson = $derived(JSON.stringify(rawPayload, null, 2));
+	let rawJson = $derived(safeJsonStringify(rawPayload));
 	let runActions = $derived(
 		(pageData.runActions ?? pageData.actions ?? {}) as Record<string, unknown>
 	);
@@ -119,6 +119,18 @@
 	let inspectionErrors = $derived.by(() => {
 		const errors = inspection?.errors;
 		return Array.isArray(errors) ? errors.map(formatDiagnostic) : [];
+	});
+	let inspectionStatus = $derived.by(() => {
+		const status = inspection?.status ?? inspection?.state;
+		if (typeof status === 'string' && status.trim().length > 0) return status.toLowerCase();
+		if (inspectionErrors.length > 0) return 'failed';
+		return inspection ? 'loaded' : 'not loaded';
+	});
+	let inspectionRedactions = $derived.by(() => {
+		const redactions = inspection?.redactions ?? inspection?.redacted_fields ?? inspection?.redactedFields;
+		if (Array.isArray(redactions)) return redactions.map(formatDiagnostic);
+		if (inspection?.redacted === true) return ['Sensitive values were redacted by the inspection service.'];
+		return [];
 	});
 	let notes = $derived.by(() => {
 		const source =
@@ -218,8 +230,29 @@
 	function jsonValue(candidate: unknown): string {
 		if (candidate === null || candidate === undefined || candidate === '') return '—';
 		if (typeof candidate === 'string') return candidate;
+		if (typeof candidate === 'bigint') return candidate.toString();
 		if (typeof candidate === 'number' || typeof candidate === 'boolean') return String(candidate);
-		return JSON.stringify(candidate);
+		return safeJsonStringify(candidate, false);
+	}
+
+	function safeJsonStringify(candidate: unknown, pretty = true): string {
+		const seen = new WeakSet<object>();
+		try {
+			return JSON.stringify(
+				candidate,
+				(_key, value) => {
+					if (typeof value === 'bigint') return value.toString();
+					if (value && typeof value === 'object') {
+						if (seen.has(value)) return '[Circular]';
+						seen.add(value);
+					}
+					return value;
+				},
+				pretty ? 2 : undefined
+			);
+		} catch {
+			return String(candidate);
+		}
 	}
 
 	function formatDiagnostic(candidate: unknown): string {
@@ -247,6 +280,9 @@
 				? (inspectionPayload as InspectionPayload)
 				: null;
 		}
+		if (data && typeof data === 'object' && !Array.isArray(data)) {
+			return data as InspectionPayload;
+		}
 		const direct = record.inspection;
 		if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
 			return direct as InspectionPayload;
@@ -269,7 +305,7 @@
 				),
 				{ headers: { accept: 'application/json' } }
 			);
-			const payload = (await response.json()) as unknown;
+			const payload = (await response.json().catch(() => null)) as unknown;
 			if (!response.ok) {
 				const message =
 					payload && typeof payload === 'object' && 'error' in payload
@@ -664,7 +700,31 @@
 								<span class="text-slate-500">Preview limit</span>
 								<p class="font-medium">20 rows max</p>
 							</div>
+							<div>
+								<span class="text-slate-500">Inspection status</span>
+								<p class="font-medium capitalize">{inspectionStatus}</p>
+							</div>
 						</div>
+
+						{#if inspectionStatus === 'loaded' || inspectionStatus === 'succeeded' || inspectionStatus === 'success'}
+							<p class="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-sm text-emerald-800">
+								Preview loaded from the local inspection service.
+							</p>
+						{:else if inspectionStatus === 'missing' || inspectionStatus === 'not_found'}
+							<p class="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+								No local materialization is available to inspect for this asset yet.
+							</p>
+						{:else if inspectionStatus === 'failed' || inspectionStatus === 'error'}
+							<p class="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+								The local inspection request reported a failure.
+							</p>
+						{/if}
+
+						{#each inspectionRedactions as redaction (redaction)}
+							<p class="rounded-md border border-slate-200 bg-slate-50 p-2 text-sm text-slate-700">
+								{redaction}
+							</p>
+						{/each}
 
 						{#each inspectionWarnings as warning (warning)}
 							<p class="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
@@ -725,6 +785,13 @@
 								No sample rows were returned for this preview.
 							</p>
 						{/if}
+
+						<details class="rounded-lg border bg-slate-50 p-3 text-sm">
+							<summary class="cursor-pointer font-medium">Raw inspection metadata</summary>
+							<pre class="mt-3 max-h-64 overflow-auto text-xs whitespace-pre-wrap">{safeJsonStringify(
+									inspection
+								)}</pre>
+						</details>
 					</div>
 				{/if}
 			</Card.Content>

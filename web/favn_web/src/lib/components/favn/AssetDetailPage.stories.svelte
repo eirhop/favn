@@ -26,10 +26,13 @@
 				JSON.stringify({
 					data: {
 						inspection: {
+							status: 'succeeded',
 							row_count: 1,
+							redacted: true,
 							warnings: [{ code: 'metadata_partial', message: 'Some metadata is unavailable' }],
 							columns: [{ name: 'id', data_type: 'INTEGER' }],
-							sample: { limit: 20, columns: ['id'], rows: [{ id: 1 }] }
+							sample: { limit: 20, columns: ['id'], rows: [{ id: 1 }] },
+							metadata: { raw_relation: { schema: 'mart', name: 'customer_revenue' } }
 						}
 					}
 				}),
@@ -46,8 +49,15 @@
 			).toBeInTheDocument();
 			await expect(canvas.getByText('42 / —')).toBeInTheDocument();
 			await userEvent.click(canvas.getByRole('button', { name: 'Load data preview' }));
+			await expect(
+				canvas.getByText('Preview loaded from the local inspection service.')
+			).toBeInTheDocument();
+			await expect(
+				canvas.getByText('Sensitive values were redacted by the inspection service.')
+			).toBeInTheDocument();
 			await expect(canvas.getByText('Some metadata is unavailable')).toBeInTheDocument();
 			await expect(canvas.getByText('INTEGER')).toBeInTheDocument();
+			await expect(canvas.getByText('Raw inspection metadata')).toBeInTheDocument();
 			await expect(canvas.getAllByText('1').length).toBeGreaterThan(0);
 			await userEvent.click(canvas.getByRole('tab', { name: 'Lineage' }));
 			await expect(canvas.getByText('MyApp.Assets.Raw.Customers')).toBeInTheDocument();
@@ -65,6 +75,34 @@
 				assetRef: 'MyApp.Assets.Mart.CustomerRevenue',
 				manifestVersionId: 'mfv_2026_04_27'
 			});
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	}}
+/>
+
+<Story
+	name="Inspection failure state"
+	args={{ data: successfulAssetWithRuns, onrun: fn() }}
+	play={async ({ canvasElement, userEvent }) => {
+		const canvas = within(canvasElement);
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					error: {
+						code: 'not_found',
+						message: 'No local materialization is available for this asset'
+					}
+				}),
+				{ status: 404, headers: { 'content-type': 'application/json' } }
+			) as unknown as Response;
+
+		try {
+			await userEvent.click(canvas.getByRole('button', { name: 'Load data preview' }));
+			await expect(canvas.getByRole('alert')).toHaveTextContent(
+				'No local materialization is available for this asset'
+			);
 		} finally {
 			globalThis.fetch = originalFetch;
 		}

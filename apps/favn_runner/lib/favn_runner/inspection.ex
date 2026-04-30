@@ -6,6 +6,7 @@ defmodule FavnRunner.Inspection do
   alias Favn.Manifest.Asset
   alias Favn.RelationRef
   alias Favn.SQL.Client
+  alias Favn.SQL.Error
   alias Favn.SQL.Result
 
   @include_items [:relation, :columns, :row_count, :sample, :table_metadata]
@@ -14,11 +15,14 @@ defmodule FavnRunner.Inspection do
   @spec inspect_relation(RelationInspectionRequest.t(), Favn.Manifest.Version.t()) ::
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, version) do
-    with {:ok, asset, relation_ref} <- resolve_relation(request, version),
+    include = normalize_include(request.include)
+
+    with {:ok, sample_limit} <- normalize_sample_limit(request.sample_limit, include),
+         {:ok, asset, relation_ref} <- resolve_relation(request, version),
          {:ok, session} <-
            Client.connect(relation_ref.connection, registry_name: @runner_registry) do
       try do
-        {:ok, inspect_with_session(request, asset, relation_ref, session)}
+        {:ok, inspect_with_session(asset, relation_ref, session, include, sample_limit)}
       after
         Client.disconnect(session)
       end
@@ -54,9 +58,7 @@ defmodule FavnRunner.Inspection do
     ArgumentError -> {:error, :invalid_relation}
   end
 
-  defp inspect_with_session(request, asset, relation_ref, session) do
-    include = normalize_include(request.include)
-
+  defp inspect_with_session(asset, relation_ref, session, include, sample_limit) do
     %RelationInspectionResult{
       asset_ref: inspection_asset_ref(asset),
       relation_ref: relation_ref,
@@ -66,7 +68,7 @@ defmodule FavnRunner.Inspection do
     |> maybe_relation(session, relation_ref, include)
     |> maybe_columns(session, relation_ref, include)
     |> maybe_row_count(session, relation_ref, include)
-    |> maybe_sample(session, relation_ref, include, request.sample_limit)
+    |> maybe_sample(session, relation_ref, include, sample_limit)
     |> maybe_table_metadata(session, relation_ref, include)
   end
 
@@ -78,6 +80,17 @@ defmodule FavnRunner.Inspection do
   end
 
   defp normalize_include(_include), do: []
+
+  defp normalize_sample_limit(limit, include) do
+    if :sample in include do
+      case limit do
+        int when is_integer(int) and int >= 0 -> {:ok, min(int, 20)}
+        _invalid -> {:error, :invalid_sample_limit}
+      end
+    else
+      {:ok, 20}
+    end
+  end
 
   defp maybe_relation(result, session, relation_ref, include) do
     if :relation in include,
@@ -129,7 +142,7 @@ defmodule FavnRunner.Inspection do
       {:ok, %Result{} = sample} ->
         %{
           result
-          | sample: %{limit: min(max(limit, 0), 20), columns: sample.columns, rows: sample.rows}
+          | sample: %{limit: limit, columns: sample.columns, rows: sample.rows}
         }
 
       {:error, reason} ->
@@ -151,9 +164,13 @@ defmodule FavnRunner.Inspection do
   end
 
   defp add_warning(%RelationInspectionResult{} = result, code, reason) do
-    warning = %{code: code, message: inspect(reason)}
+    warning = %{code: code, message: warning_message(reason)}
     %{result | warnings: result.warnings ++ [warning]}
   end
+
+  defp warning_message(%Error{message: message}) when is_binary(message), do: message
+  defp warning_message(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp warning_message(_reason), do: "inspection operation failed"
 
   defp inspection_asset_ref(%Asset{} = asset), do: asset.ref
   defp inspection_asset_ref(_asset), do: nil

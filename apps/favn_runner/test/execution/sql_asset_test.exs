@@ -188,6 +188,82 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert result.warnings == []
   end
 
+  test "inspection rejects invalid sample limits before opening a SQL session" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    version = register_sql_manifest!(ref)
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      asset_ref: ref,
+      include: [:sample],
+      sample_limit: -1
+    }
+
+    assert {:error, :invalid_sample_limit} =
+             FavnRunner.Inspection.inspect_relation(request, version)
+  end
+
+  test "inspection warnings expose adapter messages without error details or causes" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    relation = RelationRef.new!(%{connection: :inspection_fake, name: "orders"})
+
+    :ok =
+      Registry.reload(
+        %{
+          inspection_fake: %Resolved{
+            name: :inspection_fake,
+            adapter: FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter,
+            module: __MODULE__,
+            config: %{}
+          }
+        },
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+
+    version = register_inspection_manifest!(ref, relation)
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      asset_ref: ref,
+      include: [:row_count]
+    }
+
+    assert {:ok, result} = FavnRunner.Inspection.inspect_relation(request, version)
+    assert [%{code: :row_count_failed, message: "safe row count failure"}] = result.warnings
+  end
+
+  defp register_inspection_manifest!(ref, relation) do
+    manifest = %Manifest{
+      schema_version: 1,
+      runner_contract_version: 1,
+      assets: [
+        %Asset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: :asset,
+          type: :sql,
+          execution: %{entrypoint: :asset, arity: 1},
+          relation: relation,
+          materialization: :table,
+          sql_execution: nil
+        }
+      ],
+      pipelines: [],
+      schedules: [],
+      graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
+      metadata: %{}
+    }
+
+    {:ok, version} =
+      Version.new(manifest,
+        manifest_version_id:
+          "mv_inspection_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    :ok = FavnRunner.register_manifest(version)
+    version
+  end
+
   defp register_sql_manifest!(ref) do
     relation = RelationRef.new!(%{connection: :duckdb_runtime, name: "manifest_sql_asset"})
 
@@ -343,4 +419,25 @@ defmodule FavnRunner.ExecutionSQLAssetTest.MissingPayloadSQLAsset do
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.MissingConnectionSQLAsset do
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter do
+  alias Favn.Connection.Resolved
+  alias Favn.SQL.Capabilities
+  alias Favn.SQL.Error
+
+  def connect(%Resolved{}, _opts), do: {:ok, :conn}
+  def disconnect(:conn, _opts), do: :ok
+  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def row_count(:conn, _ref, _opts) do
+    {:error,
+     %Error{
+       type: :execution_error,
+       message: "safe row count failure",
+       operation: :row_count,
+       details: %{password: "do-not-leak"},
+       cause: %{token: "do-not-leak"}
+     }}
+  end
 end

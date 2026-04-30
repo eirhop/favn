@@ -24,7 +24,11 @@ The first implementation should answer the dogfooding questions after running a 
 
 This is a local verification feature, not a database IDE.
 
-## Current Baseline
+## Planning Baseline
+
+This section records the baseline at the time the issue plan was written. The
+first curated local inspection slice is now implemented; see the acceptance
+mapping below for current status.
 
 Implemented foundations already present:
 
@@ -40,7 +44,7 @@ Implemented foundations already present:
 - `Favn.SQL.Adapter.DuckDB` already implements relation lookup, schema listing, relation listing, columns, and materialization.
 - `favn_web` already has asset catalog/detail and run detail pages, BFF routes under `/api/web/v1/**`, server-side orchestrator client helpers, normalizers, Storybook stories, and E2E coverage.
 
-Important gaps:
+Important gaps at planning time:
 
 - The private orchestrator run detail DTO currently drops `run.result`, `run.metadata`, `asset_results`, `node_results`, `pipeline`, `pipeline_context`, `params`, and `trigger`.
 - Active manifest target DTOs expose only asset target id and label for assets; they do not expose relation, type, metadata, dependencies, or runtime config declarations.
@@ -449,19 +453,22 @@ For `favn_web` changes, use the web-dev workflow and run the workspace's relevan
 
 ## Acceptance Mapping
 
-- Latest run status is visible: slices 1 and 6.
-- Relation name/catalog/schema/table is visible: slices 1 and 6.
-- Rows written or affected are visible when metadata exists: slices 1 and 6.
-- Schema/columns are visible: slices 2, 3, 4, 5, and 6.
-- Sample rows up to 20 are visible: slices 2, 3, 4, 5, and 6.
-- Freshness or loaded/materialized timestamp is visible when metadata exists: slices 1 and 6.
-- Source config keys are shown with secrets redacted: slices 1 and 6; run-scoped presence requires the V1b runtime summary.
-- Window context is visible: slices 1 and 6.
-- Raw run metadata JSON is visible: slices 1 and 6.
-- Errors and diagnostics are visible without crashing pages: all slices.
-- Upstream/downstream assets are visible from manifest dependencies and run context: slices 1 and 6.
-- DuckLake metadata is visible where safe and available: slice 3.
-- No arbitrary SQL editor is exposed by default: architectural rule across all slices.
+Current status of the first curated local inspection slice:
+
+- Latest run status is visible on asset/run surfaces: implemented by slices 1 and 6.
+- Relation name/catalog/schema/table is visible when the active manifest carries an owned relation: implemented by slices 1 and 6.
+- Rows written or affected are visible when asset metadata includes those fields: implemented by slices 1 and 6.
+- Schema/columns are visible for supported inspected relations: implemented by slices 2, 3, 4, 5, and 6.
+- Sample rows up to 20 are visible for supported inspected relations: implemented by slices 2, 3, 4, 5, and 6.
+- Freshness or loaded/materialized timestamp is visible when metadata includes those fields: implemented by slices 1 and 6.
+- Source config declarations are shown with secret flags and no raw secret values: implemented by slices 1 and 6. Run-scoped present/missing proof remains future V1b work unless existing run diagnostics prove a value is missing.
+- Window context is visible when exposed by the run/manifest payload: implemented by slices 1 and 6.
+- Raw run metadata JSON is visible: implemented by slices 1 and 6.
+- Errors and diagnostics are visible without crashing pages: implemented across the local inspector path.
+- Upstream/downstream assets are visible from manifest dependencies and run context: implemented by slices 1 and 6.
+- DuckDB table metadata is exposed through the safe inspection path where available. Richer DuckLake snapshot/storage metadata remains future work.
+- No arbitrary SQL editor is exposed by default: implemented by the architectural rule across all slices.
+- Tests cover the backend/orchestrator/runner/adapter path and web BFF/UI preview states. Broader live browser-plus-runner DuckDB dogfooding coverage remains future hardening.
 
 ## Non-Goals
 
