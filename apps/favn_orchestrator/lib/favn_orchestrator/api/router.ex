@@ -550,6 +550,14 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :not_found} ->
         error(conn, 404, "not_found", "Run was not found")
 
+      {:error, :backfill_parent_cancel_not_supported} ->
+        error(
+          conn,
+          409,
+          "conflict",
+          "Backfill parent runs cannot be cancelled through generic run cancellation"
+        )
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -580,6 +588,14 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :not_found} ->
         error(conn, 404, "not_found", "Run was not found")
+
+      {:error, :backfill_parent_rerun_not_supported} ->
+        error(
+          conn,
+          409,
+          "conflict",
+          "Backfill parent runs cannot be rerun through generic run rerun"
+        )
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -1590,6 +1606,33 @@ defmodule FavnOrchestrator.API.Router do
 
   defp backfill_range_error({:invalid_timezone, timezone}) do
     {:ok, "Invalid backfill timezone", %{timezone: timezone}}
+  end
+
+  defp backfill_range_error({:too_many_backfill_windows, requested, max}) do
+    {:ok, "Backfill range exceeds maximum window count", %{requested: requested, max: max}}
+  end
+
+  defp backfill_range_error({:coverage_baseline_pipeline_mismatch, baseline, requested}) do
+    {:ok, "Coverage baseline does not belong to requested pipeline",
+     %{
+       baseline_pipeline_module: module_name(baseline),
+       requested_pipeline_module: module_name(requested)
+     }}
+  end
+
+  defp backfill_range_error({:coverage_baseline_not_ok, status}) do
+    {:ok, "Coverage baseline is not usable for relative range resolution",
+     %{status: atom_name(status)}}
+  end
+
+  defp backfill_range_error({:coverage_baseline_window_kind_mismatch, baseline, requested}) do
+    {:ok, "Coverage baseline window kind does not match requested range kind",
+     %{baseline_window_kind: atom_name(baseline), requested_window_kind: atom_name(requested)}}
+  end
+
+  defp backfill_range_error({:coverage_baseline_timezone_mismatch, baseline, requested}) do
+    {:ok, "Coverage baseline timezone does not match requested range timezone",
+     %{baseline_timezone: baseline, requested_timezone: requested}}
   end
 
   defp backfill_range_error(_reason), do: :error

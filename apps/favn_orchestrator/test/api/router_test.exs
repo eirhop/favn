@@ -697,6 +697,43 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert Enum.all?(windows, &(&1["pipeline_module"] == "Elixir.MyApp.Pipelines.DailyOrders"))
   end
 
+  test "backfill submit endpoint rejects oversized ranges with validation details" do
+    version = schedule_manifest_version("mv_backfill_too_large_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2024-01-01",
+          "to" => "2026-01-01",
+          "kind" => "day",
+          "timezone" => "Etc/UTC"
+        }
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "details" => %{"requested" => requested, "max" => 500}
+             }
+           } = Jason.decode!(response.resp_body)
+
+    assert requested > 500
+  end
+
   test "lists backfill coverage baselines and asset window states" do
     %{window_key: window_key} = seed_backfill_http_state!()
 
@@ -805,6 +842,43 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert %{"data" => %{"cancelled" => true, "run_id" => "run_cancel_service"}} =
              Jason.decode!(response.resp_body)
+  end
+
+  test "generic cancel and rerun return conflict for backfill parent runs" do
+    parent =
+      RunState.new(
+        id: "backfill_parent_http",
+        manifest_version_id: "mv_backfill_parent_http",
+        manifest_content_hash: "hash_backfill_parent_http",
+        asset_ref: {MyApp.Assets.DailyOrders, :asset},
+        target_refs: [{MyApp.Assets.DailyOrders, :asset}],
+        submit_kind: :backfill_pipeline
+      )
+      |> Map.put(:status, :running)
+      |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(parent)
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    cancel_response =
+      conn(:post, "/api/orchestrator/v1/runs/backfill_parent_http/cancel")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert cancel_response.status == 409
+    assert %{"error" => %{"code" => "conflict"}} = Jason.decode!(cancel_response.resp_body)
+
+    rerun_response =
+      conn(:post, "/api/orchestrator/v1/runs/backfill_parent_http/rerun")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert rerun_response.status == 409
+    assert %{"error" => %{"code" => "conflict"}} = Jason.decode!(rerun_response.resp_body)
   end
 
   test "registers manifest through private API" do

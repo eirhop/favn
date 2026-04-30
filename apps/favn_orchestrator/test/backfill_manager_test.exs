@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Policy
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -34,6 +35,9 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
     @impl true
     def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :invalid_inspection_target}
   end
 
   setup do
@@ -234,6 +238,124 @@ defmodule FavnOrchestrator.BackfillManagerTest do
            ]
   end
 
+  test "coverage baseline id validates pipeline status kind and timezone scope" do
+    version = manifest_version("mv_backfill_baseline_scope")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert :ok = put_baseline("wrong_pipeline", pipeline_module: Other.Pipeline)
+
+    assert {:error, {:coverage_baseline_pipeline_mismatch, Other.Pipeline, MyApp.Pipelines.Daily}} =
+             submit_relative_with_baseline("wrong_pipeline")
+
+    assert :ok = put_baseline("not_ok", status: :error)
+    assert {:error, {:coverage_baseline_not_ok, :error}} = submit_relative_with_baseline("not_ok")
+
+    assert :ok = put_baseline("wrong_kind", window_kind: :month)
+
+    assert {:error, {:coverage_baseline_window_kind_mismatch, :month, :day}} =
+             submit_relative_with_baseline("wrong_kind")
+
+    assert :ok = put_baseline("wrong_timezone", timezone: "Europe/Oslo")
+
+    assert {:error, {:coverage_baseline_timezone_mismatch, "Europe/Oslo", "Etc/UTC"}} =
+             submit_relative_with_baseline("wrong_timezone",
+               range_request: %{"last" => [1, "day"], "timezone" => "Etc/UTC"}
+             )
+  end
+
+  test "coverage baseline timezone is used when relative request omits timezone" do
+    version = manifest_version("mv_backfill_baseline_timezone")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = put_baseline("baseline_oslo", timezone: "Europe/Oslo")
+
+    assert {:ok, parent_run_id} =
+             submit_relative_with_baseline("baseline_oslo",
+               run_id: "run_backfill_baseline_timezone",
+               range_request: %{"last" => [1, "day"]}
+             )
+
+    assert {:ok, [window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert window.timezone == "Europe/Oslo"
+  end
+
+  test "empty relative references still allow coverage baseline id resolution" do
+    version = manifest_version("mv_backfill_empty_reference")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = put_baseline("baseline_empty_reference")
+
+    assert {:ok, parent_run_id} =
+             submit_relative_with_baseline("baseline_empty_reference",
+               run_id: "run_backfill_empty_reference",
+               range_request: %{"last" => [1, "day"], "relative_to" => "", "baseline" => nil}
+             )
+
+    assert {:ok, [_window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+  end
+
+  test "partial child submission failure projects parent partial when a prior child succeeded" do
+    version = manifest_version("mv_backfill_partial_compensation")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    counter = :counters.new(1, [])
+
+    submitter = fn pipeline_module, child_opts ->
+      :counters.add(counter, 1, 1)
+      count = :counters.get(counter, 1)
+
+      if count == 1 do
+        result = RunManager.submit_pipeline_module_run(pipeline_module, child_opts)
+        trigger = Keyword.fetch!(child_opts, :trigger)
+
+        wait_for_window_status(
+          trigger.backfill_run_id,
+          pipeline_module,
+          trigger.window_key,
+          :ok
+        )
+
+        result
+      else
+        {:error, :synthetic_child_submit_failed}
+      end
+    end
+
+    assert {:error, :synthetic_child_submit_failed} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_partial_compensation",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               _child_submitter: submitter
+             )
+
+    assert {:ok, parent} = Storage.get_run("run_backfill_partial_compensation")
+    assert parent.status == :partial
+    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent.id)
+    assert Enum.map(windows, & &1.status) |> Enum.sort() == [:error, :ok]
+  end
+
+  test "child submission failure before any success projects parent error" do
+    version = manifest_version("mv_backfill_error_compensation")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    submitter = fn _pipeline_module, _child_opts -> {:error, :synthetic_first_submit_failed} end
+
+    assert {:error, :synthetic_first_submit_failed} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_error_compensation",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               _child_submitter: submitter
+             )
+
+    assert {:ok, parent} = Storage.get_run("run_backfill_error_compensation")
+    assert parent.status == :error
+    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent.id)
+    assert Enum.all?(windows, &(&1.status == :error))
+  end
+
   test "coverage baseline rejects nested raw source identity" do
     now = DateTime.utc_now()
 
@@ -266,6 +388,49 @@ defmodule FavnOrchestrator.BackfillManagerTest do
   end
 
   defp eventually(fun, 0), do: fun.()
+
+  defp submit_relative_with_baseline(baseline_id, opts \\ []) do
+    FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+      run_id: Keyword.get(opts, :run_id, "run_#{baseline_id}"),
+      range_request: Keyword.get(opts, :range_request, %{"last" => [1, "day"]}),
+      coverage_baseline_id: baseline_id
+    )
+  end
+
+  defp put_baseline(baseline_id, overrides \\ []) do
+    now = DateTime.utc_now()
+
+    attrs =
+      Keyword.merge(
+        [
+          baseline_id: baseline_id,
+          pipeline_module: MyApp.Pipelines.Daily,
+          source_key: "source",
+          segment_key_hash: "hash",
+          window_kind: :day,
+          timezone: "Etc/UTC",
+          coverage_until: ~U[2026-04-28 00:00:00Z],
+          created_by_run_id: "run_baseline",
+          manifest_version_id: "mv_baseline",
+          status: :ok,
+          created_at: now,
+          updated_at: now
+        ],
+        overrides
+      )
+
+    with {:ok, baseline} <- CoverageBaseline.new(attrs),
+         do: Storage.put_coverage_baseline(baseline)
+  end
+
+  defp wait_for_window_status(backfill_run_id, pipeline_module, window_key, status) do
+    eventually(fn ->
+      assert {:ok, window} =
+               Storage.get_backfill_window(backfill_run_id, pipeline_module, window_key)
+
+      assert window.status == status
+    end)
+  end
 
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{

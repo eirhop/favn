@@ -377,7 +377,7 @@ smoke runs do not require hand-written private orchestrator API requests. This
 manual run path is the recommended default for one-time local ETL.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
-local stacks. Use `submit` for explicit pipeline ranges, `windows RUN_ID` to
+local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges, `windows RUN_ID` to
 inspect child windows, `coverage-baselines` and `asset-window-states` to inspect
 projected backfill state, and `rerun-window RUN_ID --window-key KEY` for failed
 window reruns.

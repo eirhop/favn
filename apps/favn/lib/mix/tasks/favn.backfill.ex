@@ -12,9 +12,10 @@ defmodule Mix.Tasks.Favn.Backfill do
       mix favn.backfill asset-window-states
       mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01
 
-  By default `submit` waits for the parent backfill run to finish. Use `--no-wait`
-  to return after submission. Use `--wait-timeout-ms` for local polling and
-  `--run-timeout-ms` for child run execution timeout.
+  The local CLI submit path currently accepts explicit `--from`/`--to`/`--kind`
+  ranges only. By default `submit` waits for the parent backfill run to finish.
+  Use `--no-wait` to return after submission. Use `--wait-timeout-ms` for local
+  polling and `--run-timeout-ms` for child run execution timeout.
   """
 
   alias Favn.Dev

@@ -130,9 +130,12 @@ defmodule FavnOrchestrator.Backfill.Projector do
     end
   end
 
-  defp parent_status([]), do: :running
+  @doc false
+  @spec parent_status([BackfillWindow.t()]) ::
+          :running | :ok | :partial | :cancelled | :timed_out | :error
+  def parent_status([]), do: :running
 
-  defp parent_status(windows) do
+  def parent_status(windows) do
     statuses = Enum.map(windows, & &1.status)
 
     cond do

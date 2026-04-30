@@ -84,8 +84,9 @@ defmodule Favn.Backfill.RangeRequest do
   `:baseline` map containing `:coverage_until`.
 
   Relative requests are useful after a baseline/cutover run has established
-  coverage. The resolver expands the last complete windows before that
-  reference.
+  coverage. The resolver expands the last windows up to the boundary containing
+  that reference. When the reference is exactly on a boundary, that boundary is
+  used as the exclusive range end; otherwise the containing period is included.
 
   ## Example
 
