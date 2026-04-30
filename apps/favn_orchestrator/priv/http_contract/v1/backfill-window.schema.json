@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://favn.dev/contracts/orchestrator/v1/backfill-window.schema.json",
+  "title": "BackfillWindow",
+  "type": "object",
+  "required": [
+    "backfill_run_id",
+    "pipeline_module",
+    "manifest_version_id",
+    "window_kind",
+    "window_start_at",
+    "window_end_at",
+    "timezone",
+    "window_key",
+    "status",
+    "attempt_count",
+    "latest_attempt_run_id",
+    "last_success_run_id",
+    "updated_at"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "backfill_run_id": { "type": "string", "minLength": 1 },
+    "pipeline_module": { "type": "string", "minLength": 1 },
+    "manifest_version_id": { "type": "string", "minLength": 1 },
+    "window_kind": { "type": "string", "minLength": 1 },
+    "window_start_at": { "type": "string", "minLength": 1 },
+    "window_end_at": { "type": "string", "minLength": 1 },
+    "timezone": { "type": "string", "minLength": 1 },
+    "window_key": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "minLength": 1 },
+    "attempt_count": { "type": "integer", "minimum": 0 },
+    "latest_attempt_run_id": { "type": ["string", "null"] },
+    "last_success_run_id": { "type": ["string", "null"] },
+    "updated_at": { "type": "string", "minLength": 1 }
+  }
+}

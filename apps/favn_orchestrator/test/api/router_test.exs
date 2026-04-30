@@ -10,10 +10,16 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
   alias Favn.RuntimeConfig.Ref
+  alias Favn.Window.Anchor
+  alias Favn.Window.Key, as: WindowKey
+  alias Favn.Window.Policy
   alias FavnOrchestrator
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -643,6 +649,224 @@ defmodule FavnOrchestrator.API.RouterTest do
            } = Jason.decode!(response.resp_body)
   end
 
+  test "submits pipeline backfill and lists requested windows" do
+    version = schedule_manifest_version("mv_backfill_submit_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    submit_response =
+      conn(:post, "/api/orchestrator/v1/backfills", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2026-01-01",
+          "to" => "2026-01-02",
+          "kind" => "day",
+          "timezone" => "Etc/UTC"
+        }
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert submit_response.status == 201
+
+    assert %{
+             "data" => %{
+               "run" => %{"id" => backfill_run_id, "submit_kind" => "backfill_pipeline"}
+             }
+           } =
+             Jason.decode!(submit_response.resp_body)
+
+    list_response =
+      conn(:get, "/api/orchestrator/v1/backfills/#{backfill_run_id}/windows")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert list_response.status == 200
+    assert %{"data" => %{"items" => windows}} = Jason.decode!(list_response.resp_body)
+    assert length(windows) == 2
+    assert Enum.all?(windows, &(&1["backfill_run_id"] == backfill_run_id))
+    assert Enum.all?(windows, &(&1["pipeline_module"] == "Elixir.MyApp.Pipelines.DailyOrders"))
+  end
+
+  test "backfill submit endpoint rejects oversized ranges with validation details" do
+    version = schedule_manifest_version("mv_backfill_too_large_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2024-01-01",
+          "to" => "2026-01-01",
+          "kind" => "day",
+          "timezone" => "Etc/UTC"
+        }
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "details" => %{"requested" => requested, "max" => 500}
+             }
+           } = Jason.decode!(response.resp_body)
+
+    assert requested > 500
+  end
+
+  test "backfill submit endpoint reports missing coverage baseline clearly" do
+    version = schedule_manifest_version("mv_backfill_missing_baseline_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2026-01-01",
+          "to" => "2026-01-01",
+          "kind" => "day",
+          "timezone" => "Etc/UTC"
+        },
+        "coverage_baseline_id" => "missing_baseline"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Coverage baseline was not found",
+               "details" => %{"coverage_baseline_id" => "missing_baseline"}
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
+  test "lists backfill coverage baselines and asset window states" do
+    %{window_key: window_key} = seed_backfill_http_state!()
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    baseline_response =
+      conn(:get, "/api/orchestrator/v1/backfills/coverage-baselines")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert baseline_response.status == 200
+
+    assert %{"data" => %{"items" => [%{"baseline_id" => "baseline_http"}]}} =
+             Jason.decode!(baseline_response.resp_body)
+
+    state_response =
+      conn(
+        :get,
+        "/api/orchestrator/v1/assets/window-states?asset_ref_module=MyApp.Assets.DailyOrders&asset_ref_name=asset"
+      )
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert state_response.status == 200
+
+    assert %{"data" => %{"items" => [%{"window_key" => ^window_key, "status" => "error"}]}} =
+             Jason.decode!(state_response.resp_body)
+  end
+
+  test "backfill read endpoints reject invalid filters" do
+    seed_backfill_http_state!()
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    headers = fn conn ->
+      conn
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+    end
+
+    assert conn(:get, "/api/orchestrator/v1/backfills/backfill_http/windows?status=bad")
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+
+    assert conn(:get, "/api/orchestrator/v1/backfills/backfill_http/windows?pipeline_module=Typo")
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+
+    assert conn(:get, "/api/orchestrator/v1/backfills/coverage-baselines?pipeline_module=Typo")
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+
+    assert conn(
+             :get,
+             "/api/orchestrator/v1/assets/window-states?asset_ref_module=Typo&asset_ref_name=asset"
+           )
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+  end
+
+  test "reruns failed backfill window from latest attempt" do
+    version = schedule_manifest_version("mv_backfill_rerun_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    %{window_key: window_key} = seed_backfill_http_state!(version.manifest_version_id)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills/backfill_http/windows/rerun", %{
+        "window_key" => window_key
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 201
+
+    assert %{"data" => %{"run" => %{"id" => rerun_id, "submit_kind" => "rerun"}}} =
+             Jason.decode!(response.resp_body)
+
+    assert {:ok, rerun} = Storage.get_run(rerun_id)
+    assert rerun.parent_run_id == "backfill_http"
+    assert rerun.trigger.kind == :backfill
+    assert rerun.trigger.window_key == window_key
+  end
+
   test "service token can cancel run without actor headers" do
     seed_run_events!("run_cancel_service", [1])
 
@@ -655,6 +879,43 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert %{"data" => %{"cancelled" => true, "run_id" => "run_cancel_service"}} =
              Jason.decode!(response.resp_body)
+  end
+
+  test "generic cancel and rerun return conflict for backfill parent runs" do
+    parent =
+      RunState.new(
+        id: "backfill_parent_http",
+        manifest_version_id: "mv_backfill_parent_http",
+        manifest_content_hash: "hash_backfill_parent_http",
+        asset_ref: {MyApp.Assets.DailyOrders, :asset},
+        target_refs: [{MyApp.Assets.DailyOrders, :asset}],
+        submit_kind: :backfill_pipeline
+      )
+      |> Map.put(:status, :running)
+      |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(parent)
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    cancel_response =
+      conn(:post, "/api/orchestrator/v1/runs/backfill_parent_http/cancel")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert cancel_response.status == 409
+    assert %{"error" => %{"code" => "conflict"}} = Jason.decode!(cancel_response.resp_body)
+
+    rerun_response =
+      conn(:post, "/api/orchestrator/v1/runs/backfill_parent_http/rerun")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert rerun_response.status == 409
+    assert %{"error" => %{"code" => "conflict"}} = Jason.decode!(rerun_response.resp_body)
   end
 
   test "registers manifest through private API" do
@@ -941,10 +1202,10 @@ defmodule FavnOrchestrator.API.RouterTest do
         %Pipeline{
           module: MyApp.Pipelines.DailyOrders,
           name: :daily_orders,
-          selectors: [{MyApp.Assets.DailyOrders, :asset}],
+          selectors: [{:asset, {MyApp.Assets.DailyOrders, :asset}}],
           deps: :all,
           schedule: {:ref, {MyApp.Schedules, :daily}},
-          window: :day,
+          window: Policy.new!(:day),
           source: :dsl,
           outputs: [:asset],
           config: %{},
@@ -982,6 +1243,106 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
+  end
+
+  defp seed_backfill_http_state!(manifest_version_id \\ "mv_backfill_http") do
+    now = DateTime.utc_now()
+    start_at = ~U[2026-01-01 00:00:00Z]
+    end_at = ~U[2026-01-02 00:00:00Z]
+    {:ok, anchor} = Anchor.new(:day, start_at, end_at, timezone: "Etc/UTC")
+    window_key = WindowKey.encode(anchor.key)
+
+    source_run =
+      RunState.new(
+        id: "backfill_child_http",
+        manifest_version_id: manifest_version_id,
+        manifest_content_hash: "hash_backfill_http",
+        asset_ref: {MyApp.Assets.DailyOrders, :asset},
+        target_refs: [{MyApp.Assets.DailyOrders, :asset}],
+        trigger: %{
+          kind: :backfill,
+          backfill_run_id: "backfill_http",
+          window_key: window_key
+        },
+        metadata: %{
+          submit_kind: :pipeline,
+          pipeline_submit_ref: MyApp.Pipelines.DailyOrders,
+          pipeline_target_refs: [{MyApp.Assets.DailyOrders, :asset}],
+          pipeline_dependencies: :all
+        },
+        submit_kind: :pipeline,
+        parent_run_id: "backfill_http",
+        root_run_id: "backfill_http",
+        lineage_depth: 1
+      )
+      |> Map.put(:status, :error)
+      |> Map.put(:error, :seeded_failure)
+      |> Map.put(:updated_at, now)
+      |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(source_run)
+
+    {:ok, baseline} =
+      CoverageBaseline.new(%{
+        baseline_id: "baseline_http",
+        pipeline_module: MyApp.Pipelines.DailyOrders,
+        source_key: "orders",
+        segment_key_hash: "hash_segment",
+        window_kind: :day,
+        timezone: "Etc/UTC",
+        coverage_until: start_at,
+        created_by_run_id: "baseline_run_http",
+        manifest_version_id: manifest_version_id,
+        status: :ok,
+        created_at: now,
+        updated_at: now
+      })
+
+    assert :ok = Storage.put_coverage_baseline(baseline)
+
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: "backfill_http",
+        child_run_id: "backfill_child_http",
+        pipeline_module: MyApp.Pipelines.DailyOrders,
+        manifest_version_id: manifest_version_id,
+        coverage_baseline_id: "baseline_http",
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: end_at,
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :error,
+        attempt_count: 1,
+        latest_attempt_run_id: "backfill_child_http",
+        last_error: :seeded_failure,
+        created_at: now,
+        updated_at: now
+      })
+
+    assert :ok = Storage.put_backfill_window(window)
+
+    {:ok, state} =
+      AssetWindowState.new(%{
+        asset_ref_module: MyApp.Assets.DailyOrders,
+        asset_ref_name: :asset,
+        pipeline_module: MyApp.Pipelines.DailyOrders,
+        manifest_version_id: manifest_version_id,
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: end_at,
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :error,
+        latest_run_id: "backfill_child_http",
+        latest_parent_run_id: "backfill_http",
+        latest_error: :seeded_failure,
+        updated_at: now
+      })
+
+    assert :ok = Storage.put_asset_window_state(state)
+
+    %{window_key: window_key}
   end
 
   defp seed_run_events!(run_id, sequences) when is_binary(run_id) and is_list(sequences) do

@@ -5,6 +5,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
+  alias Mix.Tasks.Favn.Backfill, as: BackfillTask
   alias Mix.Tasks.Favn.Build.Orchestrator, as: BuildOrchestratorTask
   alias Mix.Tasks.Favn.Build.Runner, as: BuildRunnerTask
   alias Mix.Tasks.Favn.Build.Single, as: BuildSingleTask
@@ -210,6 +211,100 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     assert_raise Mix.Error, ~r/--poll-interval-ms must be greater than 0/, fn ->
       RunTask.run(["Example.Pipeline", "--poll-interval-ms", "0"])
+    end
+  end
+
+  test "mix favn.backfill parses submit command" do
+    assert {:ok, {:submit, "Example.Pipeline", opts}} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--from",
+               "2026-04-01",
+               "--to",
+               "2026-04-07",
+               "--kind",
+               "day",
+               "--coverage-baseline-id",
+               "baseline_1",
+               "--no-wait"
+             ])
+
+    assert Keyword.fetch!(opts, :from) == "2026-04-01"
+    assert Keyword.fetch!(opts, :to) == "2026-04-07"
+    assert Keyword.fetch!(opts, :kind) == "day"
+    assert Keyword.fetch!(opts, :timezone) == "Etc/UTC"
+    assert Keyword.fetch!(opts, :coverage_baseline_id) == "baseline_1"
+    assert Keyword.fetch!(opts, :wait) == false
+  end
+
+  test "mix favn.backfill validates submit arguments" do
+    assert {:error, message} = BackfillTask.parse_args(["submit", "Example.Pipeline"])
+    assert message =~ "missing required option(s): --from, --to, --kind"
+
+    assert {:error, message} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--from",
+               "2026-04-01",
+               "--to",
+               "2026-04-07",
+               "--kind",
+               "day",
+               "--bad"
+             ])
+
+    assert message == "invalid option for mix favn.backfill submit"
+  end
+
+  test "mix favn.backfill parses read and rerun commands" do
+    assert {:ok, {:windows, "run_1", opts}} =
+             BackfillTask.parse_args(["windows", "run_1", "--status", "failed"])
+
+    assert Keyword.fetch!(opts, :status) == "failed"
+
+    assert {:ok, {:coverage_baselines, opts}} =
+             BackfillTask.parse_args([
+               "coverage-baselines",
+               "--pipeline-module",
+               "Example.Pipeline"
+             ])
+
+    assert Keyword.fetch!(opts, :pipeline_module) == "Example.Pipeline"
+
+    assert {:ok, {:asset_window_states, opts}} =
+             BackfillTask.parse_args([
+               "asset-window-states",
+               "--asset-ref-module",
+               "Example.Asset",
+               "--asset-ref-name",
+               "asset"
+             ])
+
+    assert Keyword.fetch!(opts, :asset_ref_module) == "Example.Asset"
+    assert Keyword.fetch!(opts, :asset_ref_name) == "asset"
+
+    assert {:ok, {:rerun_window, "run_1", opts}} =
+             BackfillTask.parse_args(["rerun-window", "run_1", "--window-key", "day:2026-04-01"])
+
+    assert Keyword.fetch!(opts, :window_key) == "day:2026-04-01"
+  end
+
+  test "mix favn.backfill reports stopped local stack", %{root_dir: root_dir} do
+    assert_raise Mix.Error, ~r/stack not running; use mix favn.dev/, fn ->
+      BackfillTask.run([
+        "submit",
+        "Example.Pipeline",
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-04-07",
+        "--kind",
+        "day",
+        "--root-dir",
+        root_dir
+      ])
     end
   end
 

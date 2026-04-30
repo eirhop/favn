@@ -57,6 +57,8 @@ defmodule Favn.Dev.LifecycleTest do
   end
 
   test "startup failure cleans runtime state", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+
     :ok = State.ensure_layout(root_dir: root_dir)
 
     failing_specs = [

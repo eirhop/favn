@@ -33,7 +33,7 @@ defmodule FavnOrchestrator.Projector do
 
   @spec project_run(RunState.t()) :: Run.t()
   def project_run(%RunState{} = run_state) do
-    terminal? = run_state.status in [:ok, :error, :cancelled, :timed_out]
+    terminal? = run_state.status in [:ok, :partial, :error, :cancelled, :timed_out]
     asset_results = project_asset_results(run_state)
 
     %Run{
@@ -157,6 +157,8 @@ defmodule FavnOrchestrator.Projector do
 
   defp project_submit_kind(:manual), do: :asset
   defp project_submit_kind(:pipeline), do: :pipeline
+  defp project_submit_kind(:backfill_asset), do: :backfill_asset
+  defp project_submit_kind(:backfill_pipeline), do: :backfill_pipeline
   defp project_submit_kind(:rerun), do: :rerun
   defp project_submit_kind(_other), do: :asset
 
@@ -185,7 +187,7 @@ defmodule FavnOrchestrator.Projector do
   defp project_operator_reason(_run_state), do: nil
 
   defp project_terminal_reason(%RunState{status: status, error: error})
-       when status in [:ok, :error, :cancelled, :timed_out] do
+       when status in [:ok, :partial, :error, :cancelled, :timed_out] do
     %{status: status, error: error}
   end
 
@@ -265,6 +267,7 @@ defmodule FavnOrchestrator.Projector do
   defp maybe_put_submit_ref(pipeline, submit_ref), do: Map.put(pipeline, :submit_ref, submit_ref)
 
   defp pipeline_origin?(%RunState{submit_kind: :pipeline}), do: true
+  defp pipeline_origin?(%RunState{submit_kind: :backfill_pipeline}), do: true
 
   defp pipeline_origin?(%RunState{metadata: metadata}) when is_map(metadata) do
     Map.get(metadata, :replay_submit_kind) == :pipeline or

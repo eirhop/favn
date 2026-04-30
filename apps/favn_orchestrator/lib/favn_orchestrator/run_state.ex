@@ -3,7 +3,7 @@ defmodule FavnOrchestrator.RunState do
   Persisted run snapshot owned by the orchestrator control plane.
   """
 
-  @type status :: :pending | :running | :ok | :error | :cancelled | :timed_out
+  @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -18,7 +18,7 @@ defmodule FavnOrchestrator.RunState do
           params: map(),
           trigger: map(),
           metadata: map(),
-          submit_kind: :manual | :rerun | :pipeline,
+          submit_kind: :manual | :rerun | :pipeline | :backfill_asset | :backfill_pipeline,
           rerun_of_run_id: String.t() | nil,
           parent_run_id: String.t() | nil,
           root_run_id: String.t() | nil,
@@ -138,6 +138,8 @@ defmodule FavnOrchestrator.RunState do
   defp normalize_submit_kind(:manual), do: :manual
   defp normalize_submit_kind(:rerun), do: :rerun
   defp normalize_submit_kind(:pipeline), do: :pipeline
+  defp normalize_submit_kind(:backfill_asset), do: :backfill_asset
+  defp normalize_submit_kind(:backfill_pipeline), do: :backfill_pipeline
   defp normalize_submit_kind(_value), do: :manual
 
   defp normalize_optional_string(value) when is_binary(value) and value != "", do: value

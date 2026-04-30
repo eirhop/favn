@@ -293,5 +293,34 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   @impl true
   def get_scheduler_state(_scheduler_key, _opts), do: {:ok, nil}
 
+  @impl true
+  def put_coverage_baseline(_baseline, _opts), do: :ok
+
+  @impl true
+  def get_coverage_baseline(_baseline_id, _opts), do: {:error, :not_found}
+
+  @impl true
+  def list_coverage_baselines(_filters, _opts), do: {:ok, []}
+
+  @impl true
+  def put_backfill_window(_window, _opts), do: :ok
+
+  @impl true
+  def get_backfill_window(_backfill_run_id, _pipeline_module, _window_key, _opts),
+    do: {:error, :not_found}
+
+  @impl true
+  def list_backfill_windows(_filters, _opts), do: {:ok, []}
+
+  @impl true
+  def put_asset_window_state(_state, _opts), do: :ok
+
+  @impl true
+  def get_asset_window_state(_asset_ref_module, _asset_ref_name, _window_key, _opts),
+    do: {:error, :not_found}
+
+  @impl true
+  def list_asset_window_states(_filters, _opts), do: {:ok, []}
+
   def reset!, do: :persistent_term.put(@counter_key, 0)
 end

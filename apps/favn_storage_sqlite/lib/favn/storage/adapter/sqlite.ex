@@ -7,6 +7,9 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
@@ -289,6 +292,535 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  @impl true
+  def put_coverage_baseline(%CoverageBaseline{} = baseline, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        """
+        INSERT INTO favn_pipeline_coverage_baselines (
+          baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted,
+          window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id,
+          manifest_version_id, status, errors_blob, metadata_blob, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        ON CONFLICT(baseline_id) DO UPDATE SET
+          pipeline_module = excluded.pipeline_module,
+          source_key = excluded.source_key,
+          segment_key_hash = excluded.segment_key_hash,
+          segment_key_redacted = excluded.segment_key_redacted,
+          window_kind = excluded.window_kind,
+          timezone = excluded.timezone,
+          coverage_start_at = excluded.coverage_start_at,
+          coverage_until = excluded.coverage_until,
+          created_by_run_id = excluded.created_by_run_id,
+          manifest_version_id = excluded.manifest_version_id,
+          status = excluded.status,
+          errors_blob = excluded.errors_blob,
+          metadata_blob = excluded.metadata_blob,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at
+        """
+
+      params = [
+        baseline.baseline_id,
+        encode_atom(baseline.pipeline_module),
+        baseline.source_key,
+        baseline.segment_key_hash,
+        baseline.segment_key_redacted,
+        encode_atom(baseline.window_kind),
+        baseline.timezone,
+        encode_datetime(baseline.coverage_start_at),
+        encode_datetime(baseline.coverage_until),
+        baseline.created_by_run_id,
+        baseline.manifest_version_id,
+        encode_atom(baseline.status),
+        encode_payload(baseline.errors),
+        encode_payload(baseline.metadata),
+        encode_datetime(baseline.created_at),
+        encode_datetime(baseline.updated_at)
+      ]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_coverage_baseline(baseline_id, opts) when is_binary(baseline_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        "SELECT #{coverage_baseline_columns()} FROM favn_pipeline_coverage_baselines WHERE baseline_id = ?1 LIMIT 1"
+
+      case SQL.query(repo, sql, [baseline_id]) do
+        {:ok, %{rows: [row]}} -> decode_coverage_baseline_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_coverage_baselines(filters, opts) when is_list(filters) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, {where_sql, params}} <-
+           build_filter_sql(filters, coverage_baseline_filter_columns()) do
+      sql =
+        "SELECT #{coverage_baseline_columns()} FROM favn_pipeline_coverage_baselines#{where_sql} ORDER BY updated_at DESC, baseline_id ASC"
+
+      decode_rows(repo, sql, params, &decode_coverage_baseline_row/1)
+    end
+  end
+
+  @impl true
+  def put_backfill_window(%BackfillWindow{} = window, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        """
+        INSERT INTO favn_backfill_windows (
+          backfill_run_id, child_run_id, pipeline_module, manifest_version_id,
+          coverage_baseline_id, window_kind, window_start_at, window_end_at, timezone,
+          window_key, status, attempt_count, latest_attempt_run_id, last_success_run_id,
+          last_error_blob, errors_blob, metadata_blob, started_at, finished_at, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+        ON CONFLICT(backfill_run_id, pipeline_module, window_key) DO UPDATE SET
+          child_run_id = excluded.child_run_id,
+          manifest_version_id = excluded.manifest_version_id,
+          coverage_baseline_id = excluded.coverage_baseline_id,
+          window_kind = excluded.window_kind,
+          window_start_at = excluded.window_start_at,
+          window_end_at = excluded.window_end_at,
+          timezone = excluded.timezone,
+          status = excluded.status,
+          attempt_count = excluded.attempt_count,
+          latest_attempt_run_id = excluded.latest_attempt_run_id,
+          last_success_run_id = excluded.last_success_run_id,
+          last_error_blob = excluded.last_error_blob,
+          errors_blob = excluded.errors_blob,
+          metadata_blob = excluded.metadata_blob,
+          started_at = excluded.started_at,
+          finished_at = excluded.finished_at,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at
+        """
+
+      params = [
+        window.backfill_run_id,
+        window.child_run_id,
+        encode_atom(window.pipeline_module),
+        window.manifest_version_id,
+        window.coverage_baseline_id,
+        encode_atom(window.window_kind),
+        encode_datetime(window.window_start_at),
+        encode_datetime(window.window_end_at),
+        window.timezone,
+        window.window_key,
+        encode_atom(window.status),
+        window.attempt_count,
+        window.latest_attempt_run_id,
+        window.last_success_run_id,
+        encode_payload(window.last_error),
+        encode_payload(window.errors),
+        encode_payload(window.metadata),
+        encode_datetime(window.started_at),
+        encode_datetime(window.finished_at),
+        encode_datetime(window.created_at),
+        encode_datetime(window.updated_at)
+      ]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_backfill_window(backfill_run_id, pipeline_module, window_key, opts)
+      when is_binary(backfill_run_id) and is_atom(pipeline_module) and is_binary(window_key) and
+             is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        "SELECT #{backfill_window_columns()} FROM favn_backfill_windows WHERE backfill_run_id = ?1 AND pipeline_module = ?2 AND window_key = ?3 LIMIT 1"
+
+      params = [backfill_run_id, encode_atom(pipeline_module), window_key]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: [row]}} -> decode_backfill_window_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_backfill_windows(filters, opts) when is_list(filters) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, {where_sql, params}} <- build_filter_sql(filters, backfill_window_filter_columns()) do
+      sql =
+        "SELECT #{backfill_window_columns()} FROM favn_backfill_windows#{where_sql} ORDER BY window_start_at ASC, backfill_run_id ASC"
+
+      decode_rows(repo, sql, params, &decode_backfill_window_row/1)
+    end
+  end
+
+  @impl true
+  def put_asset_window_state(%AssetWindowState{} = state, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        """
+        INSERT INTO favn_asset_window_states (
+          asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id,
+          window_kind, window_start_at, window_end_at, timezone, window_key, status,
+          latest_run_id, latest_parent_run_id, latest_success_run_id, latest_error_blob,
+          rows_written, errors_blob, metadata_blob, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+        ON CONFLICT(asset_ref_module, asset_ref_name, window_key) DO UPDATE SET
+          pipeline_module = excluded.pipeline_module,
+          manifest_version_id = excluded.manifest_version_id,
+          window_kind = excluded.window_kind,
+          window_start_at = excluded.window_start_at,
+          window_end_at = excluded.window_end_at,
+          timezone = excluded.timezone,
+          status = excluded.status,
+          latest_run_id = excluded.latest_run_id,
+          latest_parent_run_id = excluded.latest_parent_run_id,
+          latest_success_run_id = excluded.latest_success_run_id,
+          latest_error_blob = excluded.latest_error_blob,
+          rows_written = excluded.rows_written,
+          errors_blob = excluded.errors_blob,
+          metadata_blob = excluded.metadata_blob,
+          updated_at = excluded.updated_at
+        """
+
+      params = [
+        encode_atom(state.asset_ref_module),
+        encode_atom(state.asset_ref_name),
+        encode_atom(state.pipeline_module),
+        state.manifest_version_id,
+        encode_atom(state.window_kind),
+        encode_datetime(state.window_start_at),
+        encode_datetime(state.window_end_at),
+        state.timezone,
+        state.window_key,
+        encode_atom(state.status),
+        state.latest_run_id,
+        state.latest_parent_run_id,
+        state.latest_success_run_id,
+        encode_payload(state.latest_error),
+        state.rows_written,
+        encode_payload(state.errors),
+        encode_payload(state.metadata),
+        encode_datetime(state.updated_at)
+      ]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_asset_window_state(asset_ref_module, asset_ref_name, window_key, opts)
+      when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(window_key) and
+             is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        "SELECT #{asset_window_state_columns()} FROM favn_asset_window_states WHERE asset_ref_module = ?1 AND asset_ref_name = ?2 AND window_key = ?3 LIMIT 1"
+
+      params = [encode_atom(asset_ref_module), encode_atom(asset_ref_name), window_key]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: [row]}} -> decode_asset_window_state_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_asset_window_states(filters, opts) when is_list(filters) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, {where_sql, params}} <-
+           build_filter_sql(filters, asset_window_state_filter_columns()) do
+      sql =
+        "SELECT #{asset_window_state_columns()} FROM favn_asset_window_states#{where_sql} ORDER BY window_start_at ASC, asset_ref_module ASC, asset_ref_name ASC"
+
+      decode_rows(repo, sql, params, &decode_asset_window_state_row/1)
+    end
+  end
+
+  defp coverage_baseline_columns do
+    "baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted, window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id, manifest_version_id, status, errors_blob, metadata_blob, created_at, updated_at"
+  end
+
+  defp backfill_window_columns do
+    "backfill_run_id, child_run_id, pipeline_module, manifest_version_id, coverage_baseline_id, window_kind, window_start_at, window_end_at, timezone, window_key, status, attempt_count, latest_attempt_run_id, last_success_run_id, last_error_blob, errors_blob, metadata_blob, started_at, finished_at, created_at, updated_at"
+  end
+
+  defp asset_window_state_columns do
+    "asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id, window_kind, window_start_at, window_end_at, timezone, window_key, status, latest_run_id, latest_parent_run_id, latest_success_run_id, latest_error_blob, rows_written, errors_blob, metadata_blob, updated_at"
+  end
+
+  defp coverage_baseline_filter_columns do
+    %{
+      baseline_id: {:text, "baseline_id"},
+      pipeline_module: {:atom, "pipeline_module"},
+      source_key: {:text, "source_key"},
+      segment_key_hash: {:text, "segment_key_hash"},
+      window_kind: {:atom, "window_kind"},
+      timezone: {:text, "timezone"},
+      created_by_run_id: {:text, "created_by_run_id"},
+      manifest_version_id: {:text, "manifest_version_id"},
+      status: {:atom, "status"}
+    }
+  end
+
+  defp backfill_window_filter_columns do
+    %{
+      backfill_run_id: {:text, "backfill_run_id"},
+      child_run_id: {:text, "child_run_id"},
+      pipeline_module: {:atom, "pipeline_module"},
+      manifest_version_id: {:text, "manifest_version_id"},
+      coverage_baseline_id: {:text, "coverage_baseline_id"},
+      window_kind: {:atom, "window_kind"},
+      timezone: {:text, "timezone"},
+      window_key: {:text, "window_key"},
+      status: {:atom, "status"},
+      latest_attempt_run_id: {:text, "latest_attempt_run_id"},
+      last_success_run_id: {:text, "last_success_run_id"}
+    }
+  end
+
+  defp asset_window_state_filter_columns do
+    %{
+      asset_ref_module: {:atom, "asset_ref_module"},
+      asset_ref_name: {:atom, "asset_ref_name"},
+      pipeline_module: {:atom, "pipeline_module"},
+      manifest_version_id: {:text, "manifest_version_id"},
+      window_kind: {:atom, "window_kind"},
+      timezone: {:text, "timezone"},
+      window_key: {:text, "window_key"},
+      status: {:atom, "status"},
+      latest_run_id: {:text, "latest_run_id"},
+      latest_parent_run_id: {:text, "latest_parent_run_id"},
+      latest_success_run_id: {:text, "latest_success_run_id"}
+    }
+  end
+
+  defp decode_coverage_baseline_row([
+         baseline_id,
+         pipeline_module,
+         source_key,
+         segment_key_hash,
+         segment_key_redacted,
+         window_kind,
+         timezone,
+         coverage_start_at,
+         coverage_until,
+         created_by_run_id,
+         manifest_version_id,
+         status,
+         errors_blob,
+         metadata_blob,
+         created_at,
+         updated_at
+       ]) do
+    with {:ok, errors} <- decode_payload(errors_blob),
+         {:ok, metadata} <- decode_payload(metadata_blob) do
+      {:ok,
+       %CoverageBaseline{
+         baseline_id: baseline_id,
+         pipeline_module: decode_atom(pipeline_module),
+         source_key: source_key,
+         segment_key_hash: segment_key_hash,
+         segment_key_redacted: segment_key_redacted,
+         window_kind: decode_atom(window_kind),
+         timezone: timezone,
+         coverage_start_at: decode_datetime(coverage_start_at),
+         coverage_until: decode_datetime(coverage_until),
+         created_by_run_id: created_by_run_id,
+         manifest_version_id: manifest_version_id,
+         status: decode_atom(status),
+         errors: errors,
+         metadata: metadata,
+         created_at: decode_datetime(created_at),
+         updated_at: decode_datetime(updated_at)
+       }}
+    end
+  end
+
+  defp decode_backfill_window_row([
+         backfill_run_id,
+         child_run_id,
+         pipeline_module,
+         manifest_version_id,
+         coverage_baseline_id,
+         window_kind,
+         window_start_at,
+         window_end_at,
+         timezone,
+         window_key,
+         status,
+         attempt_count,
+         latest_attempt_run_id,
+         last_success_run_id,
+         last_error_blob,
+         errors_blob,
+         metadata_blob,
+         started_at,
+         finished_at,
+         created_at,
+         updated_at
+       ]) do
+    with {:ok, last_error} <- decode_payload(last_error_blob),
+         {:ok, errors} <- decode_payload(errors_blob),
+         {:ok, metadata} <- decode_payload(metadata_blob) do
+      {:ok,
+       %BackfillWindow{
+         backfill_run_id: backfill_run_id,
+         child_run_id: child_run_id,
+         pipeline_module: decode_atom(pipeline_module),
+         manifest_version_id: manifest_version_id,
+         coverage_baseline_id: coverage_baseline_id,
+         window_kind: decode_atom(window_kind),
+         window_start_at: decode_datetime(window_start_at),
+         window_end_at: decode_datetime(window_end_at),
+         timezone: timezone,
+         window_key: window_key,
+         status: decode_atom(status),
+         attempt_count: attempt_count,
+         latest_attempt_run_id: latest_attempt_run_id,
+         last_success_run_id: last_success_run_id,
+         last_error: last_error,
+         errors: errors,
+         metadata: metadata,
+         started_at: decode_datetime(started_at),
+         finished_at: decode_datetime(finished_at),
+         created_at: decode_datetime(created_at),
+         updated_at: decode_datetime(updated_at)
+       }}
+    end
+  end
+
+  defp decode_asset_window_state_row([
+         asset_ref_module,
+         asset_ref_name,
+         pipeline_module,
+         manifest_version_id,
+         window_kind,
+         window_start_at,
+         window_end_at,
+         timezone,
+         window_key,
+         status,
+         latest_run_id,
+         latest_parent_run_id,
+         latest_success_run_id,
+         latest_error_blob,
+         rows_written,
+         errors_blob,
+         metadata_blob,
+         updated_at
+       ]) do
+    with {:ok, latest_error} <- decode_payload(latest_error_blob),
+         {:ok, errors} <- decode_payload(errors_blob),
+         {:ok, metadata} <- decode_payload(metadata_blob) do
+      {:ok,
+       %AssetWindowState{
+         asset_ref_module: decode_atom(asset_ref_module),
+         asset_ref_name: decode_atom(asset_ref_name),
+         pipeline_module: decode_atom(pipeline_module),
+         manifest_version_id: manifest_version_id,
+         window_kind: decode_atom(window_kind),
+         window_start_at: decode_datetime(window_start_at),
+         window_end_at: decode_datetime(window_end_at),
+         timezone: timezone,
+         window_key: window_key,
+         status: decode_atom(status),
+         latest_run_id: latest_run_id,
+         latest_parent_run_id: latest_parent_run_id,
+         latest_success_run_id: latest_success_run_id,
+         latest_error: latest_error,
+         rows_written: rows_written,
+         errors: errors,
+         metadata: metadata,
+         updated_at: decode_datetime(updated_at)
+       }}
+    end
+  end
+
+  defp decode_rows(repo, sql, params, decoder) when is_function(decoder, 1) do
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: rows}} ->
+        rows
+        |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+          case decoder.(row) do
+            {:ok, value} -> {:cont, {:ok, [value | acc]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+        |> case do
+          {:ok, values} -> {:ok, Enum.reverse(values)}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp build_filter_sql([], _columns), do: {:ok, {"", []}}
+
+  defp build_filter_sql(filters, columns) do
+    filters
+    |> Enum.reduce_while({:ok, [], []}, fn {key, value}, {:ok, clauses, params} ->
+      case Map.fetch(columns, key) do
+        {:ok, {type, column}} ->
+          placeholder = "?#{length(params) + 1}"
+          clause = "#{column} = #{placeholder}"
+          {:cont, {:ok, [clause | clauses], params ++ [encode_filter_value(type, value)]}}
+
+        :error ->
+          {:halt, {:error, {:unsupported_filter, key}}}
+      end
+    end)
+    |> case do
+      {:ok, clauses, params} ->
+        {:ok, {" WHERE " <> Enum.join(Enum.reverse(clauses), " AND "), params}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp encode_filter_value(:atom, value) when is_atom(value), do: encode_atom(value)
+  defp encode_filter_value(:atom, value) when is_binary(value), do: value
+  defp encode_filter_value(:text, value), do: value
+
+  defp encode_atom(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp decode_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> {:unknown_atom, value}
+  end
+
+  defp encode_datetime(nil), do: nil
+  defp encode_datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp decode_datetime(nil), do: nil
+
+  defp decode_datetime(%DateTime{} = value), do: value
+
+  defp decode_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      {:error, _reason} -> value
     end
   end
 
