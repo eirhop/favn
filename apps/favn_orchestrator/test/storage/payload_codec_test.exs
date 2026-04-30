@@ -35,11 +35,11 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
              PayloadCodec.decode(payload)
   end
 
-  test "rejects non-struct modules during decode" do
+  test "rejects unsupported struct modules during decode" do
     payload =
-      ~s({"format":"json-v1","value":{"__type__":"struct","module":"Elixir.String","fields":{"__type__":"map","entries":[]}}})
+      ~s({"format":"json-v1","value":{"__type__":"struct","module":"Elixir.URI","fields":{"__type__":"map","entries":[]}}})
 
-    assert {:error, {:payload_decode_failed, {:invalid_struct_module, "Elixir.String"}}} =
+    assert {:error, {:payload_decode_failed, {:unsupported_struct_module, "Elixir.URI"}}} =
              PayloadCodec.decode(payload)
   end
 end
