@@ -127,8 +127,6 @@ defmodule Favn.Triggers.Schedules do
     else
       _ -> {:error, :not_schedule_module}
     end
-  rescue
-    _error -> {:error, :schedule_not_defined}
   end
 
   def fetch(_module, _name), do: {:error, :not_schedule_module}
