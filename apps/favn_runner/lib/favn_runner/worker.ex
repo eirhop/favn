@@ -181,6 +181,7 @@ defmodule FavnRunner.Worker do
 
   defp asset_result(%Asset{} = asset, started_at, finished_at, status, meta, error) do
     meta = RuntimeConfigRedactor.redact(meta, asset.runtime_config || %{})
+    duration_ms = duration_ms(started_at, finished_at)
 
     %AssetResult{
       ref: asset.ref,
@@ -188,7 +189,7 @@ defmodule FavnRunner.Worker do
       status: status,
       started_at: started_at,
       finished_at: finished_at,
-      duration_ms: max(DateTime.diff(finished_at, started_at, :millisecond), 0),
+      duration_ms: duration_ms,
       meta: meta,
       error: error,
       attempt_count: 1,
@@ -198,13 +199,17 @@ defmodule FavnRunner.Worker do
           attempt: 1,
           started_at: started_at,
           finished_at: finished_at,
-          duration_ms: max(DateTime.diff(finished_at, started_at, :millisecond), 0),
+          duration_ms: duration_ms,
           status: status,
           meta: meta,
           error: error
         }
       ]
     }
+  end
+
+  defp duration_ms(started_at, finished_at) do
+    max(DateTime.diff(finished_at, started_at, :millisecond), 0)
   end
 
   defp emit_event(server, execution_id, work, event_type, payload) do

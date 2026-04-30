@@ -34,25 +34,29 @@ defmodule Favn.SQL.MaterializationPlanner do
       if target_exists? do
         incremental_write_plan(render, strategy, opts, effective_window)
       else
-        {:ok,
-         table_write_plan(render)
-         |> Map.merge(%{
-           materialization: :incremental,
-           strategy: strategy,
-           mode: :bootstrap,
-           transactional?: false,
-           window: effective_window,
-           effective_window: effective_window,
-           bootstrap?: true,
-           metadata: %{
-             mode: :bootstrap,
-             bootstrap?: true,
-             strategy: strategy,
-             effective_window: effective_window
-           }
-         })}
+        bootstrap_write_plan(render, strategy, effective_window)
       end
     end
+  end
+
+  defp bootstrap_write_plan(%Render{} = render, strategy, %IncrementalWindow{} = window) do
+    {:ok,
+     table_write_plan(render)
+     |> Map.merge(%{
+       materialization: :incremental,
+       strategy: strategy,
+       mode: :bootstrap,
+       transactional?: false,
+       window: window,
+       effective_window: window,
+       bootstrap?: true,
+       metadata: %{
+         mode: :bootstrap,
+         bootstrap?: true,
+         strategy: strategy,
+         effective_window: window
+       }
+     })}
   end
 
   defp incremental_write_plan(%Render{} = render, :append, _opts, %IncrementalWindow{} = window) do
@@ -127,14 +131,7 @@ defmodule Favn.SQL.MaterializationPlanner do
   end
 
   defp target_exists?(%Session{} = session, %Render{} = render) do
-    ref =
-      RelationRef.new!(%{
-        catalog: render.relation.catalog,
-        schema: render.relation.schema,
-        name: render.relation.name
-      })
-
-    case Client.relation(session, ref) do
+    case Client.relation(session, target_ref(render)) do
       {:ok, nil} -> {:ok, false}
       {:ok, _relation} -> {:ok, true}
       {:error, reason} -> planning_error(render, "failed to inspect incremental target", reason)
@@ -176,14 +173,7 @@ defmodule Favn.SQL.MaterializationPlanner do
        ) do
     column = opts |> Keyword.fetch!(:window_column) |> normalize_column_name()
 
-    ref =
-      RelationRef.new!(%{
-        catalog: render.relation.catalog,
-        schema: render.relation.schema,
-        name: render.relation.name
-      })
-
-    with {:ok, columns} <- Client.columns(session, ref),
+    with {:ok, columns} <- Client.columns(session, target_ref(render)),
          :ok <- ensure_column_present(Enum.map(columns, & &1.name), column, render, :target) do
       {:ok, :ok}
     else
@@ -245,6 +235,14 @@ defmodule Favn.SQL.MaterializationPlanner do
        message: message,
        cause: reason
      }}
+  end
+
+  defp target_ref(%Render{} = render) do
+    RelationRef.new!(%{
+      catalog: render.relation.catalog,
+      schema: render.relation.schema,
+      name: render.relation.name
+    })
   end
 
   defp relation(%Render{} = render, type) do

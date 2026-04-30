@@ -50,8 +50,8 @@ defmodule Favn.Connection.Validator do
          {:ok, resolved_values} <- resolve_runtime_refs(definition, merged) do
       errors =
         []
-        |> validate_required(definition, %{}, resolved_values)
-        |> validate_types(definition, %{}, resolved_values)
+        |> validate_required(definition, resolved_values)
+        |> validate_types(definition, resolved_values)
 
       if errors == [] do
         required_keys =
@@ -106,17 +106,12 @@ defmodule Favn.Connection.Validator do
       |> Enum.filter(&Map.get(&1, :secret, false))
       |> Enum.map(& &1.key)
 
-    top_level_runtime_secret_fields =
-      values
-      |> Enum.filter(fn {_key, value} -> match?(%Favn.RuntimeConfig.Ref{secret?: true}, value) end)
-      |> Enum.map(&elem(&1, 0))
-
-    nested_runtime_secret_fields =
+    runtime_secret_fields =
       values
       |> Enum.filter(fn {_key, value} -> nested_secret_ref?(value) end)
       |> Enum.map(&elem(&1, 0))
 
-    (schema_secret_fields ++ top_level_runtime_secret_fields ++ nested_runtime_secret_fields)
+    (schema_secret_fields ++ runtime_secret_fields)
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -307,13 +302,11 @@ defmodule Favn.Connection.Validator do
     ]
   end
 
-  defp validate_required(errors, definition, defaults, runtime_values) do
-    merged = Map.merge(defaults, runtime_values)
-
+  defp validate_required(errors, definition, values) do
     definition.config_schema
     |> Enum.filter(&Map.get(&1, :required, false))
     |> Enum.reduce(errors, fn field, acc ->
-      case Map.fetch(merged, field.key) do
+      case Map.fetch(values, field.key) do
         {:ok, value} when not is_nil(value) ->
           acc
 
@@ -333,11 +326,9 @@ defmodule Favn.Connection.Validator do
     end)
   end
 
-  defp validate_types(errors, definition, defaults, runtime_values) do
-    merged = Map.merge(defaults, runtime_values)
-
+  defp validate_types(errors, definition, values) do
     Enum.reduce(definition.config_schema, errors, fn field, acc ->
-      case Map.fetch(merged, field.key) do
+      case Map.fetch(values, field.key) do
         {:ok, value} -> validate_field_value(acc, definition, field, value)
         :error -> acc
       end
