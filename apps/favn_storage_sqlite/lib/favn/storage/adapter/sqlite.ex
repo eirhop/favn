@@ -367,7 +367,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_coverage_baselines(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
-         page_opts <- page_opts(filters),
+         {:ok, page_opts} <- page_opts(filters),
          {:ok, {where_sql, params}} <-
            build_filter_sql(read_filters(filters), coverage_baseline_filter_columns()) do
       sql =
@@ -461,7 +461,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_backfill_windows(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
-         page_opts <- page_opts(filters),
+         {:ok, page_opts} <- page_opts(filters),
          {:ok, {where_sql, params}} <-
            build_filter_sql(read_filters(filters), backfill_window_filter_columns()) do
       sql =
@@ -549,7 +549,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_asset_window_states(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
-         page_opts <- page_opts(filters),
+         {:ok, page_opts} <- page_opts(filters),
          {:ok, {where_sql, params}} <-
            build_filter_sql(read_filters(filters), asset_window_state_filter_columns()) do
       sql =
@@ -791,10 +791,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
 
-  defp page_opts(filters) do
-    {:ok, opts} = Page.normalize_opts(filters)
-    opts
-  end
+  defp page_opts(filters), do: Page.normalize_opts(filters)
 
   defp build_filter_sql([], _columns), do: {:ok, {"", []}}
 

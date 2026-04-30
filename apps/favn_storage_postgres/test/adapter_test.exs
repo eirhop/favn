@@ -16,12 +16,7 @@ defmodule FavnStoragePostgres.AdapterTest do
     assert {:error, {:invalid_migration_mode, :bad}} =
              Adapter.child_spec(
                repo_mode: :managed,
-               repo_config: [
-                 hostname: "localhost",
-                 database: "favn",
-                 username: "postgres",
-                 password: "postgres"
-               ],
+               repo_config: repo_config(),
                migration_mode: :bad
              )
   end
@@ -30,12 +25,7 @@ defmodule FavnStoragePostgres.AdapterTest do
     assert {:ok, child_spec} =
              Adapter.child_spec(
                repo_mode: :managed,
-               repo_config: [
-                 hostname: "localhost",
-                 database: "favn",
-                 username: "postgres",
-                 password: "postgres"
-               ],
+               repo_config: repo_config(),
                migration_mode: :manual,
                supervisor_name: Module.concat([__MODULE__, "Supervisor"])
              )
@@ -67,5 +57,23 @@ defmodule FavnStoragePostgres.AdapterTest do
 
   test "invalid repo mode is rejected" do
     assert {:error, {:invalid_repo_mode, :bogus}} = Adapter.child_spec(repo_mode: :bogus)
+  end
+
+  test "read-model list APIs return invalid pagination errors" do
+    opts = [repo_mode: :managed, repo_config: repo_config()]
+    filters = [limit: 0]
+
+    assert {:error, :invalid_pagination} = Adapter.list_coverage_baselines(filters, opts)
+    assert {:error, :invalid_pagination} = Adapter.list_backfill_windows(filters, opts)
+    assert {:error, :invalid_pagination} = Adapter.list_asset_window_states(filters, opts)
+  end
+
+  defp repo_config do
+    [
+      hostname: "localhost",
+      database: "favn",
+      username: "postgres",
+      password: "postgres"
+    ]
   end
 end

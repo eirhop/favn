@@ -9,6 +9,17 @@ defmodule FavnStorageSqlite.Migrations do
     {20_260_415_000_000, CreateFoundation},
     {20_260_428_100_000, AddBackfillState}
   ]
+  @required_tables [
+    "favn_manifest_versions",
+    "favn_runtime_settings",
+    "favn_runs",
+    "favn_run_events",
+    "favn_scheduler_cursors",
+    "favn_pipeline_coverage_baselines",
+    "favn_backfill_windows",
+    "favn_asset_window_states",
+    "favn_counters"
+  ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 
   @spec migrate!(module()) :: :ok
@@ -27,24 +38,12 @@ defmodule FavnStorageSqlite.Migrations do
   end
 
   defp schema_objects_ready?(repo) do
-    required = [
-      "favn_manifest_versions",
-      "favn_runtime_settings",
-      "favn_runs",
-      "favn_run_events",
-      "favn_scheduler_cursors",
-      "favn_pipeline_coverage_baselines",
-      "favn_backfill_windows",
-      "favn_asset_window_states",
-      "favn_counters"
-    ]
-
-    placeholders = Enum.map_join(1..length(required), ",", &"?#{&1}")
+    placeholders = Enum.map_join(1..length(@required_tables), ",", &"?#{&1}")
 
     sql =
-      "SELECT COUNT(*) = ?#{length(required) + 1} FROM sqlite_master WHERE type = 'table' AND name IN (#{placeholders})"
+      "SELECT COUNT(*) = ?#{length(@required_tables) + 1} FROM sqlite_master WHERE type = 'table' AND name IN (#{placeholders})"
 
-    params = required ++ [length(required)]
+    params = @required_tables ++ [length(@required_tables)]
 
     case SQL.query(repo, sql, params) do
       {:ok, %{rows: [[1]]}} -> true

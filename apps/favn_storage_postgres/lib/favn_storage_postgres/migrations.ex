@@ -9,6 +9,17 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_415_100_000, CreateFoundation},
     {20_260_428_100_000, AddBackfillState}
   ]
+  @required_tables [
+    "public.favn_manifest_versions",
+    "public.favn_runtime_settings",
+    "public.favn_runs",
+    "public.favn_run_events",
+    "public.favn_scheduler_cursors",
+    "public.favn_pipeline_coverage_baselines",
+    "public.favn_backfill_windows",
+    "public.favn_asset_window_states",
+    "public.favn_run_write_seq"
+  ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 
   @spec migrate!(module()) :: :ok
@@ -27,24 +38,12 @@ defmodule FavnStoragePostgres.Migrations do
   end
 
   defp schema_objects_ready?(repo) do
-    required = [
-      "public.favn_manifest_versions",
-      "public.favn_runtime_settings",
-      "public.favn_runs",
-      "public.favn_run_events",
-      "public.favn_scheduler_cursors",
-      "public.favn_pipeline_coverage_baselines",
-      "public.favn_backfill_windows",
-      "public.favn_asset_window_states",
-      "public.favn_run_write_seq"
-    ]
-
-    placeholders = Enum.map_join(1..length(required), ",", &"$#{&1}")
+    placeholders = Enum.map_join(1..length(@required_tables), ",", &"$#{&1}")
 
     sql =
       "SELECT bool_and(to_regclass(name) IS NOT NULL) FROM unnest(ARRAY[#{placeholders}]::text[]) AS name"
 
-    case SQL.query(repo, sql, required) do
+    case SQL.query(repo, sql, @required_tables) do
       {:ok, %{rows: [[true]]}} -> true
       _ -> false
     end

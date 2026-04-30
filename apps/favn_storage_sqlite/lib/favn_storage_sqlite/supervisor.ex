@@ -26,19 +26,13 @@ defmodule FavnStorageSqlite.Supervisor do
   defp bootstrap_storage(repo_name, repo_opts, :auto), do: run_migrations(repo_name, repo_opts)
 
   defp bootstrap_storage(repo_name, repo_opts, :manual) do
-    {:ok, pid} = Repo.start_link(Keyword.put(bootstrap_repo_opts(repo_opts), :name, repo_name))
-
-    try do
+    with_bootstrap_repo(repo_name, repo_opts, fn ->
       if Migrations.schema_ready?(repo_name) do
         :ok
       else
         raise "favn sqlite schema is not ready; run migrations or set migration_mode: :auto"
       end
-    after
-      GenServer.stop(pid)
-    end
-
-    :ok
+    end)
   end
 
   defp bootstrap_storage(_repo_name, _repo_opts, mode) do
@@ -46,10 +40,16 @@ defmodule FavnStorageSqlite.Supervisor do
   end
 
   defp run_migrations(repo_name, repo_opts) do
+    with_bootstrap_repo(repo_name, repo_opts, fn ->
+      Migrations.migrate!(repo_name)
+    end)
+  end
+
+  defp with_bootstrap_repo(repo_name, repo_opts, fun) when is_function(fun, 0) do
     {:ok, pid} = Repo.start_link(Keyword.put(bootstrap_repo_opts(repo_opts), :name, repo_name))
 
     try do
-      Migrations.migrate!(repo_name)
+      fun.()
     after
       GenServer.stop(pid)
     end

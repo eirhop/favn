@@ -251,7 +251,7 @@ defmodule Favn.SQLiteStorageTest do
 
   test "persists and fetches scheduler state rows" do
     state = %SchedulerState{
-      pipeline_module: Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline,
+      pipeline_module: Favn.SQLiteStorageTest.Pipeline,
       schedule_id: :scheduler_daily,
       schedule_fingerprint: "fingerprint-v1",
       last_evaluated_at: DateTime.utc_now() |> DateTime.truncate(:second),
@@ -278,7 +278,7 @@ defmodule Favn.SQLiteStorageTest do
   end
 
   test "persists scheduler states for multiple schedule ids in same pipeline" do
-    pipeline = Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline
+    pipeline = Favn.SQLiteStorageTest.Pipeline
 
     first = %SchedulerState{
       pipeline_module: pipeline,
@@ -329,7 +329,7 @@ defmodule Favn.SQLiteStorageTest do
                ) VALUES (?1, ?2, ?3, ?4, ?5)
                """,
                [
-                 "Elixir.Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline",
+                 "Elixir.Favn.SQLiteStorageTest.Pipeline",
                  "scheduler_daily",
                  1,
                  DateTime.utc_now(),
@@ -339,7 +339,7 @@ defmodule Favn.SQLiteStorageTest do
 
     assert {:error, {:payload_decode_failed, _reason}} =
              OrchestratorStorage.get_scheduler_state(
-               {Favn.Test.Fixtures.Pipelines.SchedulerDailyPipeline, :scheduler_daily}
+               {Favn.SQLiteStorageTest.Pipeline, :scheduler_daily}
              )
   end
 
