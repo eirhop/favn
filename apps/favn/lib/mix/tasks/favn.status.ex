@@ -10,10 +10,11 @@ defmodule Mix.Tasks.Favn.Status do
   """
 
   alias Favn.Dev
+  alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
-    {opts, _rest, _invalid} = OptionParser.parse(args, strict: [root_dir: :string])
+    opts = CLIArgs.parse_no_args!("favn.status", args, root_dir: :string)
 
     status = Dev.status(opts)
 

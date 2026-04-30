@@ -7,7 +7,7 @@ Code:
 - `apps/favn/lib/favn.ex`
 - `apps/favn/lib/favn/ai.ex`
 - `apps/favn/lib/favn/sql_client.ex`
-- `apps/favn/lib/mix/tasks/*.ex`
+- `apps/favn/lib/mix/tasks/**/*.ex`
 
 Tests:
 - `apps/favn/test/`

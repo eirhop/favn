@@ -463,6 +463,8 @@ Storage modes:
 ### favn_local implementation notes
 
 - public `mix favn.*` tasks are owned by `apps/favn`
+- public `mix favn.*` tasks reject unsupported options and unexpected positional
+  arguments before performing work
 - implementation is owned by `apps/favn_local`
 - `mix favn.build.runner` is rooted in the current Mix project; `--root-dir`
   must match the current project root

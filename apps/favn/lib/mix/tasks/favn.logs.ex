@@ -8,12 +8,16 @@ defmodule Mix.Tasks.Favn.Logs do
   """
 
   alias Favn.Dev
+  alias Mix.Tasks.Favn.CLIArgs
 
   @impl Mix.Task
   def run(args) do
-    {opts, _rest, _invalid} =
-      OptionParser.parse(args,
-        strict: [root_dir: :string, service: :string, tail: :integer, follow: :boolean]
+    opts =
+      CLIArgs.parse_no_args!("favn.logs", args,
+        root_dir: :string,
+        service: :string,
+        tail: :integer,
+        follow: :boolean
       )
 
     opts = normalize_service(opts)

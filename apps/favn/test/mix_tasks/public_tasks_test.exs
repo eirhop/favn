@@ -15,9 +15,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Init, as: InitTask
   alias Mix.Tasks.Favn.Install, as: InstallTask
   alias Mix.Tasks.Favn.Logs, as: LogsTask
+  alias Mix.Tasks.Favn.Reload, as: ReloadTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
   alias Mix.Tasks.Favn.Run, as: RunTask
   alias Mix.Tasks.Favn.Status, as: StatusTask
+  alias Mix.Tasks.Favn.Stop, as: StopTask
 
   setup do
     root_dir =
@@ -78,6 +80,32 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert Keyword.get(DevTask.parse_args(["--scheduler"]), :scheduler) == true
     assert Keyword.get(DevTask.parse_args(["--no-scheduler"]), :scheduler) == false
     assert Keyword.get(DevTask.parse_args([]), :scheduler) == nil
+  end
+
+  test "no-positional public mix favn tasks reject invalid options and unexpected args" do
+    tasks = [
+      {BuildOrchestratorTask, "favn.build.orchestrator"},
+      {BuildRunnerTask, "favn.build.runner"},
+      {BuildSingleTask, "favn.build.single"},
+      {BuildWebTask, "favn.build.web"},
+      {DevTask, "favn.dev"},
+      {InstallTask, "favn.install"},
+      {LogsTask, "favn.logs"},
+      {ReloadTask, "favn.reload"},
+      {ResetTask, "favn.reset"},
+      {StatusTask, "favn.status"},
+      {StopTask, "favn.stop"}
+    ]
+
+    for {task, task_name} <- tasks do
+      assert_raise Mix.Error, ~r/invalid option for mix #{Regex.escape(task_name)}/, fn ->
+        task.run(["--bad-option"])
+      end
+
+      assert_raise Mix.Error, ~r/unexpected argument for mix #{Regex.escape(task_name)}/, fn ->
+        task.run(["extra"])
+      end
+    end
   end
 
   test "mix favn.dev raises with partial runtime recovery guidance", %{root_dir: root_dir} do
