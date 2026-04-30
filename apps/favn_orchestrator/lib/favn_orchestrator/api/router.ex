@@ -681,6 +681,10 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :invalid_pagination} ->
         error(conn, 422, "validation_failed", "Invalid pagination parameters")
 
+      {:error, {:manifest_filter_lookup_failed, reason}} ->
+        Logger.error("backfill_window.filter_lookup failed: #{inspect(reason)}")
+        error(conn, 400, "bad_request", "Request failed")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -759,6 +763,10 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :invalid_pagination} ->
         error(conn, 422, "validation_failed", "Invalid pagination parameters")
 
+      {:error, {:manifest_filter_lookup_failed, reason}} ->
+        Logger.error("coverage_baseline.filter_lookup failed: #{inspect(reason)}")
+        error(conn, 400, "bad_request", "Request failed")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -788,6 +796,10 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, {:manifest_filter_lookup_failed, reason}} ->
+        Logger.error("asset_window_state.filter_lookup failed: #{inspect(reason)}")
+        error(conn, 400, "bad_request", "Request failed")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -1350,6 +1362,9 @@ defmodule FavnOrchestrator.API.Router do
 
           {:error, :invalid_manifest_asset_ref} ->
             {:error, :invalid_asset_ref}
+
+          {:error, {:manifest_filter_lookup_failed, _reason}} = error ->
+            error
         end
 
       _other ->
@@ -1538,6 +1553,7 @@ defmodule FavnOrchestrator.API.Router do
     case allowed_manifest_pipeline_module(value) do
       {:ok, module} -> {:ok, Keyword.put(opts, :pipeline_module, module)}
       {:error, :invalid_manifest_pipeline_module} -> {:error, :invalid_filter}
+      {:error, {:manifest_filter_lookup_failed, _reason}} = error -> error
     end
   end
 
@@ -1548,7 +1564,8 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, module} <- match_allowed_module(value, modules) do
       {:ok, module}
     else
-      _ -> {:error, :invalid_manifest_pipeline_module}
+      {:error, :not_allowed} -> {:error, :invalid_manifest_pipeline_module}
+      {:error, {:manifest_filter_lookup_failed, _reason}} = error -> error
     end
   end
 
@@ -1558,27 +1575,36 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, asset_ref} <- match_allowed_asset_ref(module_value, name_value, refs) do
       {:ok, asset_ref}
     else
-      _ -> {:error, :invalid_manifest_asset_ref}
+      {:error, :not_allowed} -> {:error, :invalid_manifest_asset_ref}
+      {:error, {:manifest_filter_lookup_failed, _reason}} = error -> error
     end
   end
 
   defp manifest_pipeline_modules do
-    with {:ok, versions} <- FavnOrchestrator.list_manifests() do
-      {:ok,
-       versions
-       |> Enum.flat_map(& &1.manifest.pipelines)
-       |> Enum.map(& &1.module)
-       |> Enum.uniq()}
+    case FavnOrchestrator.list_manifests() do
+      {:ok, versions} ->
+        {:ok,
+         versions
+         |> Enum.flat_map(& &1.manifest.pipelines)
+         |> Enum.map(& &1.module)
+         |> Enum.uniq()}
+
+      {:error, reason} ->
+        {:error, {:manifest_filter_lookup_failed, reason}}
     end
   end
 
   defp manifest_asset_refs do
-    with {:ok, versions} <- FavnOrchestrator.list_manifests() do
-      {:ok,
-       versions
-       |> Enum.flat_map(& &1.manifest.assets)
-       |> Enum.map(& &1.ref)
-       |> Enum.uniq()}
+    case FavnOrchestrator.list_manifests() do
+      {:ok, versions} ->
+        {:ok,
+         versions
+         |> Enum.flat_map(& &1.manifest.assets)
+         |> Enum.map(& &1.ref)
+         |> Enum.uniq()}
+
+      {:error, reason} ->
+        {:error, {:manifest_filter_lookup_failed, reason}}
     end
   end
 

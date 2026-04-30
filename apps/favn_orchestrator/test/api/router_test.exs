@@ -941,6 +941,30 @@ defmodule FavnOrchestrator.API.RouterTest do
            |> Map.fetch!(:status) == 422
   end
 
+  test "backfill read filter lookup failures are operational errors" do
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+
+    on_exit(fn -> restore_env(:favn_orchestrator, :storage_adapter, previous_adapter) end)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter, String)
+
+    response =
+      conn(
+        :get,
+        "/api/orchestrator/v1/backfills/coverage-baselines?pipeline_module=MyApp.Pipelines.DailyOrders"
+      )
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 400
+
+    assert %{"error" => %{"code" => "bad_request", "message" => "Request failed"}} =
+             Jason.decode!(response.resp_body)
+  end
+
   test "reruns failed backfill window from latest attempt" do
     version = schedule_manifest_version("mv_backfill_rerun_http")
     assert :ok = FavnOrchestrator.register_manifest(version)

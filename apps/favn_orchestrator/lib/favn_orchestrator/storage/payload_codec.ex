@@ -26,9 +26,22 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
                             "Elixir.Favn.Run.Context",
                             "Elixir.Favn.RuntimeConfig.Ref",
                             "Elixir.Favn.Scheduler.State",
+                            "Elixir.Favn.SQL.Definition",
+                            "Elixir.Favn.SQL.Definition.Param",
                             "Elixir.Favn.SQL.Column",
                             "Elixir.Favn.SQL.Relation",
                             "Elixir.Favn.SQL.RelationRef",
+                            "Elixir.Favn.SQL.Template",
+                            "Elixir.Favn.SQL.Template.AssetRef",
+                            "Elixir.Favn.SQL.Template.Call",
+                            "Elixir.Favn.SQL.Template.DefinitionRef",
+                            "Elixir.Favn.SQL.Template.Fragment",
+                            "Elixir.Favn.SQL.Template.Placeholder",
+                            "Elixir.Favn.SQL.Template.Position",
+                            "Elixir.Favn.SQL.Template.Relation",
+                            "Elixir.Favn.SQL.Template.Requirements",
+                            "Elixir.Favn.SQL.Template.Span",
+                            "Elixir.Favn.SQL.Template.Text",
                             "Elixir.Favn.Window.Anchor",
                             "Elixir.Favn.Window.Policy",
                             "Elixir.Favn.Window.Request",
@@ -39,7 +52,8 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
                             "Elixir.FavnOrchestrator.Backfill.CoverageBaseline",
                             "Elixir.FavnOrchestrator.RunEvent",
                             "Elixir.FavnOrchestrator.RunState",
-                            "Elixir.FavnOrchestrator.SchedulerEntry"
+                            "Elixir.FavnOrchestrator.SchedulerEntry",
+                            "Elixir.MapSet"
                           ])
 
   @type encoded_value :: map() | list() | String.t() | number() | boolean() | nil
@@ -194,10 +208,16 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
   end
 
   defp validate_struct_module(module_atom, raw_module) when is_atom(module_atom) do
-    if function_exported?(module_atom, :__struct__, 0) do
-      :ok
-    else
-      {:error, {:invalid_struct_module, raw_module}}
+    case Code.ensure_loaded(module_atom) do
+      {:module, ^module_atom} ->
+        if function_exported?(module_atom, :__struct__, 0) do
+          :ok
+        else
+          {:error, {:invalid_struct_module, raw_module}}
+        end
+
+      _other ->
+        {:error, {:invalid_struct_module, raw_module}}
     end
   end
 end
