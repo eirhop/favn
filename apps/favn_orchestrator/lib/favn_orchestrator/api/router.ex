@@ -653,8 +653,8 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, filters} <- backfill_window_filters(conn.params, backfill_run_id),
-         {:ok, windows} <- FavnOrchestrator.list_backfill_windows(filters) do
-      data(conn, 200, %{items: Enum.map(windows, &backfill_window_dto/1)})
+         {:ok, page} <- FavnOrchestrator.list_backfill_windows(filters) do
+      data(conn, 200, page_response(page, &backfill_window_dto/1))
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -667,6 +667,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :invalid_filter} ->
         error(conn, 422, "validation_failed", "Invalid backfill window filter")
+
+      {:error, :invalid_pagination} ->
+        error(conn, 422, "validation_failed", "Invalid pagination parameters")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -728,8 +731,8 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, filters} <- coverage_baseline_filters(conn.params),
-         {:ok, baselines} <- FavnOrchestrator.list_coverage_baselines(filters) do
-      data(conn, 200, %{items: Enum.map(baselines, &coverage_baseline_dto/1)})
+         {:ok, page} <- FavnOrchestrator.list_coverage_baselines(filters) do
+      data(conn, 200, page_response(page, &coverage_baseline_dto/1))
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -743,6 +746,9 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :invalid_filter} ->
         error(conn, 422, "validation_failed", "Invalid coverage baseline filter")
 
+      {:error, :invalid_pagination} ->
+        error(conn, 422, "validation_failed", "Invalid pagination parameters")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -752,14 +758,17 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, filters} <- asset_window_state_filters(conn.params),
-         {:ok, states} <- FavnOrchestrator.list_asset_window_states(filters) do
-      data(conn, 200, %{items: Enum.map(states, &asset_window_state_dto/1)})
+         {:ok, page} <- FavnOrchestrator.list_asset_window_states(filters) do
+      data(conn, 200, page_response(page, &asset_window_state_dto/1))
     else
       {:error, :invalid_asset_ref} ->
         error(conn, 422, "validation_failed", "Invalid asset ref filter")
 
       {:error, :invalid_filter} ->
         error(conn, 422, "validation_failed", "Invalid asset window state filter")
+
+      {:error, :invalid_pagination} ->
+        error(conn, 422, "validation_failed", "Invalid pagination parameters")
 
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -1279,9 +1288,10 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_window_filters(params, backfill_run_id) when is_map(params) do
-    with {:ok, filters} <-
+    with {:ok, filters} <- pagination_filters(params),
+         {:ok, filters} <-
            maybe_put_existing_atom_filter(
-             [],
+             filters,
              :pipeline_module,
              Map.get(params, "pipeline_module")
            ),
@@ -1294,9 +1304,10 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp coverage_baseline_filters(params) when is_map(params) do
-    with {:ok, filters} <-
+    with {:ok, filters} <- pagination_filters(params),
+         {:ok, filters} <-
            maybe_put_existing_atom_filter(
-             [],
+             filters,
              :pipeline_module,
              Map.get(params, "pipeline_module")
            ),
@@ -1309,7 +1320,8 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp asset_window_state_filters(params) when is_map(params) do
-    with {:ok, opts} <- maybe_put_asset_ref_filters([], params),
+    with {:ok, opts} <- pagination_filters(params),
+         {:ok, opts} <- maybe_put_asset_ref_filters(opts, params),
          {:ok, opts} <-
            maybe_put_existing_atom_filter(
              opts,
@@ -1348,12 +1360,13 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp find_backfill_window(backfill_run_id, window_key) do
-    with {:ok, windows} <-
+    with {:ok, page} <-
            FavnOrchestrator.list_backfill_windows(
              backfill_run_id: backfill_run_id,
-             window_key: window_key
+             window_key: window_key,
+             limit: 1
            ) do
-      case windows do
+      case page.items do
         [window] -> {:ok, window}
         [] -> {:error, :not_found}
         [window | _rest] -> {:ok, window}
@@ -1450,6 +1463,29 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_int_opt(opts, _key, _value), do: opts
 
+  defp pagination_filters(params) when is_map(params) do
+    with {:ok, limit} <- pagination_int(Map.get(params, "limit", "100"), 1, 500),
+         {:ok, offset} <- pagination_int(Map.get(params, "offset", "0"), 0, nil) do
+      {:ok, [limit: limit, offset: offset]}
+    end
+  end
+
+  defp pagination_int(value, min, max) when is_integer(value),
+    do: validate_page_int(value, min, max)
+
+  defp pagination_int(value, min, max) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> validate_page_int(int, min, max)
+      _ -> {:error, :invalid_pagination}
+    end
+  end
+
+  defp pagination_int(_value, _min, _max), do: {:error, :invalid_pagination}
+
+  defp validate_page_int(value, min, nil) when value >= min, do: {:ok, value}
+  defp validate_page_int(value, min, max) when value >= min and value <= max, do: {:ok, value}
+  defp validate_page_int(_value, _min, _max), do: {:error, :invalid_pagination}
+
   defp inspection_sample_limit(params) when is_map(params) do
     value = Map.get(params, "sample_limit") || Map.get(params, "limit") || "20"
 
@@ -1535,6 +1571,18 @@ defmodule FavnOrchestrator.API.Router do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(status, body)
+  end
+
+  defp page_response(page, mapper) when is_function(mapper, 1) do
+    %{
+      items: Enum.map(page.items, mapper),
+      pagination: %{
+        limit: page.limit,
+        offset: page.offset,
+        has_more: page.has_more?,
+        next_offset: page.next_offset
+      }
+    }
   end
 
   defp error(conn, status, code, message, details \\ %{}) do

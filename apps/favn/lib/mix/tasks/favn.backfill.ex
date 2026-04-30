@@ -38,7 +38,9 @@ defmodule Mix.Tasks.Favn.Backfill do
     root_dir: :string,
     pipeline_module: :string,
     window_key: :string,
-    status: :string
+    status: :string,
+    limit: :integer,
+    offset: :integer
   ]
 
   @coverage_switches [
@@ -46,7 +48,9 @@ defmodule Mix.Tasks.Favn.Backfill do
     pipeline_module: :string,
     source_key: :string,
     segment_key_hash: :string,
-    status: :string
+    status: :string,
+    limit: :integer,
+    offset: :integer
   ]
 
   @asset_state_switches [
@@ -55,7 +59,9 @@ defmodule Mix.Tasks.Favn.Backfill do
     window_key: :string,
     status: :string,
     asset_ref_module: :string,
-    asset_ref_name: :string
+    asset_ref_name: :string,
+    limit: :integer,
+    offset: :integer
   ]
 
   @rerun_switches [root_dir: :string, window_key: :string]
@@ -167,21 +173,21 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp list_windows(run_id, opts) do
     case Dev.list_backfill_windows(run_id, opts) do
-      {:ok, windows} -> print_items("Backfill windows", windows)
+      {:ok, page} -> print_page("Backfill windows", page)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp list_coverage_baselines(opts) do
     case Dev.list_coverage_baselines(opts) do
-      {:ok, baselines} -> print_items("Coverage baselines", baselines)
+      {:ok, page} -> print_page("Coverage baselines", page)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
 
   defp list_asset_window_states(opts) do
     case Dev.list_asset_window_states(opts) do
-      {:ok, states} -> print_items("Asset window states", states)
+      {:ok, page} -> print_page("Asset window states", page)
       {:error, reason} -> Mix.raise(error_message(reason))
     end
   end
@@ -278,6 +284,14 @@ defmodule Mix.Tasks.Favn.Backfill do
     Enum.each(items, fn item ->
       IO.puts(JSON.encode!(item))
     end)
+  end
+
+  defp print_page(title, %{"items" => items, "pagination" => pagination}) when is_list(items) do
+    print_items(title, items)
+
+    if Map.get(pagination, "has_more") do
+      IO.puts("next page: pass --offset #{Map.fetch!(pagination, "next_offset")}")
+    end
   end
 
   defp pipeline_not_found_message(requested, available) do

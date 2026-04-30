@@ -263,7 +263,8 @@ defmodule FavnOrchestrator do
   Lists normalized backfill-window ledger rows.
   """
   @spec list_backfill_windows(keyword()) ::
-          {:ok, [FavnOrchestrator.Backfill.BackfillWindow.t()]} | {:error, term()}
+          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.Backfill.BackfillWindow.t())}
+          | {:error, term()}
   def list_backfill_windows(filters \\ []) when is_list(filters) do
     Storage.list_backfill_windows(filters)
   end
@@ -272,7 +273,8 @@ defmodule FavnOrchestrator do
   Lists projected coverage baselines.
   """
   @spec list_coverage_baselines(keyword()) ::
-          {:ok, [FavnOrchestrator.Backfill.CoverageBaseline.t()]} | {:error, term()}
+          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.Backfill.CoverageBaseline.t())}
+          | {:error, term()}
   def list_coverage_baselines(filters \\ []) when is_list(filters) do
     Storage.list_coverage_baselines(filters)
   end
@@ -281,7 +283,8 @@ defmodule FavnOrchestrator do
   Lists latest asset/window states.
   """
   @spec list_asset_window_states(keyword()) ::
-          {:ok, [FavnOrchestrator.Backfill.AssetWindowState.t()]} | {:error, term()}
+          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.Backfill.AssetWindowState.t())}
+          | {:error, term()}
   def list_asset_window_states(filters \\ []) when is_list(filters) do
     Storage.list_asset_window_states(filters)
   end

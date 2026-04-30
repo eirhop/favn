@@ -300,7 +300,7 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def get_coverage_baseline(_baseline_id, _opts), do: {:error, :not_found}
 
   @impl true
-  def list_coverage_baselines(_filters, _opts), do: {:ok, []}
+  def list_coverage_baselines(filters, _opts), do: {:ok, empty_page(filters)}
 
   @impl true
   def put_backfill_window(_window, _opts), do: :ok
@@ -310,7 +310,7 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
     do: {:error, :not_found}
 
   @impl true
-  def list_backfill_windows(_filters, _opts), do: {:ok, []}
+  def list_backfill_windows(filters, _opts), do: {:ok, empty_page(filters)}
 
   @impl true
   def put_asset_window_state(_state, _opts), do: :ok
@@ -320,7 +320,14 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
     do: {:error, :not_found}
 
   @impl true
-  def list_asset_window_states(_filters, _opts), do: {:ok, []}
+  def list_asset_window_states(filters, _opts), do: {:ok, empty_page(filters)}
 
   def reset!, do: :persistent_term.put(@counter_key, 0)
+
+  defp empty_page(filters) do
+    FavnOrchestrator.Page.from_fetched([],
+      limit: Keyword.fetch!(filters, :limit),
+      offset: Keyword.fetch!(filters, :offset)
+    )
+  end
 end

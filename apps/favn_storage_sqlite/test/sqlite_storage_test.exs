@@ -354,11 +354,13 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, ^ok_baseline} = OrchestratorStorage.get_coverage_baseline("baseline-ok")
     assert {:error, :not_found} = OrchestratorStorage.get_coverage_baseline("missing-baseline")
 
-    assert {:ok, [^ok_baseline]} =
+    assert {:ok, baseline_page} =
              OrchestratorStorage.list_coverage_baselines(
                pipeline_module: Favn.SQLiteStorageTest.Pipeline,
                status: :ok
              )
+
+    assert [^ok_baseline] = baseline_page.items
   end
 
   test "persists backfill windows and filters by status, pipeline, and window" do
@@ -383,12 +385,37 @@ defmodule Favn.SQLiteStorageTest do
                "missing-window"
              )
 
-    assert {:ok, [^running_window]} =
+    assert {:ok, window_page} =
              OrchestratorStorage.list_backfill_windows(
                pipeline_module: Favn.SQLiteStorageTest.Pipeline,
                window_key: "window-running",
                status: :running
              )
+
+    assert [^running_window] = window_page.items
+  end
+
+  test "paginates backfill windows with limit and offset metadata" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    first_window = sample_backfill_window("window-first", :running, now)
+
+    second_window =
+      sample_backfill_window("window-second", :running, DateTime.add(now, 86_400, :second))
+
+    assert :ok = OrchestratorStorage.put_backfill_window(first_window)
+    assert :ok = OrchestratorStorage.put_backfill_window(second_window)
+
+    assert {:ok, first_page} = OrchestratorStorage.list_backfill_windows(limit: 1)
+    assert [^first_window] = first_page.items
+    assert first_page.limit == 1
+    assert first_page.offset == 0
+    assert first_page.has_more? == true
+    assert first_page.next_offset == 1
+
+    assert {:ok, second_page} = OrchestratorStorage.list_backfill_windows(limit: 1, offset: 1)
+    assert [^second_window] = second_page.items
+    assert second_page.has_more? == false
+    assert second_page.next_offset == nil
   end
 
   test "persists asset window states and filters by status, pipeline, and window" do
@@ -415,12 +442,14 @@ defmodule Favn.SQLiteStorageTest do
                "missing-window"
              )
 
-    assert {:ok, [^running_state]} =
+    assert {:ok, state_page} =
              OrchestratorStorage.list_asset_window_states(
                pipeline_module: Favn.SQLiteStorageTest.Pipeline,
                window_key: "window-running",
                status: :running
              )
+
+    assert [^running_state] = state_page.items
   end
 
   test "decodes legacy backfill window kind aliases through constructors" do

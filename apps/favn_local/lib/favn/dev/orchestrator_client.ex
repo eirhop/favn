@@ -119,7 +119,7 @@ defmodule Favn.Dev.OrchestratorClient do
   end
 
   @spec list_backfill_windows(String.t(), String.t(), session_context(), String.t(), keyword()) ::
-          {:ok, [map()]} | {:error, term()}
+          {:ok, map()} | {:error, term()}
   def list_backfill_windows(
         base_url,
         service_token,
@@ -134,7 +134,7 @@ defmodule Favn.Dev.OrchestratorClient do
         "/api/orchestrator/v1/backfills/#{URI.encode(backfill_run_id)}/windows" <>
         query_string(filters)
 
-    request_items(:list_backfill_windows, url, service_token, session_context)
+    request_page(:list_backfill_windows, url, service_token, session_context)
   end
 
   @spec rerun_backfill_window(String.t(), String.t(), session_context(), String.t(), String.t()) ::
@@ -165,23 +165,23 @@ defmodule Favn.Dev.OrchestratorClient do
   end
 
   @spec list_coverage_baselines(String.t(), String.t(), session_context(), keyword()) ::
-          {:ok, [map()]} | {:error, term()}
+          {:ok, map()} | {:error, term()}
   def list_coverage_baselines(base_url, service_token, session_context, filters \\ [])
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
              is_list(filters) do
     url = base_url <> "/api/orchestrator/v1/backfills/coverage-baselines" <> query_string(filters)
 
-    request_items(:list_coverage_baselines, url, service_token, session_context)
+    request_page(:list_coverage_baselines, url, service_token, session_context)
   end
 
   @spec list_asset_window_states(String.t(), String.t(), session_context(), keyword()) ::
-          {:ok, [map()]} | {:error, term()}
+          {:ok, map()} | {:error, term()}
   def list_asset_window_states(base_url, service_token, session_context, filters \\ [])
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
              is_list(filters) do
     url = base_url <> "/api/orchestrator/v1/assets/window-states" <> query_string(filters)
 
-    request_items(:list_asset_window_states, url, service_token, session_context)
+    request_page(:list_asset_window_states, url, service_token, session_context)
   end
 
   @spec get_run(String.t(), String.t(), session_context(), String.t()) ::
@@ -248,10 +248,14 @@ defmodule Favn.Dev.OrchestratorClient do
     request(operation, :get, url, service_token, nil, session_context)
   end
 
-  defp request_items(operation, url, service_token, session_context) do
+  defp request_page(operation, url, service_token, session_context) do
     case request_get(operation, url, service_token, session_context) do
+      {:ok, %{"data" => %{"items" => items, "pagination" => pagination}}}
+      when is_list(items) and is_map(pagination) ->
+        {:ok, %{"items" => items, "pagination" => pagination}}
+
       {:ok, %{"data" => %{"items" => items}}} when is_list(items) ->
-        {:ok, items}
+        {:ok, %{"items" => items, "pagination" => %{}}}
 
       {:error, _reason} = error ->
         error

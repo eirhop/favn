@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -504,7 +505,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:list_coverage_baselines, filters}, _from, state) do
-    {:reply, {:ok, state.coverage_baselines |> Map.values() |> filter_by(filters)}, state}
+    rows =
+      state.coverage_baselines
+      |> Map.values()
+      |> filter_by(filters)
+      |> Enum.sort_by(&{DateTime.to_unix(&1.updated_at, :microsecond) * -1, &1.baseline_id})
+      |> offset_and_fetch(filters)
+
+    {:reply, {:ok, Page.from_fetched(rows, page_opts(filters))}, state}
   end
 
   def handle_call({:put_backfill_window, %BackfillWindow{} = window}, _from, state) do
@@ -517,7 +525,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:list_backfill_windows, filters}, _from, state) do
-    {:reply, {:ok, state.backfill_windows |> Map.values() |> filter_by(filters)}, state}
+    rows =
+      state.backfill_windows
+      |> Map.values()
+      |> filter_by(filters)
+      |> Enum.sort_by(
+        &{&1.window_start_at, &1.backfill_run_id, Atom.to_string(&1.pipeline_module),
+         &1.window_key}
+      )
+      |> offset_and_fetch(filters)
+
+    {:reply, {:ok, Page.from_fetched(rows, page_opts(filters))}, state}
   end
 
   def handle_call({:put_asset_window_state, %AssetWindowState{} = window_state}, _from, state) do
@@ -530,7 +548,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:list_asset_window_states, filters}, _from, state) do
-    {:reply, {:ok, state.asset_window_states |> Map.values() |> filter_by(filters)}, state}
+    rows =
+      state.asset_window_states
+      |> Map.values()
+      |> filter_by(filters)
+      |> Enum.sort_by(
+        &{DateTime.to_unix(&1.updated_at, :microsecond) * -1, Atom.to_string(&1.asset_ref_module),
+         Atom.to_string(&1.asset_ref_name), &1.window_key}
+      )
+      |> offset_and_fetch(filters)
+
+    {:reply, {:ok, Page.from_fetched(rows, page_opts(filters))}, state}
   end
 
   defp put_run_with_semantics(runs, %RunState{} = incoming) do
@@ -573,9 +601,24 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   defp filter_by(values, filters) do
+    filters = Keyword.drop(filters, [:limit, :offset])
+
     Enum.filter(values, fn value ->
       Enum.all?(filters, fn {key, expected} -> Map.get(value, key) == expected end)
     end)
+  end
+
+  defp offset_and_fetch(values, filters) do
+    opts = page_opts(filters)
+
+    values
+    |> Enum.drop(Keyword.fetch!(opts, :offset))
+    |> Enum.take(Keyword.fetch!(opts, :limit) + 1)
+  end
+
+  defp page_opts(filters) do
+    {:ok, opts} = Page.normalize_opts(filters)
+    opts
   end
 
   defp maybe_limit_runs(runs, run_opts) do

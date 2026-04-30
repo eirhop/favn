@@ -103,14 +103,14 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     refute Enum.any?(parent_events, &(&1.event_type == :run_started))
 
     eventually(fn ->
-      assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+      windows = list_backfill_windows(backfill_run_id: parent_run_id)
       assert length(windows) == 2
       assert Enum.all?(windows, &(&1.status == :ok))
       assert {:ok, parent} = Storage.get_run(parent_run_id)
       assert parent.status == :ok
     end)
 
-    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    windows = list_backfill_windows(backfill_run_id: parent_run_id)
     assert Enum.all?(windows, &(&1.attempt_count == 1))
     assert Enum.all?(windows, &(&1.pipeline_module == MyApp.Pipelines.Daily))
     assert Enum.all?(windows, &(&1.manifest_version_id == version.manifest_version_id))
@@ -177,7 +177,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily, opts)
 
       assert {:error, :not_found} = Storage.get_run(run_id)
-      assert {:ok, []} = Storage.list_backfill_windows(backfill_run_id: run_id)
+      assert [] = list_backfill_windows(backfill_run_id: run_id)
     end
   end
 
@@ -195,7 +195,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
              )
 
     assert {:error, :not_found} = Storage.get_run("run_backfill_too_large")
-    assert {:ok, []} = Storage.list_backfill_windows(backfill_run_id: "run_backfill_too_large")
+    assert [] = list_backfill_windows(backfill_run_id: "run_backfill_too_large")
   end
 
   test "generic cancel and rerun reject backfill parent runs" do
@@ -254,7 +254,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                coverage_baseline_id: "baseline_relative"
              )
 
-    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    windows = list_backfill_windows(backfill_run_id: parent_run_id)
 
     assert Enum.map(windows, & &1.window_start_at) == [
              ~U[2026-04-26 00:00:00Z],
@@ -336,7 +336,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                coverage_baseline_id: "baseline_daily_alias"
              )
 
-    assert {:ok, [_window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert [_window] = list_backfill_windows(backfill_run_id: parent_run_id)
   end
 
   test "coverage baseline timezone is used when relative request omits timezone" do
@@ -351,7 +351,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                range_request: %{"last" => [1, "day"]}
              )
 
-    assert {:ok, [window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert [window] = list_backfill_windows(backfill_run_id: parent_run_id)
     assert window.timezone == "Europe/Oslo"
   end
 
@@ -368,7 +368,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                coverage_baseline_id: "baseline_explicit_oslo"
              )
 
-    assert {:ok, [window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert [window] = list_backfill_windows(backfill_run_id: parent_run_id)
     assert window.timezone == "Europe/Oslo"
   end
 
@@ -388,7 +388,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                coverage_baseline_id: "baseline_relative_ref_oslo"
              )
 
-    assert {:ok, [window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert [window] = list_backfill_windows(backfill_run_id: parent_run_id)
     assert window.timezone == "Europe/Oslo"
   end
 
@@ -404,7 +404,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                range_request: %{"last" => [1, "day"], "relative_to" => "", "baseline" => nil}
              )
 
-    assert {:ok, [_window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert [_window] = list_backfill_windows(backfill_run_id: parent_run_id)
   end
 
   test "partial child submission failure projects parent partial when a prior child succeeded" do
@@ -444,7 +444,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
     assert {:ok, parent} = Storage.get_run("run_backfill_partial_compensation")
     assert parent.status == :partial
-    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent.id)
+    windows = list_backfill_windows(backfill_run_id: parent.id)
     assert Enum.map(windows, & &1.status) |> Enum.sort() == [:error, :ok]
   end
 
@@ -464,7 +464,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
     assert {:ok, parent} = Storage.get_run("run_backfill_error_compensation")
     assert parent.status == :error
-    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent.id)
+    windows = list_backfill_windows(backfill_run_id: parent.id)
     assert Enum.all?(windows, &(&1.status == :error))
   end
 
@@ -487,7 +487,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert {:ok, parent} = Storage.get_run("run_backfill_compensation_write_failure")
     assert parent.status == :running
 
-    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent.id)
+    windows = list_backfill_windows(backfill_run_id: parent.id)
     assert Enum.all?(windows, &(&1.status == :pending))
   end
 
@@ -565,6 +565,11 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
       assert window.status == status
     end)
+  end
+
+  defp list_backfill_windows(filters) do
+    assert {:ok, page} = Storage.list_backfill_windows(filters)
+    page.items
   end
 
   defp manifest_version(manifest_version_id) do

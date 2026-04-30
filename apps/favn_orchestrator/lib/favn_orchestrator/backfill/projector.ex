@@ -108,7 +108,9 @@ defmodule FavnOrchestrator.Backfill.Projector do
   end
 
   defp maybe_project_parent(backfill_run_id) do
-    with {:ok, windows} <- Storage.list_backfill_windows(backfill_run_id: backfill_run_id),
+    with {:ok, page} <-
+           Storage.list_backfill_windows(backfill_run_id: backfill_run_id, limit: 500),
+         windows <- page.items,
          {:ok, parent} <- Storage.get_run(backfill_run_id),
          status <- parent_status(windows),
          true <- status != parent.status do

@@ -231,11 +231,13 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert :ok = Adapter.put_coverage_baseline(baseline, opts)
         assert {:ok, ^baseline} = Adapter.get_coverage_baseline(baseline.baseline_id, opts)
 
-        assert {:ok, [^baseline]} =
+        assert {:ok, baseline_page} =
                  Adapter.list_coverage_baselines(
                    [pipeline_module: MyApp.Pipeline, status: :ok],
                    opts
                  )
+
+        assert [^baseline] = baseline_page.items
 
         assert {:ok, window} =
                  BackfillWindow.new(%{
@@ -270,11 +272,13 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
                    opts
                  )
 
-        assert {:ok, [^window]} =
+        assert {:ok, window_page} =
                  Adapter.list_backfill_windows(
                    [pipeline_module: MyApp.Pipeline, status: :running],
                    opts
                  )
+
+        assert [^window] = window_page.items
 
         assert {:ok, asset_state} =
                  AssetWindowState.new(%{
@@ -307,11 +311,13 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
                    opts
                  )
 
-        assert {:ok, [^asset_state]} =
+        assert {:ok, state_page} =
                  Adapter.list_asset_window_states(
                    [pipeline_module: MyApp.Pipeline, window_key: window.window_key],
                    opts
                  )
+
+        assert [^asset_state] = state_page.items
     end
   end
 
