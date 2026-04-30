@@ -33,6 +33,44 @@ defmodule Favn.Dev.BackfillTest do
            }
   end
 
+  test "build_submit_payload/3 sends run timeout separately from wait timeout" do
+    assert {:ok, payload} =
+             Backfill.build_submit_payload(
+               %{"target_id" => "pipeline:Elixir.MyApp.Pipeline"},
+               %{from: "2026-01-01", to: "2026-01-03", kind: "day", timezone: "Etc/UTC"},
+               wait_timeout_ms: 120_000,
+               run_timeout_ms: 5_000
+             )
+
+    assert payload.timeout_ms == 5_000
+  end
+
+  test "submit_pipeline/2 treats waited partial parent as terminal failure", %{root_dir: root_dir} do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(
+        [
+          {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+          {200,
+           ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
+          {201,
+           ~s({"data":{"run":{"id":"backfill_1","status":"partial","manifest_version_id":"mv_1"}}})}
+        ],
+        parent: parent
+      )
+
+    write_running_state(root_dir, base_url)
+
+    assert {:error, {:run_failed, "backfill parent run finished with status partial", %{"id" => "backfill_1"}}} =
+             Backfill.submit_pipeline(MyApp.Pipeline,
+               root_dir: root_dir,
+               from: "2026-01-01",
+               to: "2026-01-02",
+               kind: "day"
+             )
+  end
+
   test "build_range/1 validates explicit range options" do
     assert {:ok, %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"}} =
              Backfill.build_range(from: "2026-01-01", to: "2026-01-02", kind: :day)

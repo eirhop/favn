@@ -616,6 +616,7 @@ defmodule Favn.Storage.Adapter.Postgres do
       baseline_id: {"baseline_id", & &1},
       pipeline_module: {"pipeline_module", &Atom.to_string/1},
       source_key: {"source_key", & &1},
+      segment_key_hash: {"segment_key_hash", & &1},
       window_kind: {"window_kind", &Atom.to_string/1},
       status: {"status", &Atom.to_string/1},
       manifest_version_id: {"manifest_version_id", & &1}

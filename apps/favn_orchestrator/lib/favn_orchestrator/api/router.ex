@@ -636,10 +636,8 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/backfills/:backfill_run_id/windows" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, windows} <-
-           FavnOrchestrator.list_backfill_windows(
-             backfill_window_filters(conn.params, backfill_run_id)
-           ) do
+         {:ok, filters} <- backfill_window_filters(conn.params, backfill_run_id),
+         {:ok, windows} <- FavnOrchestrator.list_backfill_windows(filters) do
       data(conn, 200, %{items: Enum.map(windows, &backfill_window_dto/1)})
     else
       {:error, :forbidden} ->
@@ -650,6 +648,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, :invalid_filter} ->
+        error(conn, 422, "validation_failed", "Invalid backfill window filter")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -710,8 +711,8 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/backfills/coverage-baselines" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, baselines} <-
-           FavnOrchestrator.list_coverage_baselines(coverage_baseline_filters(conn.params)) do
+         {:ok, filters} <- coverage_baseline_filters(conn.params),
+         {:ok, baselines} <- FavnOrchestrator.list_coverage_baselines(filters) do
       data(conn, 200, %{items: Enum.map(baselines, &coverage_baseline_dto/1)})
     else
       {:error, :forbidden} ->
@@ -722,6 +723,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, :invalid_filter} ->
+        error(conn, 422, "validation_failed", "Invalid coverage baseline filter")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -737,6 +741,9 @@ defmodule FavnOrchestrator.API.Router do
     else
       {:error, :invalid_asset_ref} ->
         error(conn, 422, "validation_failed", "Invalid asset ref filter")
+
+      {:error, :invalid_filter} ->
+        error(conn, 422, "validation_failed", "Invalid asset window state filter")
 
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -1242,28 +1249,47 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_window_filters(params, backfill_run_id) when is_map(params) do
-    []
-    |> Keyword.put(:backfill_run_id, backfill_run_id)
-    |> maybe_put_existing_atom_opt(:pipeline_module, Map.get(params, "pipeline_module"))
-    |> maybe_put_string_opt(:window_key, Map.get(params, "window_key"))
-    |> maybe_put_atom_opt(:status, Map.get(params, "status"))
+    with {:ok, filters} <-
+           maybe_put_existing_atom_filter(
+             [],
+             :pipeline_module,
+             Map.get(params, "pipeline_module")
+           ),
+         {:ok, filters} <- maybe_put_status_filter(filters, Map.get(params, "status")) do
+      {:ok,
+       filters
+       |> Keyword.put(:backfill_run_id, backfill_run_id)
+       |> maybe_put_string_opt(:window_key, Map.get(params, "window_key"))}
+    end
   end
 
   defp coverage_baseline_filters(params) when is_map(params) do
-    []
-    |> maybe_put_existing_atom_opt(:pipeline_module, Map.get(params, "pipeline_module"))
-    |> maybe_put_string_opt(:source_key, Map.get(params, "source_key"))
-    |> maybe_put_string_opt(:segment_key_hash, Map.get(params, "segment_key_hash"))
-    |> maybe_put_atom_opt(:status, Map.get(params, "status"))
+    with {:ok, filters} <-
+           maybe_put_existing_atom_filter(
+             [],
+             :pipeline_module,
+             Map.get(params, "pipeline_module")
+           ),
+         {:ok, filters} <- maybe_put_status_filter(filters, Map.get(params, "status")) do
+      {:ok,
+       filters
+       |> maybe_put_string_opt(:source_key, Map.get(params, "source_key"))
+       |> maybe_put_string_opt(:segment_key_hash, Map.get(params, "segment_key_hash"))}
+    end
   end
 
   defp asset_window_state_filters(params) when is_map(params) do
-    with {:ok, opts} <- maybe_put_asset_ref_filters([], params) do
+    with {:ok, opts} <- maybe_put_asset_ref_filters([], params),
+         {:ok, opts} <-
+           maybe_put_existing_atom_filter(
+             opts,
+             :pipeline_module,
+             Map.get(params, "pipeline_module")
+           ),
+         {:ok, opts} <- maybe_put_status_filter(opts, Map.get(params, "status")) do
       {:ok,
        opts
-       |> maybe_put_existing_atom_opt(:pipeline_module, Map.get(params, "pipeline_module"))
-       |> maybe_put_string_opt(:window_key, Map.get(params, "window_key"))
-       |> maybe_put_atom_opt(:status, Map.get(params, "status"))}
+       |> maybe_put_string_opt(:window_key, Map.get(params, "window_key"))}
     end
   end
 
@@ -1429,20 +1455,35 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_non_neg_int_opt(opts, _key, _value), do: opts
 
-  defp maybe_put_atom_opt(opts, key, value) when is_binary(value) and value != "" do
-    Keyword.put(opts, key, String.to_atom(value))
-  end
+  defp maybe_put_status_filter(opts, nil), do: {:ok, opts}
+  defp maybe_put_status_filter(opts, ""), do: {:ok, opts}
 
-  defp maybe_put_atom_opt(opts, _key, _value), do: opts
-
-  defp maybe_put_existing_atom_opt(opts, key, value) when is_binary(value) and value != "" do
-    case existing_atom(value) do
-      {:ok, atom} -> Keyword.put(opts, key, atom)
-      {:error, :invalid_existing_atom} -> opts
+  defp maybe_put_status_filter(opts, value) when is_binary(value) do
+    case value do
+      "pending" -> {:ok, Keyword.put(opts, :status, :pending)}
+      "running" -> {:ok, Keyword.put(opts, :status, :running)}
+      "ok" -> {:ok, Keyword.put(opts, :status, :ok)}
+      "partial" -> {:ok, Keyword.put(opts, :status, :partial)}
+      "error" -> {:ok, Keyword.put(opts, :status, :error)}
+      "cancelled" -> {:ok, Keyword.put(opts, :status, :cancelled)}
+      "timed_out" -> {:ok, Keyword.put(opts, :status, :timed_out)}
+      _other -> {:error, :invalid_filter}
     end
   end
 
-  defp maybe_put_existing_atom_opt(opts, _key, _value), do: opts
+  defp maybe_put_status_filter(_opts, _value), do: {:error, :invalid_filter}
+
+  defp maybe_put_existing_atom_filter(opts, _key, nil), do: {:ok, opts}
+  defp maybe_put_existing_atom_filter(opts, _key, ""), do: {:ok, opts}
+
+  defp maybe_put_existing_atom_filter(opts, key, value) when is_binary(value) do
+    case existing_atom(value) do
+      {:ok, atom} -> {:ok, Keyword.put(opts, key, atom)}
+      {:error, :invalid_existing_atom} -> {:error, :invalid_filter}
+    end
+  end
+
+  defp maybe_put_existing_atom_filter(_opts, _key, _value), do: {:error, :invalid_filter}
 
   defp existing_atom(value) when is_binary(value) do
     {:ok, String.to_existing_atom(value)}

@@ -730,6 +730,42 @@ defmodule FavnOrchestrator.API.RouterTest do
              Jason.decode!(state_response.resp_body)
   end
 
+  test "backfill read endpoints reject invalid filters" do
+    seed_backfill_http_state!()
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    headers = fn conn ->
+      conn
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+    end
+
+    assert conn(:get, "/api/orchestrator/v1/backfills/backfill_http/windows?status=bad")
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+
+    assert conn(:get, "/api/orchestrator/v1/backfills/backfill_http/windows?pipeline_module=Typo")
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+
+    assert conn(:get, "/api/orchestrator/v1/backfills/coverage-baselines?pipeline_module=Typo")
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+
+    assert conn(
+             :get,
+             "/api/orchestrator/v1/assets/window-states?asset_ref_module=Typo&asset_ref_name=asset"
+           )
+           |> headers.()
+           |> Router.call(@opts)
+           |> Map.fetch!(:status) == 422
+  end
+
   test "reruns failed backfill window from latest attempt" do
     version = schedule_manifest_version("mv_backfill_rerun_http")
     assert :ok = FavnOrchestrator.register_manifest(version)

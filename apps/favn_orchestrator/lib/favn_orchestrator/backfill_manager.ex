@@ -27,6 +27,8 @@ defmodule FavnOrchestrator.BackfillManager do
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.TransitionWriter
 
+  @default_max_windows 500
+
   @doc """
   Submits a parent pipeline backfill run and one child pipeline run per resolved anchor.
 
@@ -44,7 +46,9 @@ defmodule FavnOrchestrator.BackfillManager do
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
+         {:ok, range_request} <- maybe_resolve_coverage_baseline(range_request, opts),
          {:ok, range} <- RangeResolver.resolve(range_request),
+         :ok <- validate_window_count(range, opts),
          {:ok, resolution} <- resolve_parent_pipeline(index, pipeline, range),
          {:ok, parent} <- build_parent_run(run_id, version, pipeline, resolution, range, opts),
          :ok <- persist_parent(parent, range, opts),
@@ -58,6 +62,10 @@ defmodule FavnOrchestrator.BackfillManager do
            ),
          :ok <- submit_child_runs(parent, pipeline_module, range, opts) do
       {:ok, parent.id}
+    else
+      {:error, reason} = error ->
+        maybe_compensate_submit_failure(run_id, pipeline_module, reason)
+        error
     end
   end
 
@@ -183,30 +191,97 @@ defmodule FavnOrchestrator.BackfillManager do
           window_key: window_key
         })
 
-      with {:ok, child_run_id} <-
-             RunManager.submit_pipeline_module_run(pipeline_module, child_opts),
-           :ok <- mark_window_running(parent.id, pipeline_module, window_key, child_run_id) do
-        {:cont, :ok}
-      else
+      case RunManager.submit_pipeline_module_run(pipeline_module, child_opts) do
+        {:ok, _child_run_id} -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp mark_window_running(backfill_run_id, pipeline_module, window_key, child_run_id) do
-    now = DateTime.utc_now()
+  defp validate_window_count(range, opts) do
+    max_windows = Keyword.get(opts, :max_windows, @default_max_windows)
 
-    with {:ok, window} <-
-           Storage.get_backfill_window(backfill_run_id, pipeline_module, window_key) do
-      Storage.put_backfill_window(%{
-        window
-        | child_run_id: child_run_id,
-          latest_attempt_run_id: child_run_id,
-          attempt_count: 1,
-          status: :running,
-          started_at: now,
-          updated_at: now
-      })
+    cond do
+      not is_integer(max_windows) or max_windows <= 0 ->
+        {:error, :invalid_max_windows}
+
+      range.requested_count > max_windows ->
+        {:error, {:too_many_backfill_windows, range.requested_count, max_windows}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp maybe_resolve_coverage_baseline(range_request, opts) do
+    coverage_baseline_id = Keyword.get(opts, :coverage_baseline_id)
+
+    cond do
+      is_nil(coverage_baseline_id) or coverage_baseline_id == "" ->
+        {:ok, range_request}
+
+      has_relative_reference?(range_request) ->
+        {:ok, range_request}
+
+      relative_last_request?(range_request) ->
+        with {:ok, baseline} <- Storage.get_coverage_baseline(coverage_baseline_id) do
+          {:ok, put_baseline(range_request, baseline)}
+        end
+
+      true ->
+        {:ok, range_request}
+    end
+  end
+
+  defp relative_last_request?(value) when is_map(value), do: has_key?(value, :last)
+  defp relative_last_request?(value) when is_list(value), do: Keyword.has_key?(value, :last)
+  defp relative_last_request?(_value), do: false
+
+  defp has_relative_reference?(value) when is_map(value) do
+    has_key?(value, :relative_to) or has_key?(value, :baseline)
+  end
+
+  defp has_relative_reference?(value) when is_list(value) do
+    Keyword.has_key?(value, :relative_to) or Keyword.has_key?(value, :baseline)
+  end
+
+  defp has_relative_reference?(_value), do: false
+
+  defp has_key?(map, key), do: Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key))
+
+  defp put_baseline(value, baseline) when is_map(value), do: Map.put(value, :baseline, baseline)
+
+  defp put_baseline(value, baseline) when is_list(value),
+    do: Keyword.put(value, :baseline, baseline)
+
+  defp maybe_compensate_submit_failure(backfill_run_id, pipeline_module, reason) do
+    with {:ok, parent} <- Storage.get_run(backfill_run_id),
+         true <- parent.submit_kind == :backfill_pipeline,
+         {:ok, windows} <- Storage.list_backfill_windows(backfill_run_id: backfill_run_id) do
+      now = DateTime.utc_now()
+      error = {:backfill_child_submission_failed, reason}
+
+      windows
+      |> Enum.filter(
+        &(&1.pipeline_module == pipeline_module and &1.status in [:pending, :running])
+      )
+      |> Enum.each(fn window ->
+        _ =
+          Storage.put_backfill_window(%{
+            window
+            | status: :error,
+              last_error: error,
+              errors: window.errors ++ [error],
+              finished_at: window.finished_at || now,
+              updated_at: now
+          })
+      end)
+
+      parent
+      |> RunState.transition(status: :error, error: error)
+      |> TransitionWriter.persist_transition(:backfill_failed, %{status: :error, error: error})
+    else
+      _other -> :ok
     end
   end
 

@@ -43,7 +43,7 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
     metadata: %{}
   ]
 
-  @type status :: :pending | :running | :ok | :error | :cancelled | atom()
+  @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
           asset_ref_module: module(),
@@ -72,7 +72,8 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
   def new(attrs) when is_map(attrs) or is_list(attrs) do
     attrs = Map.new(attrs)
 
-    with :ok <- require_keys(attrs, @required_keys) do
+    with {:ok, attrs} <- normalize_attrs(attrs),
+         :ok <- require_keys(attrs, @required_keys) do
       {:ok, struct(__MODULE__, Map.merge(%{errors: [], metadata: %{}}, attrs))}
     end
   end
@@ -89,4 +90,39 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
   end
 
   defp missing?(attrs, key), do: Map.get(attrs, key) in [nil, ""]
+
+  defp normalize_attrs(attrs) do
+    with {:ok, window_kind} <- normalize_window_kind(Map.get(attrs, :window_kind)),
+         {:ok, status} <- normalize_status(Map.get(attrs, :status)) do
+      {:ok, attrs |> Map.put(:window_kind, window_kind) |> Map.put(:status, status)}
+    end
+  end
+
+  defp normalize_window_kind(value) when value in [:hour, :day, :month, :year], do: {:ok, value}
+  defp normalize_window_kind(:hourly), do: {:ok, :hour}
+  defp normalize_window_kind(:daily), do: {:ok, :day}
+  defp normalize_window_kind(:monthly), do: {:ok, :month}
+  defp normalize_window_kind(:yearly), do: {:ok, :year}
+  defp normalize_window_kind("hour"), do: {:ok, :hour}
+  defp normalize_window_kind("hourly"), do: {:ok, :hour}
+  defp normalize_window_kind("day"), do: {:ok, :day}
+  defp normalize_window_kind("daily"), do: {:ok, :day}
+  defp normalize_window_kind("month"), do: {:ok, :month}
+  defp normalize_window_kind("monthly"), do: {:ok, :month}
+  defp normalize_window_kind("year"), do: {:ok, :year}
+  defp normalize_window_kind("yearly"), do: {:ok, :year}
+  defp normalize_window_kind(value), do: {:error, {:invalid_window_kind, value}}
+
+  defp normalize_status(value)
+       when value in [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out],
+       do: {:ok, value}
+
+  defp normalize_status("pending"), do: {:ok, :pending}
+  defp normalize_status("running"), do: {:ok, :running}
+  defp normalize_status("ok"), do: {:ok, :ok}
+  defp normalize_status("partial"), do: {:ok, :partial}
+  defp normalize_status("error"), do: {:ok, :error}
+  defp normalize_status("cancelled"), do: {:ok, :cancelled}
+  defp normalize_status("timed_out"), do: {:ok, :timed_out}
+  defp normalize_status(value), do: {:error, {:invalid_status, value}}
 end

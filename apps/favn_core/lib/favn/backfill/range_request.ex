@@ -170,6 +170,18 @@ defmodule Favn.Backfill.RangeRequest do
     with {:ok, kind} <- normalize_kind(kind), do: {:ok, count, kind}
   end
 
+  defp normalize_last([count, kind]) when is_integer(count) and count > 0 do
+    with {:ok, kind} <- normalize_kind(kind), do: {:ok, count, kind}
+  end
+
+  defp normalize_last(%{count: count, kind: kind}) when is_integer(count) and count > 0 do
+    with {:ok, kind} <- normalize_kind(kind), do: {:ok, count, kind}
+  end
+
+  defp normalize_last(%{"count" => count, "kind" => kind}) when is_integer(count) and count > 0 do
+    with {:ok, kind} <- normalize_kind(kind), do: {:ok, count, kind}
+  end
+
   defp normalize_last(value), do: {:error, {:invalid_last_request, value}}
 
   defp normalize_kind(kind) when is_atom(kind), do: Policy.normalize_kind(kind)
@@ -193,9 +205,34 @@ defmodule Favn.Backfill.RangeRequest do
     baseline = Keyword.get(opts, :baseline)
 
     cond do
-      match?(%DateTime{}, relative_to) -> {:ok, relative_to, baseline}
-      match?(%DateTime{}, coverage_until(baseline)) -> {:ok, coverage_until(baseline), baseline}
-      true -> {:error, {:missing_backfill_reference, opts}}
+      match?(%DateTime{}, parse_datetime(relative_to)) ->
+        {:ok, parse_datetime(relative_to), baseline}
+
+      match?(%DateTime{}, parse_datetime(coverage_until(baseline))) ->
+        {:ok, parse_datetime(coverage_until(baseline)), normalize_baseline(baseline)}
+
+      true ->
+        {:error, {:missing_backfill_reference, opts}}
+    end
+  end
+
+  defp parse_datetime(%DateTime{} = value), do: value
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_datetime(_value), do: nil
+
+  defp normalize_baseline(nil), do: nil
+
+  defp normalize_baseline(value) when is_map(value) do
+    case parse_datetime(coverage_until(value)) do
+      %DateTime{} = datetime -> Map.put(value, :coverage_until, datetime)
+      nil -> value
     end
   end
 

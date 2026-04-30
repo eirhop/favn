@@ -254,6 +254,9 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp normalize_asset_status(status) when status in [:ok, :error, :cancelled, :timed_out],
     do: status
 
+  defp normalize_asset_status(status) when status in ["ok", "error", "cancelled", "timed_out"],
+    do: String.to_existing_atom(status)
+
   defp normalize_asset_status(_status), do: :error
 
   defp asset_result_metadata(%AssetResult{meta: metadata}) when is_map(metadata), do: metadata

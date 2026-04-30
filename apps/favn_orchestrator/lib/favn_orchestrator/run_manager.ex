@@ -146,6 +146,7 @@ defmodule FavnOrchestrator.RunManager do
   def handle_call({:rerun, source_run_id, opts}, _from, state) do
     reply =
       with {:ok, source_run} <- Storage.get_run(source_run_id),
+           :ok <- reject_backfill_parent_rerun(source_run),
            {:ok, run_state, version} <- build_rerun_submission(source_run, opts),
            :ok <-
              TransitionWriter.persist_transition(run_state, :run_created, %{
@@ -176,6 +177,7 @@ defmodule FavnOrchestrator.RunManager do
       case Storage.get_run(run_id) do
         {:ok, run} ->
           with :ok <- validate_cancel_reason(reason),
+               :ok <- reject_backfill_parent_cancel(run),
                :ok <- forward_cancel_if_inflight(run, reason),
                {:ok, cancel_requested, cancelled} <- build_cancel_snapshots(run, reason),
                :ok <-
@@ -585,6 +587,16 @@ defmodule FavnOrchestrator.RunManager do
 
   defp validate_cancel_reason(value) when is_map(value), do: :ok
   defp validate_cancel_reason(_value), do: {:error, :invalid_cancel_reason}
+
+  defp reject_backfill_parent_cancel(%RunState{submit_kind: :backfill_pipeline}),
+    do: {:error, :backfill_parent_cancel_not_supported}
+
+  defp reject_backfill_parent_cancel(_run), do: :ok
+
+  defp reject_backfill_parent_rerun(%RunState{submit_kind: :backfill_pipeline}),
+    do: {:error, :backfill_parent_rerun_not_supported}
+
+  defp reject_backfill_parent_rerun(_run), do: :ok
 
   defp validate_dependencies(:all), do: :ok
   defp validate_dependencies(:none), do: :ok

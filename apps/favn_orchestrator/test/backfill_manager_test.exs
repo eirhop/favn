@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
   alias Favn.Manifest.Version
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Policy
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -83,19 +84,30 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert parent_run_id == "run_backfill_parent"
     assert {:ok, parent} = Storage.get_run(parent_run_id)
     assert parent.submit_kind == :backfill_pipeline
-    assert parent.status == :running
+    assert parent.status in [:running, :ok]
     assert parent.runner_execution_id == nil
     assert parent.metadata.backfill.lookback == %{days: 7}
     assert parent.metadata.backfill.coverage_baseline_id == "baseline_1"
     assert parent.metadata.backfill.requested_count == 2
 
     assert {:ok, parent_events} = Storage.list_run_events(parent_run_id)
-    assert Enum.map(parent_events, & &1.event_type) == [:run_created, :backfill_started]
+
+    assert parent_events |> Enum.map(& &1.event_type) |> Enum.take(2) == [
+             :run_created,
+             :backfill_started
+           ]
+
     refute Enum.any?(parent_events, &(&1.event_type == :run_started))
 
+    eventually(fn ->
+      assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+      assert length(windows) == 2
+      assert Enum.all?(windows, &(&1.status == :ok))
+      assert {:ok, parent} = Storage.get_run(parent_run_id)
+      assert parent.status == :ok
+    end)
+
     assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
-    assert length(windows) == 2
-    assert Enum.all?(windows, &(&1.status in [:running, :ok]))
     assert Enum.all?(windows, &(&1.attempt_count == 1))
     assert Enum.all?(windows, &(&1.pipeline_module == MyApp.Pipelines.Daily))
     assert Enum.all?(windows, &(&1.manifest_version_id == version.manifest_version_id))
@@ -139,6 +151,108 @@ defmodule FavnOrchestrator.BackfillManagerTest do
       refute Enum.any?(submissions, &(&1.run_id == parent_run_id))
       assert submissions |> Enum.map(& &1.run_id) |> Enum.uniq() |> Enum.sort() == child_run_ids
     end)
+  end
+
+  test "rejects oversized ranges before parent or windows are persisted" do
+    version = manifest_version("mv_backfill_max_windows")
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:error, {:too_many_backfill_windows, 2, 1}} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_too_large",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               max_windows: 1
+             )
+
+    assert {:error, :not_found} = Storage.get_run("run_backfill_too_large")
+    assert {:ok, []} = Storage.list_backfill_windows(backfill_run_id: "run_backfill_too_large")
+  end
+
+  test "generic cancel and rerun reject backfill parent runs" do
+    version = manifest_version("mv_backfill_parent_safety")
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, parent_run_id} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_parent_safety",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"}
+             )
+
+    assert {:error, :backfill_parent_cancel_not_supported} =
+             FavnOrchestrator.cancel_run(parent_run_id, %{reason: "operator"})
+
+    assert {:error, :backfill_parent_rerun_not_supported} = FavnOrchestrator.rerun(parent_run_id)
+
+    assert {:ok, all_runs} = Storage.list_runs()
+
+    refute Enum.any?(all_runs, fn run ->
+             run.rerun_of_run_id == parent_run_id and run.submit_kind == :rerun
+           end)
+  end
+
+  test "relative range can resolve from coverage baseline id" do
+    version = manifest_version("mv_backfill_baseline_relative")
+    now = DateTime.utc_now()
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, baseline} =
+             CoverageBaseline.new(%{
+               baseline_id: "baseline_relative",
+               pipeline_module: MyApp.Pipelines.Daily,
+               source_key: "source",
+               segment_key_hash: "hash",
+               window_kind: :day,
+               timezone: "Etc/UTC",
+               coverage_until: ~U[2026-04-28 00:00:00Z],
+               created_by_run_id: "run_baseline",
+               manifest_version_id: version.manifest_version_id,
+               status: :ok,
+               created_at: now,
+               updated_at: now
+             })
+
+    assert :ok = Storage.put_coverage_baseline(baseline)
+
+    assert {:ok, parent_run_id} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_relative_baseline",
+               range_request: %{"last" => [2, "day"], "timezone" => "Etc/UTC"},
+               coverage_baseline_id: "baseline_relative"
+             )
+
+    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+
+    assert Enum.map(windows, & &1.window_start_at) == [
+             ~U[2026-04-26 00:00:00Z],
+             ~U[2026-04-27 00:00:00Z]
+           ]
+  end
+
+  test "coverage baseline rejects nested raw source identity" do
+    now = DateTime.utc_now()
+
+    assert {:error, {:raw_source_identity_not_allowed, :token}} =
+             CoverageBaseline.new(%{
+               baseline_id: "baseline_secret",
+               pipeline_module: MyApp.Pipelines.Daily,
+               source_key: "source",
+               segment_key_hash: "hash",
+               window_kind: :day,
+               timezone: "Etc/UTC",
+               coverage_until: ~U[2026-04-28 00:00:00Z],
+               created_by_run_id: "run_baseline",
+               manifest_version_id: "mv",
+               status: :ok,
+               metadata: %{nested: %{"token" => "raw"}},
+               created_at: now,
+               updated_at: now
+             })
   end
 
   defp eventually(fun, attempts \\ 20)

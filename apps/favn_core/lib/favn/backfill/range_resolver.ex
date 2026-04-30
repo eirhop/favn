@@ -144,5 +144,16 @@ defmodule Favn.Backfill.RangeResolver do
   defp coverage_until(nil), do: nil
 
   defp coverage_until(value) when is_map(value),
-    do: Map.get(value, :coverage_until, Map.get(value, "coverage_until"))
+    do: parse_datetime(Map.get(value, :coverage_until, Map.get(value, "coverage_until")))
+
+  defp parse_datetime(%DateTime{} = value), do: value
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_datetime(_value), do: nil
 end

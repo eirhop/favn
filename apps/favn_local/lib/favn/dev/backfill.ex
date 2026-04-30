@@ -9,7 +9,7 @@ defmodule Favn.Dev.Backfill do
   alias Favn.Dev.State
   alias Favn.Dev.Status
 
-  @terminal_statuses ["ok", "error", "cancelled", "timed_out"]
+  @terminal_statuses ["ok", "partial", "error", "cancelled", "timed_out"]
   @default_timeout_ms 60_000
   @default_poll_interval_ms 1_000
 
@@ -23,9 +23,11 @@ defmodule Favn.Dev.Backfill do
           coverage_baseline_id: String.t(),
           wait: boolean(),
           max_attempts: pos_integer(),
-          retry_backoff_ms: non_neg_integer(),
-          timeout_ms: pos_integer(),
-          poll_interval_ms: pos_integer(),
+           retry_backoff_ms: non_neg_integer(),
+           timeout_ms: pos_integer(),
+           wait_timeout_ms: pos_integer(),
+           run_timeout_ms: pos_integer(),
+           poll_interval_ms: pos_integer(),
           metadata: map()
         ]
 
@@ -131,7 +133,7 @@ defmodule Favn.Dev.Backfill do
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
      |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
-     |> maybe_put(:timeout_ms, Keyword.get(opts, :timeout_ms))}
+      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end
 
   def build_submit_payload(_target, _range, _opts), do: {:error, :invalid_pipeline_target}
@@ -153,10 +155,13 @@ defmodule Favn.Dev.Backfill do
   end
 
   defp validate_opts(opts) do
-    case validate_positive_integer(opts, :timeout_ms) do
-      :ok -> validate_positive_integer(opts, :poll_interval_ms)
-      {:error, _reason} = error -> error
-    end
+    Enum.reduce_while([:timeout_ms, :wait_timeout_ms, :run_timeout_ms, :poll_interval_ms], :ok, fn
+      key, :ok ->
+        case validate_positive_integer(opts, key) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+    end)
   end
 
   defp validate_positive_integer(opts, key) do
@@ -239,13 +244,16 @@ defmodule Favn.Dev.Backfill do
   defp maybe_put(payload, _key, ""), do: payload
   defp maybe_put(payload, key, value), do: Map.put(payload, key, value)
 
+  defp run_timeout_ms(opts), do: Keyword.get(opts, :run_timeout_ms, Keyword.get(opts, :timeout_ms))
+
   defp maybe_wait(run, base_url, service_token, session_context, opts) do
     case {Keyword.get(opts, :wait, true), run} do
       {false, _run} ->
         {:ok, run}
 
       {true, %{"id" => run_id}} when is_binary(run_id) and run_id != "" ->
-        timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+        timeout_ms =
+          Keyword.get(opts, :wait_timeout_ms, Keyword.get(opts, :timeout_ms, @default_timeout_ms))
         poll_interval_ms = Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms)
         deadline = System.monotonic_time(:millisecond) + timeout_ms
 
@@ -309,6 +317,7 @@ defmodule Favn.Dev.Backfill do
   defp ensure_success(run, true) do
     case run_status(run) do
       "ok" -> :ok
+      "partial" -> {:error, {:run_failed, "backfill parent run finished with status partial", run}}
       status when status in ["error", "cancelled", "timed_out"] -> {:error, {:run_failed, run}}
       _other -> :ok
     end

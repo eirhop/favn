@@ -44,7 +44,7 @@ defmodule FavnOrchestrator.Backfill.BackfillWindow do
     metadata: %{}
   ]
 
-  @type status :: :pending | :running | :ok | :error | :cancelled | atom()
+  @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
           backfill_run_id: String.t(),
@@ -76,7 +76,8 @@ defmodule FavnOrchestrator.Backfill.BackfillWindow do
   def new(attrs) when is_map(attrs) or is_list(attrs) do
     attrs = Map.new(attrs)
 
-    with :ok <- require_keys(attrs, @required_keys) do
+    with {:ok, attrs} <- normalize_attrs(attrs),
+         :ok <- require_keys(attrs, @required_keys) do
       {:ok, struct(__MODULE__, Map.merge(%{attempt_count: 0, errors: [], metadata: %{}}, attrs))}
     end
   end
@@ -93,4 +94,45 @@ defmodule FavnOrchestrator.Backfill.BackfillWindow do
   end
 
   defp missing?(attrs, key), do: Map.get(attrs, key) in [nil, ""]
+
+  defp normalize_attrs(attrs) do
+    with {:ok, window_kind} <- normalize_window_kind(Map.get(attrs, :window_kind)),
+         {:ok, status} <- normalize_status(Map.get(attrs, :status)) do
+      {:ok, attrs |> Map.put(:window_kind, window_kind) |> Map.put(:status, status)}
+    end
+  end
+
+  defp normalize_window_kind(value) when value in [:hour, :day, :month, :year], do: {:ok, value}
+  defp normalize_window_kind(:hourly), do: {:ok, :hour}
+  defp normalize_window_kind(:daily), do: {:ok, :day}
+  defp normalize_window_kind(:monthly), do: {:ok, :month}
+  defp normalize_window_kind(:yearly), do: {:ok, :year}
+  defp normalize_window_kind("hour"), do: {:ok, :hour}
+  defp normalize_window_kind("hourly"), do: {:ok, :hour}
+  defp normalize_window_kind("day"), do: {:ok, :day}
+  defp normalize_window_kind("daily"), do: {:ok, :day}
+  defp normalize_window_kind("month"), do: {:ok, :month}
+  defp normalize_window_kind("monthly"), do: {:ok, :month}
+  defp normalize_window_kind("year"), do: {:ok, :year}
+  defp normalize_window_kind("yearly"), do: {:ok, :year}
+  defp normalize_window_kind(value), do: {:error, {:invalid_window_kind, value}}
+
+  defp normalize_status(value)
+       when value in [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out],
+       do: {:ok, value}
+
+  defp normalize_status(value) when is_binary(value) do
+    case value do
+      "pending" -> {:ok, :pending}
+      "running" -> {:ok, :running}
+      "ok" -> {:ok, :ok}
+      "partial" -> {:ok, :partial}
+      "error" -> {:ok, :error}
+      "cancelled" -> {:ok, :cancelled}
+      "timed_out" -> {:ok, :timed_out}
+      _other -> {:error, {:invalid_status, value}}
+    end
+  end
+
+  defp normalize_status(value), do: {:error, {:invalid_status, value}}
 end

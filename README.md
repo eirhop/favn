@@ -382,6 +382,10 @@ inspect child windows, `coverage-baselines` and `asset-window-states` to inspect
 projected backfill state, and `rerun-window RUN_ID --window-key KEY` for failed
 window reruns.
 
+For `submit`, `--wait-timeout-ms` controls local CLI polling only, while
+`--run-timeout-ms` controls the child run execution timeout sent to the
+orchestrator.
+
 The local runner receives only the explicitly supported consumer `:favn` config
 needed for local execution: `:connection_modules`, `:connections`,
 `:runner_plugins`, and `:duckdb_in_process_client`. This transport is local-dev

@@ -78,6 +78,31 @@ defmodule Favn.Backfill.RangeResolverTest do
     )
   end
 
+  test "resolves JSON relative last input with ISO8601 reference values" do
+    assert {:ok, resolved} =
+             RangeResolver.resolve(%{
+               "last" => [2, "day"],
+               "baseline" => %{"coverage_until" => "2026-04-28T00:00:00Z"},
+               "timezone" => "Etc/UTC"
+             })
+
+    assert resolved.kind == :day
+    assert resolved.requested_count == 2
+    assert_same_instant(resolved.reference, ~U[2026-04-28 00:00:00Z])
+    assert_same_instant(resolved.range_start_at, ~U[2026-04-26 00:00:00Z])
+    assert_same_instant(resolved.range_end_at, ~U[2026-04-28 00:00:00Z])
+
+    assert {:ok, resolved_from_map_last} =
+             RangeResolver.resolve(%{
+               "last" => %{"count" => 1, "kind" => "month"},
+               "relative_to" => "2026-04-28T00:00:00Z",
+               "timezone" => "Etc/UTC"
+             })
+
+    assert resolved_from_map_last.kind == :month
+    assert resolved_from_map_last.requested_count == 1
+  end
+
   test "relative range ending exactly on a period boundary does not include next period" do
     coverage_until = ~U[2026-04-01 00:00:00Z]
 

@@ -43,7 +43,7 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
     updated_at: nil
   ]
 
-  @type status :: :pending | :ok | :error | :cancelled | atom()
+  @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
           baseline_id: String.t(),
@@ -71,7 +71,8 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
   def new(attrs) when is_map(attrs) or is_list(attrs) do
     attrs = Map.new(attrs)
 
-    with :ok <- reject_raw_source_identity(attrs),
+    with {:ok, attrs} <- normalize_attrs(attrs),
+         :ok <- reject_raw_source_identity(attrs),
          :ok <- require_keys(attrs, @required_keys) do
       {:ok,
        struct(
@@ -84,11 +85,45 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
   def new(_attrs), do: {:error, :invalid_attrs}
 
   defp reject_raw_source_identity(attrs) do
-    case Enum.find(@raw_source_keys, &Map.has_key?(attrs, &1)) do
+    case find_raw_source_key(attrs) do
       nil -> :ok
       key -> {:error, {:raw_source_identity_not_allowed, key}}
     end
   end
+
+  defp find_raw_source_key(%_struct{}), do: nil
+
+  defp find_raw_source_key(value) when is_map(value) do
+    Enum.find_value(value, fn {key, nested} ->
+      if raw_source_key?(key) do
+        normalize_key(key)
+      else
+        find_raw_source_key(nested)
+      end
+    end)
+  end
+
+  defp find_raw_source_key(value) when is_list(value),
+    do: Enum.find_value(value, &find_raw_source_key/1)
+
+  defp find_raw_source_key(_value), do: nil
+
+  defp raw_source_key?(key), do: normalize_key(key) in @raw_source_keys
+
+  defp normalize_key(key) when is_atom(key), do: key
+
+  defp normalize_key(key) when is_binary(key) do
+    case key do
+      "segment_id" -> :segment_id
+      "source_id" -> :source_id
+      "source_secret" -> :source_secret
+      "token" -> :token
+      "secret" -> :secret
+      _other -> key
+    end
+  end
+
+  defp normalize_key(key), do: key
 
   defp require_keys(attrs, keys) do
     missing = Enum.filter(keys, &missing?(attrs, &1))
@@ -100,4 +135,39 @@ defmodule FavnOrchestrator.Backfill.CoverageBaseline do
   end
 
   defp missing?(attrs, key), do: Map.get(attrs, key) in [nil, ""]
+
+  defp normalize_attrs(attrs) do
+    with {:ok, window_kind} <- normalize_window_kind(Map.get(attrs, :window_kind)),
+         {:ok, status} <- normalize_status(Map.get(attrs, :status)) do
+      {:ok, attrs |> Map.put(:window_kind, window_kind) |> Map.put(:status, status)}
+    end
+  end
+
+  defp normalize_window_kind(value) when value in [:hour, :day, :month, :year], do: {:ok, value}
+  defp normalize_window_kind(:hourly), do: {:ok, :hour}
+  defp normalize_window_kind(:daily), do: {:ok, :day}
+  defp normalize_window_kind(:monthly), do: {:ok, :month}
+  defp normalize_window_kind(:yearly), do: {:ok, :year}
+  defp normalize_window_kind("hour"), do: {:ok, :hour}
+  defp normalize_window_kind("hourly"), do: {:ok, :hour}
+  defp normalize_window_kind("day"), do: {:ok, :day}
+  defp normalize_window_kind("daily"), do: {:ok, :day}
+  defp normalize_window_kind("month"), do: {:ok, :month}
+  defp normalize_window_kind("monthly"), do: {:ok, :month}
+  defp normalize_window_kind("year"), do: {:ok, :year}
+  defp normalize_window_kind("yearly"), do: {:ok, :year}
+  defp normalize_window_kind(value), do: {:error, {:invalid_window_kind, value}}
+
+  defp normalize_status(value)
+       when value in [:pending, :running, :ok, :partial, :error, :cancelled, :timed_out],
+       do: {:ok, value}
+
+  defp normalize_status("pending"), do: {:ok, :pending}
+  defp normalize_status("running"), do: {:ok, :running}
+  defp normalize_status("ok"), do: {:ok, :ok}
+  defp normalize_status("partial"), do: {:ok, :partial}
+  defp normalize_status("error"), do: {:ok, :error}
+  defp normalize_status("cancelled"), do: {:ok, :cancelled}
+  defp normalize_status("timed_out"), do: {:ok, :timed_out}
+  defp normalize_status(value), do: {:error, {:invalid_status, value}}
 end

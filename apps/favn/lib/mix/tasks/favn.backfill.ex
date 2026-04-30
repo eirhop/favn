@@ -13,7 +13,8 @@ defmodule Mix.Tasks.Favn.Backfill do
       mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01
 
   By default `submit` waits for the parent backfill run to finish. Use `--no-wait`
-  to return after submission.
+  to return after submission. Use `--wait-timeout-ms` for local polling and
+  `--run-timeout-ms` for child run execution timeout.
   """
 
   alias Favn.Dev
@@ -26,6 +27,8 @@ defmodule Mix.Tasks.Favn.Backfill do
     timezone: :string,
     coverage_baseline_id: :string,
     wait: :boolean,
+    wait_timeout_ms: :integer,
+    run_timeout_ms: :integer,
     timeout_ms: :integer,
     poll_interval_ms: :integer
   ]
@@ -152,6 +155,10 @@ defmodule Mix.Tasks.Favn.Backfill do
           "backfill parent run finished with status #{run["status"] || inspect(run[:status])}"
         )
 
+      {:error, {:run_failed, message, run}} ->
+        print_run("Submitted pipeline backfill", run)
+        Mix.raise(message)
+
       {:error, reason} ->
         Mix.raise(error_message(reason))
     end
@@ -243,6 +250,12 @@ defmodule Mix.Tasks.Favn.Backfill do
     do: "timed out waiting for backfill parent run #{run_id}"
 
   defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :wait_timeout_ms}),
+    do: "--wait-timeout-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :run_timeout_ms}),
+    do: "--run-timeout-ms must be greater than 0"
 
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"
