@@ -56,8 +56,7 @@ defmodule FavnAuthoring do
   """
   @spec list_assets() :: {:ok, [asset()]} | {:error, term()}
   def list_assets do
-    modules = Application.get_env(:favn, :asset_modules, [])
-    list_assets(modules)
+    list_assets(default_asset_modules())
   end
 
   @doc """
@@ -65,16 +64,16 @@ defmodule FavnAuthoring do
   """
   @spec list_assets(module() | [module()]) :: {:ok, [asset()]} | {:error, term()}
   def list_assets(module) when is_atom(module) do
-    case Application.get_env(:favn, :asset_modules, :unset) do
+    case configured_asset_modules() do
       modules when is_list(modules) ->
         if module in modules do
           list_assets_for_module_from_catalog(module, modules)
         else
-          compile_module_assets(module)
+          Compiler.compile_module_assets(module)
         end
 
       _other ->
-        compile_module_assets(module)
+        Compiler.compile_module_assets(module)
     end
   end
 
@@ -100,13 +99,6 @@ defmodule FavnAuthoring do
         [] -> {:error, :not_asset_module}
         module_assets -> {:ok, module_assets}
       end
-    end
-  end
-
-  defp compile_module_assets(module) when is_atom(module) do
-    case Compiler.compile_module_assets(module) do
-      {:ok, assets} -> {:ok, assets}
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -202,16 +194,32 @@ defmodule FavnAuthoring do
 
   defp with_default_manifest_modules(opts) when is_list(opts) do
     opts
-    |> Keyword.put_new(:asset_modules, Application.get_env(:favn, :asset_modules, []))
-    |> Keyword.put_new(:pipeline_modules, Application.get_env(:favn, :pipeline_modules, []))
-    |> Keyword.put_new(:schedule_modules, Application.get_env(:favn, :schedule_modules, []))
+    |> Keyword.put_new(:asset_modules, default_asset_modules())
+    |> Keyword.put_new(:pipeline_modules, default_pipeline_modules())
+    |> Keyword.put_new(:schedule_modules, default_schedule_modules())
+  end
+
+  defp configured_asset_modules do
+    Application.get_env(:favn, :asset_modules, :unset)
+  end
+
+  defp default_asset_modules do
+    Application.get_env(:favn, :asset_modules, [])
+  end
+
+  defp default_pipeline_modules do
+    Application.get_env(:favn, :pipeline_modules, [])
+  end
+
+  defp default_schedule_modules do
+    Application.get_env(:favn, :schedule_modules, [])
   end
 
   @doc false
   @spec plan_asset_run(asset_ref() | [asset_ref()], keyword()) ::
           {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_asset_run(target_refs, opts \\ []) do
-    opts = Keyword.put_new(opts, :asset_modules, Application.get_env(:favn, :asset_modules, []))
+    opts = Keyword.put_new(opts, :asset_modules, default_asset_modules())
     Planner.plan(target_refs, opts)
   end
 

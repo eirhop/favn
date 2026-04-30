@@ -241,36 +241,28 @@ defmodule Favn do
   @spec render(module() | Favn.Ref.t() | Favn.Asset.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def render(asset_input, opts \\ []) when is_list(opts) do
-    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
-      sql_runtime_call(:render, [asset, opts])
-    end
+    normalized_sql_asset_call(:render, asset_input, opts)
   end
 
   @doc false
   @spec preview(module() | Favn.Ref.t() | Favn.Asset.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def preview(asset_input, opts \\ []) when is_list(opts) do
-    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
-      sql_runtime_call(:preview, [asset, opts])
-    end
+    normalized_sql_asset_call(:preview, asset_input, opts)
   end
 
   @doc false
   @spec explain(module() | Favn.Ref.t() | Favn.Asset.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def explain(asset_input, opts \\ []) when is_list(opts) do
-    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
-      sql_runtime_call(:explain, [asset, opts])
-    end
+    normalized_sql_asset_call(:explain, asset_input, opts)
   end
 
   @doc false
   @spec materialize(module() | Favn.Ref.t() | Favn.Asset.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def materialize(asset_input, opts \\ []) when is_list(opts) do
-    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
-      sql_runtime_call(:materialize, [asset, opts])
-    end
+    normalized_sql_asset_call(:materialize, asset_input, opts)
   end
 
   @doc false
@@ -321,16 +313,22 @@ defmodule Favn do
     scheduler_runtime_call(:list_scheduled_pipelines)
   end
 
-  defp orchestrator_runtime_call(function_name, args)
-       when is_atom(function_name) and is_list(args) do
-    orchestrator = FavnOrchestrator
+  defp normalized_sql_asset_call(runtime_function, asset_input, opts)
+       when is_atom(runtime_function) and is_list(opts) do
+    with {:ok, asset} <- SQLAssetInput.normalize(asset_input) do
+      sql_runtime_call(runtime_function, [asset, opts])
+    end
+  end
 
-    with {:module, ^orchestrator} <- Code.ensure_loaded(orchestrator),
-         arity <- length(args),
-         true <- function_exported?(orchestrator, function_name, arity) do
+  defp orchestrator_runtime_call(runtime_function, runtime_args)
+       when is_atom(runtime_function) and is_list(runtime_args) do
+    orchestrator_module = FavnOrchestrator
+    arity = length(runtime_args)
+
+    if runtime_function_exported?(orchestrator_module, runtime_function, arity) do
       try do
-        orchestrator
-        |> apply(function_name, args)
+        orchestrator_module
+        |> apply(runtime_function, runtime_args)
         |> normalize_orchestrator_result()
       rescue
         UndefinedFunctionError ->
@@ -346,7 +344,7 @@ defmodule Favn do
           {:error, {:runtime_call_exited, reason}}
       end
     else
-      _ -> {:error, :runtime_not_available}
+      {:error, :runtime_not_available}
     end
   end
 
@@ -358,14 +356,13 @@ defmodule Favn do
 
   defp normalize_orchestrator_result(other), do: other
 
-  defp scheduler_runtime_call(function_name) when is_atom(function_name) do
-    scheduler = Favn.Scheduler
+  defp scheduler_runtime_call(runtime_function) when is_atom(runtime_function) do
+    scheduler_module = Favn.Scheduler
 
-    with {:module, ^scheduler} <- Code.ensure_loaded(scheduler),
-         true <- function_exported?(scheduler, function_name, 0) do
+    if runtime_function_exported?(scheduler_module, runtime_function, 0) do
       try do
-        scheduler
-        |> apply(function_name, [])
+        scheduler_module
+        |> apply(runtime_function, [])
         |> normalize_scheduler_result()
       rescue
         UndefinedFunctionError ->
@@ -381,7 +378,7 @@ defmodule Favn do
           {:error, {:runtime_call_exited, reason}}
       end
     else
-      _ -> {:error, :runtime_not_available}
+      {:error, :runtime_not_available}
     end
   end
 
@@ -390,16 +387,23 @@ defmodule Favn do
 
   defp normalize_scheduler_result(other), do: other
 
-  defp sql_runtime_call(function_name, args)
-       when is_atom(function_name) and is_list(args) do
+  defp sql_runtime_call(runtime_function, runtime_args)
+       when is_atom(runtime_function) and is_list(runtime_args) do
     runtime_module = Favn.SQLAsset.Runtime
+    arity = length(runtime_args)
 
-    with {:module, ^runtime_module} <- Code.ensure_loaded(runtime_module),
-         arity <- length(args),
-         true <- function_exported?(runtime_module, function_name, arity) do
-      apply(runtime_module, function_name, args)
+    if runtime_function_exported?(runtime_module, runtime_function, arity) do
+      apply(runtime_module, runtime_function, runtime_args)
     else
-      _ -> {:error, :runtime_not_available}
+      {:error, :runtime_not_available}
+    end
+  end
+
+  defp runtime_function_exported?(runtime_module, runtime_function, arity)
+       when is_atom(runtime_module) and is_atom(runtime_function) and is_integer(arity) do
+    case Code.ensure_loaded(runtime_module) do
+      {:module, ^runtime_module} -> function_exported?(runtime_module, runtime_function, arity)
+      _other -> false
     end
   end
 end
