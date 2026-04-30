@@ -14,15 +14,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.SQL.Template
 
   setup do
-    previous_runner_plugins = Application.get_env(:favn, :runner_plugins)
-
     on_exit(fn ->
-      if is_nil(previous_runner_plugins) do
-        Application.delete_env(:favn, :runner_plugins)
-      else
-        Application.put_env(:favn, :runner_plugins, previous_runner_plugins)
-      end
-
       Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
     end)
 

@@ -23,7 +23,7 @@ defmodule Favn.SQLAsset.Definition do
           required(:ref) => {module(), atom()},
           required(:relation) => Favn.RelationRef.t(),
           required(:file) => String.t(),
-          optional(:window_spec) => Favn.Window.Spec.t() | nil,
+          required(:window_spec) => Favn.Window.Spec.t() | nil,
           optional(atom()) => term()
         }
 
