@@ -10,26 +10,25 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   alias Favn.SQL.Relation
   alias Favn.SQL.Session
   alias Favn.SQL.WritePlan
-
-  @events_table :favn_duckdb_adapter_hardening_events
+  alias FavnDuckdb.TestSupport
 
   defmodule FakeClient do
-    @behaviour Favn.SQL.Adapter.DuckDB.Client
+    use FavnDuckdb.TestSupport.FakeClient
 
-    @events_table :favn_duckdb_adapter_hardening_events
+    alias FavnDuckdb.TestSupport
 
     @impl true
     def open(_database) do
       db_ref = make_ref()
-      record({:open, db_ref})
+      TestSupport.record({:open, db_ref})
       {:ok, db_ref}
     end
 
     @impl true
     def connection(db_ref) do
-      record({:connection, db_ref})
+      TestSupport.record({:connection, db_ref})
 
-      case mode(:connection_mode, :ok) do
+      case TestSupport.mode(:connection_mode, :ok) do
         :ok -> {:ok, make_ref()}
         :error -> {:error, :connection_failed}
       end
@@ -37,10 +36,10 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     @impl true
     def query(conn_ref, sql, params) do
-      record({:query, conn_ref, sql})
-      record({:query_params, sql, params})
+      TestSupport.record({:query, conn_ref, sql})
+      TestSupport.record({:query_params, sql, params})
 
-      case {mode(:query_mode, :ok), String.starts_with?(sql, "INSERT")} do
+      case {TestSupport.mode(:query_mode, :ok), String.starts_with?(sql, "INSERT")} do
         {:error, true} ->
           {:error, :write_failed}
 
@@ -49,16 +48,16 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
         _ ->
           result_ref = make_ref()
-          record({:result_ref, result_ref, sql})
+          TestSupport.record({:result_ref, result_ref, sql})
           {:ok, result_ref}
       end
     end
 
     @impl true
     def fetch_all(result_ref) do
-      record({:fetch_all, result_ref})
+      TestSupport.record({:fetch_all, result_ref})
 
-      case mode(:fetch_mode, :ok) do
+      case TestSupport.mode(:fetch_mode, :ok) do
         :ok -> [[1]]
         :error -> :fetch_error
         :raise -> raise "fetch failed"
@@ -67,9 +66,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     @impl true
     def columns(result_ref) do
-      record({:columns, result_ref})
+      TestSupport.record({:columns, result_ref})
 
-      case mode(:columns_mode, :ok) do
+      case TestSupport.mode(:columns_mode, :ok) do
         :ok ->
           sql = result_sql(result_ref)
 
@@ -85,21 +84,17 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     end
 
     defp result_sql(result_ref) do
-      if :ets.whereis(@events_table) != :undefined do
-        @events_table
-        |> :ets.tab2list()
-        |> Enum.find_value(fn
-          {_key, {:result_ref, ^result_ref, sql}} -> sql
-          _other -> nil
-        end)
-      end
+      Enum.find_value(TestSupport.events(), fn
+        {:result_ref, ^result_ref, sql} -> sql
+        _other -> nil
+      end)
     end
 
     @impl true
     def begin_transaction(conn_ref) do
-      record({:begin_transaction, conn_ref})
+      TestSupport.record({:begin_transaction, conn_ref})
 
-      case mode(:begin_mode, :ok) do
+      case TestSupport.mode(:begin_mode, :ok) do
         :ok -> :ok
         :error -> {:error, "begin failed"}
       end
@@ -107,9 +102,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     @impl true
     def commit(conn_ref) do
-      record({:commit, conn_ref})
+      TestSupport.record({:commit, conn_ref})
 
-      case mode(:commit_mode, :ok) do
+      case TestSupport.mode(:commit_mode, :ok) do
         :ok -> :ok
         :error -> {:error, "commit failed"}
       end
@@ -117,9 +112,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     @impl true
     def rollback(conn_ref) do
-      record({:rollback, conn_ref})
+      TestSupport.record({:rollback, conn_ref})
 
-      case mode(:rollback_mode, :ok) do
+      case TestSupport.mode(:rollback_mode, :ok) do
         :ok -> :ok
         :error -> {:error, :rollback_failed}
       end
@@ -128,15 +123,15 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     @impl true
     def appender(conn_ref, _table_name, _schema) do
       appender_ref = make_ref()
-      record({:appender_open, conn_ref, appender_ref})
+      TestSupport.record({:appender_open, conn_ref, appender_ref})
       {:ok, appender_ref}
     end
 
     @impl true
     def appender_add_rows(appender_ref, _rows) do
-      record({:appender_add_rows, appender_ref})
+      TestSupport.record({:appender_add_rows, appender_ref})
 
-      case mode(:appender_add_rows_mode, :ok) do
+      case TestSupport.mode(:appender_add_rows_mode, :ok) do
         :ok -> :ok
         :error -> {:error, :appender_add_rows_failed}
       end
@@ -144,9 +139,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     @impl true
     def appender_flush(appender_ref) do
-      record({:appender_flush, appender_ref})
+      TestSupport.record({:appender_flush, appender_ref})
 
-      case mode(:appender_flush_mode, :ok) do
+      case TestSupport.mode(:appender_flush_mode, :ok) do
         :ok -> :ok
         :error -> {:error, :appender_flush_failed}
       end
@@ -154,9 +149,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     @impl true
     def appender_close(appender_ref) do
-      record({:appender_close, appender_ref})
+      TestSupport.record({:appender_close, appender_ref})
 
-      case mode(:appender_close_mode, :ok) do
+      case TestSupport.mode(:appender_close_mode, :ok) do
         :ok -> :ok
         :error -> {:error, :appender_close_failed}
       end
@@ -164,27 +159,13 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     @impl true
     def release(resource) do
-      record({:release, resource})
-      :ok
-    end
-
-    defp mode(key, default), do: Application.get_env(:favn, key, default)
-
-    defp record(event) do
-      if :ets.whereis(@events_table) != :undefined do
-        :ets.insert(@events_table, {System.unique_integer([:positive]), event})
-      end
-
+      TestSupport.record({:release, resource})
       :ok
     end
   end
 
   setup do
-    if :ets.whereis(@events_table) != :undefined do
-      :ets.delete(@events_table)
-    end
-
-    :ets.new(@events_table, [:named_table, :ordered_set, :public])
+    TestSupport.start_events()
 
     keys = [
       :connection_mode,
@@ -199,21 +180,17 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
       :appender_close_mode
     ]
 
-    Enum.each(keys, &Application.put_env(:favn, &1, :ok))
+    TestSupport.put_modes(keys, :ok)
 
     on_exit(fn ->
-      Enum.each(keys, &Application.delete_env(:favn, &1))
-
-      if :ets.whereis(@events_table) != :undefined do
-        :ets.delete(@events_table)
-      end
+      TestSupport.reset()
     end)
 
     :ok
   end
 
   test "begin failure keeps begin-stage transaction error and does not rollback" do
-    Application.put_env(:favn, :begin_mode, :error)
+    TestSupport.put_mode(:begin_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error, %Error{operation: :transaction, details: %{transaction_stage: :begin}}} =
@@ -238,7 +215,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "commit failure preserves commit-stage error and rolls back" do
-    Application.put_env(:favn, :commit_mode, :error)
+    TestSupport.put_mode(:commit_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error, %Error{operation: :transaction, details: %{transaction_stage: :commit}}} =
@@ -251,7 +228,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "rollback failure keeps original transaction failure context" do
-    Application.put_env(:favn, :rollback_mode, :error)
+    TestSupport.put_mode(:rollback_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error,
@@ -305,7 +282,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "query fetch error releases result handle" do
-    Application.put_env(:favn, :fetch_mode, :error)
+    TestSupport.put_mode(:fetch_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error, %Error{type: :execution_error, operation: :query}} =
@@ -320,7 +297,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "query columns error releases result handle" do
-    Application.put_env(:favn, :columns_mode, :error)
+    TestSupport.put_mode(:columns_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error, %Error{type: :execution_error, operation: :query}} =
@@ -340,7 +317,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "query fetch raise releases result handle" do
-    Application.put_env(:favn, :fetch_mode, :raise)
+    TestSupport.put_mode(:fetch_mode, :raise)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert_raise RuntimeError, "fetch failed", fn ->
@@ -356,7 +333,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "releases database handle when connection allocation fails" do
-    Application.put_env(:favn, :connection_mode, :error)
+    TestSupport.put_mode(:connection_mode, :error)
 
     assert {:error, %Error{type: :connection_error, operation: :connect}} =
              DuckDB.connect(resolved(), duckdb_client: FakeClient)
@@ -368,7 +345,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "appender failure still cleans up appender deterministically" do
-    Application.put_env(:favn, :appender_add_rows_mode, :error)
+    TestSupport.put_mode(:appender_add_rows_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     write_plan =
@@ -433,7 +410,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "conflict failures normalize as retryable" do
-    Application.put_env(:favn, :query_mode, :conflict)
+    TestSupport.put_mode(:query_mode, :conflict)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
     assert {:error,
@@ -680,10 +657,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   defp events do
-    @events_table
-    |> :ets.tab2list()
-    |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.map(&elem(&1, 1))
+    TestSupport.events()
   end
 
   defp assert_schema_setup_has_no_params(statement_prefix) do

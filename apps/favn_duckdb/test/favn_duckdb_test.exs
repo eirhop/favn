@@ -6,92 +6,23 @@ defmodule FavnDuckdbTest do
   alias FavnDuckdb.Worker
 
   defmodule FakeClient do
-    @behaviour Favn.SQL.Adapter.DuckDB.Client
-
-    @impl true
-    def open(_database), do: {:ok, make_ref()}
-
-    @impl true
-    def connection(_db_ref), do: {:ok, make_ref()}
-
-    @impl true
-    def query(_conn_ref, _sql, _params), do: {:ok, make_ref()}
+    use FavnDuckdb.TestSupport.FakeClient
 
     @impl true
     def fetch_all(_result_ref), do: [[1]]
 
     @impl true
     def columns(_result_ref), do: ["id"]
-
-    @impl true
-    def begin_transaction(_conn_ref), do: :ok
-
-    @impl true
-    def commit(_conn_ref), do: :ok
-
-    @impl true
-    def rollback(_conn_ref), do: :ok
-
-    @impl true
-    def appender(_conn_ref, _table_name, _schema), do: {:ok, make_ref()}
-
-    @impl true
-    def appender_add_rows(_appender_ref, _rows), do: :ok
-
-    @impl true
-    def appender_flush(_appender_ref), do: :ok
-
-    @impl true
-    def appender_close(_appender_ref), do: :ok
-
-    @impl true
-    def release(_resource), do: :ok
   end
 
   defmodule SlowClient do
-    @behaviour Favn.SQL.Adapter.DuckDB.Client
-
-    @impl true
-    def open(_database), do: {:ok, make_ref()}
-
-    @impl true
-    def connection(_db_ref), do: {:ok, make_ref()}
+    use FavnDuckdb.TestSupport.FakeClient
 
     @impl true
     def query(_conn_ref, _sql, _params) do
       Process.sleep(100)
       {:ok, make_ref()}
     end
-
-    @impl true
-    def fetch_all(_result_ref), do: []
-
-    @impl true
-    def columns(_result_ref), do: []
-
-    @impl true
-    def begin_transaction(_conn_ref), do: :ok
-
-    @impl true
-    def commit(_conn_ref), do: :ok
-
-    @impl true
-    def rollback(_conn_ref), do: :ok
-
-    @impl true
-    def appender(_conn_ref, _table_name, _schema), do: {:ok, make_ref()}
-
-    @impl true
-    def appender_add_rows(_appender_ref, _rows), do: :ok
-
-    @impl true
-    def appender_flush(_appender_ref), do: :ok
-
-    @impl true
-    def appender_close(_appender_ref), do: :ok
-
-    @impl true
-    def release(_resource), do: :ok
   end
 
   setup do

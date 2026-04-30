@@ -4,25 +4,18 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
   alias Favn.Connection.Resolved
   alias Favn.SQL.Adapter.DuckDB
   alias Favn.SQL.Error
-
-  @events_table :favn_duckdb_bootstrap_events
+  alias FavnDuckdb.TestSupport
 
   defmodule FakeClient do
-    @behaviour Favn.SQL.Adapter.DuckDB.Client
+    use FavnDuckdb.TestSupport.FakeClient
 
-    @events_table :favn_duckdb_bootstrap_events
-
-    @impl true
-    def open(_database), do: {:ok, make_ref()}
-
-    @impl true
-    def connection(_db_ref), do: {:ok, make_ref()}
+    alias FavnDuckdb.TestSupport
 
     @impl true
     def query(_conn_ref, sql, params) do
-      record({:query, sql, params})
+      TestSupport.record({:query, sql, params})
 
-      if Application.get_env(:favn, :duckdb_bootstrap_fail_sql) == sql do
+      if TestSupport.mode(:bootstrap_fail_sql, nil) == sql do
         {:error, "failed while running #{sql}"}
       else
         {:ok, make_ref()}
@@ -30,59 +23,17 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     end
 
     @impl true
-    def fetch_all(_result_ref), do: []
-
-    @impl true
-    def columns(_result_ref), do: []
-
-    @impl true
-    def begin_transaction(_conn_ref), do: :ok
-
-    @impl true
-    def commit(_conn_ref), do: :ok
-
-    @impl true
-    def rollback(_conn_ref), do: :ok
-
-    @impl true
-    def appender(_conn_ref, _table_name, _schema), do: {:ok, make_ref()}
-
-    @impl true
-    def appender_add_rows(_appender_ref, _rows), do: :ok
-
-    @impl true
-    def appender_flush(_appender_ref), do: :ok
-
-    @impl true
-    def appender_close(_appender_ref), do: :ok
-
-    @impl true
     def release(resource) do
-      record({:release, resource})
+      TestSupport.record({:release, resource})
       :ok
-    end
-
-    defp record(event) do
-      if :ets.whereis(@events_table) != :undefined do
-        :ets.insert(@events_table, {System.unique_integer([:positive, :monotonic]), event})
-      end
     end
   end
 
   setup do
-    if :ets.whereis(@events_table) != :undefined do
-      :ets.delete(@events_table)
-    end
-
-    :ets.new(@events_table, [:named_table, :ordered_set, :public])
-    Application.delete_env(:favn, :duckdb_bootstrap_fail_sql)
+    TestSupport.start_events()
 
     on_exit(fn ->
-      Application.delete_env(:favn, :duckdb_bootstrap_fail_sql)
-
-      if :ets.whereis(@events_table) != :undefined do
-        :ets.delete(@events_table)
-      end
+      TestSupport.reset()
     end)
 
     :ok
@@ -130,7 +81,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     failing_sql =
       "ATTACH '#{secret_metadata}' AS \"lake\" (TYPE ducklake, DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/raw')"
 
-    Application.put_env(:favn, :duckdb_bootstrap_fail_sql, failing_sql)
+    TestSupport.put_mode(:bootstrap_fail_sql, failing_sql)
 
     assert {:error,
             %Error{
@@ -235,10 +186,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
   end
 
   defp statements do
-    @events_table
-    |> :ets.tab2list()
-    |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.map(&elem(&1, 1))
+    TestSupport.events()
     |> Enum.flat_map(fn
       {:query, sql, []} -> [sql]
       _event -> []
