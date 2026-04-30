@@ -195,3 +195,108 @@ export function orchestratorListSchedules(session: WebSession): Promise<Response
 		headers: { accept: 'application/json' }
 	});
 }
+
+export function orchestratorSubmitBackfill(
+	session: WebSession,
+	payload: unknown
+): Promise<Response> {
+	return orchestratorAuthed('/api/orchestrator/v1/backfills', session, {
+		method: 'POST',
+		headers: {
+			accept: 'application/json',
+			'content-type': 'application/json'
+		},
+		body: JSON.stringify(payload)
+	});
+}
+
+function queryString(params: URLSearchParams): string {
+	const value = params.toString();
+	return value ? `?${value}` : '';
+}
+
+function forwardedSearchParams(input: URLSearchParams, allowed: string[]): URLSearchParams {
+	const output = new URLSearchParams();
+	for (const key of allowed) {
+		const value = input.get(key);
+		if (value !== null && value !== '') output.set(key, value);
+	}
+	return output;
+}
+
+export function orchestratorListBackfillWindows(
+	session: WebSession,
+	backfillRunId: string,
+	searchParams: URLSearchParams
+): Promise<Response> {
+	const forwarded = forwardedSearchParams(searchParams, [
+		'limit',
+		'offset',
+		'status',
+		'pipeline_module',
+		'window_key'
+	]);
+	return orchestratorAuthed(
+		`/api/orchestrator/v1/backfills/${encodeURIComponent(backfillRunId)}/windows${queryString(forwarded)}`,
+		session,
+		{ headers: { accept: 'application/json' } }
+	);
+}
+
+export function orchestratorRerunBackfillWindow(
+	session: WebSession,
+	backfillRunId: string,
+	payload: { window_key: string }
+): Promise<Response> {
+	return orchestratorAuthed(
+		`/api/orchestrator/v1/backfills/${encodeURIComponent(backfillRunId)}/windows/rerun`,
+		session,
+		{
+			method: 'POST',
+			headers: {
+				accept: 'application/json',
+				'content-type': 'application/json'
+			},
+			body: JSON.stringify(payload)
+		}
+	);
+}
+
+export function orchestratorListCoverageBaselines(
+	session: WebSession,
+	searchParams: URLSearchParams = new URLSearchParams()
+): Promise<Response> {
+	const forwarded = forwardedSearchParams(searchParams, [
+		'limit',
+		'offset',
+		'status',
+		'pipeline_module',
+		'source_key',
+		'segment_key_hash'
+	]);
+	return orchestratorAuthed(
+		`/api/orchestrator/v1/backfills/coverage-baselines${queryString(forwarded)}`,
+		session,
+		{ headers: { accept: 'application/json' } }
+	);
+}
+
+export function orchestratorListAssetWindowStates(
+	session: WebSession,
+	searchParams: URLSearchParams = new URLSearchParams()
+): Promise<Response> {
+	const forwarded = forwardedSearchParams(searchParams, [
+		'limit',
+		'offset',
+		'status',
+		'pipeline_module',
+		'asset_ref_module',
+		'asset_ref_name',
+		'window_key'
+	]);
+	return orchestratorAuthed(
+		`/api/orchestrator/v1/assets/window-states${queryString(forwarded)}`,
+		session,
+		{ headers: { accept: 'application/json' } }
+	);
+}

@@ -5,7 +5,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 
 	type Session = { actor_id: string; provider: string };
-	type NavHref = '/assets' | '/runs';
+	type NavHref = '/assets' | '/runs' | '/backfills';
 	type NavItem = { label: string; href: NavHref | null; complete: boolean };
 
 	let { session, activeManifestVersionId, children } = $props<{
@@ -17,6 +17,7 @@
 	const navItems: NavItem[] = [
 		{ label: 'Assets', href: '/assets', complete: true },
 		{ label: 'Runs', href: '/runs', complete: true },
+		{ label: 'Backfills', href: '/backfills', complete: true },
 		{ label: 'Manifests', href: null, complete: false },
 		{ label: 'Schedules', href: null, complete: false },
 		{ label: 'Settings', href: null, complete: false }
@@ -24,7 +25,13 @@
 
 	let currentPath = $derived(page.url.pathname);
 	let compactManifestVersionId = $derived(shortId(activeManifestVersionId));
-	let currentRootHref = $derived<NavHref>(currentPath.startsWith('/assets') ? '/assets' : '/runs');
+	let currentRootHref = $derived<NavHref>(
+		currentPath.startsWith('/assets')
+			? '/assets'
+			: currentPath.startsWith('/backfills')
+				? '/backfills'
+				: '/runs'
+	);
 	let currentRootLabel = $derived(
 		navItems.find(
 			(item) => item.href && (currentPath === item.href || currentPath.startsWith(`${item.href}/`))
@@ -63,9 +70,9 @@
 						>
 							<span>{item.label}</span>
 						</a>
-					{:else if item.href === '/runs'}
+					{:else if item.href === '/runs' || item.href === '/backfills'}
 						<a
-							href={resolve('/runs')}
+							href={resolve(item.href)}
 							class={[
 								'flex items-center justify-between rounded-md px-3 py-2 text-sm font-medium',
 								active
@@ -103,10 +110,12 @@
 						<nav class="mt-1 truncate text-xs text-slate-500" aria-label="Breadcrumb">
 							{#if currentRootHref === '/assets'}
 								<a href={resolve('/assets')} class="hover:text-slate-950">{currentRootLabel}</a>
+							{:else if currentRootHref === '/backfills'}
+								<a href={resolve('/backfills')} class="hover:text-slate-950">{currentRootLabel}</a>
 							{:else}
 								<a href={resolve('/runs')} class="hover:text-slate-950">{currentRootLabel}</a>
 							{/if}
-							{#if currentPath !== '/runs' && currentPath !== '/assets'}
+							{#if currentPath !== '/runs' && currentPath !== '/assets' && currentPath !== '/backfills'}
 								<span class="mx-1">/</span><span
 									title={currentPath.split('/').filter(Boolean).at(-1)}
 									>{shortId(currentPath.split('/').filter(Boolean).at(-1))}</span
@@ -154,6 +163,37 @@
 						</details>
 					</div>
 				</div>
+				<nav
+					class="flex gap-2 overflow-x-auto border-t px-4 py-2 lg:hidden"
+					aria-label="Primary navigation"
+				>
+					{#each navItems as item (item.label)}
+						{@const active =
+							item.href !== null &&
+							(currentPath === item.href || currentPath.startsWith(`${item.href}/`))}
+						{#if item.href}
+							<a
+								href={resolve(item.href)}
+								class={[
+									'rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap',
+									active
+										? 'bg-slate-950 text-white shadow-sm'
+										: 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
+								]}
+								aria-current={active ? 'page' : undefined}
+							>
+								{item.label}
+							</a>
+						{:else}
+							<span
+								class="rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap text-slate-400"
+								aria-disabled="true"
+							>
+								{item.label}
+							</span>
+						{/if}
+					{/each}
+				</nav>
 			</header>
 
 			<main class="flex-1 px-4 py-6 lg:px-6">{@render children?.()}</main>

@@ -39,7 +39,7 @@ development on top of the new boundaries.
 - `{:favn, ...}` remains the one public package users should depend on
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
-- the local web UI now includes a run inspector at `/runs` and an asset catalog at `/assets` for browsing active-manifest assets, filtering by health/type/domain, opening asset detail pages, seeing asset-scoped runs, loading safe relation previews for manifest-owned relations, submitting active-manifest pipeline runs with explicit window requests, and submitting the current orchestrator asset run path
+- the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
@@ -236,7 +236,7 @@ Operational backfill foundations can resolve explicit or relative ranges into
 the same concrete window anchors and submit one child pipeline run per resolved
 window through the orchestrator. Local development can submit explicit
 operational backfills and inspect their control-plane state with
-`mix favn.backfill`.
+`mix favn.backfill` or the web operator flow at `/backfills`.
 
 ### 5. Configure authored modules
 
@@ -399,6 +399,12 @@ local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges
 RUN_ID --window-key KEY` for failed window reruns. Operational backfill submit
 does not accept lookback-policy input; asset window lookback remains part of
 normal windowed execution only.
+
+The local web UI exposes the same operator workflow through `/backfills`,
+including active-manifest pipeline selection, explicit range submission,
+optional coverage-baseline selection, parent backfill detail pages with child
+window rows, one-window failed reruns, `/backfills/coverage-baselines`, and
+`/assets/window-states`.
 
 Backfill read commands are bounded. They default to `--limit 100 --offset 0`, reject
 `--limit` values above `500`, and print a next-page hint when more rows are available.
