@@ -92,7 +92,9 @@ defmodule Favn.Dev.RuntimeLaunchTest do
   end
 
   test "orchestrator spec carries bootstrap credentials from consumer dotenv and shell env" do
-    root_dir = Path.join(System.tmp_dir!(), "favn_orchestrator_env_#{System.unique_integer([:positive])}")
+    root_dir =
+      Path.join(System.tmp_dir!(), "favn_orchestrator_env_#{System.unique_integer([:positive])}")
+
     previous_env = snapshot_system_env(bootstrap_env_keys())
 
     Enum.each(bootstrap_env_keys(), &System.delete_env/1)
@@ -130,7 +132,9 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "local_operator_password" => "generated-password"
     }
 
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [root_dir: root_dir], node_names, secrets)
+    orchestrator =
+      RuntimeLaunch.orchestrator_spec(runtime, config, [root_dir: root_dir], node_names, secrets)
+
     web = RuntimeLaunch.web_spec(runtime, config, [root_dir: root_dir], secrets)
 
     assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME"] == "admin"
@@ -199,7 +203,12 @@ defmodule Favn.Dev.RuntimeLaunchTest do
   test "orchestrator spec configures storage before starting orchestrator" do
     runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
     config = Config.resolve(storage: :sqlite)
-    node_names = %{runner_full: "favn_runner_test@host", orchestrator_short: "favn_orchestrator_test"}
+
+    node_names = %{
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
     code =
@@ -207,8 +216,18 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       |> RuntimeLaunch.orchestrator_spec(config, [], node_names, secrets)
       |> eval_code!()
 
-    assert before?(code, "Application.put_env(:favn_orchestrator, :storage_adapter", "Application.ensure_all_started(:favn_storage_sqlite)")
-    assert before?(code, "Application.ensure_all_started(:favn_storage_sqlite)", "Application.ensure_all_started(:favn_orchestrator)")
+    assert before?(
+             code,
+             "Application.put_env(:favn_orchestrator, :storage_adapter",
+             "Application.ensure_all_started(:favn_storage_sqlite)"
+           )
+
+    assert before?(
+             code,
+             "Application.ensure_all_started(:favn_storage_sqlite)",
+             "Application.ensure_all_started(:favn_orchestrator)"
+           )
+
     assert code =~ "migration_mode: :auto"
   end
 
@@ -309,18 +328,48 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       |> then(fn {:ok, config} -> config end)
 
     assert {:connection_modules, [MyApp.Connections.Warehouse]} in decoded_config
+
     assert {:connections, [warehouse: [database: "/tmp/consumer/warehouse.duckdb"]]} in decoded_config
+
     assert {:runner_plugins, [{FavnDuckdb, [execution_mode: :in_process]}]} in decoded_config
     assert code =~ "FAVN_DEV_CONSUMER_FAVN_CONFIG"
     assert code =~ "Base.decode64(encoded)"
     assert code =~ ":erlang.binary_to_term(binary, [:safe])"
-    assert before?(code, "Application.put_env(:favn, key, value)", "Application.ensure_all_started(:favn_runner)")
+
+    assert before?(
+             code,
+             "Application.put_env(:favn, key, value)",
+             "Application.ensure_all_started(:favn_runner)"
+           )
+  end
+
+  test "orchestrator eval validates runner node env before atom conversion" do
+    runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
+    config = Config.resolve([])
+
+    node_names = %{
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
+    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+
+    code =
+      runtime |> RuntimeLaunch.orchestrator_spec(config, [], node_names, secrets) |> eval_code!()
+
+    assert code =~ "validate_runner_node_name!"
+    assert before?(code, "validate_runner_node_name!", "String.to_atom()")
   end
 
   test "orchestrator spec disables scheduler by default" do
     runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
     config = Config.resolve([])
-    node_names = %{runner_full: "favn_runner_test@host", orchestrator_short: "favn_orchestrator_test"}
+
+    node_names = %{
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
     orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
@@ -334,7 +383,12 @@ defmodule Favn.Dev.RuntimeLaunchTest do
   test "orchestrator spec enables scheduler when resolved config enables it" do
     runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
     config = Config.resolve(scheduler: true)
-    node_names = %{runner_full: "favn_runner_test@host", orchestrator_short: "favn_orchestrator_test"}
+
+    node_names = %{
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
     orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
@@ -364,7 +418,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     earlier_index = :binary.match(text, earlier)
     later_index = :binary.match(text, later)
 
-    match?({_, _}, earlier_index) and match?({_, _}, later_index) and elem(earlier_index, 0) < elem(later_index, 0)
+    match?({_, _}, earlier_index) and match?({_, _}, later_index) and
+      elem(earlier_index, 0) < elem(later_index, 0)
   end
 
   defp restore_env(key, nil) when is_binary(key), do: System.delete_env(key)

@@ -29,14 +29,74 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
   test "roundtrips supported consumer config and module atoms" do
     config = [
       connection_modules: [MyApp.Connections.Warehouse],
-      connections: [warehouse: [adapter: Favn.SQL.Adapter.DuckDB, database: "/tmp/warehouse.duckdb"]],
+      connections: [
+        warehouse: [adapter: Favn.SQL.Adapter.DuckDB, database: "/tmp/warehouse.duckdb"]
+      ],
       runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
-      duckdb_in_process_client: [pool: MyApp.DuckPool]
+      duckdb_in_process_client: [pool: MyApp.DuckPool, enabled: true, note: nil]
     ]
 
     encoded = ConsumerConfigTransport.encode(config)
 
     assert {:ok, ^config} = ConsumerConfigTransport.decode(encoded)
+  end
+
+  test "encoded atoms carry bounded transport kinds" do
+    payload =
+      ConsumerConfigTransport.encode(
+        connection_modules: [MyApp.Connections.Warehouse],
+        connections: [warehouse: [adapter: Favn.SQL.Adapter.DuckDB]]
+      )
+      |> decode_payload!()
+
+    assert payload == %{
+             "schema_version" => 1,
+             "entries" => [
+               %{
+                 "key" => "connection_modules",
+                 "value" => %{
+                   "$type" => "list",
+                   "items" => [
+                     %{
+                       "$type" => "atom",
+                       "kind" => "module",
+                       "value" => "Elixir.MyApp.Connections.Warehouse"
+                     }
+                   ]
+                 }
+               },
+               %{
+                 "key" => "connections",
+                 "value" => %{
+                   "$type" => "list",
+                   "items" => [
+                     %{
+                       "$type" => "tuple",
+                       "items" => [
+                         %{"$type" => "atom", "kind" => "local", "value" => "warehouse"},
+                         %{
+                           "$type" => "list",
+                           "items" => [
+                             %{
+                               "$type" => "tuple",
+                               "items" => [
+                                 %{"$type" => "atom", "kind" => "local", "value" => "adapter"},
+                                 %{
+                                   "$type" => "atom",
+                                   "kind" => "module",
+                                   "value" => "Elixir.Favn.SQL.Adapter.DuckDB"
+                                 }
+                               ]
+                             }
+                           ]
+                         }
+                       ]
+                     }
+                   ]
+                 }
+               }
+             ]
+           }
   end
 
   test "collect normalizes relative DuckDB database paths to the consumer project root" do
@@ -76,6 +136,65 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert {:error, {:unsupported_key, "asset_modules"}} = ConsumerConfigTransport.decode(encoded)
   end
 
+  test "payload size and atom shape limits reject unsafe config transport" do
+    assert {:error, :invalid_payload} =
+             ConsumerConfigTransport.decode(
+               encode_payload(%{
+                 "schema_version" => 1,
+                 "entries" => duplicate_entries(5)
+               })
+             )
+
+    assert {:error, :invalid_payload} =
+             ConsumerConfigTransport.decode(
+               encode_payload(%{
+                 "schema_version" => 1,
+                 "entries" => [
+                   %{
+                     "key" => "connection_modules",
+                     "value" => %{
+                       "$type" => "atom",
+                       "kind" => "module",
+                       "value" => "Elixir.Bad-name"
+                     }
+                   }
+                 ]
+               })
+             )
+
+    assert {:error, :invalid_payload} =
+             ConsumerConfigTransport.decode(
+               encode_payload(%{
+                 "schema_version" => 1,
+                 "entries" => [
+                   %{
+                     "key" => "connections",
+                     "value" => %{"$type" => "atom", "kind" => "local", "value" => "bad-name"}
+                   }
+                 ]
+               })
+             )
+
+    missing_atom = "definitely_missing_atom_#{System.unique_integer([:positive])}"
+
+    assert {:error, :invalid_payload} =
+             ConsumerConfigTransport.decode(
+               encode_payload(%{
+                 "schema_version" => 1,
+                 "entries" => [
+                   %{
+                     "key" => "connections",
+                     "value" => %{
+                       "$type" => "atom",
+                       "kind" => "existing",
+                       "value" => missing_atom
+                     }
+                   }
+                 ]
+               })
+             )
+  end
+
   test "redaction hides local secrets and plugin config" do
     config = [
       connections: [warehouse: [database_url: "duckdb://secret", password: "p@ssw0rd"]],
@@ -99,6 +218,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
     assert code =~ "Base.decode64(encoded)"
     assert code =~ ":erlang.binary_to_term(binary, [:safe])"
+    assert code =~ "String.to_existing_atom(value)"
     assert code =~ "invalid FAVN_DEV_CONSUMER_FAVN_CONFIG"
     refute code =~ "decode64!"
     refute code =~ "binary_to_term()"
@@ -116,7 +236,10 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     purge_bootstrap_module()
     assert {:ok, _bindings} = Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
     assert Application.get_env(:favn, :connection_modules) == [MyApp.Connections.Warehouse]
-    assert Application.get_env(:favn, :runner_plugins) == [{FavnDuckdb, [execution_mode: :in_process]}]
+
+    assert Application.get_env(:favn, :runner_plugins) == [
+             {FavnDuckdb, [execution_mode: :in_process]}
+           ]
   end
 
   test "bootstrap snippet raises a redacted structured error for bad payloads" do
@@ -127,16 +250,53 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
       "entries" => [%{"key" => "connections", "value" => %{"password" => secret}}]
     }
 
-    System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", Base.encode64(:erlang.term_to_binary(payload)))
+    System.put_env(
+      "FAVN_DEV_CONSUMER_FAVN_CONFIG",
+      Base.encode64(:erlang.term_to_binary(payload))
+    )
 
     purge_bootstrap_module()
 
     error =
-      assert_raise RuntimeError, ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/, fn ->
-        Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
-      end
+      assert_raise RuntimeError,
+                   ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/,
+                   fn ->
+                     Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+                   end
 
     refute Exception.message(error) =~ secret
+  end
+
+  test "bootstrap snippet rejects unsafe atom transport payloads" do
+    payload = %{
+      "schema_version" => 1,
+      "entries" => [
+        %{
+          "key" => "connection_modules",
+          "value" => %{"$type" => "atom", "kind" => "module", "value" => "Elixir.Bad-name"}
+        }
+      ]
+    }
+
+    System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", encode_payload(payload))
+
+    purge_bootstrap_module()
+
+    assert_raise RuntimeError, ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/, fn ->
+      Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+    end
+  end
+
+  defp decode_payload!(encoded) do
+    encoded
+    |> Base.decode64!()
+    |> :erlang.binary_to_term([:safe])
+  end
+
+  defp encode_payload(payload), do: payload |> :erlang.term_to_binary() |> Base.encode64()
+
+  defp duplicate_entries(count) do
+    Enum.map(1..count, fn _index -> %{"key" => "connection_modules", "value" => []} end)
   end
 
   defp purge_bootstrap_module do

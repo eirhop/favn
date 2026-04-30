@@ -119,7 +119,30 @@ defmodule Favn.Dev.RunnerControlTest do
     end
   end
 
+  test "register_manifest/2 rejects malformed runner node names before atom conversion", ctx do
+    version = Map.get(ctx, :version) || version_fixture()
+
+    assert {:error, {:invalid_node_name, "bad runner@local.host"}} =
+             RunnerControl.register_manifest(version,
+               runner_node_name: "bad runner@local.host",
+               rpc_cookie: "favn_runner_control_test_cookie",
+               runner_module: StubRunnerV2
+             )
+  end
+
   defp build_context(cookie) do
+    version = version_fixture()
+
+    {:ok,
+     %{
+       distributed?: true,
+       version: version,
+       cookie: cookie,
+       runner_node_name: Atom.to_string(Node.self())
+     }}
+  end
+
+  defp version_fixture do
     manifest = %{
       schema_version: 1,
       runner_contract_version: 1,
@@ -132,13 +155,7 @@ defmodule Favn.Dev.RunnerControlTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_runner_control_test")
 
-    {:ok,
-     %{
-       distributed?: true,
-       version: version,
-       cookie: cookie,
-       runner_node_name: Atom.to_string(Node.self())
-     }}
+    version
   end
 
   defp maybe_run_distributed?(%{distributed?: true}), do: true

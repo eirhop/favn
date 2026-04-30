@@ -6,33 +6,36 @@ defmodule Favn.Dev.NodeControl do
   the fully-qualified node name (`name@host`) in `.favn/runtime.json`.
   """
 
+  alias Favn.Dev.DistributedErlang
+
   @spec ensure_local_node_started(String.t(), keyword()) :: :ok | {:error, term()}
   def ensure_local_node_started(cookie, opts \\ []) when is_binary(cookie) and is_list(opts) do
-    case Node.alive?() do
-      true ->
-        Node.set_cookie(String.to_atom(cookie))
-        :ok
+    with {:ok, cookie_atom} <- DistributedErlang.cookie_to_atom(cookie) do
+      case Node.alive?() do
+        true ->
+          Node.set_cookie(cookie_atom)
+          :ok
 
-      false ->
-        :ok = configure_loopback_distribution(opts)
+        false ->
+          :ok = configure_loopback_distribution(opts)
 
-        name =
-          opts
-          |> Keyword.get(:name, "favn_local_ctl_#{:erlang.unique_integer([:positive])}")
-          |> String.to_atom()
+          name = Keyword.get(opts, :name, "favn_local_ctl_#{:erlang.unique_integer([:positive])}")
 
-        case Node.start(name, name_domain: :shortnames) do
-          {:ok, _pid} ->
-            Node.set_cookie(String.to_atom(cookie))
-            :ok
+          with {:ok, name_atom} <- DistributedErlang.short_node_name_to_atom(name) do
+            case Node.start(name_atom, name_domain: :shortnames) do
+              {:ok, _pid} ->
+                Node.set_cookie(cookie_atom)
+                :ok
 
-          {:error, {:already_started, _pid}} ->
-            Node.set_cookie(String.to_atom(cookie))
-            :ok
+              {:error, {:already_started, _pid}} ->
+                Node.set_cookie(cookie_atom)
+                :ok
 
-          {:error, reason} ->
-            {:error, {:shortname_host_unavailable, reason}}
-        end
+              {:error, reason} ->
+                {:error, {:shortname_host_unavailable, reason}}
+            end
+          end
+      end
     end
   end
 
@@ -52,10 +55,13 @@ defmodule Favn.Dev.NodeControl do
 
   @spec shortname_to_full(String.t()) :: {:ok, String.t()} | {:error, term()}
   def shortname_to_full(shortname) when is_binary(shortname) and shortname != "" do
-    with {:ok, host} <- local_short_host() do
+    with :ok <- DistributedErlang.validate_short_node_name(shortname),
+         {:ok, host} <- local_short_host() do
       {:ok, shortname <> "@" <> host}
     end
   end
+
+  def shortname_to_full(shortname), do: DistributedErlang.validate_short_node_name(shortname)
 
   defp local_short_host do
     case node() do
@@ -87,20 +93,20 @@ defmodule Favn.Dev.NodeControl do
   end
 
   defp normalize_short_host(host) when is_binary(host) and host != "" do
-    if String.contains?(host, ".") do
-      {:error, {:invalid_shortname_host, host}}
-    else
+    if DistributedErlang.valid_short_host?(host) do
       {:ok, host}
+    else
+      {:error, {:invalid_shortname_host, host}}
     end
   end
 
   defp normalize_short_host(_host), do: {:error, :shortname_host_not_available}
 
   defp parse_short_host([_name, host]) when is_binary(host) and host != "" do
-    if String.contains?(host, ".") do
-      {:error, {:invalid_shortname_host, host}}
-    else
+    if DistributedErlang.valid_short_host?(host) do
       {:ok, host}
+    else
+      {:error, {:invalid_shortname_host, host}}
     end
   end
 
