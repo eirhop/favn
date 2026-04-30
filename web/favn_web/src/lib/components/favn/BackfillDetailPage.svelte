@@ -4,6 +4,7 @@
 	import * as Alert from '$lib/components/ui/alert';
 	import * as Card from '$lib/components/ui/card';
 	import BackfillWindowsTable from './BackfillWindowsTable.svelte';
+	import PaginationControls from './PaginationControls.svelte';
 	import type { BackfillPage, BackfillWindowView } from '$lib/backfill_view_types';
 	import type { RunDetailView } from '$lib/run_view_types';
 
@@ -90,4 +91,5 @@
 	{/if}
 
 	<BackfillWindowsTable backfillRunId={run.id} windows={windowsPage.items} />
+	<PaginationControls pagination={windowsPage.pagination} />
 </section>

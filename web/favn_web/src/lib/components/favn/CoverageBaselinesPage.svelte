@@ -3,6 +3,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Card from '$lib/components/ui/card';
 	import * as Table from '$lib/components/ui/table';
+	import PaginationControls from './PaginationControls.svelte';
 	import type { BackfillPage, CoverageBaselineView } from '$lib/backfill_view_types';
 
 	let { baselinesPage, loadError = null } = $props<{
@@ -63,4 +64,5 @@
 			{/if}
 		</Card.Content>
 	</Card.Root>
+	<PaginationControls pagination={baselinesPage.pagination} />
 </section>

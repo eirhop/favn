@@ -4,7 +4,12 @@
 	import { Input } from '$lib/components/ui/input';
 	import * as Card from '$lib/components/ui/card';
 	import { Badge } from '$lib/components/ui/badge';
-	import { buildBackfillSubmitPayload, extractSubmittedBackfill } from '$lib/backfill_submission';
+	import {
+		buildBackfillSubmitPayload,
+		compatibleCoverageBaselines,
+		coverageBaselineOptionLabel,
+		extractSubmittedBackfill
+	} from '$lib/backfill_submission';
 	import type { CoverageBaselineView } from '$lib/backfill_view_types';
 	import type { PipelineTargetView, WindowKind } from '$lib/pipeline_run_submission';
 
@@ -33,6 +38,19 @@
 	let effectiveKind = $derived<WindowKind>(kind || selectedPipeline?.windowPolicy?.kind || 'day');
 	let effectiveTimezone = $derived(
 		timezone || selectedPipeline?.windowPolicy?.timezone || 'Etc/UTC'
+	);
+	let selectableCoverageBaselines = $derived(
+		compatibleCoverageBaselines({
+			baselines: coverageBaselines,
+			pipeline: selectedPipeline,
+			kind: effectiveKind,
+			timezone: effectiveTimezone
+		})
+	);
+	let selectedCoverageBaselineId = $derived(
+		selectableCoverageBaselines.some((baseline) => baseline.baselineId === coverageBaselineId)
+			? coverageBaselineId
+			: ''
 	);
 
 	function updatePipeline(event: Event) {
@@ -80,7 +98,7 @@
 			to,
 			kind: effectiveKind,
 			timezone: effectiveTimezone,
-			coverageBaselineId
+			coverageBaselineId: selectedCoverageBaselineId
 		});
 
 		if (!result.ok) {
@@ -119,6 +137,10 @@
 				: value === 'month'
 					? 'Use months such as 2026-04 through 2026-06.'
 					: 'Use years such as 2025 through 2026.';
+	}
+
+	function updateCoverageBaseline(event: Event) {
+		coverageBaselineId = (event.currentTarget as HTMLSelectElement).value;
 	}
 </script>
 
@@ -183,12 +205,13 @@
 					<span>Coverage baseline (optional)</span>
 					<select
 						class="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm disabled:bg-slate-100"
-						bind:value={coverageBaselineId}
-						disabled={coverageBaselines.length === 0}
+						value={selectedCoverageBaselineId}
+						onchange={updateCoverageBaseline}
+						disabled={selectableCoverageBaselines.length === 0}
 					>
 						<option value="">No baseline</option>
-						{#each coverageBaselines as baseline (baseline.baselineId)}
-							<option value={baseline.baselineId}>{baseline.baselineId}</option>
+						{#each selectableCoverageBaselines as baseline (baseline.baselineId)}
+							<option value={baseline.baselineId}>{coverageBaselineOptionLabel(baseline)}</option>
 						{/each}
 					</select>
 				</label>
@@ -197,6 +220,11 @@
 			{#if coverageBaselines.length === 0}
 				<p class="text-xs text-slate-500">
 					No coverage baselines are available yet; explicit range submission is still allowed.
+				</p>
+			{:else if selectableCoverageBaselines.length === 0}
+				<p class="text-xs text-slate-500">
+					No coverage baselines match the selected pipeline, kind, and timezone; explicit range
+					submission is still allowed.
 				</p>
 			{/if}
 			<div class="flex flex-col gap-3 md:flex-row md:items-center">

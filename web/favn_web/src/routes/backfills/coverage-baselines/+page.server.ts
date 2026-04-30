@@ -1,9 +1,31 @@
 import { redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { clearWebSessionCookie } from '$lib/server/session';
-import { orchestratorListCoverageBaselines } from '$lib/server/orchestrator';
+import {
+	orchestratorGetActiveManifest,
+	orchestratorListCoverageBaselines
+} from '$lib/server/orchestrator';
 import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
 import { normalizeCoverageBaselines } from '$lib/server/backfill_views';
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | null {
+	return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function normalizeActiveManifest(payload: unknown): string | null {
+	const dataObj = isRecord(payload) && isRecord(payload.data) ? payload.data : payload;
+	if (!isRecord(dataObj)) return null;
+	if (isRecord(dataObj.manifest)) {
+		return asString(dataObj.manifest.manifest_version_id) ?? asString(dataObj.manifest.id);
+	}
+	return asString(dataObj.manifest_version_id) ?? asString(dataObj.id);
+}
 
 async function readJsonOr(response: Response, fallback: unknown): Promise<unknown> {
 	try {
@@ -19,14 +41,20 @@ export const load: PageServerLoad = async (event) => {
 	const search = new URLSearchParams(url.searchParams);
 	if (!search.has('limit')) search.set('limit', '50');
 	if (!search.has('offset')) search.set('offset', '0');
-	const response = await orchestratorListCoverageBaselines(session, search);
-	if (response.status === 401) {
+	const [response, activeManifestResponse] = await Promise.all([
+		orchestratorListCoverageBaselines(session, search),
+		orchestratorGetActiveManifest(session)
+	]);
+	if (response.status === 401 || activeManifestResponse.status === 401) {
 		clearLocalSession({ locals, cookies });
 		throw redirect(303, '/login');
 	}
+	const activeManifestPayload = activeManifestResponse.ok
+		? await readJsonOr(activeManifestResponse, null)
+		: null;
 	return {
 		session: locals.session,
-		activeManifestVersionId: null,
+		activeManifestVersionId: normalizeActiveManifest(activeManifestPayload),
 		baselinesPage: normalizeCoverageBaselines(response.ok ? await readJsonOr(response, []) : []),
 		loadError: response.ok ? null : `HTTP ${response.status}`
 	};

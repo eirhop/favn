@@ -4,6 +4,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import * as Card from '$lib/components/ui/card';
 	import * as Table from '$lib/components/ui/table';
+	import PaginationControls from './PaginationControls.svelte';
 	import type { AssetWindowStateView, BackfillPage } from '$lib/backfill_view_types';
 
 	let { statesPage, loadError = null } = $props<{
@@ -47,7 +48,7 @@
 							></Table.Header
 						>
 						<Table.Body>
-							{#each statesPage.items as state (state.windowKey + (state.assetRefName ?? ''))}
+							{#each statesPage.items as state ([state.manifestVersionId, state.pipelineModule, state.assetRefModule, state.assetRefName, state.windowKey].join(':'))}
 								<Table.Row>
 									<Table.Cell
 										>{state.assetRefModule ??
@@ -77,4 +78,5 @@
 			{/if}
 		</Card.Content>
 	</Card.Root>
+	<PaginationControls pagination={statesPage.pagination} />
 </section>

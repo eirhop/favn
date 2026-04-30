@@ -1,4 +1,5 @@
 import type { PipelineTargetView, WindowKind } from '$lib/pipeline_run_submission';
+import type { CoverageBaselineView } from '$lib/backfill_view_types';
 
 export type BackfillSubmitPayload = {
 	target: { type: 'pipeline'; id: string };
@@ -72,4 +73,64 @@ export function extractSubmittedBackfill(value: unknown): {
 		id: asString(record.id) ?? asString(record.run_id) ?? asString(record.backfill_run_id),
 		status: asString(record.status) ?? asString(record.state)
 	};
+}
+
+function comparable(value: string | null | undefined): string | null {
+	if (!value) return null;
+	return value
+		.replace(/^pipeline:/i, '')
+		.replace(/^Elixir\./, '')
+		.trim()
+		.toLowerCase();
+}
+
+function pipelineComparableValues(pipeline: PipelineTargetView | null): Set<string> {
+	const values = new Set<string>();
+	for (const value of [pipeline?.module, pipeline?.label, pipeline?.targetId]) {
+		const normalized = comparable(value);
+		if (normalized) values.add(normalized);
+	}
+	return values;
+}
+
+export function isCoverageBaselineCompatible(input: {
+	baseline: CoverageBaselineView;
+	pipeline: PipelineTargetView | null;
+	kind: WindowKind;
+	timezone: string;
+}): boolean {
+	if (!input.pipeline) return false;
+
+	const baselinePipeline = comparable(input.baseline.pipelineModule);
+	if (!baselinePipeline || !pipelineComparableValues(input.pipeline).has(baselinePipeline))
+		return false;
+
+	if (input.baseline.windowKind && input.baseline.windowKind !== input.kind) return false;
+
+	const baselineTimezone = input.baseline.timezone?.trim();
+	const selectedTimezone = input.timezone.trim();
+	if (baselineTimezone && selectedTimezone && baselineTimezone !== selectedTimezone) return false;
+
+	return true;
+}
+
+export function compatibleCoverageBaselines(input: {
+	baselines: CoverageBaselineView[];
+	pipeline: PipelineTargetView | null;
+	kind: WindowKind;
+	timezone: string;
+}): CoverageBaselineView[] {
+	return input.baselines.filter((baseline) => isCoverageBaselineCompatible({ ...input, baseline }));
+}
+
+export function coverageBaselineOptionLabel(baseline: CoverageBaselineView): string {
+	return [
+		baseline.baselineId,
+		baseline.pipelineModule,
+		baseline.windowKind,
+		baseline.timezone,
+		baseline.coverageUntil ? `coverage until ${baseline.coverageUntil}` : null
+	]
+		.filter((value): value is string => Boolean(value))
+		.join(' · ');
 }

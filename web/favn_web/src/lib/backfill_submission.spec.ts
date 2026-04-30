@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildBackfillSubmitPayload, extractSubmittedBackfill } from './backfill_submission';
+import {
+	buildBackfillSubmitPayload,
+	compatibleCoverageBaselines,
+	coverageBaselineOptionLabel,
+	extractSubmittedBackfill
+} from './backfill_submission';
 import type { PipelineTargetView } from './pipeline_run_submission';
 
 const pipeline: PipelineTargetView = {
@@ -67,5 +72,79 @@ describe('extractSubmittedBackfill', () => {
 			id: 'bf_001',
 			status: 'queued'
 		});
+	});
+});
+
+describe('coverage baseline helpers', () => {
+	it('filters baselines by pipeline, kind, and available timezone', () => {
+		const baselines = [
+			{
+				baselineId: 'baseline_match',
+				pipelineModule: 'DailySales',
+				sourceKey: null,
+				segmentKeyHash: null,
+				windowKind: 'day',
+				timezone: 'Etc/UTC',
+				coverageUntil: '2026-04-01',
+				createdByRunId: null,
+				manifestVersionId: null,
+				status: 'active',
+				createdAt: null,
+				updatedAt: null
+			},
+			{
+				baselineId: 'baseline_other_kind',
+				pipelineModule: 'DailySales',
+				sourceKey: null,
+				segmentKeyHash: null,
+				windowKind: 'month',
+				timezone: 'Etc/UTC',
+				coverageUntil: null,
+				createdByRunId: null,
+				manifestVersionId: null,
+				status: 'active',
+				createdAt: null,
+				updatedAt: null
+			},
+			{
+				baselineId: 'baseline_other_tz',
+				pipelineModule: 'DailySales',
+				sourceKey: null,
+				segmentKeyHash: null,
+				windowKind: 'day',
+				timezone: 'Europe/Oslo',
+				coverageUntil: null,
+				createdByRunId: null,
+				manifestVersionId: null,
+				status: 'active',
+				createdAt: null,
+				updatedAt: null
+			}
+		];
+
+		expect(
+			compatibleCoverageBaselines({ baselines, pipeline, kind: 'day', timezone: 'Etc/UTC' }).map(
+				(baseline) => baseline.baselineId
+			)
+		).toEqual(['baseline_match']);
+	});
+
+	it('builds useful baseline labels', () => {
+		expect(
+			coverageBaselineOptionLabel({
+				baselineId: 'baseline_match',
+				pipelineModule: 'DailySales',
+				sourceKey: null,
+				segmentKeyHash: null,
+				windowKind: 'day',
+				timezone: 'Etc/UTC',
+				coverageUntil: '2026-04-01',
+				createdByRunId: null,
+				manifestVersionId: null,
+				status: 'active',
+				createdAt: null,
+				updatedAt: null
+			})
+		).toBe('baseline_match · DailySales · day · Etc/UTC · coverage until 2026-04-01');
 	});
 });

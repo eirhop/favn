@@ -32,6 +32,12 @@
 		createdAt: '2026-04-01T00:00:00Z',
 		updatedAt: '2026-04-01T00:00:00Z'
 	};
+	const incompatibleBaseline: CoverageBaselineView = {
+		...baseline,
+		baselineId: 'baseline_monthly',
+		windowKind: 'month',
+		coverageUntil: '2026-01'
+	};
 	const { Story } = defineMeta({
 		title: 'Favn/Backfills',
 		component: BackfillsPage,
@@ -41,11 +47,15 @@
 
 <Story
 	name="Submit Ready"
-	args={{ pipelineTargets, coverageBaselines: [baseline] }}
+	args={{ pipelineTargets, coverageBaselines: [baseline, incompatibleBaseline] }}
 	play={async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
 		await expect(canvas.getByRole('heading', { name: 'Backfills' })).toBeInTheDocument();
 		await expect(canvas.getByText('Daily sales')).toBeInTheDocument();
+		await expect(
+			canvas.getByText('baseline_123 · DailySales · day · Etc/UTC · coverage until 2026-04-01')
+		).toBeInTheDocument();
+		await expect(canvas.queryByText(/baseline_monthly/)).not.toBeInTheDocument();
 	}}
 />
 <Story name="No Pipeline Targets" args={{ pipelineTargets: [], coverageBaselines: [] }} />
