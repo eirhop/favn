@@ -55,7 +55,8 @@ defmodule Favn.Dev.Build.Single do
 
   defp storage_mode(opts) do
     case Keyword.get(opts, :storage, :sqlite) do
-      value when is_binary(value) -> String.to_atom(value)
+      "sqlite" -> :sqlite
+      "postgres" -> :postgres
       value -> value
     end
   end

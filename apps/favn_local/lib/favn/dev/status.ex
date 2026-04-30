@@ -122,8 +122,8 @@ defmodule Favn.Dev.Status do
 
   defp internal_control(runtime, services) do
     %{
-      runner_node: internal_node(runtime, services, "runner"),
-      orchestrator_node: internal_node(runtime, services, "orchestrator"),
+      runner_node: internal_node(runtime, services, :runner, "runner"),
+      orchestrator_node: internal_node(runtime, services, :orchestrator, "orchestrator"),
       control_node: %{
         node_name: get_in(runtime, ["node_names", "control"]),
         distribution_port: get_in(runtime, ["distribution_ports", "control"])
@@ -131,14 +131,18 @@ defmodule Favn.Dev.Status do
     }
   end
 
-  defp internal_node(runtime, services, key) do
+  defp internal_node(runtime, services, service_key, runtime_key) do
+    service = Map.fetch!(services, service_key)
+
     %{
-      node_name: get_in(runtime, ["services", key, "node_name"]) || get_in(runtime, ["node_names", key]),
+      node_name:
+        get_in(runtime, ["services", runtime_key, "node_name"]) ||
+          get_in(runtime, ["node_names", runtime_key]),
       distribution_port:
-        get_in(runtime, ["services", key, "distribution_port"]) ||
-          get_in(runtime, ["distribution_ports", key]),
-      status: Map.fetch!(services, String.to_existing_atom(key)).status,
-      pid: Map.fetch!(services, String.to_existing_atom(key)).pid
+        get_in(runtime, ["services", runtime_key, "distribution_port"]) ||
+          get_in(runtime, ["distribution_ports", runtime_key]),
+      status: service.status,
+      pid: service.pid
     }
   end
 

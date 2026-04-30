@@ -49,6 +49,13 @@ defmodule Favn.Dev.StateTest do
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
   end
 
+  test "state writes return encode errors instead of raising", %{root_dir: root_dir} do
+    assert {:error, {:encode_failed, _path, _reason}} =
+             State.write_runtime(%{"pid" => self()}, root_dir: root_dir)
+
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  end
+
   test "install and toolchain state roundtrip", %{root_dir: root_dir} do
     install = %{"schema_version" => 2, "fingerprint" => %{"consumer_mix_lock_sha256" => "abc"}}
     runtime = %{"schema_version" => 1, "materialized_root" => "/tmp/runtime"}

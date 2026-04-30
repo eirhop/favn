@@ -208,12 +208,19 @@ defmodule Favn.Dev.State do
   @spec write_json(Path.t(), map()) :: :ok | {:error, term()}
   defp write_json(path, map) when is_map(map) do
     with :ok <- File.mkdir_p(Path.dirname(path)),
-         encoded <- JSON.encode_to_iodata!(map),
+         {:ok, encoded} <- encode_json(path, map),
          :ok <- File.write(path, [encoded, "\n"]) do
       :ok
     else
+      {:error, {:encode_failed, _path, _reason} = reason} -> {:error, reason}
       {:error, reason} -> {:error, {:write_failed, path, reason}}
     end
+  end
+
+  defp encode_json(path, map) when is_map(map) do
+    {:ok, JSON.encode_to_iodata!(map)}
+  rescue
+    error -> {:error, {:encode_failed, path, error}}
   end
 
   @spec delete_if_exists(Path.t()) :: :ok | {:error, term()}
