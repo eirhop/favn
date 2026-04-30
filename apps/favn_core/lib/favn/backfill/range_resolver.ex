@@ -37,14 +37,14 @@ defmodule Favn.Backfill.RangeResolver do
   end
 
   defp resolve_request(%RangeRequest{mode: :explicit} = request) do
-    with {:ok, from_anchor} <- single_anchor(request.kind, request.from, request.timezone),
-         {:ok, to_anchor} <- single_anchor(request.kind, request.to, request.timezone),
+    with {:ok, from_anchor} <- request_anchor(request.kind, request.from, request.timezone),
+         {:ok, to_anchor} <- request_anchor(request.kind, request.to, request.timezone),
          :ok <- validate_order(from_anchor.start_at, to_anchor.end_at),
          {:ok, anchors} <-
            Anchor.expand_range(request.kind, from_anchor.start_at, to_anchor.end_at,
              timezone: request.timezone
            ) do
-      resolved(request.kind, request.timezone, anchors, length(anchors), nil)
+      build_resolved_range(request.kind, request.timezone, anchors, length(anchors), nil)
     end
   end
 
@@ -54,16 +54,16 @@ defmodule Favn.Backfill.RangeResolver do
     with {:ok, end_at} <- exclusive_end_boundary(reference, kind, request.timezone),
          {:ok, start_at} <- shift_kind(end_at, kind, -count),
          {:ok, anchors} <- Anchor.expand_range(kind, start_at, end_at, timezone: request.timezone) do
-      resolved(kind, request.timezone, anchors, count, reference)
+      build_resolved_range(kind, request.timezone, anchors, count, reference)
     end
   end
 
-  defp single_anchor(kind, value, timezone) do
+  defp request_anchor(kind, value, timezone) do
     %Request{kind: kind, value: value, timezone: timezone}
     |> Request.to_anchor(timezone)
   end
 
-  defp resolved(kind, timezone, anchors, requested_count, reference) do
+  defp build_resolved_range(kind, timezone, anchors, requested_count, reference) do
     {:ok,
      %{
        kind: kind,

@@ -206,18 +206,18 @@ defmodule Favn.Assets.Planner do
 
   defp build_windowed_graph(index, anchors) do
     with {:ok, ref_nodes} <- build_ref_nodes_by_ref(index, anchors) do
-      nodes =
-        index.topo_order
-        |> Enum.flat_map(fn ref ->
-          Enum.map(Map.fetch!(ref_nodes, ref), fn node ->
-            upstream = build_edges(node, index.upstream |> Map.fetch!(ref), ref_nodes)
-            downstream = build_edges(node, index.downstream |> Map.fetch!(ref), ref_nodes)
-            Map.merge(node, %{upstream: upstream, downstream: downstream})
-          end)
-        end)
-
-      {:ok, %{nodes: nodes, ref_nodes: ref_nodes}}
+      {:ok, %{nodes: build_windowed_nodes(index, ref_nodes), ref_nodes: ref_nodes}}
     end
+  end
+
+  defp build_windowed_nodes(index, ref_nodes) do
+    Enum.flat_map(index.topo_order, fn ref ->
+      Enum.map(Map.fetch!(ref_nodes, ref), fn node ->
+        upstream = build_edges(node, index.upstream |> Map.fetch!(ref), ref_nodes)
+        downstream = build_edges(node, index.downstream |> Map.fetch!(ref), ref_nodes)
+        Map.merge(node, %{upstream: upstream, downstream: downstream})
+      end)
+    end)
   end
 
   defp build_ref_nodes_by_ref(index, anchors) do
@@ -262,14 +262,14 @@ defmodule Favn.Assets.Planner do
   defp asset_window_spec(_asset), do: nil
 
   defp expand_windows(%Anchor{} = anchor_window, %Spec{} = spec) do
-    count =
+    window_count =
       window_units_between(spec.kind, anchor_window.start_at, anchor_window.end_at, spec.timezone)
 
-    total = max(count + spec.lookback, 1)
+    runtime_window_count = max(window_count + spec.lookback, 1)
     anchor_start = floor_to_kind(anchor_window.start_at, spec.kind, spec.timezone)
     first_start = shift_kind(anchor_start, spec.kind, -spec.lookback)
 
-    for offset <- 0..(total - 1) do
+    for offset <- 0..(runtime_window_count - 1) do
       start_at = shift_kind(first_start, spec.kind, offset)
       end_at = shift_kind(start_at, spec.kind, 1)
       Runtime.new!(spec.kind, start_at, end_at, anchor_window.key, timezone: spec.timezone)
@@ -290,9 +290,9 @@ defmodule Favn.Assets.Planner do
   end
 
   defp month_diff(start_at, end_at) do
-    s = DateTime.to_date(start_at)
-    e = DateTime.to_date(end_at)
-    (e.year - s.year) * 12 + (e.month - s.month)
+    start_date = DateTime.to_date(start_at)
+    end_date = DateTime.to_date(end_at)
+    (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
   end
 
   defp floor_to_kind(datetime, :hour, timezone),
@@ -398,9 +398,9 @@ defmodule Favn.Assets.Planner do
   defp node_action(%{type: :source}), do: :observe
   defp node_action(_asset), do: :run
 
-  defp build_stages(index, stage_map) do
+  defp build_stages(index, ref_stage_map) do
     index.topo_order
-    |> Enum.group_by(&Map.fetch!(stage_map, &1))
+    |> Enum.group_by(&Map.fetch!(ref_stage_map, &1))
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(fn {_rank, refs} -> Enum.sort(refs) end)
   end

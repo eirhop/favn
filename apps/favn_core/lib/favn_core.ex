@@ -1,10 +1,14 @@
 defmodule FavnCore do
   @moduledoc """
-  Documentation for `FavnCore`.
+  Internal application marker for the `:favn_core` app.
+
+  The shared contracts and implementation modules in this app live under the
+  `Favn.*` namespace. This module is kept as a lightweight app-level smoke
+  surface for the generated Mix project scaffold.
   """
 
   @doc """
-  Hello world.
+  Returns the existing scaffold smoke value.
 
   ## Examples
 

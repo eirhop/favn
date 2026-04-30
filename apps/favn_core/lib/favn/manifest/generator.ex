@@ -85,22 +85,9 @@ defmodule Favn.Manifest.Generator do
   end
 
   defp manifest_from_catalog(%Catalog{} = catalog) do
-    assets =
-      catalog.assets
-      |> Enum.map(&ManifestAsset.from_asset/1)
-      |> Enum.sort(&compare_assets/2)
-
-    pipelines =
-      catalog.pipelines
-      |> Enum.map(&ManifestPipeline.from_definition/1)
-      |> Enum.sort(&compare_pipelines/2)
-
-    schedules =
-      catalog.schedules
-      |> Enum.map(fn {module, name, schedule} ->
-        ManifestSchedule.from_schedule(module, name, schedule)
-      end)
-      |> Enum.sort(&compare_schedules/2)
+    assets = manifest_assets_from_catalog(catalog)
+    pipelines = manifest_pipelines_from_catalog(catalog)
+    schedules = manifest_schedules_from_catalog(catalog)
 
     with {:ok, graph} <- Graph.build(assets) do
       {:ok,
@@ -114,6 +101,26 @@ defmodule Favn.Manifest.Generator do
          metadata: %{}
        }}
     end
+  end
+
+  defp manifest_assets_from_catalog(%Catalog{} = catalog) do
+    catalog.assets
+    |> Enum.map(&ManifestAsset.from_asset/1)
+    |> Enum.sort(&compare_assets/2)
+  end
+
+  defp manifest_pipelines_from_catalog(%Catalog{} = catalog) do
+    catalog.pipelines
+    |> Enum.map(&ManifestPipeline.from_definition/1)
+    |> Enum.sort(&compare_pipelines/2)
+  end
+
+  defp manifest_schedules_from_catalog(%Catalog{} = catalog) do
+    catalog.schedules
+    |> Enum.map(fn {module, name, schedule} ->
+      ManifestSchedule.from_schedule(module, name, schedule)
+    end)
+    |> Enum.sort(&compare_schedules/2)
   end
 
   defp resolve_modules(opts, key) do
@@ -171,18 +178,9 @@ defmodule Favn.Manifest.Generator do
   defp compile_schedules(modules) when is_list(modules) do
     modules
     |> Enum.reduce_while({:ok, []}, fn module, {:ok, acc} ->
-      with {:module, ^module} <- Code.ensure_loaded(module),
-           true <- function_exported?(module, :__favn_schedules__, 0) do
-        schedules =
-          module
-          |> then(& &1.__favn_schedules__())
-          |> Map.to_list()
-          |> Enum.sort_by(&elem(&1, 0))
-          |> Enum.map(fn {name, schedule} -> {module, name, schedule} end)
-
-        {:cont, {:ok, schedules ++ acc}}
-      else
-        _ -> {:halt, {:error, {:schedule_compile_failed, module, :not_schedule_module}}}
+      case compile_module_schedules(module) do
+        {:ok, schedules} -> {:cont, {:ok, schedules ++ acc}}
+        {:error, reason} -> {:halt, {:error, {:schedule_compile_failed, module, reason}}}
       end
     end)
     |> case do
@@ -192,6 +190,22 @@ defmodule Favn.Manifest.Generator do
   end
 
   defp compile_schedules(_invalid), do: {:error, :invalid_schedule_modules}
+
+  defp compile_module_schedules(module) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :__favn_schedules__, 0) do
+      schedules =
+        module
+        |> then(& &1.__favn_schedules__())
+        |> Map.to_list()
+        |> Enum.sort_by(&elem(&1, 0))
+        |> Enum.map(fn {name, schedule} -> {module, name, schedule} end)
+
+      {:ok, schedules}
+    else
+      _ -> {:error, :not_schedule_module}
+    end
+  end
 
   defp compare_assets(left, right), do: compare_refs(left.ref, right.ref)
 
