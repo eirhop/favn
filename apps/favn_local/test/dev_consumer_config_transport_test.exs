@@ -136,7 +136,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert {:error, {:unsupported_key, "asset_modules"}} = ConsumerConfigTransport.decode(encoded)
   end
 
-  test "payload size and atom shape limits reject unsafe config transport" do
+  test "top-level entry and atom shape limits reject unsafe config transport" do
     assert {:error, :invalid_payload} =
              ConsumerConfigTransport.decode(
                encode_payload(%{
@@ -193,6 +193,39 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
                  ]
                })
              )
+  end
+
+  test "payload byte limit rejects oversized config transport" do
+    encoded = String.duplicate("a", 1_048_577) |> :erlang.term_to_binary() |> Base.encode64()
+
+    assert {:error, :invalid_payload} = ConsumerConfigTransport.decode(encoded)
+    assert_bootstrap_invalid_payload(encoded)
+  end
+
+  test "collection item limits reject oversized list map and tuple transport values" do
+    encoded_list =
+      encode_payload_with_value(%{"$type" => "list", "items" => duplicate_values(2_001)})
+
+    encoded_map =
+      encode_payload_with_value(%{
+        "$type" => "map",
+        "entries" => duplicate_map_entries(2_001)
+      })
+
+    encoded_tuple =
+      encode_payload_with_value(%{"$type" => "tuple", "items" => duplicate_values(2_001)})
+
+    for encoded <- [encoded_list, encoded_map, encoded_tuple] do
+      assert {:error, :invalid_payload} = ConsumerConfigTransport.decode(encoded)
+      assert_bootstrap_invalid_payload(encoded)
+    end
+  end
+
+  test "decode depth limit rejects deeply nested transport values" do
+    encoded = encode_payload_with_value(nested_list_value(34))
+
+    assert {:error, :invalid_payload} = ConsumerConfigTransport.decode(encoded)
+    assert_bootstrap_invalid_payload(encoded)
   end
 
   test "redaction hides local secrets and plugin config" do
@@ -295,8 +328,38 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
   defp encode_payload(payload), do: payload |> :erlang.term_to_binary() |> Base.encode64()
 
+  defp encode_payload_with_value(value) do
+    encode_payload(%{
+      "schema_version" => 1,
+      "entries" => [%{"key" => "connections", "value" => value}]
+    })
+  end
+
+  defp assert_bootstrap_invalid_payload(encoded) do
+    System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", encoded)
+    purge_bootstrap_module()
+
+    assert_raise RuntimeError, ~r/invalid FAVN_DEV_CONSUMER_FAVN_CONFIG: :invalid_payload/, fn ->
+      Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
+    end
+  end
+
   defp duplicate_entries(count) do
     Enum.map(1..count, fn _index -> %{"key" => "connection_modules", "value" => []} end)
+  end
+
+  defp duplicate_values(count), do: Enum.map(1..count, &Integer.to_string/1)
+
+  defp duplicate_map_entries(count) do
+    Enum.map(1..count, fn index ->
+      %{"key" => Integer.to_string(index), "value" => Integer.to_string(index)}
+    end)
+  end
+
+  defp nested_list_value(depth) do
+    Enum.reduce(1..depth, "leaf", fn _index, value ->
+      %{"$type" => "list", "items" => [value]}
+    end)
   end
 
   defp purge_bootstrap_module do
