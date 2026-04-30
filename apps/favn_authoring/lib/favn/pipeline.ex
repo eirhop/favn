@@ -17,7 +17,7 @@ defmodule Favn.Pipeline do
         use Favn.Pipeline
 
         pipeline :daily_sales do
-          asset MyApp.Gold.Sales.FctOrders
+          asset MyApp.Warehouse.Mart.FctOrders
           deps :all
           schedule cron: "0 2 * * *", timezone: "Etc/UTC"
         end
@@ -79,11 +79,7 @@ defmodule Favn.Pipeline do
         use Favn.Namespace, relation: [catalog: "raw"]
       end
 
-      defmodule MyApp.Warehouse.Raw.Sales do
-        use Favn.Namespace, relation: [schema: "sales"]
-      end
-
-      defmodule MyApp.Warehouse.Raw.Sales.Orders do
+      defmodule MyApp.Warehouse.Raw.Orders do
         use Favn.Asset
 
         @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
@@ -91,7 +87,7 @@ defmodule Favn.Pipeline do
         def asset(_ctx), do: :ok
       end
 
-      defmodule MyApp.Warehouse.Raw.Sales.OrderLines do
+      defmodule MyApp.Warehouse.Raw.OrderLines do
         use Favn.Asset
 
         @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
@@ -99,24 +95,21 @@ defmodule Favn.Pipeline do
         def asset(_ctx), do: :ok
       end
 
-      defmodule MyApp.Warehouse.Gold do
-        use Favn.Namespace, relation: [catalog: "gold"]
+      defmodule MyApp.Warehouse.Mart do
+        use Favn.Namespace, relation: [catalog: "mart"]
       end
 
-      defmodule MyApp.Warehouse.Gold.Sales do
-        use Favn.Namespace, relation: [schema: "sales"]
-      end
-
-      defmodule MyApp.Warehouse.Gold.Sales.OrderSummary do
+      defmodule MyApp.Warehouse.Mart.OrderSummary do
         use Favn.SQLAsset
 
-        @meta owner: "analytics", category: :sales, tags: [:gold, :daily]
+        @meta owner: "analytics", category: :sales, tags: [:mart, :daily]
+        @depends MyApp.Warehouse.Raw.Orders
         @materialized :view
 
         query do
           ~SQL\"""
           select *
-          from raw.sales.orders
+          from raw.orders
           \"""
         end
       end
@@ -126,7 +119,7 @@ defmodule Favn.Pipeline do
 
         pipeline :daily_sales do
           select do
-            module MyApp.Warehouse.Gold.Sales
+            module MyApp.Warehouse.Mart
             tag :daily
             category :sales
           end
@@ -260,7 +253,7 @@ defmodule Favn.Pipeline do
   ## Examples
 
       meta owner: "analytics", purpose: :daily_refresh
-      meta %{team: "data-platform", tier: :gold}
+      meta %{team: "data-platform", tier: :mart}
   """
   defmacro meta(opts) do
     quote bind_quoted: [opts: opts] do
@@ -389,7 +382,7 @@ defmodule Favn.Pipeline do
   ## Examples
 
       asset {MyApp.Raw.Shopify, :orders}
-      asset MyApp.Gold.Sales.FctOrders
+      asset MyApp.Warehouse.Mart.FctOrders
   """
   defmacro asset(ref) do
     quote bind_quoted: [ref: ref] do
@@ -412,7 +405,7 @@ defmodule Favn.Pipeline do
 
       assets [
         {MyApp.Raw.Shopify, :orders},
-        MyApp.Gold.Sales.FctOrders
+        MyApp.Warehouse.Mart.FctOrders
       ]
   """
   defmacro assets(refs) do
@@ -445,7 +438,7 @@ defmodule Favn.Pipeline do
   ## Example
 
       select do
-        module MyApp.Gold.Sales
+        module MyApp.Warehouse.Mart
         tag :daily
         category :sales
       end

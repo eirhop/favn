@@ -33,6 +33,8 @@ defmodule Mix.Tasks.Favn.ReadDocTaskTest do
 
     assert output =~ "Module: Favn.AI"
     assert output =~ "AI-oriented documentation entrypoint"
+    assert output =~ "Recommended Consumer Shape"
+    assert output =~ "Favn.Namespace"
     assert output =~ "What To Read"
   end
 

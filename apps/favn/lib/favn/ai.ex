@@ -8,6 +8,17 @@ defmodule Favn.AI do
 
   Use this module to decide which docs to read next with `mix favn.read_doc`.
 
+  ## Recommended Consumer Shape
+
+  For project layout, namespace files, and relation hierarchy, read
+  `Favn.Namespace` before authoring files. The short default is:
+
+  - `warehouse.ex` owns the warehouse connection namespace.
+  - `warehouse/<layer>.ex` owns each layer namespace.
+  - `warehouse/<layer>/<asset>.ex` owns leaf asset modules.
+  - integration clients, pipelines, triggers, and reusable SQL live outside the
+    warehouse asset tree.
+
   ## What To Read
 
   - To author one Elixir asset, read `Favn.Asset`, then `Favn.Namespace` and
@@ -102,6 +113,10 @@ defmodule Favn.AI do
   - Prefer `mix favn.read_doc ModuleName` before reading source files.
   - Prefer `Favn.Asset` for new Elixir assets and `Favn.SQLAsset` for new SQL
     assets.
+  - Prefer the consumer shape above unless the current project already has a
+    stronger convention.
+  - Keep `@moduledoc` on assets business-oriented. It should explain what the
+    data means, not only how the code runs.
   - Read `Favn.Namespace` whenever relation naming, connection defaults, or SQL
     relation references are involved.
   - For external-source ingestion, keep connector/client logic in your project,
@@ -131,5 +146,7 @@ defmodule Favn.AI do
     the canonical source-system raw landing example in
     `FavnReferenceWorkload.Warehouse.Raw.Orders`
   - `docs/lib_structure.md`: ownership and folder map
+  - `examples/basic-workflow-tutorial`: larger consumer-style example with its
+    own layer convention
   """
 end

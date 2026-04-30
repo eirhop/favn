@@ -12,13 +12,14 @@ defmodule Favn.Source do
 
   ## Minimal example
 
-      defmodule MyApp.Raw.Stripe.Charges do
-        use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "stripe"]
+      # lib/my_app/warehouse/sources/stripe_charges.ex
+      defmodule MyApp.Warehouse.Sources.StripeCharges do
+        use Favn.Namespace, relation: [connection: :warehouse, catalog: "sources"]
         use Favn.Source
 
         @doc "External raw Stripe charges table"
         @meta owner: "data-platform", category: :payments, tags: [:raw]
-        @relation true
+        @relation [name: "stripe_charges"]
       end
 
   ## Authoring contract

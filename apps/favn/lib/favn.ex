@@ -138,7 +138,7 @@ defmodule Favn do
   ## Example
 
       {:ok, manifest} = Favn.generate_manifest(
-        asset_modules: [MyApp.Raw.Sales.Orders, MyApp.Gold.Sales.OrderSummary],
+        asset_modules: [MyApp.Warehouse.Raw.Orders, MyApp.Warehouse.Mart.OrderSummary],
         pipeline_modules: [MyApp.Pipelines.DailySales]
       )
   """

@@ -14,18 +14,31 @@ defmodule Favn.Asset do
   - the runtime logic is normal Elixir code
   - you want the clearest public authoring surface for humans and AI agents
 
+  Asset modules should carry a business-oriented `@moduledoc`. Explain the data
+  grain, source, filtering/retention rules, key transformations, and downstream
+  purpose. Use the function `@doc` for the operational action performed by
+  `asset/1`.
+
   Use `Favn.MultiAsset` for repetitive generated assets, and `Favn.SQLAsset`
   when the primary body is SQL.
 
   ## Minimal example
 
-      defmodule MyApp.Raw.Sales.Orders do
-        use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]
+      # lib/my_app/warehouse/raw/orders.ex
+      defmodule MyApp.Warehouse.Raw.Orders do
+        @moduledoc \"\"\"
+        Raw commerce orders as received from the source platform.
+
+        One row represents one source order. Cancelled orders are retained, order
+        timestamps are normalized to UTC, and source monetary values are kept in
+        the original currency for downstream modeling.
+        \"\"\"
+
         use Favn.Asset
 
-        @doc "Extract raw orders"
+        @doc "Fetch, normalize, and write raw commerce orders."
         @meta owner: "data-platform", category: :sales, tags: [:raw]
-        @depends MyApp.Raw.Sales.Customers
+        @depends MyApp.Warehouse.Raw.Customers
         @window Favn.Window.daily()
         @relation true
         def asset(ctx) do
