@@ -106,9 +106,12 @@ defmodule FavnOrchestrator.BackfillManager do
       end
 
     with :ok <- validate_metadata(metadata),
-         {:ok, max_attempts} <- positive_integer_option(opts, :max_attempts, 1),
-         {:ok, retry_backoff_ms} <- non_neg_integer_option(opts, :retry_backoff_ms, 0),
-         {:ok, timeout_ms} <- positive_integer_option(opts, :timeout_ms, 5_000) do
+         {:ok, max_attempts} <-
+           positive_integer_option(opts, :max_attempts, 1, :invalid_max_attempts),
+         {:ok, retry_backoff_ms} <-
+           non_neg_integer_option(opts, :retry_backoff_ms, 0, :invalid_retry_backoff_ms),
+         {:ok, timeout_ms} <-
+           positive_integer_option(opts, :timeout_ms, 5_000, :invalid_timeout_ms) do
       parent =
         RunState.new(
           id: run_id,
@@ -539,17 +542,17 @@ defmodule FavnOrchestrator.BackfillManager do
   defp validate_metadata(value) when is_map(value), do: :ok
   defp validate_metadata(_value), do: {:error, :invalid_run_metadata}
 
-  defp positive_integer_option(opts, key, default) do
+  defp positive_integer_option(opts, key, default, error_reason) do
     case Keyword.get(opts, key, default) do
       value when is_integer(value) and value > 0 -> {:ok, value}
-      _value -> {:error, String.to_atom("invalid_#{key}")}
+      _value -> {:error, error_reason}
     end
   end
 
-  defp non_neg_integer_option(opts, key, default) do
+  defp non_neg_integer_option(opts, key, default, error_reason) do
     case Keyword.get(opts, key, default) do
       value when is_integer(value) and value >= 0 -> {:ok, value}
-      _value -> {:error, String.to_atom("invalid_#{key}")}
+      _value -> {:error, error_reason}
     end
   end
 

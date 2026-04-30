@@ -65,11 +65,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   @spec scheduler_child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
   def scheduler_child_spec(opts \\ []) when is_list(opts) do
-    if runtime_started?(runtime_name(opts)) do
-      :none
-    else
-      child_spec(opts)
-    end
+    child_spec(opts)
   end
 
   @impl true
@@ -264,32 +260,25 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   @impl true
   def init(_args) do
-    {:ok,
-     %{
-       manifests: %{},
-       active_manifest_version_id: nil,
-       runs: %{},
-       run_events: %{},
-       scheduler_states: %{},
-       coverage_baselines: %{},
-       backfill_windows: %{},
-       asset_window_states: %{}
-     }}
+    {:ok, initial_state()}
   end
 
   @impl true
   def handle_call(:reset, _from, _state) do
-    {:reply, :ok,
-     %{
-       manifests: %{},
-       active_manifest_version_id: nil,
-       runs: %{},
-       run_events: %{},
-       scheduler_states: %{},
-       coverage_baselines: %{},
-       backfill_windows: %{},
-       asset_window_states: %{}
-     }}
+    {:reply, :ok, initial_state()}
+  end
+
+  defp initial_state do
+    %{
+      manifests: %{},
+      active_manifest_version_id: nil,
+      runs: %{},
+      run_events: %{},
+      scheduler_states: %{},
+      coverage_baselines: %{},
+      backfill_windows: %{},
+      asset_window_states: %{}
+    }
   end
 
   def handle_call({:put_manifest_version, %Version{} = version}, _from, state) do
