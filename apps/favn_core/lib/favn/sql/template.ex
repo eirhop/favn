@@ -68,7 +68,7 @@ defmodule Favn.SQL.Template do
     @enforce_keys [:runtime_inputs, :query_params]
     defstruct [:runtime_inputs, :query_params]
 
-    @type t :: %__MODULE__{runtime_inputs: MapSet.t(atom()), query_params: MapSet.t(atom())}
+    @type t :: %__MODULE__{runtime_inputs: MapSet.t(atom()), query_params: MapSet.t(String.t())}
   end
 
   defmodule Fragment do
@@ -93,7 +93,7 @@ defmodule Favn.SQL.Template do
     defstruct [:name, :source, :span]
 
     @type t :: %__MODULE__{
-            name: atom(),
+            name: atom() | String.t(),
             source: Favn.SQL.Template.placeholder_source(),
             span: Favn.SQL.Template.Span.t()
           }
@@ -250,7 +250,7 @@ defmodule Favn.SQL.Template do
   def runtime_inputs(%__MODULE__{requires: %Requirements{runtime_inputs: runtime_inputs}}),
     do: runtime_inputs
 
-  @spec query_params(t()) :: MapSet.t(atom())
+  @spec query_params(t()) :: MapSet.t(String.t())
   def query_params(%__MODULE__{requires: %Requirements{query_params: query_params}}),
     do: query_params
 
@@ -475,7 +475,7 @@ defmodule Favn.SQL.Template do
     case rest do
       [valid | _] when valid >= ?a and valid <= ?z ->
         {name_string, tail} = read_identifier(rest)
-        name = String.to_atom(name_string)
+        name = placeholder_name(name_string, state)
         next_state = advance_state(state, ~c"@" ++ String.to_charlist(name_string))
         placeholder = build_placeholder(name, state, next_state)
         parse_nodes(tail, next_state, [placeholder | acc])
@@ -546,15 +546,7 @@ defmodule Favn.SQL.Template do
     next_char = peek_nonspace_char(tail_after_module)
 
     if length(segments) >= 2 and uppercase_alias_segments?(segments) and next_char != ?( do
-      raw = Enum.join(segments, ".")
-
-      next_state =
-        advance_state(state, String.to_charlist(raw))
-        |> Map.put(:relation_entry?, false)
-        |> Map.put(:join_prefix, nil)
-
-      node = build_asset_ref(Module.concat(segments), state, next_state)
-      parse_nodes(tail_after_module, next_state, [node | acc])
+      parse_asset_ref_segments(segments, tail_after_module, state, acc)
     else
       next_state =
         advance_state(state, String.to_charlist(word))
@@ -562,6 +554,34 @@ defmodule Favn.SQL.Template do
 
       parse_nodes(tail, next_state, [text_node(word, state.position, next_state.position) | acc])
     end
+  end
+
+  defp parse_asset_ref_segments(segments, tail_after_module, state, acc) do
+    raw = Enum.join(segments, ".")
+
+    next_state =
+      advance_state(state, String.to_charlist(raw))
+      |> Map.put(:relation_entry?, false)
+      |> Map.put(:join_prefix, nil)
+
+    case safe_module_concat(segments) do
+      {:ok, module} ->
+        node = build_asset_ref(module, state, next_state)
+        parse_nodes(tail_after_module, next_state, [node | acc])
+
+      :error ->
+        compile_error!(
+          state.file,
+          state.position.line,
+          "unknown SQL asset reference #{raw}; expected an existing module atom"
+        )
+    end
+  end
+
+  defp safe_module_concat(segments) do
+    {:ok, Module.safe_concat(segments)}
+  rescue
+    ArgumentError -> :error
   end
 
   defp parse_call(word, tail, state, context, acc) do
@@ -578,7 +598,7 @@ defmodule Favn.SQL.Template do
         arity = length(args)
         visible_arities = visible_arities(word, state.known_definitions)
 
-        case Map.fetch(state.known_definitions, {String.to_atom(word), arity}) do
+        case fetch_known_definition(state.known_definitions, word, arity) do
           {:ok, definition} ->
             call = build_call(definition, args, context, start_pos, end_pos)
 
@@ -861,7 +881,8 @@ defmodule Favn.SQL.Template do
   defp classify_placeholder_source(name, _state) when name in @reserved_runtime_inputs,
     do: :runtime
 
-  defp classify_placeholder_source(name, %{scope: :definition, local_args: local_args} = state) do
+  defp classify_placeholder_source(name, %{scope: :definition, local_args: local_args} = state)
+       when is_atom(name) do
     case Map.fetch(local_args, name) do
       {:ok, index} ->
         {:local_arg, index}
@@ -907,13 +928,63 @@ defmodule Favn.SQL.Template do
   end
 
   defp visible_arities(word, known_definitions) do
-    name = String.to_atom(word)
-
     known_definitions
     |> Map.keys()
-    |> Enum.filter(fn {candidate_name, _arity} -> candidate_name == name end)
+    |> Enum.filter(fn {candidate_name, _arity} -> Atom.to_string(candidate_name) == word end)
     |> Enum.map(&elem(&1, 1))
     |> Enum.sort()
+  end
+
+  defp fetch_known_definition(known_definitions, word, arity) do
+    Enum.find_value(known_definitions, :error, fn
+      {{name, ^arity}, definition} when is_atom(name) ->
+        if Atom.to_string(name) == word, do: {:ok, definition}, else: false
+
+      _other ->
+        false
+    end)
+  end
+
+  defp placeholder_name(name_string, state) do
+    cond do
+      name_string in reserved_runtime_input_names() ->
+        existing_atom!(name_string)
+
+      state.scope == :definition ->
+        local_arg_atom!(name_string, state)
+
+      true ->
+        name_string
+    end
+  end
+
+  defp reserved_runtime_input_names,
+    do: Enum.map(@reserved_runtime_inputs, &Atom.to_string/1)
+
+  defp local_arg_atom!(name_string, state) do
+    case Enum.find_value(state.local_args, fn
+           {name, _index} when is_atom(name) ->
+             if Atom.to_string(name) == name_string, do: {:ok, name}, else: false
+
+           _other ->
+             false
+         end) do
+      {:ok, name} ->
+        name
+
+      nil ->
+        compile_error!(
+          state.file,
+          state.position.line,
+          "undefined defsql placeholder @#{name_string}; expected one of #{inspect(Map.keys(state.local_args))}"
+        )
+    end
+  end
+
+  defp existing_atom!(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> raise ArgumentError, "unknown atom #{inspect(value)}"
   end
 
   defp validate_call_context!(

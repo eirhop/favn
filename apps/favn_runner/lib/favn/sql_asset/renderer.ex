@@ -162,10 +162,9 @@ defmodule Favn.SQLAsset.Renderer do
   end
 
   defp render_node(%Placeholder{source: :query_param, name: name, span: span}, env) do
-    if Map.has_key?(env.params, name) do
-      {:ok, value_fragment(name, :query_param, Map.fetch!(env.params, name), span), env}
-    else
-      missing_query_param_error(name, span, env)
+    case fetch_param(env.params, name) do
+      {:ok, value} -> {:ok, value_fragment(name, :query_param, value, span), env}
+      :error -> missing_query_param_error(name, span, env)
     end
   end
 
@@ -230,6 +229,30 @@ defmodule Favn.SQLAsset.Renderer do
 
       {:ok, fragment, next_env}
     end
+  end
+
+  defp fetch_param(params, name) when is_binary(name) do
+    case Map.fetch(params, name) do
+      {:ok, value} -> {:ok, value}
+      :error -> fetch_atom_named_param(params, name)
+    end
+  end
+
+  defp fetch_param(params, name) when is_atom(name) do
+    case Map.fetch(params, name) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(params, Atom.to_string(name))
+    end
+  end
+
+  defp fetch_atom_named_param(params, name) do
+    Enum.find_value(params, :error, fn
+      {key, value} when is_atom(key) ->
+        if Atom.to_string(key) == name, do: {:ok, value}, else: false
+
+      _other ->
+        false
+    end)
   end
 
   defp fetch_definition(%Call{definition: %{name: name, arity: arity}, span: span}, env) do
