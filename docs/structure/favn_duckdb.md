@@ -11,7 +11,10 @@ Code:
 
 Tests:
 - `apps/favn_duckdb/test/`
+- `apps/favn_duckdb/test/support/` for app-local DuckDB fake clients,
+  process-local event recording, and test-only client modes
 
 Use when changing DuckDB adapter queries/materialization, safe inspection query
 generation, bootstrap diagnostics, runtime placement, worker lifecycle, or DuckDB
-plugin child specs.
+plugin child specs. Update test support when the DuckDB client boundary or shared
+adapter test instrumentation changes.

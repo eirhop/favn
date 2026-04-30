@@ -15,6 +15,11 @@ Runner-side DuckDB execution plugin for Phase 7.
 Allowed umbrella dependency direction:
 
 - `favn_duckdb -> favn_runner`
+- `favn_duckdb -> favn_sql_runtime`
+
+External dependency:
+
+- `duckdbex` for DuckDB client integration
 
 Must not depend on:
 

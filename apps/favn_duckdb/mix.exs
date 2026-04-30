@@ -12,6 +12,7 @@ defmodule FavnDuckdb.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      test_ignore_filters: [~r/test\/support\//],
       deps: deps()
     ]
   end
