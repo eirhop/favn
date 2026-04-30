@@ -63,7 +63,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     end
   end
 
-  @spec scheduler_child_spec(keyword()) :: {:ok, Supervisor.child_spec()} | :none
+  @spec scheduler_child_spec(keyword()) :: Favn.Storage.Adapter.child_spec_result()
   def scheduler_child_spec(opts \\ []) when is_list(opts) do
     child_spec(opts)
   end

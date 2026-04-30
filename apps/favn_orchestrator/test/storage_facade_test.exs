@@ -101,7 +101,7 @@ defmodule Favn.StorageFacadeTest do
     def child_spec(opts) do
       test_pid = Keyword.fetch!(opts, :test_pid)
       send(test_pid, :child_spec_called)
-      :none
+      Keyword.get(opts, :child_spec_result, :none)
     end
 
     @impl true
@@ -234,6 +234,20 @@ defmodule Favn.StorageFacadeTest do
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, test_pid: self())
 
     assert {:ok, []} = Storage.child_specs()
+    assert_receive :child_spec_called
+  end
+
+  test "propagates adapter child spec configuration errors" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, ChildSpecProbeAdapterStub)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      test_pid: self(),
+      child_spec_result: {:error, :bad_storage_config}
+    )
+
+    assert {:error, :bad_storage_config} = OrchestratorStorage.child_specs()
+    assert {:error, {:store_error, :bad_storage_config}} = Storage.child_specs()
+    assert_receive :child_spec_called
     assert_receive :child_spec_called
   end
 

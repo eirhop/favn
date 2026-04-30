@@ -466,6 +466,11 @@ Storage modes:
 `mix favn.build.single` defaults to SQLite and accepts
 `--storage sqlite|postgres`.
 
+Storage adapter startup reports recoverable configuration failures as
+`{:error, reason}`. Scheduler state keys are exact across built-in adapters:
+`{pipeline_module, nil}` addresses the nil schedule id and does not fall back to
+the latest concrete schedule id.
+
 ### favn_local implementation notes
 
 - public `mix favn.*` tasks are owned by `apps/favn`
