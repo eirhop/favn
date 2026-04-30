@@ -566,21 +566,27 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp fetch_rows(%Conn{} = conn, result_ref) do
-    columns =
-      case conn.client.columns(result_ref) do
-        cols when is_list(cols) -> Enum.map(cols, &to_string/1)
-        _ -> []
-      end
-
-    rows =
-      case conn.client.fetch_all(result_ref) do
-        rows when is_list(rows) -> Enum.map(rows, &normalize_row(&1, columns))
-        other -> other
-      end
-
-    if is_list(rows), do: {:ok, rows, columns}, else: {:error, rows}
+    case fetch_columns(conn, result_ref) do
+      {:ok, columns} -> fetch_all_rows(conn, result_ref, columns)
+      {:error, reason} -> {:error, reason}
+    end
   after
     _ = safe_release(conn, result_ref)
+  end
+
+  defp fetch_columns(%Conn{} = conn, result_ref) do
+    case conn.client.columns(result_ref) do
+      {:error, reason} -> {:error, reason}
+      cols when is_list(cols) -> {:ok, Enum.map(cols, &to_string/1)}
+      _other -> {:ok, []}
+    end
+  end
+
+  defp fetch_all_rows(%Conn{} = conn, result_ref, columns) do
+    case conn.client.fetch_all(result_ref) do
+      rows when is_list(rows) -> {:ok, Enum.map(rows, &normalize_row(&1, columns)), columns}
+      other -> {:error, other}
+    end
   end
 
   defp normalize_row(row, _columns) when is_map(row) do

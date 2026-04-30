@@ -69,12 +69,18 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     def columns(result_ref) do
       record({:columns, result_ref})
 
-      sql = result_sql(result_ref)
+      case mode(:columns_mode, :ok) do
+        :ok ->
+          sql = result_sql(result_ref)
 
-      if is_binary(sql) and String.contains?(sql, "count(*) AS row_count") do
-        ["row_count"]
-      else
-        ["value"]
+          if is_binary(sql) and String.contains?(sql, "count(*) AS row_count") do
+            ["row_count"]
+          else
+            ["value"]
+          end
+
+        :error ->
+          {:error, :columns_failed}
       end
     end
 
@@ -184,6 +190,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
       :connection_mode,
       :query_mode,
       :fetch_mode,
+      :columns_mode,
       :begin_mode,
       :commit_mode,
       :rollback_mode,
@@ -308,6 +315,26 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     assert Enum.any?(events(), fn
              {:release, ^result_ref} -> true
+             _ -> false
+           end)
+  end
+
+  test "query columns error releases result handle" do
+    Application.put_env(:favn, :columns_mode, :error)
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:error, %Error{type: :execution_error, operation: :query}} =
+             DuckDB.query(conn, "SELECT 1", [])
+
+    {result_ref, _sql} = last_result_ref!()
+
+    assert Enum.any?(events(), fn
+             {:release, ^result_ref} -> true
+             _ -> false
+           end)
+
+    refute Enum.any?(events(), fn
+             {:fetch_all, ^result_ref} -> true
              _ -> false
            end)
   end
