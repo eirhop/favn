@@ -39,7 +39,6 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Strengthen SSE from a thin prototype into a dependable live-update model, especially for the global runs stream and replay/cursor behavior.
 - Add real end-to-end integration coverage against the live orchestrator boundary rather than relying mostly on local mocks or thin route tests.
 - Add operational-backfill projection repair tooling for drifted or deleted derived read models. Plan: `docs/ISSUE_184_BACKFILL_PROJECTION_REPAIR_PLAN.md`.
-- Add web operator surfaces for operational backfill submit, inspect, failed-window rerun, coverage-baseline selection, and asset/window history on top of the private orchestrator HTTP API.
 
 ### 5. Close Storage And Persistence Gaps
 

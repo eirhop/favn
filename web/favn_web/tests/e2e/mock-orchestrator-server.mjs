@@ -290,6 +290,20 @@ const RUN_DETAILS = new Map([
 		}
 	],
 	[
+		'bf_001',
+		{
+			id: 'bf_001',
+			status: 'running',
+			target: { type: 'pipeline', id: 'DailySalesPipeline' },
+			manifest_version_id: 'manifest_v2',
+			submit_kind: 'backfill',
+			started_at: '2026-04-01T00:00:00.000Z',
+			assets_total: 2,
+			assets_completed: 1,
+			assets: []
+		}
+	],
+	[
 		'run_003',
 		{
 			id: 'run_003',
@@ -349,6 +363,77 @@ const SCHEDULE_DETAILS = new Map([
 		}
 	]
 ]);
+
+const BACKFILL_WINDOWS = [
+	{
+		backfill_run_id: 'bf_001',
+		pipeline_module: 'DailySalesPipeline',
+		manifest_version_id: 'manifest_v2',
+		window_kind: 'day',
+		window_start_at: '2026-04-01T00:00:00.000Z',
+		window_end_at: '2026-04-02T00:00:00.000Z',
+		timezone: 'Etc/UTC',
+		window_key: 'day:2026-04-01',
+		status: 'failed',
+		attempt_count: 1,
+		latest_attempt_run_id: 'run_002',
+		last_success_run_id: null,
+		updated_at: '2026-04-01T00:05:00.000Z',
+		last_error: 'mock child failed'
+	},
+	{
+		backfill_run_id: 'bf_001',
+		pipeline_module: 'DailySalesPipeline',
+		manifest_version_id: 'manifest_v2',
+		window_kind: 'day',
+		window_start_at: '2026-04-02T00:00:00.000Z',
+		window_end_at: '2026-04-03T00:00:00.000Z',
+		timezone: 'Etc/UTC',
+		window_key: 'day:2026-04-02',
+		status: 'succeeded',
+		attempt_count: 1,
+		latest_attempt_run_id: 'run_001',
+		last_success_run_id: 'run_001',
+		updated_at: '2026-04-02T00:05:00.000Z'
+	}
+];
+
+const COVERAGE_BASELINES = [
+	{
+		baseline_id: 'baseline_123',
+		pipeline_module: 'DailySalesPipeline',
+		source_key: 'daily-sales',
+		segment_key_hash: 'abc123',
+		window_kind: 'day',
+		timezone: 'Etc/UTC',
+		coverage_until: '2026-04-01T00:00:00.000Z',
+		created_by_run_id: 'run_001',
+		manifest_version_id: 'manifest_v2',
+		status: 'active',
+		created_at: '2026-04-01T00:00:00.000Z',
+		updated_at: '2026-04-01T00:00:00.000Z'
+	}
+];
+
+const ASSET_WINDOW_STATES = [
+	{
+		asset_ref_module: 'Mart',
+		asset_ref_name: 'Revenue',
+		pipeline_module: 'DailySalesPipeline',
+		manifest_version_id: 'manifest_v2',
+		window_kind: 'day',
+		window_start_at: '2026-04-01T00:00:00.000Z',
+		window_end_at: '2026-04-02T00:00:00.000Z',
+		timezone: 'Etc/UTC',
+		window_key: 'day:2026-04-01',
+		status: 'succeeded',
+		latest_run_id: 'run_001',
+		updated_at: '2026-04-02T00:00:00.000Z'
+	}
+];
+
+let lastBackfillSubmitPayload = null;
+let lastBackfillRerunPayload = null;
 
 /** @type {Map<string, { actorId: string; provider: string }>} */
 const sessions = new Map();
@@ -774,6 +859,70 @@ function handleListSchedules(request, response) {
 	});
 }
 
+function handleSubmitBackfill(request, response) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	readJsonBody(request)
+		.then((body) => {
+			lastBackfillSubmitPayload = body;
+			sendJson(response, 202, { data: { run: { run_id: 'bf_001', status: 'queued' } } });
+		})
+		.catch(() => sendJson(response, 500, { error: { message: 'Mock server error' } }));
+}
+
+function handleListBackfillWindows(request, response, backfillRunId) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	const items = BACKFILL_WINDOWS.filter((window) => window.backfill_run_id === backfillRunId);
+	sendJson(response, 200, {
+		data: { items, pagination: { limit: 50, offset: 0, total: items.length } }
+	});
+}
+
+function handleRerunBackfillWindow(request, response, backfillRunId) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	readJsonBody(request)
+		.then((body) => {
+			lastBackfillRerunPayload = { backfill_run_id: backfillRunId, ...body };
+			sendJson(response, 202, {
+				data: { backfill_run_id: backfillRunId, window_key: body?.window_key, status: 'queued' }
+			});
+		})
+		.catch(() => sendJson(response, 500, { error: { message: 'Mock server error' } }));
+}
+
+function handleListCoverageBaselines(request, response) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	sendJson(response, 200, {
+		data: {
+			items: COVERAGE_BASELINES,
+			pagination: { limit: 50, offset: 0, total: COVERAGE_BASELINES.length }
+		}
+	});
+}
+
+function handleListAssetWindowStates(request, response) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	sendJson(response, 200, {
+		data: {
+			items: ASSET_WINDOW_STATES,
+			pagination: { limit: 50, offset: 0, total: ASSET_WINDOW_STATES.length }
+		}
+	});
+}
+
+function handleBackfillMockState(response) {
+	sendJson(response, 200, { data: { lastBackfillSubmitPayload, lastBackfillRerunPayload } });
+}
+
 function handleScheduleDetail(request, response, scheduleId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
@@ -822,6 +971,11 @@ const server = createServer((request, response) => {
 		return;
 	}
 
+	if (method === 'GET' && url.pathname === '/__mock/backfills') {
+		handleBackfillMockState(response);
+		return;
+	}
+
 	if (method === 'GET' && url.pathname === '/api/orchestrator/v1/me') {
 		handleMe(request, response);
 		return;
@@ -834,6 +988,21 @@ const server = createServer((request, response) => {
 
 	if (method === 'POST' && url.pathname === '/api/orchestrator/v1/runs') {
 		handleSubmitRun(request, response);
+		return;
+	}
+
+	if (method === 'POST' && url.pathname === '/api/orchestrator/v1/backfills') {
+		handleSubmitBackfill(request, response);
+		return;
+	}
+
+	if (method === 'GET' && url.pathname === '/api/orchestrator/v1/backfills/coverage-baselines') {
+		handleListCoverageBaselines(request, response);
+		return;
+	}
+
+	if (method === 'GET' && url.pathname === '/api/orchestrator/v1/assets/window-states') {
+		handleListAssetWindowStates(request, response);
 		return;
 	}
 
@@ -867,6 +1036,22 @@ const server = createServer((request, response) => {
 	const rerunRunMatch = url.pathname.match(/^\/api\/orchestrator\/v1\/runs\/([^/]+)\/rerun$/);
 	if (method === 'POST' && rerunRunMatch) {
 		handleRerunRun(request, response, decodeURIComponent(rerunRunMatch[1]));
+		return;
+	}
+
+	const backfillWindowsMatch = url.pathname.match(
+		/^\/api\/orchestrator\/v1\/backfills\/([^/]+)\/windows$/
+	);
+	if (method === 'GET' && backfillWindowsMatch) {
+		handleListBackfillWindows(request, response, decodeURIComponent(backfillWindowsMatch[1]));
+		return;
+	}
+
+	const rerunBackfillWindowMatch = url.pathname.match(
+		/^\/api\/orchestrator\/v1\/backfills\/([^/]+)\/windows\/rerun$/
+	);
+	if (method === 'POST' && rerunBackfillWindowMatch) {
+		handleRerunBackfillWindow(request, response, decodeURIComponent(rerunBackfillWindowMatch[1]));
 		return;
 	}
 

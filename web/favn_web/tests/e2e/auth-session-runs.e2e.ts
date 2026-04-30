@@ -441,6 +441,53 @@ test.describe('auth/session/runs flow', () => {
 		expect(body).toContain('"last_event_id_received":"evt_123"');
 	});
 
+	test('operational backfill UI submits, opens detail, reruns failed window, and renders read models', async ({
+		page
+	}) => {
+		await loginAndReachHome(page);
+
+		await page.getByRole('link', { name: 'Backfills' }).click();
+		await expect(page).toHaveURL(/\/backfills$/);
+		await expect(page.getByRole('heading', { name: 'Backfills' })).toBeVisible();
+		await expect(page.locator('select').first()).toContainText('DailySalesPipeline');
+
+		await page.getByLabel('From').fill('2026-04-01');
+		await page.getByLabel('To').fill('2026-04-02');
+		await page.getByRole('button', { name: 'Submit backfill' }).click();
+		await expect(page.getByText(/Accepted queued/)).toBeVisible();
+
+		const mockState = await (await fetch('http://127.0.0.1:4101/__mock/backfills')).json();
+		expect(mockState.data.lastBackfillSubmitPayload).toMatchObject({
+			target: { type: 'pipeline', id: 'pipeline:DailySalesPipeline' },
+			manifest_selection: { mode: 'active' },
+			range: { from: '2026-04-01', to: '2026-04-02', kind: 'day', timezone: 'Etc/UTC' }
+		});
+
+		await page.getByRole('link', { name: 'bf_001' }).click();
+		await expect(page).toHaveURL(/\/backfills\/bf_001$/);
+		await expect(page.getByRole('heading', { name: 'Backfill bf_001' })).toBeVisible();
+		await expect(page.getByRole('row', { name: /day:2026-04-01/ })).toContainText('failed');
+		page.once('dialog', (dialog) => dialog.accept());
+		await page
+			.getByRole('row', { name: /day:2026-04-01/ })
+			.getByRole('button', { name: 'Rerun' })
+			.click();
+		await expect(page.getByText('Rerun accepted for day:2026-04-01.')).toBeVisible();
+		const rerunState = await (await fetch('http://127.0.0.1:4101/__mock/backfills')).json();
+		expect(rerunState.data.lastBackfillRerunPayload).toMatchObject({
+			backfill_run_id: 'bf_001',
+			window_key: 'day:2026-04-01'
+		});
+
+		await page.goto('/backfills/coverage-baselines');
+		await expect(page.getByRole('heading', { name: 'Coverage baselines' })).toBeVisible();
+		await expect(page.getByRole('row', { name: /baseline_123/ })).toContainText('active');
+
+		await page.goto('/assets/window-states');
+		await expect(page.getByRole('heading', { name: 'Asset window states' })).toBeVisible();
+		await expect(page.getByRole('row', { name: /Revenue/ })).toContainText('succeeded');
+	});
+
 	test('unauthenticated web BFF API returns current unauthorized envelope', async ({ page }) => {
 		const response = await page.request.get(`${BASE_URL}/api/web/v1/runs`);
 
