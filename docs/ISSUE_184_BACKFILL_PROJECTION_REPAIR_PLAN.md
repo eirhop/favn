@@ -121,11 +121,24 @@ The adapter implementation should clear only rows matching the provided scope an
 
 Scope behavior:
 
-- `backfill_run_id` clears windows for that parent and asset/window states whose `latest_parent_run_id` is that parent.
+- `backfill_run_id` clears and rebuilds backfill-window rows for that parent. It must not blindly upsert rebuilt asset/window rows into the global latest-state slot because `asset_window_states` are keyed by `{asset_ref_module, asset_ref_name, window_key}` across all backfills, while `latest_parent_run_id` is only an attribute. Parent-scoped repair must either skip asset/window state repair and report it as requiring pipeline/full repair, or recompute latest state across all authoritative child runs competing for each affected `{asset_ref, window_key}` pair before writing.
 - `pipeline_module` clears coverage baselines, windows, and asset/window states for that pipeline.
 - empty scope clears all three derived read-model tables.
 
 If this proves too coarse for coverage baselines scoped by one `backfill_run_id`, keep coverage repair additive for parent-scoped repair and document that stale unrelated coverage rows require pipeline or full repair.
+
+For durable adapters, `replace_backfill_read_models/5` must clear scoped rows and insert rebuilt rows in one transaction. On error, existing read models must remain unchanged. Memory storage can implement equivalent all-or-nothing replacement inside its GenServer state update.
+
+### Latest Asset/Window State Semantics
+
+`asset_window_states` represent the latest known state for one `{asset_ref_module, asset_ref_name, window_key}`, not the latest state for one backfill parent. Repair must preserve that global latest invariant.
+
+The first implementation should choose one explicit behavior:
+
+- Parent-scoped repair rebuilds backfill-window ledger rows only, skips asset/window latest-state writes, and reports skipped latest-state candidates with a reason such as `:latest_state_requires_wider_scope`.
+- Pipeline/full repair recomputes latest asset/window state by grouping all authoritative terminal child runs by `{asset_ref_module, asset_ref_name, window_key}` and selecting the newest durable run by `updated_at`, with deterministic tie-breaking by run id or event sequence.
+
+Do not rely on unguarded adapter upserts for latest-state repair. If guarded writes are added later, the guard must reject older repaired rows when a newer latest-state row already exists.
 
 ### Operator Surface
 
