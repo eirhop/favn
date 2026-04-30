@@ -17,13 +17,13 @@ defmodule Favn.Dev.Build.Single do
 
   @spec run(root_opt()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) when is_list(opts) do
-    with :ok <- Install.ensure_ready(opts),
+    with storage <- storage_mode(opts),
+         :ok <- validate_storage(storage),
+         :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
          {:ok, web} <- Web.run(opts),
          {:ok, orchestrator} <- Orchestrator.run(opts),
          {:ok, runner} <- Runner.run(opts),
-         storage <- storage_mode(opts),
-         :ok <- validate_storage(storage),
          {build_id, root_dir} <- {build_id(), Paths.root_dir(opts)},
          build_dir <- Paths.build_single_dir(root_dir, build_id),
          dist_dir <- Paths.dist_single_dir(root_dir, build_id),
@@ -55,7 +55,8 @@ defmodule Favn.Dev.Build.Single do
 
   defp storage_mode(opts) do
     case Keyword.get(opts, :storage, :sqlite) do
-      value when is_binary(value) -> String.to_atom(value)
+      "sqlite" -> :sqlite
+      "postgres" -> :postgres
       value -> value
     end
   end

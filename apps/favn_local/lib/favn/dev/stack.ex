@@ -116,8 +116,8 @@ defmodule Favn.Dev.Stack do
            runtime: runtime,
            secrets: secrets,
            node_names: node_names,
-            distribution_ports: distribution_ports(opts),
-            services: services
+           distribution_ports: distribution_ports(opts),
+           services: services
          }}
       end
     end)
@@ -372,32 +372,34 @@ defmodule Favn.Dev.Stack do
         start_service_specs(list)
 
       _ ->
-        :ok = ensure_web_assets(runtime, opts)
+        with :ok <- ensure_web_assets(runtime, opts) do
+          runner_wait_timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 15_000)
 
-        runner_wait_timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 15_000)
-        runner_wait_node_name = Keyword.get(opts, :runner_wait_node_name, node_names.runner_full)
+          runner_wait_node_name =
+            Keyword.get(opts, :runner_wait_node_name, node_names.runner_full)
 
-        runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
+          runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
 
-        orchestrator_spec =
-          RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
+          orchestrator_spec =
+            RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
 
-        web_spec = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+          web_spec = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
 
-        case start_service_specs([runner_spec]) do
-          {:ok, services} ->
-            with :ok <- wait_runner_node_ready(runner_wait_node_name, runner_wait_timeout_ms),
-                 {:ok, services} <- start_service_specs([orchestrator_spec], services),
-                 {:ok, services} <- start_service_specs([web_spec], services) do
-              {:ok, services}
-            else
-              {:error, _reason} = error ->
-                stop_service_map(services)
-                error
-            end
+          case start_service_specs([runner_spec]) do
+            {:ok, services} ->
+              with :ok <- wait_runner_node_ready(runner_wait_node_name, runner_wait_timeout_ms),
+                   {:ok, services} <- start_service_specs([orchestrator_spec], services),
+                   {:ok, services} <- start_service_specs([web_spec], services) do
+                {:ok, services}
+              else
+                {:error, _reason} = error ->
+                  stop_service_map(services)
+                  error
+              end
 
-          {:error, _reason} = error ->
-            error
+            {:error, _reason} = error ->
+              error
+          end
         end
     end
   end
@@ -494,7 +496,8 @@ defmodule Favn.Dev.Stack do
                 |> Map.put("node_name", node_names.orchestrator_full)
                 |> Map.put("distribution_port", distribution_ports(opts).orchestrator)
 
-              _ -> service
+              _ ->
+                service
             end
 
           {name, service}
@@ -524,7 +527,7 @@ defmodule Favn.Dev.Stack do
              runner_node_name: node_names.runner_full,
              rpc_cookie: secrets["rpc_cookie"]
            ),
-          :ok <- wait_orchestrator_health(config.orchestrator_base_url, 15_000),
+         :ok <- wait_orchestrator_health(config.orchestrator_base_url, 15_000),
          :ok <-
            State.write_manifest_latest(
              %{
@@ -538,18 +541,18 @@ defmodule Favn.Dev.Stack do
              opts
            ),
          {:ok, _published} <-
-            OrchestratorClient.publish_manifest(
-              config.orchestrator_base_url,
-              secrets["service_token"],
-              %{
-                manifest_version_id: version.manifest_version_id,
-                content_hash: version.content_hash,
-                schema_version: version.schema_version,
-                runner_contract_version: version.runner_contract_version,
-                serialization_format: version.serialization_format,
-                manifest: version.manifest
-              }
-            ),
+           OrchestratorClient.publish_manifest(
+             config.orchestrator_base_url,
+             secrets["service_token"],
+             %{
+               manifest_version_id: version.manifest_version_id,
+               content_hash: version.content_hash,
+               schema_version: version.schema_version,
+               runner_contract_version: version.runner_contract_version,
+               serialization_format: version.serialization_format,
+               manifest: version.manifest
+             }
+           ),
          {:ok, _activated} <-
            OrchestratorClient.activate_manifest(
              config.orchestrator_base_url,
@@ -695,7 +698,12 @@ defmodule Favn.Dev.Stack do
     |> maybe_put_log_paths(startup, runtime)
   end
 
-  defp maybe_put_failure_details(payload, %{operation: operation, method: method, url: url, reason: reason}) do
+  defp maybe_put_failure_details(payload, %{
+         operation: operation,
+         method: method,
+         url: url,
+         reason: reason
+       }) do
     Map.merge(payload, %{
       "operation" => Atom.to_string(operation),
       "method" => method |> Atom.to_string() |> String.upcase(),
@@ -813,6 +821,7 @@ defmodule Favn.Dev.Stack do
     IO.puts(
       "control node: node=#{node_names.control_full} distribution_port=#{distribution_ports.control}"
     )
+
     IO.puts("logs: web=#{services["web"].log_path}")
     IO.puts("logs: orchestrator=#{services["orchestrator"].log_path}")
     IO.puts("logs: runner=#{services["runner"].log_path}")
