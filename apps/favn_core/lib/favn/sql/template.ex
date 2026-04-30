@@ -68,7 +68,7 @@ defmodule Favn.SQL.Template do
     @enforce_keys [:runtime_inputs, :query_params]
     defstruct [:runtime_inputs, :query_params]
 
-    @type t :: %__MODULE__{runtime_inputs: MapSet.t(atom()), query_params: MapSet.t(atom())}
+    @type t :: %__MODULE__{runtime_inputs: MapSet.t(atom()), query_params: MapSet.t(String.t())}
   end
 
   defmodule Fragment do
@@ -93,7 +93,7 @@ defmodule Favn.SQL.Template do
     defstruct [:name, :source, :span]
 
     @type t :: %__MODULE__{
-            name: atom(),
+            name: atom() | String.t(),
             source: Favn.SQL.Template.placeholder_source(),
             span: Favn.SQL.Template.Span.t()
           }
@@ -250,7 +250,7 @@ defmodule Favn.SQL.Template do
   def runtime_inputs(%__MODULE__{requires: %Requirements{runtime_inputs: runtime_inputs}}),
     do: runtime_inputs
 
-  @spec query_params(t()) :: MapSet.t(atom())
+  @spec query_params(t()) :: MapSet.t(String.t())
   def query_params(%__MODULE__{requires: %Requirements{query_params: query_params}}),
     do: query_params
 
@@ -475,20 +475,10 @@ defmodule Favn.SQL.Template do
     case rest do
       [valid | _] when valid >= ?a and valid <= ?z ->
         {name_string, tail} = read_identifier(rest)
-
-        case placeholder_atom(name_string, state) do
-          {:ok, name} ->
-            next_state = advance_state(state, ~c"@" ++ String.to_charlist(name_string))
-            placeholder = build_placeholder(name, state, next_state)
-            parse_nodes(tail, next_state, [placeholder | acc])
-
-          :error ->
-            compile_error!(
-              state.file,
-              state.position.line,
-              "unknown SQL placeholder @#{name_string}; expected an existing atom name"
-            )
-        end
+        name = placeholder_name(name_string, state)
+        next_state = advance_state(state, ~c"@" ++ String.to_charlist(name_string))
+        placeholder = build_placeholder(name, state, next_state)
+        parse_nodes(tail, next_state, [placeholder | acc])
 
       _other ->
         compile_error!(
@@ -580,9 +570,11 @@ defmodule Favn.SQL.Template do
         parse_nodes(tail_after_module, next_state, [node | acc])
 
       :error ->
-        parse_nodes(tail_after_module, next_state, [
-          text_node(raw, state.position, next_state.position) | acc
-        ])
+        compile_error!(
+          state.file,
+          state.position.line,
+          "unknown SQL asset reference #{raw}; expected an existing module atom"
+        )
     end
   end
 
@@ -889,7 +881,8 @@ defmodule Favn.SQL.Template do
   defp classify_placeholder_source(name, _state) when name in @reserved_runtime_inputs,
     do: :runtime
 
-  defp classify_placeholder_source(name, %{scope: :definition, local_args: local_args} = state) do
+  defp classify_placeholder_source(name, %{scope: :definition, local_args: local_args} = state)
+       when is_atom(name) do
     case Map.fetch(local_args, name) do
       {:ok, index} ->
         {:local_arg, index}
@@ -952,36 +945,46 @@ defmodule Favn.SQL.Template do
     end)
   end
 
-  defp placeholder_atom(name_string, state) do
+  defp placeholder_name(name_string, state) do
     cond do
       name_string in reserved_runtime_input_names() ->
-        existing_atom(name_string)
+        existing_atom!(name_string)
 
       state.scope == :definition ->
-        local_arg_atom(name_string, state.local_args)
+        local_arg_atom!(name_string, state)
 
       true ->
-        existing_atom(name_string)
+        name_string
     end
   end
 
   defp reserved_runtime_input_names,
     do: Enum.map(@reserved_runtime_inputs, &Atom.to_string/1)
 
-  defp local_arg_atom(name_string, local_args) do
-    Enum.find_value(local_args, :error, fn
-      {name, _index} when is_atom(name) ->
-        if Atom.to_string(name) == name_string, do: {:ok, name}, else: false
+  defp local_arg_atom!(name_string, state) do
+    Enum.find_value(
+      state.local_args,
+      fn ->
+        compile_error!(
+          state.file,
+          state.position.line,
+          "undefined defsql placeholder @#{name_string}; expected one of #{inspect(Map.keys(state.local_args))}"
+        )
+      end,
+      fn
+        {name, _index} when is_atom(name) ->
+          if Atom.to_string(name) == name_string, do: name, else: false
 
-      _other ->
-        false
-    end)
+        _other ->
+          false
+      end
+    )
   end
 
-  defp existing_atom(value) do
-    {:ok, String.to_existing_atom(value)}
+  defp existing_atom!(value) do
+    String.to_existing_atom(value)
   rescue
-    ArgumentError -> :error
+    ArgumentError -> raise ArgumentError, "unknown atom #{inspect(value)}"
   end
 
   defp validate_call_context!(

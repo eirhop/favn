@@ -269,7 +269,7 @@ defmodule Favn.Manifest.VersionTest do
     assert roundtrip.content_hash == original.content_hash
   end
 
-  test "rehydrates manifest module references without loading user modules" do
+  test "rehydrates known manifest module atoms without loading user modules" do
     manifest = %{
       "schema_version" => 1,
       "runner_contract_version" => 1,

@@ -56,7 +56,6 @@ development on top of the new boundaries.
 - pipeline definitions for scheduled or operator-triggered runs
 - local runtime workflow support for authoring, safe landed-data inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
-- atom-safe manifest rehydration and SQL template parsing for persisted or authored text inputs
 - public SQL client access for named Favn connections via `Favn.SQLClient`
 - DuckDB connection bootstrap for DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckLake attach, and catalog selection
 

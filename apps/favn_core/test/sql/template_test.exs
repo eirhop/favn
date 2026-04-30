@@ -5,27 +5,28 @@ defmodule Favn.SQL.TemplateTest do
   alias Favn.SQL.Template
   alias Favn.SQL.Template.Call
 
-  test "parses existing query parameter atoms without creating new atoms" do
+  test "keeps query parameter names as binaries without requiring existing atoms" do
     template =
-      Template.compile!("SELECT @safe_param AS value",
+      Template.compile!("SELECT @country AS value",
         file: "test/fixtures/template_test.sql",
         line: 1,
         enforce_query_root: true
       )
 
-    assert Template.query_params(template) == MapSet.new([:safe_param])
+    assert Template.query_params(template) == MapSet.new(["country"])
   end
 
-  test "rejects unknown query parameter atoms" do
+  test "keeps arbitrary query parameter names as binaries" do
     name = "unsafe_param_#{System.unique_integer([:positive])}"
 
-    assert_raise CompileError, ~r/unknown SQL placeholder @#{name}/, fn ->
+    template =
       Template.compile!("SELECT @#{name} AS value",
         file: "test/fixtures/template_test.sql",
         line: 1,
         enforce_query_root: true
       )
-    end
+
+    assert Template.query_params(template) == MapSet.new([name])
   end
 
   test "resolves known SQL calls by existing definition names" do
@@ -54,17 +55,16 @@ defmodule Favn.SQL.TemplateTest do
     assert Template.calls(template) == []
   end
 
-  test "does not create module atoms for unknown relation-style asset references" do
+  test "fails loudly for unknown relation-style asset references" do
     module = "UnsafeAsset#{System.unique_integer([:positive])}"
 
-    template =
+    assert_raise CompileError, ~r/unknown SQL asset reference #{module}\.MissingAsset/, fn ->
       Template.compile!("SELECT * FROM #{module}.MissingAsset",
         file: "test/fixtures/template_test.sql",
         line: 1,
         enforce_query_root: true
       )
-
-    assert Template.asset_refs(template) == []
+    end
   end
 
   defp definition(name, arity) do
