@@ -131,6 +131,10 @@ Scheduler selection:
 - `mix favn.dev --scheduler` enables local schedules and overrides config
 - `mix favn.dev --no-scheduler` disables local schedules and overrides config
 
+Numeric local config values, including local ports and Postgres port/pool size,
+must be positive integers or strings containing only a positive integer after
+trimming whitespace. Malformed strings fall back to the documented defaults.
+
 ## `.favn/` layout
 
 `favn_local` keeps all managed project-local side effects under `.favn/`:
@@ -144,6 +148,10 @@ Scheduler selection:
 - `history/` failure metadata
 - `runtime.json` live stack state
 - `secrets.json` local generated secrets
+
+If `secrets.json` is missing, local tooling creates it on demand. If it exists
+but cannot be read as a JSON object, startup returns the read error instead of
+silently replacing local credentials.
 
 ## How core flows work
 

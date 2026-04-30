@@ -75,6 +75,40 @@ defmodule Favn.Dev.ConfigTest do
     assert config.postgres.ssl == true
   end
 
+  test "resolve/1 strictly parses positive integer strings" do
+    config =
+      Config.resolve(
+        orchestrator_port: " 4201 ",
+        web_port: "4273",
+        postgres: [
+          port: " 6543 ",
+          pool_size: "12"
+        ]
+      )
+
+    assert config.orchestrator_port == 4201
+    assert config.web_port == 4273
+    assert config.postgres.port == 6543
+    assert config.postgres.pool_size == 12
+  end
+
+  test "resolve/1 falls back to defaults for malformed integer strings" do
+    config =
+      Config.resolve(
+        orchestrator_port: "4101abc",
+        web_port: "4173.0",
+        postgres: [
+          port: "5432abc",
+          pool_size: "0"
+        ]
+      )
+
+    assert config.orchestrator_port == 4101
+    assert config.web_port == 4173
+    assert config.postgres.port == 5432
+    assert config.postgres.pool_size == 10
+  end
+
   test "resolve/1 reads :local config and lets it override :dev" do
     Application.put_env(:favn, :dev, storage: :memory, sqlite_path: "dev.sqlite")
     Application.put_env(:favn, :local, storage: :sqlite, sqlite_path: "local.sqlite")

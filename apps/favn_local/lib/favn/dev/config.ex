@@ -82,8 +82,15 @@ defmodule Favn.Dev.Config do
     local_config = Application.get_env(:favn, :local, [])
     merged = dev_config |> Keyword.merge(local_config) |> Keyword.merge(opts)
 
-    orchestrator_port = Keyword.get(merged, :orchestrator_port, @default_orchestrator_port)
-    web_port = Keyword.get(merged, :web_port, @default_web_port)
+    orchestrator_port =
+      merged
+      |> Keyword.get(:orchestrator_port, @default_orchestrator_port)
+      |> normalize_int(@default_orchestrator_port)
+
+    web_port =
+      merged
+      |> Keyword.get(:web_port, @default_web_port)
+      |> normalize_int(@default_web_port)
 
     %__MODULE__{
       storage: normalize_storage(Keyword.get(merged, :storage, @default_storage)),
@@ -143,8 +150,8 @@ defmodule Favn.Dev.Config do
   defp normalize_int(value, _default) when is_integer(value) and value > 0, do: value
 
   defp normalize_int(value, default) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, _} when int > 0 -> int
+    case value |> String.trim() |> Integer.parse() do
+      {int, ""} when int > 0 -> int
       _ -> default
     end
   end

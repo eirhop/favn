@@ -384,7 +384,13 @@ project `.env` used to run `mix favn.dev`. Configure
 actor to have admin privileges. Then use those orchestrator-owned credentials
 on the web login page. If bootstrap credentials are not configured, local
 tooling keeps using the generated local operator credentials stored under
-`.favn/secrets.json`.
+`.favn/secrets.json`. Missing local secrets are generated on demand, but corrupt
+or unreadable secrets files fail startup instead of being silently replaced.
+
+Local numeric config values, including dev ports and Postgres port/pool size,
+are accepted only as positive integers or strings that contain exactly a
+positive integer after trimming whitespace. Malformed strings use the documented
+local defaults.
 
 `mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
 currently running local stack. It uses the project-local service token and local
