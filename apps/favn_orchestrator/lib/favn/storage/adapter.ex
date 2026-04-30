@@ -10,6 +10,13 @@ defmodule Favn.Storage.Adapter do
   coverage baselines, per-window backfill ledger rows, and latest asset/window
   state. Adapters should preserve the same upsert and filtering semantics across
   memory, SQLite, and Postgres.
+
+  Adapter startup is optional. `child_spec/1` returns `:none` when no supervised
+  process is required or when the adapter runtime is already started, and may
+  return `{:error, reason}` for recoverable configuration errors.
+
+  Scheduler state keys are exact keys. `{pipeline_module, nil}` addresses the
+  nil schedule id and does not fall back to the latest concrete schedule id.
   """
 
   alias Favn.Manifest.Version
@@ -24,8 +31,9 @@ defmodule Favn.Storage.Adapter do
   @type filter_opts :: keyword()
   @type error :: :not_found | :invalid_opts | term()
   @type scheduler_key :: {module(), atom() | nil}
+  @type child_spec_result :: {:ok, Supervisor.child_spec()} | :none | {:error, error()}
 
-  @callback child_spec(adapter_opts()) :: {:ok, Supervisor.child_spec()} | :none
+  @callback child_spec(adapter_opts()) :: child_spec_result()
 
   @callback put_manifest_version(Version.t(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_manifest_version(String.t(), adapter_opts()) ::

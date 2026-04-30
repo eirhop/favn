@@ -173,7 +173,7 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
-  test "scheduler supports multiple schedule ids and nil fallback", context do
+  test "scheduler supports multiple schedule ids and exact nil keys", context do
     case context[:opts] do
       nil ->
         :ok
@@ -193,7 +193,11 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert {:ok, %Favn.Scheduler.State{schedule_id: :hourly}} =
                  Adapter.get_scheduler_state(key_hourly, opts)
 
-        assert {:ok, %Favn.Scheduler.State{schedule_id: :hourly}} =
+        assert {:ok, nil} = Adapter.get_scheduler_state({MyApp.Pipeline, nil}, opts)
+
+        assert :ok = Adapter.put_scheduler_state({MyApp.Pipeline, nil}, %{version: 1}, opts)
+
+        assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} =
                  Adapter.get_scheduler_state({MyApp.Pipeline, nil}, opts)
     end
   end

@@ -91,6 +91,26 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
              Storage.put_scheduler_state(key, %{last_due_at: "bad", version: 2})
   end
 
+  test "uses nil scheduler schedule ids as exact keys" do
+    daily_key = {MyApp.Pipeline, :daily}
+    hourly_key = {MyApp.Pipeline, :hourly}
+    nil_key = {MyApp.Pipeline, nil}
+
+    assert :ok = Storage.put_scheduler_state(daily_key, %{version: 1})
+    assert :ok = Storage.put_scheduler_state(hourly_key, %{version: 1})
+
+    assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} =
+             Storage.get_scheduler_state(daily_key)
+
+    assert {:ok, %Favn.Scheduler.State{schedule_id: :hourly}} =
+             Storage.get_scheduler_state(hourly_key)
+
+    assert {:ok, nil} = Storage.get_scheduler_state(nil_key)
+
+    assert :ok = Storage.put_scheduler_state(nil_key, %{version: 1})
+    assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} = Storage.get_scheduler_state(nil_key)
+  end
+
   defp manifest_version(manifest_version_id) do
     manifest = %Manifest{
       assets: [
