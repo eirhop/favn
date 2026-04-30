@@ -105,11 +105,9 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   defp normalize_extension_name(name) when name in @extension_names, do: {:ok, name}
 
   defp normalize_extension_name(name) when is_binary(name) do
-    name
-    |> String.to_existing_atom()
-    |> normalize_extension_name()
-  rescue
-    ArgumentError -> {:error, {:unsupported_extension, name}}
+    Enum.find_value(@extension_names, {:error, {:unsupported_extension, name}}, fn extension ->
+      if Atom.to_string(extension) == name, do: {:ok, extension}
+    end)
   end
 
   defp normalize_extension_name(name), do: {:error, {:unsupported_extension, name}}
@@ -160,16 +158,16 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   defp normalize_attach(config) do
     with {:ok, attach} <- normalize_keyword_config(config, :attach),
          {:ok, name} <- normalize_identifier(Keyword.get(attach, :name)),
-         :ok <- require_value(attach, :metadata),
-         :ok <- require_value(attach, :data_path) do
+         {:ok, metadata} <- fetch_present_value(attach, :metadata),
+         {:ok, data_path} <- fetch_present_value(attach, :data_path) do
       case Keyword.get(attach, :type) do
         :ducklake ->
           {:ok,
            %{
              name: name,
              type: :ducklake,
-             metadata: Keyword.fetch!(attach, :metadata),
-             data_path: Keyword.fetch!(attach, :data_path)
+             metadata: metadata,
+             data_path: data_path
            }}
 
         other ->
@@ -198,11 +196,17 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   defp normalize_keyword_config(_config, context),
     do: {:error, {:invalid_bootstrap_config, context}}
 
-  defp require_value(keyword, key) do
-    if present_string?(Keyword.get(keyword, key)) do
-      :ok
-    else
-      {:error, {:missing_attach_field, key}}
+  defp fetch_present_value(keyword, key) do
+    case Keyword.fetch(keyword, key) do
+      {:ok, value} ->
+        if present_string?(value) do
+          {:ok, value}
+        else
+          {:error, {:missing_attach_field, key}}
+        end
+
+      _missing_or_blank ->
+        {:error, {:missing_attach_field, key}}
     end
   end
 

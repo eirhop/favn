@@ -95,6 +95,15 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     assert {:error, :expected_duckdb_bootstrap_keyword_or_map} = validator.(:invalid)
   end
 
+  test "schema field accepts supported extension names as binaries" do
+    assert %{type: {:custom, validator}} = DuckDB.bootstrap_schema_field()
+
+    assert :ok = validator.(extensions: [install: ["ducklake"], load: ["postgres", "azure"]])
+
+    assert {:error, {:unsupported_extension, "unknown"}} =
+             validator.(extensions: [load: ["unknown"]])
+  end
+
   test "runs DuckLake bootstrap statements in configured order" do
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
