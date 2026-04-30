@@ -417,8 +417,7 @@ defmodule FavnOrchestrator.BackfillManager do
   end
 
   defp compensate_existing_backfill(%RunState{} = parent, pipeline_module, reason, opts) do
-    with {:ok, page} <- Storage.list_backfill_windows(backfill_run_id: parent.id, limit: 500),
-         windows <- page.items,
+    with {:ok, windows} <- BackfillProjector.list_all_backfill_windows(backfill_run_id: parent.id),
          now <- DateTime.utc_now(),
          error <- {:backfill_child_submission_failed, reason},
          {:ok, updated_windows} <-

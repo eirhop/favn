@@ -530,8 +530,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       |> Map.values()
       |> filter_by(filters)
       |> Enum.sort_by(
-        &{&1.window_start_at, &1.backfill_run_id, Atom.to_string(&1.pipeline_module),
-         &1.window_key}
+        &{DateTime.to_unix(&1.window_start_at, :microsecond), &1.backfill_run_id,
+         Atom.to_string(&1.pipeline_module), &1.window_key}
       )
       |> offset_and_fetch(filters)
 
