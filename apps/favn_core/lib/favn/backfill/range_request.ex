@@ -204,13 +204,15 @@ defmodule Favn.Backfill.RangeRequest do
   defp normalize_reference(opts) do
     relative_to = Keyword.get(opts, :relative_to)
     baseline = Keyword.get(opts, :baseline)
+    relative_to_datetime = parse_datetime(relative_to)
+    coverage_until_datetime = parse_datetime(coverage_until(baseline))
 
     cond do
-      match?(%DateTime{}, parse_datetime(relative_to)) ->
-        {:ok, parse_datetime(relative_to), baseline}
+      match?(%DateTime{}, relative_to_datetime) ->
+        {:ok, relative_to_datetime, baseline}
 
-      match?(%DateTime{}, parse_datetime(coverage_until(baseline))) ->
-        {:ok, parse_datetime(coverage_until(baseline)), normalize_baseline(baseline)}
+      match?(%DateTime{}, coverage_until_datetime) ->
+        {:ok, coverage_until_datetime, normalize_baseline(baseline)}
 
       true ->
         {:error, {:missing_backfill_reference, opts}}

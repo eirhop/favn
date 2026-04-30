@@ -27,7 +27,7 @@ defmodule Favn.Pipeline.Resolver do
     trigger = Keyword.get(opts, :trigger, %{kind: :manual})
     params = Keyword.get(opts, :params, %{})
     anchor_window = Keyword.get(opts, :anchor_window)
-    assets_opt = Keyword.get(opts, :assets)
+    assets_input = Keyword.get(opts, :assets)
     schedule_lookup = Keyword.get(opts, :schedule_lookup)
     default_timezone = Schedule.default_timezone()
 
@@ -38,27 +38,13 @@ defmodule Favn.Pipeline.Resolver do
          :ok <- validate_trigger(trigger),
          :ok <- validate_anchor_window(anchor_window),
          :ok <- validate_schedule_lookup(schedule_lookup),
-         :ok <- validate_assets_opt(assets_opt),
+         :ok <- validate_assets_input(assets_input),
          {:ok, schedule} <-
            resolve_schedule(definition.schedule, default_timezone, schedule_lookup),
-         {:ok, assets} <- resolve_assets(assets_opt),
+         {:ok, assets} <- resolve_assets(assets_input),
          {:ok, target_refs} <- resolve_selectors(selectors, assets) do
-      pipeline_ctx = %{
-        id: definition.name,
-        name: definition.name,
-        run_kind: :pipeline,
-        resolved_refs: target_refs,
-        deps: definition.deps,
-        config: definition.config,
-        meta: definition.meta,
-        trigger: trigger,
-        params: params,
-        anchor_window: anchor_window,
-        window: definition.window,
-        schedule: schedule,
-        source: definition.source,
-        outputs: definition.outputs
-      }
+      pipeline_ctx =
+        build_pipeline_ctx(definition, target_refs, trigger, params, anchor_window, schedule)
 
       {:ok,
        %Resolution{
@@ -129,9 +115,9 @@ defmodule Favn.Pipeline.Resolver do
   defp validate_schedule_lookup(fun) when is_function(fun, 2), do: :ok
   defp validate_schedule_lookup(other), do: {:error, {:invalid_schedule_lookup, other}}
 
-  defp validate_assets_opt(nil), do: {:error, :missing_assets}
-  defp validate_assets_opt(values) when is_list(values), do: :ok
-  defp validate_assets_opt(other), do: {:error, {:invalid_assets_opt, other}}
+  defp validate_assets_input(nil), do: {:error, :missing_assets}
+  defp validate_assets_input(values) when is_list(values), do: :ok
+  defp validate_assets_input(other), do: {:error, {:invalid_assets_opt, other}}
 
   defp resolve_assets(nil), do: {:error, :missing_assets}
   defp resolve_assets(values), do: {:ok, values}
@@ -160,13 +146,13 @@ defmodule Favn.Pipeline.Resolver do
   defp resolve_selectors(selectors, assets) when is_list(selectors) do
     assets_by_ref = Map.new(assets, &{&1.ref, &1})
 
-    with {:ok, refs} <- do_resolve_selectors(selectors, assets, assets_by_ref) do
+    with {:ok, refs} <- collect_selector_refs(selectors, assets, assets_by_ref) do
       refs = refs |> Enum.uniq() |> Enum.sort()
       if refs == [], do: {:error, :pipeline_resolved_empty}, else: {:ok, refs}
     end
   end
 
-  defp do_resolve_selectors(selectors, assets, assets_by_ref) do
+  defp collect_selector_refs(selectors, assets, assets_by_ref) do
     Enum.reduce_while(selectors, {:ok, []}, fn selector, {:ok, acc} ->
       case selector_refs(selector, assets, assets_by_ref) do
         {:ok, refs} -> {:cont, {:ok, refs ++ acc}}
@@ -220,5 +206,24 @@ defmodule Favn.Pipeline.Resolver do
       values when is_list(values) -> values
       _ -> []
     end
+  end
+
+  defp build_pipeline_ctx(definition, target_refs, trigger, params, anchor_window, schedule) do
+    %{
+      id: definition.name,
+      name: definition.name,
+      run_kind: :pipeline,
+      resolved_refs: target_refs,
+      deps: definition.deps,
+      config: definition.config,
+      meta: definition.meta,
+      trigger: trigger,
+      params: params,
+      anchor_window: anchor_window,
+      window: definition.window,
+      schedule: schedule,
+      source: definition.source,
+      outputs: definition.outputs
+    }
   end
 end

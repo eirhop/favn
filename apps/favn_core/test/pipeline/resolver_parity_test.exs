@@ -1,5 +1,5 @@
 defmodule Favn.Pipeline.ResolverParityTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Pipeline.Definition
   alias Favn.Pipeline.Resolver
