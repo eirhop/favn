@@ -49,7 +49,7 @@ defmodule FavnOrchestrator.BackfillManager do
          {:ok, index} <- Index.build_from_version(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
          {:ok, range_request} <-
-           maybe_resolve_coverage_baseline(range_request, pipeline_module, opts),
+           maybe_validate_coverage_baseline(range_request, pipeline_module, opts),
          {:ok, range} <- RangeResolver.resolve(range_request),
          :ok <- validate_window_count(range, opts),
          {:ok, resolution} <- resolve_parent_pipeline(index, pipeline, range),
@@ -67,8 +67,10 @@ defmodule FavnOrchestrator.BackfillManager do
       {:ok, parent.id}
     else
       {:error, reason} = error ->
-        maybe_compensate_submit_failure(run_id, pipeline_module, reason)
-        error
+        case maybe_compensate_submit_failure(run_id, pipeline_module, reason, opts) do
+          :ok -> error
+          {:error, _reason} = compensation_error -> compensation_error
+        end
     end
   end
 
@@ -223,23 +225,24 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
-  defp maybe_resolve_coverage_baseline(range_request, pipeline_module, opts) do
+  defp maybe_validate_coverage_baseline(range_request, pipeline_module, opts) do
     coverage_baseline_id = Keyword.get(opts, :coverage_baseline_id)
 
-    cond do
-      is_nil(coverage_baseline_id) or coverage_baseline_id == "" ->
-        {:ok, range_request}
+    if is_nil(coverage_baseline_id) or coverage_baseline_id == "" do
+      {:ok, range_request}
+    else
+      with {:ok, baseline} <- fetch_coverage_baseline(coverage_baseline_id),
+           :ok <- validate_coverage_baseline(baseline, pipeline_module, range_request) do
+        {:ok, maybe_apply_coverage_baseline(range_request, baseline)}
+      end
+    end
+  end
 
-      has_meaningful_relative_reference?(range_request) ->
-        {:ok, range_request}
-
-      relative_last_request?(range_request) ->
-        with {:ok, baseline} <- Storage.get_coverage_baseline(coverage_baseline_id) do
-          validate_coverage_baseline(baseline, pipeline_module, range_request)
-        end
-
-      true ->
-        {:ok, range_request}
+  defp fetch_coverage_baseline(coverage_baseline_id) do
+    case Storage.get_coverage_baseline(coverage_baseline_id) do
+      {:ok, %CoverageBaseline{} = baseline} -> {:ok, baseline}
+      {:error, :not_found} -> {:error, {:coverage_baseline_not_found, coverage_baseline_id}}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -251,12 +254,7 @@ defmodule FavnOrchestrator.BackfillManager do
     with :ok <- validate_baseline_pipeline(baseline, pipeline_module),
          :ok <- validate_baseline_status(baseline),
          :ok <- validate_baseline_kind(baseline, range_request),
-         :ok <- validate_baseline_timezone(baseline, range_request) do
-      {:ok,
-       range_request
-       |> put_baseline(baseline)
-       |> put_default_timezone(baseline.timezone)}
-    end
+         do: validate_baseline_timezone(baseline, range_request)
   end
 
   defp validate_baseline_pipeline(
@@ -277,7 +275,7 @@ defmodule FavnOrchestrator.BackfillManager do
     do: {:error, {:coverage_baseline_not_ok, status}}
 
   defp validate_baseline_kind(%CoverageBaseline{window_kind: kind}, range_request) do
-    case relative_last_kind(range_request) do
+    case request_kind(range_request) do
       {:ok, ^kind} ->
         :ok
 
@@ -286,6 +284,24 @@ defmodule FavnOrchestrator.BackfillManager do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp request_kind(%{__struct__: _struct, kind: kind}), do: normalize_kind(kind)
+
+  defp request_kind(value) when is_map(value) do
+    cond do
+      has_key?(value, :last) -> value |> get_value(:last) |> last_kind()
+      has_key?(value, :kind) -> value |> get_value(:kind) |> normalize_kind()
+      true -> {:error, {:invalid_backfill_range_request, value}}
+    end
+  end
+
+  defp request_kind(value) when is_list(value) do
+    cond do
+      Keyword.has_key?(value, :last) -> value |> Keyword.get(:last) |> last_kind()
+      Keyword.has_key?(value, :kind) -> value |> Keyword.get(:kind) |> normalize_kind()
+      true -> {:error, {:invalid_backfill_range_request, value}}
     end
   end
 
@@ -302,11 +318,6 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
-  defp relative_last_kind(value) when is_map(value), do: value |> get_value(:last) |> last_kind()
-
-  defp relative_last_kind(value) when is_list(value),
-    do: value |> Keyword.get(:last) |> last_kind()
-
   defp last_kind({_count, kind}), do: normalize_kind(kind)
   defp last_kind([_count, kind]), do: normalize_kind(kind)
   defp last_kind(%{kind: kind}), do: normalize_kind(kind)
@@ -315,9 +326,13 @@ defmodule FavnOrchestrator.BackfillManager do
 
   defp normalize_kind(kind) when kind in [:hour, :day, :month, :year], do: {:ok, kind}
   defp normalize_kind("hour"), do: {:ok, :hour}
+  defp normalize_kind("hourly"), do: {:ok, :hour}
   defp normalize_kind("day"), do: {:ok, :day}
+  defp normalize_kind("daily"), do: {:ok, :day}
   defp normalize_kind("month"), do: {:ok, :month}
+  defp normalize_kind("monthly"), do: {:ok, :month}
   defp normalize_kind("year"), do: {:ok, :year}
+  defp normalize_kind("yearly"), do: {:ok, :year}
   defp normalize_kind(value), do: {:error, {:invalid_window_policy_kind, value}}
 
   defp has_meaningful_relative_reference?(value) when is_map(value) do
@@ -343,6 +358,17 @@ defmodule FavnOrchestrator.BackfillManager do
 
   defp put_baseline(value, baseline) when is_list(value),
     do: Keyword.put(value, :baseline, baseline)
+
+  defp maybe_apply_coverage_baseline(range_request, baseline) do
+    if relative_last_request?(range_request) and
+         not has_meaningful_relative_reference?(range_request) do
+      range_request
+      |> put_baseline(baseline)
+      |> put_default_timezone(baseline.timezone)
+    else
+      range_request
+    end
+  end
 
   defp request_timezone(value) when is_map(value) do
     case get_value(value, :timezone) do
@@ -372,14 +398,28 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
-  defp maybe_compensate_submit_failure(backfill_run_id, pipeline_module, reason) do
-    with {:ok, parent} <- Storage.get_run(backfill_run_id),
-         true <- parent.submit_kind == :backfill_pipeline,
-         {:ok, windows} <- Storage.list_backfill_windows(backfill_run_id: backfill_run_id) do
-      now = DateTime.utc_now()
-      error = {:backfill_child_submission_failed, reason}
+  defp maybe_compensate_submit_failure(backfill_run_id, pipeline_module, reason, opts) do
+    case Storage.get_run(backfill_run_id) do
+      {:ok, %RunState{submit_kind: :backfill_pipeline} = parent} ->
+        compensate_existing_backfill(parent, pipeline_module, reason, opts)
 
-      updated_windows = windows_with_compensation(windows, pipeline_module, error, now)
+      {:ok, _other_run} ->
+        :ok
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp compensate_existing_backfill(%RunState{} = parent, pipeline_module, reason, opts) do
+    with {:ok, windows} <- Storage.list_backfill_windows(backfill_run_id: parent.id),
+         now <- DateTime.utc_now(),
+         error <- {:backfill_child_submission_failed, reason},
+         {:ok, updated_windows} <-
+           windows_with_compensation(windows, pipeline_module, error, now, opts) do
       status = BackfillProjector.parent_status(updated_windows)
 
       parent
@@ -394,28 +434,43 @@ defmodule FavnOrchestrator.BackfillManager do
         window_counts: window_counts(updated_windows)
       })
     else
-      _other -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
-  defp windows_with_compensation(windows, pipeline_module, error, now) do
-    Enum.map(windows, fn window ->
-      if window.pipeline_module == pipeline_module and window.status in [:pending, :running] do
-        updated = %{
-          window
-          | status: :error,
-            last_error: error,
-            errors: window.errors ++ [error],
-            finished_at: window.finished_at || now,
-            updated_at: now
-        }
+  defp windows_with_compensation(windows, pipeline_module, error, now, opts) do
+    result =
+      Enum.reduce_while(windows, {:ok, []}, fn window, {:ok, acc} ->
+        if window.pipeline_module == pipeline_module and window.status in [:pending, :running] do
+          updated = %{
+            window
+            | status: :error,
+              last_error: error,
+              errors: window.errors ++ [error],
+              finished_at: window.finished_at || now,
+              updated_at: now
+          }
 
-        _ = Storage.put_backfill_window(updated)
-        updated
-      else
-        window
-      end
-    end)
+          case put_compensated_window(updated, opts) do
+            :ok -> {:cont, {:ok, [updated | acc]}}
+            {:error, reason} -> {:halt, {:error, {:backfill_compensation_failed, reason}}}
+          end
+        else
+          {:cont, {:ok, [window | acc]}}
+        end
+      end)
+
+    case result do
+      {:ok, windows} -> {:ok, Enum.reverse(windows)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp put_compensated_window(window, opts) do
+    case Keyword.get(opts, :_compensation_window_writer) do
+      writer when is_function(writer, 1) -> writer.(window)
+      _other -> Storage.put_backfill_window(window)
+    end
   end
 
   defp parent_event_type(:ok), do: :backfill_finished

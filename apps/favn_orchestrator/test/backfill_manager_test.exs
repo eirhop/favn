@@ -68,6 +68,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = put_baseline("baseline_1")
 
     assert {:ok, parent_run_id} =
              FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
@@ -264,6 +265,57 @@ defmodule FavnOrchestrator.BackfillManagerTest do
              )
   end
 
+  test "coverage baseline id is validated for explicit and explicitly referenced relative ranges" do
+    version = manifest_version("mv_backfill_baseline_always_validated")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:error, {:coverage_baseline_not_found, "missing_baseline"}} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_explicit_missing_baseline",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+               coverage_baseline_id: "missing_baseline"
+             )
+
+    assert :ok = put_baseline("explicit_wrong_pipeline", pipeline_module: Other.Pipeline)
+
+    assert {:error, {:coverage_baseline_pipeline_mismatch, Other.Pipeline, MyApp.Pipelines.Daily}} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_explicit_wrong_pipeline_baseline",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+               coverage_baseline_id: "explicit_wrong_pipeline"
+             )
+
+    assert :ok = put_baseline("relative_ref_wrong_pipeline", pipeline_module: Other.Pipeline)
+
+    assert {:error, {:coverage_baseline_pipeline_mismatch, Other.Pipeline, MyApp.Pipelines.Daily}} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_relative_ref_wrong_pipeline_baseline",
+               range_request: %{
+                 "last" => [1, "day"],
+                 "relative_to" => "2026-04-28T00:00:00Z",
+                 "timezone" => "Etc/UTC"
+               },
+               coverage_baseline_id: "relative_ref_wrong_pipeline"
+             )
+  end
+
+  test "coverage baseline kind validation accepts range aliases" do
+    version = manifest_version("mv_backfill_baseline_kind_alias")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = put_baseline("baseline_daily_alias")
+
+    assert {:ok, parent_run_id} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_daily_alias",
+               range_request: %{"last" => [1, "daily"], "timezone" => "Etc/UTC"},
+               coverage_baseline_id: "baseline_daily_alias"
+             )
+
+    assert {:ok, [_window]} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+  end
+
   test "coverage baseline timezone is used when relative request omits timezone" do
     version = manifest_version("mv_backfill_baseline_timezone")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -354,6 +406,29 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert parent.status == :error
     assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent.id)
     assert Enum.all?(windows, &(&1.status == :error))
+  end
+
+  test "child submission compensation failure is returned without parent compensation" do
+    version = manifest_version("mv_backfill_compensation_write_failure")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    submitter = fn _pipeline_module, _child_opts -> {:error, :synthetic_first_submit_failed} end
+    writer = fn _window -> {:error, :synthetic_window_write_failed} end
+
+    assert {:error, {:backfill_compensation_failed, :synthetic_window_write_failed}} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_compensation_write_failure",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               _child_submitter: submitter,
+               _compensation_window_writer: writer
+             )
+
+    assert {:ok, parent} = Storage.get_run("run_backfill_compensation_write_failure")
+    assert parent.status == :running
+
+    assert {:ok, windows} = Storage.list_backfill_windows(backfill_run_id: parent.id)
+    assert Enum.all?(windows, &(&1.status == :pending))
   end
 
   test "coverage baseline rejects nested raw source identity" do

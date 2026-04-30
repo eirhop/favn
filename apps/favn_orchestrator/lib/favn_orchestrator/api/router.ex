@@ -1612,6 +1612,10 @@ defmodule FavnOrchestrator.API.Router do
     {:ok, "Backfill range exceeds maximum window count", %{requested: requested, max: max}}
   end
 
+  defp backfill_range_error({:coverage_baseline_not_found, baseline_id}) do
+    {:ok, "Coverage baseline was not found", %{coverage_baseline_id: baseline_id}}
+  end
+
   defp backfill_range_error({:coverage_baseline_pipeline_mismatch, baseline, requested}) do
     {:ok, "Coverage baseline does not belong to requested pipeline",
      %{

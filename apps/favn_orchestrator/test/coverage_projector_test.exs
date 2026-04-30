@@ -81,6 +81,37 @@ defmodule FavnOrchestrator.Backfill.CoverageProjectorTest do
     assert {:ok, []} = Storage.list_coverage_baselines([])
   end
 
+  test "coverage metadata ISO8601 timestamps are normalized" do
+    run = pipeline_run("run_coverage_string_timestamps")
+
+    assert :ok = TransitionWriter.persist_transition(run, :run_created, %{status: :pending})
+
+    terminal =
+      RunState.transition(run,
+        status: :ok,
+        result: %{
+          status: :ok,
+          metadata: %{
+            coverage: %{
+              source_key: "orders_api",
+              segment_key_hash: "sha256:segment",
+              coverage_start_at: "2026-04-01T00:00:00Z",
+              coverage_until: "2026-04-28T00:00:00Z",
+              window_kind: "daily",
+              timezone: "Etc/UTC"
+            }
+          }
+        }
+      )
+
+    assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{status: :ok})
+
+    assert {:ok, [baseline]} = Storage.list_coverage_baselines(source_key: "orders_api")
+    assert baseline.coverage_start_at == ~U[2026-04-01 00:00:00Z]
+    assert baseline.coverage_until == ~U[2026-04-28 00:00:00Z]
+    assert baseline.window_kind == :day
+  end
+
   test "raw segment or source identity is rejected without failing the run transition" do
     run = pipeline_run("run_coverage_raw_identity")
 
