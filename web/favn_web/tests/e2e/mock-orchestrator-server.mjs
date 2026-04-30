@@ -710,6 +710,59 @@ function handleActivateManifest(request, response, manifestVersionId) {
 	});
 }
 
+function handleAssetInspection(request, response, manifestVersionId, targetId, url) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	const limit = Number.parseInt(url.searchParams.get('limit') ?? '20', 10);
+	const cappedLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 20) : 20;
+
+	if (manifestVersionId !== 'manifest_v2') {
+		sendJson(response, 404, {
+			error: { code: 'not_found', message: `Manifest ${manifestVersionId} not found` }
+		});
+		return;
+	}
+
+	if (targetId === 'asset:Missing.LocalMaterialization:asset') {
+		sendJson(response, 404, {
+			error: {
+				code: 'not_found',
+				message: 'No local materialization is available for this asset'
+			}
+		});
+		return;
+	}
+
+	sendJson(response, 200, {
+		data: {
+			inspection: {
+				status: 'succeeded',
+				row_count: 2,
+				redacted: true,
+				redactions: ['secret columns redacted'],
+				warnings: [{ code: 'metadata_partial', message: 'Some metadata is unavailable' }],
+				columns: [
+					{ name: 'id', data_type: 'INTEGER' },
+					{ name: 'customer_token', data_type: 'VARCHAR', redacted: true }
+				],
+				sample: {
+					limit: cappedLimit,
+					rows: [
+						{ id: 1, customer_token: '[redacted]' },
+						{ id: 2, customer_token: '[redacted]' }
+					]
+				},
+				metadata: {
+					target_id: targetId,
+					manifest_version_id: manifestVersionId,
+					query_keys_seen: Array.from(url.searchParams.keys())
+				}
+			}
+		}
+	});
+}
+
 function handleListSchedules(request, response) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
@@ -822,6 +875,20 @@ const server = createServer((request, response) => {
 	);
 	if (method === 'POST' && activateManifestMatch) {
 		handleActivateManifest(request, response, decodeURIComponent(activateManifestMatch[1]));
+		return;
+	}
+
+	const assetInspectionMatch = url.pathname.match(
+		/^\/api\/orchestrator\/v1\/manifests\/([^/]+)\/assets\/([^/]+)\/inspection$/
+	);
+	if (method === 'GET' && assetInspectionMatch) {
+		handleAssetInspection(
+			request,
+			response,
+			decodeURIComponent(assetInspectionMatch[1]),
+			decodeURIComponent(assetInspectionMatch[2]),
+			url
+		);
 		return;
 	}
 

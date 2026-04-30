@@ -175,6 +175,11 @@ test.describe('auth/session/runs flow', () => {
 		await expect(page).toHaveURL(/\/assets\/Staging\.CustomerOrders%3Aasset$/);
 		await expect(page.getByRole('heading', { name: 'CustomerOrders' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Asset-only run unavailable' })).toBeDisabled();
+		await page.getByRole('button', { name: 'Load data preview' }).click();
+		await expect(page.getByText('Preview loaded from the local inspection service.')).toBeVisible();
+		await expect(page.getByText('secret columns redacted', { exact: true })).toBeVisible();
+		await expect(page.getByText('[redacted]').first()).toBeVisible();
+		await expect(page.getByText('Raw inspection metadata')).toBeVisible();
 
 		await page.getByRole('tab', { name: 'Runs' }).click();
 		await expect(page.getByText('run_002')).toBeVisible();
@@ -353,6 +358,36 @@ test.describe('auth/session/runs flow', () => {
 				cron: '*/5 * * * *'
 			})
 		});
+
+		const inspection = await pageGetJson(
+			page,
+			'/api/web/v1/manifests/manifest_v2/assets/asset%3AStaging.CustomerOrders%3Aasset/inspection?limit=999&sql=select%201'
+		);
+		expect(inspection.status).toBe(200);
+		expect(inspection.body).toMatchObject({
+			data: {
+				inspection: expect.objectContaining({
+					status: 'succeeded',
+					redacted: true,
+					sample: expect.objectContaining({ limit: 20 }),
+					metadata: expect.objectContaining({
+						query_keys_seen: ['limit']
+					})
+				})
+			}
+		});
+
+		const missingInspection = await pageGetJson(
+			page,
+			'/api/web/v1/manifests/manifest_v2/assets/asset%3AMissing.LocalMaterialization%3Aasset/inspection?limit=20'
+		);
+		expect(missingInspection.status).toBe(404);
+		expect(missingInspection.body).toEqual({
+			error: {
+				code: 'not_found',
+				message: 'No local materialization is available for this asset'
+			}
+		});
 	});
 
 	test('run stream relay smoke includes Last-Event-ID passthrough and validation', async ({
@@ -411,6 +446,17 @@ test.describe('auth/session/runs flow', () => {
 
 		expect(response.status()).toBe(401);
 		expect(await response.json()).toEqual({
+			error: {
+				code: 'unauthorized',
+				message: 'Authentication required'
+			}
+		});
+
+		const inspectionResponse = await page.request.get(
+			`${BASE_URL}/api/web/v1/manifests/manifest_v2/assets/asset%3AStaging.CustomerOrders%3Aasset/inspection`
+		);
+		expect(inspectionResponse.status()).toBe(401);
+		expect(await inspectionResponse.json()).toEqual({
 			error: {
 				code: 'unauthorized',
 				message: 'Authentication required'

@@ -1,6 +1,11 @@
 defmodule Favn.Contracts.RelationInspectionRequest do
   @moduledoc """
   Runner-owned read-only relation inspection request.
+
+  `sample_limit` is a non-negative runner contract value. Browser-facing layers
+  currently clamp requested samples to `1..20`; a runner-level value of `0` is
+  reserved for internal callers that want schema and metadata without sample
+  rows.
   """
 
   alias Favn.RelationRef
