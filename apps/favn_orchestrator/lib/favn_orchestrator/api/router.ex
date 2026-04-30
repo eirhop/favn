@@ -18,6 +18,16 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
 
+  @read_model_status_filters %{
+    "pending" => :pending,
+    "running" => :running,
+    "ok" => :ok,
+    "partial" => :partial,
+    "error" => :error,
+    "cancelled" => :cancelled,
+    "timed_out" => :timed_out
+  }
+
   plug(Plug.RequestId)
 
   plug(Plug.Parsers,
@@ -671,6 +681,10 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :invalid_pagination} ->
         error(conn, 422, "validation_failed", "Invalid pagination parameters")
 
+      {:error, {:manifest_filter_lookup_failed, reason}} ->
+        Logger.error("backfill_window.filter_lookup failed: #{inspect(reason)}")
+        error(conn, 400, "bad_request", "Request failed")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -749,6 +763,10 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :invalid_pagination} ->
         error(conn, 422, "validation_failed", "Invalid pagination parameters")
 
+      {:error, {:manifest_filter_lookup_failed, reason}} ->
+        Logger.error("coverage_baseline.filter_lookup failed: #{inspect(reason)}")
+        error(conn, 400, "bad_request", "Request failed")
+
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
     end
@@ -778,6 +796,10 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, {:manifest_filter_lookup_failed, reason}} ->
+        Logger.error("asset_window_state.filter_lookup failed: #{inspect(reason)}")
+        error(conn, 400, "bad_request", "Request failed")
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -1290,11 +1312,7 @@ defmodule FavnOrchestrator.API.Router do
   defp backfill_window_filters(params, backfill_run_id) when is_map(params) do
     with {:ok, filters} <- pagination_filters(params),
          {:ok, filters} <-
-           maybe_put_existing_atom_filter(
-             filters,
-             :pipeline_module,
-             Map.get(params, "pipeline_module")
-           ),
+           maybe_put_pipeline_module_filter(filters, Map.get(params, "pipeline_module")),
          {:ok, filters} <- maybe_put_status_filter(filters, Map.get(params, "status")) do
       {:ok,
        filters
@@ -1306,11 +1324,7 @@ defmodule FavnOrchestrator.API.Router do
   defp coverage_baseline_filters(params) when is_map(params) do
     with {:ok, filters} <- pagination_filters(params),
          {:ok, filters} <-
-           maybe_put_existing_atom_filter(
-             filters,
-             :pipeline_module,
-             Map.get(params, "pipeline_module")
-           ),
+           maybe_put_pipeline_module_filter(filters, Map.get(params, "pipeline_module")),
          {:ok, filters} <- maybe_put_status_filter(filters, Map.get(params, "status")) do
       {:ok,
        filters
@@ -1322,12 +1336,7 @@ defmodule FavnOrchestrator.API.Router do
   defp asset_window_state_filters(params) when is_map(params) do
     with {:ok, opts} <- pagination_filters(params),
          {:ok, opts} <- maybe_put_asset_ref_filters(opts, params),
-         {:ok, opts} <-
-           maybe_put_existing_atom_filter(
-             opts,
-             :pipeline_module,
-             Map.get(params, "pipeline_module")
-           ),
+         {:ok, opts} <- maybe_put_pipeline_module_filter(opts, Map.get(params, "pipeline_module")),
          {:ok, opts} <- maybe_put_status_filter(opts, Map.get(params, "status")) do
       {:ok,
        opts
@@ -1344,14 +1353,18 @@ defmodule FavnOrchestrator.API.Router do
         {:ok, opts}
 
       {module, name} when is_binary(module) and is_binary(name) ->
-        with {:ok, module_atom} <- existing_atom(module),
-             {:ok, name_atom} <- existing_atom(name) do
-          {:ok,
-           opts
-           |> Keyword.put(:asset_ref_module, module_atom)
-           |> Keyword.put(:asset_ref_name, name_atom)}
-        else
-          {:error, :invalid_existing_atom} -> {:error, :invalid_asset_ref}
+        case allowed_manifest_asset_ref(module, name) do
+          {:ok, {module_atom, name_atom}} ->
+            {:ok,
+             opts
+             |> Keyword.put(:asset_ref_module, module_atom)
+             |> Keyword.put(:asset_ref_name, name_atom)}
+
+          {:error, :invalid_manifest_asset_ref} ->
+            {:error, :invalid_asset_ref}
+
+          {:error, {:manifest_filter_lookup_failed, _reason}} = error ->
+            error
         end
 
       _other ->
@@ -1525,44 +1538,101 @@ defmodule FavnOrchestrator.API.Router do
   defp maybe_put_status_filter(opts, ""), do: {:ok, opts}
 
   defp maybe_put_status_filter(opts, value) when is_binary(value) do
-    case value do
-      "pending" -> {:ok, Keyword.put(opts, :status, :pending)}
-      "running" -> {:ok, Keyword.put(opts, :status, :running)}
-      "ok" -> {:ok, Keyword.put(opts, :status, :ok)}
-      "partial" -> {:ok, Keyword.put(opts, :status, :partial)}
-      "error" -> {:ok, Keyword.put(opts, :status, :error)}
-      "cancelled" -> {:ok, Keyword.put(opts, :status, :cancelled)}
-      "timed_out" -> {:ok, Keyword.put(opts, :status, :timed_out)}
-      _other -> {:error, :invalid_filter}
+    case Map.fetch(@read_model_status_filters, value) do
+      {:ok, status} -> {:ok, Keyword.put(opts, :status, status)}
+      :error -> {:error, :invalid_filter}
     end
   end
 
   defp maybe_put_status_filter(_opts, _value), do: {:error, :invalid_filter}
 
-  defp maybe_put_existing_atom_filter(opts, _key, nil), do: {:ok, opts}
-  defp maybe_put_existing_atom_filter(opts, _key, ""), do: {:ok, opts}
+  defp maybe_put_pipeline_module_filter(opts, nil), do: {:ok, opts}
+  defp maybe_put_pipeline_module_filter(opts, ""), do: {:ok, opts}
 
-  defp maybe_put_existing_atom_filter(opts, key, value) when is_binary(value) do
-    case existing_atom(value) do
-      {:ok, atom} -> {:ok, Keyword.put(opts, key, atom)}
-      {:error, :invalid_existing_atom} -> {:error, :invalid_filter}
+  defp maybe_put_pipeline_module_filter(opts, value) when is_binary(value) do
+    case allowed_manifest_pipeline_module(value) do
+      {:ok, module} -> {:ok, Keyword.put(opts, :pipeline_module, module)}
+      {:error, :invalid_manifest_pipeline_module} -> {:error, :invalid_filter}
+      {:error, {:manifest_filter_lookup_failed, _reason}} = error -> error
     end
   end
 
-  defp maybe_put_existing_atom_filter(_opts, _key, _value), do: {:error, :invalid_filter}
+  defp maybe_put_pipeline_module_filter(_opts, _value), do: {:error, :invalid_filter}
 
-  defp existing_atom(value) when is_binary(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> existing_elixir_module_atom(value)
+  defp allowed_manifest_pipeline_module(value) when is_binary(value) do
+    with {:ok, modules} <- manifest_pipeline_modules(),
+         {:ok, module} <- match_allowed_module(value, modules) do
+      {:ok, module}
+    else
+      {:error, :not_allowed} -> {:error, :invalid_manifest_pipeline_module}
+      {:error, {:manifest_filter_lookup_failed, _reason}} = error -> error
+    end
   end
 
-  defp existing_elixir_module_atom("Elixir." <> _module), do: {:error, :invalid_existing_atom}
+  defp allowed_manifest_asset_ref(module_value, name_value)
+       when is_binary(module_value) and is_binary(name_value) do
+    with {:ok, refs} <- manifest_asset_refs(),
+         {:ok, asset_ref} <- match_allowed_asset_ref(module_value, name_value, refs) do
+      {:ok, asset_ref}
+    else
+      {:error, :not_allowed} -> {:error, :invalid_manifest_asset_ref}
+      {:error, {:manifest_filter_lookup_failed, _reason}} = error -> error
+    end
+  end
 
-  defp existing_elixir_module_atom(value) do
-    {:ok, String.to_existing_atom("Elixir." <> value)}
-  rescue
-    ArgumentError -> {:error, :invalid_existing_atom}
+  defp manifest_pipeline_modules do
+    case FavnOrchestrator.list_manifests() do
+      {:ok, versions} ->
+        {:ok,
+         versions
+         |> Enum.flat_map(& &1.manifest.pipelines)
+         |> Enum.map(& &1.module)
+         |> Enum.uniq()}
+
+      {:error, reason} ->
+        {:error, {:manifest_filter_lookup_failed, reason}}
+    end
+  end
+
+  defp manifest_asset_refs do
+    case FavnOrchestrator.list_manifests() do
+      {:ok, versions} ->
+        {:ok,
+         versions
+         |> Enum.flat_map(& &1.manifest.assets)
+         |> Enum.map(& &1.ref)
+         |> Enum.uniq()}
+
+      {:error, reason} ->
+        {:error, {:manifest_filter_lookup_failed, reason}}
+    end
+  end
+
+  defp match_allowed_module(value, modules) do
+    Enum.find_value(modules, {:error, :not_allowed}, fn module ->
+      if module_filter_match?(value, module), do: {:ok, module}
+    end)
+  end
+
+  defp match_allowed_asset_ref(module_value, name_value, refs) do
+    Enum.find_value(refs, {:error, :not_allowed}, fn {module, name} = ref ->
+      if module_filter_match?(module_value, module) and name_value == Atom.to_string(name) do
+        {:ok, ref}
+      end
+    end)
+  end
+
+  defp module_filter_match?(value, module) when is_atom(module) do
+    value in module_filter_names(module)
+  end
+
+  defp module_filter_names(module) do
+    module
+    |> Atom.to_string()
+    |> then(fn
+      "Elixir." <> short_name = full_name -> [full_name, short_name]
+      full_name -> [full_name]
+    end)
   end
 
   defp data(conn, status, payload) do

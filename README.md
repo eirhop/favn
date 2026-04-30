@@ -413,7 +413,8 @@ window rows, one-window failed reruns, `/backfills/coverage-baselines`, and
 `/assets/window-states`.
 
 Backfill read commands are bounded. They default to `--limit 100 --offset 0`, reject
-`--limit` values above `500`, and print a next-page hint when more rows are available.
+`--limit` values above `500`, only accept known status values and manifest-owned
+pipeline or asset filters, and print a next-page hint when more rows are available.
 
 For `submit`, `--wait-timeout-ms` controls local CLI polling only, while
 `--run-timeout-ms` controls the child run execution timeout sent to the
