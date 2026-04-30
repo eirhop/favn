@@ -35,9 +35,8 @@ defmodule Favn.AI do
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
     details.
   - To work with operational backfill ranges, read
-    `Favn.Backfill.RangeRequest`, `Favn.Backfill.RangeResolver`, and
-    `Favn.Backfill.LookbackPolicy`. If you are wiring orchestrator-side
-    submission or projection, then read `FavnOrchestrator`,
+    `Favn.Backfill.RangeRequest` and `Favn.Backfill.RangeResolver`. If you are
+    wiring orchestrator-side submission or projection, then read `FavnOrchestrator`,
     `FavnOrchestrator.BackfillManager`, and the internal modules under
     `FavnOrchestrator.Backfill.*`. If you are changing the private service HTTP
     surface for backfills, also read `FavnOrchestrator.API.Router`. For the

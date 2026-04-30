@@ -256,6 +256,22 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
              ])
 
     assert message == "invalid option for mix favn.backfill submit"
+
+    assert {:error, message} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--from",
+               "2026-04-01",
+               "--to",
+               "2026-04-07",
+               "--kind",
+               "day",
+               "--lookback",
+               "2"
+             ])
+
+    assert message == "invalid option for mix favn.backfill submit"
   end
 
   test "mix favn.backfill parses read and rerun commands" do

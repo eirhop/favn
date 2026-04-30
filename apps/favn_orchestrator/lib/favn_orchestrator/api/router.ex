@@ -1232,7 +1232,8 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp submit_backfill_from_request(params) do
-    with {:ok, %{type: "pipeline", id: target_id}} <- fetch_target(params),
+    with :ok <- reject_backfill_lookback_params(params),
+         {:ok, %{type: "pipeline", id: target_id}} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
          {:ok, range_request} <- fetch_backfill_range_request(params) do
       FavnOrchestrator.submit_pipeline_backfill_for_manifest(
@@ -1251,6 +1252,19 @@ defmodule FavnOrchestrator.API.Router do
       %{} = range -> {:ok, range}
       nil -> {:error, :invalid_backfill_range_request}
       _other -> {:error, :invalid_backfill_range_request}
+    end
+  end
+
+  defp reject_backfill_lookback_params(params) when is_map(params) do
+    cond do
+      Map.has_key?(params, "lookback") ->
+        {:error, {:unsupported_backfill_option, :lookback}}
+
+      Map.has_key?(params, "lookback_policy") ->
+        {:error, {:unsupported_backfill_option, :lookback_policy}}
+
+      true ->
+        :ok
     end
   end
 
@@ -1610,6 +1624,10 @@ defmodule FavnOrchestrator.API.Router do
 
   defp backfill_range_error({:too_many_backfill_windows, requested, max}) do
     {:ok, "Backfill range exceeds maximum window count", %{requested: requested, max: max}}
+  end
+
+  defp backfill_range_error({:unsupported_backfill_option, option}) do
+    {:ok, "Unsupported backfill option", %{option: Atom.to_string(option)}}
   end
 
   defp backfill_range_error({:coverage_baseline_not_found, baseline_id}) do

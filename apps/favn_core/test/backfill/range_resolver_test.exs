@@ -1,22 +1,8 @@
 defmodule Favn.Backfill.RangeResolverTest do
   use ExUnit.Case, async: true
 
-  alias Favn.Backfill.LookbackPolicy
   alias Favn.Backfill.RangeRequest
   alias Favn.Backfill.RangeResolver
-
-  test "normalizes lookback policy values" do
-    assert LookbackPolicy.normalize(:asset_default) == {:ok, :asset_default}
-    assert LookbackPolicy.normalize("asset-default") == {:ok, :asset_default}
-    assert LookbackPolicy.normalize("asset_default") == {:ok, :asset_default}
-    assert LookbackPolicy.normalize(0) == {:ok, 0}
-    assert LookbackPolicy.normalize(12) == {:ok, 12}
-    assert LookbackPolicy.normalize("12") == {:ok, 12}
-
-    assert LookbackPolicy.normalize(-1) == {:error, {:invalid_lookback_policy, -1}}
-    assert LookbackPolicy.normalize("-1") == {:error, {:invalid_lookback_policy, "-1"}}
-    assert LookbackPolicy.normalize(:bad) == {:error, {:invalid_lookback_policy, :bad}}
-  end
 
   test "resolves explicit monthly range with inclusive request end" do
     assert {:ok, request} =
