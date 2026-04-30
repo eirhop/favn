@@ -962,23 +962,23 @@ defmodule Favn.SQL.Template do
     do: Enum.map(@reserved_runtime_inputs, &Atom.to_string/1)
 
   defp local_arg_atom!(name_string, state) do
-    Enum.find_value(
-      state.local_args,
-      fn ->
+    case Enum.find_value(state.local_args, fn
+           {name, _index} when is_atom(name) ->
+             if Atom.to_string(name) == name_string, do: {:ok, name}, else: false
+
+           _other ->
+             false
+         end) do
+      {:ok, name} ->
+        name
+
+      nil ->
         compile_error!(
           state.file,
           state.position.line,
           "undefined defsql placeholder @#{name_string}; expected one of #{inspect(Map.keys(state.local_args))}"
         )
-      end,
-      fn
-        {name, _index} when is_atom(name) ->
-          if Atom.to_string(name) == name_string, do: name, else: false
-
-        _other ->
-          false
-      end
-    )
+    end
   end
 
   defp existing_atom!(value) do

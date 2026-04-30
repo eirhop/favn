@@ -67,6 +67,17 @@ defmodule Favn.SQL.TemplateTest do
     end
   end
 
+  test "rejects undefined defsql placeholders without returning non-name values" do
+    assert_raise CompileError, ~r/undefined defsql placeholder @missing/, fn ->
+      Template.compile!("coalesce(@known, @missing)",
+        file: "test/fixtures/template_test.sql",
+        line: 1,
+        scope: :definition,
+        local_args: [:known]
+      )
+    end
+  end
+
   defp definition(name, arity) do
     %Definition{
       module: __MODULE__,
