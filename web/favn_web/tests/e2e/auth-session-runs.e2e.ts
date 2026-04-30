@@ -376,6 +376,18 @@ test.describe('auth/session/runs flow', () => {
 				})
 			}
 		});
+
+		const missingInspection = await pageGetJson(
+			page,
+			'/api/web/v1/manifests/manifest_v2/assets/asset%3AMissing.LocalMaterialization%3Aasset/inspection?limit=20'
+		);
+		expect(missingInspection.status).toBe(404);
+		expect(missingInspection.body).toEqual({
+			error: {
+				code: 'not_found',
+				message: 'No local materialization is available for this asset'
+			}
+		});
 	});
 
 	test('run stream relay smoke includes Last-Event-ID passthrough and validation', async ({

@@ -127,9 +127,11 @@
 		return inspection ? 'loaded' : 'not loaded';
 	});
 	let inspectionRedactions = $derived.by(() => {
-		const redactions = inspection?.redactions ?? inspection?.redacted_fields ?? inspection?.redactedFields;
+		const redactions =
+			inspection?.redactions ?? inspection?.redacted_fields ?? inspection?.redactedFields;
 		if (Array.isArray(redactions)) return redactions.map(formatDiagnostic);
-		if (inspection?.redacted === true) return ['Sensitive values were redacted by the inspection service.'];
+		if (inspection?.redacted === true)
+			return ['Sensitive values were redacted by the inspection service.'];
 		return [];
 	});
 	let notes = $derived.by(() => {
@@ -290,6 +292,18 @@
 		return record;
 	}
 
+	function inspectionErrorMessage(payload: unknown): string {
+		if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+			const error = (payload as Record<string, unknown>).error;
+			if (error && typeof error === 'object' && !Array.isArray(error)) {
+				const message = (error as Record<string, unknown>).message;
+				if (typeof message === 'string' && message.trim().length > 0) return message;
+			}
+		}
+
+		return 'Inspection request failed';
+	}
+
 	async function loadInspection() {
 		if (!manifestVersionId || !targetId) return;
 
@@ -307,11 +321,7 @@
 			);
 			const payload = (await response.json().catch(() => null)) as unknown;
 			if (!response.ok) {
-				const message =
-					payload && typeof payload === 'object' && 'error' in payload
-						? jsonValue((payload as Record<string, unknown>).error)
-						: 'Inspection request failed';
-				throw new Error(message);
+				throw new Error(inspectionErrorMessage(payload));
 			}
 			inspection = inspectionFromPayload(payload);
 		} catch (error) {
@@ -707,7 +717,9 @@
 						</div>
 
 						{#if inspectionStatus === 'loaded' || inspectionStatus === 'succeeded' || inspectionStatus === 'success'}
-							<p class="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-sm text-emerald-800">
+							<p
+								class="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-sm text-emerald-800"
+							>
 								Preview loaded from the local inspection service.
 							</p>
 						{:else if inspectionStatus === 'missing' || inspectionStatus === 'not_found'}
@@ -788,7 +800,8 @@
 
 						<details class="rounded-lg border bg-slate-50 p-3 text-sm">
 							<summary class="cursor-pointer font-medium">Raw inspection metadata</summary>
-							<pre class="mt-3 max-h-64 overflow-auto text-xs whitespace-pre-wrap">{safeJsonStringify(
+							<pre
+								class="mt-3 max-h-64 overflow-auto text-xs whitespace-pre-wrap">{safeJsonStringify(
 									inspection
 								)}</pre>
 						</details>

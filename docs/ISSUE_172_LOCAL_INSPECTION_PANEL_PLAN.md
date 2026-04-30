@@ -107,6 +107,9 @@ Return a stable, JSON-friendly map or struct:
 Rules:
 
 - Default `sample_limit` to 20 and cap it at 20 in every external-facing layer.
+- Browser-facing layers clamp requested samples to `1..20`; the runner contract
+  accepts `0` for internal schema/metadata-only inspection requests that should
+  not fetch sample rows.
 - Support only read-only operations: relation lookup, columns, row count, sample rows, and safe table metadata.
 - Treat missing relation as a normal inspectable state, not a page crash.
 - Normalize dates, decimals, binaries, atoms, and structs to JSON-safe values before exposing them to the web tier.
