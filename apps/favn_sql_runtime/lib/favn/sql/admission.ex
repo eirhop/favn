@@ -10,8 +10,13 @@ defmodule Favn.SQL.Admission do
     load merge pragma set truncate update vacuum
   )
 
-  @spec with_permit(Session.t(), atom(), iodata() | term(), (() -> term())) :: term()
-  def with_permit(%Session{concurrency_policy: %ConcurrencyPolicy{} = policy}, operation, payload, fun)
+  @spec with_permit(Session.t(), atom(), iodata() | term(), (-> term())) :: term()
+  def with_permit(
+        %Session{concurrency_policy: %ConcurrencyPolicy{} = policy},
+        operation,
+        payload,
+        fun
+      )
       when is_function(fun, 0) do
     if permit_required?(policy, operation, payload) do
       acquire_and_run(policy, fun)
@@ -24,13 +29,16 @@ defmodule Favn.SQL.Admission do
 
   @spec acquire_session(ConcurrencyPolicy.t() | nil) :: term()
   def acquire_session(%ConcurrencyPolicy{scope: scope} = policy) do
-    if permit_required?(policy, :connect, nil) do
-      if already_holding?(scope) do
+    cond do
+      not permit_required?(policy, :connect, nil) ->
+        nil
+
+      already_holding?(scope) ->
         increment_held(scope)
         {:borrowed, scope, self()}
-      else
+
+      true ->
         acquire_lease(policy)
-      end
     end
   end
 
@@ -38,10 +46,7 @@ defmodule Favn.SQL.Admission do
 
   @spec release_session(term()) :: :ok
   def release_session({_kind, scope, owner}) when owner == self() do
-    if decrement_held(scope) == 0 do
-      Limiter.release(scope)
-    end
-
+    release_held_scope(scope)
     :ok
   end
 
@@ -84,14 +89,13 @@ defmodule Favn.SQL.Admission do
       try do
         fun.()
       after
-        if decrement_held(scope) == 0 do
-          Limiter.release(scope)
-        end
+        release_held_scope(scope)
       end
     end
   end
 
-  defp acquire_lease(%ConcurrencyPolicy{scope: scope, limit: limit}), do: acquire_lease(scope, limit)
+  defp acquire_lease(%ConcurrencyPolicy{scope: scope, limit: limit}),
+    do: acquire_lease(scope, limit)
 
   defp acquire_lease(scope, limit) do
     :ok = Limiter.acquire(scope, limit)
@@ -101,7 +105,8 @@ defmodule Favn.SQL.Admission do
 
   defp already_holding?(scope), do: Map.get(held(), scope, 0) > 0
 
-  defp increment_held(scope), do: Process.put(@permit_key, Map.update(held(), scope, 1, &(&1 + 1)))
+  defp increment_held(scope),
+    do: Process.put(@permit_key, Map.update(held(), scope, 1, &(&1 + 1)))
 
   defp decrement_held(scope) do
     next =
@@ -112,6 +117,12 @@ defmodule Favn.SQL.Admission do
 
     Process.put(@permit_key, next)
     Map.get(next, scope, 0)
+  end
+
+  defp release_held_scope(scope) do
+    if decrement_held(scope) == 0 do
+      Limiter.release(scope)
+    end
   end
 
   defp held do

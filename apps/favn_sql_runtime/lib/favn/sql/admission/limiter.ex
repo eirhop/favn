@@ -3,6 +3,8 @@ defmodule Favn.SQL.Admission.Limiter do
 
   use GenServer
 
+  @initial_state %{limits: %{}, holders: %{}, queues: %{}, monitors: %{}}
+
   @type scope :: term()
 
   @spec acquire(scope(), pos_integer()) :: :ok
@@ -33,7 +35,7 @@ defmodule Favn.SQL.Admission.Limiter do
 
   @impl true
   def init(_opts) do
-    {:ok, %{limits: %{}, holders: %{}, queues: %{}, monitors: %{}}}
+    {:ok, initial_state()}
   end
 
   @impl true
@@ -49,7 +51,7 @@ defmodule Favn.SQL.Admission.Limiter do
 
   def handle_call(:reset, _from, state) do
     Enum.each(Map.keys(state.monitors), &Process.demonitor(&1, [:flush]))
-    {:reply, :ok, %{limits: %{}, holders: %{}, queues: %{}, monitors: %{}}}
+    {:reply, :ok, initial_state()}
   end
 
   @impl true
@@ -73,6 +75,8 @@ defmodule Favn.SQL.Admission.Limiter do
         {:noreply, %{state | monitors: monitors} |> remove_waiter(scope, monitor_ref)}
     end
   end
+
+  defp initial_state, do: @initial_state
 
   defp available?(state, scope) do
     active_count(state, scope) < Map.fetch!(state.limits, scope)
@@ -123,7 +127,9 @@ defmodule Favn.SQL.Admission.Limiter do
     end
   end
 
-  defp put_scope_holders(state, scope, []), do: %{state | holders: Map.delete(state.holders, scope)}
+  defp put_scope_holders(state, scope, []),
+    do: %{state | holders: Map.delete(state.holders, scope)}
+
   defp put_scope_holders(state, scope, holders), do: put_in(state, [:holders, scope], holders)
 
   defp enqueue_waiter(state, scope, {pid, _tag} = from) do
