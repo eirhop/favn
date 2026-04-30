@@ -11,6 +11,8 @@ defmodule Favn.SQL do
   parameterized reusable SQL definitions.
 
   Use `Favn.SQLAsset` when authoring a concrete runnable SQL asset.
+  Asset-specific SQL should stay in or next to the asset module; this module is
+  for SQL reused by multiple assets.
 
   ## Features
 
@@ -25,11 +27,11 @@ defmodule Favn.SQL do
         use Favn.SQL
 
         defsql orders_in_window(start_at, end_at) do
-          ~SQL"select * from raw.sales.orders where inserted_at >= @start_at and inserted_at < @end_at"
+          ~SQL"select * from raw.orders where inserted_at >= @start_at and inserted_at < @end_at"
         end
       end
 
-      defmodule MyApp.Gold.Sales.OrderSummary do
+      defmodule MyApp.Warehouse.Mart.OrderSummary do
         use MyApp.SQL.Reporting
         use Favn.SQLAsset
 

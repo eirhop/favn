@@ -15,21 +15,37 @@ defmodule Favn.SQLAsset do
   - you want Favn-aware relation references, placeholders, and reusable SQL
   - you want the SQL asset to participate in the same dependency and runtime model as Elixir assets
 
+  Like Elixir assets, SQL assets should carry a business-oriented `@moduledoc`
+  that explains the data grain, business rules, and downstream purpose.
+
+  Keep asset-specific SQL close to the asset. Inline SQL is fine for short
+  queries. For file-backed SQL, place the `.sql` file next to the asset module
+  and use a relative path such as `query file: "fct_orders.sql"`. Put SQL under
+  `MyApp.SQL.*` only when it is reusable across assets.
+
   ## Minimal example
 
-      defmodule MyApp.Gold.Sales.FctOrders do
-        use Favn.Namespace, relation: [connection: :warehouse, catalog: "gold", schema: "sales"]
+      # lib/my_app/warehouse/mart/fct_orders.ex
+      defmodule MyApp.Warehouse.Mart.FctOrders do
+        @moduledoc \"\"\"
+        Order fact mart used for revenue and customer reporting.
+
+        One row represents one completed order. Test orders are excluded and
+        order timestamps are grouped by business day in the warehouse timezone.
+        \"\"\"
+
         use Favn.SQLAsset
 
-        @doc "Build the gold orders fact table"
-        @meta owner: "analytics", category: :sales, tags: [:gold]
+        @doc "Build the order fact mart."
+        @meta owner: "analytics", category: :sales, tags: [:mart]
         @window Favn.Window.daily(lookback: 1)
+        @depends MyApp.Warehouse.Raw.Orders
         @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
         query do
           ~SQL\"""
           select *
-          from silver.sales.stg_orders
+          from raw.orders
           where order_date >= @window_start
             and order_date < @window_end
           \"""
@@ -42,7 +58,8 @@ defmodule Favn.SQLAsset do
   - declare exactly one `@materialized`
   - attach `@doc`, `@meta`, `@depends`, `@window`, `@materialized`, and optional `@relation` before `query`
   - use `~SQL` for inline SQL bodies
-  - use `query file: "..."` for file-backed SQL loaded at compile time
+  - use `query file: "..."` for asset-local file-backed SQL loaded at compile
+    time
 
   ## Attributes
 
@@ -70,17 +87,18 @@ defmodule Favn.SQLAsset do
   - incremental materialization requires `@window`
   - `:append` does not accept `:window_column`
   - `:delete_insert` requires `:window_column`
-  - `:merge`, `:replace`, and `unique_key` are not supported in v0.4
+  - `:merge`, `:replace`, and `unique_key` are not currently supported
 
   ## Dependency Inference
 
-  Relation-style references such as `silver.sales.stg_orders` are the preferred
-  way to reference upstream SQL inputs.
+  Relation-style references are the preferred way to reference upstream SQL
+  inputs when the SQL name unambiguously matches the owned relation convention.
 
   When a relation reference resolves to an owned asset relation in the same
   connection, Favn infers the dependency automatically. Use `@depends` when the
   dependency is not visible in the SQL body, when you need a non-SQL upstream,
-  or when the relation cannot be resolved from owned asset metadata.
+  when the relation cannot be resolved from owned asset metadata, or when the
+  project intentionally uses catalog-only layer names.
 
   ## Compiles To
 
@@ -195,7 +213,7 @@ defmodule Favn.SQLAsset do
       query do
         ~SQL\"""
         select *
-        from raw.sales.orders
+        from raw.orders
         \"""
       end
 
@@ -512,7 +530,8 @@ defmodule Favn.SQLAsset do
       DSLCompiler.compile_error!(
         raw_definition.file,
         raw_definition.line,
-        "incremental materialization unique_key is reserved for future :merge semantics and is not supported in Phase 4b"
+        "incremental materialization unique_key is reserved for future :merge semantics " <>
+          "and is not currently supported"
       )
     end
 
@@ -543,14 +562,14 @@ defmodule Favn.SQLAsset do
         DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
-          "incremental strategy :merge is not supported in Phase 4b"
+          "incremental strategy :merge is not currently supported"
         )
 
       :replace ->
         DSLCompiler.compile_error!(
           raw_definition.file,
           raw_definition.line,
-          "incremental strategy :replace is not supported in Phase 4b"
+          "incremental strategy :replace is not currently supported"
         )
     end
 

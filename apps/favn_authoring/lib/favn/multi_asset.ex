@@ -15,9 +15,22 @@ defmodule Favn.MultiAsset do
   - the runtime implementation is shared
   - per-asset differences are mostly config, metadata, relation ownership, or dependencies
 
+  Keep source/API transport mechanics in integration modules when useful, but
+  keep asset-specific extraction, normalization, and business rules visible in
+  this module.
+
   ## Minimal example
 
-      defmodule MyApp.Raw.Shopify do
+      # lib/my_app/warehouse/raw/shopify.ex
+      defmodule MyApp.Warehouse.Raw.Shopify do
+        @moduledoc \"\"\"
+        Raw Shopify resources used as source-shaped commerce inputs.
+
+        Each generated asset writes one source resource. Resource-specific
+        normalization remains visible in this module so the asset behavior can
+        be reviewed without opening the integration client.
+        \"\"\"
+
         use Favn.MultiAsset
 
         defaults do
@@ -196,7 +209,7 @@ defmodule Favn.MultiAsset do
   @doc """
   Declares defaults shared by every generated asset in the module.
 
-  Defaults are merged with per-asset declarations. In v0.4 this block supports
+  Defaults are merged with per-asset declarations. This block supports
   `meta`, `window`, and `rest`.
 
   Supported entries:
@@ -517,7 +530,7 @@ defmodule Favn.MultiAsset do
             DSLCompiler.compile_error!(
               env.file,
               env.line,
-              "asset blocks only support rest do ... end in v0.4; got: #{Macro.to_string(other)}"
+              "asset blocks only support rest do ... end, got: #{Macro.to_string(other)}"
             )
         end
       end)

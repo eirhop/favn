@@ -44,7 +44,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 5. Close Storage And Persistence Gaps
 
 - Expand Postgres verification so production-oriented persistence has stronger live confidence, not only adapter-shape confidence.
-- Finish remaining storage semantics cleanup that is still tracked as post-legacy or post-extraction follow-up.
+- Decide which storage and migration guarantees belong in the supported `v1` contract.
 
 ### 6. Decide What Must Be Production-Grade At `v1`
 

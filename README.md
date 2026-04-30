@@ -121,14 +121,17 @@ defmodule MyApp.Warehouse.Raw do
   use Favn.Namespace, relation: [catalog: "raw"]
 end
 
-defmodule MyApp.Warehouse.Raw.Sales do
-  use Favn.Namespace, relation: [schema: "sales"]
-end
+defmodule MyApp.Warehouse.Raw.Orders do
+  @moduledoc """
+  Raw commerce orders as received from the source platform.
 
-defmodule MyApp.Warehouse.Raw.Sales.Orders do
+  One row represents one source order. Cancelled orders are retained so
+  downstream models can decide how to treat them.
+  """
+
   use Favn.Asset
 
-  @doc "Load raw orders"
+  @doc "Fetch, normalize, and write raw orders."
   @meta owner: "data-platform", category: :sales, tags: [:raw]
   source_config :source_system,
     segment_id: env!("SOURCE_SYSTEM_SEGMENT_ID"),
@@ -141,13 +144,17 @@ defmodule MyApp.Warehouse.Raw.Sales.Orders do
 end
 ```
 
-Namespace defaults are inherited from parent modules. Child asset modules only
-need `use Favn.Namespace` when they are adding or overriding shared relation
-defaults. `@relation true` is the normal leaf-module path, while
-`@relation [name: "..."]` is the normal way to override only the relation
-name. SQL asset namespace inheritance is finalized during explicit
-asset/manifest compilation, so parent namespace modules do not need to compile
-before child SQL asset modules in the same parallel compiler batch.
+Namespace defaults are inherited from parent modules. The recommended default is
+`warehouse.ex` for the connection namespace, `warehouse/raw.ex` or
+`warehouse/mart.ex` for layer catalogs, and leaf files for assets. `@relation
+true` is the normal leaf-module path, while `@relation [name: "..."]` overrides
+only the relation name. SQL asset namespace inheritance is finalized during
+explicit asset/manifest compilation, so parent namespace modules do not need to
+compile before child SQL asset modules in the same parallel compiler batch.
+Use your own layer names, such as bronze/silver/gold or raw/intermediate/mart,
+and use schemas instead of catalogs if that is your platform convention.
+Keep asset-specific logic near the asset; move code to `integrations/` or `sql/`
+only when it is transport-specific or genuinely reusable.
 
 Assets can declare required runtime configuration with `source_config/2`,
 `env!/1`, and `secret_env!/1`. Manifests record the required environment keys
@@ -166,35 +173,44 @@ orders asset followed by SQL transformations.
 ### 3. Define a downstream SQL asset
 
 ```elixir
-defmodule MyApp.Warehouse.Gold do
-  use Favn.Namespace, relation: [catalog: "gold"]
+defmodule MyApp.Warehouse.Mart do
+  use Favn.Namespace, relation: [catalog: "mart"]
 end
 
-defmodule MyApp.Warehouse.Gold.Sales do
-  use Favn.Namespace, relation: [schema: "sales"]
-end
+defmodule MyApp.Warehouse.Mart.OrderSummary do
+  @moduledoc """
+  Sales order mart used by business reporting.
 
-defmodule MyApp.Warehouse.Gold.Sales.OrderSummary do
+  One row represents one reportable order after raw source fields have been
+  normalized for analytics.
+  """
+
   use Favn.SQLAsset
 
-  @meta owner: "analytics", category: :sales, tags: [:gold]
+  @meta owner: "analytics", category: :sales, tags: [:mart]
+  @depends MyApp.Warehouse.Raw.Orders
   @materialized :view
 
   query do
     ~SQL"""
     select *
-    from raw.sales.orders
+    from raw.orders
     """
   end
 end
 ```
 
-Relation-style SQL references are the primary authoring path. When a reference
-resolves to an owned asset relation on the same connection, Favn infers the
-dependency automatically, so `@depends` is only needed for dependencies that
-are not visible in SQL or cannot be resolved from owned relations. DuckDB-backed
-SQL materialization creates the owned target schema when needed before creating
-the table or view.
+Relation-style SQL references are the primary authoring path. Two-part SQL names
+are read as `schema.table`; three-part names are read as
+`catalog.schema.table`. When a reference resolves to an owned asset relation on
+the same connection, Favn infers the dependency automatically. Use `@depends`
+when the dependency is not visible in SQL, cannot be resolved from owned
+relations, or the project intentionally uses catalog-only layer names.
+DuckDB-backed SQL materialization creates the owned target schema when needed
+before creating the table or view.
+For longer queries, place the SQL file next to the SQL asset module, for example
+`warehouse/mart/order_summary.ex` plus `warehouse/mart/order_summary.sql`, and
+use `query file: "order_summary.sql"`.
 
 ### 4. Define a pipeline
 
@@ -203,7 +219,7 @@ defmodule MyApp.Pipelines.DailySales do
   use Favn.Pipeline
 
   pipeline :daily_sales do
-    asset MyApp.Warehouse.Gold.Sales.OrderSummary
+    asset MyApp.Warehouse.Mart.OrderSummary
     deps :all
     schedule cron: "0 2 * * *", timezone: "Etc/UTC"
     window :daily
@@ -229,8 +245,8 @@ import Config
 
 config :favn,
   asset_modules: [
-    MyApp.Warehouse.Raw.Sales.Orders,
-    MyApp.Warehouse.Gold.Sales.OrderSummary
+    MyApp.Warehouse.Raw.Orders,
+    MyApp.Warehouse.Mart.OrderSummary
   ],
   pipeline_modules: [
     MyApp.Pipelines.DailySales
@@ -502,7 +518,8 @@ Favn is used to define business-oriented assets and pipelines in Elixir,
 compile them into a manifest, and run or inspect them locally.
 
 Before guessing about Favn APIs, read `mix favn.read_doc Favn.AI` and follow
-the module pointers there.
+the module pointers there. Prefer the recommended consumer shape unless this
+project documents a stronger local convention.
 ```
 
 ## Current Direction

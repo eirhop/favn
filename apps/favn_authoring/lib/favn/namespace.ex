@@ -8,35 +8,74 @@ defmodule Favn.Namespace do
 
   ## When to use it
 
-  Use this module when many assets share the same `connection`, `catalog`, or
-  `schema` and you want those values derived from module nesting instead of
+  Use this module when many assets share the same warehouse connection or layer
+  catalog and you want those values derived from module nesting instead of
   repeated in every asset.
+
+  The recommended default is one namespace module per file:
+
+  - `warehouse.ex` sets the connection-level namespace.
+  - `warehouse/raw.ex` and `warehouse/mart.ex` set example layer catalogs.
+  - leaf modules under those folders define assets.
+
+  Use the layer names your platform uses, such as bronze/silver/gold,
+  raw/intermediate/mart, raw/mart, or domain-specific names. If your backend or
+  team models layers as schemas instead of catalogs, use schemas consistently
+  instead.
+
+  ## Recommended project shape
+
+      lib/my_app/
+        warehouse.ex
+        warehouse/raw.ex
+        warehouse/raw/orders.ex
+        warehouse/mart.ex
+        warehouse/mart/order_summary.ex
+        warehouse/mart/order_summary.sql
+        integrations/shopify.ex
+        pipelines/daily_sales.ex
+        triggers/schedules.ex
+        sql/calendar.ex
+
+  The warehouse tree should mirror namespaces and assets. Keep integration
+  clients, pipelines, triggers, and reusable SQL outside `warehouse/` unless the
+  project has a stronger documented convention. Keep asset-specific logic near
+  the asset; move code away from the asset only when it is transport-specific or
+  genuinely reused by multiple assets.
 
   ## Example
 
+      # lib/my_app/warehouse.ex
       defmodule MyApp.Warehouse do
         use Favn.Namespace, relation: [connection: :warehouse]
       end
 
+      # lib/my_app/warehouse/raw.ex
       defmodule MyApp.Warehouse.Raw do
         use Favn.Namespace, relation: [catalog: "raw"]
       end
 
-      defmodule MyApp.Warehouse.Raw.Sales do
-        use Favn.Namespace, relation: [schema: "sales"]
+      # lib/my_app/warehouse/raw/orders.ex
+      defmodule MyApp.Warehouse.Raw.Orders do
+        use Favn.Asset
+
+        @relation true
+        def asset(_ctx), do: :ok
       end
 
   ## Supported options
 
   `use Favn.Namespace` accepts:
 
-  - `relation: [connection: ..., catalog: ..., schema: ...]`
+  - `relation: [connection: ...]` for a root warehouse namespace
+  - `relation: [catalog: ...]` for layer namespaces such as raw or mart
 
   Supported relation keys:
 
   - `connection`: atom
   - `catalog`: string or atom
-  - `schema`: string or atom
+
+  `schema` is also accepted for teams or engines that model layers as schemas.
 
   Only `relation:` is supported at the top level.
 
@@ -128,7 +167,7 @@ defmodule Favn.Namespace do
 
   defp validate_no_legacy_keys!(opts_without_relation) do
     raise ArgumentError,
-          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; use relation: [connection: ..., catalog: ..., schema: ...]"
+          "namespace config contains unsupported key(s) #{inspect(Map.keys(opts_without_relation))}; use relation: [connection: ...], relation: [catalog: ...], or relation: [schema: ...]"
   end
 
   defp namespace_config(module) do
