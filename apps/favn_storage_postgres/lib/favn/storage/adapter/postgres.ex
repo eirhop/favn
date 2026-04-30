@@ -358,7 +358,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def list_coverage_baselines(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
-         page_opts <- page_opts(filters),
+         {:ok, page_opts} <- page_opts(filters),
          {:ok, sql, params} <-
            build_select_query(
              coverage_baseline_select(),
@@ -431,7 +431,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def list_backfill_windows(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
-         page_opts <- page_opts(filters),
+         {:ok, page_opts} <- page_opts(filters),
          {:ok, sql, params} <-
            build_select_query(
              backfill_window_select(),
@@ -501,7 +501,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def list_asset_window_states(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
-         page_opts <- page_opts(filters),
+         {:ok, page_opts} <- page_opts(filters),
          {:ok, sql, params} <-
            build_select_query(
              asset_window_state_select(),
@@ -714,10 +714,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
 
-  defp page_opts(filters) do
-    {:ok, opts} = Page.normalize_opts(filters)
-    opts
-  end
+  defp page_opts(filters), do: Page.normalize_opts(filters)
 
   defp decode_coverage_baseline_row([
          baseline_id,

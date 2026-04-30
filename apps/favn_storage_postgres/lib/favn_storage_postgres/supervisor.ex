@@ -24,34 +24,34 @@ defmodule FavnStoragePostgres.Supervisor do
   end
 
   defp bootstrap_storage(repo_config, :auto) do
-    {:ok, pid} = Repo.start_link(Keyword.put(repo_config, :name, Repo))
-
-    try do
+    with_bootstrap_repo(repo_config, fn ->
       Migrations.migrate!(Repo)
-    after
-      GenServer.stop(pid)
-    end
-
-    :ok
+    end)
   end
 
   defp bootstrap_storage(repo_config, :manual) do
-    {:ok, pid} = Repo.start_link(Keyword.put(repo_config, :name, Repo))
-
-    try do
+    with_bootstrap_repo(repo_config, fn ->
       if Migrations.schema_ready?(Repo) do
         :ok
       else
         raise "favn postgres schema is not ready; run migrations or set migration_mode: :auto"
       end
+    end)
+  end
+
+  defp bootstrap_storage(_repo_config, mode) do
+    raise "invalid postgres migration mode: #{inspect(mode)}"
+  end
+
+  defp with_bootstrap_repo(repo_config, fun) when is_function(fun, 0) do
+    {:ok, pid} = Repo.start_link(Keyword.put(repo_config, :name, Repo))
+
+    try do
+      fun.()
     after
       GenServer.stop(pid)
     end
 
     :ok
-  end
-
-  defp bootstrap_storage(_repo_config, mode) do
-    raise "invalid postgres migration mode: #{inspect(mode)}"
   end
 end

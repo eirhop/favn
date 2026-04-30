@@ -121,6 +121,14 @@ defmodule FavnStorageSqlite.AdapterTest do
              Adapter.get_scheduler_state(key, opts)
   end
 
+  test "read-model list APIs return invalid pagination errors", %{opts: opts} do
+    filters = [limit: 0]
+
+    assert {:error, :invalid_pagination} = Adapter.list_coverage_baselines(filters, opts)
+    assert {:error, :invalid_pagination} = Adapter.list_backfill_windows(filters, opts)
+    assert {:error, :invalid_pagination} = Adapter.list_asset_window_states(filters, opts)
+  end
+
   @tag without_started_adapter: true
   test "rejects manual mode startup when schema is missing" do
     unique = System.unique_integer([:positive])
