@@ -7,8 +7,11 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.Pipeline.Definition, as: PipelineDefinition
   alias Favn.RelationRef
   alias Favn.SQL.Template
+  alias Favn.Triggers.Schedule
+  alias Favn.Window.Policy
   alias FavnOrchestrator.Storage.PayloadCodec
 
   test "round-trips tagged runtime payload values" do
@@ -82,6 +85,32 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
     assert %Version{} = decoded
     assert %SQLExecution{template: %Template{}} = hd(decoded.manifest.assets).sql_execution
     assert decoded == version
+  end
+
+  test "round-trips pipeline definitions with inline trigger schedules" do
+    assert {:ok, schedule} =
+             Schedule.new_inline(
+               cron: "0 * * * *",
+               timezone: "Etc/UTC",
+               missed: :skip,
+               overlap: :forbid
+             )
+
+    definition = %PipelineDefinition{
+      module: MyApp.Pipelines.Scheduled,
+      name: :scheduled,
+      selectors: [{:asset, {MyApp.Assets.Scheduled, :asset}}],
+      schedule: {:inline, schedule},
+      window: Policy.new!(:day),
+      source: :dsl,
+      outputs: [:asset]
+    }
+
+    assert {:ok, encoded} = PayloadCodec.encode(definition)
+    assert {:ok, decoded} = PayloadCodec.decode(encoded)
+
+    assert %PipelineDefinition{schedule: {:inline, %Schedule{}}} = decoded
+    assert decoded == definition
   end
 
   test "rejects unknown atoms during decode" do

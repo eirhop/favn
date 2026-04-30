@@ -2,59 +2,65 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
   @moduledoc false
 
   @format "json-v1"
-  @allowed_struct_modules MapSet.new([
-                            "Elixir.Favn.Backfill.RangeRequest",
-                            "Elixir.Favn.Contracts.RelationInspectionRequest",
-                            "Elixir.Favn.Contracts.RelationInspectionResult",
-                            "Elixir.Favn.Contracts.RunnerEvent",
-                            "Elixir.Favn.Contracts.RunnerResult",
-                            "Elixir.Favn.Contracts.RunnerWork",
-                            "Elixir.Favn.Manifest",
-                            "Elixir.Favn.Manifest.Asset",
-                            "Elixir.Favn.Manifest.Catalog",
-                            "Elixir.Favn.Manifest.Graph",
-                            "Elixir.Favn.Manifest.Pipeline",
-                            "Elixir.Favn.Manifest.Schedule",
-                            "Elixir.Favn.Manifest.SQLExecution",
-                            "Elixir.Favn.Manifest.Version",
-                            "Elixir.Favn.Plan",
-                            "Elixir.Favn.Pipeline.Definition",
-                            "Elixir.Favn.Pipeline.Resolution",
-                            "Elixir.Favn.RelationRef",
-                            "Elixir.Favn.Run",
-                            "Elixir.Favn.Run.AssetResult",
-                            "Elixir.Favn.Run.Context",
-                            "Elixir.Favn.RuntimeConfig.Ref",
-                            "Elixir.Favn.Scheduler.State",
-                            "Elixir.Favn.SQL.Definition",
-                            "Elixir.Favn.SQL.Definition.Param",
-                            "Elixir.Favn.SQL.Column",
-                            "Elixir.Favn.SQL.Relation",
-                            "Elixir.Favn.SQL.RelationRef",
-                            "Elixir.Favn.SQL.Template",
-                            "Elixir.Favn.SQL.Template.AssetRef",
-                            "Elixir.Favn.SQL.Template.Call",
-                            "Elixir.Favn.SQL.Template.DefinitionRef",
-                            "Elixir.Favn.SQL.Template.Fragment",
-                            "Elixir.Favn.SQL.Template.Placeholder",
-                            "Elixir.Favn.SQL.Template.Position",
-                            "Elixir.Favn.SQL.Template.Relation",
-                            "Elixir.Favn.SQL.Template.Requirements",
-                            "Elixir.Favn.SQL.Template.Span",
-                            "Elixir.Favn.SQL.Template.Text",
-                            "Elixir.Favn.Window.Anchor",
-                            "Elixir.Favn.Window.Policy",
-                            "Elixir.Favn.Window.Request",
-                            "Elixir.Favn.Window.Runtime",
-                            "Elixir.Favn.Window.Spec",
-                            "Elixir.FavnOrchestrator.Backfill.AssetWindowState",
-                            "Elixir.FavnOrchestrator.Backfill.BackfillWindow",
-                            "Elixir.FavnOrchestrator.Backfill.CoverageBaseline",
-                            "Elixir.FavnOrchestrator.RunEvent",
-                            "Elixir.FavnOrchestrator.RunState",
-                            "Elixir.FavnOrchestrator.SchedulerEntry",
-                            "Elixir.MapSet"
-                          ])
+  @allowed_struct_modules %{
+    "Elixir.Favn.Backfill.RangeRequest" => :"Elixir.Favn.Backfill.RangeRequest",
+    "Elixir.Favn.Contracts.RelationInspectionRequest" =>
+      :"Elixir.Favn.Contracts.RelationInspectionRequest",
+    "Elixir.Favn.Contracts.RelationInspectionResult" =>
+      :"Elixir.Favn.Contracts.RelationInspectionResult",
+    "Elixir.Favn.Contracts.RunnerEvent" => :"Elixir.Favn.Contracts.RunnerEvent",
+    "Elixir.Favn.Contracts.RunnerResult" => :"Elixir.Favn.Contracts.RunnerResult",
+    "Elixir.Favn.Contracts.RunnerWork" => :"Elixir.Favn.Contracts.RunnerWork",
+    "Elixir.Favn.Manifest" => :"Elixir.Favn.Manifest",
+    "Elixir.Favn.Manifest.Asset" => :"Elixir.Favn.Manifest.Asset",
+    "Elixir.Favn.Manifest.Catalog" => :"Elixir.Favn.Manifest.Catalog",
+    "Elixir.Favn.Manifest.Graph" => :"Elixir.Favn.Manifest.Graph",
+    "Elixir.Favn.Manifest.Pipeline" => :"Elixir.Favn.Manifest.Pipeline",
+    "Elixir.Favn.Manifest.Schedule" => :"Elixir.Favn.Manifest.Schedule",
+    "Elixir.Favn.Manifest.SQLExecution" => :"Elixir.Favn.Manifest.SQLExecution",
+    "Elixir.Favn.Manifest.Version" => :"Elixir.Favn.Manifest.Version",
+    "Elixir.Favn.Plan" => :"Elixir.Favn.Plan",
+    "Elixir.Favn.Pipeline.Definition" => :"Elixir.Favn.Pipeline.Definition",
+    "Elixir.Favn.Pipeline.Resolution" => :"Elixir.Favn.Pipeline.Resolution",
+    "Elixir.Favn.RelationRef" => :"Elixir.Favn.RelationRef",
+    "Elixir.Favn.Run" => :"Elixir.Favn.Run",
+    "Elixir.Favn.Run.AssetResult" => :"Elixir.Favn.Run.AssetResult",
+    "Elixir.Favn.Run.Context" => :"Elixir.Favn.Run.Context",
+    "Elixir.Favn.RuntimeConfig.Ref" => :"Elixir.Favn.RuntimeConfig.Ref",
+    "Elixir.Favn.Scheduler.State" => :"Elixir.Favn.Scheduler.State",
+    "Elixir.Favn.SQL.Definition" => :"Elixir.Favn.SQL.Definition",
+    "Elixir.Favn.SQL.Definition.Param" => :"Elixir.Favn.SQL.Definition.Param",
+    "Elixir.Favn.SQL.Column" => :"Elixir.Favn.SQL.Column",
+    "Elixir.Favn.SQL.Relation" => :"Elixir.Favn.SQL.Relation",
+    "Elixir.Favn.SQL.RelationRef" => :"Elixir.Favn.SQL.RelationRef",
+    "Elixir.Favn.SQL.Template" => :"Elixir.Favn.SQL.Template",
+    "Elixir.Favn.SQL.Template.AssetRef" => :"Elixir.Favn.SQL.Template.AssetRef",
+    "Elixir.Favn.SQL.Template.Call" => :"Elixir.Favn.SQL.Template.Call",
+    "Elixir.Favn.SQL.Template.DefinitionRef" => :"Elixir.Favn.SQL.Template.DefinitionRef",
+    "Elixir.Favn.SQL.Template.Fragment" => :"Elixir.Favn.SQL.Template.Fragment",
+    "Elixir.Favn.SQL.Template.Placeholder" => :"Elixir.Favn.SQL.Template.Placeholder",
+    "Elixir.Favn.SQL.Template.Position" => :"Elixir.Favn.SQL.Template.Position",
+    "Elixir.Favn.SQL.Template.Relation" => :"Elixir.Favn.SQL.Template.Relation",
+    "Elixir.Favn.SQL.Template.Requirements" => :"Elixir.Favn.SQL.Template.Requirements",
+    "Elixir.Favn.SQL.Template.Span" => :"Elixir.Favn.SQL.Template.Span",
+    "Elixir.Favn.SQL.Template.Text" => :"Elixir.Favn.SQL.Template.Text",
+    "Elixir.Favn.Triggers.Schedule" => :"Elixir.Favn.Triggers.Schedule",
+    "Elixir.Favn.Window.Anchor" => :"Elixir.Favn.Window.Anchor",
+    "Elixir.Favn.Window.Policy" => :"Elixir.Favn.Window.Policy",
+    "Elixir.Favn.Window.Request" => :"Elixir.Favn.Window.Request",
+    "Elixir.Favn.Window.Runtime" => :"Elixir.Favn.Window.Runtime",
+    "Elixir.Favn.Window.Spec" => :"Elixir.Favn.Window.Spec",
+    "Elixir.FavnOrchestrator.Backfill.AssetWindowState" =>
+      :"Elixir.FavnOrchestrator.Backfill.AssetWindowState",
+    "Elixir.FavnOrchestrator.Backfill.BackfillWindow" =>
+      :"Elixir.FavnOrchestrator.Backfill.BackfillWindow",
+    "Elixir.FavnOrchestrator.Backfill.CoverageBaseline" =>
+      :"Elixir.FavnOrchestrator.Backfill.CoverageBaseline",
+    "Elixir.FavnOrchestrator.RunEvent" => :"Elixir.FavnOrchestrator.RunEvent",
+    "Elixir.FavnOrchestrator.RunState" => :"Elixir.FavnOrchestrator.RunState",
+    "Elixir.FavnOrchestrator.SchedulerEntry" => :"Elixir.FavnOrchestrator.SchedulerEntry",
+    "Elixir.MapSet" => :"Elixir.MapSet"
+  }
 
   @type encoded_value :: map() | list() | String.t() | number() | boolean() | nil
 
@@ -200,10 +206,9 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     do: {:error, {:invalid_struct_fields, raw_fields}}
 
   defp allowed_struct_module(raw_module) when is_binary(raw_module) do
-    if MapSet.member?(@allowed_struct_modules, raw_module) do
-      decode_existing_atom(raw_module)
-    else
-      {:error, {:unsupported_struct_module, raw_module}}
+    case Map.fetch(@allowed_struct_modules, raw_module) do
+      {:ok, module} -> {:ok, module}
+      :error -> {:error, {:unsupported_struct_module, raw_module}}
     end
   end
 
