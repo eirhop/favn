@@ -315,6 +315,297 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "decodes legacy backfill window kind aliases through constructors", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        unique = System.unique_integer([:positive])
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        start_at = DateTime.add(now, -86_400, :second)
+        baseline = sample_coverage_baseline("baseline_pg_legacy_#{unique}", :ok, now, start_at)
+
+        window =
+          sample_backfill_window("window_pg_legacy_#{unique}", :running, now, start_at, baseline)
+
+        state =
+          sample_asset_window_state(:orders, "asset_pg_legacy_#{unique}", :running, now, start_at)
+
+        assert :ok = Adapter.put_coverage_baseline(baseline, opts)
+        assert :ok = Adapter.put_backfill_window(window, opts)
+        assert :ok = Adapter.put_asset_window_state(state, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_pipeline_coverage_baselines SET window_kind = $1 WHERE baseline_id = $2",
+                   [
+                     "daily",
+                     baseline.baseline_id
+                   ]
+                 )
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_backfill_windows SET window_kind = $1 WHERE window_key = $2",
+                   [
+                     "daily",
+                     window.window_key
+                   ]
+                 )
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_asset_window_states SET window_kind = $1 WHERE window_key = $2",
+                   [
+                     "daily",
+                     state.window_key
+                   ]
+                 )
+
+        assert {:ok, ^baseline} = Adapter.get_coverage_baseline(baseline.baseline_id, opts)
+
+        assert {:ok, ^window} =
+                 Adapter.get_backfill_window(
+                   window.backfill_run_id,
+                   window.pipeline_module,
+                   window.window_key,
+                   opts
+                 )
+
+        assert {:ok, ^state} =
+                 Adapter.get_asset_window_state(
+                   state.asset_ref_module,
+                   state.asset_ref_name,
+                   state.window_key,
+                   opts
+                 )
+    end
+  end
+
+  test "rejects invalid persisted backfill read-model statuses", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        unique = System.unique_integer([:positive])
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        start_at = DateTime.add(now, -86_400, :second)
+
+        baseline =
+          sample_coverage_baseline("baseline_pg_bad_status_#{unique}", :ok, now, start_at)
+
+        window =
+          sample_backfill_window(
+            "window_pg_bad_status_#{unique}",
+            :running,
+            now,
+            start_at,
+            baseline
+          )
+
+        state =
+          sample_asset_window_state(
+            :orders,
+            "asset_pg_bad_status_#{unique}",
+            :running,
+            now,
+            start_at
+          )
+
+        assert :ok = Adapter.put_coverage_baseline(baseline, opts)
+        assert :ok = Adapter.put_backfill_window(window, opts)
+        assert :ok = Adapter.put_asset_window_state(state, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_pipeline_coverage_baselines SET status = $1 WHERE baseline_id = $2",
+                   [
+                     "bogus",
+                     baseline.baseline_id
+                   ]
+                 )
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_backfill_windows SET status = $1 WHERE window_key = $2",
+                   [
+                     "bogus",
+                     window.window_key
+                   ]
+                 )
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_asset_window_states SET status = $1 WHERE window_key = $2",
+                   [
+                     "bogus",
+                     state.window_key
+                   ]
+                 )
+
+        assert {:error, {:invalid_status, "bogus"}} =
+                 Adapter.get_coverage_baseline(baseline.baseline_id, opts)
+
+        assert {:error, {:invalid_status, "bogus"}} =
+                 Adapter.get_backfill_window(
+                   window.backfill_run_id,
+                   window.pipeline_module,
+                   window.window_key,
+                   opts
+                 )
+
+        assert {:error, {:invalid_status, "bogus"}} =
+                 Adapter.get_asset_window_state(
+                   state.asset_ref_module,
+                   state.asset_ref_name,
+                   state.window_key,
+                   opts
+                 )
+    end
+  end
+
+  test "rejects invalid persisted backfill read-model window kinds", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        unique = System.unique_integer([:positive])
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        start_at = DateTime.add(now, -86_400, :second)
+        baseline = sample_coverage_baseline("baseline_pg_bad_kind_#{unique}", :ok, now, start_at)
+
+        window =
+          sample_backfill_window(
+            "window_pg_bad_kind_#{unique}",
+            :running,
+            now,
+            start_at,
+            baseline
+          )
+
+        state =
+          sample_asset_window_state(
+            :orders,
+            "asset_pg_bad_kind_#{unique}",
+            :running,
+            now,
+            start_at
+          )
+
+        assert :ok = Adapter.put_coverage_baseline(baseline, opts)
+        assert :ok = Adapter.put_backfill_window(window, opts)
+        assert :ok = Adapter.put_asset_window_state(state, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_pipeline_coverage_baselines SET window_kind = $1 WHERE baseline_id = $2",
+                   [
+                     "fortnight",
+                     baseline.baseline_id
+                   ]
+                 )
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_backfill_windows SET window_kind = $1 WHERE window_key = $2",
+                   [
+                     "fortnight",
+                     window.window_key
+                   ]
+                 )
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_asset_window_states SET window_kind = $1 WHERE window_key = $2",
+                   [
+                     "fortnight",
+                     state.window_key
+                   ]
+                 )
+
+        assert {:error, {:invalid_window_kind, "fortnight"}} =
+                 Adapter.get_coverage_baseline(baseline.baseline_id, opts)
+
+        assert {:error, {:invalid_window_kind, "fortnight"}} =
+                 Adapter.get_backfill_window(
+                   window.backfill_run_id,
+                   window.pipeline_module,
+                   window.window_key,
+                   opts
+                 )
+
+        assert {:error, {:invalid_window_kind, "fortnight"}} =
+                 Adapter.get_asset_window_state(
+                   state.asset_ref_module,
+                   state.asset_ref_name,
+                   state.window_key,
+                   opts
+                 )
+    end
+  end
+
+  test "rejects unknown persisted backfill identity atoms", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        unique = System.unique_integer([:positive])
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        start_at = DateTime.add(now, -86_400, :second)
+
+        baseline =
+          sample_coverage_baseline("baseline_pg_unknown_atom_#{unique}", :ok, now, start_at)
+
+        state =
+          sample_asset_window_state(
+            :orders,
+            "asset_pg_unknown_atom_#{unique}",
+            :running,
+            now,
+            start_at
+          )
+
+        unknown_pipeline = "Elixir.FavnStoragePostgres.UnknownPipeline#{unique}"
+        unknown_asset_name = "unknown_asset_name_#{unique}"
+
+        assert :ok = Adapter.put_coverage_baseline(baseline, opts)
+        assert :ok = Adapter.put_asset_window_state(state, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_pipeline_coverage_baselines SET pipeline_module = $1 WHERE baseline_id = $2",
+                   [unknown_pipeline, baseline.baseline_id]
+                 )
+
+        assert {:error, {:unknown_atom, ^unknown_pipeline}} =
+                 Adapter.get_coverage_baseline(baseline.baseline_id, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_asset_window_states SET asset_ref_name = $1 WHERE window_key = $2",
+                   [unknown_asset_name, state.window_key]
+                 )
+
+        assert {:error, {:unknown_atom, ^unknown_asset_name}} =
+                 Adapter.list_asset_window_states([], opts)
+    end
+  end
+
   test "manual schema readiness can recover after missing migration row", context do
     case context[:opts] do
       nil ->
@@ -329,6 +620,82 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         :ok = Migrations.migrate!(Repo)
         assert true == Migrations.schema_ready?(Repo)
     end
+  end
+
+  defp sample_coverage_baseline(baseline_id, status, now, start_at) do
+    {:ok, baseline} =
+      CoverageBaseline.new(%{
+        baseline_id: baseline_id,
+        pipeline_module: MyApp.Pipeline,
+        source_key: "orders",
+        segment_key_hash: "sha256:#{baseline_id}",
+        segment_key_redacted: "tenant-***",
+        window_kind: :daily,
+        timezone: "Etc/UTC",
+        coverage_start_at: start_at,
+        coverage_until: now,
+        created_by_run_id: "run_#{baseline_id}",
+        manifest_version_id: "mv_#{baseline_id}",
+        status: status,
+        errors: [],
+        metadata: %{row_count: 10},
+        created_at: now,
+        updated_at: now
+      })
+
+    baseline
+  end
+
+  defp sample_backfill_window(window_key, status, now, start_at, baseline) do
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: "backfill_#{window_key}",
+        child_run_id: "child_#{window_key}",
+        pipeline_module: MyApp.Pipeline,
+        manifest_version_id: baseline.manifest_version_id,
+        coverage_baseline_id: baseline.baseline_id,
+        window_kind: :daily,
+        window_start_at: start_at,
+        window_end_at: now,
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: status,
+        attempt_count: 1,
+        latest_attempt_run_id: "child_#{window_key}",
+        last_error: %{reason: :retryable},
+        errors: [%{message: "retry"}],
+        metadata: %{partition: "2026-04-27"},
+        started_at: start_at,
+        created_at: start_at,
+        updated_at: now
+      })
+
+    window
+  end
+
+  defp sample_asset_window_state(asset_name, window_key, status, now, start_at) do
+    {:ok, state} =
+      AssetWindowState.new(%{
+        asset_ref_module: MyApp.Asset,
+        asset_ref_name: asset_name,
+        pipeline_module: MyApp.Pipeline,
+        manifest_version_id: "mv_#{window_key}",
+        window_kind: :daily,
+        window_start_at: start_at,
+        window_end_at: now,
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: status,
+        latest_run_id: "asset_#{window_key}",
+        latest_parent_run_id: "backfill_#{window_key}",
+        latest_success_run_id: if(status == :ok, do: "asset_#{window_key}", else: nil),
+        rows_written: 10,
+        errors: [],
+        metadata: %{relation: "gold.sales"},
+        updated_at: now
+      })
+
+    state
   end
 
   defp repo_config_from_url(url) do

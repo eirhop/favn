@@ -423,6 +423,185 @@ defmodule Favn.SQLiteStorageTest do
              )
   end
 
+  test "decodes legacy backfill window kind aliases through constructors" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    baseline = sample_coverage_baseline("baseline-legacy-kind", :ok, now)
+    window = sample_backfill_window("window-legacy-kind", :running, now)
+    state = sample_asset_window_state(:orders, "asset-legacy-kind", :running, now)
+
+    assert :ok = OrchestratorStorage.put_coverage_baseline(baseline)
+    assert :ok = OrchestratorStorage.put_backfill_window(window)
+    assert :ok = OrchestratorStorage.put_asset_window_state(state)
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_pipeline_coverage_baselines SET window_kind = ?1", [
+               "daily"
+             ])
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_backfill_windows SET window_kind = ?1", ["daily"])
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_asset_window_states SET window_kind = ?1", ["daily"])
+
+    assert {:ok, ^baseline} = OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
+
+    assert {:ok, ^window} =
+             OrchestratorStorage.get_backfill_window(
+               window.backfill_run_id,
+               window.pipeline_module,
+               window.window_key
+             )
+
+    assert {:ok, ^state} =
+             OrchestratorStorage.get_asset_window_state(
+               state.asset_ref_module,
+               state.asset_ref_name,
+               state.window_key
+             )
+  end
+
+  test "rejects invalid persisted backfill read-model statuses" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    baseline = sample_coverage_baseline("baseline-invalid-status", :ok, now)
+    window = sample_backfill_window("window-invalid-status", :running, now)
+    state = sample_asset_window_state(:orders, "asset-invalid-status", :running, now)
+
+    assert :ok = OrchestratorStorage.put_coverage_baseline(baseline)
+    assert :ok = OrchestratorStorage.put_backfill_window(window)
+    assert :ok = OrchestratorStorage.put_asset_window_state(state)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_pipeline_coverage_baselines SET status = ?1 WHERE baseline_id = ?2",
+               ["bogus", baseline.baseline_id]
+             )
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_backfill_windows SET status = ?1 WHERE window_key = ?2",
+               [
+                 "bogus",
+                 window.window_key
+               ]
+             )
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_asset_window_states SET status = ?1 WHERE window_key = ?2",
+               [
+                 "bogus",
+                 state.window_key
+               ]
+             )
+
+    assert {:error, {:invalid_status, "bogus"}} =
+             OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
+
+    assert {:error, {:invalid_status, "bogus"}} =
+             OrchestratorStorage.get_backfill_window(
+               window.backfill_run_id,
+               window.pipeline_module,
+               window.window_key
+             )
+
+    assert {:error, {:invalid_status, "bogus"}} =
+             OrchestratorStorage.get_asset_window_state(
+               state.asset_ref_module,
+               state.asset_ref_name,
+               state.window_key
+             )
+  end
+
+  test "rejects invalid persisted backfill read-model window kinds" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    baseline = sample_coverage_baseline("baseline-invalid-kind", :ok, now)
+    window = sample_backfill_window("window-invalid-kind", :running, now)
+    state = sample_asset_window_state(:orders, "asset-invalid-kind", :running, now)
+
+    assert :ok = OrchestratorStorage.put_coverage_baseline(baseline)
+    assert :ok = OrchestratorStorage.put_backfill_window(window)
+    assert :ok = OrchestratorStorage.put_asset_window_state(state)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_pipeline_coverage_baselines SET window_kind = ?1 WHERE baseline_id = ?2",
+               ["fortnight", baseline.baseline_id]
+             )
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_backfill_windows SET window_kind = ?1 WHERE window_key = ?2",
+               [
+                 "fortnight",
+                 window.window_key
+               ]
+             )
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_asset_window_states SET window_kind = ?1 WHERE window_key = ?2",
+               [
+                 "fortnight",
+                 state.window_key
+               ]
+             )
+
+    assert {:error, {:invalid_window_kind, "fortnight"}} =
+             OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
+
+    assert {:error, {:invalid_window_kind, "fortnight"}} =
+             OrchestratorStorage.get_backfill_window(
+               window.backfill_run_id,
+               window.pipeline_module,
+               window.window_key
+             )
+
+    assert {:error, {:invalid_window_kind, "fortnight"}} =
+             OrchestratorStorage.get_asset_window_state(
+               state.asset_ref_module,
+               state.asset_ref_name,
+               state.window_key
+             )
+  end
+
+  test "rejects unknown persisted backfill identity atoms" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    baseline = sample_coverage_baseline("baseline-unknown-atom", :ok, now)
+    state = sample_asset_window_state(:orders, "asset-unknown-atom", :running, now)
+    unknown_pipeline = "Elixir.Favn.SQLiteStorageTest.UnknownPipeline"
+    unknown_asset_name = "unknown_asset_name_#{System.unique_integer([:positive])}"
+
+    assert :ok = OrchestratorStorage.put_coverage_baseline(baseline)
+    assert :ok = OrchestratorStorage.put_asset_window_state(state)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_pipeline_coverage_baselines SET pipeline_module = ?1 WHERE baseline_id = ?2",
+               [unknown_pipeline, baseline.baseline_id]
+             )
+
+    assert {:error, {:unknown_atom, ^unknown_pipeline}} =
+             OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_asset_window_states SET asset_ref_name = ?1 WHERE window_key = ?2",
+               [unknown_asset_name, state.window_key]
+             )
+
+    assert {:error, {:unknown_atom, ^unknown_asset_name}} =
+             OrchestratorStorage.list_asset_window_states()
+  end
+
   defp sample_run(id, status, started_at \\ DateTime.utc_now(), opts \\ []) do
     now = DateTime.truncate(started_at, :second)
 
@@ -448,76 +627,85 @@ defmodule Favn.SQLiteStorageTest do
   end
 
   defp sample_coverage_baseline(baseline_id, status, now) do
-    %CoverageBaseline{
-      baseline_id: baseline_id,
-      pipeline_module: Favn.SQLiteStorageTest.Pipeline,
-      source_key: "orders-api",
-      segment_key_hash: "sha256:orders",
-      segment_key_redacted: "orders-***",
-      window_kind: :daily,
-      timezone: "Etc/UTC",
-      coverage_start_at: DateTime.add(now, -86_400, :second),
-      coverage_until: now,
-      created_by_run_id: "baseline-run-1",
-      manifest_version_id: "manifest_v1",
-      status: status,
-      errors: [%{reason: :sample_error}],
-      metadata: %{row_count: 12},
-      created_at: now,
-      updated_at: now
-    }
+    {:ok, baseline} =
+      CoverageBaseline.new(%{
+        baseline_id: baseline_id,
+        pipeline_module: Favn.SQLiteStorageTest.Pipeline,
+        source_key: "orders-api",
+        segment_key_hash: "sha256:orders",
+        segment_key_redacted: "orders-***",
+        window_kind: :daily,
+        timezone: "Etc/UTC",
+        coverage_start_at: DateTime.add(now, -86_400, :second),
+        coverage_until: now,
+        created_by_run_id: "baseline-run-1",
+        manifest_version_id: "manifest_v1",
+        status: status,
+        errors: [%{reason: :sample_error}],
+        metadata: %{row_count: 12},
+        created_at: now,
+        updated_at: now
+      })
+
+    baseline
   end
 
   defp sample_backfill_window(window_key, status, window_start_at) do
     window_end_at = DateTime.add(window_start_at, 86_400, :second)
 
-    %BackfillWindow{
-      backfill_run_id: "backfill-run-1",
-      child_run_id: "child-#{window_key}",
-      pipeline_module: Favn.SQLiteStorageTest.Pipeline,
-      manifest_version_id: "manifest_v1",
-      coverage_baseline_id: "baseline-ok",
-      window_kind: :daily,
-      window_start_at: window_start_at,
-      window_end_at: window_end_at,
-      timezone: "Etc/UTC",
-      window_key: window_key,
-      status: status,
-      attempt_count: 2,
-      latest_attempt_run_id: "attempt-#{window_key}",
-      last_success_run_id: if(status == :ok, do: "success-#{window_key}", else: nil),
-      last_error: %{reason: :sample_error},
-      started_at: window_start_at,
-      finished_at: if(status == :running, do: nil, else: window_end_at),
-      created_at: window_start_at,
-      updated_at: window_end_at,
-      errors: [%{attempt: 1, reason: :sample_error}],
-      metadata: %{source: "sqlite-test"}
-    }
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: "backfill-run-1",
+        child_run_id: "child-#{window_key}",
+        pipeline_module: Favn.SQLiteStorageTest.Pipeline,
+        manifest_version_id: "manifest_v1",
+        coverage_baseline_id: "baseline-ok",
+        window_kind: :daily,
+        window_start_at: window_start_at,
+        window_end_at: window_end_at,
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: status,
+        attempt_count: 2,
+        latest_attempt_run_id: "attempt-#{window_key}",
+        last_success_run_id: if(status == :ok, do: "success-#{window_key}", else: nil),
+        last_error: %{reason: :sample_error},
+        started_at: window_start_at,
+        finished_at: if(status == :running, do: nil, else: window_end_at),
+        created_at: window_start_at,
+        updated_at: window_end_at,
+        errors: [%{attempt: 1, reason: :sample_error}],
+        metadata: %{source: "sqlite-test"}
+      })
+
+    window
   end
 
   defp sample_asset_window_state(asset_name, window_key, status, window_start_at) do
     window_end_at = DateTime.add(window_start_at, 86_400, :second)
 
-    %AssetWindowState{
-      asset_ref_module: Favn.SQLiteStorageTest.Asset,
-      asset_ref_name: asset_name,
-      pipeline_module: Favn.SQLiteStorageTest.Pipeline,
-      manifest_version_id: "manifest_v1",
-      window_kind: :daily,
-      window_start_at: window_start_at,
-      window_end_at: window_end_at,
-      timezone: "Etc/UTC",
-      window_key: window_key,
-      status: status,
-      latest_run_id: "asset-run-#{window_key}",
-      latest_parent_run_id: "backfill-run-1",
-      latest_success_run_id: if(status == :ok, do: "asset-success-#{window_key}", else: nil),
-      latest_error: %{reason: :sample_error},
-      rows_written: 42,
-      errors: [%{reason: :sample_error}],
-      metadata: %{partition: window_key},
-      updated_at: window_end_at
-    }
+    {:ok, state} =
+      AssetWindowState.new(%{
+        asset_ref_module: Favn.SQLiteStorageTest.Asset,
+        asset_ref_name: asset_name,
+        pipeline_module: Favn.SQLiteStorageTest.Pipeline,
+        manifest_version_id: "manifest_v1",
+        window_kind: :daily,
+        window_start_at: window_start_at,
+        window_end_at: window_end_at,
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: status,
+        latest_run_id: "asset-run-#{window_key}",
+        latest_parent_run_id: "backfill-run-1",
+        latest_success_run_id: if(status == :ok, do: "asset-success-#{window_key}", else: nil),
+        latest_error: %{reason: :sample_error},
+        rows_written: 42,
+        errors: [%{reason: :sample_error}],
+        metadata: %{partition: window_key},
+        updated_at: window_end_at
+      })
+
+    state
   end
 end
