@@ -45,7 +45,7 @@ development on top of the new boundaries.
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
 - single-node assembly packaging now includes `mix favn.build.single` with topology-preserving assembly output under `.favn/dist/single/<build_id>/` (see `OPERATOR_NOTES.md` in each artifact)
-- operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev
+- operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 
 ## What Favn Gives You
 
@@ -377,10 +377,12 @@ smoke runs do not require hand-written private orchestrator API requests. This
 manual run path is the recommended default for one-time local ETL.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
-local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges, `windows RUN_ID` to
-inspect child windows, `coverage-baselines` and `asset-window-states` to inspect
-projected backfill state, and `rerun-window RUN_ID --window-key KEY` for failed
-window reruns.
+local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges,
+`windows RUN_ID` to inspect child windows, `coverage-baselines` and
+`asset-window-states` to inspect projected backfill state, and `rerun-window
+RUN_ID --window-key KEY` for failed window reruns. Operational backfill submit
+does not accept lookback-policy input; asset window lookback remains part of
+normal windowed execution only.
 
 For `submit`, `--wait-timeout-ms` controls local CLI polling only, while
 `--run-timeout-ms` controls the child run execution timeout sent to the

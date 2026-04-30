@@ -79,7 +79,6 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                  to: "2026-04-27",
                  timezone: "Etc/UTC"
                },
-               lookback: %{days: 7},
                timeout_ms: 1_000,
                max_attempts: 2,
                retry_backoff_ms: 10,
@@ -91,7 +90,6 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert parent.submit_kind == :backfill_pipeline
     assert parent.status in [:running, :ok]
     assert parent.runner_execution_id == nil
-    assert parent.metadata.backfill.lookback == %{days: 7}
     assert parent.metadata.backfill.coverage_baseline_id == "baseline_1"
     assert parent.metadata.backfill.requested_count == 2
 
@@ -156,6 +154,25 @@ defmodule FavnOrchestrator.BackfillManagerTest do
       refute Enum.any?(submissions, &(&1.run_id == parent_run_id))
       assert submissions |> Enum.map(& &1.run_id) |> Enum.uniq() |> Enum.sort() == child_run_ids
     end)
+  end
+
+  test "rejects unsupported lookback options before persisting parent state" do
+    version = manifest_version("mv_backfill_lookback_rejected")
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:error, {:unsupported_backfill_option, :lookback}} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_lookback_rejected",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               lookback: 2
+             )
+
+    assert {:error, :not_found} = Storage.get_run("run_backfill_lookback_rejected")
+
+    assert {:ok, []} =
+             Storage.list_backfill_windows(backfill_run_id: "run_backfill_lookback_rejected")
   end
 
   test "rejects oversized ranges before parent or windows are persisted" do

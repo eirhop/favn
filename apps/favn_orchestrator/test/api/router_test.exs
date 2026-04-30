@@ -734,6 +734,43 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert requested > 500
   end
 
+  test "backfill submit endpoint rejects unsupported lookback input" do
+    version = schedule_manifest_version("mv_backfill_lookback_rejected_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2026-01-01",
+          "to" => "2026-01-02",
+          "kind" => "day",
+          "timezone" => "Etc/UTC"
+        },
+        "lookback" => %{"days" => 7}
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Unsupported backfill option",
+               "details" => %{"option" => "lookback"}
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
   test "backfill submit endpoint reports missing coverage baseline clearly" do
     version = schedule_manifest_version("mv_backfill_missing_baseline_http")
     assert :ok = FavnOrchestrator.register_manifest(version)

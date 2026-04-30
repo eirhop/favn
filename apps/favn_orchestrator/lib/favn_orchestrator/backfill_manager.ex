@@ -44,7 +44,8 @@ defmodule FavnOrchestrator.BackfillManager do
     run_id = Keyword.get(opts, :run_id, new_run_id())
     range_request = Keyword.get(opts, :range_request)
 
-    with {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
+    with :ok <- reject_unsupported_lookback(opts),
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
          {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
@@ -184,7 +185,7 @@ defmodule FavnOrchestrator.BackfillManager do
 
       child_opts =
         opts
-        |> Keyword.drop([:range_request, :lookback, :run_id, :coverage_baseline_id])
+        |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id])
         |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
         |> Keyword.put(:anchor_window, anchor)
         |> Keyword.put(:parent_run_id, parent.id)
@@ -495,9 +496,21 @@ defmodule FavnOrchestrator.BackfillManager do
       range_start_at: range.range_start_at,
       range_end_at: range.range_end_at,
       window_keys: encoded_window_keys(range.anchors),
-      lookback: Keyword.get(opts, :lookback),
       coverage_baseline_id: Keyword.get(opts, :coverage_baseline_id)
     }
+  end
+
+  defp reject_unsupported_lookback(opts) do
+    cond do
+      Keyword.has_key?(opts, :lookback) ->
+        {:error, {:unsupported_backfill_option, :lookback}}
+
+      Keyword.has_key?(opts, :lookback_policy) ->
+        {:error, {:unsupported_backfill_option, :lookback_policy}}
+
+      true ->
+        :ok
+    end
   end
 
   defp backfill_range_summary(range) do
