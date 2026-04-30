@@ -164,11 +164,31 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
                occurred_at: DateTime.utc_now()
              })
 
-    key = {MyApp.Pipeline, :daily}
-    assert :ok = Storage.put_scheduler_state(key, %{version: 1, last_due_at: DateTime.utc_now()})
-    assert {:error, :stale_scheduler_state} = Storage.put_scheduler_state(key, %{version: 1})
-    assert :ok = Storage.put_scheduler_state(key, %{version: 2, last_due_at: DateTime.utc_now()})
-    assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} = Storage.get_scheduler_state(key)
+    daily_key = {MyApp.Pipeline, :daily}
+    hourly_key = {MyApp.Pipeline, :hourly}
+    nil_key = {MyApp.Pipeline, nil}
+
+    assert :ok =
+             Storage.put_scheduler_state(daily_key, %{version: 1, last_due_at: DateTime.utc_now()})
+
+    assert {:error, :stale_scheduler_state} =
+             Storage.put_scheduler_state(daily_key, %{version: 1})
+
+    assert :ok =
+             Storage.put_scheduler_state(daily_key, %{version: 2, last_due_at: DateTime.utc_now()})
+
+    assert :ok = Storage.put_scheduler_state(hourly_key, %{version: 1})
+
+    assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} =
+             Storage.get_scheduler_state(daily_key)
+
+    assert {:ok, %Favn.Scheduler.State{schedule_id: :hourly}} =
+             Storage.get_scheduler_state(hourly_key)
+
+    assert {:ok, nil} = Storage.get_scheduler_state(nil_key)
+
+    assert :ok = Storage.put_scheduler_state(nil_key, %{version: 1})
+    assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} = Storage.get_scheduler_state(nil_key)
   end
 
   defp manifest_version(manifest_version_id) do

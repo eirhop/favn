@@ -12,7 +12,7 @@ defmodule Favn.SQL.ParamBinding do
 
   @type t :: %__MODULE__{
           ordinal: pos_integer(),
-          name: atom(),
+          name: atom() | String.t(),
           source: source(),
           value: term(),
           span: Span.t() | nil

@@ -315,9 +315,11 @@ defmodule Favn.Manifest.Rehydrate do
         }
 
       template_placeholder?(value) ->
+        source = value |> field_value(:source) |> decode_placeholder_source()
+
         %Placeholder{
-          name: value |> field_value(:name) |> decode_atom_optional(),
-          source: value |> field_value(:source) |> decode_placeholder_source(),
+          name: value |> field_value(:name) |> decode_placeholder_name(source),
+          source: source,
           span: value |> field_value(:span) |> build_template_span()
         }
 
@@ -394,12 +396,15 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_placeholder_source(other), do: other
 
+  defp decode_placeholder_name(value, :query_param) when is_binary(value), do: value
+  defp decode_placeholder_name(value, _source), do: decode_atom_optional(value)
+
   defp build_requirements(%Requirements{} = value), do: value
 
   defp build_requirements(value) when is_map(value) do
     %Requirements{
       runtime_inputs: value |> field_value(:runtime_inputs) |> build_atom_mapset(),
-      query_params: value |> field_value(:query_params) |> build_atom_mapset()
+      query_params: value |> field_value(:query_params) |> build_string_mapset()
     }
   end
 
@@ -427,6 +432,28 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_atom_mapset(_other), do: MapSet.new()
+
+  defp build_string_mapset(%MapSet{} = value), do: MapSet.new(value, &to_string/1)
+
+  defp build_string_mapset(value) when is_map(value) do
+    entries =
+      case field_value(value, :map) do
+        nested when is_map(nested) -> Map.keys(nested)
+        _other -> Map.keys(value)
+      end
+
+    entries
+    |> Enum.map(&to_string/1)
+    |> MapSet.new()
+  end
+
+  defp build_string_mapset(value) when is_list(value) do
+    value
+    |> Enum.map(&to_string/1)
+    |> MapSet.new()
+  end
+
+  defp build_string_mapset(_other), do: MapSet.new()
 
   defp build_pipelines(values) when is_list(values), do: Enum.map(values, &build_pipeline/1)
   defp build_pipelines(_other), do: []
@@ -720,7 +747,7 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_manifest_module!(value) do
     if valid_manifest_module?(value) do
-      String.to_atom(value)
+      decode_existing_atom!(value)
     else
       raise ArgumentError, "invalid module reference #{inspect(value)}"
     end
@@ -728,7 +755,7 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_manifest_atom!(value) do
     if valid_manifest_atom?(value) do
-      String.to_atom(value)
+      decode_existing_atom!(value)
     else
       raise ArgumentError, "invalid atom reference #{inspect(value)}"
     end

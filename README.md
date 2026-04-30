@@ -38,7 +38,7 @@ development on top of the new boundaries.
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
-- local development startup uses HTTP-level orchestrator readiness checks and structured local API failure diagnostics
+- local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, and structured local API failure diagnostics
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
@@ -424,8 +424,9 @@ The local runner receives only the explicitly supported consumer `:favn` config
 needed for local execution: `:connection_modules`, `:connections`,
 `:runner_plugins`, and `:duckdb_in_process_client`. This transport is local-dev
 plumbing only; it uses a tagged payload rather than arbitrary app-env forwarding,
-normalizes relative connection database paths from the consumer project root,
-and redacts connection/plugin secrets from diagnostics.
+maps top-level keys explicitly, validates transported module/local atoms before
+recreating them, normalizes relative connection database paths from the consumer
+project root, and redacts connection/plugin secrets from diagnostics.
 
 If you are upgrading from earlier pre-closeout local SQL storage state, run
 `mix favn.reset` once so local persisted payloads are recreated in the current
@@ -466,6 +467,11 @@ Storage modes:
 
 `mix favn.build.single` defaults to SQLite and accepts
 `--storage sqlite|postgres`.
+
+Storage adapter startup reports recoverable configuration failures as
+`{:error, reason}`. Scheduler state keys are exact across built-in adapters:
+`{pipeline_module, nil}` addresses the nil schedule id and does not fall back to
+the latest concrete schedule id.
 
 ### favn_local implementation notes
 

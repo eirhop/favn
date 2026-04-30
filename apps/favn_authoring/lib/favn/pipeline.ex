@@ -523,9 +523,6 @@ defmodule Favn.Pipeline do
     else
       _ -> {:error, :not_pipeline_module}
     end
-  rescue
-    _error ->
-      {:error, :pipeline_not_defined}
   end
 
   def fetch(_invalid), do: {:error, :not_pipeline_module}

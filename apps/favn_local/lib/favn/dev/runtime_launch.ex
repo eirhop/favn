@@ -77,7 +77,10 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_DEV_CONSUMER_EBIN_PATHS",
           Enum.join(consumer_ebin_paths, path_separator())
         )
-        |> Map.put("FAVN_DEV_CONSUMER_FAVN_CONFIG", ConsumerConfigTransport.collect_and_encode(opts))
+        |> Map.put(
+          "FAVN_DEV_CONSUMER_FAVN_CONFIG",
+          ConsumerConfigTransport.collect_and_encode(opts)
+        )
     }
   end
 
@@ -147,7 +150,25 @@ defmodule Favn.Dev.RuntimeLaunch do
                 "unsupported FAVN_DEV_STORAGE=\#{inspect(other)}; expected memory, sqlite, or postgres"
       end
 
-      runner_node = String.to_atom(System.fetch_env!("FAVN_DEV_RUNNER_NODE"))
+      validate_runner_node_name! = fn node_name ->
+        valid_part? = fn part ->
+          byte_size(part) in 1..128 and String.match?(part, ~r/^[A-Za-z0-9_-]+$/)
+        end
+
+        case String.split(node_name, "@", parts: 2) do
+          [short_name, host] when byte_size(node_name) <= 255 ->
+            if not String.contains?(host, ".") and valid_part?.(short_name) and valid_part?.(host) do
+              node_name
+            else
+              raise ArgumentError, "invalid FAVN_DEV_RUNNER_NODE"
+            end
+
+          _other ->
+            raise ArgumentError, "invalid FAVN_DEV_RUNNER_NODE"
+        end
+      end
+
+      runner_node = System.fetch_env!("FAVN_DEV_RUNNER_NODE") |> validate_runner_node_name!.() |> String.to_atom()
       Application.put_env(:favn_orchestrator, :runner_client, FavnOrchestrator.RunnerClient.LocalNode)
       Application.put_env(:favn_orchestrator, :runner_client_opts, [runner_node: runner_node])
       Application.put_env(:favn_orchestrator, :scheduler,
@@ -217,7 +238,14 @@ defmodule Favn.Dev.RuntimeLaunch do
     %{
       name: "web",
       exec: node,
-      args: [vite, "preview", "--host", @loopback_host, "--port", Integer.to_string(config.web_port)],
+      args: [
+        vite,
+        "preview",
+        "--host",
+        @loopback_host,
+        "--port",
+        Integer.to_string(config.web_port)
+      ],
       cwd: runtime["web_root"],
       log_path: Paths.web_log_path(Paths.root_dir(opts)),
       env: %{
@@ -325,5 +353,4 @@ defmodule Favn.Dev.RuntimeLaunch do
       _other -> ":"
     end
   end
-
 end

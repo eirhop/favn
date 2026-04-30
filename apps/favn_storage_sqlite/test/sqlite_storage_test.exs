@@ -313,6 +313,15 @@ defmodule Favn.SQLiteStorageTest do
              OrchestratorStorage.get_scheduler_state({pipeline, :hourly})
 
     assert {:ok, nil} = OrchestratorStorage.get_scheduler_state({pipeline, nil})
+
+    assert :ok =
+             OrchestratorStorage.put_scheduler_state(
+               {pipeline, nil},
+               %{version: 1, schedule_fingerprint: "nil-v1"}
+             )
+
+    assert {:ok, %SchedulerState{schedule_id: nil, schedule_fingerprint: "nil-v1"}} =
+             OrchestratorStorage.get_scheduler_state({pipeline, nil})
   end
 
   test "malformed scheduler state blobs return decode errors" do
