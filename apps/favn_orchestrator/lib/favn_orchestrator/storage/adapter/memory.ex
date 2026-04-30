@@ -263,11 +263,6 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:ok, initial_state()}
   end
 
-  @impl true
-  def handle_call(:reset, _from, _state) do
-    {:reply, :ok, initial_state()}
-  end
-
   defp initial_state do
     %{
       manifests: %{},
@@ -279,6 +274,11 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       backfill_windows: %{},
       asset_window_states: %{}
     }
+  end
+
+  @impl true
+  def handle_call(:reset, _from, _state) do
+    {:reply, :ok, initial_state()}
   end
 
   def handle_call({:put_manifest_version, %Version{} = version}, _from, state) do
