@@ -571,6 +571,37 @@ defmodule Favn.SQLiteStorageTest do
              )
   end
 
+  test "rejects unknown persisted backfill identity atoms" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    baseline = sample_coverage_baseline("baseline-unknown-atom", :ok, now)
+    state = sample_asset_window_state(:orders, "asset-unknown-atom", :running, now)
+    unknown_pipeline = "Elixir.Favn.SQLiteStorageTest.UnknownPipeline"
+    unknown_asset_name = "unknown_asset_name_#{System.unique_integer([:positive])}"
+
+    assert :ok = OrchestratorStorage.put_coverage_baseline(baseline)
+    assert :ok = OrchestratorStorage.put_asset_window_state(state)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_pipeline_coverage_baselines SET pipeline_module = ?1 WHERE baseline_id = ?2",
+               [unknown_pipeline, baseline.baseline_id]
+             )
+
+    assert {:error, {:unknown_atom, ^unknown_pipeline}} =
+             OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_asset_window_states SET asset_ref_name = ?1 WHERE window_key = ?2",
+               [unknown_asset_name, state.window_key]
+             )
+
+    assert {:error, {:unknown_atom, ^unknown_asset_name}} =
+             OrchestratorStorage.list_asset_window_states()
+  end
+
   defp sample_run(id, status, started_at \\ DateTime.utc_now(), opts \\ []) do
     now = DateTime.truncate(started_at, :second)
 

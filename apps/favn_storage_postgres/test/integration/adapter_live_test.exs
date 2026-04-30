@@ -556,6 +556,56 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "rejects unknown persisted backfill identity atoms", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        unique = System.unique_integer([:positive])
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        start_at = DateTime.add(now, -86_400, :second)
+
+        baseline =
+          sample_coverage_baseline("baseline_pg_unknown_atom_#{unique}", :ok, now, start_at)
+
+        state =
+          sample_asset_window_state(
+            :orders,
+            "asset_pg_unknown_atom_#{unique}",
+            :running,
+            now,
+            start_at
+          )
+
+        unknown_pipeline = "Elixir.FavnStoragePostgres.UnknownPipeline#{unique}"
+        unknown_asset_name = "unknown_asset_name_#{unique}"
+
+        assert :ok = Adapter.put_coverage_baseline(baseline, opts)
+        assert :ok = Adapter.put_asset_window_state(state, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_pipeline_coverage_baselines SET pipeline_module = $1 WHERE baseline_id = $2",
+                   [unknown_pipeline, baseline.baseline_id]
+                 )
+
+        assert {:error, {:unknown_atom, ^unknown_pipeline}} =
+                 Adapter.get_coverage_baseline(baseline.baseline_id, opts)
+
+        assert {:ok, _} =
+                 SQL.query(
+                   Repo,
+                   "UPDATE favn_asset_window_states SET asset_ref_name = $1 WHERE window_key = $2",
+                   [unknown_asset_name, state.window_key]
+                 )
+
+        assert {:error, {:unknown_atom, ^unknown_asset_name}} =
+                 Adapter.list_asset_window_states([], opts)
+    end
+  end
+
   test "manual schema readiness can recover after missing migration row", context do
     case context[:opts] do
       nil ->
