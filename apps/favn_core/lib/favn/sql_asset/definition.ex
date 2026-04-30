@@ -3,7 +3,6 @@ defmodule Favn.SQLAsset.Definition do
   Internal compiled SQL asset definition used by the SQL asset frontend.
   """
 
-  alias Favn.Asset
   alias Favn.Asset.RelationInput
   alias Favn.SQL
   alias Favn.SQLAsset.Materialization
@@ -20,9 +19,17 @@ defmodule Favn.SQLAsset.Definition do
     raw_asset: nil
   ]
 
+  @type asset :: %{
+          required(:ref) => {module(), atom()},
+          required(:relation) => Favn.RelationRef.t(),
+          required(:file) => String.t(),
+          required(:window_spec) => Favn.Window.Spec.t() | nil,
+          optional(atom()) => term()
+        }
+
   @type t :: %__MODULE__{
           module: module(),
-          asset: Asset.t(),
+          asset: asset(),
           sql: String.t(),
           template: SQL.Template.t(),
           materialization: Materialization.t(),

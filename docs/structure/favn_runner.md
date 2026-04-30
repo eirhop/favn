@@ -11,6 +11,10 @@ Code:
 
 Tests:
 - `apps/favn_runner/test/`
+- App-local tests use manifest-shaped fixtures and fake SQL adapters instead of
+  authoring DSL fixtures or concrete runner plugins from sibling apps.
+- Connection loader tests declare the authoring app as a test-only dependency so
+  local connection fixtures can use the public `Favn.Connection` behaviour.
 
 Use when changing asset execution, runner protocol behavior, cancellation,
 timeouts, manifest registration/resolution, plugin config, SQL asset execution,

@@ -1,4 +1,4 @@
-defmodule Favn.Assets.CompilerParityTest do
+defmodule FavnAuthoring.Assets.CompilerParityTest do
   use ExUnit.Case, async: false
 
   alias Favn.Asset
@@ -389,7 +389,7 @@ defmodule Favn.Assets.CompilerParityTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "favn_core_loadable_modules_#{System.unique_integer([:positive])}"
+        "favn_authoring_loadable_modules_#{System.unique_integer([:positive])}"
       )
 
     File.mkdir_p!(dir)
@@ -410,7 +410,7 @@ defmodule Favn.Assets.CompilerParityTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "favn_core_parallel_modules_#{System.unique_integer([:positive])}"
+        "favn_authoring_parallel_modules_#{System.unique_integer([:positive])}"
       )
 
     File.mkdir_p!(dir)
