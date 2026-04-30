@@ -46,8 +46,7 @@ defmodule FavnOrchestrator.Backfill.CoverageProjectorTest do
 
     assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{status: :ok})
 
-    assert {:ok, [baseline]} =
-             Storage.list_coverage_baselines(pipeline_module: MyApp.Pipelines.Daily)
+    assert [baseline] = list_coverage_baselines(pipeline_module: MyApp.Pipelines.Daily)
 
     assert baseline.baseline_id =~ ~r/^baseline_[0-9a-f]{64}$/
     assert baseline.pipeline_module == MyApp.Pipelines.Daily
@@ -78,7 +77,7 @@ defmodule FavnOrchestrator.Backfill.CoverageProjectorTest do
       )
 
     assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{status: :ok})
-    assert {:ok, []} = Storage.list_coverage_baselines([])
+    assert [] = list_coverage_baselines([])
   end
 
   test "coverage metadata ISO8601 timestamps are normalized" do
@@ -106,7 +105,7 @@ defmodule FavnOrchestrator.Backfill.CoverageProjectorTest do
 
     assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{status: :ok})
 
-    assert {:ok, [baseline]} = Storage.list_coverage_baselines(source_key: "orders_api")
+    assert [baseline] = list_coverage_baselines(source_key: "orders_api")
     assert baseline.coverage_start_at == ~U[2026-04-01 00:00:00Z]
     assert baseline.coverage_until == ~U[2026-04-28 00:00:00Z]
     assert baseline.window_kind == :day
@@ -138,7 +137,7 @@ defmodule FavnOrchestrator.Backfill.CoverageProjectorTest do
     assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{status: :ok})
     assert {:ok, stored_run} = Storage.get_run(run.id)
     assert stored_run.status == :ok
-    assert {:ok, []} = Storage.list_coverage_baselines([])
+    assert [] = list_coverage_baselines([])
   end
 
   test "lookup and list filters find projected baselines" do
@@ -165,11 +164,11 @@ defmodule FavnOrchestrator.Backfill.CoverageProjectorTest do
       )
 
     assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{status: :ok})
-    assert {:ok, [baseline]} = Storage.list_coverage_baselines(source_key: "orders_api")
+    assert [baseline] = list_coverage_baselines(source_key: "orders_api")
     assert {:ok, ^baseline} = Storage.get_coverage_baseline(baseline.baseline_id)
 
-    assert {:ok, [^baseline]} =
-             Storage.list_coverage_baselines(
+    assert [^baseline] =
+             list_coverage_baselines(
                pipeline_module: MyApp.Pipelines.Daily,
                status: :ok,
                source_key: "orders_api",
@@ -188,5 +187,10 @@ defmodule FavnOrchestrator.Backfill.CoverageProjectorTest do
       metadata: %{pipeline_submit_ref: MyApp.Pipelines.Daily},
       submit_kind: :pipeline
     )
+  end
+
+  defp list_coverage_baselines(filters) do
+    assert {:ok, page} = Storage.list_coverage_baselines(filters)
+    page.items
   end
 end

@@ -389,8 +389,8 @@ defmodule Favn.StorageFacadeTest do
                "month:2026-03"
              )
 
-    assert {:ok, [^window]} =
-             OrchestratorStorage.list_backfill_windows(status: :running)
+    assert {:ok, page} = OrchestratorStorage.list_backfill_windows(status: :running)
+    assert [^window] = page.items
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)

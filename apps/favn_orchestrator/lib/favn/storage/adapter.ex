@@ -16,6 +16,7 @@ defmodule Favn.Storage.Adapter do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
 
   @type adapter_opts :: keyword()
@@ -54,19 +55,19 @@ defmodule Favn.Storage.Adapter do
   @callback get_coverage_baseline(String.t(), adapter_opts()) ::
               {:ok, CoverageBaseline.t()} | {:error, error()}
   @callback list_coverage_baselines(filter_opts(), adapter_opts()) ::
-              {:ok, [CoverageBaseline.t()]} | {:error, error()}
+              {:ok, Page.t(CoverageBaseline.t())} | {:error, error()}
 
   @callback put_backfill_window(BackfillWindow.t(), adapter_opts()) ::
               :ok | {:error, error()}
   @callback get_backfill_window(String.t(), module(), String.t(), adapter_opts()) ::
               {:ok, BackfillWindow.t()} | {:error, error()}
   @callback list_backfill_windows(filter_opts(), adapter_opts()) ::
-              {:ok, [BackfillWindow.t()]} | {:error, error()}
+              {:ok, Page.t(BackfillWindow.t())} | {:error, error()}
 
   @callback put_asset_window_state(AssetWindowState.t(), adapter_opts()) ::
               :ok | {:error, error()}
   @callback get_asset_window_state(module(), atom(), String.t(), adapter_opts()) ::
               {:ok, AssetWindowState.t()} | {:error, error()}
   @callback list_asset_window_states(filter_opts(), adapter_opts()) ::
-              {:ok, [AssetWindowState.t()]} | {:error, error()}
+              {:ok, Page.t(AssetWindowState.t())} | {:error, error()}
 end

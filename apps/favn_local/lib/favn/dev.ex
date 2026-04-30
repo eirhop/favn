@@ -148,21 +148,21 @@ defmodule Favn.Dev do
   @doc """
   Lists child window rows for a backfill parent run.
   """
-  @spec list_backfill_windows(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec list_backfill_windows(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_backfill_windows(backfill_run_id, opts \\ []) when is_list(opts),
     do: Backfill.list_windows(backfill_run_id, opts)
 
   @doc """
   Lists projected coverage baselines from the local stack.
   """
-  @spec list_coverage_baselines(keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec list_coverage_baselines(keyword()) :: {:ok, map()} | {:error, term()}
   def list_coverage_baselines(opts \\ []) when is_list(opts),
     do: Backfill.list_coverage_baselines(opts)
 
   @doc """
   Lists latest projected asset/window states from the local stack.
   """
-  @spec list_asset_window_states(keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec list_asset_window_states(keyword()) :: {:ok, map()} | {:error, term()}
   def list_asset_window_states(opts \\ []) when is_list(opts),
     do: Backfill.list_asset_window_states(opts)
 

@@ -117,6 +117,17 @@ defmodule FavnOrchestrator.HTTPContract.SchemaTest do
     })
   end
 
+  test "pagination schema locks expected keys" do
+    schema = load_schema!("pagination.schema.json")
+
+    assert_required_keys(schema, %{
+      "limit" => 100,
+      "offset" => 0,
+      "has_more" => false,
+      "next_offset" => nil
+    })
+  end
+
   defp load_schema!(file_name) do
     path = Path.join(@contract_dir, file_name)
     {:ok, body} = File.read(path)

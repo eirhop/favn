@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -108,9 +109,12 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.get_coverage_baseline(baseline_id, opts) end)
   end
 
-  @spec list_coverage_baselines(keyword()) :: {:ok, [CoverageBaseline.t()]} | {:error, term()}
+  @spec list_coverage_baselines(keyword()) ::
+          {:ok, Page.t(CoverageBaseline.t())} | {:error, term()}
   def list_coverage_baselines(filters \\ []) when is_list(filters) do
-    adapter_call(fn adapter, opts -> adapter.list_coverage_baselines(filters, opts) end)
+    paginated_adapter_call(filters, fn adapter, filters, opts ->
+      adapter.list_coverage_baselines(filters, opts)
+    end)
   end
 
   @spec put_backfill_window(BackfillWindow.t()) :: :ok | {:error, term()}
@@ -127,9 +131,12 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
-  @spec list_backfill_windows(keyword()) :: {:ok, [BackfillWindow.t()]} | {:error, term()}
+  @spec list_backfill_windows(keyword()) ::
+          {:ok, Page.t(BackfillWindow.t())} | {:error, term()}
   def list_backfill_windows(filters \\ []) when is_list(filters) do
-    adapter_call(fn adapter, opts -> adapter.list_backfill_windows(filters, opts) end)
+    paginated_adapter_call(filters, fn adapter, filters, opts ->
+      adapter.list_backfill_windows(filters, opts)
+    end)
   end
 
   @spec put_asset_window_state(AssetWindowState.t()) :: :ok | {:error, term()}
@@ -146,9 +153,12 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
-  @spec list_asset_window_states(keyword()) :: {:ok, [AssetWindowState.t()]} | {:error, term()}
+  @spec list_asset_window_states(keyword()) ::
+          {:ok, Page.t(AssetWindowState.t())} | {:error, term()}
   def list_asset_window_states(filters \\ []) when is_list(filters) do
-    adapter_call(fn adapter, opts -> adapter.list_asset_window_states(filters, opts) end)
+    paginated_adapter_call(filters, fn adapter, filters, opts ->
+      adapter.list_asset_window_states(filters, opts)
+    end)
   end
 
   @spec adapter_module() :: module()
@@ -184,6 +194,12 @@ defmodule FavnOrchestrator.Storage do
   catch
     :throw, reason -> {:error, {:thrown, reason}}
     :exit, reason -> {:error, {:exited, reason}}
+  end
+
+  defp paginated_adapter_call(filters, fun) when is_list(filters) and is_function(fun, 3) do
+    with {:ok, page_opts} <- Page.normalize_opts(filters) do
+      adapter_call(fn adapter, opts -> fun.(adapter, Keyword.merge(filters, page_opts), opts) end)
+    end
   end
 
   defp maybe_child_to_list(:none), do: []

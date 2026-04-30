@@ -10,6 +10,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
@@ -357,14 +358,15 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def list_coverage_baselines(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
+         page_opts <- page_opts(filters),
          {:ok, sql, params} <-
            build_select_query(
              coverage_baseline_select(),
-             filters,
+             read_filters(filters),
              coverage_baseline_filter_specs(),
              "ORDER BY updated_at DESC, baseline_id ASC"
            ) do
-      query_and_decode_rows(repo, sql, params, &decode_coverage_baseline_row/1)
+      query_and_decode_page(repo, sql, params, page_opts, &decode_coverage_baseline_row/1)
     end
   end
 
@@ -429,14 +431,15 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def list_backfill_windows(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
+         page_opts <- page_opts(filters),
          {:ok, sql, params} <-
            build_select_query(
              backfill_window_select(),
-             filters,
+             read_filters(filters),
              backfill_window_filter_specs(),
-             "ORDER BY window_start_at ASC, backfill_run_id ASC, window_key ASC"
+             "ORDER BY window_start_at ASC, backfill_run_id ASC, pipeline_module ASC, window_key ASC"
            ) do
-      query_and_decode_rows(repo, sql, params, &decode_backfill_window_row/1)
+      query_and_decode_page(repo, sql, params, page_opts, &decode_backfill_window_row/1)
     end
   end
 
@@ -498,14 +501,15 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def list_asset_window_states(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
+         page_opts <- page_opts(filters),
          {:ok, sql, params} <-
            build_select_query(
              asset_window_state_select(),
-             filters,
+             read_filters(filters),
              asset_window_state_filter_specs(),
              "ORDER BY updated_at DESC, asset_ref_module ASC, asset_ref_name ASC, window_key ASC"
            ) do
-      query_and_decode_rows(repo, sql, params, &decode_asset_window_state_row/1)
+      query_and_decode_page(repo, sql, params, page_opts, &decode_asset_window_state_row/1)
     end
   end
 
@@ -695,6 +699,24 @@ defmodule Favn.Storage.Adapter.Postgres do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp query_and_decode_page(repo, sql, params, page_opts, decoder) do
+    limit_placeholder = "$#{length(params) + 1}"
+    offset_placeholder = "$#{length(params) + 2}"
+    sql = sql <> "\nLIMIT #{limit_placeholder} OFFSET #{offset_placeholder}"
+    params = params ++ [Keyword.fetch!(page_opts, :limit) + 1, Keyword.fetch!(page_opts, :offset)]
+
+    with {:ok, rows} <- query_and_decode_rows(repo, sql, params, decoder) do
+      {:ok, Page.from_fetched(rows, page_opts)}
+    end
+  end
+
+  defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
+
+  defp page_opts(filters) do
+    {:ok, opts} = Page.normalize_opts(filters)
+    opts
   end
 
   defp decode_coverage_baseline_row([

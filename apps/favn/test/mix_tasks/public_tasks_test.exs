@@ -276,9 +276,20 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
   test "mix favn.backfill parses read and rerun commands" do
     assert {:ok, {:windows, "run_1", opts}} =
-             BackfillTask.parse_args(["windows", "run_1", "--status", "failed"])
+             BackfillTask.parse_args([
+               "windows",
+               "run_1",
+               "--status",
+               "failed",
+               "--limit",
+               "50",
+               "--offset",
+               "100"
+             ])
 
     assert Keyword.fetch!(opts, :status) == "failed"
+    assert Keyword.fetch!(opts, :limit) == 50
+    assert Keyword.fetch!(opts, :offset) == 100
 
     assert {:ok, {:coverage_baselines, opts}} =
              BackfillTask.parse_args([

@@ -128,7 +128,8 @@ defmodule Favn.Dev.BackfillTest do
       start_server(
         [
           {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
-          {200, ~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}]}})},
+          {200,
+           ~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null}}})},
           {201, ~s({"data":{"session":{"id":"sess_2"},"actor":{"id":"act_1"}}})},
           {201, ~s({"data":{"run":{"id":"rerun_1","status":"running"}}})}
         ],
@@ -137,7 +138,7 @@ defmodule Favn.Dev.BackfillTest do
 
     write_running_state(root_dir, base_url)
 
-    assert {:ok, [%{"window_key" => "day:2026-01-01:Etc/UTC"}]} =
+    assert {:ok, %{"items" => [%{"window_key" => "day:2026-01-01:Etc/UTC"}]}} =
              Backfill.list_windows("backfill_1", root_dir: root_dir, status: "error")
 
     assert {:ok, %{"id" => "rerun_1"}} =

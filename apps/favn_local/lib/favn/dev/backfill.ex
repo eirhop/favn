@@ -65,7 +65,7 @@ defmodule Favn.Dev.Backfill do
 
   def submit_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
 
-  @spec list_windows(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec list_windows(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_windows(backfill_run_id, opts \\ [])
       when is_binary(backfill_run_id) and is_list(opts) do
     with {:ok, base_url, credentials, session_context} <- session(opts) do
@@ -74,31 +74,39 @@ defmodule Favn.Dev.Backfill do
         credentials.service_token,
         session_context,
         backfill_run_id,
-        filters(opts, [:pipeline_module, :window_key, :status])
+        filters(opts, [:pipeline_module, :window_key, :status, :limit, :offset])
       )
     end
   end
 
-  @spec list_coverage_baselines(keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec list_coverage_baselines(keyword()) :: {:ok, map()} | {:error, term()}
   def list_coverage_baselines(opts \\ []) when is_list(opts) do
     with {:ok, base_url, credentials, session_context} <- session(opts) do
       OrchestratorClient.list_coverage_baselines(
         base_url,
         credentials.service_token,
         session_context,
-        filters(opts, [:pipeline_module, :source_key, :segment_key_hash, :status])
+        filters(opts, [:pipeline_module, :source_key, :segment_key_hash, :status, :limit, :offset])
       )
     end
   end
 
-  @spec list_asset_window_states(keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec list_asset_window_states(keyword()) :: {:ok, map()} | {:error, term()}
   def list_asset_window_states(opts \\ []) when is_list(opts) do
     with {:ok, base_url, credentials, session_context} <- session(opts) do
       OrchestratorClient.list_asset_window_states(
         base_url,
         credentials.service_token,
         session_context,
-        filters(opts, [:asset_ref_module, :asset_ref_name, :pipeline_module, :window_key, :status])
+        filters(opts, [
+          :asset_ref_module,
+          :asset_ref_name,
+          :pipeline_module,
+          :window_key,
+          :status,
+          :limit,
+          :offset
+        ])
       )
     end
   end

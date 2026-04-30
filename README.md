@@ -287,7 +287,7 @@ mix favn.install
 mix favn.dev
 mix favn.run MyApp.Pipelines.DailySales --window day:2026-04-27 --timezone Europe/Oslo
 mix favn.backfill submit MyApp.Pipelines.DailySales --from 2026-04-01 --to 2026-04-07 --kind day
-mix favn.backfill windows RUN_ID
+mix favn.backfill windows RUN_ID --limit 100 --offset 0
 mix favn.logs
 mix favn.status
 mix favn.reload
@@ -383,6 +383,9 @@ local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges
 RUN_ID --window-key KEY` for failed window reruns. Operational backfill submit
 does not accept lookback-policy input; asset window lookback remains part of
 normal windowed execution only.
+
+Backfill read commands are bounded. They default to `--limit 100 --offset 0`, reject
+`--limit` values above `500`, and print a next-page hint when more rows are available.
 
 For `submit`, `--wait-timeout-ms` controls local CLI polling only, while
 `--run-timeout-ms` controls the child run execution timeout sent to the

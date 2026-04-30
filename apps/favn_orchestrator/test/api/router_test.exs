@@ -835,7 +835,17 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert baseline_response.status == 200
 
-    assert %{"data" => %{"items" => [%{"baseline_id" => "baseline_http"}]}} =
+    assert %{
+             "data" => %{
+               "items" => [%{"baseline_id" => "baseline_http"}],
+               "pagination" => %{
+                 "limit" => 100,
+                 "offset" => 0,
+                 "has_more" => false,
+                 "next_offset" => nil
+               }
+             }
+           } =
              Jason.decode!(baseline_response.resp_body)
 
     state_response =
@@ -850,8 +860,30 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert state_response.status == 200
 
-    assert %{"data" => %{"items" => [%{"window_key" => ^window_key, "status" => "error"}]}} =
+    assert %{
+             "data" => %{
+               "items" => [%{"window_key" => ^window_key, "status" => "error"}],
+               "pagination" => %{"limit" => 100, "offset" => 0}
+             }
+           } =
              Jason.decode!(state_response.resp_body)
+  end
+
+  test "backfill read endpoints reject invalid pagination" do
+    seed_backfill_http_state!()
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/backfills/coverage-baselines?limit=501")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-id", session.id)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{"error" => %{"message" => "Invalid pagination parameters"}} =
+             Jason.decode!(response.resp_body)
   end
 
   test "backfill read endpoints reject invalid filters" do

@@ -10,6 +10,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
@@ -366,12 +367,13 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_coverage_baselines(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
+         page_opts <- page_opts(filters),
          {:ok, {where_sql, params}} <-
-           build_filter_sql(filters, coverage_baseline_filter_columns()) do
+           build_filter_sql(read_filters(filters), coverage_baseline_filter_columns()) do
       sql =
-        "SELECT #{coverage_baseline_columns()} FROM favn_pipeline_coverage_baselines#{where_sql} ORDER BY updated_at DESC, baseline_id ASC"
+        "SELECT #{coverage_baseline_columns()} FROM favn_pipeline_coverage_baselines#{where_sql} ORDER BY updated_at DESC, baseline_id ASC LIMIT ?#{length(params) + 1} OFFSET ?#{length(params) + 2}"
 
-      decode_rows(repo, sql, params, &decode_coverage_baseline_row/1)
+      decode_page(repo, sql, params, page_opts, &decode_coverage_baseline_row/1)
     end
   end
 
@@ -459,11 +461,13 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_backfill_windows(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
-         {:ok, {where_sql, params}} <- build_filter_sql(filters, backfill_window_filter_columns()) do
+         page_opts <- page_opts(filters),
+         {:ok, {where_sql, params}} <-
+           build_filter_sql(read_filters(filters), backfill_window_filter_columns()) do
       sql =
-        "SELECT #{backfill_window_columns()} FROM favn_backfill_windows#{where_sql} ORDER BY window_start_at ASC, backfill_run_id ASC"
+        "SELECT #{backfill_window_columns()} FROM favn_backfill_windows#{where_sql} ORDER BY window_start_at ASC, backfill_run_id ASC, pipeline_module ASC, window_key ASC LIMIT ?#{length(params) + 1} OFFSET ?#{length(params) + 2}"
 
-      decode_rows(repo, sql, params, &decode_backfill_window_row/1)
+      decode_page(repo, sql, params, page_opts, &decode_backfill_window_row/1)
     end
   end
 
@@ -545,12 +549,13 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_asset_window_states(filters, opts) when is_list(filters) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
+         page_opts <- page_opts(filters),
          {:ok, {where_sql, params}} <-
-           build_filter_sql(filters, asset_window_state_filter_columns()) do
+           build_filter_sql(read_filters(filters), asset_window_state_filter_columns()) do
       sql =
-        "SELECT #{asset_window_state_columns()} FROM favn_asset_window_states#{where_sql} ORDER BY window_start_at ASC, asset_ref_module ASC, asset_ref_name ASC"
+        "SELECT #{asset_window_state_columns()} FROM favn_asset_window_states#{where_sql} ORDER BY updated_at DESC, asset_ref_module ASC, asset_ref_name ASC, window_key ASC LIMIT ?#{length(params) + 1} OFFSET ?#{length(params) + 2}"
 
-      decode_rows(repo, sql, params, &decode_asset_window_state_row/1)
+      decode_page(repo, sql, params, page_opts, &decode_asset_window_state_row/1)
     end
   end
 
@@ -774,6 +779,21 @@ defmodule Favn.Storage.Adapter.SQLite do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp decode_page(repo, sql, params, page_opts, decoder) when is_function(decoder, 1) do
+    params = params ++ [Keyword.fetch!(page_opts, :limit) + 1, Keyword.fetch!(page_opts, :offset)]
+
+    with {:ok, rows} <- decode_rows(repo, sql, params, decoder) do
+      {:ok, Page.from_fetched(rows, page_opts)}
+    end
+  end
+
+  defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
+
+  defp page_opts(filters) do
+    {:ok, opts} = Page.normalize_opts(filters)
+    opts
   end
 
   defp build_filter_sql([], _columns), do: {:ok, {"", []}}

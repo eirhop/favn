@@ -108,7 +108,7 @@ defmodule FavnOrchestrator.Backfill.Projector do
   end
 
   defp maybe_project_parent(backfill_run_id) do
-    with {:ok, windows} <- Storage.list_backfill_windows(backfill_run_id: backfill_run_id),
+    with {:ok, windows} <- list_all_backfill_windows(backfill_run_id: backfill_run_id),
          {:ok, parent} <- Storage.get_run(backfill_run_id),
          status <- parent_status(windows),
          true <- status != parent.status do
@@ -127,6 +127,25 @@ defmodule FavnOrchestrator.Backfill.Projector do
       false -> :ok
       {:error, :not_found} -> :ok
       {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  @spec list_all_backfill_windows(keyword()) :: {:ok, [BackfillWindow.t()]} | {:error, term()}
+  def list_all_backfill_windows(filters) when is_list(filters) do
+    fetch_backfill_window_pages(filters, 0, [])
+  end
+
+  defp fetch_backfill_window_pages(filters, offset, acc) do
+    with {:ok, page} <-
+           Storage.list_backfill_windows(Keyword.merge(filters, limit: 500, offset: offset)) do
+      acc = acc ++ page.items
+
+      if page.has_more? do
+        fetch_backfill_window_pages(filters, page.next_offset, acc)
+      else
+        {:ok, acc}
+      end
     end
   end
 

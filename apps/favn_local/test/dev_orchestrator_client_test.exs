@@ -104,10 +104,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
     parent = self()
 
     {:ok, base_url, _server} =
-      start_server(~s({"data":{"items":[{"baseline_id":"base_1"}]}}), 200, parent: parent)
+      start_server(
+        ~s({"data":{"items":[{"baseline_id":"base_1"}],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null}}}),
+        200,
+        parent: parent
+      )
 
-    assert {:ok, [%{"baseline_id" => "base_1"}]} =
-             OrchestratorClient.list_coverage_baselines(
+    assert {:ok, %{"items" => [%{"baseline_id" => "base_1"}]}} =
+              OrchestratorClient.list_coverage_baselines(
                base_url,
                "token",
                %{"actor_id" => "act_1", "session_id" => "sess_1"},
@@ -123,12 +127,14 @@ defmodule Favn.Dev.OrchestratorClientTest do
     parent = self()
 
     {:ok, base_url, _server} =
-      start_server(~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}]}}), 200,
+      start_server(
+        ~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null}}}),
+        200,
         parent: parent
       )
 
-    assert {:ok, [%{"window_key" => "day:2026-01-01:Etc/UTC"}]} =
-             OrchestratorClient.list_asset_window_states(
+    assert {:ok, %{"items" => [%{"window_key" => "day:2026-01-01:Etc/UTC"}]}} =
+              OrchestratorClient.list_asset_window_states(
                base_url,
                "token",
                %{"actor_id" => "act_1", "session_id" => "sess_1"},
