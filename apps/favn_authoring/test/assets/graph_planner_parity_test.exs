@@ -1,4 +1,4 @@
-defmodule Favn.Assets.GraphPlannerParityTest do
+defmodule FavnAuthoring.Assets.GraphPlannerParityTest do
   use ExUnit.Case, async: false
 
   alias Favn.Assets.GraphIndex

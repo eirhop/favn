@@ -27,6 +27,7 @@ defmodule FavnRunner.MixProject do
     [
       internal_dep(:favn_core, "../favn_core"),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
+      internal_dep(:favn_authoring, "../favn_authoring", only: :test),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test)
     ]
   end

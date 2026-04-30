@@ -306,22 +306,21 @@ defmodule Favn.SQLAsset.Runtime do
          %Asset{type: :sql, sql_execution: %SQLExecution{} = payload} = asset,
          %Version{} = version
        ) do
-    asset_stub =
-      struct(Favn.Asset, %{
-        module: asset.module,
-        name: asset.name,
-        entrypoint: :asset,
-        ref: asset.ref,
-        arity: 1,
-        type: :sql,
-        file: "manifest",
-        line: 1,
-        config: asset.config || %{},
-        window_spec: asset.window,
-        relation: asset.relation,
-        materialization: asset.materialization,
-        relation_inputs: asset.relation_inputs || []
-      })
+    asset_stub = %{
+      module: asset.module,
+      name: asset.name,
+      entrypoint: :asset,
+      ref: asset.ref,
+      arity: 1,
+      type: :sql,
+      file: "manifest",
+      line: 1,
+      config: asset.config || %{},
+      window_spec: asset.window,
+      relation: asset.relation,
+      materialization: asset.materialization,
+      relation_inputs: asset.relation_inputs || []
+    }
 
     {:ok,
      %Definition{

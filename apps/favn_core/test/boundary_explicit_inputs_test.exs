@@ -7,19 +7,6 @@ defmodule Favn.BoundaryExplicitInputsTest do
   alias Favn.Pipeline.Resolver
   alias Favn.Triggers.Schedule
 
-  defmodule RawAsset do
-    use Favn.Asset
-
-    def asset(_ctx), do: :ok
-  end
-
-  defmodule GoldAsset do
-    use Favn.Asset
-
-    @depends RawAsset
-    def asset(_ctx), do: :ok
-  end
-
   test "planner builds from explicit graph index input" do
     assets = [
       %{ref: {MyApp.Raw, :asset}, module: MyApp.Raw, name: :asset, depends_on: []},
@@ -45,17 +32,6 @@ defmodule Favn.BoundaryExplicitInputsTest do
 
   test "planner rejects missing explicit graph input" do
     assert {:error, :missing_graph_index_input} = Planner.plan({MyApp.Gold, :asset})
-  end
-
-  test "planner builds from explicit asset modules input" do
-    assert {:ok, plan} =
-             Planner.plan({GoldAsset, :asset},
-               asset_modules: [RawAsset, GoldAsset],
-               dependencies: :all
-             )
-
-    assert plan.target_refs == [{GoldAsset, :asset}]
-    assert plan.topo_order == [{RawAsset, :asset}, {GoldAsset, :asset}]
   end
 
   test "resolver resolves from explicit assets and schedule lookup" do

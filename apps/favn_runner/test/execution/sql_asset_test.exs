@@ -24,34 +24,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       end
 
       Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
-
-      worker_module = Module.concat([FavnDuckdb, Worker])
-
-      if Process.whereis(worker_module) do
-        GenServer.stop(worker_module, :normal, 1_000)
-      end
     end)
 
-    :ok =
-      Registry.reload(
-        %{
-          duckdb_runtime: %Resolved{
-            name: :duckdb_runtime,
-            adapter: Favn.SQL.Adapter.DuckDB,
-            module: __MODULE__,
-            config: %{database: ":memory:"}
-          }
-        },
-        registry_name: FavnRunner.ConnectionRegistry
-      )
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeExecutionAdapter)
 
     :ok
   end
 
-  test "executes manifest-pinned sql asset in in_process mode" do
-    plugin_module = Module.concat([FavnDuckdb])
-    Application.put_env(:favn, :runner_plugins, [{plugin_module, execution_mode: :in_process}])
-
+  test "executes manifest-pinned sql asset through declared runner SQL runtime" do
     ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
     version = register_sql_manifest!(ref)
 
@@ -68,38 +48,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert [%{status: :ok}] = result.asset_results
   end
 
-  test "executes manifest-pinned sql asset in separate_process mode" do
-    plugin_module = Module.concat([FavnDuckdb])
-    worker_module = Module.concat([FavnDuckdb, Worker])
-    client_module = Module.concat([Favn, SQL, Adapter, DuckDB, Client, Duckdbex])
-
-    Application.put_env(:favn, :runner_plugins, [
-      {plugin_module, execution_mode: :separate_process, worker_name: worker_module}
-    ])
-
-    {:ok, _pid} =
-      worker_module.start_link(name: worker_module, client: client_module)
-
-    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
-    version = register_sql_manifest!(ref)
-
-    work =
-      %RunnerWork{
-        run_id: "run_sql_separate_process",
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        asset_ref: ref
-      }
-
-    assert {:ok, result} = FavnRunner.run(work)
-    assert result.status == :ok
-    assert [%{status: :ok}] = result.asset_results
-  end
-
   test "manifest execution does not fall back to compiled modules for deferred refs" do
-    plugin_module = Module.concat([FavnDuckdb])
-    Application.put_env(:favn, :runner_plugins, [{plugin_module, execution_mode: :in_process}])
-
     ref = {FavnRunner.ExecutionSQLAssetTest.ManifestOnlySQLAsset, :asset}
     version = register_manifest_with_missing_relation!(ref)
 
@@ -120,9 +69,6 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   end
 
   test "manifest execution fails when sql payload is missing" do
-    plugin_module = Module.concat([FavnDuckdb])
-    Application.put_env(:favn, :runner_plugins, [{plugin_module, execution_mode: :in_process}])
-
     ref = {FavnRunner.ExecutionSQLAssetTest.MissingPayloadSQLAsset, :asset}
     version = register_manifest_without_sql_execution!(ref)
 
@@ -143,9 +89,6 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   end
 
   test "manifest sql execution reports backend failure when runtime connection is missing" do
-    plugin_module = Module.concat([FavnDuckdb])
-    Application.put_env(:favn, :runner_plugins, [{plugin_module, execution_mode: :in_process}])
-
     Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
 
     ref = {FavnRunner.ExecutionSQLAssetTest.MissingConnectionSQLAsset, :asset}
@@ -265,7 +208,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   end
 
   defp register_sql_manifest!(ref) do
-    relation = RelationRef.new!(%{connection: :duckdb_runtime, name: "manifest_sql_asset"})
+    relation = RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset"})
 
     template =
       Template.compile!("SELECT 1 AS id",
@@ -317,7 +260,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       Module.concat([__MODULE__, "HiddenSource#{System.unique_integer([:positive])}"])
 
     relation =
-      RelationRef.new!(%{connection: :duckdb_runtime, name: "manifest_sql_asset_missing"})
+      RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset_missing"})
 
     template =
       Template.compile!("SELECT * FROM #{inspect(deferred_module)}",
@@ -331,9 +274,6 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     Code.compile_string(
       """
       defmodule #{inspect(deferred_module)} do
-        use Favn.Asset
-
-        def asset(_ctx), do: :ok
       end
       """,
       "test/dynamic_manifest_hidden_source_asset.exs"
@@ -377,7 +317,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_manifest_without_sql_execution!(ref) do
     relation =
-      RelationRef.new!(%{connection: :duckdb_runtime, name: "manifest_sql_asset_missing"})
+      RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset_missing"})
 
     manifest =
       %Manifest{
@@ -410,6 +350,21 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     :ok = FavnRunner.register_manifest(version)
     version
   end
+
+  defp reload_fake_connection(name, adapter) when is_atom(name) and is_atom(adapter) do
+    :ok =
+      Registry.reload(
+        %{
+          name => %Resolved{
+            name: name,
+            adapter: adapter,
+            module: __MODULE__,
+            config: %{}
+          }
+        },
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+  end
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.SQLAsset do
@@ -440,4 +395,17 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter do
        cause: %{token: "do-not-leak"}
      }}
   end
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
+  alias Favn.Connection.Resolved
+  alias Favn.SQL.Capabilities
+  alias Favn.SQL.Result
+
+  def connect(%Resolved{}, _opts), do: {:ok, :conn}
+  def disconnect(:conn, _opts), do: :ok
+  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def materialize(:conn, _write_plan, _opts),
+    do: {:ok, %Result{command: :insert, rows_affected: 1}}
 end

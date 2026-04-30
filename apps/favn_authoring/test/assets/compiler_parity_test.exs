@@ -1,4 +1,4 @@
-defmodule Favn.Assets.CompilerParityTest do
+defmodule FavnAuthoring.Assets.CompilerParityTest do
   use ExUnit.Case, async: false
 
   alias Favn.Asset
