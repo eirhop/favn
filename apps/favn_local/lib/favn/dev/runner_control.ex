@@ -6,6 +6,7 @@ defmodule Favn.Dev.RunnerControl do
   one-off helper VMs.
   """
 
+  alias Favn.Dev.DistributedErlang
   alias Favn.Dev.NodeControl
   alias Favn.Manifest.Version
 
@@ -138,7 +139,7 @@ defmodule Favn.Dev.RunnerControl do
 
   defp fetch_runner_node(opts) do
     case Keyword.get(opts, :runner_node_name) do
-      value when is_binary(value) and value != "" -> {:ok, String.to_atom(value)}
+      value when is_binary(value) and value != "" -> DistributedErlang.node_name_to_atom(value)
       _ -> {:error, :missing_runner_node_name}
     end
   end

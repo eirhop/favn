@@ -7,6 +7,7 @@ defmodule Favn.Dev.Stack do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.DistributedErlang
   alias Favn.Dev.Install
   alias Favn.Dev.LocalHttpClient
   alias Favn.Dev.Lock
@@ -68,6 +69,8 @@ defmodule Favn.Dev.Stack do
   defp cleanup_required?({:shortname_host_unavailable, _reason}), do: false
   defp cleanup_required?(:shortname_host_not_available), do: false
   defp cleanup_required?({:invalid_shortname_host, _host}), do: false
+  defp cleanup_required?({:invalid_node_name, _node_name}), do: false
+  defp cleanup_required?({:invalid_rpc_cookie, _cookie}), do: false
   defp cleanup_required?(_reason), do: true
 
   @spec stop(root_opt()) :: :ok | {:error, term()}
@@ -419,10 +422,11 @@ defmodule Favn.Dev.Stack do
 
   defp wait_runner_node_ready(runner_full, timeout_ms)
        when is_binary(runner_full) and is_integer(timeout_ms) and timeout_ms > 0 do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    runner_node = String.to_atom(runner_full)
+    with {:ok, runner_node} <- DistributedErlang.node_name_to_atom(runner_full) do
+      deadline = System.monotonic_time(:millisecond) + timeout_ms
 
-    do_wait_runner_node_ready(runner_node, deadline)
+      do_wait_runner_node_ready(runner_node, deadline)
+    end
   end
 
   defp do_wait_runner_node_ready(runner_node, deadline_ms) when is_atom(runner_node) do
