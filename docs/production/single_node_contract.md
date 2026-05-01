@@ -287,8 +287,12 @@ Production startup must have explicit schema-readiness behavior:
   unsupported; persisted state must be reset, recreated, or migrated only through
   a documented production migration path.
 
-The current SQLite adapter already has schema-readiness concepts. Production
-issues must turn that foundation into an operator-facing contract.
+The SQLite adapter has internal schema-readiness diagnostics that distinguish
+empty, ready, missing, upgrade-required, newer-than-release, and inconsistent
+schemas, and it has stopped-backend restore verification coverage for current
+control-plane state. Production runtime issues must still expose those
+diagnostics through operator-facing startup, migration, readiness, and runbook
+flows.
 
 ## Health, Readiness, And Diagnostics
 

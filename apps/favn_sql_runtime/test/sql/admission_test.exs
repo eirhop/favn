@@ -111,10 +111,7 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
     on_exit(fn ->
       Limiter.reset()
-
-      if Process.alive?(tracker) do
-        Agent.stop(tracker)
-      end
+      stop_tracker(tracker)
     end)
 
     {:ok, tracker: tracker}
@@ -396,5 +393,15 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         config: Map.put(config, :tracker, tracker)
       }
     }
+  end
+
+  defp stop_tracker(tracker) do
+    if Process.alive?(tracker) do
+      Agent.stop(tracker)
+    end
+
+    :ok
+  catch
+    :exit, _reason -> :ok
   end
 end

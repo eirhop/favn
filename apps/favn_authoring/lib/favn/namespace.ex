@@ -172,7 +172,7 @@ defmodule Favn.Namespace do
 
   defp namespace_config(module) do
     cond do
-      Module.open?(module) ->
+      module_open?(module) ->
         Module.get_attribute(module, :favn_namespace_config)
 
       match?({:module, _}, ensure_namespace_module(module)) and
@@ -182,6 +182,12 @@ defmodule Favn.Namespace do
       true ->
         nil
     end
+  end
+
+  defp module_open?(module) when is_atom(module) do
+    Module.open?(module)
+  rescue
+    ArgumentError -> false
   end
 
   # Namespace inheritance is used during DSL compilation, so same-project
