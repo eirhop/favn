@@ -1,11 +1,10 @@
 defmodule Favn.Dev.Build.Single do
   @moduledoc """
-  Project-local single-node assembly target.
+  Project-local single-node backend artifact target.
   """
 
   alias Favn.Dev.Build.Orchestrator
   alias Favn.Dev.Build.Runner
-  alias Favn.Dev.Build.Web
   alias Favn.Dev.Install
   alias Favn.Dev.Paths
   alias Favn.Dev.State
@@ -21,23 +20,20 @@ defmodule Favn.Dev.Build.Single do
          :ok <- validate_storage(storage),
          :ok <- Install.ensure_ready(opts),
          :ok <- State.ensure_layout(opts),
-         {:ok, web} <- Web.run(opts),
          {:ok, orchestrator} <- Orchestrator.run(opts),
          {:ok, runner} <- Runner.run(opts),
          {build_id, root_dir} <- {build_id(), Paths.root_dir(opts)},
          build_dir <- Paths.build_single_dir(root_dir, build_id),
          dist_dir <- Paths.dist_single_dir(root_dir, build_id),
          :ok <- File.mkdir_p(build_dir),
-         :ok <- File.mkdir_p(Path.join(dist_dir, "web")),
          :ok <- File.mkdir_p(Path.join(dist_dir, "orchestrator")),
          :ok <- File.mkdir_p(Path.join(dist_dir, "runner")),
          :ok <- File.mkdir_p(Path.join(dist_dir, "config")),
          :ok <- File.mkdir_p(Path.join(dist_dir, "env")),
          :ok <- File.mkdir_p(Path.join(dist_dir, "bin")),
-         :ok <- copy_target_outputs(web.dist_dir, Path.join(dist_dir, "web")),
          :ok <- copy_target_outputs(orchestrator.dist_dir, Path.join(dist_dir, "orchestrator")),
          :ok <- copy_target_outputs(runner.dist_dir, Path.join(dist_dir, "runner")),
-         assembly <- assembly_json(build_id, web, orchestrator, runner, storage),
+         assembly <- assembly_json(build_id, orchestrator, runner, storage),
          :ok <-
            write_json(Path.join(build_dir, "build.json"), build_json(build_id, assembly, opts)),
          :ok <-
@@ -46,8 +42,8 @@ defmodule Favn.Dev.Build.Single do
              metadata_json(build_id, assembly, opts)
            ),
          :ok <- write_json(Path.join(dist_dir, "config/assembly.json"), assembly),
-         :ok <- write_env_files(dist_dir, storage),
-         :ok <- write_scripts(dist_dir),
+         :ok <- write_env_files(dist_dir),
+         :ok <- write_scripts(dist_dir, orchestrator),
          :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
     end
@@ -62,7 +58,7 @@ defmodule Favn.Dev.Build.Single do
   end
 
   defp validate_storage(:sqlite), do: :ok
-  defp validate_storage(:postgres), do: :ok
+  defp validate_storage(:postgres), do: {:error, {:unsupported_storage, :postgres}}
   defp validate_storage(other), do: {:error, {:invalid_storage, other}}
 
   defp copy_target_outputs(source_dir, target_dir) do
@@ -99,7 +95,7 @@ defmodule Favn.Dev.Build.Single do
     end
   end
 
-  defp assembly_json(build_id, web, orchestrator, runner, storage) do
+  defp assembly_json(build_id, orchestrator, runner, storage) do
     %{
       "schema_version" => @schema_version,
       "target" => @target,
@@ -107,7 +103,6 @@ defmodule Favn.Dev.Build.Single do
       "assembled_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "storage" => %{"mode" => Atom.to_string(storage)},
       "services" => %{
-        "web" => %{"build_id" => web.build_id, "bundle_dir" => "web"},
         "orchestrator" => %{"build_id" => orchestrator.build_id, "bundle_dir" => "orchestrator"},
         "runner" => %{"build_id" => runner.build_id, "bundle_dir" => "runner"}
       }
@@ -127,27 +122,43 @@ defmodule Favn.Dev.Build.Single do
     |> Map.put("target", @target)
     |> Map.put("assembly", assembly)
     |> Map.put("artifact", %{
-      "kind" => "assembly_bundle",
-      "operational" => false,
-      "truthfulness" => "topology_assembly_only"
+      "kind" => "single_node_backend_runtime",
+      "operational" => true,
+      "truthfulness" => "runnable_backend_only_sqlite_single_node"
     })
-    |> Map.put("topology", %{"boundary" => "web+orchestrator+runner", "collapsed" => false})
+    |> Map.put("topology", %{
+      "boundary" => "orchestrator+runner+scheduler",
+      "boundary_preserved" => true,
+      "process_model" => "one_backend_beam_runtime",
+      "backend_only" => true,
+      "backend_nodes" => 1,
+      "runner_mode" => "local",
+      "scheduler_instances" => 1
+    })
     |> Map.put("compatibility", %{
-      "topology" => "web+orchestrator+runner",
-      "storage_modes" => ["sqlite", "postgres"]
+      "scope" => "backend-only SQLite single-node artifact",
+      "storage_modes" => ["sqlite"],
+      "unsupported" => [
+        "postgres_production_mode",
+        "distributed_execution",
+        "shared_sqlite",
+        "high_availability_orchestrators",
+        "web_production_startup"
+      ]
     })
     |> Map.put("required_env", [
-      "FAVN_ORCHESTRATOR_BASE_URL",
-      "FAVN_ORCHESTRATOR_SERVICE_TOKEN",
-      "FAVN_WEB_SESSION_SECRET",
       "FAVN_STORAGE",
       "FAVN_SQLITE_PATH",
-      "FAVN_POSTGRES_HOST",
-      "FAVN_POSTGRES_PORT",
-      "FAVN_POSTGRES_USERNAME",
-      "FAVN_POSTGRES_PASSWORD",
-      "FAVN_POSTGRES_DATABASE",
-      "FAVN_POSTGRES_SSL"
+      "FAVN_SQLITE_MIGRATION_MODE",
+      "FAVN_SQLITE_BUSY_TIMEOUT_MS",
+      "FAVN_SQLITE_POOL_SIZE",
+      "FAVN_ORCHESTRATOR_API_BIND_HOST",
+      "FAVN_ORCHESTRATOR_API_PORT",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+      "FAVN_SCHEDULER_ENABLED",
+      "FAVN_SCHEDULER_TICK_MS",
+      "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES",
+      "FAVN_RUNNER_MODE"
     ])
   end
 
@@ -170,88 +181,243 @@ defmodule Favn.Dev.Build.Single do
     end
   end
 
-  defp write_env_files(dist_dir, :sqlite) do
-    orchestrator = ["FAVN_STORAGE=sqlite", "FAVN_SQLITE_PATH=.favn/data/orchestrator.sqlite3", ""]
-
-    web = [
-      "FAVN_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101",
-      "FAVN_ORCHESTRATOR_SERVICE_TOKEN=replace-me",
-      "FAVN_WEB_SESSION_SECRET=replace-me",
+  defp write_env_files(dist_dir) do
+    backend = [
+      "# Copy this file to env/backend.env or set FAVN_ENV_FILE before running bin/start.",
+      "FAVN_STORAGE=sqlite",
+      "FAVN_SQLITE_PATH=/var/lib/favn/control-plane.sqlite3",
+      "FAVN_SQLITE_MIGRATION_MODE=manual",
+      "FAVN_SQLITE_BUSY_TIMEOUT_MS=5000",
+      "FAVN_SQLITE_POOL_SIZE=1",
+      "FAVN_ORCHESTRATOR_API_BIND_HOST=127.0.0.1",
+      "FAVN_ORCHESTRATOR_API_PORT=4101",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=replace-with-at-least-32-characters",
+      "FAVN_SCHEDULER_ENABLED=true",
+      "FAVN_SCHEDULER_TICK_MS=15000",
+      "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES=1000",
+      "FAVN_RUNNER_MODE=local",
       ""
     ]
 
-    runner = [
-      "FAVN_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101",
-      "FAVN_ORCHESTRATOR_SERVICE_TOKEN=replace-me",
-      ""
-    ]
-
-    write_env_bundle(dist_dir, web, orchestrator, runner)
+    File.write(Path.join(dist_dir, "env/backend.env.example"), Enum.join(backend, "\n"))
   end
 
-  defp write_env_files(dist_dir, :postgres) do
-    orchestrator = [
-      "FAVN_STORAGE=postgres",
-      "FAVN_POSTGRES_HOST=127.0.0.1",
-      "FAVN_POSTGRES_PORT=5432",
-      "FAVN_POSTGRES_USERNAME=postgres",
-      "FAVN_POSTGRES_PASSWORD=postgres",
-      "FAVN_POSTGRES_DATABASE=favn",
-      "FAVN_POSTGRES_SSL=false",
-      ""
-    ]
-
-    web = [
-      "FAVN_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101",
-      "FAVN_ORCHESTRATOR_SERVICE_TOKEN=replace-me",
-      "FAVN_WEB_SESSION_SECRET=replace-me",
-      ""
-    ]
-
-    runner = [
-      "FAVN_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101",
-      "FAVN_ORCHESTRATOR_SERVICE_TOKEN=replace-me",
-      ""
-    ]
-
-    write_env_bundle(dist_dir, web, orchestrator, runner)
+  defp write_scripts(dist_dir, orchestrator) do
+    with {:ok, source_root} <- bundled_source_root(orchestrator.dist_dir) do
+      [
+        File.write(Path.join(dist_dir, "bin/start"), start_script(source_root)),
+        File.write(Path.join(dist_dir, "bin/stop"), stop_script()),
+        File.chmod(Path.join(dist_dir, "bin/start"), 0o755),
+        File.chmod(Path.join(dist_dir, "bin/stop"), 0o755)
+      ]
+      |> run_steps()
+    end
   end
 
-  defp write_env_bundle(dist_dir, web, orchestrator, runner) do
-    [
-      File.write(Path.join(dist_dir, "env/web.env"), Enum.join(web, "\n")),
-      File.write(Path.join(dist_dir, "env/orchestrator.env"), Enum.join(orchestrator, "\n")),
-      File.write(Path.join(dist_dir, "env/runner.env"), Enum.join(runner, "\n"))
-    ]
-    |> run_steps()
+  defp bundled_source_root(orchestrator_dist_dir) do
+    with {:ok, encoded} <- File.read(Path.join(orchestrator_dist_dir, "bundle.json")),
+         {:ok, %{"source_root" => source_root}} when is_binary(source_root) <-
+           JSON.decode(encoded) do
+      {:ok, source_root}
+    else
+      {:error, reason} -> {:error, {:read_orchestrator_bundle_failed, reason}}
+      _other -> {:error, :invalid_orchestrator_bundle}
+    end
   end
 
-  defp write_scripts(dist_dir) do
-    start_script = [
-      "#!/usr/bin/env sh",
-      "set -eu",
-      "echo \"Favn single bundle in this Phase 9 build is assembly-only.\"",
-      "echo \"No operational runtime launch wiring is bundled yet.\"",
-      "echo \"See OPERATOR_NOTES.md and env/*.env for required deployment inputs.\"",
-      "exit 1",
-      ""
-    ]
+  defp start_script(orchestrator_source_root) do
+    ~S'''
+    #!/usr/bin/env sh
+    set -eu
 
-    stop_script = [
-      "#!/usr/bin/env sh",
-      "set -eu",
-      "echo \"No managed processes were started by this assembly-only artifact.\"",
-      "exit 1",
-      ""
-    ]
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    ARTIFACT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+    ORCHESTRATOR_SOURCE_ROOT="__ORCHESTRATOR_SOURCE_ROOT__"
+    RUNTIME_HOME=${FAVN_SINGLE_NODE_HOME:-"$ARTIFACT_ROOT/var"}
+    RUN_DIR="$RUNTIME_HOME/run"
+    LOG_DIR="$RUNTIME_HOME/log"
+    DATA_DIR="$RUNTIME_HOME/data"
+    PID_FILE="$RUN_DIR/backend.pid"
+    LOG_FILE="$LOG_DIR/backend.log"
+    BOOT_FILE="$RUN_DIR/backend_boot.exs"
+    STARTUP_TIMEOUT_SECONDS=${FAVN_STARTUP_TIMEOUT_SECONDS:-30}
 
-    [
-      File.write(Path.join(dist_dir, "bin/start"), Enum.join(start_script, "\n")),
-      File.write(Path.join(dist_dir, "bin/stop"), Enum.join(stop_script, "\n")),
-      File.chmod(Path.join(dist_dir, "bin/start"), 0o755),
-      File.chmod(Path.join(dist_dir, "bin/stop"), 0o755)
-    ]
-    |> run_steps()
+    mkdir -p "$RUN_DIR" "$LOG_DIR" "$DATA_DIR"
+
+    if [ -n "${FAVN_ENV_FILE:-}" ]; then
+      if [ ! -f "$FAVN_ENV_FILE" ]; then
+        echo "FAVN_ENV_FILE does not exist: $FAVN_ENV_FILE" >&2
+        exit 1
+      fi
+      set -a
+      . "$FAVN_ENV_FILE"
+      set +a
+    elif [ -f "$ARTIFACT_ROOT/env/backend.env" ]; then
+      set -a
+      . "$ARTIFACT_ROOT/env/backend.env"
+      set +a
+    fi
+
+    if [ -f "$PID_FILE" ]; then
+      old_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+      case "$old_pid" in
+        ''|*[!0-9]*) rm -f "$PID_FILE" ;;
+        *)
+          if kill -0 "$old_pid" 2>/dev/null; then
+            echo "Favn backend already running with PID $old_pid" >&2
+            exit 1
+          fi
+          rm -f "$PID_FILE"
+          ;;
+      esac
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "curl is required for readiness polling" >&2
+      exit 1
+    fi
+
+    cat > "$BOOT_FILE" <<'EOF'
+    artifact_root = System.fetch_env!("FAVN_ARTIFACT_ROOT")
+    runner_ebin = Path.join([artifact_root, "runner", "ebin"])
+
+    if File.dir?(runner_ebin) do
+      Code.prepend_path(runner_ebin)
+    end
+
+    env = System.get_env()
+
+    # FAVN_SCHEDULER_ENABLED is consumed only by FavnOrchestrator.ProductionRuntimeConfig.
+    with {:ok, _runner} <- FavnRunner.ProductionRuntimeConfig.validate(env),
+         {:ok, _orchestrator} <- FavnOrchestrator.ProductionRuntimeConfig.validate(env),
+         {:ok, _} <- Application.ensure_all_started(:favn_runner),
+         {:ok, _} <- Application.ensure_all_started(:favn_storage_sqlite),
+         {:ok, _} <- Application.ensure_all_started(:favn_orchestrator) do
+      manifest_path = Path.join([artifact_root, "runner", "manifest.json"])
+
+      if File.regular?(manifest_path) do
+        with {:ok, encoded} <- File.read(manifest_path),
+             {:ok, manifest} <- Favn.Manifest.Serializer.decode_manifest(encoded),
+             {:ok, version} <- Favn.Manifest.Version.new(manifest),
+             :ok <- FavnRunner.register_manifest(version),
+             :ok <- FavnOrchestrator.register_manifest(version) do
+          :ok
+        else
+          {:error, reason} -> raise "failed to register packaged manifest: #{inspect(reason)}"
+          other -> raise "failed to register packaged manifest: #{inspect(other)}"
+        end
+      end
+
+      Process.sleep(:infinity)
+    else
+      {:error, reason} -> raise "invalid Favn backend production runtime config or startup: #{inspect(reason)}"
+      other -> raise "invalid Favn backend production runtime config or startup: #{inspect(other)}"
+    end
+    EOF
+
+    (
+      cd "$ORCHESTRATOR_SOURCE_ROOT"
+      FAVN_ARTIFACT_ROOT="$ARTIFACT_ROOT" MIX_ENV=${MIX_ENV:-prod} elixir -S mix run --no-start "$BOOT_FILE"
+    ) >"$LOG_FILE" 2>&1 &
+
+    pid=$!
+    printf '%s\n' "$pid" > "$PID_FILE"
+
+    host=${FAVN_ORCHESTRATOR_API_BIND_HOST:-127.0.0.1}
+    port=${FAVN_ORCHESTRATOR_API_PORT:-4101}
+    ready_url="http://$host:$port/api/orchestrator/v1/health/ready"
+    elapsed=0
+
+    while [ "$elapsed" -lt "$STARTUP_TIMEOUT_SECONDS" ]; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$PID_FILE"
+        echo "Favn backend exited before readiness; see $LOG_FILE" >&2
+        exit 1
+      fi
+
+      if curl -fsS "$ready_url" >/dev/null 2>&1; then
+        echo "Favn backend started with PID $pid"
+        echo "Readiness: $ready_url"
+        exit 0
+      fi
+
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
+
+    kill "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    echo "Favn backend did not become ready within ${STARTUP_TIMEOUT_SECONDS}s; see $LOG_FILE" >&2
+    exit 1
+    '''
+    |> script_body()
+    |> String.replace(
+      "__ORCHESTRATOR_SOURCE_ROOT__",
+      shell_double_quote_escape(orchestrator_source_root)
+    )
+  end
+
+  defp stop_script do
+    ~S'''
+    #!/usr/bin/env sh
+    set -eu
+
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    ARTIFACT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+    RUNTIME_HOME=${FAVN_SINGLE_NODE_HOME:-"$ARTIFACT_ROOT/var"}
+    PID_FILE="$RUNTIME_HOME/run/backend.pid"
+    STOP_TIMEOUT_SECONDS=${FAVN_STOP_TIMEOUT_SECONDS:-30}
+
+    if [ ! -f "$PID_FILE" ]; then
+      echo "Favn backend is not running"
+      exit 0
+    fi
+
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    case "$pid" in
+      ''|*[!0-9]*)
+        rm -f "$PID_FILE"
+        echo "Removed stale Favn backend PID file"
+        exit 0
+        ;;
+    esac
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$PID_FILE"
+      echo "Removed stale Favn backend PID file"
+      exit 0
+    fi
+
+    kill "$pid"
+    elapsed=0
+    while [ "$elapsed" -lt "$STOP_TIMEOUT_SECONDS" ]; do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$PID_FILE"
+        echo "Favn backend stopped"
+        exit 0
+      fi
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
+
+    echo "Favn backend did not stop within ${STOP_TIMEOUT_SECONDS}s" >&2
+    exit 1
+    '''
+    |> script_body()
+  end
+
+  defp script_body(contents) when is_binary(contents) do
+    contents
+    |> String.trim_leading()
+    |> String.replace(~r/^    /m, "")
+  end
+
+  defp shell_double_quote_escape(value) when is_binary(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("\"", "\\\"")
+    |> String.replace("$", "\\$")
+    |> String.replace("`", "\\`")
   end
 
   defp run_steps(steps) when is_list(steps) do
@@ -277,11 +443,13 @@ defmodule Favn.Dev.Build.Single do
     notes = [
       "# Favn Single Artifact Notes",
       "",
-      "This output preserves the web + orchestrator + runner topology and env contracts.",
-      "In this Phase 9 cut it is assembly metadata/output, not an operational launcher bundle.",
+      "This output is a runnable backend-only SQLite single-node artifact.",
+      "It starts one BEAM runtime containing the runner, SQLite storage adapter,",
+      "orchestrator API, and scheduler when FAVN_SCHEDULER_ENABLED allows it.",
       "",
-      "The generated bin/start and bin/stop scripts intentionally exit non-zero to avoid",
-      "falsely implying full local deployment automation.",
+      "Copy env/backend.env.example to env/backend.env or set FAVN_ENV_FILE before",
+      "running bin/start. Web production startup, Postgres production mode,",
+      "distributed execution, shared SQLite, and HA orchestrators are not included.",
       ""
     ]
 

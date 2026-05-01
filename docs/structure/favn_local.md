@@ -1,7 +1,8 @@
 # favn_local
 
 Purpose: implementation behind local developer tooling, local stack lifecycle,
-install/reset/logs/status/reload/run/backfill flows, and packaging commands.
+install/reset/logs/status/reload/run/backfill flows, and packaging commands,
+including the backend-only SQLite `build.single` artifact launcher.
 
 Code:
 - `apps/favn_local/lib/favn/dev.ex`

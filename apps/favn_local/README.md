@@ -88,7 +88,6 @@ mix favn.build.runner
 mix favn.build.web
 mix favn.build.orchestrator
 mix favn.build.single --storage sqlite
-mix favn.build.single --storage postgres
 ```
 
 ## Configuration contract
@@ -261,9 +260,11 @@ is out of sync.
   manifest + plugin inventory metadata
 - `build.web`: web/BFF artifact metadata and bundle contract
 - `build.orchestrator`: orchestrator artifact metadata and storage contract
-- `build.single`: assembles `web/`, `orchestrator/`, and `runner/` into one
-  single-node bundle with generated `config/assembly.json`, `env/*.env`, and
-  `bin/start|stop`
+- `build.single`: assembles a backend-only SQLite single-node bundle with
+  generated `config/assembly.json`, `env/backend.env.example`, and executable
+  `bin/start|stop` scripts. It runs runner, SQLite storage, and orchestrator in
+  one backend BEAM runtime; web startup and Postgres production mode are out of
+  scope for this artifact.
 
 ## Platform assumptions
 
