@@ -145,10 +145,13 @@ Production DuckDB behavior covers or must preserve:
   planner and shared SQL runtime client.
 - Local-file DuckDB database paths on durable attached storage when local files
   are used; production paths must be explicit and production-safe rather than
-  implicit local-dev state.
+  implicit local-dev state. Production connection schemas can include DuckDB's
+  production storage fields to reject memory databases, relative paths, missing
+  parent directories, and unwritable parent directories before opening DuckDB.
 - Conservative admission/concurrency behavior for local-file DuckDB connections;
   local files default to single-admitted SQL sessions against the same database
-  path unless the connection explicitly configures another safe policy.
+  path unless the connection explicitly configures another safe policy. Admission
+  timeouts are retryable structured SQL errors with the blocked scope and timeout.
 - Separate-process DuckDB execution as the recommended production placement when
   using the implemented DuckDB plugin modes, so DuckDB handles live in a
   supervised worker process instead of the asset worker process.
@@ -157,7 +160,10 @@ Production DuckDB behavior covers or must preserve:
   rejected during bootstrap config validation.
 - Clear diagnostics for connection, bootstrap, extension, materialization,
   appender, cancellation, timeout, and crash failures, with secret values
-  redacted from logs, API/UI payloads, and structured error details.
+  redacted from logs, API/UI payloads, and structured error details. Separate
+  process worker unavailability is reported as retryable, while worker-call
+  timeouts are reported as unknown-outcome failures because the DuckDB operation
+  may still be running in the worker.
 - Documented backup/restore expectations for local DuckDB files or external
   DuckLake-style storage used by named connections.
 - No general production SQL editor as part of the v1 promise. Relation

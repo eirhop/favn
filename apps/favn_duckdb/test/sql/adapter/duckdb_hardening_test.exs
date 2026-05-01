@@ -21,7 +21,11 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     def open(database) do
       db_ref = make_ref()
       TestSupport.record({:open, db_ref, database})
-      {:ok, db_ref}
+
+      case TestSupport.mode(:open_mode, :ok) do
+        :ok -> {:ok, db_ref}
+        :worker_not_available -> {:error, :worker_not_available}
+      end
     end
 
     @impl true
@@ -40,6 +44,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
       TestSupport.record({:query_params, sql, params})
 
       case {TestSupport.mode(:query_mode, :ok), String.starts_with?(sql, "INSERT")} do
+        {:worker_timeout, _write?} ->
+          {:error, :worker_call_timeout}
+
         {:error, true} ->
           {:error, :write_failed}
 
@@ -168,6 +175,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     TestSupport.start_events()
 
     keys = [
+      :open_mode,
       :connection_mode,
       :query_mode,
       :fetch_mode,
@@ -342,6 +350,36 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
              {:release, _resource} -> true
              _ -> false
            end)
+  end
+
+  test "worker unavailable connect failure has actionable retryable diagnostics" do
+    TestSupport.put_mode(:open_mode, :worker_not_available)
+
+    assert {:error,
+            %Error{
+              type: :connection_error,
+              operation: :connect,
+              message: "DuckDB worker is not available",
+              retryable?: true,
+              details: %{classification: :worker_unavailable, reason: ":worker_not_available"}
+            }} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+  end
+
+  test "worker timeout execution failure has actionable retryable diagnostics" do
+    TestSupport.put_mode(:query_mode, :worker_timeout)
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:error,
+            %Error{
+              type: :execution_error,
+              operation: :query,
+              message: "DuckDB worker call timed out; operation outcome is unknown",
+              retryable?: false,
+              details: %{
+                classification: :unknown_outcome_timeout,
+                reason: ":worker_call_timeout"
+              }
+            }} = DuckDB.query(conn, "SELECT 1", [])
   end
 
   test "production local-file storage rejects missing database before opening DuckDB" do

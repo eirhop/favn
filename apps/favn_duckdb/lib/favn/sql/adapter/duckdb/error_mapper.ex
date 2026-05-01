@@ -47,6 +47,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
   end
 
   defp classification(:connect, :invalid_database), do: :invalid_config
+  defp classification(_operation, :worker_call_timeout), do: :unknown_outcome_timeout
+  defp classification(_operation, :worker_not_available), do: :worker_unavailable
+  defp classification(_operation, :invalid_handle), do: :worker_handle
   defp classification(:connect, _), do: :connection
   defp classification(:ping, _), do: :connection
   defp classification(_operation, {:error, reason}), do: classification(:query, reason)
@@ -63,10 +66,16 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
   defp error_type(:ping, _), do: :connection_error
   defp error_type(_operation, _reason), do: :execution_error
 
+  defp error_message(:worker_call_timeout),
+    do: "DuckDB worker call timed out; operation outcome is unknown"
+
+  defp error_message(:worker_not_available), do: "DuckDB worker is not available"
+  defp error_message(:invalid_handle), do: "DuckDB worker handle is invalid"
   defp error_message(reason) when is_binary(reason), do: reason
   defp error_message({:error, message}) when is_binary(message), do: message
   defp error_message(_), do: "duckdb operation failed"
 
+  defp retryable_reason?(:worker_not_available), do: true
   defp retryable_reason?(reason) when reason in [:busy, :locked], do: true
 
   defp retryable_reason?({:error, reason}), do: retryable_reason?(reason)
