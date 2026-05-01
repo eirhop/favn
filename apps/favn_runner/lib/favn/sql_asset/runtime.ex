@@ -8,6 +8,7 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.RelationRef
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
+  alias Favn.SQL.Error, as: SQLError
 
   alias Favn.SQL.{Explain, IncrementalWindow, MaterializationResult, Params, Preview, Render}
 
@@ -261,15 +262,17 @@ defmodule Favn.SQLAsset.Runtime do
   defp map_sql_result_error({:ok, write_plan, result}, _asset_ref, _phase),
     do: {:ok, write_plan, result}
 
-  defp map_sql_result_error({:error, %Favn.SQL.Error{} = error}, asset_ref, phase) do
+  defp map_sql_result_error({:error, %SQLError{} = error}, asset_ref, phase) do
+    safe_error = SQLError.redact(error)
+
     {:error,
      %Error{
        type: :backend_execution_failed,
        phase: phase,
        asset_ref: asset_ref,
-       message: error.message || "SQL execution failed",
-       details: %{connection: error.connection, operation: error.operation},
-       cause: error
+       message: safe_error.message || "SQL execution failed",
+       details: %{connection: safe_error.connection, operation: safe_error.operation},
+       cause: safe_error
      }}
   end
 

@@ -6,7 +6,7 @@ defmodule Favn.Connection.Validator do
   alias Favn.Connection.Resolved
   alias Favn.RuntimeConfig.Resolver, as: RuntimeConfigResolver
 
-  @reserved_runtime_keys [:write_concurrency]
+  @reserved_runtime_keys [:write_concurrency, :admission_timeout_ms]
 
   @spec validate_definition(Definition.t()) :: :ok | {:error, [Error.t()]}
   def validate_definition(%Definition{} = definition) do

@@ -102,6 +102,29 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert %{type: :backend_execution_failed, phase: :materialize} = asset_result.error
   end
 
+  test "manifest sql execution redacts backend error details and causes" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeSecretExecutionAdapter)
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    version = register_sql_manifest!(ref)
+
+    work = %RunnerWork{
+      run_id: "run_sql_secret_failure",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: ref
+    }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+    assert [asset_result] = result.asset_results
+
+    refute inspect(asset_result.error) =~ "super-secret"
+    refute inspect(asset_result.error) =~ "user:password"
+    refute inspect(asset_result.error) =~ "credential=raw"
+    assert asset_result.error.cause.details.password == :redacted
+  end
+
   test "inspection normalizes malformed include values at the runner boundary" do
     ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
     version = register_sql_manifest!(ref)
@@ -400,4 +423,26 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
 
   def materialize(:conn, _write_plan, _opts),
     do: {:ok, %Result{command: :insert, rows_affected: 1}}
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.FakeSecretExecutionAdapter do
+  alias Favn.Connection.Resolved
+  alias Favn.SQL.Capabilities
+  alias Favn.SQL.Error
+
+  def connect(%Resolved{}, _opts), do: {:ok, :conn}
+  def disconnect(:conn, _opts), do: :ok
+  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def materialize(:conn, _write_plan, _opts) do
+    {:error,
+     %Error{
+       type: :execution_error,
+       message: "failed against postgres://user:password@example/db?token=super-secret",
+       operation: :materialize,
+       connection: :runner_sql_runtime,
+       details: %{password: "super-secret", nested: %{reason: "credential=raw"}},
+       cause: %{token: "super-secret"}
+     }}
+  end
 end

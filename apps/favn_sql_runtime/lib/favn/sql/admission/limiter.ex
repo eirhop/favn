@@ -7,10 +7,16 @@ defmodule Favn.SQL.Admission.Limiter do
 
   @type scope :: term()
 
-  @spec acquire(scope(), pos_integer()) :: :ok
-  def acquire(scope, limit) when is_integer(limit) and limit > 0 do
+  @spec acquire(scope(), pos_integer()) :: :ok | {:error, :admission_timeout}
+  @spec acquire(scope(), pos_integer(), pos_integer() | :infinity) ::
+          :ok | {:error, :admission_timeout}
+  def acquire(scope, limit, timeout_ms \\ :infinity)
+
+  def acquire(scope, limit, timeout_ms)
+      when is_integer(limit) and limit > 0 and
+             (timeout_ms == :infinity or (is_integer(timeout_ms) and timeout_ms > 0)) do
     ensure_started()
-    GenServer.call(__MODULE__, {:acquire, scope, limit}, :infinity)
+    GenServer.call(__MODULE__, {:acquire, scope, limit, timeout_ms}, :infinity)
   end
 
   @spec release(scope()) :: :ok
@@ -39,13 +45,13 @@ defmodule Favn.SQL.Admission.Limiter do
   end
 
   @impl true
-  def handle_call({:acquire, scope, limit}, {pid, _tag} = from, state) do
+  def handle_call({:acquire, scope, limit, timeout_ms}, {pid, _tag} = from, state) do
     state = put_in(state, [:limits, scope], limit)
 
     if available?(state, scope) do
       {:reply, :ok, add_holder(state, scope, pid)}
     else
-      {:noreply, enqueue_waiter(state, scope, from)}
+      {:noreply, enqueue_waiter(state, scope, from, timeout_ms)}
     end
   end
 
@@ -73,6 +79,24 @@ defmodule Favn.SQL.Admission.Limiter do
 
       {{:waiter, scope, _from}, monitors} ->
         {:noreply, %{state | monitors: monitors} |> remove_waiter(scope, monitor_ref)}
+    end
+  end
+
+  def handle_info({:admission_timeout, monitor_ref}, state) do
+    case Map.pop(state.monitors, monitor_ref) do
+      {nil, monitors} ->
+        {:noreply, %{state | monitors: monitors}}
+
+      {{:waiter, scope, from}, monitors} ->
+        Process.demonitor(monitor_ref, [:flush])
+        GenServer.reply(from, {:error, :admission_timeout})
+
+        {:noreply,
+         %{state | monitors: monitors}
+         |> remove_waiter(scope, monitor_ref)}
+
+      {{:holder, scope, pid}, monitors} ->
+        {:noreply, %{state | monitors: Map.put(monitors, monitor_ref, {:holder, scope, pid})}}
     end
   end
 
@@ -132,26 +156,49 @@ defmodule Favn.SQL.Admission.Limiter do
 
   defp put_scope_holders(state, scope, holders), do: put_in(state, [:holders, scope], holders)
 
-  defp enqueue_waiter(state, scope, {pid, _tag} = from) do
+  defp enqueue_waiter(state, scope, {pid, _tag} = from, timeout_ms) do
     monitor_ref = Process.monitor(pid)
-    waiter = %{from: from, pid: pid, monitor_ref: monitor_ref}
+    timer_ref = schedule_timeout(monitor_ref, timeout_ms)
+    waiter = %{from: from, pid: pid, monitor_ref: monitor_ref, timer_ref: timer_ref}
 
     state
     |> update_in([:queues, scope], fn queue -> :queue.in(waiter, queue || :queue.new()) end)
     |> put_in([:monitors, monitor_ref], {:waiter, scope, from})
   end
 
+  defp schedule_timeout(_monitor_ref, :infinity), do: nil
+
+  defp schedule_timeout(monitor_ref, timeout_ms) do
+    Process.send_after(self(), {:admission_timeout, monitor_ref}, timeout_ms)
+  end
+
   defp remove_waiter(state, scope, monitor_ref) do
     queue = Map.get(state.queues, scope, :queue.new())
 
-    next_queue =
-      queue
-      |> :queue.to_list()
-      |> Enum.reject(&(&1.monitor_ref == monitor_ref))
-      |> :queue.from_list()
+    {waiter, waiters} = pop_first_waiter(:queue.to_list(queue), monitor_ref)
+    cancel_timeout(waiter)
+    next_queue = :queue.from_list(waiters)
 
     put_scope_queue(state, scope, next_queue)
   end
+
+  defp pop_first_waiter([], _monitor_ref), do: {nil, []}
+
+  defp pop_first_waiter([waiter | rest], monitor_ref) do
+    if waiter.monitor_ref == monitor_ref do
+      {waiter, rest}
+    else
+      {found, waiters} = pop_first_waiter(rest, monitor_ref)
+      {found, [waiter | waiters]}
+    end
+  end
+
+  defp cancel_timeout(%{timer_ref: timer_ref}) when is_reference(timer_ref) do
+    Process.cancel_timer(timer_ref)
+    :ok
+  end
+
+  defp cancel_timeout(_waiter), do: :ok
 
   defp drain(state, scope) do
     queue = Map.get(state.queues, scope, :queue.new())
@@ -163,6 +210,7 @@ defmodule Favn.SQL.Admission.Limiter do
       available?(state, scope) ->
         {{:value, waiter}, next_queue} = :queue.out(queue)
         Process.demonitor(waiter.monitor_ref, [:flush])
+        cancel_timeout(waiter)
         GenServer.reply(waiter.from, :ok)
 
         state

@@ -42,15 +42,14 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 5. Close Storage And Persistence Gaps
 
-- Define and verify SQLite-first backup, migration, restore, and schema-readiness guarantees for the single-node production contract.
+- Finish operator-facing SQLite-first backup, migration, restore, and schema-readiness automation for the single-node production contract, including clear coordination with separate DuckDB data-plane backups.
 - Move Postgres live verification into the next production mode after SQLite single-node readiness, not the first `v1` gate.
 
 ### 6. Harden The Production-Grade Runtime
 
 - Harden the manifest-pinned SQL execution path enough for the `v1` support promise, especially around runtime payload handling and backend failure behavior.
 - Add run-level runtime config preflight for planned SQL assets so SQL connection env refs fail before any asset starts, not only when an adapter connection is opened.
-- Harden DuckDB/plugin execution as part of the core `v1` production promise for the single-node contract.
-- Make the supported-versus-experimental line explicit in user-facing docs.
+- Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
 - Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
 
 ## Later / Future Ideas

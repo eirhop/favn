@@ -135,20 +135,29 @@ of storage that can be detected safely, or not schema-ready.
 
 ## DuckDB Production Contract
 
-DuckDB is part of the v1 production promise. It is not experimental for the
-first single-node production target.
+DuckDB is part of the v1 production promise. It is runner/plugin-owned
+data-plane infrastructure, not control-plane persistence, and is not
+experimental for the first single-node production target.
 
-This means follow-up hardening work must make DuckDB-backed execution production
-grade rather than deciding whether to keep it behind an experimental label.
-Production DuckDB behavior must cover:
+Production DuckDB behavior covers or must preserve:
 
 - Manifest-pinned SQL asset execution through the runner-owned materialization
   planner and shared SQL runtime client.
 - Local-file DuckDB database paths on durable attached storage when local files
-  are used.
-- Safe admission/concurrency behavior for local-file DuckDB connections.
+  are used; production paths must be explicit and production-safe rather than
+  implicit local-dev state.
+- Conservative admission/concurrency behavior for local-file DuckDB connections;
+  local files default to single-admitted SQL sessions against the same database
+  path unless the connection explicitly configures another safe policy.
+- Separate-process DuckDB execution as the recommended production placement when
+  using the implemented DuckDB plugin modes, so DuckDB handles live in a
+  supervised worker process instead of the asset worker process.
+- Bootstrap extension install/load constrained by the adapter allow-list
+  (`ducklake`, `postgres`, and `azure` today), with unsupported extensions
+  rejected during bootstrap config validation.
 - Clear diagnostics for connection, bootstrap, extension, materialization,
-  appender, cancellation, timeout, and crash failures.
+  appender, cancellation, timeout, and crash failures, with secret values
+  redacted from logs, API/UI payloads, and structured error details.
 - Documented backup/restore expectations for local DuckDB files or external
   DuckLake-style storage used by named connections.
 - No general production SQL editor as part of the v1 promise. Relation
@@ -156,7 +165,9 @@ Production DuckDB behavior must cover:
 
 DuckDB data-plane storage is separate from SQLite control-plane persistence. A
 production deployment may use SQLite for Favn control-plane state and DuckDB for
-asset data at the same time.
+asset data at the same time. SQLite control-plane backup does not include local
+DuckDB database files, DuckLake data paths, object storage, or external source
+systems; operators must back up and restore those data-plane systems separately.
 
 ## Scheduler Behavior
 
@@ -226,7 +237,8 @@ The production path contract is intentionally explicit:
 - `FAVN_SQLITE_PATH` is the control-plane SQLite database path and must live on
   durable attached storage.
 - DuckDB local database paths in named connections must live on durable storage
-  when those connections contain production asset data.
+  when those connections contain production asset data. Production DuckDB paths
+  must be explicit connection config, not inferred from local-dev state.
 - Runtime logs, crash dumps, and diagnostics must have documented paths or
   stdout/stderr behavior suitable for the chosen release packaging.
 - Build metadata paths under `.favn/dist` are not production persistence paths.
@@ -252,6 +264,8 @@ Minimum expectations for the SQLite phase:
 - Document how migrations interact with backup and rollback expectations.
 - Document what state is not covered by the control-plane backup, especially
   DuckDB asset data, external source systems, logs, and object/external storage.
+- Document separate backup and restore procedures for runner/plugin-owned DuckDB
+  data-plane files or external DuckLake-style storage used by named connections.
 - Verify restore with realistic manifests, runs, scheduler state, auth/audit
   state after durable auth lands, and operational backfill state.
 
@@ -292,8 +306,9 @@ Required expectations:
   readiness without leaking secrets.
 - Web readiness must include its ability to reach the orchestrator API through
   the configured service boundary.
-- DuckDB diagnostics must identify connection/bootstrap/materialization failures
-  without exposing secret values.
+- DuckDB diagnostics must identify connection/bootstrap/materialization failures,
+  bootstrap step/kind, unsupported allow-list values, and adapter details where
+  safe, without exposing secret values.
 
 The exact endpoints, CLI commands, and output shapes are follow-up implementation
 work.

@@ -5,32 +5,52 @@ defmodule Favn.SQL.ConcurrencyPolicy do
   alias Favn.SQL.Error
 
   @enforce_keys [:limit, :scope, :applies_to]
-  defstruct [:limit, :scope, :applies_to]
+  defstruct [:limit, :scope, :applies_to, :connection, admission_timeout_ms: :infinity]
 
   @type limit :: pos_integer() | :unlimited
   @type applies_to :: :all | :writes
+  @type admission_timeout_ms :: pos_integer() | :infinity
   @type t :: %__MODULE__{
           limit: limit(),
           scope: term(),
-          applies_to: applies_to()
+          applies_to: applies_to(),
+          connection: atom() | nil,
+          admission_timeout_ms: admission_timeout_ms()
         }
 
   @spec resolve(Resolved.t()) :: {:ok, t()} | {:error, Error.t()}
   def resolve(%Resolved{} = resolved) do
     with {:ok, policy} <- default_policy(resolved),
-         {:ok, limit} <- configured_limit(resolved) do
-      {:ok, %{policy | limit: limit || policy.limit}}
+         {:ok, limit} <- configured_limit(resolved),
+         {:ok, admission_timeout_ms} <- configured_admission_timeout(resolved) do
+      {:ok,
+       %{
+         policy
+         | limit: limit || policy.limit,
+           connection: resolved.name,
+           admission_timeout_ms: admission_timeout_ms || policy.admission_timeout_ms
+       }}
     end
   end
 
   @spec unlimited(Resolved.t()) :: t()
   def unlimited(%Resolved{} = resolved) do
-    %__MODULE__{limit: :unlimited, scope: {:connection, resolved.name}, applies_to: :writes}
+    %__MODULE__{
+      limit: :unlimited,
+      scope: {:connection, resolved.name},
+      applies_to: :writes,
+      connection: resolved.name
+    }
   end
 
   @spec single_writer(Resolved.t()) :: t()
   def single_writer(%Resolved{} = resolved) do
-    %__MODULE__{limit: 1, scope: {:connection, resolved.name}, applies_to: :writes}
+    %__MODULE__{
+      limit: 1,
+      scope: {:connection, resolved.name},
+      applies_to: :writes,
+      connection: resolved.name
+    }
   end
 
   defp default_policy(%Resolved{adapter: adapter} = resolved) do
@@ -80,6 +100,30 @@ defmodule Favn.SQL.ConcurrencyPolicy do
        connection: resolved.name,
        operation: :connect,
        details: %{write_concurrency: value}
+     }}
+  end
+
+  defp configured_admission_timeout(%Resolved{config: config} = resolved) when is_map(config) do
+    case Map.fetch(config, :admission_timeout_ms) do
+      :error -> {:ok, nil}
+      {:ok, value} -> normalize_admission_timeout(value, resolved)
+    end
+  end
+
+  defp normalize_admission_timeout(:infinity, _resolved), do: {:ok, :infinity}
+
+  defp normalize_admission_timeout(value, _resolved)
+       when is_integer(value) and value > 0,
+       do: {:ok, value}
+
+  defp normalize_admission_timeout(value, resolved) do
+    {:error,
+     %Error{
+       type: :invalid_config,
+       message: "connection #{inspect(resolved.name)} has invalid :admission_timeout_ms",
+       connection: resolved.name,
+       operation: :connect,
+       details: %{admission_timeout_ms: value}
      }}
   end
 

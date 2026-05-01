@@ -235,18 +235,22 @@ defmodule Favn.SQL.Client do
   end
 
   defp connect_with_admission(%Resolved{} = resolved, concurrency_policy, adapter_opts) do
-    lease = Admission.acquire_session(concurrency_policy)
+    case Admission.acquire_session(concurrency_policy) do
+      {:error, %Error{}} = error ->
+        error
 
-    try do
-      connect_and_build_session(resolved, adapter_opts, concurrency_policy, lease)
-    rescue
-      error ->
-        Admission.release_session(lease)
-        reraise error, __STACKTRACE__
-    catch
-      kind, reason ->
-        Admission.release_session(lease)
-        :erlang.raise(kind, reason, __STACKTRACE__)
+      lease ->
+        try do
+          connect_and_build_session(resolved, adapter_opts, concurrency_policy, lease)
+        rescue
+          error ->
+            Admission.release_session(lease)
+            reraise error, __STACKTRACE__
+        catch
+          kind, reason ->
+            Admission.release_session(lease)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
     end
   end
 
