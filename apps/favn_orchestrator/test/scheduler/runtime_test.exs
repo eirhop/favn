@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
   alias Favn.Scheduler.State
+  alias Favn.Window.Policy
   alias FavnOrchestrator
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Scheduler.Runtime
@@ -402,6 +403,48 @@ defmodule FavnOrchestrator.Scheduler.RuntimeTest do
     assert anchor_window.timezone == "Europe/Oslo"
     assert anchor_window.start_at.time_zone == "Europe/Oslo"
     assert anchor_window.end_at.time_zone == "Europe/Oslo"
+  end
+
+  test "invalid scheduled window policy data fails entry without crashing runtime" do
+    version = scheduler_manifest_version("mv_scheduler_invalid_window", window: :hour)
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    name = unique_runtime_name()
+    pid = start_runtime(name)
+    [entry] = Runtime.scheduled(name)
+
+    state = %State{
+      pipeline_module: entry.module,
+      schedule_id: entry.schedule.name,
+      schedule_fingerprint: entry.schedule_fingerprint,
+      last_due_at: DateTime.add(DateTime.utc_now(), -120, :second),
+      version: 1
+    }
+
+    assert :ok = Storage.put_scheduler_state({entry.module, entry.schedule.name}, state)
+    assert :ok = Runtime.reload(name)
+
+    :sys.replace_state(pid, fn runtime_state ->
+      put_in(runtime_state, [:entries, entry.module, :window], %Policy{
+        kind: :hour,
+        timezone: "Invalid/Timezone"
+      })
+    end)
+
+    log = capture_log(fn -> assert :ok = Runtime.tick(name) end)
+
+    assert Process.alive?(pid)
+    assert log =~ "scheduler submit failed"
+    assert log =~ "invalid_scheduled_window_policy"
+
+    assert {:ok, runs} = Storage.list_runs()
+    refute Enum.any?(runs, &(&1.manifest_version_id == version.manifest_version_id))
+
+    assert {:ok, %State{} = stored_state} =
+             Storage.get_scheduler_state({entry.module, entry.schedule.name})
+
+    assert is_nil(stored_state.last_submitted_due_at)
   end
 
   defp await_run_submission(manifest_version_id, attempts \\ 40)

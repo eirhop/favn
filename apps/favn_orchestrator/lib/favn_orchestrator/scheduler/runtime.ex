@@ -344,15 +344,11 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   defp submit_occurrence(state, entry, index, version, due_at, latest_due, now, opts \\ []) do
     track_in_flight? = Keyword.get(opts, :track_in_flight?, true)
     trigger = build_trigger(entry, due_at, latest_due, now)
-    anchor_window = maybe_anchor_window(entry.window, due_at, entry.schedule.timezone)
 
-    resolve_opts =
-      if(anchor_window,
-        do: [trigger: trigger, anchor_window: anchor_window],
-        else: [trigger: trigger]
-      )
-
-    with {:ok, resolution} <- PipelineResolver.resolve(index, entry.pipeline, resolve_opts),
+    with {:ok, anchor_window} <-
+           maybe_anchor_window(entry.window, due_at, entry.schedule.timezone),
+         {:ok, resolution} <-
+           PipelineResolver.resolve(index, entry.pipeline, resolve_opts(trigger, anchor_window)),
          {:ok, run_id} <-
            FavnOrchestrator.submit_pipeline_run(resolution.target_refs,
              manifest_version_id: version.manifest_version_id,
@@ -378,6 +374,9 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     end
   end
 
+  defp resolve_opts(trigger, nil), do: [trigger: trigger]
+  defp resolve_opts(trigger, anchor_window), do: [trigger: trigger, anchor_window: anchor_window]
+
   defp build_trigger(entry, due_at, latest_due, now) do
     %{
       kind: :schedule,
@@ -400,16 +399,19 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     }
   end
 
-  defp maybe_anchor_window(nil, _due_at, _timezone), do: nil
+  defp maybe_anchor_window(nil, _due_at, _timezone), do: {:ok, nil}
 
   defp maybe_anchor_window(%Policy{} = policy, due_at, timezone) do
-    case Policy.resolve_scheduled(policy, due_at, timezone) do
-      {:ok, anchor_window} ->
-        anchor_window
-
-      {:error, reason} ->
-        raise ArgumentError, "invalid scheduled window policy: #{inspect(reason)}"
+    with {:ok, policy} <- Policy.validate(policy),
+         {:ok, anchor_window} <- Policy.resolve_scheduled(policy, due_at, timezone) do
+      {:ok, anchor_window}
+    else
+      {:error, reason} -> {:error, {:invalid_scheduled_window_policy, reason}}
     end
+  end
+
+  defp maybe_anchor_window(window, _due_at, _timezone) do
+    {:error, {:invalid_scheduled_window_policy, {:invalid_scheduler_window, window}}}
   end
 
   defp select_occurrences(entry, :all, cron, timezone, last_due_at, latest_due) do

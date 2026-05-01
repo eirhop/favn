@@ -230,7 +230,9 @@ end
 Windowed pipelines support `:hourly`, `:daily`, `:monthly`, and `:yearly`
 policies. Manual local runs pass the concrete requested window, while scheduled
 windowed runs resolve the previous complete period in the schedule timezone.
-Pipelines without a `window` clause run without an anchor window.
+Invalid scheduled window policy data is isolated to that scheduler entry instead
+of crashing the scheduler runtime. Pipelines without a `window` clause run
+without an anchor window.
 
 Operational backfill foundations can resolve explicit or relative ranges into
 the same concrete window anchors and submit one child pipeline run per resolved

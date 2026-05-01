@@ -984,7 +984,8 @@ defmodule Favn.SQL.Template do
   defp existing_atom!(value) do
     String.to_existing_atom(value)
   rescue
-    ArgumentError -> raise ArgumentError, "unknown atom #{inspect(value)}"
+    exception in ArgumentError ->
+      reraise %{exception | message: "unknown atom #{inspect(value)}"}, __STACKTRACE__
   end
 
   defp validate_call_context!(
