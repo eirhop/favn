@@ -1,5 +1,10 @@
-defmodule Favn.SQL.MaterializationPlanner do
-  @moduledoc false
+defmodule FavnRunner.SQL.MaterializationPlanner do
+  @moduledoc """
+  Runner-owned SQL asset materialization planner.
+
+  The planner lives in `favn_runner` because it translates runner SQL asset
+  render output into the shared `%Favn.SQL.WritePlan{}` adapter contract.
+  """
 
   alias Favn.RelationRef
   alias Favn.SQL.{Client, IncrementalWindow, Params, Render, Session, WritePlan}

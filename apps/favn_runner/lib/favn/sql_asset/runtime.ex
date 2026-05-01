@@ -9,18 +9,11 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
 
-  alias Favn.SQL.{
-    Explain,
-    IncrementalWindow,
-    MaterializationPlanner,
-    MaterializationResult,
-    Params,
-    Preview,
-    Render
-  }
+  alias Favn.SQL.{Explain, IncrementalWindow, MaterializationResult, Params, Preview, Render}
 
   alias Favn.SQLAsset.{Compiler, Definition, Error, Renderer}
   alias Favn.Window.Runtime
+  alias FavnRunner.SQL.MaterializationPlanner
 
   @runner_registry FavnRunner.ConnectionRegistry
 
