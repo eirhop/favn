@@ -1,6 +1,6 @@
 # Issue 184 Backfill Projection Repair Plan
 
-> Status: planned for issue #184.
+> Status: implemented for issue #184.
 > Scope: add operator/developer repair tooling for derived operational-backfill read models without mutating authoritative run history.
 
 ## Issue Summary

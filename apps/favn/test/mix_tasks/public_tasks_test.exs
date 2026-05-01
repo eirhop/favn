@@ -344,6 +344,33 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
              BackfillTask.parse_args(["rerun-window", "run_1", "--window-key", "day:2026-04-01"])
 
     assert Keyword.fetch!(opts, :window_key) == "day:2026-04-01"
+
+    assert {:ok, {:repair, opts}} =
+             BackfillTask.parse_args([
+               "repair",
+               "--pipeline-module",
+               "Example.Pipeline",
+               "--apply"
+             ])
+
+    assert Keyword.fetch!(opts, :pipeline_module) == "Example.Pipeline"
+    assert Keyword.fetch!(opts, :apply) == true
+  end
+
+  test "mix favn.backfill validates repair arguments" do
+    assert {:error, message} =
+             BackfillTask.parse_args([
+               "repair",
+               "--backfill-run-id",
+               "run_1",
+               "--pipeline-module",
+               "Example.Pipeline"
+             ])
+
+    assert message == "expected at most one repair scope: --backfill-run-id or --pipeline-module"
+
+    assert {:error, message} = BackfillTask.parse_args(["repair", "extra"])
+    assert message == "unexpected argument for mix favn.backfill repair"
   end
 
   test "mix favn.backfill reports stopped local stack", %{root_dir: root_dir} do

@@ -87,4 +87,12 @@ defmodule Favn.Storage.Adapter do
               {:ok, AssetWindowState.t()} | {:error, error()}
   @callback list_asset_window_states(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(AssetWindowState.t())} | {:error, error()}
+
+  @callback replace_backfill_read_models(
+              filter_opts(),
+              [CoverageBaseline.t()],
+              [BackfillWindow.t()],
+              [AssetWindowState.t()],
+              adapter_opts()
+            ) :: :ok | {:error, error()}
 end

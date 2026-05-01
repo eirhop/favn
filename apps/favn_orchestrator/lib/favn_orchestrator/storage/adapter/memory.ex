@@ -259,6 +259,25 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def replace_backfill_read_models(
+        scope,
+        coverage_baselines,
+        backfill_windows,
+        asset_window_states,
+        opts
+      )
+      when is_list(scope) and is_list(coverage_baselines) and is_list(backfill_windows) and
+             is_list(asset_window_states) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+
+    GenServer.call(
+      server,
+      {:replace_backfill_read_models, scope, coverage_baselines, backfill_windows,
+       asset_window_states}
+    )
+  end
+
+  @impl true
   def init(_args) do
     {:ok, initial_state()}
   end
@@ -537,6 +556,31 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, Page.from_fetched(rows, page_opts(filters))}, state}
   end
 
+  def handle_call(
+        {:replace_backfill_read_models, scope, coverage_baselines, backfill_windows,
+         asset_window_states},
+        _from,
+        state
+      ) do
+    next_state = %{
+      state
+      | coverage_baselines:
+          state.coverage_baselines
+          |> reject_scoped(scope)
+          |> put_coverage_baselines(coverage_baselines),
+        backfill_windows:
+          state.backfill_windows
+          |> reject_scoped(scope)
+          |> put_backfill_windows(backfill_windows),
+        asset_window_states:
+          state.asset_window_states
+          |> reject_scoped(scope)
+          |> put_asset_window_states(asset_window_states)
+    }
+
+    {:reply, :ok, next_state}
+  end
+
   defp put_run_with_semantics(runs, %RunState{} = incoming) do
     case Map.fetch(runs, incoming.id) do
       :error ->
@@ -581,6 +625,40 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
     Enum.filter(values, fn value ->
       Enum.all?(filters, fn {key, expected} -> Map.get(value, key) == expected end)
+    end)
+  end
+
+  defp reject_scoped(_values, []), do: %{}
+
+  defp reject_scoped(values, scope) when is_map(values) do
+    values
+    |> Enum.reject(fn {_key, value} -> scoped?(value, scope) end)
+    |> Map.new()
+  end
+
+  defp scoped?(value, scope) do
+    Enum.all?(scope, fn {key, expected} -> Map.get(value, key) == expected end)
+  end
+
+  defp put_coverage_baselines(values, baselines) do
+    Enum.reduce(baselines, values, fn %CoverageBaseline{} = baseline, acc ->
+      Map.put(acc, baseline.baseline_id, baseline)
+    end)
+  end
+
+  defp put_backfill_windows(values, windows) do
+    Enum.reduce(windows, values, fn %BackfillWindow{} = window, acc ->
+      Map.put(acc, {window.backfill_run_id, window.pipeline_module, window.window_key}, window)
+    end)
+  end
+
+  defp put_asset_window_states(values, states) do
+    Enum.reduce(states, values, fn %AssetWindowState{} = window_state, acc ->
+      Map.put(
+        acc,
+        {window_state.asset_ref_module, window_state.asset_ref_name, window_state.window_key},
+        window_state
+      )
     end)
   end
 

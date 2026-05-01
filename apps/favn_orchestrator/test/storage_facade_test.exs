@@ -82,6 +82,16 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_asset_window_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def replace_backfill_read_models(
+          _scope,
+          _coverage_baselines,
+          _backfill_windows,
+          _states,
+          _opts
+        ),
+        do: :ok
   end
 
   defmodule LegacyShapeAdapterStub do
@@ -171,6 +181,16 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_asset_window_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def replace_backfill_read_models(
+          _scope,
+          _coverage_baselines,
+          _backfill_windows,
+          _states,
+          _opts
+        ),
+        do: :ok
   end
 
   setup do

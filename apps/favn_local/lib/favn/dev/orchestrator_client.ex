@@ -184,6 +184,25 @@ defmodule Favn.Dev.OrchestratorClient do
     request_page(:list_asset_window_states, url, service_token, session_context)
   end
 
+  @spec repair_backfill_projections(String.t(), String.t(), session_context(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def repair_backfill_projections(base_url, service_token, session_context, payload)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_map(payload) do
+    url = base_url <> "/api/orchestrator/v1/backfills/projections/repair"
+
+    case request_post(:repair_backfill_projections, url, service_token, payload, session_context) do
+      {:ok, %{"data" => %{"repair" => repair}}} when is_map(repair) ->
+        {:ok, repair}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:repair_backfill_projections, :post, url, :invalid_response)}
+    end
+  end
+
   @spec get_run(String.t(), String.t(), session_context(), String.t()) ::
           {:ok, map()} | {:error, term()}
   def get_run(base_url, service_token, session_context, run_id)

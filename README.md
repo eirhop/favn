@@ -312,6 +312,7 @@ mix favn.dev
 mix favn.run MyApp.Pipelines.DailySales --window day:2026-04-27 --timezone Europe/Oslo
 mix favn.backfill submit MyApp.Pipelines.DailySales --from 2026-04-01 --to 2026-04-07 --kind day
 mix favn.backfill windows RUN_ID --limit 100 --offset 0
+mix favn.backfill repair --pipeline-module MyApp.Pipelines.DailySales --apply
 mix favn.logs
 mix favn.status
 mix favn.reload
@@ -410,9 +411,14 @@ manual run path is the recommended default for one-time local ETL.
 local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges,
 `windows RUN_ID` to inspect child windows, `coverage-baselines` and
 `asset-window-states` to inspect projected backfill state, and `rerun-window
-RUN_ID --window-key KEY` for failed window reruns. Operational backfill submit
-does not accept lookback-policy input; asset window lookback remains part of
-normal windowed execution only.
+RUN_ID --window-key KEY` for failed window reruns. Use `repair` to dry-run or,
+with `--apply`, rebuild derived coverage-baseline, backfill-window, and latest
+asset/window projections from authoritative run snapshots after projection drift
+or read-model deletion. `repair --backfill-run-id RUN_ID` rebuilds that parent
+window ledger only; use `--pipeline-module` or no scope when latest
+asset/window state must also be recomputed. Operational backfill submit does not accept
+lookback-policy input; asset window lookback remains part of normal windowed
+execution only.
 
 The local web UI exposes the same operator workflow through `/backfills`,
 including active-manifest pipeline selection, explicit range submission,

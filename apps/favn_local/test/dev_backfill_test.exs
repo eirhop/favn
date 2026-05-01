@@ -153,6 +153,34 @@ defmodule Favn.Dev.BackfillTest do
     assert JSON.decode!(body) == %{"window_key" => "day:2026-01-01:Etc/UTC"}
   end
 
+  test "repair_projections posts repair payload", %{root_dir: root_dir} do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(
+        [
+          {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+          {200,
+           ~s({"data":{"repair":{"apply":true,"counts":{"coverage_baselines":0,"backfill_windows":1,"asset_window_states":1,"skips":0},"skips":[]}}})}
+        ],
+        parent: parent
+      )
+
+    write_running_state(root_dir, base_url)
+
+    assert {:ok, %{"apply" => true, "counts" => %{"backfill_windows" => 1}}} =
+             Backfill.repair_projections(
+               root_dir: root_dir,
+               pipeline_module: "MyApp.Pipeline",
+               apply: true
+             )
+
+    assert_receive {:request,
+                    %{path: "/api/orchestrator/v1/backfills/projections/repair", body: body}}
+
+    assert JSON.decode!(body) == %{"apply" => true, "pipeline_module" => "MyApp.Pipeline"}
+  end
+
   defp write_running_state(root_dir, base_url) do
     pid = :os.getpid() |> List.to_string() |> String.to_integer()
 
