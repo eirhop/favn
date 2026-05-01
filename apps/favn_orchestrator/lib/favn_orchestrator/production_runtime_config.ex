@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           api_server: keyword(),
           api_service_tokens: [String.t()],
           scheduler: keyword(),
+          runner: map(),
           runner_client: module(),
           runner_client_opts: keyword()
         }
@@ -69,7 +70,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, sqlite} <- sqlite(env),
          {:ok, api_server} <- api_server(env),
          {:ok, tokens} <- api_service_tokens(env),
-         {:ok, scheduler} <- scheduler(env) do
+         {:ok, scheduler} <- scheduler(env),
+         {:ok, runner} <- runner(env) do
       {:ok,
        %{
          storage: storage,
@@ -77,6 +79,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          api_server: api_server,
          api_service_tokens: tokens,
          scheduler: scheduler,
+         runner: runner,
          runner_client: FavnOrchestrator.RunnerClient.LocalNode,
          runner_client_opts: []
        }}
@@ -104,7 +107,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         port: Keyword.fetch!(config.api_server, :port)
       },
       api_service_tokens: %{count: length(config.api_service_tokens), redacted: true},
-      scheduler: Map.new(config.scheduler)
+      scheduler: Map.new(config.scheduler),
+      runner: config.runner
     }
   end
 
@@ -177,6 +181,21 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          tick_ms: tick_ms,
          max_missed_all_occurrences: max_missed
        ]}
+    end
+  end
+
+  defp runner(env) do
+    module = Module.concat([FavnRunner, ProductionRuntimeConfig])
+
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         true <- function_exported?(module, :validate, 1) do
+      case module.validate(env) do
+        {:ok, config} -> {:ok, config}
+        {:error, %{error: reason}} -> {:error, reason}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      _other -> {:error, {:runtime_config_unavailable, "FAVN_RUNNER_MODE"}}
     end
   end
 
@@ -265,5 +284,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   defp redact({:invalid_secret_env, name, reason}), do: {:invalid_secret_env, name, reason}
   defp redact({:missing_env, name}), do: {:missing_env, name}
+  defp redact({:invalid_env, name, expected}), do: {:invalid_env, name, expected}
   defp redact({:invalid_env, name, _value, expected}), do: {:invalid_env, name, expected}
+  defp redact({:runtime_config_unavailable, name}), do: {:runtime_config_unavailable, name}
 end

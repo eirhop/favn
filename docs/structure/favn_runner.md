@@ -7,6 +7,8 @@ inspection.
 Code:
 - `apps/favn_runner/lib/favn_runner.ex`
 - `apps/favn_runner/lib/favn_runner/`
+- `apps/favn_runner/lib/favn_runner/production_runtime_config.ex` owns
+  runner-side production env validation for the first local single-node setup
 - `apps/favn_runner/lib/favn_runner/sql/materialization_planner.ex` owns runner SQL
   asset materialization planning and emits shared `%Favn.SQL.WritePlan{}` values
 - runner-owned execution modules under `apps/favn_runner/lib/favn/`
@@ -22,4 +24,5 @@ Tests:
 
 Use when changing asset execution, runner protocol behavior, cancellation,
 timeouts, manifest registration/resolution, plugin config, SQL asset execution,
-SQL asset materialization planning, or runner-owned inspection.
+SQL asset materialization planning, runner production config validation, or
+runner-owned inspection.

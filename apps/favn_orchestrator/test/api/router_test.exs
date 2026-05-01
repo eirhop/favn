@@ -114,6 +114,23 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert Enum.any?(checks, &(&1["name"] == "storage" and &1["status"] == "ok"))
   end
 
+  test "readiness endpoint returns 503 with redacted diagnostics" do
+    secret = "test-service-token"
+    Application.delete_env(:favn_orchestrator, :runner_client)
+
+    ready_conn =
+      conn(:get, "/api/orchestrator/v1/health/ready")
+      |> Router.call(@opts)
+
+    assert ready_conn.status == 503
+
+    assert %{"data" => %{"status" => "not_ready", "checks" => checks}} =
+             Jason.decode!(ready_conn.resp_body)
+
+    assert Enum.any?(checks, &(&1["name"] == "runner" and &1["status"] == "error"))
+    refute ready_conn.resp_body =~ secret
+  end
+
   test "password session login and me endpoint" do
     login_conn =
       conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{

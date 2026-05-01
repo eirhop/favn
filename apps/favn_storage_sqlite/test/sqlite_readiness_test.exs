@@ -24,10 +24,27 @@ defmodule FavnStorageSqlite.ReadinessTest do
     assert {:error, :sqlite_database_required} = Diagnostics.validate_database_path([])
   end
 
+  test "adapter readiness delegates to redacted sqlite diagnostics" do
+    db_path = temp_path("adapter-readiness-ready.db")
+    repo_pid = start_repo!(db_path)
+    :ok = Migrations.migrate!(Repo)
+    maybe_stop_pid(repo_pid)
+
+    assert {:ok, diagnostics} = Adapter.readiness(database: db_path, migration_mode: :manual)
+
+    assert diagnostics.status == :ready
+    assert diagnostics.ready?
+    assert diagnostics.database == %{configured?: true, path: :redacted}
+    assert diagnostics.schema.status == :ready
+    refute inspect(diagnostics) =~ db_path
+
+    File.rm(db_path)
+  end
+
   test "readiness reports invalid paths without leaking configured path" do
     path = temp_path("missing-secret-parent/db.sqlite")
 
-    assert {:error, error} = Diagnostics.readiness(database: path, migration_mode: :manual)
+    assert {:error, error} = Adapter.readiness(database: path, migration_mode: :manual)
 
     assert error.status == :invalid_database_path
     assert error.reason == :database_parent_missing
@@ -109,6 +126,15 @@ defmodule FavnStorageSqlite.ReadinessTest do
     refute inspect(diagnostics) =~ db_path
 
     File.rm(db_path)
+  end
+
+  test "readiness redacts diagnostics failures" do
+    path = temp_path("invalid-mode-secret.db")
+
+    assert {:error, error} = Adapter.readiness(database: path, migration_mode: {:bad, path})
+
+    assert error == %{status: :invalid_configuration, reason: :invalid_migration_mode}
+    refute inspect(error) =~ path
   end
 
   test "database path diagnostics can require absolute path" do

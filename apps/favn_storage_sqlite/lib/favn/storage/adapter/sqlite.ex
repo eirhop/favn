@@ -49,6 +49,11 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   @impl true
+  def readiness(opts) when is_list(opts) do
+    Diagnostics.readiness(opts)
+  end
+
+  @impl true
   def put_manifest_version(%Version{} = version, opts) when is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
          {:ok, record} <- ManifestCodec.to_record(version),

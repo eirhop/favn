@@ -5,7 +5,6 @@ defmodule FavnOrchestrator.Readiness do
 
   alias Favn.Contracts.RunnerClient
   alias FavnOrchestrator.API.Config, as: APIConfig
-  alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
 
@@ -16,10 +15,25 @@ defmodule FavnOrchestrator.Readiness do
 
   @spec readiness() :: map()
   def readiness do
-    checks = [api_check(), storage_check(), scheduler_check(), runner_check()]
+    checks = [
+      safe_check(:api, &api_check/0),
+      safe_check(:storage, &storage_check/0),
+      safe_check(:scheduler, &scheduler_check/0),
+      safe_check(:runner, &runner_check/0)
+    ]
+
     status = if Enum.all?(checks, &(&1.status == :ok)), do: :ready, else: :not_ready
 
     %{status: status, checks: checks}
+  end
+
+  defp safe_check(name, fun) when is_function(fun, 0) do
+    fun.()
+  rescue
+    exception -> error(name, %{kind: :raised, exception: module_name(exception.__struct__)})
+  catch
+    :exit, reason -> error(name, %{kind: :exited, reason: redact_untrusted(reason)})
+    kind, reason -> error(name, %{kind: kind, reason: redact_untrusted(reason)})
   end
 
   defp api_check do
@@ -30,37 +44,15 @@ defmodule FavnOrchestrator.Readiness do
   end
 
   defp storage_check do
-    adapter = Storage.adapter_module()
+    case Storage.readiness() do
+      {:ok, %{ready?: false} = diagnostics} ->
+        error(:storage, diagnostics)
 
-    with :ok <- Storage.validate_adapter(adapter),
-         :ok <- sqlite_schema_check(adapter) do
-      ok(:storage, storage_details(adapter))
-    else
-      {:error, reason} -> error(:storage, reason)
-    end
-  end
+      {:ok, diagnostics} ->
+        ok(:storage, diagnostics)
 
-  defp sqlite_schema_check(adapter) do
-    if adapter == ProductionRuntimeConfig.sqlite_adapter() do
-      migrations = Module.concat([FavnStorageSqlite, Migrations])
-      repo = Module.concat([FavnStorageSqlite, Repo])
-
-      with {:module, ^migrations} <- Code.ensure_loaded(migrations),
-           true <- function_exported?(migrations, :schema_diagnostics, 1),
-           {:ok, %{status: :ready}} <- migrations.schema_diagnostics(repo) do
-        :ok
-      else
-        {:ok, diagnostics} ->
-          {:error, {:sqlite_schema_not_ready, redact_diagnostics(diagnostics)}}
-
-        {:error, reason} ->
-          {:error, {:sqlite_schema_diagnostics_failed, redact_diagnostics(reason)}}
-
-        _other ->
-          {:error, :sqlite_schema_diagnostics_unavailable}
-      end
-    else
-      :ok
+      {:error, reason} ->
+        error(:storage, normalize_storage_error(reason))
     end
   end
 
@@ -109,19 +101,17 @@ defmodule FavnOrchestrator.Readiness do
 
   defp api_opts, do: Application.get_env(:favn_orchestrator, :api_server, [])
 
-  defp storage_details(adapter) do
-    details = %{adapter: module_name(adapter)}
-
-    if adapter == ProductionRuntimeConfig.sqlite_adapter() do
-      Keyword.get(Storage.adapter_opts(), :database)
-      |> then(fn
-        nil -> Map.put(details, :database, %{configured?: false})
-        _path -> Map.put(details, :database, %{configured?: true, path: :redacted})
-      end)
-    else
-      details
-    end
+  defp normalize_storage_error({:raised, %{__exception__: true, __struct__: exception_module}}) do
+    %{kind: :raised, exception: module_name(exception_module)}
   end
+
+  defp normalize_storage_error({:thrown, reason}),
+    do: %{kind: :thrown, reason: redact_untrusted(reason)}
+
+  defp normalize_storage_error({:exited, reason}),
+    do: %{kind: :exited, reason: redact_untrusted(reason)}
+
+  defp normalize_storage_error(reason), do: reason
 
   defp ok(name, details), do: %{name: name, status: :ok, details: redact_diagnostics(details)}
   defp error(name, reason), do: %{name: name, status: :error, error: redact_diagnostics(reason)}
@@ -142,7 +132,33 @@ defmodule FavnOrchestrator.Readiness do
   defp redact_diagnostics(key, _value) when key in [:token, :tokens, :password, :secret],
     do: "[REDACTED]"
 
+  defp redact_diagnostics(key, value) when is_binary(key) do
+    if sensitive_key?(key), do: "[REDACTED]", else: redact_diagnostics(value)
+  end
+
   defp redact_diagnostics(_key, value), do: redact_diagnostics(value)
+
+  defp sensitive_key?(key) do
+    key = String.downcase(key)
+
+    String.contains?(key, "token") or String.contains?(key, "password") or
+      String.contains?(key, "secret")
+  end
+
+  defp redact_untrusted(value) when is_atom(value), do: value
+  defp redact_untrusted(value) when is_integer(value), do: value
+  defp redact_untrusted(value) when is_boolean(value), do: value
+  defp redact_untrusted(value) when is_binary(value), do: "[REDACTED]"
+
+  defp redact_untrusted(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> Enum.map(&redact_untrusted/1) |> List.to_tuple()
+
+  defp redact_untrusted(value) when is_list(value), do: Enum.map(value, &redact_untrusted/1)
+
+  defp redact_untrusted(value) when is_map(value),
+    do: Map.new(value, fn {key, val} -> {key, redact_untrusted(val)} end)
+
+  defp redact_untrusted(_value), do: "[REDACTED]"
 
   defp module_name(nil), do: nil
   defp module_name(module) when is_atom(module), do: Atom.to_string(module)

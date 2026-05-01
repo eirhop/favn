@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.api_server == [enabled: true, host: "127.0.0.1", port: 4101]
     assert config.api_service_tokens == [@token]
     assert config.scheduler == [enabled: true, tick_ms: 15_000, max_missed_all_occurrences: 1_000]
+    assert config.runner == %{mode: :local, topology: :single_node}
   end
 
   test "validate/1 accepts explicit supported production values" do
@@ -33,6 +34,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_ORCHESTRATOR_API_BIND_HOST" => "0.0.0.0",
       "FAVN_ORCHESTRATOR_API_PORT" => "4444",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "#{@token},#{String.duplicate("b", 33)}",
+      "FAVN_RUNNER_MODE" => "local",
       "FAVN_SCHEDULER_ENABLED" => "false",
       "FAVN_SCHEDULER_TICK_MS" => "250",
       "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES" => "2"
@@ -44,6 +46,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.api_server == [enabled: true, host: "0.0.0.0", port: 4444]
     assert length(config.api_service_tokens) == 2
     assert config.scheduler == [enabled: false, tick_ms: 250, max_missed_all_occurrences: 2]
+    assert config.runner == %{mode: :local, topology: :single_node}
+  end
+
+  test "validate/1 rejects missing required production config" do
+    assert {:error, %{error: {:missing_env, "FAVN_STORAGE"}}} =
+             ProductionRuntimeConfig.validate(%{})
   end
 
   test "validate/1 rejects unsupported storage and relative sqlite path" do
@@ -83,6 +91,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
             %{error: {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_short}}} =
              base
              |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "short-secret")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_RUNNER_MODE", "local"}}} =
+             base
+             |> Map.put("FAVN_RUNNER_MODE", "distributed")
              |> ProductionRuntimeConfig.validate()
   end
 
@@ -126,6 +139,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     diagnostics = Application.get_env(:favn_orchestrator, :production_runtime_diagnostics)
     refute inspect(diagnostics) =~ "/var/lib/favn/orchestrator.sqlite3"
+    assert diagnostics.runner == %{mode: :local, topology: :single_node}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
