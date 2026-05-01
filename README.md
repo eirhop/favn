@@ -42,6 +42,7 @@ development on top of the new boundaries.
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
+- the first `v1` production target is documented as a single backend node with SQLite on durable attached storage and production-grade DuckDB execution; see `docs/production/single_node_contract.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
@@ -517,6 +518,7 @@ the latest concrete schedule id.
 
 - `docs/FEATURES.md` tracks the implemented feature set today
 - `docs/ROADMAP.md` tracks planned next work and later ideas
+- `docs/production/single_node_contract.md` defines the first `v1` production deployment contract
 - `docs/structure/` maps current ownership, code layout, and test layout by app
 - `examples/basic-workflow-tutorial` is the first end-to-end tutorial project
 
