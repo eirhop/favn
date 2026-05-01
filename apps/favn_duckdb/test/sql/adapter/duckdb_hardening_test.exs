@@ -4,6 +4,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB
+  alias Favn.SQL.Admission.Limiter
   alias Favn.SQL.Client
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
@@ -21,7 +22,11 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     def open(database) do
       db_ref = make_ref()
       TestSupport.record({:open, db_ref, database})
-      {:ok, db_ref}
+
+      case TestSupport.mode(:open_mode, :ok) do
+        :ok -> {:ok, db_ref}
+        :worker_not_available -> {:error, :worker_not_available}
+      end
     end
 
     @impl true
@@ -40,6 +45,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
       TestSupport.record({:query_params, sql, params})
 
       case {TestSupport.mode(:query_mode, :ok), String.starts_with?(sql, "INSERT")} do
+        {:worker_timeout, _write?} ->
+          {:error, :worker_call_timeout}
+
         {:error, true} ->
           {:error, :write_failed}
 
@@ -168,6 +176,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     TestSupport.start_events()
 
     keys = [
+      :open_mode,
       :connection_mode,
       :query_mode,
       :fetch_mode,
@@ -342,6 +351,33 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
              {:release, _resource} -> true
              _ -> false
            end)
+  end
+
+  test "worker unavailable connect failure has actionable retryable diagnostics" do
+    TestSupport.put_mode(:open_mode, :worker_not_available)
+
+    assert {:error,
+            %Error{
+              type: :connection_error,
+              operation: :connect,
+              message: "DuckDB worker is not available",
+              retryable?: true,
+              details: %{classification: :worker_unavailable, reason: ":worker_not_available"}
+            }} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+  end
+
+  test "worker timeout execution failure has actionable retryable diagnostics" do
+    TestSupport.put_mode(:query_mode, :worker_timeout)
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:error,
+            %Error{
+              type: :execution_error,
+              operation: :query,
+              message: "DuckDB worker call timed out",
+              retryable?: true,
+              details: %{classification: :timeout, reason: ":worker_call_timeout"}
+            }} = DuckDB.query(conn, "SELECT 1", [])
   end
 
   test "production local-file storage rejects missing database before opening DuckDB" do
@@ -614,6 +650,30 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     assert {:ok, %Relation{name: "concurrent_b"}} =
              Client.relation(session_b, RelationRef.new!(schema: "main", name: "concurrent_b"))
+  end
+
+  test "same-file admission timeout returns scoped retryable diagnostics" do
+    path = tmp_duckdb_path("admission_timeout")
+    resolved = %Resolved{resolved() | config: %{database: path, admission_timeout_ms: 1}}
+    {:ok, session} = open_session(resolved)
+    scope = session.concurrency_policy.scope
+
+    :ok = Limiter.acquire(scope, 1)
+
+    try do
+      assert {:error,
+              %Error{
+                type: :admission_timeout,
+                operation: :materialize,
+                connection: :duckdb_runtime,
+                retryable?: true,
+                details: %{scope: ^scope, timeout_ms: 1}
+              }} = Client.materialize(session, table_plan("blocked_by_admission", 1), [])
+    after
+      Limiter.release(scope)
+      Client.disconnect(session)
+      File.rm(path)
+    end
   end
 
   test "table materialization creates missing target schema" do

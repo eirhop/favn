@@ -49,7 +49,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 - Harden the manifest-pinned SQL execution path enough for the `v1` support promise, especially around runtime payload handling and backend failure behavior.
 - Add run-level runtime config preflight for planned SQL assets so SQL connection env refs fail before any asset starts, not only when an adapter connection is opened.
-- Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
+- Add longer-running stress and restore drills for DuckDB/plugin execution beyond the supported single-node hardening tests.
 - Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
 
 ## Later / Future Ideas
