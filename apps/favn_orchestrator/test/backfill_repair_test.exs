@@ -88,6 +88,51 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
     assert repaired_state.latest_error == nil
   end
 
+  test "repair folds failed attempts and successful reruns for the same window" do
+    anchor = anchor(~U[2026-04-29 00:00:00Z])
+    window_key = WindowKey.encode(anchor.key)
+    parent = parent_run("backfill_rerun")
+
+    failed =
+      child_run(parent.id, "child_failed_attempt", anchor, :error,
+        updated_at: ~U[2026-04-29 01:00:00Z]
+      )
+
+    rerun =
+      child_run(parent.id, "child_successful_rerun", anchor, :ok,
+        updated_at: ~U[2026-04-29 02:00:00Z]
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(rerun)
+    assert :ok = Storage.put_run(failed)
+
+    assert {:ok, report} = FavnOrchestrator.repair_backfill_projections(apply: true)
+
+    assert report.counts.backfill_windows == 1
+    assert report.counts.asset_window_states == 1
+
+    assert {:ok, window} =
+             Storage.get_backfill_window(parent.id, MyApp.Pipelines.Daily, window_key)
+
+    assert window.child_run_id == failed.id
+    assert window.status == :ok
+    assert window.attempt_count == 2
+    assert window.latest_attempt_run_id == rerun.id
+    assert window.last_success_run_id == rerun.id
+    assert window.last_error == nil
+    assert window.errors == [%{message: "failed"}]
+
+    assert {:ok, state} =
+             Storage.get_asset_window_state(MyApp.Assets.Gold, :asset, window_key)
+
+    assert state.status == :ok
+    assert state.latest_run_id == rerun.id
+    assert state.latest_success_run_id == rerun.id
+    assert state.latest_error == nil
+    assert state.errors == [%{message: "asset failed"}]
+  end
+
   test "dry run reports missing metadata without writing read models" do
     parent = parent_run("backfill_missing_metadata")
     child = child_run(parent.id, "child_missing_metadata", nil, :ok)
@@ -120,7 +165,7 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
     |> RunState.with_snapshot_hash()
   end
 
-  defp child_run(parent_run_id, run_id, anchor, status) do
+  defp child_run(parent_run_id, run_id, anchor, status, opts \\ []) do
     window_key = if anchor, do: WindowKey.encode(anchor.key), else: "day:2026-04-27"
 
     RunState.new(
@@ -137,6 +182,7 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
       lineage_depth: 1
     )
     |> RunState.transition(status: status, result: result(status), error: error(status))
+    |> maybe_put_updated_at(Keyword.get(opts, :updated_at))
   end
 
   defp child_metadata(nil), do: %{pipeline_submit_ref: MyApp.Pipelines.Daily}
@@ -166,9 +212,36 @@ defmodule FavnOrchestrator.Backfill.RepairTest do
     }
   end
 
+  defp result(:error) do
+    %{
+      status: :error,
+      asset_results: [
+        %AssetResult{
+          ref: {MyApp.Assets.Gold, :asset},
+          stage: 0,
+          status: :error,
+          meta: %{},
+          error: %{message: "asset failed"},
+          attempt_count: 1,
+          max_attempts: 1,
+          attempts: []
+        }
+      ],
+      metadata: %{}
+    }
+  end
+
   defp error(:ok), do: nil
 
   defp error(_status), do: %{message: "failed"}
+
+  defp maybe_put_updated_at(%RunState{} = run, nil), do: run
+
+  defp maybe_put_updated_at(%RunState{} = run, %DateTime{} = updated_at) do
+    run
+    |> Map.put(:updated_at, updated_at)
+    |> RunState.with_snapshot_hash()
+  end
 
   defp anchor(start_at) do
     {:ok, anchor} = Anchor.new(:day, start_at, DateTime.add(start_at, 1, :day))

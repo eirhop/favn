@@ -331,6 +331,132 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "replaces scoped backfill read models", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        unique = System.unique_integer([:positive])
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+        start_at = DateTime.add(now, -86_400, :second)
+
+        stale_baseline =
+          sample_coverage_baseline("baseline_pg_stale_#{unique}", :ok, now, start_at)
+
+        kept_baseline = %{
+          sample_coverage_baseline("baseline_pg_kept_#{unique}", :ok, now, start_at)
+          | pipeline_module: MyApp.OtherPipeline
+        }
+
+        replacement_baseline =
+          sample_coverage_baseline("baseline_pg_new_#{unique}", :ok, now, start_at)
+
+        stale_window =
+          sample_backfill_window("window_pg_stale_#{unique}", :ok, now, start_at, stale_baseline)
+
+        kept_window = %{
+          sample_backfill_window("window_pg_kept_#{unique}", :ok, now, start_at, kept_baseline)
+          | pipeline_module: MyApp.OtherPipeline
+        }
+
+        replacement_window =
+          sample_backfill_window(
+            "window_pg_new_#{unique}",
+            :ok,
+            now,
+            start_at,
+            replacement_baseline
+          )
+
+        stale_state =
+          sample_asset_window_state(:stale_asset, stale_window.window_key, :ok, now, start_at)
+
+        kept_state = %{
+          sample_asset_window_state(:kept_asset, kept_window.window_key, :ok, now, start_at)
+          | pipeline_module: MyApp.OtherPipeline
+        }
+
+        replacement_state =
+          sample_asset_window_state(:new_asset, replacement_window.window_key, :ok, now, start_at)
+
+        for item <- [stale_baseline, kept_baseline],
+            do: assert(:ok = Adapter.put_coverage_baseline(item, opts))
+
+        for item <- [stale_window, kept_window],
+            do: assert(:ok = Adapter.put_backfill_window(item, opts))
+
+        for item <- [stale_state, kept_state],
+            do: assert(:ok = Adapter.put_asset_window_state(item, opts))
+
+        assert :ok =
+                 Adapter.replace_backfill_read_models(
+                   [pipeline_module: MyApp.Pipeline],
+                   [replacement_baseline],
+                   [replacement_window],
+                   [replacement_state],
+                   opts
+                 )
+
+        assert {:error, :not_found} =
+                 Adapter.get_coverage_baseline(stale_baseline.baseline_id, opts)
+
+        assert {:ok, ^kept_baseline} =
+                 Adapter.get_coverage_baseline(kept_baseline.baseline_id, opts)
+
+        assert {:ok, ^replacement_baseline} =
+                 Adapter.get_coverage_baseline(replacement_baseline.baseline_id, opts)
+
+        assert {:error, :not_found} =
+                 Adapter.get_backfill_window(
+                   stale_window.backfill_run_id,
+                   stale_window.pipeline_module,
+                   stale_window.window_key,
+                   opts
+                 )
+
+        assert {:ok, ^kept_window} =
+                 Adapter.get_backfill_window(
+                   kept_window.backfill_run_id,
+                   kept_window.pipeline_module,
+                   kept_window.window_key,
+                   opts
+                 )
+
+        assert {:ok, ^replacement_window} =
+                 Adapter.get_backfill_window(
+                   replacement_window.backfill_run_id,
+                   replacement_window.pipeline_module,
+                   replacement_window.window_key,
+                   opts
+                 )
+
+        assert {:error, :not_found} =
+                 Adapter.get_asset_window_state(
+                   stale_state.asset_ref_module,
+                   stale_state.asset_ref_name,
+                   stale_state.window_key,
+                   opts
+                 )
+
+        assert {:ok, ^kept_state} =
+                 Adapter.get_asset_window_state(
+                   kept_state.asset_ref_module,
+                   kept_state.asset_ref_name,
+                   kept_state.window_key,
+                   opts
+                 )
+
+        assert {:ok, ^replacement_state} =
+                 Adapter.get_asset_window_state(
+                   replacement_state.asset_ref_module,
+                   replacement_state.asset_ref_name,
+                   replacement_state.window_key,
+                   opts
+                 )
+    end
+  end
+
   test "decodes legacy backfill window kind aliases through constructors", context do
     case context[:opts] do
       nil ->

@@ -5,6 +5,9 @@ defmodule FavnStorageSqlite.AdapterTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter.SQLite, as: Adapter
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
 
   setup context do
@@ -130,6 +133,127 @@ defmodule FavnStorageSqlite.AdapterTest do
     assert {:error, :invalid_pagination} = Adapter.list_asset_window_states(filters, opts)
   end
 
+  test "replaces scoped backfill read models atomically", %{opts: opts} do
+    unique = System.unique_integer([:positive])
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    start_at = DateTime.add(now, -86_400, :second)
+
+    stale_baseline =
+      coverage_baseline("baseline_sqlite_stale_#{unique}", MyApp.Pipeline, now, start_at)
+
+    kept_baseline =
+      coverage_baseline("baseline_sqlite_kept_#{unique}", MyApp.OtherPipeline, now, start_at)
+
+    replacement_baseline =
+      coverage_baseline("baseline_sqlite_new_#{unique}", MyApp.Pipeline, now, start_at)
+
+    stale_window =
+      backfill_window(
+        "backfill_sqlite_stale_#{unique}",
+        MyApp.Pipeline,
+        "day:stale:#{unique}",
+        stale_baseline,
+        now,
+        start_at
+      )
+
+    kept_window =
+      backfill_window(
+        "backfill_sqlite_kept_#{unique}",
+        MyApp.OtherPipeline,
+        "day:kept:#{unique}",
+        kept_baseline,
+        now,
+        start_at
+      )
+
+    replacement_window =
+      backfill_window(
+        "backfill_sqlite_new_#{unique}",
+        MyApp.Pipeline,
+        "day:new:#{unique}",
+        replacement_baseline,
+        now,
+        start_at
+      )
+
+    stale_state = asset_window_state(:stale_asset, MyApp.Pipeline, stale_window, now)
+    kept_state = asset_window_state(:kept_asset, MyApp.OtherPipeline, kept_window, now)
+    replacement_state = asset_window_state(:new_asset, MyApp.Pipeline, replacement_window, now)
+
+    for item <- [stale_baseline, kept_baseline],
+        do: assert(:ok = Adapter.put_coverage_baseline(item, opts))
+
+    for item <- [stale_window, kept_window],
+        do: assert(:ok = Adapter.put_backfill_window(item, opts))
+
+    for item <- [stale_state, kept_state],
+        do: assert(:ok = Adapter.put_asset_window_state(item, opts))
+
+    assert :ok =
+             Adapter.replace_backfill_read_models(
+               [pipeline_module: MyApp.Pipeline],
+               [replacement_baseline],
+               [replacement_window],
+               [replacement_state],
+               opts
+             )
+
+    assert {:error, :not_found} = Adapter.get_coverage_baseline(stale_baseline.baseline_id, opts)
+    assert {:ok, ^kept_baseline} = Adapter.get_coverage_baseline(kept_baseline.baseline_id, opts)
+
+    assert {:ok, ^replacement_baseline} =
+             Adapter.get_coverage_baseline(replacement_baseline.baseline_id, opts)
+
+    assert {:error, :not_found} =
+             Adapter.get_backfill_window(
+               stale_window.backfill_run_id,
+               stale_window.pipeline_module,
+               stale_window.window_key,
+               opts
+             )
+
+    assert {:ok, ^kept_window} =
+             Adapter.get_backfill_window(
+               kept_window.backfill_run_id,
+               kept_window.pipeline_module,
+               kept_window.window_key,
+               opts
+             )
+
+    assert {:ok, ^replacement_window} =
+             Adapter.get_backfill_window(
+               replacement_window.backfill_run_id,
+               replacement_window.pipeline_module,
+               replacement_window.window_key,
+               opts
+             )
+
+    assert {:error, :not_found} =
+             Adapter.get_asset_window_state(
+               stale_state.asset_ref_module,
+               stale_state.asset_ref_name,
+               stale_state.window_key,
+               opts
+             )
+
+    assert {:ok, ^kept_state} =
+             Adapter.get_asset_window_state(
+               kept_state.asset_ref_module,
+               kept_state.asset_ref_name,
+               kept_state.window_key,
+               opts
+             )
+
+    assert {:ok, ^replacement_state} =
+             Adapter.get_asset_window_state(
+               replacement_state.asset_ref_module,
+               replacement_state.asset_ref_name,
+               replacement_state.window_key,
+               opts
+             )
+  end
+
   @tag without_started_adapter: true
   test "rejects manual mode startup when schema is missing" do
     unique = System.unique_integer([:positive])
@@ -213,6 +337,73 @@ defmodule FavnStorageSqlite.AdapterTest do
       manifest_content_hash: manifest_content_hash,
       asset_ref: {MyApp.Asset, :asset}
     )
+  end
+
+  defp coverage_baseline(baseline_id, pipeline_module, now, start_at) do
+    {:ok, baseline} =
+      CoverageBaseline.new(%{
+        baseline_id: baseline_id,
+        pipeline_module: pipeline_module,
+        source_key: "orders",
+        segment_key_hash: "sha256:#{baseline_id}",
+        window_kind: :day,
+        timezone: "Etc/UTC",
+        coverage_start_at: start_at,
+        coverage_until: now,
+        created_by_run_id: "run_#{baseline_id}",
+        manifest_version_id: "mv_#{baseline_id}",
+        status: :ok,
+        created_at: now,
+        updated_at: now
+      })
+
+    baseline
+  end
+
+  defp backfill_window(backfill_run_id, pipeline_module, window_key, baseline, now, start_at) do
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: backfill_run_id,
+        child_run_id: "child_#{window_key}",
+        pipeline_module: pipeline_module,
+        manifest_version_id: baseline.manifest_version_id,
+        coverage_baseline_id: baseline.baseline_id,
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: now,
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :ok,
+        attempt_count: 1,
+        latest_attempt_run_id: "child_#{window_key}",
+        last_success_run_id: "child_#{window_key}",
+        created_at: start_at,
+        updated_at: now
+      })
+
+    window
+  end
+
+  defp asset_window_state(asset_ref_name, pipeline_module, window, now) do
+    {:ok, state} =
+      AssetWindowState.new(%{
+        asset_ref_module: MyApp.Asset,
+        asset_ref_name: asset_ref_name,
+        pipeline_module: pipeline_module,
+        manifest_version_id: window.manifest_version_id,
+        window_kind: window.window_kind,
+        window_start_at: window.window_start_at,
+        window_end_at: window.window_end_at,
+        timezone: window.timezone,
+        window_key: window.window_key,
+        status: :ok,
+        latest_run_id: window.latest_attempt_run_id,
+        latest_parent_run_id: window.backfill_run_id,
+        latest_success_run_id: window.last_success_run_id,
+        updated_at: now
+      })
+
+    state
   end
 
   defp concurrent_results(fun_a, fun_b) do

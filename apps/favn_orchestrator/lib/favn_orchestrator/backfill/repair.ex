@@ -31,8 +31,9 @@ defmodule FavnOrchestrator.Backfill.Repair do
   def repair(opts \\ []) when is_list(opts) do
     apply? = Keyword.get(opts, :apply, false)
 
-    with {:ok, scope} <- normalize_scope(opts),
+    with {:ok, raw_scope} <- normalize_scope(opts),
          {:ok, runs} <- Storage.list_runs(),
+         {:ok, scope} <- resolve_scope(raw_scope, runs),
          {:ok, plan} <- plan(runs, scope),
          :ok <- maybe_apply(apply?, scope, plan) do
       {:ok, report(apply?, scope, plan)}
@@ -79,11 +80,32 @@ defmodule FavnOrchestrator.Backfill.Repair do
 
   defp maybe_put_scope(scope, _key, nil), do: scope
   defp maybe_put_scope(scope, _key, ""), do: scope
-
-  defp maybe_put_scope(scope, :pipeline_module, value) when is_binary(value),
-    do: [{:pipeline_module, Module.concat([value])} | scope]
-
   defp maybe_put_scope(scope, key, value), do: [{key, value} | scope]
+
+  defp resolve_scope([pipeline_module: value], runs) when is_binary(value) do
+    runs
+    |> Enum.flat_map(fn run ->
+      case pipeline_module(run) do
+        {:ok, module} -> [module]
+        {:error, _reason} -> []
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.find(&module_name_matches?(&1, value))
+    |> case do
+      nil -> {:error, :invalid_pipeline_module}
+      module -> {:ok, [pipeline_module: module]}
+    end
+  end
+
+  defp resolve_scope([pipeline_module: module], _runs) when is_atom(module),
+    do: {:ok, [pipeline_module: module]}
+
+  defp resolve_scope(scope, _runs), do: {:ok, scope}
+
+  defp module_name_matches?(module, value) when is_atom(module) and is_binary(value) do
+    Atom.to_string(module) == value or inspect(module) == value
+  end
 
   defp run_in_scope?(_run, []), do: true
   defp run_in_scope?(%RunState{id: id}, backfill_run_id: id), do: true
@@ -147,17 +169,19 @@ defmodule FavnOrchestrator.Backfill.Repair do
 
   defp derive_backfill_windows(runs, parent_by_id) do
     runs
-    |> Enum.reduce({[], []}, fn run, {windows, skips} ->
-      case backfill_window(run, parent_by_id) do
-        {:ok, window} -> {[window | windows], skips}
-        {:skip, nil} -> {windows, skips}
-        {:skip, reason} -> {windows, [skip(run.id, :backfill_window, reason) | skips]}
+    |> Enum.reduce({[], []}, fn run, {attempts, skips} ->
+      case backfill_window_attempt(run, parent_by_id) do
+        {:ok, window} -> {[window | attempts], skips}
+        {:skip, nil} -> {attempts, skips}
+        {:skip, reason} -> {attempts, [skip(run.id, :backfill_window, reason) | skips]}
       end
     end)
-    |> reverse_pair()
+    |> then(fn {attempts, skips} ->
+      {fold_backfill_window_attempts(attempts), Enum.reverse(skips)}
+    end)
   end
 
-  defp backfill_window(%RunState{} = run, parent_by_id) do
+  defp backfill_window_attempt(%RunState{} = run, parent_by_id) do
     with {:ok, context} <- child_context(run),
          {:ok, anchor} <- anchor_window(run),
          {:ok, parent} <- fetch_parent(parent_by_id, context.backfill_run_id),
@@ -192,20 +216,54 @@ defmodule FavnOrchestrator.Backfill.Repair do
     end
   end
 
+  defp fold_backfill_window_attempts(attempts) do
+    attempts
+    |> Enum.group_by(&{&1.backfill_run_id, &1.pipeline_module, &1.window_key})
+    |> Enum.map(fn {_key, grouped} -> fold_backfill_window_attempt_group(grouped) end)
+  end
+
+  defp fold_backfill_window_attempt_group(grouped) do
+    sorted = Enum.sort_by(grouped, &attempt_sort_key(&1.updated_at, &1.latest_attempt_run_id))
+    first = List.first(sorted)
+    latest = List.last(sorted)
+    errors = Enum.flat_map(sorted, & &1.errors)
+    last_success_run_id = sorted |> Enum.reverse() |> Enum.find_value(& &1.last_success_run_id)
+
+    %{
+      first
+      | status: latest.status,
+        attempt_count: length(sorted),
+        latest_attempt_run_id: latest.latest_attempt_run_id,
+        last_success_run_id: last_success_run_id,
+        last_error: if(latest.status == :ok, do: nil, else: List.last(errors)),
+        errors: errors,
+        finished_at: latest.finished_at,
+        updated_at: latest.updated_at
+    }
+  end
+
   defp derive_asset_window_states(_runs, _windows, backfill_run_id: _id),
     do: {[], [skip(nil, :asset_window_state, :latest_state_requires_wider_scope)]}
 
   defp derive_asset_window_states(runs, windows, _scope) do
-    window_by_run_id = Map.new(windows, &{&1.child_run_id, &1})
+    window_by_key =
+      Map.new(windows, &{{&1.backfill_run_id, &1.pipeline_module, &1.window_key}, &1})
 
     runs
     |> Enum.reduce({[], []}, fn run, {states, skips} ->
-      case Map.fetch(window_by_run_id, run.id) do
-        {:ok, window} -> derive_asset_states_for_run(run, window, states, skips)
-        :error -> {states, skips}
+      with {:ok, context} <- child_context(run),
+           {:ok, window} <-
+             Map.fetch(window_by_key, {
+               context.backfill_run_id,
+               context.pipeline_module,
+               context.window_key
+             }) do
+        derive_asset_states_for_run(run, window, states, skips)
+      else
+        _ -> {states, skips}
       end
     end)
-    |> then(fn {states, skips} -> {latest_asset_states(states), Enum.reverse(skips)} end)
+    |> then(fn {states, skips} -> {fold_asset_window_states(states), Enum.reverse(skips)} end)
   end
 
   defp derive_asset_states_for_run(%RunState{} = run, %BackfillWindow{} = window, states, skips) do
@@ -247,13 +305,30 @@ defmodule FavnOrchestrator.Backfill.Repair do
     end
   end
 
-  defp latest_asset_states(states) do
+  defp fold_asset_window_states(states) do
     states
     |> Enum.group_by(&{&1.asset_ref_module, &1.asset_ref_name, &1.window_key})
     |> Enum.map(fn {_key, grouped} ->
-      Enum.max_by(grouped, &{DateTime.to_unix(&1.updated_at, :microsecond), &1.latest_run_id})
+      sorted = Enum.sort_by(grouped, &attempt_sort_key(&1.updated_at, &1.latest_run_id))
+      latest = List.last(sorted)
+      errors = Enum.flat_map(sorted, & &1.errors)
+
+      latest_success_run_id =
+        sorted |> Enum.reverse() |> Enum.find_value(& &1.latest_success_run_id)
+
+      %{
+        latest
+        | latest_success_run_id: latest_success_run_id,
+          latest_error: if(latest.status == :ok, do: nil, else: List.last(errors)),
+          errors: errors
+      }
     end)
   end
+
+  defp attempt_sort_key(%DateTime{} = timestamp, run_id) when is_binary(run_id),
+    do: {DateTime.to_unix(timestamp, :microsecond), run_id}
+
+  defp attempt_sort_key(_timestamp, run_id), do: {0, run_id || ""}
 
   defp child_context(%RunState{trigger: trigger} = run) when is_map(trigger) do
     with :backfill <- field(trigger, :kind),

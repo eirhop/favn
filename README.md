@@ -414,7 +414,9 @@ local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges
 RUN_ID --window-key KEY` for failed window reruns. Use `repair` to dry-run or,
 with `--apply`, rebuild derived coverage-baseline, backfill-window, and latest
 asset/window projections from authoritative run snapshots after projection drift
-or read-model deletion. Operational backfill submit does not accept
+or read-model deletion. `repair --backfill-run-id RUN_ID` rebuilds that parent
+window ledger only; use `--pipeline-module` or no scope when latest
+asset/window state must also be recomputed. Operational backfill submit does not accept
 lookback-policy input; asset window lookback remains part of normal windowed
 execution only.
 
