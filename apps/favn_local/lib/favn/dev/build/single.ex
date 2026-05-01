@@ -122,9 +122,10 @@ defmodule Favn.Dev.Build.Single do
     |> Map.put("target", @target)
     |> Map.put("assembly", assembly)
     |> Map.put("artifact", %{
-      "kind" => "single_node_backend_runtime",
-      "operational" => true,
-      "truthfulness" => "runnable_backend_only_sqlite_single_node"
+      "kind" => "project_local_backend_launcher",
+      "operational" => false,
+      "truthfulness" =>
+        "project_local_launcher_requires_runtime_source_and_start_stop_verification"
     })
     |> Map.put("topology", %{
       "boundary" => "orchestrator+runner+scheduler",
@@ -136,9 +137,11 @@ defmodule Favn.Dev.Build.Single do
       "scheduler_instances" => 1
     })
     |> Map.put("compatibility", %{
-      "scope" => "backend-only SQLite single-node artifact",
+      "scope" => "project-local backend-only SQLite launcher",
+      "runtime_dependency" => "recorded_orchestrator_source_root",
       "storage_modes" => ["sqlite"],
       "unsupported" => [
+        "self_contained_release_artifact",
         "postgres_production_mode",
         "distributed_execution",
         "shared_sqlite",
@@ -191,7 +194,7 @@ defmodule Favn.Dev.Build.Single do
       "FAVN_SQLITE_POOL_SIZE=1",
       "FAVN_ORCHESTRATOR_API_BIND_HOST=127.0.0.1",
       "FAVN_ORCHESTRATOR_API_PORT=4101",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=replace-with-at-least-32-characters",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=replace-me",
       "FAVN_SCHEDULER_ENABLED=true",
       "FAVN_SCHEDULER_TICK_MS=15000",
       "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES=1000",
@@ -443,13 +446,17 @@ defmodule Favn.Dev.Build.Single do
     notes = [
       "# Favn Single Artifact Notes",
       "",
-      "This output is a runnable backend-only SQLite single-node artifact.",
-      "It starts one BEAM runtime containing the runner, SQLite storage adapter,",
-      "orchestrator API, and scheduler when FAVN_SCHEDULER_ENABLED allows it.",
+      "This output is a project-local backend-only SQLite launcher, not a",
+      "self-contained operational production artifact yet. It depends on the",
+      "recorded orchestrator source/runtime root used by the install step.",
+      "The launcher starts one BEAM runtime containing the runner, SQLite storage",
+      "adapter, orchestrator API, and scheduler when FAVN_SCHEDULER_ENABLED allows it.",
       "",
       "Copy env/backend.env.example to env/backend.env or set FAVN_ENV_FILE before",
-      "running bin/start. Web production startup, Postgres production mode,",
-      "distributed execution, shared SQLite, and HA orchestrators are not included.",
+      "running bin/start. The example service token is intentionally invalid and",
+      "must be replaced with a real secret. Web production startup, Postgres",
+      "production mode, distributed execution, shared SQLite, and HA orchestrators",
+      "are not included.",
       ""
     ]
 

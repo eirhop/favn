@@ -61,7 +61,7 @@ scope.
 - [x] Make `mix favn.build.web` outputs operationally honest with explicit metadata-oriented semantics and operator notes.
 - [x] Make `mix favn.build.orchestrator` outputs operationally honest with explicit metadata-oriented semantics and operator notes.
 - [x] Verify `mix favn.build.runner` remains the reference-quality packaging target for manifest-first artifact truthfulness.
-- [x] Harden `mix favn.build.single` with honest packaging semantics and operator notes. It was assembly-only in Phase 9 and is now superseded by the runnable backend-only SQLite artifact.
+- [x] Harden `mix favn.build.single` with honest packaging semantics and operator notes. It now has a project-local backend-only SQLite launcher, but remains non-operational until self-contained runtime closure and executed start/stop verification land.
 - [x] Add build metadata contract coverage for `web`, `orchestrator`, `runner`, and `single`.
 
 ### Batch 5: storage verification closeout
@@ -142,7 +142,7 @@ gap remains:
 - [x] Make `mix favn.build.web` outputs operationally honest with explicit metadata-only semantics.
 - [x] Make `mix favn.build.orchestrator` outputs operationally honest with explicit metadata-only semantics.
 - [x] Verify `mix favn.build.runner` remains the reference-quality packaging target for manifest-first artifact truthfulness.
-- [x] Harden `mix favn.build.single` with honest packaging semantics. The Phase 9 assembly-only contract is superseded by the runnable backend-only SQLite artifact.
+- [x] Harden `mix favn.build.single` with honest packaging semantics. The launcher remains non-operational until self-contained runtime closure and executed start/stop verification land.
 
 ## Remaining Testing
 

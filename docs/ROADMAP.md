@@ -23,7 +23,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 2. Make Deployment Outputs Real
 
-- Turn `build.web` and `build.orchestrator` from metadata outputs into genuinely runnable, supportable deployment artifacts, and harden the new backend-only SQLite `build.single` launcher into the documented production operator path.
+- Turn `build.single` from a project-local backend launcher into a self-contained, verified operational artifact, turn `build.web` and `build.orchestrator` from metadata outputs into genuinely runnable, supportable deployment artifacts, and align all deployment outputs with the documented production operator path.
 - Verify the SQLite-first single-node deployment path end to end with realistic runtime flows before split-topology production work.
 - Keep `build.runner` aligned with the same production deployment contract.
 

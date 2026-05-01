@@ -50,7 +50,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
-- single-node packaging now includes `mix favn.build.single` with a runnable backend-only SQLite artifact under `.favn/dist/single/<build_id>/` (see `OPERATOR_NOTES.md` in each artifact)
+- single-node packaging now includes `mix favn.build.single` with a project-local backend-only SQLite launcher under `.favn/dist/single/<build_id>/`; it is not yet marked operational because it still depends on the installed runtime source root and lacks executed start/stop artifact verification (see `OPERATOR_NOTES.md` in each artifact)
 - operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 
 ## What Favn Gives You
@@ -499,12 +499,14 @@ Storage modes:
 - `mix favn.dev --scheduler` enables local scheduled runs
 - `mix favn.dev --no-scheduler` disables local scheduled runs and overrides config
 
-`mix favn.build.single` emits a backend-only SQLite single-node artifact under
+`mix favn.build.single` emits a project-local backend-only SQLite launcher under
 `.favn/dist/single/<build_id>/`. Configure it by copying
 `env/backend.env.example` to `env/backend.env` or setting `FAVN_ENV_FILE`, then
-use the generated `bin/start` and `bin/stop` scripts. This artifact starts the
-runner, SQLite adapter, and orchestrator in one backend BEAM runtime; web
-production startup and Postgres production mode are not included.
+use the generated `bin/start` and `bin/stop` scripts. The launcher starts the
+runner, SQLite adapter, and orchestrator in one backend BEAM runtime, but it is
+not yet a self-contained operational production artifact because it depends on
+the installed runtime source root. Web production startup and Postgres
+production mode are not included.
 
 Storage adapter startup reports recoverable configuration failures as
 `{:error, reason}`. Scheduler state keys are exact across built-in adapters:

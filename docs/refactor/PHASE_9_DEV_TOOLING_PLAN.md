@@ -77,9 +77,10 @@ Recommended default:
   phase
 - `build.web` and `build.orchestrator` now ship explicit metadata-oriented
   packaging contracts (`artifact.kind=assembly_metadata`) with operator notes
-- `build.single` now ships a runnable backend-only SQLite packaging contract
-  (`artifact.kind=single_node_backend_runtime`, `operational=true`) with managed
-  start/stop scripts for the single backend runtime
+- `build.single` now ships a project-local backend-only SQLite launcher contract
+  (`artifact.kind=project_local_backend_launcher`, `operational=false`) with
+  managed start/stop scripts that still depend on the installed runtime source
+  root
 
 ### Remaining hardening work
 
@@ -1224,9 +1225,9 @@ Recommended default:
 - keep `build.web` and `build.orchestrator` explicitly metadata-oriented until
   true deployable packaging is introduced in a later slice, and keep those
   semantics honest in metadata and docs
-- keep `build.single` topology-preserving and backend-only now that operational
-  SQLite single-node launcher wiring exists; web and split-topology launchers
-  remain later slices
+- keep `build.single` topology-preserving and backend-only while the launcher is
+  still project-local; self-contained runtime closure, executed start/stop
+  verification, web launchers, and split-topology launchers remain later slices
 
 ### Slice 4: finish verification and docs
 

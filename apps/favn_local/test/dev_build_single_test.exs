@@ -83,11 +83,12 @@ defmodule Favn.Dev.Build.SingleTest do
 
     assert %{
              "artifact" => %{
-               "kind" => "single_node_backend_runtime",
-               "operational" => true
+               "kind" => "project_local_backend_launcher",
+               "operational" => false
              },
              "compatibility" => %{
                "storage_modes" => ["sqlite"],
+               "runtime_dependency" => "recorded_orchestrator_source_root",
                "unsupported" => unsupported
              },
              "required_env" => required_env,
@@ -100,6 +101,7 @@ defmodule Favn.Dev.Build.SingleTest do
            } = metadata
 
     assert "postgres_production_mode" in unsupported
+    assert "self_contained_release_artifact" in unsupported
     refute "postgres" in get_in(metadata, ["compatibility", "storage_modes"])
     assert "FAVN_STORAGE" in required_env
     assert "FAVN_SQLITE_PATH" in required_env
@@ -119,6 +121,8 @@ defmodule Favn.Dev.Build.SingleTest do
     refute start_script =~ "No operational runtime launch wiring"
     refute stop_script =~ "No managed processes were started"
     refute env_example =~ "FAVN_DEV_"
+    assert env_example =~ "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=replace-me"
+    assert String.length("replace-me") < 32
     refute start_script =~ "FAVN_DEV_"
     refute stop_script =~ "FAVN_DEV_"
     refute metadata_json =~ "FAVN_DEV_"

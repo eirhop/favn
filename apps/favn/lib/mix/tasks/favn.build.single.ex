@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Favn.Build.Single do
         IO.puts("dist: #{dist_dir}")
 
         IO.puts(
-          "note: backend-only SQLite artifact; see #{Path.join(dist_dir, "OPERATOR_NOTES.md")}"
+          "note: project-local backend SQLite launcher; see #{Path.join(dist_dir, "OPERATOR_NOTES.md")}"
         )
 
       {:error, :install_required} ->

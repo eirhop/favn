@@ -15,11 +15,13 @@ documented separately in `docs/production/public_api_boundary.md`.
 ## Current Implementation Status
 
 This is an architecture and documentation contract. The current
-`mix favn.build.single` output is runnable only for the backend-only SQLite
-single-node scope: one BEAM runtime starts runner, SQLite storage, orchestrator,
-and the scheduler when enabled by production config. Full release packaging,
-backup automation, production web startup, and auth/session persistence remain
-follow-up implementation work.
+`mix favn.build.single` output includes a project-local backend-only SQLite
+launcher, but it is not yet marked as an operational production artifact. It
+depends on the recorded installed runtime source root rather than a
+self-contained runtime closure, and generated `bin/start`/`bin/stop` still need
+executed artifact verification. Full release packaging, backup automation,
+production web startup, and auth/session persistence remain follow-up
+implementation work.
 
 Follow-up issues must treat this document as the product contract they are
 making real.
