@@ -217,13 +217,28 @@ using production names, not local-dev-only `FAVN_DEV_*` names.
 At minimum, the production single-node runtime needs:
 
 - `FAVN_STORAGE=sqlite` for the first production mode.
-- `FAVN_SQLITE_PATH` pointing to the durable attached-storage SQLite database.
-- Orchestrator API bind host/port configuration.
-- Scheduler enabled/disabled configuration and scheduler tick settings where
-  exposed.
-- Web-to-orchestrator base URL for co-located or separate web deployment.
-- Web-to-orchestrator service token secret.
-- Web session signing/encryption secret.
+- `FAVN_SQLITE_PATH` pointing to the durable attached-storage SQLite database;
+  it must be absolute.
+- `FAVN_SQLITE_MIGRATION_MODE` as `manual` or `auto`, defaulting to `manual`.
+- `FAVN_SQLITE_BUSY_TIMEOUT_MS`, defaulting to `5000`, as a positive integer.
+- `FAVN_SQLITE_POOL_SIZE`, defaulting to `1`; Phase 1 accepts only `1`.
+- `FAVN_ORCHESTRATOR_API_BIND_HOST`, defaulting to `127.0.0.1`, as an IPv4
+  address.
+- `FAVN_ORCHESTRATOR_API_PORT`, defaulting to `4101`, in `1..65535`.
+- `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`, required as comma-separated secrets
+  where each token is at least 32 characters.
+- `FAVN_SCHEDULER_ENABLED`, defaulting to `true`, as a boolean.
+- `FAVN_SCHEDULER_TICK_MS`, defaulting to `15000`, minimum `100`.
+- `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES`, defaulting to `1000`, as a
+  positive integer.
+- `FAVN_RUNNER_MODE`, defaulting to `local`; Phase 1 accepts only the local
+  single-node runner mode.
+- `FAVN_WEB_ORCHESTRATOR_BASE_URL`, required by `favn_web`, as an absolute
+  `http://` or `https://` URL without embedded credentials.
+- `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, required by `favn_web`, at least 32
+  characters, for web-to-orchestrator service auth.
+- `FAVN_WEB_SESSION_SECRET`, required by `favn_web`, at least 32 characters, for
+  current session signing and future web session encryption/signing expansion.
 - First-run bootstrap credentials or a secure bootstrap flow for the first admin
   actor.
 - Runtime config values required by authored assets and named SQL connections,
@@ -251,8 +266,17 @@ The production path contract is intentionally explicit:
 - Local development state such as `.favn/runtime.json`, `.favn/secrets.json`, and
   `FAVN_DEV_*` env values are not production contracts.
 
-Follow-up runtime/config work must document the exact final path names and
-startup validation behavior.
+Ownership is split by app boundary. `favn_orchestrator` validates and applies
+orchestrator API, service-token, SQLite storage, scheduler, and local-runner
+client config before supervised runtime traffic starts. `favn_runner` validates
+runner mode before runner supervision starts. `favn_web` validates web-to-
+orchestrator URL/token and web session secret before handling production web
+requests. Local-dev-only `FAVN_DEV_*` names are not accepted by this production
+contract.
+
+Postgres production config validation is explicitly deferred to the later
+Postgres production-mode issue. `FAVN_STORAGE=postgres` is not a valid first
+single-node production runtime mode.
 
 ## Backup And Restore Expectations
 
@@ -320,8 +344,14 @@ Required expectations:
   bootstrap step/kind, unsupported allow-list values, and adapter details where
   safe, without exposing secret values.
 
-The exact endpoints, CLI commands, and output shapes are follow-up implementation
-work.
+The orchestrator exposes unauthenticated `/api/orchestrator/v1/health/live` and
+`/api/orchestrator/v1/health/ready` endpoints. Liveness returns `200` when the
+process can serve the route. Readiness returns `200` only when all aggregated
+checks pass and `503` with redacted check diagnostics otherwise. Readiness
+delegates storage checks through the storage adapter boundary and isolates check
+raises/exits/throws so degraded dependencies produce structured `503`
+diagnostics rather than unhandled `500` responses. CLI/runbook surfaces remain
+follow-up implementation work.
 
 ## Explicitly Unsupported In V1
 

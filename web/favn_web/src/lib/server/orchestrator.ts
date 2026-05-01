@@ -4,17 +4,17 @@ import type { WebSession } from './session';
 const DEFAULT_BASE_URL = 'http://127.0.0.1:4101';
 
 function orchestratorBaseUrl(): string {
-	return env.FAVN_ORCHESTRATOR_BASE_URL || DEFAULT_BASE_URL;
+	return env.FAVN_WEB_ORCHESTRATOR_BASE_URL || DEFAULT_BASE_URL;
 }
 
 function orchestratorServiceToken(): string {
-	const token = env.FAVN_ORCHESTRATOR_SERVICE_TOKEN;
+	const token = env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN;
 
 	if (token && token.length > 0) {
 		return token;
 	}
 
-	throw new Error('Missing FAVN_ORCHESTRATOR_SERVICE_TOKEN for orchestrator service auth');
+	throw new Error('Missing FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN for orchestrator service auth');
 }
 
 function orchestratorUrl(pathname: string): URL {

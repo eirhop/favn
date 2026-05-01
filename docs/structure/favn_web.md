@@ -5,12 +5,15 @@ sessions, server-side relays to the private orchestrator API, and local operator
 surfaces.
 
 Code:
+
 - `web/favn_web/src/`
 - Favn components under `web/favn_web/src/lib/components/favn/`
 - BFF/server helpers under `web/favn_web/src/lib/server/`
+- Production runtime config validation in `web/favn_web/src/lib/server/runtime_config.ts`
 - web API routes under `web/favn_web/src/routes/api/web/v1/`
 
 Tests:
+
 - `web/favn_web/src/**/*.spec.ts`
 - `web/favn_web/tests/e2e/`
 - Storybook stories under `web/favn_web/src/lib/components/favn/*.stories.svelte`

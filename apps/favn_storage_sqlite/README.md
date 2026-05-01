@@ -43,6 +43,18 @@ config :favn_orchestrator,
 
 Use `migration_mode: :manual` only when schema lifecycle is controlled externally.
 
+Read safe readiness diagnostics without starting the managed adapter supervisor:
+
+```elixir
+FavnStorageSqlite.Diagnostics.readiness(
+  database: ".favn/dev.sqlite3",
+  migration_mode: :manual
+)
+```
+
+The readiness result includes the migration mode and schema status, but redacts
+the configured database path.
+
 ## Payload compatibility
 
 - pre-closeout persisted run/event/scheduler rows encoded as BEAM term blobs are intentionally unsupported

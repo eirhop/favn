@@ -34,12 +34,20 @@ npm run dev -- --open
 Create a local `.env` file in `web/favn_web` when running the prototype directly:
 
 ```sh
-FAVN_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101
-FAVN_ORCHESTRATOR_SERVICE_TOKEN=change-me
-FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-secret
+FAVN_WEB_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101
+FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN=replace-with-a-long-random-service-token
+FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-session-secret
 ```
 
 Login always uses orchestrator-owned username/password auth. The web tier stores only the signed browser session derived from the orchestrator login response.
+
+Production startup validates this web deployment contract before handling requests:
+
+- `FAVN_WEB_ORCHESTRATOR_BASE_URL` must be an absolute `http://` or `https://` URL and must not include embedded credentials.
+- `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN` is required and must be at least 32 characters.
+- `FAVN_WEB_SESSION_SECRET` is required and must be at least 32 characters. It signs the current web session cookie and remains the reserved web session secret for any future signing/encryption expansion.
+
+Validation diagnostics name invalid variables but redact configured values.
 
 ### Operator UI
 

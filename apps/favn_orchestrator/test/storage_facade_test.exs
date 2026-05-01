@@ -115,6 +115,13 @@ defmodule Favn.StorageFacadeTest do
     end
 
     @impl true
+    def readiness(opts) do
+      test_pid = Keyword.fetch!(opts, :test_pid)
+      send(test_pid, {:readiness_called, opts})
+      Keyword.get(opts, :readiness_result, {:ok, %{status: :probe_ready, ready?: true}})
+    end
+
+    @impl true
     def put_manifest_version(_version, _opts), do: :ok
 
     @impl true
@@ -269,6 +276,27 @@ defmodule Favn.StorageFacadeTest do
     assert {:error, {:store_error, :bad_storage_config}} = Storage.child_specs()
     assert_receive :child_spec_called
     assert_receive :child_spec_called
+  end
+
+  test "delegates readiness diagnostics to the configured storage adapter" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, ChildSpecProbeAdapterStub)
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+      test_pid: self(),
+      readiness_result: {:error, %{status: :probe_failed, ready?: false}}
+    )
+
+    assert {:error, %{status: :probe_failed, ready?: false}} = OrchestratorStorage.readiness()
+    assert_receive {:readiness_called, opts}
+    assert opts[:test_pid] == self()
+  end
+
+  test "readiness uses a local ok diagnostic when an adapter omits the optional callback" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, ExactShapeAdapterStub)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    assert {:ok, %{status: :ready, ready?: true, adapter: ExactShapeAdapterStub}} =
+             OrchestratorStorage.readiness()
   end
 
   test "builds normalized backfill storage structs with hashed source identity" do

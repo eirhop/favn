@@ -29,6 +29,17 @@ defmodule FavnOrchestrator.Storage do
     end
   end
 
+  @spec readiness() :: {:ok, map()} | {:error, term()}
+  def readiness do
+    adapter_call(fn adapter, opts ->
+      if function_exported?(adapter, :readiness, 1) do
+        adapter.readiness(opts)
+      else
+        {:ok, %{status: :ready, ready?: true, adapter: adapter}}
+      end
+    end)
+  end
+
   @spec put_manifest_version(Version.t()) :: :ok | {:error, term()}
   def put_manifest_version(%Version{} = version) do
     adapter_call(fn adapter, opts -> adapter.put_manifest_version(version, opts) end)
@@ -199,7 +210,7 @@ defmodule FavnOrchestrator.Storage do
   @spec validate_adapter(module()) :: :ok | {:error, term()}
   def validate_adapter(adapter) when is_atom(adapter) do
     with {:module, ^adapter} <- Code.ensure_loaded(adapter),
-         callbacks <- StorageAdapter.behaviour_info(:callbacks),
+         callbacks <- required_adapter_callbacks(),
          true <-
            Enum.all?(callbacks, fn {name, arity} -> function_exported?(adapter, name, arity) end) do
       :ok
@@ -234,4 +245,9 @@ defmodule FavnOrchestrator.Storage do
   defp normalize_child_spec_result({:ok, child_spec}), do: {:ok, child_spec}
   defp normalize_child_spec_result({:error, reason}), do: {:error, reason}
   defp normalize_child_spec_result(other), do: {:error, {:invalid_child_spec_response, other}}
+
+  defp required_adapter_callbacks do
+    StorageAdapter.behaviour_info(:callbacks) --
+      StorageAdapter.behaviour_info(:optional_callbacks)
+  end
 end

@@ -18,6 +18,20 @@ defmodule FavnRunner do
   @type execution_id :: String.t()
 
   @doc """
+  Reports whether the runner server process is available.
+
+  This is a local process availability check only. It does not submit work or
+  validate runtime dependencies behind the runner boundary.
+  """
+  @spec readiness() :: :ok | {:error, :runner_not_available}
+  def readiness do
+    case Process.whereis(Server) do
+      pid when is_pid(pid) -> :ok
+      nil -> {:error, :runner_not_available}
+    end
+  end
+
+  @doc """
   Registers one pinned manifest version in the runner.
   """
   @spec register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}

@@ -13,5 +13,5 @@ Tests:
 - SQLite readiness diagnostics: `apps/favn_storage_sqlite/test/sqlite_readiness_test.exs`
 - Stopped-backend control-plane restore verification: `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs`
 
-Use when changing SQLite persistence, migrations, adapter lifecycle, or local
-SQLite storage semantics.
+Use when changing SQLite persistence, migrations, adapter lifecycle, readiness
+diagnostics, or local SQLite storage semantics.

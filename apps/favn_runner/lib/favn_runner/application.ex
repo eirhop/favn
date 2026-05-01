@@ -7,9 +7,11 @@ defmodule FavnRunner.Application do
   alias Favn.Connection.Loader
   alias Favn.Connection.Registry, as: ConnectionRegistry
   alias FavnRunner.Plugin
+  alias FavnRunner.ProductionRuntimeConfig
 
   @impl true
   def start(_type, _args) do
+    :ok = apply_production_runtime_config_or_raise()
     connections = load_connections_or_raise()
     plugin_children = load_plugin_children_or_raise()
 
@@ -25,6 +27,16 @@ defmodule FavnRunner.Application do
 
     opts = [strategy: :one_for_one, name: FavnRunner.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp apply_production_runtime_config_or_raise do
+    case ProductionRuntimeConfig.apply_from_env() do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid runner production config: #{inspect(reason)}"
+    end
   end
 
   defp load_connections_or_raise do

@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Readiness
 
   @read_model_status_filters %{
     "pending" => :pending,
@@ -41,6 +42,17 @@ defmodule FavnOrchestrator.API.Router do
 
   get "/api/orchestrator/v1/health" do
     data(conn, 200, %{status: "ok"})
+  end
+
+  get "/api/orchestrator/v1/health/live" do
+    data(conn, 200, normalize_data(Readiness.liveness()))
+  end
+
+  get "/api/orchestrator/v1/health/ready" do
+    readiness = Readiness.readiness()
+    status = if readiness.status == :ready, do: 200, else: 503
+
+    data(conn, status, normalize_data(readiness))
   end
 
   post "/api/orchestrator/v1/auth/password/sessions" do

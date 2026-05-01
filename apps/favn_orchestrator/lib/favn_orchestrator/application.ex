@@ -6,13 +6,15 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
 
   @impl true
   def start(_type, _args) do
-    with _timezone_database <- Favn.Timezone.database!(),
+    with :ok <- ProductionRuntimeConfig.apply_from_env_if_configured(),
+         _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),
          {:ok, storage_children} <- Storage.child_specs() do
       children =
