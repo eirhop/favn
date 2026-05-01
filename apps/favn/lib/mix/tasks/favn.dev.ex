@@ -104,7 +104,7 @@ defmodule Mix.Tasks.Favn.Dev do
 
   defp error_message({:service_exit, service, status}),
     do:
-      "#{service} exited during startup (status=#{status}); inspect .favn/logs/#{service}.log and check for stale state or port conflicts"
+      "#{service} exited during startup (status=#{inspect(status)}); inspect .favn/logs/#{service}.log and check for stale state or port conflicts"
 
   defp error_message(reason), do: "failed to start local stack: #{inspect(reason)}"
 

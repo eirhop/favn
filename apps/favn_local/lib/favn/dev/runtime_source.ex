@@ -145,23 +145,10 @@ defmodule Favn.Dev.RuntimeSource do
   end
 
   defp fingerprint_records(root) do
-    optional_entries = RuntimeTreePolicy.optional_entries()
-
-    Enum.reduce_while(RuntimeTreePolicy.entries(), {:ok, []}, fn relative, {:ok, acc} ->
-      path = Path.join(root, relative)
-
-      cond do
-        not File.exists?(path) and relative in optional_entries ->
-          {:cont, {:ok, acc}}
-
-        not File.exists?(path) ->
-          {:halt, {:error, {:missing_runtime_entry, relative, path}}}
-
-        true ->
-          case collect_records(path, relative) do
-            {:ok, records} -> {:cont, {:ok, records ++ acc}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
+    RuntimeTreePolicy.reduce_required_entries(root, [], fn path, relative, acc ->
+      case collect_records(path, relative) do
+        {:ok, records} -> {:ok, records ++ acc}
+        {:error, reason} -> {:error, reason}
       end
     end)
   end
@@ -186,27 +173,19 @@ defmodule Favn.Dev.RuntimeSource do
   end
 
   defp collect_directory_records(path, relative) do
-    case File.ls(path) do
-      {:ok, entries} ->
-        Enum.reduce_while(entries, {:ok, [{:directory, normalize_relative(relative)}]}, fn entry,
-                                                                                           {:ok,
-                                                                                            acc} ->
-          if entry in RuntimeTreePolicy.ignored_entries() do
-            {:cont, {:ok, acc}}
-          else
-            child_path = Path.join(path, entry)
-            child_relative = Path.join(relative, entry)
+    RuntimeTreePolicy.reduce_child_entries(
+      path,
+      [{:directory, normalize_relative(relative)}],
+      &{:list_failed, path, &1},
+      fn child_path, entry, acc ->
+        child_relative = Path.join(relative, entry)
 
-            case collect_records(child_path, child_relative) do
-              {:ok, records} -> {:cont, {:ok, records ++ acc}}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-          end
-        end)
-
-      {:error, reason} ->
-        {:error, {:list_failed, path, reason}}
-    end
+        case collect_records(child_path, child_relative) do
+          {:ok, records} -> {:ok, records ++ acc}
+          {:error, reason} -> {:error, reason}
+        end
+      end
+    )
   end
 
   defp record_sort_key({:directory, relative}), do: relative
