@@ -396,6 +396,20 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     refute opened_duckdb?()
   end
 
+  test "production local-file storage rejects whitespace-padded absolute database before opening DuckDB" do
+    path = " " <> tmp_duckdb_path("production_padded") <> " "
+    resolved = production_resolved(%{database: path})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :invalid_database}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
   test "production storage rejects unknown storage mode before opening DuckDB" do
     resolved = production_resolved(%{database: ":memory:", duckdb_storage: :unknown})
 

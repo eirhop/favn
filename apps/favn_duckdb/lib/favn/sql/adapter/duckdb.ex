@@ -990,14 +990,21 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp validate_local_file_database(database, resolved) when is_binary(database) do
-    database = String.trim(database)
+    trimmed_database = String.trim(database)
 
     cond do
-      database == "" ->
+      trimmed_database == "" ->
         production_storage_error(
           resolved,
           :blank_database,
           "production DuckDB local-file storage requires a non-blank :database path"
+        )
+
+      trimmed_database != database ->
+        production_storage_error(
+          resolved,
+          :invalid_database,
+          "production DuckDB local-file storage requires an exact absolute :database path"
         )
 
       Path.type(database) != :absolute ->
