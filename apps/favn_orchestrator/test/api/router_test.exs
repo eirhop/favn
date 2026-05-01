@@ -94,6 +94,26 @@ defmodule FavnOrchestrator.API.RouterTest do
     :ok
   end
 
+  test "liveness and readiness endpoints expose health diagnostics without auth" do
+    live_conn =
+      conn(:get, "/api/orchestrator/v1/health/live")
+      |> Router.call(@opts)
+
+    assert live_conn.status == 200
+    assert %{"data" => %{"status" => "ok"}} = Jason.decode!(live_conn.resp_body)
+
+    ready_conn =
+      conn(:get, "/api/orchestrator/v1/health/ready")
+      |> Router.call(@opts)
+
+    assert ready_conn.status == 200
+
+    assert %{"data" => %{"status" => "ready", "checks" => checks}} =
+             Jason.decode!(ready_conn.resp_body)
+
+    assert Enum.any?(checks, &(&1["name"] == "storage" and &1["status"] == "ok"))
+  end
+
   test "password session login and me endpoint" do
     login_conn =
       conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{

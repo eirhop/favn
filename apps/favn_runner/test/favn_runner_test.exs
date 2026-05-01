@@ -36,6 +36,24 @@ defmodule FavnRunnerTest do
     %{version: version}
   end
 
+  test "readiness returns ok when the runner server is available" do
+    assert :ok = FavnRunner.readiness()
+  end
+
+  test "readiness reports unavailable when the runner server is stopped" do
+    assert :ok = Supervisor.terminate_child(FavnRunner.Supervisor, FavnRunner.Server)
+
+    on_exit(fn ->
+      case Supervisor.restart_child(FavnRunner.Supervisor, FavnRunner.Server) do
+        {:ok, _pid} -> :ok
+        {:ok, _pid, _info} -> :ok
+        {:error, :running} -> :ok
+      end
+    end)
+
+    assert {:error, :runner_not_available} = FavnRunner.readiness()
+  end
+
   test "runs a local plain Elixir asset through runner execution boundary", %{version: version} do
     fixture_ref = {FavnRunnerTest.PlainElixirAsset, :asset}
 

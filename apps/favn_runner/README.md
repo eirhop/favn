@@ -19,4 +19,4 @@ Must not depend on:
 
 Current status:
 
-- implemented runner runtime boundary for manifest-backed execution, connection loading, and SQL runtime work
+- implemented runner runtime boundary for manifest-backed execution, connection loading, SQL runtime work, and local runner server readiness checks

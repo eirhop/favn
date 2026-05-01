@@ -217,10 +217,20 @@ using production names, not local-dev-only `FAVN_DEV_*` names.
 At minimum, the production single-node runtime needs:
 
 - `FAVN_STORAGE=sqlite` for the first production mode.
-- `FAVN_SQLITE_PATH` pointing to the durable attached-storage SQLite database.
-- Orchestrator API bind host/port configuration.
-- Scheduler enabled/disabled configuration and scheduler tick settings where
-  exposed.
+- `FAVN_SQLITE_PATH` pointing to the durable attached-storage SQLite database;
+  it must be absolute.
+- `FAVN_SQLITE_MIGRATION_MODE` as `manual` or `auto`, defaulting to `manual`.
+- `FAVN_SQLITE_BUSY_TIMEOUT_MS`, defaulting to `5000`, as a positive integer.
+- `FAVN_SQLITE_POOL_SIZE`, defaulting to `1`; Phase 1 accepts only `1`.
+- `FAVN_ORCHESTRATOR_API_BIND_HOST`, defaulting to `127.0.0.1`, as an IPv4
+  address.
+- `FAVN_ORCHESTRATOR_API_PORT`, defaulting to `4101`, in `1..65535`.
+- `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`, required as comma-separated secrets
+  where each token is at least 32 characters.
+- `FAVN_SCHEDULER_ENABLED`, defaulting to `true`, as a boolean.
+- `FAVN_SCHEDULER_TICK_MS`, defaulting to `15000`, minimum `100`.
+- `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES`, defaulting to `1000`, as a
+  positive integer.
 - Web-to-orchestrator base URL for co-located or separate web deployment.
 - Web-to-orchestrator service token secret.
 - Web session signing/encryption secret.
@@ -251,8 +261,10 @@ The production path contract is intentionally explicit:
 - Local development state such as `.favn/runtime.json`, `.favn/secrets.json`, and
   `FAVN_DEV_*` env values are not production contracts.
 
-Follow-up runtime/config work must document the exact final path names and
-startup validation behavior.
+The orchestrator validates these production env names before supervised runtime
+traffic starts and applies them to its storage, API, service-token, and scheduler
+application env. Local-dev-only `FAVN_DEV_*` names are not accepted by this
+production contract.
 
 ## Backup And Restore Expectations
 
@@ -320,8 +332,11 @@ Required expectations:
   bootstrap step/kind, unsupported allow-list values, and adapter details where
   safe, without exposing secret values.
 
-The exact endpoints, CLI commands, and output shapes are follow-up implementation
-work.
+The orchestrator exposes unauthenticated `/api/orchestrator/v1/health/live` and
+`/api/orchestrator/v1/health/ready` endpoints. Liveness returns `200` when the process
+can serve the route. Readiness returns `200` only when all aggregated checks pass
+and `503` with redacted check diagnostics otherwise. CLI/runbook surfaces remain
+follow-up implementation work.
 
 ## Explicitly Unsupported In V1
 

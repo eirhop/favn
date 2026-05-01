@@ -24,6 +24,93 @@ defmodule FavnStorageSqlite.ReadinessTest do
     assert {:error, :sqlite_database_required} = Diagnostics.validate_database_path([])
   end
 
+  test "readiness reports invalid paths without leaking configured path" do
+    path = temp_path("missing-secret-parent/db.sqlite")
+
+    assert {:error, error} = Diagnostics.readiness(database: path, migration_mode: :manual)
+
+    assert error.status == :invalid_database_path
+    assert error.reason == :database_parent_missing
+    refute inspect(error) =~ path
+    refute inspect(error) =~ "missing-secret-parent"
+  end
+
+  test "readiness reports an empty manual database as schema not ready" do
+    db_path = temp_path("readiness-empty-manual.db")
+
+    assert {:ok, diagnostics} = Diagnostics.readiness(database: db_path, migration_mode: :manual)
+
+    assert diagnostics.status == :schema_not_ready
+    refute diagnostics.ready?
+    assert diagnostics.migration_mode == :manual
+    assert diagnostics.database == %{configured?: true, path: :redacted}
+    assert diagnostics.schema.status == :empty_database
+    refute inspect(diagnostics) =~ db_path
+
+    File.rm(db_path)
+  end
+
+  test "readiness reports ready schema" do
+    db_path = temp_path("readiness-ready.db")
+    repo_pid = start_repo!(db_path)
+    :ok = Migrations.migrate!(Repo)
+    maybe_stop_pid(repo_pid)
+
+    assert {:ok, diagnostics} = Diagnostics.readiness(database: db_path, migration_mode: :manual)
+
+    assert diagnostics.status == :ready
+    assert diagnostics.ready?
+    assert diagnostics.schema.status == :ready
+    assert diagnostics.schema.missing_tables == []
+    assert diagnostics.schema.missing_versions == []
+    refute inspect(diagnostics) =~ db_path
+
+    File.rm(db_path)
+  end
+
+  test "readiness reports newer schema as not ready" do
+    db_path = temp_path("readiness-newer.db")
+    repo_pid = start_repo!(db_path)
+    :ok = Migrations.migrate!(Repo)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "INSERT INTO schema_migrations (version) VALUES (99999999999999)",
+               []
+             )
+
+    maybe_stop_pid(repo_pid)
+
+    assert {:ok, diagnostics} = Diagnostics.readiness(database: db_path, migration_mode: :auto)
+
+    assert diagnostics.status == :schema_not_ready
+    refute diagnostics.ready?
+    assert diagnostics.schema.status == :schema_newer_than_release
+    assert diagnostics.schema.future_versions == ["99999999999999"]
+    refute inspect(diagnostics) =~ db_path
+
+    File.rm(db_path)
+  end
+
+  test "readiness reports inconsistent schema as not ready" do
+    db_path = temp_path("readiness-inconsistent.db")
+    repo_pid = start_repo!(db_path)
+    :ok = Migrations.migrate!(Repo)
+    assert {:ok, _} = SQL.query(Repo, "DROP TABLE favn_runs", [])
+    maybe_stop_pid(repo_pid)
+
+    assert {:ok, diagnostics} = Diagnostics.readiness(database: db_path, migration_mode: :auto)
+
+    assert diagnostics.status == :schema_not_ready
+    refute diagnostics.ready?
+    assert diagnostics.schema.status == :schema_inconsistent
+    assert "favn_runs" in diagnostics.schema.missing_tables
+    refute inspect(diagnostics) =~ db_path
+
+    File.rm(db_path)
+  end
+
   test "database path diagnostics can require absolute path" do
     assert {:error, {:database_path_not_absolute, "relative.db"}} =
              Diagnostics.validate_database_path(

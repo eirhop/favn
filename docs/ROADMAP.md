@@ -42,7 +42,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 5. Close Storage And Persistence Gaps
 
-- Wire the SQLite readiness diagnostics into the production release runtime, expose operator-facing migration/readiness flows, document the final backup/restore runbook, and coordinate clearly with separate DuckDB data-plane backups for the single-node production contract.
+- Extend the new orchestrator production readiness surface into operator-facing migration commands/runbooks and coordinate clearly with separate DuckDB data-plane backups for the single-node production contract.
 - Move Postgres live verification into the next production mode after SQLite single-node readiness, not the first `v1` gate.
 
 ### 6. Harden The Production-Grade Runtime
