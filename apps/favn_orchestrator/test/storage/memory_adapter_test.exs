@@ -68,6 +68,8 @@ defmodule FavnOrchestrator.Storage.MemoryAdapterTest do
     event = %{sequence: 1, event_type: :run_started, occurred_at: DateTime.utc_now()}
 
     assert :ok = Storage.append_run_event("run_1", event)
+    assert :ok = Storage.append_run_event("run_1", event)
+
     assert {:ok, [stored]} = Storage.list_run_events("run_1")
     assert stored.run_id == "run_1"
     assert stored.sequence == 1

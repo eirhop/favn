@@ -22,4 +22,22 @@ defmodule FavnOrchestrator.Storage.WriteSemanticsTest do
   test "returns conflicting_snapshot for same event sequence with different hash" do
     assert {:error, :conflicting_snapshot} = WriteSemantics.decide(2, "hash_a", 2, "hash_b")
   end
+
+  test "inserts a run event when no event exists for the sequence" do
+    assert :insert = WriteSemantics.decide_run_event_append(nil, %{sequence: 1})
+  end
+
+  test "returns :idempotent for an identical run event sequence write" do
+    event = %{run_id: "run_1", sequence: 1, event_type: :run_started}
+
+    assert :idempotent = WriteSemantics.decide_run_event_append(event, event)
+  end
+
+  test "returns conflicting_event_sequence for same sequence with different event content" do
+    existing = %{run_id: "run_1", sequence: 1, event_type: :run_started}
+    incoming = %{existing | event_type: :run_updated}
+
+    assert {:error, :conflicting_event_sequence} =
+             WriteSemantics.decide_run_event_append(existing, incoming)
+  end
 end

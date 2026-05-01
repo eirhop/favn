@@ -4,6 +4,8 @@ defmodule FavnOrchestrator.Storage.WriteSemantics do
   @type decision ::
           :insert | :replace | :idempotent | {:error, :conflicting_snapshot | :stale_write}
 
+  @type run_event_append_decision :: :insert | :idempotent | {:error, :conflicting_event_sequence}
+
   @spec decide(non_neg_integer() | nil, String.t() | nil, non_neg_integer(), String.t()) ::
           decision()
   def decide(nil, _existing_hash, _incoming_event_seq, _incoming_hash), do: :insert
@@ -15,6 +17,17 @@ defmodule FavnOrchestrator.Storage.WriteSemantics do
       incoming_event_seq < existing_event_seq -> {:error, :stale_write}
       existing_hash == incoming_hash -> :idempotent
       true -> {:error, :conflicting_snapshot}
+    end
+  end
+
+  @spec decide_run_event_append(map() | nil, map()) :: run_event_append_decision()
+  def decide_run_event_append(nil, incoming) when is_map(incoming), do: :insert
+
+  def decide_run_event_append(existing, incoming) when is_map(existing) and is_map(incoming) do
+    if existing == incoming do
+      :idempotent
+    else
+      {:error, :conflicting_event_sequence}
     end
   end
 end

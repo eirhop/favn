@@ -965,9 +965,10 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp resolve_existing_event_conflict(repo, run_id, event) do
     with {:ok, existing} <- fetch_event_by_sequence(repo, run_id, event.sequence) do
-      case existing do
-        ^event -> :idempotent
-        _ -> {:error, :conflicting_event_sequence}
+      case WriteSemantics.decide_run_event_append(existing, event) do
+        :idempotent -> :idempotent
+        :insert -> {:error, :missing_conflicting_event}
+        {:error, reason} -> {:error, reason}
       end
     end
   end

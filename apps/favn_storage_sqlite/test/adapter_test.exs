@@ -86,6 +86,7 @@ defmodule FavnStorageSqlite.AdapterTest do
     }
 
     assert :ok = Adapter.append_run_event("run_sqlite_events", event, opts)
+    assert :ok = Adapter.append_run_event("run_sqlite_events", event, opts)
 
     assert {:error, :conflicting_event_sequence} =
              Adapter.append_run_event(
