@@ -28,7 +28,10 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
         IO.puts("Favn single-node bootstrap complete")
         IO.puts("manifest version: #{summary.manifest_version_id}")
         IO.puts("activated: #{summary.activated?}")
-        IO.puts("active manifest verification: #{summary.active_manifest_verification}")
+
+        IO.puts(
+          "active manifest verification: #{format_active_manifest_verification(summary.active_manifest_verification)}"
+        )
 
       {:error, {:missing_required_option, key, _value}} ->
         Mix.raise("bootstrap failed: missing required option #{option_name(key)}")
@@ -112,6 +115,9 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   defp option_name(:orchestrator_url), do: "--orchestrator-url"
   defp option_name(:service_token), do: "--service-token"
   defp option_name(key), do: "--" <> (key |> Atom.to_string() |> String.replace("_", "-"))
+
+  defp format_active_manifest_verification(:matched), do: "matched"
+  defp format_active_manifest_verification(value), do: inspect(value)
 
   defp env(name) do
     case System.get_env(name) do

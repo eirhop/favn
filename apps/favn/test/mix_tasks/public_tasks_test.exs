@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   import ExUnit.CaptureIO
 
   alias Favn.Dev.Process, as: DevProcess
+  alias Favn.Dev.Bootstrap.Single, as: BootstrapSingle
   alias Favn.Dev.State
   alias Mix.Tasks.Favn.Backfill, as: BackfillTask
   alias Mix.Tasks.Favn.Bootstrap.Single, as: BootstrapSingleTask
@@ -150,6 +151,40 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       ])
 
     assert Keyword.fetch!(opts, :activate?) == false
+  end
+
+  test "mix favn.bootstrap.single prints matched active-manifest verification", %{
+    root_dir: root_dir
+  } do
+    manifest_path = write_bootstrap_manifest(root_dir)
+    {:ok, version} = BootstrapSingle.read_manifest_version(manifest_path)
+    {:ok, base_url, _server} = start_bootstrap_server({:matched, version.manifest_version_id})
+
+    output =
+      capture_io(fn ->
+        BootstrapSingleTask.run(bootstrap_args(manifest_path, base_url))
+      end)
+
+    assert output =~ "Favn single-node bootstrap complete"
+    assert output =~ "active manifest verification: matched"
+  end
+
+  test "mix favn.bootstrap.single safely prints tuple active-manifest verification", %{
+    root_dir: root_dir
+  } do
+    manifest_path = write_bootstrap_manifest(root_dir)
+
+    for verification <- [:skipped, :mismatch] do
+      {:ok, base_url, _server} = start_bootstrap_server({verification, "mv_other"})
+
+      output =
+        capture_io(fn ->
+          BootstrapSingleTask.run(bootstrap_args(manifest_path, base_url))
+        end)
+
+      assert output =~ "Favn single-node bootstrap complete"
+      assert output =~ "active manifest verification: {:#{verification},"
+    end
   end
 
   test "mix favn.dev raises with partial runtime recovery guidance", %{root_dir: root_dir} do
@@ -750,6 +785,110 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "Favn single build complete"
     assert output =~ "build id:"
     assert output =~ "/.favn/dist/single/"
+  end
+
+  defp write_bootstrap_manifest(root_dir) do
+    path = Path.join(root_dir, "bootstrap_manifest.json")
+
+    File.write!(
+      path,
+      JSON.encode_to_iodata!(%{
+        schema_version: 1,
+        runner_contract_version: 1,
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
+    )
+
+    path
+  end
+
+  defp bootstrap_args(manifest_path, base_url) do
+    [
+      "--manifest",
+      manifest_path,
+      "--orchestrator-url",
+      base_url,
+      "--service-token",
+      "token-1"
+    ]
+  end
+
+  defp start_bootstrap_server(verification) do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: false, packet: :raw])
+    {:ok, port} = :inet.port(socket)
+
+    server =
+      spawn_link(fn ->
+        serve_bootstrap_requests(socket, verification, 5)
+      end)
+
+    {:ok, "http://127.0.0.1:#{port}", server}
+  end
+
+  defp serve_bootstrap_requests(socket, _verification, 0), do: :gen_tcp.close(socket)
+
+  defp serve_bootstrap_requests(socket, verification, remaining) do
+    {:ok, client} = :gen_tcp.accept(socket, 2_000)
+    {:ok, request} = :gen_tcp.recv(client, 0, 2_000)
+    send_bootstrap_response(client, request, verification)
+    :gen_tcp.close(client)
+    serve_bootstrap_requests(socket, verification, remaining - 1)
+  end
+
+  defp send_bootstrap_response(client, request, verification) do
+    [request_line | _headers] = String.split(request, "\r\n", parts: 2)
+    [_method, path, _version] = String.split(request_line, " ", parts: 3)
+
+    cond do
+      path == "/api/orchestrator/v1/bootstrap/service-token" ->
+        send_json(client, 200, %{data: %{status: "ok"}})
+
+      path == "/api/orchestrator/v1/manifests" ->
+        send_json(client, 200, %{data: %{manifest: %{}}})
+
+      path == "/api/orchestrator/v1/bootstrap/active-manifest" and
+          match?({:matched, _manifest_version_id}, verification) ->
+        {:matched, manifest_version_id} = verification
+        send_json(client, 200, %{data: %{manifest_version_id: manifest_version_id}})
+
+      path == "/api/orchestrator/v1/bootstrap/active-manifest" and
+          match?({:mismatch, _manifest_version_id}, verification) ->
+        {:mismatch, manifest_version_id} = verification
+        send_json(client, 200, %{data: %{manifest_version_id: manifest_version_id}})
+
+      path == "/api/orchestrator/v1/bootstrap/active-manifest" and
+          match?({:skipped, _reason}, verification) ->
+        send_json(client, 503, %{error: %{reason: "unavailable"}})
+
+      String.contains?(path, "/api/orchestrator/v1/manifests/") and
+          String.contains?(path, "/runner/register") ->
+        send_json(client, 200, %{data: %{runner: %{}}})
+
+      String.contains?(path, "/api/orchestrator/v1/manifests/") and
+          String.contains?(path, "/activate") ->
+        send_json(client, 200, %{data: %{activated: true}})
+
+      true ->
+        send_json(client, 404, %{error: %{reason: "not_found"}})
+    end
+  end
+
+  defp send_json(client, status, payload) do
+    body = JSON.encode!(payload)
+    reason = if status == 200, do: "OK", else: "Error"
+
+    :gen_tcp.send(client, [
+      "HTTP/1.1 #{status} #{reason}\r\n",
+      "content-type: application/json\r\n",
+      "content-length: #{byte_size(body)}\r\n",
+      "connection: close\r\n",
+      "\r\n",
+      body
+    ])
   end
 
   defp free_port do
