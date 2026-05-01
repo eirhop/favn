@@ -32,11 +32,15 @@ It is aimed at teams who want data and workflow logic to live in normal Elixir m
 
 Favn is in private development.
 
-The `v0.5.0` architecture refactor is now closed enough to resume normal feature
-development on top of the new boundaries.
+Current release work is focused on hardening the authoring, manifest, local
+tooling, and single-node runtime support boundaries for a stable `v1`.
 
 - breaking changes are still allowed before `v1.0`
-- `{:favn, ...}` remains the one public package users should depend on
+- `{:favn, ...}` is the primary public dependency for consumer projects
+- `{:favn_duckdb, ...}` is optional and only needed when the project executes
+  DuckDB-backed SQL assets or uses DuckDB through `Favn.SQLClient`
+- storage, orchestrator, runner, local tooling, and web apps are internal runtime
+  or product components, not ordinary user dependencies
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, explicit service wrapper pid/log-write failures, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
@@ -104,8 +108,10 @@ def deps do
 end
 ```
 
-Storage adapter apps such as `favn_storage_sqlite` are runtime/control-plane
-adapters, not required for ordinary consumer authoring or DuckDB execution.
+Do not add internal runtime apps as ordinary consumer dependencies. Storage
+adapters such as `favn_storage_sqlite` and `favn_storage_postgres`, runtime apps
+such as `favn_orchestrator`, `favn_runner`, and `favn_local`, and the web app are
+owned by Favn's runtime/package tooling rather than by authored business code.
 
 Multiple `git` dependencies with different `subdir` values from this monorepo
 are not the supported plugin-consumption model before Hex packaging because Mix
@@ -323,7 +329,8 @@ mix favn.read_doc Favn
 mix favn.read_doc Favn generate_manifest
 ```
 
-This is now the stable public entrypoint for local iteration on the refactored architecture.
+These supported `mix favn.*` commands are the stable public entrypoints for
+local iteration.
 
 For a fresh standalone Mix consumer project with local path dependencies back to
 this checkout, `mix favn.init --duckdb --sample` generates the first dogfooding
@@ -504,7 +511,13 @@ the latest concrete schedule id.
   `.favn/install/runtime.json`, and caches npm data under
   `.favn/install/cache/npm`
 
-## Common Public Authoring API Entry Points
+## Common Public API Entry Points
+
+The stable `v1` API is intended to cover authoring, manifest compilation and
+registration inputs, `Favn.SQLClient`, and supported local commands. Runtime
+helper functions exposed on `Favn` are runtime-dependent conveniences and are not
+part of the stable `v1` contract unless they are documented here or in
+`docs/production/public_api_boundary.md`.
 
 - `Favn.list_assets/0,1`
 - `Favn.get_asset/1`
@@ -513,11 +526,16 @@ the latest concrete schedule id.
 - `Favn.generate_manifest/0,1`
 - `Favn.build_manifest/0,1`
 - `Favn.plan_asset_run/2`
+- `Favn.SQLClient.connect/1,2`, `query/2,3`, `execute/2,3`, `transaction/2,3`,
+  `capabilities/1`, `relation/2`, `columns/2`, `with_connection/2,3`, and
+  `disconnect/1`
 
 ## Documentation
 
 - `docs/FEATURES.md` tracks the implemented feature set today
 - `docs/ROADMAP.md` tracks planned next work and later ideas
+- `docs/production/public_api_boundary.md` defines the intended package and
+  stable public API boundary for `v1`
 - `docs/production/single_node_contract.md` defines the first `v1` production deployment contract
 - `docs/structure/` maps current ownership, code layout, and test layout by app
 - `examples/basic-workflow-tutorial` is the first end-to-end tutorial project
@@ -561,9 +579,7 @@ project documents a stronger local convention.
 
 ## Current Direction
 
-The current release work is focused on product hardening and operator/developer
-experience on top of the now-closed manifest-first architecture.
-
-That architecture work did not change the core user-facing goal: define assets
-and pipelines in Elixir, compile them into an explicit graph, and run them with
-predictable behavior.
+Current release work is focused on product hardening, explicit support
+boundaries, and operator/developer experience. The user-facing goal remains:
+define assets and pipelines in Elixir, compile them into an explicit graph, and
+run them with predictable behavior.

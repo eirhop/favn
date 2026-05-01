@@ -1,6 +1,10 @@
 defmodule FavnOrchestrator do
   @moduledoc """
-  Orchestrator control-plane facade for manifest-pinned run submission.
+  Runtime orchestrator control-plane facade for manifest-pinned operations.
+
+  `FavnOrchestrator` is the boundary used by runtime apps, operator tooling, and
+  the thin `Favn` runtime helpers. It is not the stable authoring-time API that
+  most application code should build against.
   """
 
   alias Favn.Contracts.RelationInspectionRequest

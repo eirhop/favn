@@ -33,11 +33,10 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
           :ok
 
         :sql ->
-          assert {:ok, _result} = Favn.materialize(asset)
+          assert {:ok, _result} = materialize_sql_asset_directly_for_test_setup(asset)
 
         :elixir ->
-          ctx = %Context{asset: %{relation: asset.relation}, config: source_config()}
-          assert_successful_asset_return(apply(asset.module, :asset, [ctx]))
+          assert_successful_asset_return(run_elixir_asset_directly_for_test_setup(asset))
       end
     end)
 
@@ -51,7 +50,7 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
   test "raw orders source-system asset returns structured landing metadata" do
     with_source_env("northbeam-private-segment", "private-token", fn ->
       assert :ok = prepare_order_prerequisites()
-      assert {:ok, result} = run_orders_asset()
+      assert {:ok, result} = run_orders_asset_through_runner_boundary_for_test()
 
       assert result.status == :ok
       assert [%{meta: meta}] = result.asset_results
@@ -73,7 +72,7 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
 
   test "raw orders source config fails before source fetch when required env is missing" do
     with_source_env(nil, "private-token", fn ->
-      assert {:ok, result} = run_orders_asset()
+      assert {:ok, result} = run_orders_asset_through_runner_boundary_for_test()
 
       assert result.status == :error
       assert [%{error: error}] = result.asset_results
@@ -85,7 +84,7 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
   test "raw orders source client failures are returned as asset failure diagnostics" do
     with_source_env("source-failure", "private-token", fn ->
       assert :ok = prepare_order_prerequisites()
-      assert {:ok, result} = run_orders_asset()
+      assert {:ok, result} = run_orders_asset_through_runner_boundary_for_test()
 
       assert result.status == :error
       assert [%{error: error}] = result.asset_results
@@ -146,18 +145,32 @@ defmodule FavnReferenceWorkload.DuckdbExecutionTest do
 
       case asset.type do
         :sql ->
-          assert {:ok, _result} = Favn.materialize(asset)
+          assert {:ok, _result} = materialize_sql_asset_directly_for_test_setup(asset)
 
         :elixir ->
-          ctx = %Context{asset: %{relation: asset.relation}, config: source_config()}
-          assert_successful_asset_return(apply(asset.module, :asset, [ctx]))
+          assert_successful_asset_return(run_elixir_asset_directly_for_test_setup(asset))
       end
     end
 
     :ok
   end
 
-  defp run_orders_asset do
+  # Test-only shortcut for prerequisite setup. User-facing execution should go
+  # through `mix favn.run`, which submits through the local orchestrator boundary.
+  defp materialize_sql_asset_directly_for_test_setup(asset) do
+    Favn.materialize(asset)
+  end
+
+  # Test-only shortcut for prerequisite setup. This bypasses runner config
+  # resolution, so do not copy it as application execution code.
+  defp run_elixir_asset_directly_for_test_setup(asset) do
+    ctx = %Context{asset: %{relation: asset.relation}, config: source_config()}
+    apply(asset.module, :asset, [ctx])
+  end
+
+  # Test-only runner-boundary call for asset-level diagnostics. The tutorial's
+  # recommended local user path remains `mix favn.run PipelineModule`.
+  defp run_orders_asset_through_runner_boundary_for_test do
     {:ok, _started} = Application.ensure_all_started(:favn_runner)
     {:ok, manifest} = Favn.generate_manifest()
     {:ok, version} = Favn.pin_manifest_version(manifest)

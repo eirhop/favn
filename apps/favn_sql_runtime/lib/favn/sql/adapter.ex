@@ -1,9 +1,10 @@
 defmodule Favn.SQL.Adapter do
   @moduledoc """
-  Internal backend behaviour for SQL execution in Favn.
+  SQL runtime plugin behaviour for backend adapters.
 
-  This is not an end-user SQL asset DSL contract.
-  It is the runtime backend boundary used by `Favn.SQL`.
+  This is the contract implemented by SQL backend plugins such as DuckDB. It is
+  not the end-user SQL asset DSL and should not be treated as an ordinary stable
+  authoring API.
   """
 
   alias Favn.Connection.Resolved

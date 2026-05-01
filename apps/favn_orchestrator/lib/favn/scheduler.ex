@@ -1,6 +1,9 @@
 defmodule Favn.Scheduler do
   @moduledoc """
-  Public scheduler facade backed by the orchestrator runtime.
+  Runtime scheduler control-plane facade backed by the orchestrator runtime.
+
+  This module exposes scheduler controls for runtime operators and internal
+  orchestration paths. It is not part of the stable authoring API surface.
   """
 
   @spec reload() :: :ok | {:error, term()}

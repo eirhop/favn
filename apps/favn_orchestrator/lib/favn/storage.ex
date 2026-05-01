@@ -1,6 +1,10 @@
 defmodule Favn.Storage do
   @moduledoc """
-  Public storage facade for run and scheduler state persistence.
+  Runtime storage contract for run and scheduler state persistence.
+
+  This module is part of the orchestrator control-plane boundary. It is used by
+  runtime apps and storage adapters, not as an ordinary stable authoring API for
+  application code.
   """
 
   alias Favn.Run

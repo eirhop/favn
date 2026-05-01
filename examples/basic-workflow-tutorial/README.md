@@ -192,7 +192,9 @@ What this verifies:
 - manifest generation for the full graph
 - DuckDB execution of SQL assets
 
-If this passes, the main reference workload path is healthy.
+If this passes, the main reference workload path is healthy. The tests keep
+some direct runtime calls behind private test helpers so they can assert narrow
+behavior quickly; copy the `mix favn.*` commands below for normal local usage.
 
 ## Step 3: Explore the manifest in IEx
 
@@ -212,7 +214,27 @@ What this means:
 - Favn compiled your authored modules into a manifest
 - the graph can be planned and run from this stable snapshot
 
-## Step 4: Query the generated DuckDB outputs
+## Step 4: Run through the local orchestrator boundary
+
+Use the local tooling loop from this consumer-style project:
+
+```bash
+mix favn.install
+mix favn.dev
+mix favn.run FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily
+mix favn.status
+mix favn.logs --service orchestrator --tail 200
+mix favn.reload
+mix favn.stop
+mix favn.reset
+```
+
+`mix favn.run` submits the tutorial pipeline to the running local orchestrator
+using the active manifest. This is the recommended user-facing way to execute
+the workload locally; it keeps run planning, manifest pinning, execution, and
+status tracking behind the orchestrator/runner boundary.
+
+## Step 5: Query the generated DuckDB outputs
 
 Still in IEx:
 
@@ -235,20 +257,7 @@ Why this matters:
 - you are looking directly at the data products produced by the workload
 - this is the "business output" side of the architecture
 
-## Step 5: Local tooling loop (`mix favn.*`)
-
-This project supports the local tooling loop from a consumer-style project:
-
-```bash
-mix favn.install
-mix favn.dev
-mix favn.run FavnReferenceWorkload.Pipelines.ReferenceWorkloadDaily
-mix favn.status
-mix favn.logs --service orchestrator --tail 200
-mix favn.reload
-mix favn.stop
-mix favn.reset
-```
+## Local stack configuration
 
 To choose the local web UI login credentials, add these orchestrator bootstrap
 keys to `examples/basic-workflow-tutorial/.env` before running `mix favn.dev`:
@@ -284,10 +293,6 @@ Install freshness notes:
   so rerunning `mix favn.install` refreshes stale installed runtime code
 - `mix favn.install --force` remains available when you want an unconditional
   rebuild of the installed runtime workspace
-
-`mix favn.run` submits the tutorial pipeline to the running local orchestrator
-using the active manifest. It is the local-stack smoke path after the servers
-start; the earlier steps remain useful for direct data-plane inspection.
 
 The default `mix favn.dev` path keeps the scheduler disabled so one-time local
 ETL does not run active schedules unexpectedly. To exercise the tutorial's

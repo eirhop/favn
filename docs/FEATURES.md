@@ -13,11 +13,16 @@ State labels used below:
 - `compatibility-only`: supported mainly to preserve an older/current authoring path, not because it is the preferred future shape.
 - `needs hardening`: implemented, but the code/docs/tests still point to important production-readiness gaps.
 
-## Architecture Status
+## Product Boundary Status
 
-Favn `v0.5.0` established the intended manifest-first product architecture and the runtime boundaries between:
+Favn uses a manifest-first product architecture with these package/runtime
+boundaries:
 
-- `favn` as the public authoring surface and public `mix favn.*` entrypoint owner
+- `favn` as the primary public dependency, public authoring surface, manifest
+  entrypoint owner, `Favn.SQLClient` owner, and public `mix favn.*` entrypoint
+  owner
+- `favn_duckdb` as an optional DuckDB execution plugin and SQL adapter dependency
+  for projects that execute DuckDB-backed work
 - `favn_authoring` as the internal authoring and manifest implementation owner
 - `favn_local` as the internal local lifecycle, tooling, and packaging implementation owner
 - `favn_core` as the shared compiler, manifest, planning, and contracts layer
@@ -25,11 +30,19 @@ Favn `v0.5.0` established the intended manifest-first product architecture and t
 - `favn_runner` as the execution runtime
 - `favn_web` as the separate public web edge
 
-The refactor closeout is complete enough that the main remaining work is product hardening and support-boundary clarity, not more architecture migration.
+Storage, orchestrator, runner, local, and web apps are runtime/product
+internals. Ordinary consumer projects should depend on `favn`, plus optional
+plugin packages such as `favn_duckdb` only when they need that execution backend.
 
-Implemented closeout outcomes:
+The intended stable `v1` API surface covers authoring modules, manifest
+compilation/registration inputs, `Favn.SQLClient`, and supported local commands.
+Runtime helper functions exposed on `Favn` remain internal/runtime-dependent
+until separately documented as stable. Refs:
+`docs/production/public_api_boundary.md`.
 
-- The refactor phases are complete, including the local lifecycle and packaging command surface: `mix favn.install`, `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`, `mix favn.reset`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, `mix favn.build.single`, and `mix favn.read_doc`.
+Implemented boundary outcomes:
+
+- The local lifecycle and packaging command surface is implemented: `mix favn.install`, `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`, `mix favn.reset`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, `mix favn.build.single`, and `mix favn.read_doc`.
 - Legacy same-BEAM app paths are removed from supported runtime flows: `apps/favn_legacy` and `apps/favn_view` are gone from the umbrella.
 - Stable storage adapter entrypoints are restored as `Favn.Storage.Adapter.SQLite` and `Favn.Storage.Adapter.Postgres`.
 - SQL adapters now persist canonical inspectable `json-v1` payloads for run snapshots, run events, and scheduler state instead of BEAM term blobs.
@@ -124,9 +137,10 @@ Implemented closeout outcomes:
 
 - No major area in this repository is currently documented as fully release-ready. The strongest areas today are authoring, manifest compilation, planning, runner and orchestrator basics, and the local storage loops, but the project still presents itself as private development.
 - The first `v1` production deployment contract is now documented as a single backend node with SQLite on durable attached storage and production-grade DuckDB execution. The implementation is still follow-up work. Refs: `docs/production/single_node_contract.md`.
+- The public package and API support boundary is documented for `v1`: `favn` is the primary public dependency, `favn_duckdb` is optional for DuckDB execution, internal runtime/product apps are not ordinary user dependencies, and runtime helpers on `Favn` are not stable `v1` API. Refs: `docs/production/public_api_boundary.md`.
 - The web surface is a working prototype, not a polished product UI. The clearest evidence is the thin BFF route set and the current E2E coverage, not the default scaffold `web/favn_web/README.md`, which is still outdated.
 - The orchestrator HTTP API is private service-to-service infrastructure, not a documented public external API contract.
-- The public `Favn` module intentionally spans both stable authoring helpers and thin runtime delegation helpers. Runtime-facing calls such as `run_pipeline`, `get_run`, and scheduler helpers still depend on the orchestrator and runtime apps being available and return `:runtime_not_available` when they are not. Refs: `apps/favn/lib/favn.ex`, `apps/favn/test/runtime_facade_test.exs`.
+- The public `Favn` module still contains thin runtime delegation helpers. Runtime-facing calls such as `run_pipeline`, `get_run`, and scheduler helpers depend on runtime apps being available and return `:runtime_not_available` when they are not; they are internal/runtime-dependent conveniences, not stable `v1` API. Refs: `apps/favn/lib/favn.ex`, `apps/favn/test/runtime_facade_test.exs`, `docs/production/public_api_boundary.md`.
 - Auth, session, and audit foundations exist now, but the current implementation is still prototype-grade: the orchestrator auth store is in-memory, browser-edge abuse controls are not present, and service credentials are still a simple static-token model. Refs: `apps/favn_orchestrator/lib/favn_orchestrator/auth/store.ex`, `apps/favn_orchestrator/lib/favn_orchestrator/api/router.ex`, `docs/REFACTOR.md`.
 - SSE support is uneven today. Run-scoped replay is the strongest implemented path, while the global runs stream is still much thinner and not yet a durable or scalable live-update contract. Refs: `apps/favn_orchestrator/lib/favn_orchestrator/api/router.ex`, `apps/favn_orchestrator/test/api/router_test.exs`, `docs/REFACTOR.md`.
 - Packaging is uneven today. `build.runner` produces the strongest operational package contract, while `build.web`, `build.orchestrator`, and `build.single` currently produce metadata-oriented or assembly-only outputs rather than full deployable product artifacts. Refs: `apps/favn_local/test/dev_build_runner_test.exs`, `apps/favn_local/test/dev_build_web_test.exs`, `apps/favn_local/test/dev_build_orchestrator_test.exs`, `apps/favn_local/test/dev_build_single_test.exs`.

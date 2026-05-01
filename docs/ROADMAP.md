@@ -5,20 +5,21 @@ This file is only for forward-looking work.
 - Implemented capabilities live in `docs/FEATURES.md`.
 - Do not restate shipped behavior here.
 
-Based on the current feature audit, the main path to a stable production `v1` is not broad feature expansion. The highest-value work is to harden the existing surface area, make support boundaries explicit, and turn the current honest-but-partial runtime and packaging story into the single-node production contract documented in `docs/production/single_node_contract.md`.
+Based on the current feature audit, the main path to a stable production `v1` is not broad feature expansion. The highest-value work is to harden the existing surface area, implement the documented support boundaries, and turn the current honest-but-partial runtime and packaging story into the single-node production contract documented in `docs/production/single_node_contract.md`.
 
 ## Implemented Now
 
 - See `docs/FEATURES.md` for the current feature set and current maturity labels.
+- See `docs/production/public_api_boundary.md` for the documented package and public API support boundary.
 
 ## Planned Next
 
 ### 1. Lock The Supported `v1` Surface
 
-- Finalize which public APIs are part of the stable `v1` contract and which stay internal or compatibility-only.
-- Clarify the long-term support story for `Favn.Assets`, `Favn.PublicScaffold`, and the runtime delegation helpers currently exposed from `Favn` but marked `@doc false`.
-- Define the Hex/private-Hex package plan for `favn`, optional plugins, and transitive internal apps before documenting external multi-package consumption.
-- Tighten product docs and examples so the recommended authoring and runtime entrypoints are unambiguous.
+- Finalize any remaining edge cases in the documented stable `v1` API boundary.
+- Decide the code-level fate of `Favn.Assets` and runtime delegation helpers that are outside the documented stable boundary: keep internal, remove, or move behind clearer modules.
+- Align moduledocs, tests, and examples with the documented boundary in `docs/production/public_api_boundary.md`.
+- Define the actual Hex/private-Hex publishing mechanics for the documented package model.
 
 ### 2. Make Deployment Outputs Real
 

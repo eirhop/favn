@@ -1,17 +1,13 @@
 defmodule Favn do
   @moduledoc """
-  Public Favn facade.
+  Stable public facade for the `favn` package.
 
-  This module collects the main public helper functions in one place.
+  `Favn` is the supported v1 entrypoint for authoring-time inspection,
+  manifest work, pipeline resolution, and deterministic planning. These
+  functions operate on authored modules and canonical manifest data without
+  requiring the runtime applications to be running.
 
-  It preserves the public `Favn.*` contract while delegating:
-
-  - authoring and manifest compilation to `FavnAuthoring`
-  - local lifecycle and packaging tasks to `Favn.Dev` through public
-    `mix favn.*` tasks
-  - runtime/orchestrator calls to the runtime apps when they are available
-
-  ## Main Functions
+  ## Stable v1 APIs
 
   - `list_assets/0,1`: compile and inspect assets
   - `get_asset/1`: fetch one compiled asset
@@ -23,6 +19,19 @@ defmodule Favn do
     manifest payloads and versions
   - `resolve_pipeline/2`: resolve one pipeline to concrete targets and context
   - `plan_asset_run/2`: build a deterministic execution plan
+
+  ## Runtime-dependent helpers
+
+  This module also keeps callable helper functions for SQL runtime operations,
+  run control, and scheduler control, including `render/2`, `preview/2`,
+  `explain/2`, `materialize/2`, `run_pipeline/2`, `get_run/1`, `list_runs/1`,
+  `list_run_events/2`, `rerun/2`, `cancel_run/2`, `reload_scheduler/0`,
+  `tick_scheduler/0`, and `list_scheduled_pipelines/0`.
+
+  Those helpers are intentionally not documented as stable ordinary user APIs.
+  They delegate to optional runtime apps when available and return
+  `{:error, :runtime_not_available}` when the relevant runtime boundary is not
+  loaded or running.
 
   ## Public authoring workflow
 
