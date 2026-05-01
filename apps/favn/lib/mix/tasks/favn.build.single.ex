@@ -20,7 +20,10 @@ defmodule Mix.Tasks.Favn.Build.Single do
         IO.puts("Favn single build complete")
         IO.puts("build id: #{build_id}")
         IO.puts("dist: #{dist_dir}")
-        IO.puts("note: assembly-only artifact; see #{Path.join(dist_dir, "OPERATOR_NOTES.md")}")
+
+        IO.puts(
+          "note: project-local backend SQLite launcher; see #{Path.join(dist_dir, "OPERATOR_NOTES.md")}"
+        )
 
       {:error, :install_required} ->
         Mix.raise("build blocked: install required; run mix favn.install")
@@ -44,8 +47,11 @@ defmodule Mix.Tasks.Favn.Build.Single do
         )
 
       {:error, {:invalid_storage, value}} ->
+        Mix.raise("single build failed: invalid storage #{inspect(value)}; expected sqlite")
+
+      {:error, {:unsupported_storage, :postgres}} ->
         Mix.raise(
-          "single build failed: invalid storage #{inspect(value)}; expected sqlite|postgres"
+          "single build failed: postgres is not supported for the SQLite single-node artifact"
         )
 
       {:error, {:unsupported_root_dir, requested, current}} ->
