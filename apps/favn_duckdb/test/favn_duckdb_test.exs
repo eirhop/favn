@@ -25,9 +25,39 @@ defmodule FavnDuckdbTest do
     end
   end
 
+  defmodule CloseFailsOnceClient do
+    use FavnDuckdb.TestSupport.FakeClient
+
+    @impl true
+    def appender_close(appender_ref) do
+      key = {__MODULE__, appender_ref}
+      close_count = Process.get(key, 0)
+      Process.put(key, close_count + 1)
+
+      case close_count do
+        0 -> {:error, :temporary_appender_close_failed}
+        _ -> :ok
+      end
+    end
+  end
+
+  defmodule CloseAlwaysFailsClient do
+    use FavnDuckdb.TestSupport.FakeClient
+
+    @impl true
+    def appender_close(_appender_ref), do: {:error, :appender_close_failed}
+
+    @impl true
+    def release(resource) do
+      send(Application.fetch_env!(:favn, :duckdb_test_owner), {:released, resource})
+      :ok
+    end
+  end
+
   setup do
     previous_plugins = Application.get_env(:favn, :runner_plugins)
     previous_in_process_client = Application.get_env(:favn, :duckdb_in_process_client)
+    previous_test_owner = Application.get_env(:favn, :duckdb_test_owner)
 
     on_exit(fn ->
       if is_nil(previous_plugins) do
@@ -52,6 +82,12 @@ defmodule FavnDuckdbTest do
         Application.delete_env(:favn, :duckdb_in_process_client)
       else
         Application.put_env(:favn, :duckdb_in_process_client, previous_in_process_client)
+      end
+
+      if is_nil(previous_test_owner) do
+        Application.delete_env(:favn, :duckdb_test_owner)
+      else
+        Application.put_env(:favn, :duckdb_test_owner, previous_test_owner)
       end
     end)
 
@@ -158,5 +194,46 @@ defmodule FavnDuckdbTest do
     assert {:error, :invalid_handle} = SeparateProcess.fetch_all(make_ref())
     assert {:error, :invalid_handle} = SeparateProcess.columns(make_ref())
     assert :ok = SeparateProcess.release(make_ref())
+  end
+
+  test "successful appender close consumes separate-process worker handle" do
+    {:ok, _pid} = start_separate_process_worker(FakeClient)
+    {:ok, appender_ref} = open_appender()
+
+    assert :ok = SeparateProcess.appender_close(appender_ref)
+    assert {:error, :invalid_handle} = SeparateProcess.appender_flush(appender_ref)
+  end
+
+  test "failed appender close keeps separate-process worker handle retryable" do
+    {:ok, _pid} = start_separate_process_worker(CloseFailsOnceClient)
+    {:ok, appender_ref} = open_appender()
+
+    assert {:error, :temporary_appender_close_failed} =
+             SeparateProcess.appender_close(appender_ref)
+
+    assert :ok = SeparateProcess.appender_close(appender_ref)
+    assert {:error, :invalid_handle} = SeparateProcess.appender_flush(appender_ref)
+  end
+
+  test "failed appender close keeps separate-process worker handle releasable" do
+    Application.put_env(:favn, :duckdb_test_owner, self())
+    {:ok, _pid} = start_separate_process_worker(CloseAlwaysFailsClient)
+    {:ok, appender_ref} = open_appender()
+
+    assert {:error, :appender_close_failed} = SeparateProcess.appender_close(appender_ref)
+    assert :ok = SeparateProcess.release(appender_ref)
+    assert_receive {:released, _resource}
+    assert {:error, :invalid_handle} = SeparateProcess.appender_flush(appender_ref)
+  end
+
+  defp start_separate_process_worker(client) do
+    Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :separate_process}])
+    Worker.start_link(name: Worker, client: client)
+  end
+
+  defp open_appender do
+    {:ok, db_ref} = SeparateProcess.open(":memory:")
+    {:ok, conn_ref} = SeparateProcess.connection(db_ref)
+    SeparateProcess.appender(conn_ref, "orders", nil)
   end
 end
