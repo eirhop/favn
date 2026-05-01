@@ -741,6 +741,46 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
+  post "/api/orchestrator/v1/backfills/projections/repair" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, params} <- fetch_json_body(conn),
+         {:ok, opts} <- backfill_repair_opts(params),
+         {:ok, report} <- FavnOrchestrator.repair_backfill_projections(opts) do
+      if Keyword.get(opts, :apply, false) do
+        Auth.put_audit(%{
+          action: "backfill.projections.repair",
+          actor_id: actor.id,
+          session_id: header(conn, "x-favn-session-id"),
+          resource_type: "backfill_projection",
+          resource_id: repair_resource_id(opts),
+          outcome: "accepted",
+          service_identity: service_identity(conn)
+        })
+      end
+
+      data(conn, 200, %{repair: normalize_data(report)})
+    else
+      {:error, :invalid_repair_scope} ->
+        error(conn, 422, "validation_failed", "Invalid backfill projection repair scope")
+
+      {:error, :invalid_filter} ->
+        error(conn, 422, "validation_failed", "Invalid backfill projection repair filter")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
   get "/api/orchestrator/v1/backfills/coverage-baselines" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
@@ -1307,6 +1347,34 @@ defmodule FavnOrchestrator.API.Router do
     |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
     |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
     |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
+  end
+
+  defp backfill_repair_opts(params) when is_map(params) do
+    opts =
+      []
+      |> Keyword.put(:apply, Map.get(params, "apply") == true)
+      |> maybe_put_string_opt(:backfill_run_id, Map.get(params, "backfill_run_id"))
+
+    with {:ok, opts} <- maybe_put_pipeline_module_filter(opts, Map.get(params, "pipeline_module")) do
+      if Keyword.has_key?(opts, :backfill_run_id) and Keyword.has_key?(opts, :pipeline_module) do
+        {:error, :invalid_repair_scope}
+      else
+        {:ok, opts}
+      end
+    end
+  end
+
+  defp repair_resource_id(opts) do
+    cond do
+      Keyword.has_key?(opts, :backfill_run_id) ->
+        Keyword.fetch!(opts, :backfill_run_id)
+
+      Keyword.has_key?(opts, :pipeline_module) ->
+        Atom.to_string(Keyword.fetch!(opts, :pipeline_module))
+
+      true ->
+        "all"
+    end
   end
 
   defp backfill_window_filters(params, backfill_run_id) when is_map(params) do

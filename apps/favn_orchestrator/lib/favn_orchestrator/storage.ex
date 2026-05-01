@@ -161,6 +161,31 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec replace_backfill_read_models(
+          keyword(),
+          [CoverageBaseline.t()],
+          [BackfillWindow.t()],
+          [AssetWindowState.t()]
+        ) :: :ok | {:error, term()}
+  def replace_backfill_read_models(
+        scope,
+        coverage_baselines,
+        backfill_windows,
+        asset_window_states
+      )
+      when is_list(scope) and is_list(coverage_baselines) and is_list(backfill_windows) and
+             is_list(asset_window_states) do
+    adapter_call(fn adapter, opts ->
+      adapter.replace_backfill_read_models(
+        scope,
+        coverage_baselines,
+        backfill_windows,
+        asset_window_states,
+        opts
+      )
+    end)
+  end
+
   @spec adapter_module() :: module()
   def adapter_module do
     Application.get_env(:favn_orchestrator, :storage_adapter, Memory)

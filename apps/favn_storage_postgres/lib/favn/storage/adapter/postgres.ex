@@ -513,6 +513,49 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
+  @impl true
+  def replace_backfill_read_models(
+        scope,
+        coverage_baselines,
+        backfill_windows,
+        asset_window_states,
+        opts
+      )
+      when is_list(scope) and is_list(coverage_baselines) and is_list(backfill_windows) and
+             is_list(asset_window_states) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      repo.transact(fn ->
+        with :ok <-
+               delete_scoped(
+                 repo,
+                 "favn_pipeline_coverage_baselines",
+                 scope,
+                 coverage_baseline_filter_specs()
+               ),
+             :ok <-
+               delete_scoped(repo, "favn_backfill_windows", scope, backfill_window_filter_specs()),
+             :ok <-
+               delete_scoped(
+                 repo,
+                 "favn_asset_window_states",
+                 scope,
+                 asset_window_state_filter_specs()
+               ),
+             :ok <- put_all(coverage_baselines, &put_coverage_baseline(&1, opts)),
+             :ok <- put_all(backfill_windows, &put_backfill_window(&1, opts)),
+             :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
   defp coverage_baseline_params(%CoverageBaseline{} = baseline) do
     [
       baseline.baseline_id,
@@ -713,6 +756,55 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
+
+  defp put_all(items, fun) when is_list(items) and is_function(fun, 1) do
+    Enum.reduce_while(items, :ok, fn item, :ok ->
+      case fun.(item) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp delete_scoped(repo, table, [], _specs) do
+    case SQL.query(repo, "DELETE FROM #{table}", []) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_scoped(repo, table, scope, specs) do
+    filters = Enum.filter(scope, fn {key, _value} -> Map.has_key?(specs, key) end)
+
+    if filters == [] do
+      :ok
+    else
+      with {:ok, clauses, params} <- delete_filter_clauses(filters, specs) do
+        case SQL.query(repo, "DELETE FROM #{table} WHERE #{Enum.join(clauses, " AND ")}", params) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      end
+    end
+  end
+
+  defp delete_filter_clauses(filters, specs) do
+    filters
+    |> Enum.reduce_while({:ok, [], []}, fn {key, value}, {:ok, clauses, params} ->
+      case Map.fetch(specs, key) do
+        {:ok, {column, encoder}} ->
+          placeholder = "$#{length(params) + 1}"
+          {:cont, {:ok, ["#{column} = #{placeholder}" | clauses], params ++ [encoder.(value)]}}
+
+        :error ->
+          {:halt, {:error, {:unsupported_filter, key}}}
+      end
+    end)
+    |> case do
+      {:ok, clauses, params} -> {:ok, Enum.reverse(clauses), params}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp page_opts(filters), do: Page.normalize_opts(filters)
 

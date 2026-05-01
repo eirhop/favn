@@ -175,6 +175,13 @@ defmodule Favn.Dev do
     do: Backfill.rerun_window(backfill_run_id, window_key, opts)
 
   @doc """
+  Repairs derived operational-backfill projections in the running local stack.
+  """
+  @spec repair_backfill_projections(keyword()) :: {:ok, map()} | {:error, term()}
+  def repair_backfill_projections(opts \\ []) when is_list(opts),
+    do: Backfill.repair_projections(opts)
+
+  @doc """
   Returns local stack status for the current project.
   """
   @spec status(status_opts()) :: map()

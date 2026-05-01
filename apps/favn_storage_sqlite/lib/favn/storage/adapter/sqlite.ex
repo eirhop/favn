@@ -559,6 +559,54 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
+  @impl true
+  def replace_backfill_read_models(
+        scope,
+        coverage_baselines,
+        backfill_windows,
+        asset_window_states,
+        opts
+      )
+      when is_list(scope) and is_list(coverage_baselines) and is_list(backfill_windows) and
+             is_list(asset_window_states) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      repo.transact(fn ->
+        with :ok <-
+               delete_scoped(
+                 repo,
+                 "favn_pipeline_coverage_baselines",
+                 scope,
+                 coverage_baseline_filter_columns()
+               ),
+             :ok <-
+               delete_scoped(
+                 repo,
+                 "favn_backfill_windows",
+                 scope,
+                 backfill_window_filter_columns()
+               ),
+             :ok <-
+               delete_scoped(
+                 repo,
+                 "favn_asset_window_states",
+                 scope,
+                 asset_window_state_filter_columns()
+               ),
+             :ok <- put_all(coverage_baselines, &put_coverage_baseline(&1, opts)),
+             :ok <- put_all(backfill_windows, &put_backfill_window(&1, opts)),
+             :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
   defp coverage_baseline_columns do
     "baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted, window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id, manifest_version_id, status, errors_blob, metadata_blob, created_at, updated_at"
   end
@@ -790,6 +838,37 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp read_filters(filters), do: Keyword.drop(filters, [:limit, :offset])
+
+  defp put_all(items, fun) when is_list(items) and is_function(fun, 1) do
+    Enum.reduce_while(items, :ok, fn item, :ok ->
+      case fun.(item) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp delete_scoped(repo, table, [], _columns) do
+    case SQL.query(repo, "DELETE FROM #{table}", []) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_scoped(repo, table, scope, columns) do
+    filters = Enum.filter(scope, fn {key, _value} -> Map.has_key?(columns, key) end)
+
+    if filters == [] do
+      :ok
+    else
+      with {:ok, {where_sql, params}} <- build_filter_sql(filters, columns) do
+        case SQL.query(repo, "DELETE FROM #{table}#{where_sql}", params) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+      end
+    end
+  end
 
   defp page_opts(filters), do: Page.normalize_opts(filters)
 

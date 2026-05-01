@@ -9,6 +9,7 @@ defmodule FavnOrchestrator do
   alias Favn.Manifest.Version
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
+  alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
   alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.ManifestStore
@@ -287,6 +288,18 @@ defmodule FavnOrchestrator do
           | {:error, term()}
   def list_asset_window_states(filters \\ []) when is_list(filters) do
     Storage.list_asset_window_states(filters)
+  end
+
+  @doc """
+  Repairs derived operational-backfill read models from persisted run snapshots.
+
+  The repair source is authoritative run state. By default this returns a dry-run
+  report; pass `apply: true` to replace scoped derived read models. Repair never
+  appends run events or rewrites run snapshots.
+  """
+  @spec repair_backfill_projections(keyword()) :: {:ok, map()} | {:error, term()}
+  def repair_backfill_projections(opts \\ []) when is_list(opts) do
+    BackfillRepair.repair(opts)
   end
 
   @doc """

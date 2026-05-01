@@ -14,6 +14,12 @@ defmodule Favn.Dev.Backfill do
   @default_poll_interval_ms 1_000
 
   @type workflow_opts :: [root_dir: Path.t()]
+  @type repair_opts :: [
+          root_dir: Path.t(),
+          apply: boolean(),
+          backfill_run_id: String.t(),
+          pipeline_module: String.t() | module()
+        ]
   @type submit_opts :: [
           root_dir: Path.t(),
           from: String.t(),
@@ -125,6 +131,19 @@ defmodule Favn.Dev.Backfill do
     end
   end
 
+  @spec repair_projections(repair_opts()) :: {:ok, map()} | {:error, term()}
+  def repair_projections(opts \\ []) when is_list(opts) do
+    with {:ok, base_url, credentials, session_context} <- session(opts),
+         {:ok, payload} <- build_repair_payload(opts) do
+      OrchestratorClient.repair_backfill_projections(
+        base_url,
+        credentials.service_token,
+        session_context,
+        payload
+      )
+    end
+  end
+
   @doc false
   @spec build_submit_payload(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def build_submit_payload(%{"target_id" => target_id}, range, opts)
@@ -159,6 +178,21 @@ defmodule Favn.Dev.Backfill do
          kind: to_string(kind),
          timezone: Keyword.get(opts, :timezone, "Etc/UTC")
        }}
+    end
+  end
+
+  @doc false
+  @spec build_repair_payload(keyword()) :: {:ok, map()} | {:error, term()}
+  def build_repair_payload(opts) when is_list(opts) do
+    payload = %{apply: Keyword.get(opts, :apply, false)}
+
+    payload = maybe_put(payload, :backfill_run_id, Keyword.get(opts, :backfill_run_id))
+    payload = maybe_put(payload, :pipeline_module, Keyword.get(opts, :pipeline_module))
+
+    if Map.has_key?(payload, :backfill_run_id) and Map.has_key?(payload, :pipeline_module) do
+      {:error, :invalid_repair_scope}
+    else
+      {:ok, payload}
     end
   end
 

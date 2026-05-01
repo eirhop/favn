@@ -322,6 +322,10 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   @impl true
   def list_asset_window_states(filters, _opts), do: {:ok, empty_page(filters)}
 
+  @impl true
+  def replace_backfill_read_models(_scope, _coverage_baselines, _backfill_windows, _states, _opts),
+    do: :ok
+
   def reset!, do: :persistent_term.put(@counter_key, 0)
 
   defp empty_page(filters) do
