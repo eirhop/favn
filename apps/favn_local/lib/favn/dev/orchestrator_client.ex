@@ -18,6 +18,29 @@ defmodule Favn.Dev.OrchestratorClient do
     )
   end
 
+  @spec verify_service_token(String.t(), String.t()) :: :ok | {:error, term()}
+  def verify_service_token(base_url, service_token)
+      when is_binary(base_url) and is_binary(service_token) do
+    url = base_url <> "/api/orchestrator/v1/bootstrap/service-token"
+
+    case request_get(:verify_service_token, url, service_token) do
+      {:ok, %{"data" => %{"status" => "ok"}}} ->
+        :ok
+
+      {:ok, %{"data" => %{"verified" => true}}} ->
+        :ok
+
+      {:ok, %{"data" => %{"authenticated" => true}}} ->
+        :ok
+
+      {:ok, _decoded} ->
+        {:error, operation_error(:verify_service_token, :get, url, :invalid_response)}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   @spec activate_manifest(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def activate_manifest(base_url, service_token, manifest_version_id)
       when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) do
@@ -27,6 +50,25 @@ defmodule Favn.Dev.OrchestratorClient do
       service_token,
       %{}
     )
+  end
+
+  @spec register_runner(String.t(), String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def register_runner(base_url, service_token, payload)
+      when is_binary(base_url) and is_binary(service_token) and is_map(payload) do
+    manifest_version_id =
+      Map.get(payload, :manifest_version_id) || Map.get(payload, "manifest_version_id")
+
+    if is_binary(manifest_version_id) and manifest_version_id != "" do
+      request_post(
+        :register_runner,
+        base_url <>
+          "/api/orchestrator/v1/manifests/#{URI.encode(manifest_version_id)}/runner/register",
+        service_token,
+        %{}
+      )
+    else
+      {:error, operation_error(:register_runner, :post, base_url, :missing_manifest_version_id)}
+    end
   end
 
   @spec cancel_run(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}

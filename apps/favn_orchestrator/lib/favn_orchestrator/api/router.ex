@@ -55,6 +55,16 @@ defmodule FavnOrchestrator.API.Router do
     data(conn, status, normalize_data(readiness))
   end
 
+  get "/api/orchestrator/v1/bootstrap/service-token" do
+    case ensure_service_auth(conn) do
+      :ok ->
+        data(conn, 200, service_token_diagnostics(conn))
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+    end
+  end
+
   post "/api/orchestrator/v1/auth/password/sessions" do
     with :ok <- ensure_service_auth(conn),
          {:ok, params} <- fetch_json_body(conn),
@@ -354,6 +364,35 @@ defmodule FavnOrchestrator.API.Router do
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
 
       {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  post "/api/orchestrator/v1/manifests/:manifest_version_id/runner/register" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, registration} <-
+           FavnOrchestrator.register_manifest_with_runner(manifest_version_id) do
+      data(conn, 200, %{registration: registration})
+    else
+      {:error, :manifest_version_not_found} ->
+        error(conn, 404, "not_found", "Manifest version was not found")
+
+      {:error, :runner_manifest_conflict} ->
+        error(
+          conn,
+          409,
+          "runner_manifest_conflict",
+          "Runner has a different manifest for this version id"
+        )
+
+      {:error, reason} when reason in [:runner_client_not_available, :runner_unavailable] ->
+        error(conn, 503, "runner_unavailable", "Runner manifest registration is unavailable")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, reason} ->
+        Logger.error("runner manifest registration failed: #{inspect(reason)}")
         error(conn, 400, "bad_request", "Request failed")
     end
   end
@@ -1094,6 +1133,17 @@ defmodule FavnOrchestrator.API.Router do
     else
       {:error, :service_unauthorized}
     end
+  end
+
+  defp service_token_diagnostics(conn) do
+    configured_tokens =
+      List.wrap(Application.get_env(:favn_orchestrator, :api_service_tokens, []))
+
+    %{
+      authenticated: true,
+      service_identity: service_identity(conn),
+      service_tokens: %{configured_count: length(configured_tokens), redacted: true}
+    }
   end
 
   defp ensure_actor_context(conn, required_role) do

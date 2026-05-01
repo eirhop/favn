@@ -23,8 +23,23 @@ executed artifact verification. Full release packaging, backup automation,
 production web startup, and auth/session persistence remain follow-up
 implementation work.
 
+Phase 1 runtime config validation and backend control-plane bootstrap have
+landed, while full operator runbooks, production web hardening, and
+auth/session persistence remain follow-up implementation work.
+
 Follow-up issues must treat this document as the product contract they are
 making real.
+
+Phase 1 bootstrap is intentionally backend/control-plane scoped. `mix
+favn.bootstrap.single` verifies orchestrator service-token auth through
+`/api/orchestrator/v1/bootstrap/service-token`, reads and verifies manifest JSON,
+registers the manifest, activates it by default, and asks the orchestrator to
+register the persisted manifest with the local runner through
+`/api/orchestrator/v1/manifests/:manifest_version_id/runner/register`. The
+implemented SQLite acceptance verification covers manifest persistence,
+active-manifest selection, scheduler state, runner registration, and restart
+survival. Durable first-admin/browser-login setup, durable sessions, actors,
+credentials, and audit logs are deliberately deferred to #249 / Phase 3.
 
 ## Supported V1 Topology
 
@@ -242,8 +257,8 @@ At minimum, the production single-node runtime needs:
   characters, for web-to-orchestrator service auth.
 - `FAVN_WEB_SESSION_SECRET`, required by `favn_web`, at least 32 characters, for
   current session signing and future web session encryption/signing expansion.
-- First-run bootstrap credentials or a secure bootstrap flow for the first admin
-  actor.
+- Durable first-admin/browser-login setup, durable sessions, actors,
+  credentials, and audit logs after #249 / Phase 3 lands.
 - Runtime config values required by authored assets and named SQL connections,
   expressed through manifest-safe refs such as `env!/1` and `secret_env!/1`.
 - DuckDB connection paths, bootstrap secrets, extension settings, and external
@@ -353,8 +368,9 @@ process can serve the route. Readiness returns `200` only when all aggregated
 checks pass and `503` with redacted check diagnostics otherwise. Readiness
 delegates storage checks through the storage adapter boundary and isolates check
 raises/exits/throws so degraded dependencies produce structured `503`
-diagnostics rather than unhandled `500` responses. CLI/runbook surfaces remain
-follow-up implementation work.
+diagnostics rather than unhandled `500` responses. Broader CLI/runbook surfaces
+remain follow-up implementation work beyond the implemented Phase 1 bootstrap
+command.
 
 ## Explicitly Unsupported In V1
 
@@ -370,7 +386,7 @@ The first v1 single-node production contract explicitly does not support:
 - Scheduler leadership election or cross-node scheduler coordination.
 - Production deployment that depends on local-dev `mix favn.dev` service wrappers.
 - Release packaging, backup scripts, auth/session persistence, web hardening, or
-  runtime config validation being considered complete by this document alone.
+  full operator runbooks being considered complete by this document alone.
 
 These are unsupported unless a later production contract explicitly supersedes
 this document.

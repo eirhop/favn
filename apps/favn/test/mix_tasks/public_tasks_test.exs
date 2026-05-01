@@ -6,6 +6,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
   alias Mix.Tasks.Favn.Backfill, as: BackfillTask
+  alias Mix.Tasks.Favn.Bootstrap.Single, as: BootstrapSingleTask
   alias Mix.Tasks.Favn.Build.Orchestrator, as: BuildOrchestratorTask
   alias Mix.Tasks.Favn.Build.Runner, as: BuildRunnerTask
   alias Mix.Tasks.Favn.Build.Single, as: BuildSingleTask
@@ -88,6 +89,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       {BuildRunnerTask, "favn.build.runner"},
       {BuildSingleTask, "favn.build.single"},
       {BuildWebTask, "favn.build.web"},
+      {BootstrapSingleTask, "favn.bootstrap.single"},
       {DevTask, "favn.dev"},
       {InstallTask, "favn.install"},
       {LogsTask, "favn.logs"},
@@ -106,6 +108,48 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         task.run(["extra"])
       end
     end
+  end
+
+  test "mix favn.bootstrap.single requires manifest, orchestrator URL, and service token" do
+    previous_env = bootstrap_env()
+    clear_bootstrap_env()
+    on_exit(fn -> restore_bootstrap_env(previous_env) end)
+
+    assert_raise Mix.Error,
+                 ~r/missing required option\(s\): --manifest, --orchestrator-url, --service-token/,
+                 fn -> BootstrapSingleTask.parse_args([]) end
+  end
+
+  test "mix favn.bootstrap.single reads env defaults and lets flags win" do
+    previous_env = bootstrap_env()
+    clear_bootstrap_env()
+
+    System.put_env("FAVN_BOOTSTRAP_MANIFEST_PATH", "/env/manifest.json")
+    System.put_env("FAVN_WEB_ORCHESTRATOR_BASE_URL", "http://127.0.0.1:4000")
+    System.put_env("FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN", "env-token")
+
+    on_exit(fn -> restore_bootstrap_env(previous_env) end)
+
+    opts = BootstrapSingleTask.parse_args(["--manifest", "/flag/manifest.json"])
+
+    assert Keyword.fetch!(opts, :manifest_path) == "/flag/manifest.json"
+    assert Keyword.fetch!(opts, :orchestrator_url) == "http://127.0.0.1:4000"
+    assert Keyword.fetch!(opts, :service_token) == "env-token"
+  end
+
+  test "mix favn.bootstrap.single parses activation flag" do
+    opts =
+      BootstrapSingleTask.parse_args([
+        "--manifest",
+        "/tmp/manifest.json",
+        "--orchestrator-url",
+        "http://127.0.0.1:4101",
+        "--service-token",
+        "token",
+        "--no-activate"
+      ])
+
+    assert Keyword.fetch!(opts, :activate?) == false
   end
 
   test "mix favn.dev raises with partial runtime recovery guidance", %{root_dir: root_dir} do
@@ -713,5 +757,31 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp clear_bootstrap_env do
+    bootstrap_env_names()
+    |> Enum.each(&System.delete_env/1)
+  end
+
+  defp bootstrap_env do
+    Map.new(bootstrap_env_names(), fn name -> {name, System.get_env(name)} end)
+  end
+
+  defp restore_bootstrap_env(env) when is_map(env) do
+    Enum.each(env, fn
+      {name, nil} -> System.delete_env(name)
+      {name, value} -> System.put_env(name, value)
+    end)
+  end
+
+  defp bootstrap_env_names do
+    [
+      "FAVN_BOOTSTRAP_MANIFEST_PATH",
+      "FAVN_ORCHESTRATOR_BASE_URL",
+      "FAVN_WEB_ORCHESTRATOR_BASE_URL",
+      "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN"
+    ]
   end
 end
