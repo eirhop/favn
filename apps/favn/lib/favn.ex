@@ -9,6 +9,7 @@ defmodule Favn do
 
   ## Stable v1 APIs
 
+  - `asset_module?/1`: identify modules that compile as Favn assets
   - `list_assets/0,1`: compile and inspect assets
   - `get_asset/1`: fetch one compiled asset
   - `get_pipeline/1`: fetch one compiled pipeline definition

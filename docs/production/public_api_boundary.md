@@ -50,7 +50,8 @@ The stable `v1` API should focus on the parts users build authored projects on:
   `Favn.Triggers.Schedules`, and `Favn.Window`
 - manifest compilation and registration inputs exposed through `Favn` and the
   documented manifest modules
-- planning helpers used before submitting local work, such as `Favn.plan_asset_run/2`
+- tooling and planning helpers used before submitting local work, such as
+  `Favn.asset_module?/1` and `Favn.plan_asset_run/2`
 - `Favn.SQLClient` connect, query, execute, transaction, capabilities, relation,
   columns, with-connection, and disconnect functions against named connections
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
@@ -63,6 +64,13 @@ Packaging commands such as `mix favn.build.runner`, `mix favn.build.web`,
 entrypoints, but their production artifact behavior is still being hardened and
 should follow `docs/production/single_node_contract.md` before being described as
 fully production-stable.
+
+## Compatibility-Only Authoring APIs
+
+`Favn.Assets` remains supported for existing compact multi-asset modules, but it
+is not the preferred new-project authoring path. New code should prefer
+`Favn.Asset` for single assets and `Favn.MultiAsset` when generated or repetitive
+multi-asset structure is clearer.
 
 ## Runtime-Dependent Helpers
 

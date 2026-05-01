@@ -520,6 +520,7 @@ part of the stable `v1` contract unless they are documented here or in
 `docs/production/public_api_boundary.md`.
 
 - `Favn.list_assets/0,1`
+- `Favn.asset_module?/1`
 - `Favn.get_asset/1`
 - `Favn.get_pipeline/1`
 - `Favn.resolve_pipeline/2`
@@ -529,6 +530,10 @@ part of the stable `v1` contract unless they are documented here or in
 - `Favn.SQLClient.connect/1,2`, `query/2,3`, `execute/2,3`, `transaction/2,3`,
   `capabilities/1`, `relation/2`, `columns/2`, `with_connection/2,3`, and
   `disconnect/1`
+
+`Favn.Assets` remains available as a compatibility-only authoring DSL for compact
+multi-asset modules. Prefer `Favn.Asset` for new single assets and
+`Favn.MultiAsset` for generated or repetitive multi-asset modules.
 
 ## Documentation
 

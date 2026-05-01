@@ -17,7 +17,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 1. Lock The Supported `v1` Surface
 
 - Finalize any remaining edge cases in the documented stable `v1` API boundary.
-- Decide the code-level fate of `Favn.Assets` and runtime delegation helpers that are outside the documented stable boundary: keep internal, remove, or move behind clearer modules.
+- Decide the code-level fate of runtime delegation helpers that are outside the documented stable boundary: keep internal, remove, or move behind clearer modules.
 - Align moduledocs, tests, and examples with the documented boundary in `docs/production/public_api_boundary.md`.
 - Define the actual Hex/private-Hex publishing mechanics for the documented package model.
 
