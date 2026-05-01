@@ -71,7 +71,9 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
 
   defp dispatch_local(runner_module, function, args) do
     if is_atom(runner_module) and function_exported?(runner_module, function, length(args)) do
-      apply(runner_module, function, args)
+      dispatch_safely(runner_module, function, args, fn ->
+        apply(runner_module, function, args)
+      end)
     else
       {:error, {:runner_function_undefined, runner_module, function, length(args)}}
     end
@@ -79,9 +81,53 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
 
   defp dispatch_remote(runner_node, runner_module, function, args) when is_atom(runner_node) do
     with :ok <- ensure_connected(runner_node) do
-      :erpc.call(runner_node, runner_module, function, args, 15_000)
+      dispatch_safely(runner_module, function, args, fn ->
+        :erpc.call(runner_node, runner_module, function, args, 15_000)
+      end)
     end
   end
+
+  defp dispatch_safely(runner_module, function, args, callback) do
+    callback.()
+  rescue
+    exception ->
+      {:error, dispatch_error(:error, exception, runner_module, function, args)}
+  catch
+    kind, reason ->
+      {:error, dispatch_error(kind, reason, runner_module, function, args)}
+  end
+
+  defp dispatch_error(kind, reason, runner_module, function, args) do
+    {:runner_dispatch_failed,
+     %{
+       runner_module: runner_module,
+       function: function,
+       arity: length(args),
+       kind: kind,
+       reason: normalize_dispatch_reason(kind, reason)
+     }}
+  end
+
+  defp normalize_dispatch_reason(
+         :error,
+         %ErlangError{original: {:exception, exception, _stacktrace}}
+       ) do
+    normalize_dispatch_reason(:error, exception)
+  end
+
+  defp normalize_dispatch_reason(:error, %ErlangError{original: original})
+       when not is_nil(original) do
+    original
+  end
+
+  defp normalize_dispatch_reason(
+         :error,
+         %{__exception__: true, __struct__: exception_module} = exception
+       ) do
+    {exception_module, Exception.message(exception)}
+  end
+
+  defp normalize_dispatch_reason(_kind, reason), do: reason
 
   defp ensure_connected(runner_node) when is_atom(runner_node) do
     case Node.connect(runner_node) do
