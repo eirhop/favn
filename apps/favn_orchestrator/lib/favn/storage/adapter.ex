@@ -4,7 +4,8 @@ defmodule Favn.Storage.Adapter do
   facade.
 
   This contract operates on orchestrator control-plane data, not projected
-  `%Favn.Run{}` values. Use `Favn.Storage` for the public run API.
+  `%Favn.Run{}` values. Use `Favn.Storage` for the runtime-facing storage
+  facade.
 
   Backfill callbacks persist normalized read models owned by the orchestrator:
   coverage baselines, per-window backfill ledger rows, and latest asset/window

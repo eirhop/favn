@@ -1,6 +1,9 @@
 defmodule Favn.Run do
   @moduledoc """
-  Canonical public representation of one Favn run.
+  Runtime representation of one Favn run.
+
+  This struct is part of the orchestrator/control-plane contract used to persist
+  and project run state. It is not an ordinary stable authoring API.
   """
 
   alias Favn.Ref

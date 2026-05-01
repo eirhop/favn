@@ -9,6 +9,9 @@ node first, with SQLite control-plane persistence on durable attached storage
 and production-grade DuckDB execution. Postgres and distributed execution are
 follow-up production modes, not part of the first v1 single-node contract.
 
+The package and user-facing API support boundary for this runtime target is
+documented separately in `docs/production/public_api_boundary.md`.
+
 ## Current Implementation Status
 
 This is an architecture and documentation contract. It does not mean the current

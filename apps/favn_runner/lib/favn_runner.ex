@@ -1,6 +1,9 @@
 defmodule FavnRunner do
   @moduledoc """
-  Runner boundary facade for manifest-pinned execution.
+  Runtime runner boundary facade for manifest-pinned execution.
+
+  `FavnRunner` implements the runner client contract used by the orchestrator
+  and plugin/runtime integrations. It is not an ordinary stable authoring API.
   """
 
   @behaviour Favn.Contracts.RunnerClient
