@@ -2,10 +2,12 @@ defmodule Favn.SQL.Adapter.DuckDB do
   @moduledoc """
   DuckDB implementation of `Favn.SQL.Adapter` backed by `duckdbex`.
 
-  Most functions in this module are internal runtime adapter callbacks. The one
-  supported authoring helper is `bootstrap_schema_field/0`, which can be used in
-  a `Favn.Connection.Definition` when a DuckDB connection needs session setup
-  before `Favn.SQLClient` or `Favn.SQLAsset` execution.
+  Most functions in this module are internal runtime adapter callbacks. The
+  supported authoring helpers are `bootstrap_schema_field/0` and
+  `production_storage_schema_fields/0`, which can be used in a
+  `Favn.Connection.Definition` when a DuckDB connection needs session setup or
+  production storage validation before `Favn.SQLClient` or `Favn.SQLAsset`
+  execution.
 
   Bulk ingestion paths should prefer the DuckDB Appender path for substantial
   insert workloads instead of repeated prepared inserts.
@@ -83,15 +85,22 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   @type opts :: keyword()
 
+  @production_key :production?
+  @storage_key :duckdb_storage
+  @local_file_storage :local_file
+  @non_local_storage [:external, :ephemeral, :ducklake]
+
   @impl true
   @spec connect(Resolved.t(), opts()) :: {:ok, Conn.t()} | {:error, Error.t()}
   def connect(%Resolved{config: config} = resolved, opts) do
     client = resolve_client(opts)
 
-    with {:ok, db_ref} <- client.open(Map.get(config, :database)),
+    with :ok <- validate_production_storage(resolved),
+         {:ok, db_ref} <- client.open(Map.get(config, :database)),
          {:ok, conn_ref} <- create_connection(client, db_ref) do
       {:ok, %Conn{db_ref: db_ref, conn_ref: conn_ref, connection: resolved.name, client: client}}
     else
+      {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, normalize_error(:connect, resolved.name, reason)}
     end
   end
@@ -120,6 +129,27 @@ defmodule Favn.SQL.Adapter.DuckDB do
   DuckDB connection should accept `:duckdb_bootstrap` runtime config.
   """
   def bootstrap_schema_field, do: Bootstrap.schema_field()
+
+  @spec production_storage_schema_fields() :: [Favn.Connection.Definition.field()]
+  @doc """
+  Returns connection schema fields for DuckDB production storage validation.
+
+  Production DuckDB connections default to durable local-file storage and must
+  use an explicit absolute `:database` path whose parent directory already exists
+  and is writable. Set `:duckdb_storage` to `:external`, `:ephemeral`, or
+  `:ducklake` for production connections that intentionally do not use local-file
+  durable storage.
+  """
+  def production_storage_schema_fields do
+    [
+      %{key: @production_key, type: :boolean, default: false},
+      %{
+        key: @storage_key,
+        type: {:in, [@local_file_storage | @non_local_storage]},
+        default: @local_file_storage
+      }
+    ]
+  end
 
   @impl true
   @spec disconnect(Conn.t(), opts()) :: :ok
@@ -905,6 +935,148 @@ defmodule Favn.SQL.Adapter.DuckDB do
     :ok
   rescue
     _ -> :ok
+  end
+
+  defp validate_production_storage(%Resolved{config: config} = resolved) do
+    config = config || %{}
+
+    if Map.get(config, @production_key, false) do
+      with :ok <- validate_storage_mode(config, resolved) do
+        if local_file_storage?(config) do
+          config
+          |> Map.get(:database)
+          |> validate_local_file_database(resolved)
+        else
+          :ok
+        end
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_storage_mode(config, resolved) do
+    storage = Map.get(config, @storage_key, @local_file_storage)
+
+    if storage in [@local_file_storage | @non_local_storage] do
+      :ok
+    else
+      production_storage_error(
+        resolved,
+        :invalid_storage_mode,
+        "production DuckDB storage mode must be :local_file, :external, :ephemeral, or :ducklake"
+      )
+    end
+  end
+
+  defp local_file_storage?(config) do
+    Map.get(config, @storage_key, @local_file_storage) == @local_file_storage
+  end
+
+  defp validate_local_file_database(nil, resolved) do
+    production_storage_error(
+      resolved,
+      :missing_database,
+      "production DuckDB local-file storage requires an absolute :database path"
+    )
+  end
+
+  defp validate_local_file_database(":memory:", resolved) do
+    production_storage_error(
+      resolved,
+      :memory_database,
+      "production DuckDB local-file storage cannot use :memory:"
+    )
+  end
+
+  defp validate_local_file_database(database, resolved) when is_binary(database) do
+    trimmed_database = String.trim(database)
+
+    cond do
+      trimmed_database == "" ->
+        production_storage_error(
+          resolved,
+          :blank_database,
+          "production DuckDB local-file storage requires a non-blank :database path"
+        )
+
+      trimmed_database != database ->
+        production_storage_error(
+          resolved,
+          :invalid_database,
+          "production DuckDB local-file storage requires an exact absolute :database path"
+        )
+
+      Path.type(database) != :absolute ->
+        production_storage_error(
+          resolved,
+          :relative_database,
+          "production DuckDB local-file storage requires an absolute :database path"
+        )
+
+      true ->
+        validate_database_parent(database, resolved)
+    end
+  end
+
+  defp validate_local_file_database(_database, resolved) do
+    production_storage_error(
+      resolved,
+      :invalid_database,
+      "production DuckDB local-file storage requires an absolute :database path"
+    )
+  end
+
+  defp validate_database_parent(database, resolved) do
+    parent = Path.dirname(database)
+
+    cond do
+      not File.dir?(parent) ->
+        production_storage_error(
+          resolved,
+          :missing_parent_directory,
+          "production DuckDB database parent directory must exist",
+          %{parent: parent}
+        )
+
+      not writable_directory?(parent) ->
+        production_storage_error(
+          resolved,
+          :unwritable_parent_directory,
+          "production DuckDB database parent directory must be writable",
+          %{parent: parent}
+        )
+
+      true ->
+        :ok
+    end
+  end
+
+  defp writable_directory?(directory) do
+    path = Path.join(directory, ".favn_duckdb_write_test_#{System.unique_integer([:positive])}")
+
+    case File.open(path, [:write, :exclusive]) do
+      {:ok, io} ->
+        File.close(io)
+        File.rm(path)
+        true
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp production_storage_error(%Resolved{} = resolved, reason, message, extra_details \\ %{}) do
+    {:error,
+     %Error{
+       type: :invalid_config,
+       message: message,
+       retryable?: false,
+       adapter: __MODULE__,
+       operation: :connect,
+       connection: resolved.name,
+       details: Map.merge(%{classification: :invalid_config, reason: reason}, extra_details)
+     }}
   end
 
   defp resolve_client(opts) do

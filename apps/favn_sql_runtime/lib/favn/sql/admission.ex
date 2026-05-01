@@ -2,7 +2,7 @@ defmodule Favn.SQL.Admission do
   @moduledoc false
 
   alias Favn.SQL.Admission.Limiter
-  alias Favn.SQL.{ConcurrencyPolicy, Session}
+  alias Favn.SQL.{ConcurrencyPolicy, Error, Session}
 
   @permit_key {__MODULE__, :permits}
   @write_prefixes ~w(
@@ -19,7 +19,7 @@ defmodule Favn.SQL.Admission do
       )
       when is_function(fun, 0) do
     if permit_required?(policy, operation, payload) do
-      acquire_and_run(policy, fun)
+      acquire_and_run(policy, operation, fun)
     else
       fun.()
     end
@@ -80,27 +80,46 @@ defmodule Favn.SQL.Admission do
     |> List.first()
   end
 
-  defp acquire_and_run(%ConcurrencyPolicy{scope: scope, limit: limit}, fun) do
+  defp acquire_and_run(%ConcurrencyPolicy{scope: scope} = policy, operation, fun) do
     if already_holding?(scope) do
       fun.()
     else
-      _lease = acquire_lease(scope, limit)
+      case acquire_lease(policy, operation) do
+        {:error, %Error{}} = error ->
+          error
 
-      try do
-        fun.()
-      after
-        release_held_scope(scope)
+        _lease ->
+          try do
+            fun.()
+          after
+            release_held_scope(scope)
+          end
       end
     end
   end
 
-  defp acquire_lease(%ConcurrencyPolicy{scope: scope, limit: limit}),
-    do: acquire_lease(scope, limit)
+  defp acquire_lease(%ConcurrencyPolicy{} = policy), do: acquire_lease(policy, :connect)
 
-  defp acquire_lease(scope, limit) do
-    :ok = Limiter.acquire(scope, limit)
-    increment_held(scope)
-    {:held, scope, self()}
+  defp acquire_lease(%ConcurrencyPolicy{scope: scope, limit: limit} = policy, operation) do
+    case Limiter.acquire(scope, limit, policy.admission_timeout_ms) do
+      :ok ->
+        increment_held(scope)
+        {:held, scope, self()}
+
+      {:error, :admission_timeout} ->
+        {:error, admission_timeout_error(policy, operation)}
+    end
+  end
+
+  defp admission_timeout_error(%ConcurrencyPolicy{} = policy, operation) do
+    %Error{
+      type: :admission_timeout,
+      message: "SQL admission timed out",
+      connection: policy.connection,
+      operation: operation,
+      retryable?: true,
+      details: %{scope: policy.scope, timeout_ms: policy.admission_timeout_ms}
+    }
   end
 
   defp already_holding?(scope), do: Map.get(held(), scope, 0) > 0

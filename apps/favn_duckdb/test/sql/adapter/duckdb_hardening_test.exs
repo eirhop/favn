@@ -18,9 +18,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     alias FavnDuckdb.TestSupport
 
     @impl true
-    def open(_database) do
+    def open(database) do
       db_ref = make_ref()
-      TestSupport.record({:open, db_ref})
+      TestSupport.record({:open, db_ref, database})
       {:ok, db_ref}
     end
 
@@ -344,6 +344,153 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
            end)
   end
 
+  test "production local-file storage rejects missing database before opening DuckDB" do
+    resolved = production_resolved(%{database: nil})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :missing_database}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production local-file storage rejects memory database before opening DuckDB" do
+    resolved = production_resolved(%{database: ":memory:"})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :memory_database}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production local-file storage rejects relative database before opening DuckDB" do
+    resolved = production_resolved(%{database: "tmp/tutorial.duckdb"})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :relative_database}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production local-file storage rejects blank database before opening DuckDB" do
+    resolved = production_resolved(%{database: "  "})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :blank_database}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production local-file storage rejects whitespace-padded absolute database before opening DuckDB" do
+    path = " " <> tmp_duckdb_path("production_padded") <> " "
+    resolved = production_resolved(%{database: path})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :invalid_database}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production storage rejects unknown storage mode before opening DuckDB" do
+    resolved = production_resolved(%{database: ":memory:", duckdb_storage: :unknown})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :invalid_storage_mode}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production local-file storage rejects missing parent directory before opening DuckDB" do
+    path = Path.join([System.tmp_dir!(), "favn_missing_parent", "warehouse.duckdb"])
+    resolved = production_resolved(%{database: path})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :missing_parent_directory}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production local-file storage rejects unwritable parent directory before opening DuckDB" do
+    parent = Path.join(System.tmp_dir!(), "favn_unwritable_#{System.unique_integer([:positive])}")
+    File.mkdir!(parent)
+    File.chmod!(parent, 0o555)
+
+    on_exit(fn ->
+      File.chmod(parent, 0o755)
+      File.rmdir(parent)
+    end)
+
+    resolved = production_resolved(%{database: Path.join(parent, "warehouse.duckdb")})
+
+    assert {:error,
+            %Error{
+              type: :invalid_config,
+              operation: :connect,
+              details: %{reason: :unwritable_parent_directory}
+            }} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    refute opened_duckdb?()
+  end
+
+  test "production local-file storage accepts absolute database with writable parent" do
+    path = tmp_duckdb_path("production_valid")
+    resolved = production_resolved(%{database: path})
+
+    assert {:ok, _conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+    assert opened_duckdb?(path)
+  end
+
+  test "production external storage allows memory database" do
+    resolved = production_resolved(%{database: ":memory:", duckdb_storage: :external})
+
+    assert {:ok, _conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+    assert opened_duckdb?(":memory:")
+  end
+
+  test "non-production local behavior still allows memory database" do
+    assert {:ok, _conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+    assert opened_duckdb?(":memory:")
+  end
+
+  test "production storage schema fields expose DuckDB-owned config keys" do
+    assert [production_field, storage_field] = DuckDB.production_storage_schema_fields()
+
+    assert production_field == %{key: :production?, type: :boolean, default: false}
+
+    assert storage_field == %{
+             key: :duckdb_storage,
+             type: {:in, [:local_file, :external, :ephemeral, :ducklake]},
+             default: :local_file
+           }
+  end
+
   test "appender failure still cleans up appender deterministically" do
     TestSupport.put_mode(:appender_add_rows_mode, :error)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
@@ -608,6 +755,10 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     }
   end
 
+  defp production_resolved(config) do
+    %Resolved{resolved() | config: Map.merge(%{production?: true}, config)}
+  end
+
   defp open_session(%Resolved{} = resolved) do
     with {:ok, conn} <- DuckDB.connect(resolved, []),
          {:ok, capabilities} <- DuckDB.capabilities(resolved, []),
@@ -658,6 +809,20 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
   defp events do
     TestSupport.events()
+  end
+
+  defp opened_duckdb? do
+    Enum.any?(events(), fn
+      {:open, _db_ref, _database} -> true
+      _ -> false
+    end)
+  end
+
+  defp opened_duckdb?(database) do
+    Enum.any?(events(), fn
+      {:open, _db_ref, ^database} -> true
+      _ -> false
+    end)
   end
 
   defp assert_schema_setup_has_no_params(statement_prefix) do

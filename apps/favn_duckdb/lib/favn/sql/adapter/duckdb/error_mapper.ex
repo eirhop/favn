@@ -17,6 +17,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
         reason: inspect(reason)
       }
     }
+    |> Error.redact()
   end
 
   @spec rollback_failure(Error.t(), term()) :: Error.t()
@@ -42,6 +43,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ErrorMapper do
       },
       cause: previous
     }
+    |> Error.redact()
   end
 
   defp classification(:connect, :invalid_database), do: :invalid_config

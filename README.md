@@ -46,7 +46,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
-- the first `v1` production target is documented as a single backend node with SQLite on durable attached storage and production-grade DuckDB execution; see `docs/production/single_node_contract.md`
+- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; see `docs/production/single_node_contract.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
@@ -296,6 +296,9 @@ local sessions and materializations do not run unsafe concurrent catalog writes
 against the same database file. Backends that support parallel writes can opt out
 with `write_concurrency: :unlimited` in their runtime connection config, while
 local DuckDB files can keep the default or set `write_concurrency: 1` explicitly.
+Production local DuckDB database paths should be explicit, durable attached-storage
+paths owned by the runner/plugin data plane; SQLite control-plane backups do not
+include those DuckDB files.
 
 DuckDB connections can also declare `duckdb_bootstrap` runtime config when a
 session needs setup before SQLClient or SQL asset execution. This is the
@@ -303,8 +306,9 @@ recommended path for local DuckLake dogfooding with Azure Data Lake Storage and 
 PostgreSQL metadata catalog. Add `Favn.SQL.Adapter.DuckDB.bootstrap_schema_field/0`
 to the connection module schema, then configure extension install/load, Azure
 credential-chain secret creation, DuckLake attach, and `USE` under the named
-connection. Secret runtime refs are resolved on the runner side and redacted from
-diagnostics.
+connection. Bootstrap extension names are allow-listed by the adapter today to
+`ducklake`, `postgres`, and `azure`; secret runtime refs are resolved on the
+runner side and redacted from diagnostics.
 
 ## Local Development
 
