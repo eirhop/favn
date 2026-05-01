@@ -18,6 +18,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.WriteSemantics
+  alias FavnStorageSqlite.Diagnostics
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
   alias FavnStorageSqlite.Supervisor, as: SQLiteSupervisor
@@ -28,7 +29,8 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def child_spec(opts) when is_list(opts) do
-    with {:ok, normalized} <- normalize_opts(opts) do
+    with {:ok, normalized} <- normalize_opts(opts),
+         :ok <- Diagnostics.validate_database_path(normalized) do
       supervisor_name = Keyword.fetch!(normalized, :supervisor_name)
 
       if Process.whereis(supervisor_name) do
@@ -1375,18 +1377,26 @@ defmodule Favn.Storage.Adapter.SQLite do
     database = Keyword.get(opts, :database)
 
     if is_binary(database) and database != "" do
-      {:ok,
-       [
-         database: database,
-         pool_size: Keyword.get(opts, :pool_size, 1),
-         busy_timeout: Keyword.get(opts, :busy_timeout, 5_000),
-         migration_mode: Keyword.get(opts, :migration_mode, :auto),
-         supervisor_name: Keyword.get(opts, :supervisor_name, FavnStorageSqlite.Supervisor)
-       ]}
+      with {:ok, migration_mode} <-
+             validate_migration_mode(Keyword.get(opts, :migration_mode, :auto)) do
+        {:ok,
+         [
+           database: database,
+           pool_size: Keyword.get(opts, :pool_size, 1),
+           busy_timeout: Keyword.get(opts, :busy_timeout, 5_000),
+           migration_mode: migration_mode,
+           initialize_empty?: Keyword.get(opts, :initialize_empty?, false),
+           require_absolute_path: Keyword.get(opts, :require_absolute_path, false),
+           supervisor_name: Keyword.get(opts, :supervisor_name, FavnStorageSqlite.Supervisor)
+         ]}
+      end
     else
       {:error, :sqlite_database_required}
     end
   end
+
+  defp validate_migration_mode(mode) when mode in [:auto, :manual], do: {:ok, mode}
+  defp validate_migration_mode(mode), do: {:error, {:invalid_migration_mode, mode}}
 
   defp ensure_schema_ready(normalized_opts) do
     case Keyword.fetch!(normalized_opts, :migration_mode) do

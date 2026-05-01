@@ -46,7 +46,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
-- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; see `docs/production/single_node_contract.md`
+- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; the SQLite adapter now has internal path/schema readiness diagnostics and stopped-backend restore verification coverage, while production release wiring remains follow-up work; see `docs/production/single_node_contract.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
@@ -498,6 +498,12 @@ Storage adapter startup reports recoverable configuration failures as
 `{:error, reason}`. Scheduler state keys are exact across built-in adapters:
 `{pipeline_module, nil}` addresses the nil schedule id and does not fall back to
 the latest concrete schedule id.
+
+SQLite adapter startup validates the configured database path and can classify
+the schema as empty, ready, missing, upgrade-required, newer than the running
+release, or inconsistent. Local/default SQLite startup still auto-runs
+migrations, while manual startup can reject non-ready existing databases and can
+initialize empty databases when explicitly enabled.
 
 ### favn_local implementation notes
 
