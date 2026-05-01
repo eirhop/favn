@@ -6,6 +6,7 @@ events, auth/authz/audit, private HTTP API, backfill state, and storage contract
 Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator.ex`
 - `apps/favn_orchestrator/lib/favn_orchestrator/`
+- Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - HTTP contract schemas under `apps/favn_orchestrator/priv/http_contract/v1/`
 
