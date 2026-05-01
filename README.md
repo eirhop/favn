@@ -211,7 +211,9 @@ DuckDB-backed SQL materialization creates the owned target schema when needed
 before creating the table or view. DuckDB appender materialization treats a
 successful appender close as consuming the handle; if close fails, the handle
 remains retryable or explicitly releasable, and adapter-owned materialization
-releases it as part of failure cleanup.
+releases it as part of failure cleanup. Runner-side SQL asset materialization
+planning emits the shared `%Favn.SQL.WritePlan{}` adapter contract consumed by
+SQL runtime adapters.
 For longer queries, place the SQL file next to the SQL asset module, for example
 `warehouse/mart/order_summary.ex` plus `warehouse/mart/order_summary.sql`, and
 use `query file: "order_summary.sql"`.
