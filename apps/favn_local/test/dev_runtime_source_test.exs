@@ -54,7 +54,7 @@ defmodule Favn.Dev.RuntimeSourceTest do
              get_in(second, ["runtime_source_tree", "sha256"])
   end
 
-  test "fingerprint ignores generated dependency and build directories", %{tmp_dir: tmp_dir} do
+  test "fingerprint ignores generated directories skipped during materialization", %{tmp_dir: tmp_dir} do
     runtime_root = Path.join(tmp_dir, "favn")
     create_runtime_root!(runtime_root)
 
@@ -63,8 +63,12 @@ defmodule Favn.Dev.RuntimeSourceTest do
 
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_runner/_build/dev/lib/generated"))
     File.write!(Path.join(runtime_root, "apps/favn_runner/_build/dev/lib/generated/file"), "beam")
+    File.mkdir_p!(Path.join(runtime_root, "apps/favn_runner/deps/generated"))
+    File.write!(Path.join(runtime_root, "apps/favn_runner/deps/generated/file"), "dep")
     File.mkdir_p!(Path.join(runtime_root, "web/favn_web/node_modules/vite"))
     File.write!(Path.join(runtime_root, "web/favn_web/node_modules/vite/index.js"), "generated")
+    File.mkdir_p!(Path.join(runtime_root, "web/favn_web/dist/assets"))
+    File.write!(Path.join(runtime_root, "web/favn_web/dist/assets/index.js"), "built")
 
     assert {:ok, second} =
              RuntimeSource.fingerprint(%{kind: :dependency_checkout, root: runtime_root})

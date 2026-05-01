@@ -35,4 +35,29 @@ defmodule Favn.Dev.ProcessTest do
     assert :ok = Process.stop_pid(info.pid)
     refute Process.alive?(info.pid)
   end
+
+  test "service log write failures are reported without exiting caller", %{root_dir: root_dir} do
+    if File.exists?("/dev/full") do
+      previous_trap_exit = Elixir.Process.flag(:trap_exit, true)
+
+      try do
+        spec = %{
+          name: "fixture",
+          exec: System.find_executable("bash") || "/bin/bash",
+          args: ["-lc", "printf output; sleep 30"],
+          cwd: root_dir,
+          log_path: "/dev/full",
+          env: %{}
+        }
+
+        assert {:ok, info} = Process.start_service(spec)
+        wrapper_pid = info.wrapper_pid
+
+        assert_receive {:service_exit, "fixture", {:log_write_failed, :enospc}}, 2_000
+        refute_receive {:EXIT, ^wrapper_pid, _reason}, 100
+      after
+        Elixir.Process.flag(:trap_exit, previous_trap_exit)
+      end
+    end
+  end
 end

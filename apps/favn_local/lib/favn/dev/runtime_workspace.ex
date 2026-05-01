@@ -39,26 +39,17 @@ defmodule Favn.Dev.RuntimeWorkspace do
   end
 
   defp copy_required_entries(source_root, runtime_root) do
-    optional_entries = RuntimeTreePolicy.optional_entries()
-
-    Enum.reduce_while(RuntimeTreePolicy.entries(), :ok, fn relative, :ok ->
-      source = Path.join(source_root, relative)
+    case RuntimeTreePolicy.reduce_required_entries(source_root, :ok, fn source, relative, :ok ->
       destination = Path.join(runtime_root, relative)
 
-      cond do
-        not File.exists?(source) and relative in optional_entries ->
-          {:cont, :ok}
-
-        not File.exists?(source) ->
-          {:halt, {:error, {:missing_runtime_entry, relative, source}}}
-
-        true ->
-          case copy_entry(source, destination) do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
+      case copy_entry(source, destination) do
+        :ok -> {:ok, :ok}
+        {:error, reason} -> {:error, reason}
       end
-    end)
+    end) do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp copy_entry(source, destination) do
@@ -85,21 +76,23 @@ defmodule Favn.Dev.RuntimeWorkspace do
   end
 
   defp copy_directory(source, destination) do
-    with :ok <- File.mkdir_p(destination),
-         {:ok, entries} <- File.ls(source) do
-      Enum.reduce_while(entries, :ok, fn entry, :ok ->
-        if entry in RuntimeTreePolicy.ignored_entries() do
-          {:cont, :ok}
-        else
-          child_source = Path.join(source, entry)
-          child_destination = Path.join(destination, entry)
+    with :ok <- File.mkdir_p(destination) do
+      case RuntimeTreePolicy.reduce_child_entries(
+             source,
+             :ok,
+             & &1,
+             fn child_source, entry, :ok ->
+               child_destination = Path.join(destination, entry)
 
-          case copy_entry(child_source, child_destination) do
-            :ok -> {:cont, :ok}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end
-      end)
+               case copy_entry(child_source, child_destination) do
+                 :ok -> {:ok, :ok}
+                 {:error, reason} -> {:error, reason}
+               end
+             end
+           ) do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 

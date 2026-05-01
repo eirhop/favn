@@ -13,14 +13,19 @@ defmodule Favn.Dev.Process do
   @spec start_service(service_spec()) :: {:ok, map()} | {:error, term()}
   def start_service(spec) when is_map(spec) do
     parent = self()
-    pid = spawn_link(fn -> run_service(parent, spec) end)
+    {pid, monitor_ref} = spawn_monitor(fn -> run_service(parent, spec) end)
 
-    receive do
-      {:service_started, ^pid, info} -> {:ok, Map.put(info, :wrapper_pid, pid)}
-      {:service_start_failed, ^pid, reason} -> {:error, reason}
-    after
-      5_000 -> {:error, :service_start_timeout}
-    end
+    result =
+      receive do
+        {:service_started, ^pid, info} -> {:ok, Map.put(info, :wrapper_pid, pid)}
+        {:service_start_failed, ^pid, reason} -> {:error, reason}
+        {:DOWN, ^monitor_ref, :process, ^pid, reason} -> {:error, {:service_wrapper_down, reason}}
+      after
+        5_000 -> {:error, :service_start_timeout}
+      end
+
+    Process.demonitor(monitor_ref, [:flush])
+    result
   end
 
   @spec stop_pid(integer(), timeout()) :: :ok
@@ -110,43 +115,75 @@ defmodule Favn.Dev.Process do
     %{name: name, exec: exec, args: args, cwd: cwd, log_path: log_path} = spec
     env = Map.get(spec, :env, %{})
 
-    try do
-      case File.open(log_path, [:append, :binary]) do
-        {:ok, io} ->
-          port_opts = [
-            :binary,
-            :exit_status,
-            :use_stdio,
-            :stderr_to_stdout,
-            :hide,
-            {:args, args},
-            {:cd, String.to_charlist(cwd)},
-            {:env, encode_env(env)}
-          ]
+    case open_service(exec, args, cwd, log_path, env) do
+      {:ok, port, io, os_pid} ->
+        send(parent, {:service_started, self(), %{name: name, pid: os_pid, log_path: log_path}})
+        service_loop(parent, name, port, io)
 
-          port = Port.open({:spawn_executable, String.to_charlist(exec)}, port_opts)
-          os_pid = port |> Port.info(:os_pid) |> normalize_os_pid()
-
-          send(parent, {:service_started, self(), %{name: name, pid: os_pid, log_path: log_path}})
-          service_loop(parent, name, port, io)
-
-        {:error, reason} ->
-          send(parent, {:service_start_failed, self(), {:log_open_failed, reason}})
-      end
-    rescue
-      error in ErlangError ->
-        send(parent, {:service_start_failed, self(), {:port_open_failed, error.original}})
-    catch
-      kind, reason ->
-        send(parent, {:service_start_failed, self(), {:port_open_failed, {kind, reason}}})
+      {:error, reason} ->
+        send(parent, {:service_start_failed, self(), reason})
     end
+  end
+
+  defp open_service(exec, args, cwd, log_path, env) do
+    case open_log(log_path) do
+      {:ok, io} -> open_port_with_pid(exec, args, cwd, env, io)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp open_log(log_path) do
+    case File.open(log_path, [:append, :binary]) do
+      {:ok, io} -> {:ok, io}
+      {:error, reason} -> {:error, {:log_open_failed, reason}}
+    end
+  end
+
+  defp open_port_with_pid(exec, args, cwd, env, io) do
+    port_opts = [
+      :binary,
+      :exit_status,
+      :use_stdio,
+      :stderr_to_stdout,
+      :hide,
+      {:args, args},
+      {:cd, String.to_charlist(cwd)},
+      {:env, encode_env(env)}
+    ]
+
+    port = Port.open({:spawn_executable, String.to_charlist(exec)}, port_opts)
+
+    case normalize_os_pid(Port.info(port, :os_pid)) do
+      {:ok, os_pid} ->
+        {:ok, port, io, os_pid}
+
+      {:error, reason} ->
+        close_port(port)
+        _ = File.close(io)
+        {:error, reason}
+    end
+  rescue
+    error in ErlangError ->
+      _ = File.close(io)
+      {:error, {:port_open_failed, error.original}}
+  catch
+    kind, reason ->
+      _ = File.close(io)
+      {:error, {:port_open_failed, {kind, reason}}}
   end
 
   defp service_loop(parent, name, port, io) do
     receive do
       {^port, {:data, data}} ->
-        :ok = IO.binwrite(io, data)
-        service_loop(parent, name, port, io)
+        case write_log(io, data) do
+          :ok ->
+            service_loop(parent, name, port, io)
+
+          {:error, reason} ->
+            close_port(port)
+            _ = File.close(io)
+            send(parent, {:service_exit, name, {:log_write_failed, reason}})
+        end
 
       {^port, {:exit_status, status}} ->
         _ = File.close(io)
@@ -157,8 +194,24 @@ defmodule Favn.Dev.Process do
     end
   end
 
-  defp normalize_os_pid({:os_pid, pid}) when is_integer(pid), do: pid
-  defp normalize_os_pid(_other), do: -1
+  defp normalize_os_pid({:os_pid, pid}) when is_integer(pid) and pid > 0, do: {:ok, pid}
+  defp normalize_os_pid(_other), do: {:error, :service_os_pid_unavailable}
+
+  defp close_port(port) do
+    Port.close(port)
+  rescue
+    _ -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp write_log(io, data) do
+    IO.binwrite(io, data)
+  rescue
+    error in ErlangError -> {:error, error.original}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
 
   defp encode_env(env_map) when is_map(env_map) do
     Enum.map(env_map, fn {key, value} ->
