@@ -5,7 +5,7 @@ This file is only for forward-looking work.
 - Implemented capabilities live in `docs/FEATURES.md`.
 - Do not restate shipped behavior here.
 
-Based on the current feature audit, the main path to a stable production `v1` is not broad feature expansion. The highest-value work is to harden the existing surface area, make support boundaries explicit, and turn the current honest-but-partial runtime and packaging story into a dependable production contract.
+Based on the current feature audit, the main path to a stable production `v1` is not broad feature expansion. The highest-value work is to harden the existing surface area, make support boundaries explicit, and turn the current honest-but-partial runtime and packaging story into the single-node production contract documented in `docs/production/single_node_contract.md`.
 
 ## Implemented Now
 
@@ -22,8 +22,8 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 2. Make Deployment Outputs Real
 
-- Turn `build.web`, `build.orchestrator`, and `build.single` from metadata or assembly outputs into genuinely runnable, supportable deployment artifacts, or narrow the official deployment promise before `v1`.
-- Verify both single-node and split-topology deployment paths end to end with realistic runtime flows.
+- Turn `build.web`, `build.orchestrator`, and `build.single` from metadata or assembly outputs into genuinely runnable, supportable deployment artifacts for the documented single-node production contract.
+- Verify the SQLite-first single-node deployment path end to end with realistic runtime flows before split-topology production work.
 - Keep `build.runner` aligned with the same production deployment contract.
 
 ### 3. Harden Auth, Sessions, Audit, And Service Trust
@@ -41,14 +41,14 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 5. Close Storage And Persistence Gaps
 
-- Expand Postgres verification so production-oriented persistence has stronger live confidence, not only adapter-shape confidence.
-- Decide which storage and migration guarantees belong in the supported `v1` contract.
+- Define and verify SQLite-first backup, migration, restore, and schema-readiness guarantees for the single-node production contract.
+- Move Postgres live verification into the next production mode after SQLite single-node readiness, not the first `v1` gate.
 
-### 6. Decide What Must Be Production-Grade At `v1`
+### 6. Harden The Production-Grade Runtime
 
 - Harden the manifest-pinned SQL execution path enough for the `v1` support promise, especially around runtime payload handling and backend failure behavior.
 - Add run-level runtime config preflight for planned SQL assets so SQL connection env refs fail before any asset starts, not only when an adapter connection is opened.
-- Decide whether DuckDB/plugin execution is part of the core `v1` production promise or remains explicitly experimental beyond `v1`.
+- Harden DuckDB/plugin execution as part of the core `v1` production promise for the single-node contract.
 - Make the supported-versus-experimental line explicit in user-facing docs.
 - Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
 
@@ -58,6 +58,6 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Richer landed-data inspection beyond the curated local preview, such as broader DuckLake snapshot metadata, pagination, and optional local-only SQL console behind an explicit feature flag.
 - More storage adapters and runner plugins beyond the current built-in set.
 - Additional API-triggered or externally triggered execution flows.
-- Stronger queueing, admission control, distributed execution, and resource-aware scheduling.
+- Stronger queueing, admission control, distributed execution, and resource-aware scheduling after Postgres production mode exists.
 - Deeper observability, diagnostics, and operator tooling.
 - More complete deployment automation for cloud and split-topology environments.
