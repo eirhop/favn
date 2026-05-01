@@ -161,8 +161,9 @@ Production DuckDB behavior covers or must preserve:
 - Clear diagnostics for connection, bootstrap, extension, materialization,
   appender, cancellation, timeout, and crash failures, with secret values
   redacted from logs, API/UI payloads, and structured error details. Separate
-  process worker unavailability and worker-call timeouts are reported as
-  actionable retryable DuckDB SQL errors.
+  process worker unavailability is reported as retryable, while worker-call
+  timeouts are reported as unknown-outcome failures because the DuckDB operation
+  may still be running in the worker.
 - Documented backup/restore expectations for local DuckDB files or external
   DuckLake-style storage used by named connections.
 - No general production SQL editor as part of the v1 promise. Relation

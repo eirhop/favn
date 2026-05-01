@@ -243,7 +243,7 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
               type: :admission_timeout,
               operation: :query,
               retryable?: true,
-              details: %{timeout_ms: 10}
+              details: %{scope: {:db, :operation_timeout}, timeout_ms: 10}
             }} = Client.query(session, "create or replace table queued as select 1", [])
 
     send(holder, :release)

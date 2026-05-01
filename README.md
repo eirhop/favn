@@ -314,7 +314,9 @@ connection. Bootstrap extension names are allow-listed by the adapter today to
 runner side and redacted from diagnostics. DuckDB worker unavailability,
 worker-call timeouts, bootstrap failures, materialization failures, and appender
 failures are normalized into structured SQL errors suitable for logs, API/UI
-payloads, and run diagnostics without exposing configured secrets.
+payloads, and run diagnostics without exposing configured secrets. Worker-call
+timeouts are reported as unknown-outcome failures rather than blindly retryable
+errors, because the DuckDB operation may still be running in the worker.
 
 ## Local Development
 

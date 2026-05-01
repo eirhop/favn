@@ -4,7 +4,6 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB
-  alias Favn.SQL.Admission.Limiter
   alias Favn.SQL.Client
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
@@ -374,9 +373,12 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
             %Error{
               type: :execution_error,
               operation: :query,
-              message: "DuckDB worker call timed out",
-              retryable?: true,
-              details: %{classification: :timeout, reason: ":worker_call_timeout"}
+              message: "DuckDB worker call timed out; operation outcome is unknown",
+              retryable?: false,
+              details: %{
+                classification: :unknown_outcome_timeout,
+                reason: ":worker_call_timeout"
+              }
             }} = DuckDB.query(conn, "SELECT 1", [])
   end
 
@@ -650,30 +652,6 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
     assert {:ok, %Relation{name: "concurrent_b"}} =
              Client.relation(session_b, RelationRef.new!(schema: "main", name: "concurrent_b"))
-  end
-
-  test "same-file admission timeout returns scoped retryable diagnostics" do
-    path = tmp_duckdb_path("admission_timeout")
-    resolved = %Resolved{resolved() | config: %{database: path, admission_timeout_ms: 1}}
-    {:ok, session} = open_session(resolved)
-    scope = session.concurrency_policy.scope
-
-    :ok = Limiter.acquire(scope, 1)
-
-    try do
-      assert {:error,
-              %Error{
-                type: :admission_timeout,
-                operation: :materialize,
-                connection: :duckdb_runtime,
-                retryable?: true,
-                details: %{scope: ^scope, timeout_ms: 1}
-              }} = Client.materialize(session, table_plan("blocked_by_admission", 1), [])
-    after
-      Limiter.release(scope)
-      Client.disconnect(session)
-      File.rm(path)
-    end
   end
 
   test "table materialization creates missing target schema" do

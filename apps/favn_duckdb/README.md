@@ -65,7 +65,8 @@ config :favn, :runner_plugins, [
 - placement is runtime/plugin config only (not manifest or DSL)
 - separate-process mode uses one long-lived worker (no pooling/autoscaling in Phase 7)
 - separate-process worker unavailability and worker-call timeouts are normalized
-  into retryable structured SQL diagnostics by the DuckDB adapter
+  into structured SQL diagnostics by the DuckDB adapter; worker-call timeouts are
+  non-retryable because the operation outcome is unknown
 - bulk table writes stay appender-oriented in DuckDB paths
 - appender close semantics are explicit: successful close consumes the worker
   handle, while failed close keeps it available for retry or explicit release;
