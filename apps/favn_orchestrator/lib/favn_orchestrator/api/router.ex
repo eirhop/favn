@@ -65,6 +65,27 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
+  get "/api/orchestrator/v1/bootstrap/active-manifest" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, manifest_version_id} <- FavnOrchestrator.active_manifest(),
+         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(manifest_version_id) do
+      data(conn, 200, %{manifest: summary})
+    else
+      {:error, :active_manifest_not_set} ->
+        error(conn, 404, "not_found", "Active manifest is not set")
+
+      {:error, :manifest_version_not_found} ->
+        error(conn, 404, "not_found", "Active manifest version was not found")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, reason} ->
+        Logger.error("bootstrap.active_manifest failed: #{inspect(reason)}")
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
   post "/api/orchestrator/v1/auth/password/sessions" do
     with :ok <- ensure_service_auth(conn),
          {:ok, params} <- fetch_json_body(conn),

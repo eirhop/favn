@@ -51,7 +51,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
 - single-node packaging now includes `mix favn.build.single` with a project-local backend-only SQLite launcher under `.favn/dist/single/<build_id>/`; it is not yet marked operational because it still depends on the installed runtime source root and lacks executed start/stop artifact verification (see `OPERATOR_NOTES.md` in each artifact)
-- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports whether active-manifest verification was possible; it does not make browser login/session/audit durable
+- backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
 - operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 
 ## What Favn Gives You
@@ -512,13 +512,17 @@ production mode are not included.
 `mix favn.bootstrap.single` bootstraps the backend control-plane side of the
 single-node shape through orchestrator APIs. Required inputs can be passed as
 `--manifest`, `--orchestrator-url`, and `--service-token`, or by the supported
-environment defaults documented by the task. The command verifies service-token
-auth, reads and verifies the manifest JSON, registers the manifest, activates it
-by default, and calls
+environment defaults documented by the task. Bootstrap uses
+`FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` or
+`FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
+`FAVN_ORCHESTRATOR_SERVICE_TOKEN` accepted only as a legacy fallback.
+The command verifies service-token auth, reads and verifies the manifest JSON,
+registers the manifest, activates it by default, and calls
 `/api/orchestrator/v1/manifests/:manifest_version_id/runner/register` so the
 orchestrator registers the persisted manifest with the local runner. Repeating
 the command with the same manifest and runner registration is safe and
-repeatable.
+repeatable. Active-manifest verification uses the service-auth-only
+`/api/orchestrator/v1/bootstrap/active-manifest` endpoint.
 
 Storage adapter startup reports recoverable configuration failures as
 `{:error, reason}`. Scheduler state keys are exact across built-in adapters:

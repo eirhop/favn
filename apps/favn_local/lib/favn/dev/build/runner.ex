@@ -30,8 +30,8 @@ defmodule Favn.Dev.Build.Runner do
          dist_dir <- Paths.dist_runner_dir(root_dir, build_id),
          :ok <- File.mkdir_p(build_dir),
          :ok <- File.mkdir_p(dist_dir),
-          modules <- user_modules(version.manifest),
-          copied_modules <- copy_user_beams(modules, Path.join(dist_dir, "ebin")),
+         modules <- user_modules(version.manifest),
+         copied_modules <- copy_user_beams(modules, Path.join(dist_dir, "ebin")),
          plugins <- selected_plugins(root_dir),
          :ok <- write_manifest_cache(version, serialized_manifest, opts),
          build_json <- build_json(build_id, version, modules, plugins, copied_modules, opts),
@@ -205,7 +205,7 @@ defmodule Favn.Dev.Build.Runner do
     |> Map.put("plugins", plugins)
     |> Map.put("user_modules", Enum.map(modules, &Atom.to_string/1))
     |> Map.put("copied_module_beams", copied_modules)
-    |> Map.put("required_env", ["FAVN_ORCHESTRATOR_BASE_URL", "FAVN_ORCHESTRATOR_SERVICE_TOKEN"])
+    |> Map.put("required_env", ["FAVN_RUNNER_MODE"])
   end
 
   defp base(build_id, version, opts) do

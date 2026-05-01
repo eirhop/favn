@@ -96,13 +96,24 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
     assert {:ok, %{"data" => %{"registration" => %{"manifest_version_id" => "mv_1"}}}} =
              OrchestratorClient.register_runner(base_url, "token", %{
-               runner_id: "runner-1",
                manifest_version_id: "mv_1"
              })
 
     assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_1/runner/register"}
     assert_receive {:request_body, body}
     assert body == "{}"
+  end
+
+  test "bootstrap_active_manifest/2 reads service-auth bootstrap active manifest endpoint" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"manifest":{"manifest_version_id":"mv_1"}}}), 200, parent: parent)
+
+    assert {:ok, %{"manifest" => %{"manifest_version_id" => "mv_1"}}} =
+             OrchestratorClient.bootstrap_active_manifest(base_url, "token")
+
+    assert_receive {:request_path, "/api/orchestrator/v1/bootstrap/active-manifest"}
   end
 
   test "password_login/4 returns forwarded session context" do

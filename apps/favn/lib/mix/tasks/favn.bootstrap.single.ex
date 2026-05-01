@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   Required options can be passed as flags or environment variables:
 
   - `--manifest` or `FAVN_BOOTSTRAP_MANIFEST_PATH`
-  - `--orchestrator-url` or `FAVN_ORCHESTRATOR_BASE_URL` / `FAVN_WEB_ORCHESTRATOR_BASE_URL`
+  - `--orchestrator-url` or `FAVN_WEB_ORCHESTRATOR_BASE_URL`
   - `--service-token` or `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` /
     `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`
   """
@@ -27,9 +27,8 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
       {:ok, summary} ->
         IO.puts("Favn single-node bootstrap complete")
         IO.puts("manifest version: #{summary.manifest_version_id}")
-        IO.puts("runner id: #{summary.runner_id}")
         IO.puts("activated: #{summary.activated?}")
-        IO.puts("active manifest verified: #{summary.active_manifest_verified?}")
+        IO.puts("active manifest verification: #{summary.active_manifest_verification}")
 
       {:error, {:missing_required_option, key, _value}} ->
         Mix.raise("bootstrap failed: missing required option #{option_name(key)}")
@@ -58,7 +57,6 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
       manifest: :string,
       orchestrator_url: :string,
       service_token: :string,
-      runner_id: :string,
       activate: :boolean
     )
     |> with_env_defaults()
@@ -82,13 +80,12 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
     |> Keyword.delete(:manifest)
     |> put_default(
       :orchestrator_url,
-      Keyword.get(opts, :orchestrator_url) || env("FAVN_ORCHESTRATOR_BASE_URL") ||
-        env("FAVN_WEB_ORCHESTRATOR_BASE_URL")
+      Keyword.get(opts, :orchestrator_url) || env("FAVN_WEB_ORCHESTRATOR_BASE_URL")
     )
     |> put_default(
       :service_token,
       Keyword.get(opts, :service_token) || env("FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN") ||
-        env("FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN")
+        env("FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN") || env("FAVN_ORCHESTRATOR_SERVICE_TOKEN")
     )
   end
 

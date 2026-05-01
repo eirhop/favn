@@ -35,11 +35,13 @@ favn.bootstrap.single` verifies orchestrator service-token auth through
 `/api/orchestrator/v1/bootstrap/service-token`, reads and verifies manifest JSON,
 registers the manifest, activates it by default, and asks the orchestrator to
 register the persisted manifest with the local runner through
-`/api/orchestrator/v1/manifests/:manifest_version_id/runner/register`. The
-implemented SQLite acceptance verification covers manifest persistence,
-active-manifest selection, scheduler state, runner registration, and restart
-survival. Durable first-admin/browser-login setup, durable sessions, actors,
-credentials, and audit logs are deliberately deferred to #249 / Phase 3.
+`/api/orchestrator/v1/manifests/:manifest_version_id/runner/register`. It
+verifies active-manifest selection through the service-auth-only
+`/api/orchestrator/v1/bootstrap/active-manifest` endpoint. The implemented SQLite
+acceptance verification covers manifest persistence, active-manifest selection,
+scheduler state, runner registration, and restart survival. Durable first-admin/
+browser-login setup, durable sessions, actors, credentials, and audit logs are
+deliberately deferred to #249 / Phase 3.
 
 ## Supported V1 Topology
 
@@ -255,6 +257,9 @@ At minimum, the production single-node runtime needs:
   `http://` or `https://` URL without embedded credentials.
 - `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, required by `favn_web`, at least 32
   characters, for web-to-orchestrator service auth.
+- `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
+  tooling unless `--service-token` is passed, at least 32 characters, and present
+  in `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`.
 - `FAVN_WEB_SESSION_SECRET`, required by `favn_web`, at least 32 characters, for
   current session signing and future web session encryption/signing expansion.
 - Durable first-admin/browser-login setup, durable sessions, actors,

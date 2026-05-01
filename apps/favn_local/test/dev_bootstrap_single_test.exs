@@ -24,13 +24,17 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
       {:ok, %{"data" => %{"runner" => payload}}}
     end
 
-    def active_manifest(url, token, session_context) do
-      send(test_pid(), {:active_manifest, url, token, session_context})
-      {:error, %{operation: :active_manifest, reason: {:http_error, 401, %{}}}}
+    def bootstrap_active_manifest(url, token) do
+      send(test_pid(), {:bootstrap_active_manifest, url, token})
+      {:ok, %{"manifest" => %{"manifest_version_id" => active_manifest_id()}}}
     end
 
     defp test_pid do
       Application.fetch_env!(:favn_local, :bootstrap_single_test_pid)
+    end
+
+    defp active_manifest_id do
+      Application.fetch_env!(:favn_local, :bootstrap_single_active_manifest_id)
     end
   end
 
@@ -38,6 +42,7 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
     def verify_service_token(_url, _token), do: :ok
     def publish_manifest(_url, _token, _payload), do: {:ok, %{}}
     def activate_manifest(_url, _token, _manifest_version_id), do: {:ok, %{}}
+    def bootstrap_active_manifest(_url, _token), do: {:ok, %{}}
 
     def register_runner(_url, _token, _payload) do
       {:error, %{operation: :register_runner, reason: {:http_error, 409, %{}}}}
@@ -57,6 +62,7 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
 
     on_exit(fn ->
       Application.delete_env(:favn_local, :bootstrap_single_test_pid)
+      Application.delete_env(:favn_local, :bootstrap_single_active_manifest_id)
       File.rm_rf(root_dir)
     end)
 
@@ -66,30 +72,35 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
   test "run/1 verifies token, registers manifest, activates, registers runner, and summarizes", %{
     manifest_path: manifest_path
   } do
+    {:ok, version} = Single.read_manifest_version(manifest_path)
+
+    Application.put_env(
+      :favn_local,
+      :bootstrap_single_active_manifest_id,
+      version.manifest_version_id
+    )
+
     opts = [
       manifest_path: manifest_path,
       orchestrator_url: "http://127.0.0.1:4000",
       service_token: "token-1",
-      runner_id: "runner-1",
       client: FakeClient
     ]
 
     assert {:ok, summary} = Single.run(opts)
 
-    assert summary.runner_id == "runner-1"
     assert summary.activated? == true
-    assert summary.active_manifest_verified? == false
-    assert {:skipped, %{operation: :active_manifest}} = summary.active_manifest_verification
+    assert summary.active_manifest_verification == :matched
 
     assert_receive {:verify_service_token, "http://127.0.0.1:4000", "token-1"}
     assert_receive {:publish_manifest, _url, _token, manifest_payload}
     assert_receive {:activate_manifest, _url, _token, manifest_version_id}
     assert_receive {:register_runner, _url, _token, runner_payload}
+    assert_receive {:bootstrap_active_manifest, _url, _token}
 
     assert manifest_payload.manifest_version_id == summary.manifest_version_id
     assert manifest_payload.content_hash == summary.content_hash
     assert manifest_version_id == summary.manifest_version_id
-    assert runner_payload.runner_id == "runner-1"
     assert runner_payload.manifest_version_id == summary.manifest_version_id
   end
 

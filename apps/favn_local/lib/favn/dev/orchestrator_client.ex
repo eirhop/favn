@@ -71,6 +71,23 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
+  @spec bootstrap_active_manifest(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def bootstrap_active_manifest(base_url, service_token)
+      when is_binary(base_url) and is_binary(service_token) do
+    url = base_url <> "/api/orchestrator/v1/bootstrap/active-manifest"
+
+    case request_get(:bootstrap_active_manifest, url, service_token) do
+      {:ok, %{"data" => data}} when is_map(data) ->
+        {:ok, data}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:bootstrap_active_manifest, :get, url, :invalid_response)}
+    end
+  end
+
   @spec cancel_run(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def cancel_run(base_url, service_token, run_id)
       when is_binary(base_url) and is_binary(service_token) and is_binary(run_id) do

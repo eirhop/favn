@@ -12,13 +12,10 @@ defmodule Favn.Dev.Bootstrap.Single do
   alias Favn.Manifest.Identity
   alias Favn.Manifest.Version
 
-  @default_runner_id "single-node-local"
-
   @type opts :: [
           manifest_path: Path.t(),
           orchestrator_url: String.t(),
           service_token: String.t(),
-          runner_id: String.t(),
           activate?: boolean(),
           client: module()
         ]
@@ -26,10 +23,8 @@ defmodule Favn.Dev.Bootstrap.Single do
   @type summary :: %{
           manifest_version_id: String.t(),
           content_hash: String.t(),
-          runner_id: String.t(),
           activated?: boolean(),
-          active_manifest_verified?: boolean(),
-          active_manifest_verification: :matched | term()
+          active_manifest_verification: :matched | {:mismatch, term()} | {:skipped, term()}
         }
 
   @spec run(opts()) :: {:ok, summary()} | {:error, term()}
@@ -40,8 +35,6 @@ defmodule Favn.Dev.Bootstrap.Single do
     with {:ok, manifest_path} <- required_string(opts, :manifest_path),
          {:ok, orchestrator_url} <- required_string(opts, :orchestrator_url),
          {:ok, service_token} <- required_string(opts, :service_token),
-         runner_id <- Keyword.get(opts, :runner_id, @default_runner_id),
-         :ok <- validate_runner_id(runner_id),
          :ok <- client.verify_service_token(orchestrator_url, service_token),
          {:ok, version} <- read_manifest_version(manifest_path),
          {:ok, _registration} <-
@@ -52,17 +45,14 @@ defmodule Favn.Dev.Bootstrap.Single do
            client.register_runner(
              orchestrator_url,
              service_token,
-             runner_payload(version, runner_id)
+             runner_payload(version)
            ),
-         {verified?, verification} <-
-           verify_active_manifest(client, orchestrator_url, service_token, version) do
+         verification <- verify_active_manifest(client, orchestrator_url, service_token, version) do
       {:ok,
        %{
          manifest_version_id: version.manifest_version_id,
          content_hash: version.content_hash,
-         runner_id: runner_id,
          activated?: activated?,
-         active_manifest_verified?: verified?,
          active_manifest_verification: verification
        }}
     end
@@ -110,10 +100,8 @@ defmodule Favn.Dev.Bootstrap.Single do
     }
   end
 
-  defp runner_payload(%Version{} = version, runner_id) do
+  defp runner_payload(%Version{} = version) do
     %{
-      runner_id: runner_id,
-      mode: "single_node_local",
       manifest_version_id: version.manifest_version_id,
       runner_contract_version: version.runner_contract_version
     }
@@ -129,19 +117,19 @@ defmodule Favn.Dev.Bootstrap.Single do
   end
 
   defp verify_active_manifest(client, orchestrator_url, service_token, version) do
-    case client.active_manifest(orchestrator_url, service_token, %{}) do
+    case client.bootstrap_active_manifest(orchestrator_url, service_token) do
       {:ok, %{"manifest" => %{"manifest_version_id" => id}}}
       when id == version.manifest_version_id ->
-        {true, :matched}
+        :matched
 
       {:ok, %{"manifest_version_id" => id}} when id == version.manifest_version_id ->
-        {true, :matched}
+        :matched
 
       {:ok, other} ->
-        {false, {:mismatch, other}}
+        {:mismatch, other}
 
       {:error, reason} ->
-        {false, {:skipped, reason}}
+        {:skipped, reason}
     end
   end
 
@@ -151,7 +139,4 @@ defmodule Favn.Dev.Bootstrap.Single do
       value -> {:error, {:missing_required_option, key, value}}
     end
   end
-
-  defp validate_runner_id(value) when is_binary(value) and value != "", do: :ok
-  defp validate_runner_id(value), do: {:error, {:invalid_runner_id, value}}
 end

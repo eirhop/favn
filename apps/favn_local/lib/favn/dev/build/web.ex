@@ -67,8 +67,8 @@ defmodule Favn.Dev.Build.Web do
       "orchestrator_api_version" => "v1"
     })
     |> Map.put("required_env", [
-      "FAVN_ORCHESTRATOR_BASE_URL",
-      "FAVN_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_WEB_ORCHESTRATOR_BASE_URL",
+      "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN",
       "FAVN_WEB_SESSION_SECRET"
     ])
   end

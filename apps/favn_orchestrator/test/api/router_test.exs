@@ -200,6 +200,22 @@ defmodule FavnOrchestrator.API.RouterTest do
     refute response.resp_body =~ "wrong-token"
   end
 
+  test "bootstrap active manifest verification uses service auth only" do
+    version = schedule_manifest_version("mv_bootstrap_active")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    response =
+      conn(:get, "/api/orchestrator/v1/bootstrap/active-manifest")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"manifest" => %{"manifest_version_id" => "mv_bootstrap_active"}}} =
+             Jason.decode!(response.resp_body)
+  end
+
   test "runner registration fetches persisted manifest and calls configured runner" do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientConfigurableStub)
     version = schedule_manifest_version("mv_runner_register")
