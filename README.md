@@ -38,7 +38,7 @@ development on top of the new boundaries.
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` remains the one public package users should depend on
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
-- local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, and structured local API failure diagnostics
+- local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`

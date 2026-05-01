@@ -20,3 +20,4 @@ Current status:
 
 - implemented control-plane runtime and private HTTP API boundary
 - owns manifest persistence, run lifecycle, scheduler runtime, auth, audit, and storage contracts
+- normalizes configured runner-client dispatch exceptions, exits, and RPC failures into explicit error tuples at the orchestrator boundary

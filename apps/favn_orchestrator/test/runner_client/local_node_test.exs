@@ -14,6 +14,14 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
   end
 
+  defmodule RaisingRunner do
+    def cancel_work(_execution_id, _reason, _opts), do: raise("runner failed")
+  end
+
+  defmodule ExitingRunner do
+    def cancel_work(_execution_id, _reason, _opts), do: exit(:runner_exited)
+  end
+
   test "dispatches runner calls to configured runner module" do
     manifest = %{
       schema_version: 1,
@@ -50,6 +58,30 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
              LocalNode.cancel_work("exec_2", %{}, runner_module: MissingRunnerModule)
   end
 
+  test "normalizes local runner exceptions into error tuples" do
+    assert {:error,
+            {:runner_dispatch_failed,
+             %{
+               runner_module: RaisingRunner,
+               function: :cancel_work,
+               arity: 3,
+               kind: :error,
+               reason: {RuntimeError, "runner failed"}
+             }}} = LocalNode.cancel_work("exec_2", %{}, runner_module: RaisingRunner)
+  end
+
+  test "normalizes local runner exits into error tuples" do
+    assert {:error,
+            {:runner_dispatch_failed,
+             %{
+               runner_module: ExitingRunner,
+               function: :cancel_work,
+               arity: 3,
+               kind: :exit,
+               reason: :runner_exited
+             }}} = LocalNode.cancel_work("exec_2", %{}, runner_module: ExitingRunner)
+  end
+
   test "remote dispatch does not require local runner module exports" do
     runner_node = :definitely_missing_runner@localhost
 
@@ -61,5 +93,37 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
 
     assert reason in [:runner_node_unreachable, :runner_node_ignored]
     assert node == runner_node
+  end
+
+  test "normalizes remote runner call failures into error tuples" do
+    case ensure_distributed_node() do
+      :ok ->
+        assert {:error,
+                {:runner_dispatch_failed,
+                 %{
+                   runner_module: RaisingRunner,
+                   function: :cancel_work,
+                   arity: 3,
+                   kind: :error,
+                   reason: {RuntimeError, "runner failed"}
+                 }}} =
+                 LocalNode.cancel_work("exec_2", %{},
+                   runner_module: RaisingRunner,
+                   runner_node: Node.self()
+                 )
+
+      {:error, reason} ->
+        IO.puts(
+          "Skipping remote LocalNode dispatch test: distributed Erlang unavailable: #{inspect(reason)}"
+        )
+    end
+  end
+
+  defp ensure_distributed_node do
+    case Node.start(:favn_orchestrator_local_node_test, :shortnames) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 end
