@@ -123,7 +123,12 @@ defmodule FavnDuckdb.Worker do
         state.client.appender_close(appender_handle)
       end
 
-    next_state = drop_handle(state, appender_ref)
+    next_state =
+      case reply do
+        :ok -> drop_handle(state, appender_ref)
+        _ -> state
+      end
+
     {:reply, normalize_ok_error(reply), next_state}
   end
 

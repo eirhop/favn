@@ -208,7 +208,10 @@ the same connection, Favn infers the dependency automatically. Use `@depends`
 when the dependency is not visible in SQL, cannot be resolved from owned
 relations, or the project intentionally uses catalog-only layer names.
 DuckDB-backed SQL materialization creates the owned target schema when needed
-before creating the table or view.
+before creating the table or view. DuckDB appender materialization treats a
+successful appender close as consuming the handle; if close fails, the handle
+remains retryable or explicitly releasable, and adapter-owned materialization
+releases it as part of failure cleanup.
 For longer queries, place the SQL file next to the SQL asset module, for example
 `warehouse/mart/order_summary.ex` plus `warehouse/mart/order_summary.sql`, and
 use `query file: "order_summary.sql"`.
