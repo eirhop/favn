@@ -123,6 +123,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     }
 
     assert :ok = Storage.append_run_event(run.id, event)
+    assert :ok = Storage.append_run_event(run.id, event)
 
     assert {:error, :conflicting_event_sequence} =
              Storage.append_run_event(run.id, %{sequence: 1, event_type: :run_updated})

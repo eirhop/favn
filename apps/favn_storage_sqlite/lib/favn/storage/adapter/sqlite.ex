@@ -955,9 +955,9 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp resolve_existing_event_conflict(repo, run_id, event) do
     with {:ok, existing} <- fetch_event_by_sequence(repo, run_id, event.sequence) do
-      case existing do
-        ^event -> :idempotent
-        _ -> {:error, :conflicting_event_sequence}
+      case WriteSemantics.decide_run_event_append(existing, event) do
+        :idempotent -> :idempotent
+        {:error, reason} -> {:error, reason}
       end
     end
   end

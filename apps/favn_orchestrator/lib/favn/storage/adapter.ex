@@ -17,6 +17,15 @@ defmodule Favn.Storage.Adapter do
 
   Scheduler state keys are exact keys. `{pipeline_module, nil}` addresses the
   nil schedule id and does not fall back to the latest concrete schedule id.
+
+  Run events are unique by `{run_id, sequence}`. `append_run_event/3` treats an
+  exact duplicate normalized event write as an idempotent success and returns
+  `:ok` without adding another event. A duplicate sequence with different event
+  content must return `{:error, :conflicting_event_sequence}`.
+
+  `persist_run_transition/3` applies the same run-event duplicate semantics
+  atomically with the run snapshot write. It returns `:idempotent` only when the
+  stored run snapshot and stored event are both identical to the incoming write.
   """
 
   alias Favn.Manifest.Version

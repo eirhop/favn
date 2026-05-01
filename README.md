@@ -41,6 +41,7 @@ development on top of the new boundaries.
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, and structured local API failure diagnostics
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
+- run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`

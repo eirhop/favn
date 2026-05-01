@@ -69,6 +69,9 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert :ok =
                  Adapter.append_run_event(run.id, %{sequence: 1, event_type: :run_started}, opts)
 
+        assert :ok =
+                 Adapter.append_run_event(run.id, %{sequence: 1, event_type: :run_started}, opts)
+
         assert {:ok, [event]} = Adapter.list_run_events(run.id, opts)
         assert event.sequence == 1
 

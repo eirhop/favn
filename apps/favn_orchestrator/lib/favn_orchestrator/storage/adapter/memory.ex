@@ -408,27 +408,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   def handle_call({:append_run_event, run_id, event}, _from, state) do
     current = Map.get(state.run_events, run_id, [])
-    sequence = Map.get(event, :sequence)
 
-    reply =
-      if Enum.any?(current, &(Map.get(&1, :sequence) == sequence)) do
-        {:error, :conflicting_event_sequence}
-      else
-        :ok
-      end
+    case append_event_with_semantics(current, event) do
+      {:ok, _event_write_result, next_events} ->
+        {:reply, :ok, put_in(state, [:run_events, run_id], next_events)}
 
-    next_events =
-      case reply do
-        :ok ->
-          current
-          |> Kernel.++([event])
-          |> Enum.sort_by(&Map.get(&1, :sequence, 0))
-
-        _ ->
-          current
-      end
-
-    {:reply, reply, put_in(state, [:run_events, run_id], next_events)}
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:list_run_events, run_id}, _from, state) do
@@ -633,15 +620,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp append_event_with_semantics(current_events, event) when is_list(current_events) do
     sequence = Map.get(event, :sequence)
 
-    case Enum.find(current_events, &(Map.get(&1, :sequence) == sequence)) do
-      nil ->
+    existing = Enum.find(current_events, &(Map.get(&1, :sequence) == sequence))
+
+    case WriteSemantics.decide_run_event_append(existing, event) do
+      :insert ->
         {:ok, :ok, Enum.sort_by(current_events ++ [event], &Map.get(&1, :sequence, 0))}
 
-      existing when existing == event ->
+      :idempotent ->
         {:ok, :idempotent, current_events}
 
-      _existing ->
-        {:error, :conflicting_event_sequence}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
