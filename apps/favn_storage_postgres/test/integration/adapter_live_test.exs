@@ -66,14 +66,17 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert {:ok, stored_run} = Adapter.get_run(run.id, opts)
         assert stored_run.id == run.id
 
-        assert :ok =
-                 Adapter.append_run_event(run.id, %{sequence: 1, event_type: :run_started}, opts)
+        event = %{
+          sequence: 1,
+          event_type: :run_started,
+          occurred_at: DateTime.utc_now()
+        }
 
-        assert :ok =
-                 Adapter.append_run_event(run.id, %{sequence: 1, event_type: :run_started}, opts)
+        assert :ok = Adapter.append_run_event(run.id, event, opts)
+        assert :ok = Adapter.append_run_event(run.id, event, opts)
 
-        assert {:ok, [event]} = Adapter.list_run_events(run.id, opts)
-        assert event.sequence == 1
+        assert {:ok, [stored_event]} = Adapter.list_run_events(run.id, opts)
+        assert stored_event.sequence == 1
 
         key = {MyApp.Pipeline, :daily}
         assert :ok = Adapter.put_scheduler_state(key, %{version: 1}, opts)
