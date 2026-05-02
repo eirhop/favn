@@ -533,6 +533,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       manifest_content_hash: version.content_hash,
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
+      planned_asset_refs: planned_asset_refs(run_state),
       params: run_state.params,
       trigger:
         run_state.trigger
@@ -635,6 +636,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> Enum.map(fn {node_keys, stage} -> {stage, node_keys} end)
   end
 
+  defp planned_asset_refs(%RunState{plan: %Favn.Plan{topo_order: refs}})
+       when is_list(refs) and refs != [],
+       do: refs
+
+  defp planned_asset_refs(%RunState{target_refs: refs}) when is_list(refs) and refs != [],
+    do: refs
+
+  defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
+  defp planned_asset_refs(_run_state), do: []
+
   defp exit_to_timeout(_exit), do: {:error, :timeout}
 
   defp execute_ref_with_retry(
@@ -657,6 +668,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         manifest_content_hash: version.content_hash,
         asset_ref: asset_ref,
         asset_refs: [asset_ref],
+        planned_asset_refs: planned_asset_refs(run_state),
         params: run_state.params,
         trigger: run_state.trigger,
         metadata:

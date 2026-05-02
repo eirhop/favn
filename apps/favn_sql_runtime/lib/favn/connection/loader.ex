@@ -16,6 +16,20 @@ defmodule Favn.Connection.Loader do
     end
   end
 
+  @spec resolve_required([atom()]) :: {:ok, %{atom() => Favn.Connection.Resolved.t()}} | {:error, [Error.t()]}
+  def resolve_required(names) when is_list(names) do
+    required_names = names |> Enum.filter(&is_atom/1) |> Enum.uniq() |> Enum.sort()
+
+    with {:ok, modules} <- configured_modules(),
+         {:ok, runtime_connections} <- configured_required_runtime_connections(required_names),
+         {:ok, definitions} <- load_definitions(modules),
+         selected_definitions <- select_required_definitions(definitions, required_names),
+         :ok <- validate_missing_required_definitions(selected_definitions, required_names),
+         :ok <- validate_duplicate_names(selected_definitions) do
+      resolve_connections(selected_definitions, runtime_connections)
+    end
+  end
+
   @spec configured_modules() :: {:ok, [module()]} | {:error, [Error.t()]}
   def configured_modules do
     case Application.get_env(:favn, :connection_modules, []) do
@@ -46,6 +60,37 @@ defmodule Favn.Connection.Loader do
 
       entries when is_map(entries) ->
         normalize_map_connections(entries)
+
+      other ->
+        {:error,
+         [%Error{type: :invalid_connections_config, message: invalid_connections_message(other)}]}
+    end
+  end
+
+  defp configured_required_runtime_connections(required_names) do
+    required = MapSet.new(required_names)
+
+    case Application.get_env(:favn, :connections, []) do
+      entries when is_list(entries) ->
+        if Keyword.keyword?(entries) do
+          entries
+          |> Enum.filter(fn {name, _values} -> MapSet.member?(required, name) end)
+          |> normalize_keyword_connections()
+        else
+          {:error,
+           [
+             %Error{
+               type: :invalid_connections_config,
+               message: "config :favn, :connections list must be a keyword list"
+             }
+           ]}
+        end
+
+      entries when is_map(entries) ->
+        entries
+        |> Enum.filter(fn {name, _values} -> MapSet.member?(required, name) end)
+        |> Map.new()
+        |> normalize_map_connections()
 
       other ->
         {:error,
@@ -191,6 +236,33 @@ defmodule Favn.Connection.Loader do
       {:ok, Map.new(resolved_entries)}
     else
       {:error, Enum.reverse(errors)}
+    end
+  end
+
+  defp select_required_definitions(definitions, required_names) do
+    required = MapSet.new(required_names)
+    Enum.filter(definitions, &MapSet.member?(required, &1.name))
+  end
+
+  defp validate_missing_required_definitions(definitions, required_names) do
+    found_names = definitions |> Enum.map(& &1.name) |> MapSet.new()
+
+    missing_names =
+      required_names
+      |> Enum.reject(&MapSet.member?(found_names, &1))
+      |> Enum.sort()
+
+    if missing_names == [] do
+      :ok
+    else
+      {:error,
+       Enum.map(missing_names, fn name ->
+         %Error{
+           type: :missing_connection,
+           connection: name,
+           message: "connection definition not found for #{inspect(name)}"
+         }
+       end)}
     end
   end
 

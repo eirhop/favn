@@ -9,10 +9,11 @@ defmodule Favn.Connection.Error do
   @type type ::
           :invalid_connection_modules
           | :invalid_connections_config
-          | :invalid_module
-          | :invalid_definition
-          | :duplicate_name
-          | :missing_required
+           | :invalid_module
+           | :invalid_definition
+           | :duplicate_name
+          | :missing_connection
+           | :missing_required
           | :missing_env
           | :unknown_keys
           | :invalid_type

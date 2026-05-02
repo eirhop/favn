@@ -80,7 +80,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert %{type: :invalid_sql_asset_definition, phase: :runtime} = asset_result.error
   end
 
-  test "manifest sql execution reports backend failure when runtime connection is missing" do
+  test "manifest sql execution preflights missing runtime connection before execution" do
     Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
 
     ref = {FavnRunner.ExecutionSQLAssetTest.MissingConnectionSQLAsset, :asset}
@@ -97,9 +97,12 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :error
 
-    assert [asset_result] = result.asset_results
-    assert asset_result.status == :error
-    assert %{type: :backend_execution_failed, phase: :materialize} = asset_result.error
+    assert result.asset_results == []
+    assert result.error.type == :missing_runtime_config
+    assert result.error.phase == :sql_preflight
+
+    assert [%{type: :missing_connection, connection: :runner_sql_runtime}] =
+             result.error.details.errors
   end
 
   test "manifest sql execution redacts backend error details and causes" do

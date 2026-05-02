@@ -1,6 +1,10 @@
 defmodule Favn.Contracts.RunnerWork do
   @moduledoc """
   Runner work request contract pinned to an immutable manifest version.
+
+  `planned_asset_refs` carries the complete selected asset set for the current
+  logical run. Runners use it for plan-level preflight checks before invoking
+  the current `asset_ref`.
   """
 
   @type t :: %__MODULE__{
@@ -9,6 +13,7 @@ defmodule Favn.Contracts.RunnerWork do
           manifest_content_hash: String.t(),
           asset_ref: {module(), atom()} | nil,
           asset_refs: [{module(), atom()}],
+          planned_asset_refs: [{module(), atom()}],
           params: map(),
           trigger: map(),
           metadata: map()
@@ -19,6 +24,7 @@ defmodule Favn.Contracts.RunnerWork do
             manifest_content_hash: nil,
             asset_ref: nil,
             asset_refs: [],
+            planned_asset_refs: [],
             params: %{},
             trigger: %{},
             metadata: %{}

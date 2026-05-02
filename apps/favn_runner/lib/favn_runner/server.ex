@@ -12,6 +12,7 @@ defmodule FavnRunner.Server do
   alias FavnRunner.Inspection
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestStore
+  alias FavnRunner.SQLRuntimePreflight
   alias FavnRunner.Worker
 
   @type execution_id :: String.t()
@@ -103,24 +104,39 @@ defmodule FavnRunner.Server do
                server: FavnRunner.ManifestStore
              ),
            {:ok, asset} <- ManifestResolver.resolve_asset(version, asset_ref),
-           execution_id <- new_execution_id(),
-           {:ok, pid} <- start_worker(execution_id, work, version, asset) do
-        monitor_ref = Process.monitor(pid)
+           execution_id <- new_execution_id() do
+        case SQLRuntimePreflight.run(work, version) do
+          :ok ->
+            with {:ok, pid} <- start_worker(execution_id, work, version, asset) do
+              monitor_ref = Process.monitor(pid)
 
-        execution = %{
-          work: work,
-          status: :running,
-          pid: pid,
-          monitor_ref: monitor_ref,
-          events: []
-        }
+              execution = %{
+                work: work,
+                status: :running,
+                pid: pid,
+                monitor_ref: monitor_ref,
+                events: []
+              }
 
-        next_state =
-          state
-          |> put_in([:executions, execution_id], execution)
-          |> put_in([:monitor_to_execution, monitor_ref], execution_id)
+              next_state =
+                state
+                |> put_in([:executions, execution_id], execution)
+                |> put_in([:monitor_to_execution, monitor_ref], execution_id)
 
-        {{:ok, execution_id}, next_state}
+              {{:ok, execution_id}, next_state}
+            end
+
+          {:error, diagnostic} ->
+            execution = %{
+              work: work,
+              status: :completed,
+              result: preflight_failed_result(work, version, diagnostic),
+              events: []
+            }
+
+            next_state = put_in(state, [:executions, execution_id], execution)
+            {{:ok, execution_id}, next_state}
+        end
       end
 
     case reply do
@@ -315,6 +331,18 @@ defmodule FavnRunner.Server do
       asset_results: [],
       error: {:worker_crash, reason},
       metadata: work.metadata
+    }
+  end
+
+  defp preflight_failed_result(%RunnerWork{} = work, %Version{} = version, diagnostic) do
+    %RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      status: :error,
+      asset_results: [],
+      error: diagnostic,
+      metadata: work.metadata |> Kernel.||(%{}) |> Map.put(:preflight, :sql_runtime_config)
     }
   end
 

@@ -15,6 +15,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :manifest_version_id,
         :metadata,
         :params,
+        :planned_asset_refs,
         :run_id,
         :trigger
       ]
