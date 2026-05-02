@@ -302,6 +302,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def put_auth_actor_with_credential(actor, credential, opts)
+      when is_map(actor) and is_map(credential) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_auth_actor_with_credential, actor, credential})
+  end
+
+  @impl true
   def get_auth_actor(actor_id, opts) when is_binary(actor_id) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:get_auth_actor, actor_id})
@@ -324,6 +331,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       when is_binary(actor_id) and is_map(credential) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:put_auth_credential, actor_id, credential})
+  end
+
+  @impl true
+  def update_auth_actor_password(actor_id, actor, credential, revoked_at, opts)
+      when is_binary(actor_id) and is_map(actor) and is_map(credential) and
+             is_struct(revoked_at, DateTime) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:update_auth_actor_password, actor_id, actor, credential, revoked_at})
   end
 
   @impl true
@@ -697,6 +712,17 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, :ok, next_state}
   end
 
+  def handle_call({:put_auth_actor_with_credential, actor, credential}, _from, state) do
+    next_state = %{
+      state
+      | auth_actors: Map.put(state.auth_actors, actor.id, actor),
+        auth_usernames: Map.put(state.auth_usernames, actor.username, actor.id),
+        auth_credentials: Map.put(state.auth_credentials, actor.id, credential)
+    }
+
+    {:reply, :ok, next_state}
+  end
+
   def handle_call({:get_auth_actor, actor_id}, _from, state) do
     {:reply, fetch_or_not_found(state.auth_actors, actor_id), state}
   end
@@ -718,6 +744,31 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def handle_call({:put_auth_credential, actor_id, credential}, _from, state) do
     {:reply, :ok,
      %{state | auth_credentials: Map.put(state.auth_credentials, actor_id, credential)}}
+  end
+
+  def handle_call(
+        {:update_auth_actor_password, actor_id, actor, credential, revoked_at},
+        _from,
+        state
+      ) do
+    sessions =
+      Map.new(state.auth_sessions, fn {session_id, session} ->
+        if session.actor_id == actor_id and is_nil(session.revoked_at) do
+          {session_id, %{session | revoked_at: revoked_at}}
+        else
+          {session_id, session}
+        end
+      end)
+
+    next_state = %{
+      state
+      | auth_actors: Map.put(state.auth_actors, actor_id, actor),
+        auth_usernames: Map.put(state.auth_usernames, actor.username, actor_id),
+        auth_credentials: Map.put(state.auth_credentials, actor_id, credential),
+        auth_sessions: sessions
+    }
+
+    {:reply, :ok, next_state}
   end
 
   def handle_call({:get_auth_credential, actor_id}, _from, state) do
@@ -748,16 +799,20 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:revoke_auth_session, session_id, revoked_at}, _from, state) do
-    sessions =
-      Map.update(state.auth_sessions, session_id, nil, fn
-        nil ->
-          nil
+    case Map.fetch(state.auth_sessions, session_id) do
+      {:ok, session} ->
+        sessions =
+          Map.put(
+            state.auth_sessions,
+            session_id,
+            if(is_nil(session.revoked_at), do: %{session | revoked_at: revoked_at}, else: session)
+          )
 
-        session ->
-          if is_nil(session.revoked_at), do: %{session | revoked_at: revoked_at}, else: session
-      end)
+        {:reply, :ok, %{state | auth_sessions: sessions}}
 
-    {:reply, :ok, %{state | auth_sessions: sessions}}
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
   end
 
   def handle_call({:revoke_auth_sessions_for_actor, actor_id, revoked_at}, _from, state) do

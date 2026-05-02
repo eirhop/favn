@@ -35,6 +35,11 @@ defmodule FavnOrchestrator.Auth.StoreTest do
     assert {:error, :invalid_session} = Auth.introspect_session(session.token)
   end
 
+  test "revoking a missing session returns an error without corrupting memory storage" do
+    assert {:error, :not_found} = Auth.revoke_session("ses_missing")
+    assert Auth.list_audit(limit: 10) == []
+  end
+
   defp ensure_auth_store_started do
     case Process.whereis(AuthStore) do
       nil ->

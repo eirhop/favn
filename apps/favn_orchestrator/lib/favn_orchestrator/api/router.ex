@@ -101,15 +101,15 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, params} <- fetch_json_body(conn),
          {:ok, username} <- fetch_required_string(params, "username"),
          {:ok, password} <- fetch_required_string(params, "password"),
-         {:ok, session, actor} <- Auth.password_login(username, password) do
-      Auth.put_audit(%{
-        action: "auth.password.login",
-        actor_id: actor.id,
-        session_id: session.id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, session, actor} <- Auth.password_login(username, password),
+         :ok <-
+           Auth.put_audit(%{
+             action: "auth.password.login",
+             actor_id: actor.id,
+             session_id: session.id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 201, %{
         session: session_dto(session),
         session_token: session.token,
@@ -124,6 +124,9 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, _reason} ->
+        error(conn, 500, "internal_error", "Request failed")
     end
   end
 
@@ -153,17 +156,17 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, params} <- fetch_json_body(conn),
          {:ok, session_token} <- fetch_session_token(conn, params),
          {:ok, session, actor} <- Auth.introspect_session(session_token),
-         :ok <- Auth.revoke_session(session.id) do
+         :ok <- Auth.revoke_session(session.id),
+         :ok <-
+           Auth.put_audit(%{
+             action: "auth.session.revoke_current",
+             actor_id: actor.id,
+             session_id: session.id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       revoked_at = DateTime.utc_now()
       revoked_session = %{session | revoked_at: revoked_at}
-
-      Auth.put_audit(%{
-        action: "auth.session.revoke_current",
-        actor_id: actor.id,
-        session_id: session.id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
 
       data(conn, 200, %{
         revoked: true,
@@ -182,22 +185,25 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, _reason} ->
+        error(conn, 500, "internal_error", "Request failed")
     end
   end
 
   post "/api/orchestrator/v1/auth/sessions/:session_id/revoke" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :admin) do
-      :ok = Auth.revoke_session(session_id)
-
-      Auth.put_audit(%{
-        action: "auth.session.revoke",
-        actor_id: actor.id,
-        session_id: session_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, session, actor} <- ensure_actor_context(conn, :admin),
+         :ok <- Auth.revoke_session(session_id),
+         :ok <-
+           Auth.put_audit(%{
+             action: "auth.session.revoke",
+             actor_id: actor.id,
+             session_id: session.id,
+             target_session_id: session_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 200, %{revoked: true, session_id: session_id})
     else
       {:error, :forbidden} ->
@@ -256,16 +262,16 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, params} <- fetch_json_body(conn),
          {:ok, version} <- build_manifest_version(params),
          :ok <- FavnOrchestrator.register_manifest(version),
-         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(version.manifest_version_id) do
-      Auth.put_audit(%{
-        action: "manifest.register",
-        session_id: nil,
-        resource_type: "manifest",
-        resource_id: version.manifest_version_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(version.manifest_version_id),
+         :ok <-
+           Auth.put_audit(%{
+             action: "manifest.register",
+             session_id: nil,
+             resource_type: "manifest",
+             resource_id: version.manifest_version_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 201, %{manifest: summary})
     else
       {:error, {:missing_field, field}} ->
@@ -410,17 +416,17 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, actor_id, session_id} <- ensure_activation_context(conn),
          :ok <- FavnOrchestrator.activate_manifest(manifest_version_id),
-         :ok <- maybe_reload_scheduler() do
-      Auth.put_audit(%{
-        action: "manifest.activate",
-        actor_id: actor_id,
-        session_id: session_id,
-        resource_type: "manifest",
-        resource_id: manifest_version_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         :ok <- maybe_reload_scheduler(),
+         :ok <-
+           Auth.put_audit(%{
+             action: "manifest.activate",
+             actor_id: actor_id,
+             session_id: session_id,
+             resource_type: "manifest",
+             resource_id: manifest_version_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 200, %{activated: true, manifest_version_id: manifest_version_id})
     else
       {:error, :manifest_version_not_found} ->
@@ -607,20 +613,20 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/runs" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, run_id} <- submit_run_from_request(params),
-         {:ok, run} <- FavnOrchestrator.get_run(run_id) do
-      Auth.put_audit(%{
-        action: "run.submit",
-        actor_id: actor.id,
-        session_id: nil,
-        resource_type: "run",
-        resource_id: run_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, run} <- FavnOrchestrator.get_run(run_id),
+         :ok <-
+           Auth.put_audit(%{
+             action: "run.submit",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "run",
+             resource_id: run_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 201, %{run: run_summary_dto(run)})
     else
       {:error, :invalid_target} ->
@@ -661,17 +667,17 @@ defmodule FavnOrchestrator.API.Router do
   post "/api/orchestrator/v1/runs/:run_id/cancel" do
     with :ok <- ensure_service_auth(conn),
          {:ok, actor_id, session_id} <- ensure_operator_context(conn),
-         :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor_id}) do
-      Auth.put_audit(%{
-        action: "run.cancel",
-        actor_id: actor_id,
-        session_id: session_id,
-        resource_type: "run",
-        resource_id: run_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor_id}),
+         :ok <-
+           Auth.put_audit(%{
+             action: "run.cancel",
+             actor_id: actor_id,
+             session_id: session_id,
+             resource_type: "run",
+             resource_id: run_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 200, %{cancelled: true, run_id: run_id})
     else
       {:error, :forbidden} ->
@@ -698,19 +704,19 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/runs/:run_id/rerun" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, rerun_id} <- FavnOrchestrator.rerun(run_id),
-         {:ok, rerun_run} <- FavnOrchestrator.get_run(rerun_id) do
-      Auth.put_audit(%{
-        action: "run.rerun",
-        actor_id: actor.id,
-        session_id: nil,
-        resource_type: "run",
-        resource_id: rerun_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, rerun_run} <- FavnOrchestrator.get_run(rerun_id),
+         :ok <-
+           Auth.put_audit(%{
+             action: "run.rerun",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "run",
+             resource_id: rerun_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 201, %{run: run_summary_dto(rerun_run)})
     else
       {:error, :forbidden} ->
@@ -737,20 +743,20 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/backfills" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, run_id} <- submit_backfill_from_request(params),
-         {:ok, run} <- FavnOrchestrator.get_run(run_id) do
-      Auth.put_audit(%{
-        action: "backfill.submit",
-        actor_id: actor.id,
-        session_id: nil,
-        resource_type: "run",
-        resource_id: run_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, run} <- FavnOrchestrator.get_run(run_id),
+         :ok <-
+           Auth.put_audit(%{
+             action: "backfill.submit",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "run",
+             resource_id: run_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 201, %{run: run_summary_dto(run)})
     else
       {:error, :invalid_target} ->
@@ -815,7 +821,7 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/backfills/:backfill_run_id/windows/rerun" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, window_key} <- fetch_required_string(params, "window_key"),
          {:ok, window} <- find_backfill_window(backfill_run_id, window_key),
@@ -825,17 +831,17 @@ defmodule FavnOrchestrator.API.Router do
              window.pipeline_module,
              window.window_key
            ),
-         {:ok, run} <- FavnOrchestrator.get_run(rerun_id) do
-      Auth.put_audit(%{
-        action: "backfill.window.rerun",
-        actor_id: actor.id,
-        session_id: nil,
-        resource_type: "run",
-        resource_id: rerun_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, run} <- FavnOrchestrator.get_run(rerun_id),
+         :ok <-
+           Auth.put_audit(%{
+             action: "backfill.window.rerun",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "run",
+             resource_id: rerun_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 201, %{run: run_summary_dto(run)})
     else
       {:error, {:missing_field, field}} ->
@@ -866,22 +872,20 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/backfills/projections/repair" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :operator),
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, opts} <- backfill_repair_opts(params),
-         {:ok, report} <- FavnOrchestrator.repair_backfill_projections(opts) do
-      if Keyword.get(opts, :apply, false) do
-        Auth.put_audit(%{
-          action: "backfill.projections.repair",
-          actor_id: actor.id,
-          session_id: nil,
-          resource_type: "backfill_projection",
-          resource_id: repair_resource_id(opts),
-          outcome: "accepted",
-          service_identity: service_identity(conn)
-        })
-      end
-
+         {:ok, report} <- FavnOrchestrator.repair_backfill_projections(opts),
+         :ok <-
+           maybe_put_audit(Keyword.get(opts, :apply, false), %{
+             action: "backfill.projections.repair",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "backfill_projection",
+             resource_id: repair_resource_id(opts),
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 200, %{repair: normalize_data(report)})
     else
       {:error, :invalid_repair_scope} ->
@@ -1053,23 +1057,23 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/actors" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :admin),
+         {:ok, session, actor} <- ensure_actor_context(conn, :admin),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, username} <- fetch_required_string(params, "username"),
          {:ok, password} <- fetch_required_string(params, "password"),
          {:ok, display_name} <- fetch_actor_display_name(params, username),
          {:ok, roles} <- fetch_actor_roles(params),
-         {:ok, created_actor} <- Auth.create_actor(username, password, display_name, roles) do
-      Auth.put_audit(%{
-        action: "actor.create",
-        actor_id: actor.id,
-        session_id: nil,
-        resource_type: "actor",
-        resource_id: created_actor.id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, created_actor} <- Auth.create_actor(username, password, display_name, roles),
+         :ok <-
+           Auth.put_audit(%{
+             action: "actor.create",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "actor",
+             resource_id: created_actor.id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 201, %{actor: actor_dto(created_actor)})
     else
       {:error, {:missing_field, field}} ->
@@ -1117,20 +1121,20 @@ defmodule FavnOrchestrator.API.Router do
 
   put "/api/orchestrator/v1/actors/:actor_id/roles" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :admin),
+         {:ok, session, actor} <- ensure_actor_context(conn, :admin),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, roles} <- fetch_required_roles(params, "roles"),
-         {:ok, updated_actor} <- Auth.update_actor_roles(actor_id, roles) do
-      Auth.put_audit(%{
-        action: "actor.roles.update",
-        actor_id: actor.id,
-        session_id: nil,
-        resource_type: "actor",
-        resource_id: actor_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         {:ok, updated_actor} <- Auth.update_actor_roles(actor_id, roles),
+         :ok <-
+           Auth.put_audit(%{
+             action: "actor.roles.update",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "actor",
+             resource_id: actor_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 200, %{actor: actor_dto(updated_actor)})
     else
       {:error, :actor_not_found} ->
@@ -1155,20 +1159,20 @@ defmodule FavnOrchestrator.API.Router do
 
   put "/api/orchestrator/v1/actors/:actor_id/password" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, _session, actor} <- ensure_actor_context(conn, :admin),
+         {:ok, session, actor} <- ensure_actor_context(conn, :admin),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, password} <- fetch_required_string(params, "password"),
-         :ok <- Auth.set_actor_password(actor_id, password) do
-      Auth.put_audit(%{
-        action: "actor.password.set",
-        actor_id: actor.id,
-        session_id: nil,
-        resource_type: "actor",
-        resource_id: actor_id,
-        outcome: "accepted",
-        service_identity: service_identity(conn)
-      })
-
+         :ok <- Auth.set_actor_password(actor_id, password),
+         :ok <-
+           Auth.put_audit(%{
+             action: "actor.password.set",
+             actor_id: actor.id,
+             session_id: session.id,
+             resource_type: "actor",
+             resource_id: actor_id,
+             outcome: "accepted",
+             service_identity: service_identity(conn)
+           }) do
       data(conn, 200, %{updated: true, actor_id: actor_id})
     else
       {:error, :actor_not_found} ->
@@ -1346,6 +1350,9 @@ defmodule FavnOrchestrator.API.Router do
       _ -> {:error, {:missing_field, "session_token"}}
     end
   end
+
+  defp maybe_put_audit(true, entry), do: Auth.put_audit(entry)
+  defp maybe_put_audit(false, _entry), do: :ok
 
   defp build_manifest_version(params) when is_map(params) do
     with %{} = manifest <- Map.get(params, "manifest"),

@@ -84,12 +84,12 @@ defmodule FavnOrchestrator.Auth.Store do
     GenServer.call(__MODULE__, {:introspect_session, session_token})
   end
 
-  @spec revoke_session(String.t()) :: :ok
+  @spec revoke_session(String.t()) :: :ok | {:error, term()}
   def revoke_session(session_id) when is_binary(session_id) do
     GenServer.call(__MODULE__, {:revoke_session, session_id})
   end
 
-  @spec add_audit(map()) :: :ok
+  @spec add_audit(map()) :: :ok | {:error, term()}
   def add_audit(entry) when is_map(entry) do
     GenServer.call(__MODULE__, {:add_audit, entry})
   end
@@ -141,8 +141,7 @@ defmodule FavnOrchestrator.Auth.Store do
           updated_at: now
         }
 
-        with :ok <- Storage.put_auth_actor(actor),
-             :ok <- Storage.put_auth_credential(actor.id, hash_password(password)) do
+        with :ok <- Storage.put_auth_actor_with_credential(actor, hash_password(password)) do
           {:reply, {:ok, actor}, state}
         else
           {:error, reason} -> {:reply, {:error, reason}, state}
@@ -180,9 +179,13 @@ defmodule FavnOrchestrator.Auth.Store do
             now = DateTime.utc_now()
             updated_actor = %{actor | updated_at: now}
 
-            with :ok <- Storage.put_auth_actor(updated_actor),
-                 :ok <- Storage.put_auth_credential(actor_id, hash_password(password)),
-                 :ok <- Storage.revoke_auth_sessions_for_actor(actor_id, now) do
+            with :ok <-
+                   Storage.update_auth_actor_password(
+                     actor_id,
+                     updated_actor,
+                     hash_password(password),
+                     now
+                   ) do
               {:reply, :ok, state}
             else
               {:error, reason} -> {:reply, {:error, reason}, state}
@@ -254,8 +257,7 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   def handle_call({:revoke_session, session_id}, _from, state) do
-    _ = Storage.revoke_auth_session(session_id, DateTime.utc_now())
-    {:reply, :ok, state}
+    {:reply, Storage.revoke_auth_session(session_id, DateTime.utc_now()), state}
   end
 
   def handle_call({:add_audit, entry}, _from, state) do
@@ -265,8 +267,7 @@ defmodule FavnOrchestrator.Auth.Store do
       |> Map.put_new(:id, "aud_" <> random_id())
       |> Map.put_new(:occurred_at, DateTime.utc_now())
 
-    _ = Storage.put_auth_audit(normalized)
-    {:reply, :ok, state}
+    {:reply, Storage.put_auth_audit(normalized), state}
   end
 
   def handle_call({:list_audit, opts}, _from, state) do

@@ -102,11 +102,15 @@ defmodule Favn.Storage.Adapter do
             ) :: :ok | {:error, error()}
 
   @callback put_auth_actor(map(), adapter_opts()) :: :ok | {:error, error()}
+  @callback put_auth_actor_with_credential(map(), map(), adapter_opts()) ::
+              :ok | {:error, error()}
   @callback get_auth_actor(String.t(), adapter_opts()) :: {:ok, map()} | {:error, error()}
   @callback get_auth_actor_by_username(String.t(), adapter_opts()) ::
               {:ok, map()} | {:error, error()}
   @callback list_auth_actors(adapter_opts()) :: {:ok, [map()]} | {:error, error()}
   @callback put_auth_credential(String.t(), map(), adapter_opts()) :: :ok | {:error, error()}
+  @callback update_auth_actor_password(String.t(), map(), map(), DateTime.t(), adapter_opts()) ::
+              :ok | {:error, error()}
   @callback get_auth_credential(String.t(), adapter_opts()) :: {:ok, map()} | {:error, error()}
   @callback put_auth_session(map(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_auth_session(String.t(), adapter_opts()) :: {:ok, map()} | {:error, error()}
@@ -122,10 +126,12 @@ defmodule Favn.Storage.Adapter do
   @optional_callbacks readiness: 1,
                       diagnostics: 1,
                       put_auth_actor: 2,
+                      put_auth_actor_with_credential: 3,
                       get_auth_actor: 2,
                       get_auth_actor_by_username: 2,
                       list_auth_actors: 1,
                       put_auth_credential: 3,
+                      update_auth_actor_password: 5,
                       get_auth_credential: 2,
                       put_auth_session: 2,
                       get_auth_session: 2,

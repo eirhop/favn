@@ -47,7 +47,7 @@ defmodule FavnOrchestrator.Auth do
     Store.introspect_session(session_token)
   end
 
-  @spec revoke_session(String.t()) :: :ok
+  @spec revoke_session(String.t()) :: :ok | {:error, term()}
   def revoke_session(session_id) when is_binary(session_id) do
     Store.revoke_session(session_id)
   end
@@ -100,7 +100,7 @@ defmodule FavnOrchestrator.Auth do
     |> Enum.any?(&(role_weight(&1) >= role_weight(required_role)))
   end
 
-  @spec put_audit(map()) :: :ok
+  @spec put_audit(map()) :: :ok | {:error, term()}
   def put_audit(entry) when is_map(entry) do
     Store.add_audit(entry)
   end

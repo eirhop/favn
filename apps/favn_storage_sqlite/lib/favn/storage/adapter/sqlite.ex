@@ -648,6 +648,25 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   @impl true
+  def put_auth_actor_with_credential(actor, credential, opts)
+      when is_map(actor) and is_map(credential) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      repo.transact(fn ->
+        with :ok <- put_auth_actor(actor, opts),
+             :ok <- put_auth_credential(actor.id, credential, opts) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
   def get_auth_actor(actor_id, opts) when is_binary(actor_id) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
       fetch_auth_actor(repo, "actor_id = ?1", [actor_id])
@@ -686,6 +705,27 @@ defmodule Favn.Storage.Adapter.SQLite do
         encode_payload(credential),
         encode_datetime(DateTime.utc_now())
       ])
+    end
+  end
+
+  @impl true
+  def update_auth_actor_password(actor_id, actor, credential, revoked_at, opts)
+      when is_binary(actor_id) and is_map(actor) and is_map(credential) and
+             is_struct(revoked_at, DateTime) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      repo.transact(fn ->
+        with :ok <- put_auth_actor(actor, opts),
+             :ok <- put_auth_credential(actor_id, credential, opts),
+             :ok <- revoke_auth_sessions_for_actor(actor_id, revoked_at, opts) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 

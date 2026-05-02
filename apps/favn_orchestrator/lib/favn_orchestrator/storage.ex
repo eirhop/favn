@@ -218,6 +218,14 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.put_auth_actor(actor, opts) end)
   end
 
+  @spec put_auth_actor_with_credential(map(), map()) :: :ok | {:error, term()}
+  def put_auth_actor_with_credential(actor, credential)
+      when is_map(actor) and is_map(credential) do
+    adapter_call(fn adapter, opts ->
+      adapter.put_auth_actor_with_credential(actor, credential, opts)
+    end)
+  end
+
   @spec get_auth_actor(String.t()) :: {:ok, map()} | {:error, term()}
   def get_auth_actor(actor_id) when is_binary(actor_id) do
     adapter_call(fn adapter, opts -> adapter.get_auth_actor(actor_id, opts) end)
@@ -236,6 +244,15 @@ defmodule FavnOrchestrator.Storage do
   @spec put_auth_credential(String.t(), map()) :: :ok | {:error, term()}
   def put_auth_credential(actor_id, credential) when is_binary(actor_id) and is_map(credential) do
     adapter_call(fn adapter, opts -> adapter.put_auth_credential(actor_id, credential, opts) end)
+  end
+
+  @spec update_auth_actor_password(String.t(), map(), map(), DateTime.t()) ::
+          :ok | {:error, term()}
+  def update_auth_actor_password(actor_id, actor, credential, %DateTime{} = revoked_at)
+      when is_binary(actor_id) and is_map(actor) and is_map(credential) do
+    adapter_call(fn adapter, opts ->
+      adapter.update_auth_actor_password(actor_id, actor, credential, revoked_at, opts)
+    end)
   end
 
   @spec get_auth_credential(String.t()) :: {:ok, map()} | {:error, term()}

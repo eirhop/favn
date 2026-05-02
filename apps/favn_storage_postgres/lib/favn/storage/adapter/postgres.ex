@@ -560,6 +560,10 @@ defmodule Favn.Storage.Adapter.Postgres do
   def put_auth_actor(_actor, _opts), do: auth_persistence_not_supported()
 
   @impl true
+  def put_auth_actor_with_credential(_actor, _credential, _opts),
+    do: auth_persistence_not_supported()
+
+  @impl true
   def get_auth_actor(_actor_id, _opts), do: auth_persistence_not_supported()
 
   @impl true
@@ -570,6 +574,10 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   @impl true
   def put_auth_credential(_actor_id, _credential, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def update_auth_actor_password(_actor_id, _actor, _credential, _revoked_at, _opts),
+    do: auth_persistence_not_supported()
 
   @impl true
   def get_auth_credential(_actor_id, _opts), do: auth_persistence_not_supported()

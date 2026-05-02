@@ -928,6 +928,12 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert {:ok, run} = FavnOrchestrator.get_run(run_id)
     assert run.manifest_version_id == "mv_dependency_scope"
     assert run.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
+
+    assert [%{action: "run.submit", actor_id: actor_id, session_id: session_id}] =
+             Auth.list_audit(limit: 1)
+
+    assert actor_id == actor.id
+    assert session_id == session.id
   end
 
   test "run submission rejects invalid dependency mode" do
@@ -1603,6 +1609,9 @@ defmodule FavnOrchestrator.API.RouterTest do
     {:ok, managed_actor} =
       AuthStore.create_actor("managed_password", "managed-pass-1", "Managed Password", [:viewer])
 
+    {:ok, managed_session, _managed_actor} =
+      Auth.password_login("managed_password", "managed-pass-1")
+
     {:ok, session, actor} = Auth.password_login("admin", "admin-password")
 
     reset_response =
@@ -1622,6 +1631,8 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert {:ok, _new_session, _managed_actor} =
              Auth.password_login("managed_password", "managed-pass-2")
+
+    assert {:error, :invalid_session} = Auth.introspect_session(managed_session.token)
   end
 
   test "viewer is forbidden from actor management commands" do
