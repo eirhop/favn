@@ -16,6 +16,20 @@ defmodule Favn.Connection.Loader do
     end
   end
 
+  @spec resolve_required([atom()]) :: {:ok, %{atom() => Favn.Connection.Resolved.t()}} | {:error, [Error.t()]}
+  def resolve_required(names) when is_list(names) do
+    required_names = names |> Enum.filter(&is_atom/1) |> Enum.uniq() |> Enum.sort()
+
+    with {:ok, modules} <- configured_modules(),
+         {:ok, runtime_connections} <- configured_runtime_connections(),
+         {:ok, definitions} <- load_definitions(modules),
+         selected_definitions <- select_required_definitions(definitions, required_names),
+         :ok <- validate_missing_required_definitions(selected_definitions, required_names),
+         :ok <- validate_duplicate_names(selected_definitions) do
+      resolve_connections(selected_definitions, Map.take(runtime_connections, required_names))
+    end
+  end
+
   @spec configured_modules() :: {:ok, [module()]} | {:error, [Error.t()]}
   def configured_modules do
     case Application.get_env(:favn, :connection_modules, []) do
@@ -191,6 +205,33 @@ defmodule Favn.Connection.Loader do
       {:ok, Map.new(resolved_entries)}
     else
       {:error, Enum.reverse(errors)}
+    end
+  end
+
+  defp select_required_definitions(definitions, required_names) do
+    required = MapSet.new(required_names)
+    Enum.filter(definitions, &MapSet.member?(required, &1.name))
+  end
+
+  defp validate_missing_required_definitions(definitions, required_names) do
+    found_names = definitions |> Enum.map(& &1.name) |> MapSet.new()
+
+    missing_names =
+      required_names
+      |> Enum.reject(&MapSet.member?(found_names, &1))
+      |> Enum.sort()
+
+    if missing_names == [] do
+      :ok
+    else
+      {:error,
+       Enum.map(missing_names, fn name ->
+         %Error{
+           type: :missing_connection,
+           connection: name,
+           message: "connection definition not found for #{inspect(name)}"
+         }
+       end)}
     end
   end
 
