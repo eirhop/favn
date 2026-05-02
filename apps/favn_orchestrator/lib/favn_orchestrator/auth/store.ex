@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Auth.Store do
 
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.Adapter.Memory
 
   @type actor :: %{
           required(:id) => String.t(),
@@ -105,8 +106,8 @@ defmodule FavnOrchestrator.Auth.Store do
   @impl true
   def handle_call(:reset, _from, state) do
     case Storage.adapter_module() do
-      FavnOrchestrator.Storage.Adapter.Memory ->
-        :ok = FavnOrchestrator.Storage.Adapter.Memory.reset(Storage.adapter_opts())
+      Memory ->
+        :ok = Memory.reset(Storage.adapter_opts())
 
       _adapter ->
         :ok
@@ -141,9 +142,8 @@ defmodule FavnOrchestrator.Auth.Store do
           updated_at: now
         }
 
-        with :ok <- Storage.put_auth_actor_with_credential(actor, hash_password(password)) do
-          {:reply, {:ok, actor}, state}
-        else
+        case Storage.put_auth_actor_with_credential(actor, hash_password(password)) do
+          :ok -> {:reply, {:ok, actor}, state}
           {:error, reason} -> {:reply, {:error, reason}, state}
         end
     end
@@ -169,31 +169,27 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   def handle_call({:set_actor_password, actor_id, password}, _from, state) do
-    cond do
-      byte_size(password) < 8 ->
-        {:reply, {:error, :password_too_short}, state}
+    if byte_size(password) < 8 do
+      {:reply, {:error, :password_too_short}, state}
+    else
+      case Storage.get_auth_actor(actor_id) do
+        {:ok, actor} ->
+          now = DateTime.utc_now()
+          updated_actor = %{actor | updated_at: now}
 
-      true ->
-        case Storage.get_auth_actor(actor_id) do
-          {:ok, actor} ->
-            now = DateTime.utc_now()
-            updated_actor = %{actor | updated_at: now}
+          case Storage.update_auth_actor_password(
+                 actor_id,
+                 updated_actor,
+                 hash_password(password),
+                 now
+               ) do
+            :ok -> {:reply, :ok, state}
+            {:error, reason} -> {:reply, {:error, reason}, state}
+          end
 
-            with :ok <-
-                   Storage.update_auth_actor_password(
-                     actor_id,
-                     updated_actor,
-                     hash_password(password),
-                     now
-                   ) do
-              {:reply, :ok, state}
-            else
-              {:error, reason} -> {:reply, {:error, reason}, state}
-            end
-
-          {:error, _reason} ->
-            {:reply, {:error, :actor_not_found}, state}
-        end
+        {:error, _reason} ->
+          {:reply, {:error, :actor_not_found}, state}
+      end
     end
   end
 

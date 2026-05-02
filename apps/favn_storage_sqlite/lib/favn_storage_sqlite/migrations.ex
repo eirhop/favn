@@ -2,8 +2,8 @@ defmodule FavnStorageSqlite.Migrations do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
-  alias FavnStorageSqlite.Migrations.AddBackfillState
   alias FavnStorageSqlite.Migrations.AddAuthState
+  alias FavnStorageSqlite.Migrations.AddBackfillState
   alias FavnStorageSqlite.Migrations.CreateFoundation
 
   @migrations [
