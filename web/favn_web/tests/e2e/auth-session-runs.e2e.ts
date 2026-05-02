@@ -195,6 +195,10 @@ test.describe('auth/session/runs flow', () => {
 	test('logout returns to /login and / remains protected afterward', async ({ page }) => {
 		await loginAsValidUser(page);
 		await expect(page).toHaveURL(/\/runs$/);
+		const sessionCookie = (await page.context().cookies()).find(
+			(cookie) => cookie.name === FAVN_WEB_SESSION_COOKIE
+		);
+		expect(sessionCookie?.value).toBeTruthy();
 
 		await page.getByText('local-operator').click();
 		await page.getByRole('button', { name: 'Log out' }).click();
@@ -202,6 +206,17 @@ test.describe('auth/session/runs flow', () => {
 		await expect(page).toHaveURL(/\/login$/);
 		await page.goto('/');
 		await expect(page).toHaveURL(/\/login$/);
+
+		await addSessionCookie(page, sessionCookie!.value);
+		const revokedResponse = await page.request.get(`${BASE_URL}/api/web/v1/runs`);
+		expect(revokedResponse.status()).toBe(401);
+		expect(await revokedResponse.json()).toEqual({
+			error: {
+				code: 'unauthorized',
+				message: 'Authentication required'
+			}
+		});
+		await expect.poll(() => hasSessionCookie(page)).toBe(false);
 	});
 
 	test('expired session cookie is cleared and user is redirected to /login', async ({ page }) => {
