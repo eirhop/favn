@@ -48,13 +48,22 @@ export const actions: Actions = {
 		const response = await orchestratorLoginPassword({ username, password }).catch(
 			() =>
 				new Response(
-					JSON.stringify({ error: { message: 'Unable to reach orchestrator service' } }),
+					JSON.stringify({ error: { message: 'Login service is temporarily unavailable' } }),
 					{
 						status: 502,
 						headers: { 'content-type': 'application/json; charset=utf-8' }
 					}
 				)
 		);
+
+		if (response.status >= 500) {
+			await response.body?.cancel().catch(() => undefined);
+			return fail(502, {
+				message: 'Login service is temporarily unavailable',
+				username
+			});
+		}
+
 		const payload = await tryReadJson(response);
 
 		if (response.ok) {

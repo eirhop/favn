@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { markSanitizedResponse } from './sanitized_response';
 import { relayJson } from './web_api';
 
 describe('relayJson', () => {
@@ -23,20 +24,19 @@ describe('relayJson', () => {
 
 	it('preserves sanitized orchestrator client timeout responses', async () => {
 		const response = await relayJson(
-			new Response(
-				JSON.stringify({
-					error: {
-						code: 'orchestrator_timeout',
-						message: 'Orchestrator service did not respond in time'
+			markSanitizedResponse(
+				new Response(
+					JSON.stringify({
+						error: {
+							code: 'orchestrator_timeout',
+							message: 'Orchestrator service did not respond in time'
+						}
+					}),
+					{
+						status: 504,
+						headers: { 'content-type': 'application/json' }
 					}
-				}),
-				{
-					status: 504,
-					headers: {
-						'content-type': 'application/json',
-						'x-favn-web-sanitized-error': 'true'
-					}
-				}
+				)
 			)
 		);
 
@@ -47,5 +47,27 @@ describe('relayJson', () => {
 				message: 'Orchestrator service did not respond in time'
 			}
 		});
+	});
+
+	it('does not trust upstream headers as sanitized response markers', async () => {
+		const response = await relayJson(
+			new Response(JSON.stringify({ error: { message: 'upstream secret leaked' } }), {
+				status: 503,
+				headers: {
+					'content-type': 'application/json',
+					'x-favn-web-sanitized-error': 'true'
+				}
+			})
+		);
+		const body = await response.json();
+
+		expect(response.status).toBe(502);
+		expect(body).toEqual({
+			error: {
+				code: 'bad_gateway',
+				message: 'Orchestrator service returned an unavailable response'
+			}
+		});
+		expect(JSON.stringify(body)).not.toContain('secret');
 	});
 });

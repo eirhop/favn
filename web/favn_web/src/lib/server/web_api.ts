@@ -1,4 +1,5 @@
 import type { RequestEvent } from '@sveltejs/kit';
+import { isSanitizedResponse } from './sanitized_response';
 import { validateWebSession } from './session_guard';
 
 type JsonRecord = Record<string, unknown>;
@@ -27,7 +28,7 @@ export async function relayJson(upstream: Response): Promise<Response> {
 		return new Response(null, { status: upstream.status });
 	}
 
-	if (upstream.headers.get('x-favn-web-sanitized-error') === 'true') {
+	if (isSanitizedResponse(upstream)) {
 		return upstream;
 	}
 

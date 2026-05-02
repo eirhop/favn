@@ -1,4 +1,5 @@
 import type { WebSession } from './session';
+import { markSanitizedResponse } from './sanitized_response';
 import { currentWebRuntimeConfig } from './runtime_config';
 
 export type OrchestratorFailureCode = 'orchestrator_unavailable' | 'orchestrator_timeout';
@@ -9,20 +10,19 @@ export function orchestratorFailureResponse(code: OrchestratorFailureCode): Resp
 		code === 'orchestrator_timeout'
 			? 'Orchestrator service did not respond in time'
 			: 'Orchestrator service is unavailable';
-	return new Response(
-		JSON.stringify({
-			error: {
-				code,
-				message
+	return markSanitizedResponse(
+		new Response(
+			JSON.stringify({
+				error: {
+					code,
+					message
+				}
+			}),
+			{
+				status,
+				headers: { 'content-type': 'application/json; charset=utf-8' }
 			}
-		}),
-		{
-			status,
-			headers: {
-				'content-type': 'application/json; charset=utf-8',
-				'x-favn-web-sanitized-error': 'true'
-			}
-		}
+		)
 	);
 }
 
