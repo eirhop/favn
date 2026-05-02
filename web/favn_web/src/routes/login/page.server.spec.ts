@@ -190,11 +190,45 @@ describe('login page actions', () => {
 		expect(isActionFailure(result)).toBe(true);
 
 		if (isActionFailure(result)) {
-			expect(result.status).toBe(400);
+			expect(result.status).toBe(502);
 			expect(result.data).toEqual({
-				message: 'Unable to reach orchestrator service',
+				message: 'Login service is temporarily unavailable',
 				username: 'admin'
 			});
+		}
+
+		expect(webSessionFromLoginPayload).not.toHaveBeenCalled();
+		expect(setWebSessionCookie).not.toHaveBeenCalled();
+		expect(locals.session).toBeNull();
+		expect(cookies).toEqual({});
+	});
+
+	it('sanitizes upstream server errors from login responses', async () => {
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(JSON.stringify({ error: { message: 'database password leaked' } }), {
+				status: 500,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		const cookies = {};
+		const locals = { session: null as WebSession | null };
+
+		const result = await actions.default({
+			request: createRequest({ username: 'admin', password: 'admin-password' }),
+			cookies,
+			locals
+		} as never);
+
+		expect(isActionFailure(result)).toBe(true);
+
+		if (isActionFailure(result)) {
+			expect(result.status).toBe(502);
+			expect(result.data).toEqual({
+				message: 'Login service is temporarily unavailable',
+				username: 'admin'
+			});
+			expect(JSON.stringify(result.data)).not.toContain('password leaked');
 		}
 
 		expect(webSessionFromLoginPayload).not.toHaveBeenCalled();

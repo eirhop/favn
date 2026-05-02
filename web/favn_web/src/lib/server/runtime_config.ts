@@ -1,11 +1,16 @@
-import { dev } from '$app/environment';
+import { building, dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 
 const REQUIRED_SECRET_LENGTH = 32;
+export const DEFAULT_ORCHESTRATOR_BASE_URL = 'http://127.0.0.1:4101';
+export const DEFAULT_ORCHESTRATOR_TIMEOUT_MS = 2000;
+const MIN_ORCHESTRATOR_TIMEOUT_MS = 100;
+const MAX_ORCHESTRATOR_TIMEOUT_MS = 30_000;
 
 export type WebProductionRuntimeConfig = {
 	orchestratorBaseUrl: string;
 	orchestratorServiceToken: string;
+	orchestratorTimeoutMs: number;
 	sessionSecret: string;
 };
 
@@ -26,6 +31,25 @@ export class WebProductionRuntimeConfigError extends Error {
 }
 
 type RuntimeEnv = Record<string, string | undefined>;
+type RuntimeMode = {
+	building: boolean;
+	dev: boolean;
+};
+
+let cachedProductionRuntimeConfig: WebProductionRuntimeConfig | null | undefined;
+
+export function currentWebRuntimeEnv(): RuntimeEnv {
+	return {
+		NODE_ENV: env.NODE_ENV ?? process.env.NODE_ENV,
+		FAVN_WEB_ORCHESTRATOR_BASE_URL:
+			env.FAVN_WEB_ORCHESTRATOR_BASE_URL ?? process.env.FAVN_WEB_ORCHESTRATOR_BASE_URL,
+		FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN:
+			env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN ?? process.env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN,
+		FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS:
+			env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS ?? process.env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS,
+		FAVN_WEB_SESSION_SECRET: env.FAVN_WEB_SESSION_SECRET ?? process.env.FAVN_WEB_SESSION_SECRET
+	};
+}
 
 function isPresent(value: string | undefined): value is string {
 	return value !== undefined && value.length > 0;
@@ -94,6 +118,33 @@ function validateRequiredSecret(variable: string, value: string | undefined) {
 	return null;
 }
 
+function parseInteger(value: string): number | null {
+	if (!/^\d+$/.test(value)) return null;
+
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function validateOptionalTimeout(variable: string, value: string | undefined) {
+	if (!isPresent(value)) return null;
+
+	const parsed = parseInteger(value);
+
+	if (
+		parsed === null ||
+		parsed < MIN_ORCHESTRATOR_TIMEOUT_MS ||
+		parsed > MAX_ORCHESTRATOR_TIMEOUT_MS
+	) {
+		return {
+			variable,
+			message: `must be an integer between ${MIN_ORCHESTRATOR_TIMEOUT_MS} and ${MAX_ORCHESTRATOR_TIMEOUT_MS}`,
+			value
+		};
+	}
+
+	return null;
+}
+
 function formatRuntimeConfigIssues(issues: WebProductionRuntimeConfigIssue[]): string {
 	const details = issues
 		.map((issue) => `${issue.variable} ${issue.message} (value: ${issue.value})`)
@@ -114,6 +165,10 @@ export function validateWebProductionRuntimeConfig(
 			'FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN',
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN
 		),
+		validateOptionalTimeout(
+			'FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS',
+			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS
+		),
 		validateRequiredSecret('FAVN_WEB_SESSION_SECRET', runtimeEnv.FAVN_WEB_SESSION_SECRET)
 	].filter((issue): issue is WebProductionRuntimeConfigIssue => issue !== null);
 
@@ -124,18 +179,67 @@ export function validateWebProductionRuntimeConfig(
 	return {
 		orchestratorBaseUrl: runtimeEnv.FAVN_WEB_ORCHESTRATOR_BASE_URL as string,
 		orchestratorServiceToken: runtimeEnv.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN as string,
+		orchestratorTimeoutMs:
+			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS === undefined ||
+			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS.length === 0
+				? DEFAULT_ORCHESTRATOR_TIMEOUT_MS
+				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
 		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET as string
 	};
 }
 
-export function shouldValidateWebProductionRuntimeConfig(runtimeEnv: RuntimeEnv): boolean {
-	return !dev && runtimeEnv.NODE_ENV !== 'test';
+export function shouldValidateWebProductionRuntimeConfig(
+	runtimeEnv: RuntimeEnv,
+	runtimeMode: RuntimeMode = { building, dev }
+): boolean {
+	return !runtimeMode.dev && !runtimeMode.building && runtimeEnv.NODE_ENV !== 'test';
 }
 
 export function validateCurrentWebProductionRuntimeConfig(): WebProductionRuntimeConfig | null {
-	if (!shouldValidateWebProductionRuntimeConfig(env)) {
+	const runtimeEnv = currentWebRuntimeEnv();
+
+	if (!shouldValidateWebProductionRuntimeConfig(runtimeEnv)) {
 		return null;
 	}
 
-	return validateWebProductionRuntimeConfig(env);
+	return validateWebProductionRuntimeConfig(runtimeEnv);
+}
+
+export function ensureCurrentWebProductionRuntimeConfig(): WebProductionRuntimeConfig | null {
+	if (cachedProductionRuntimeConfig !== undefined) return cachedProductionRuntimeConfig;
+
+	cachedProductionRuntimeConfig = validateCurrentWebProductionRuntimeConfig();
+	return cachedProductionRuntimeConfig;
+}
+
+export function currentWebRuntimeConfig(): WebProductionRuntimeConfig {
+	const productionConfig = ensureCurrentWebProductionRuntimeConfig();
+
+	if (productionConfig) return productionConfig;
+
+	const runtimeEnv = currentWebRuntimeEnv();
+	const orchestratorServiceToken = runtimeEnv.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN;
+	if (!isPresent(orchestratorServiceToken)) {
+		throw new Error('Missing FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN for orchestrator service auth');
+	}
+
+	const timeoutIssue = validateOptionalTimeout(
+		'FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS',
+		runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS
+	);
+
+	if (timeoutIssue) {
+		throw new WebProductionRuntimeConfigError([timeoutIssue]);
+	}
+
+	return {
+		orchestratorBaseUrl: runtimeEnv.FAVN_WEB_ORCHESTRATOR_BASE_URL || DEFAULT_ORCHESTRATOR_BASE_URL,
+		orchestratorServiceToken,
+		orchestratorTimeoutMs:
+			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS === undefined ||
+			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS.length === 0
+				? DEFAULT_ORCHESTRATOR_TIMEOUT_MS
+				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
+		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET || ''
+	};
 }

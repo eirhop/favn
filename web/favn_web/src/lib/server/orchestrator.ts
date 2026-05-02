@@ -1,39 +1,33 @@
-import { env } from '$env/dynamic/private';
 import type { WebSession } from './session';
+import { markSanitizedResponse } from './sanitized_response';
+import { currentWebRuntimeConfig } from './runtime_config';
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:4101';
+export type OrchestratorFailureCode = 'orchestrator_unavailable' | 'orchestrator_timeout';
 
-function orchestratorBaseUrl(): string {
-	return env.FAVN_WEB_ORCHESTRATOR_BASE_URL || DEFAULT_BASE_URL;
-}
-
-function orchestratorServiceToken(): string {
-	const token = env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN;
-
-	if (token && token.length > 0) {
-		return token;
-	}
-
-	throw new Error('Missing FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN for orchestrator service auth');
-}
-
-function orchestratorUrl(pathname: string): URL {
-	return new URL(pathname, orchestratorBaseUrl());
-}
-
-function orchestratorUnavailableResponse(): Response {
-	return new Response(
-		JSON.stringify({
-			error: {
-				code: 'bad_gateway',
-				message: 'Unable to reach orchestrator service'
+export function orchestratorFailureResponse(code: OrchestratorFailureCode): Response {
+	const status = code === 'orchestrator_timeout' ? 504 : 502;
+	const message =
+		code === 'orchestrator_timeout'
+			? 'Orchestrator service did not respond in time'
+			: 'Orchestrator service is unavailable';
+	return markSanitizedResponse(
+		new Response(
+			JSON.stringify({
+				error: {
+					code,
+					message
+				}
+			}),
+			{
+				status,
+				headers: { 'content-type': 'application/json; charset=utf-8' }
 			}
-		}),
-		{
-			status: 502,
-			headers: { 'content-type': 'application/json; charset=utf-8' }
-		}
+		)
 	);
+}
+
+function timeoutFailure(signal: AbortSignal): OrchestratorFailureCode {
+	return signal.aborted ? 'orchestrator_timeout' : 'orchestrator_unavailable';
 }
 
 async function orchestratorRequest(
@@ -41,9 +35,12 @@ async function orchestratorRequest(
 	init: RequestInit = {},
 	session?: WebSession
 ): Promise<Response> {
+	const config = currentWebRuntimeConfig();
 	const headers = new Headers(init.headers);
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), config.orchestratorTimeoutMs);
 
-	headers.set('authorization', `Bearer ${orchestratorServiceToken()}`);
+	headers.set('authorization', `Bearer ${config.orchestratorServiceToken}`);
 	headers.set('x-favn-service', 'favn_web');
 
 	if (session) {
@@ -52,12 +49,15 @@ async function orchestratorRequest(
 	}
 
 	try {
-		return await fetch(orchestratorUrl(pathname), {
+		return await fetch(new URL(pathname, config.orchestratorBaseUrl), {
 			...init,
-			headers
+			headers,
+			signal: controller.signal
 		});
 	} catch {
-		return orchestratorUnavailableResponse();
+		return orchestratorFailureResponse(timeoutFailure(controller.signal));
+	} finally {
+		clearTimeout(timeout);
 	}
 }
 

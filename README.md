@@ -506,8 +506,18 @@ Storage modes:
 use the generated `bin/start` and `bin/stop` scripts. The launcher starts the
 runner, SQLite adapter, and orchestrator in one backend BEAM runtime, but it is
 not yet a self-contained operational production artifact because it depends on
-the installed runtime source root. Web production startup and Postgres
-production mode are not included.
+the installed runtime source root. Postgres production mode is not included, and
+the web service is still deployed as a separate explicit process.
+
+`web/favn_web` has an explicit SvelteKit Node production path. Build it with
+`npm run build` and start it with `npm run start` from `web/favn_web`; the start
+script runs `node build`. Required production env is
+`FAVN_WEB_ORCHESTRATOR_BASE_URL`, `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, and
+`FAVN_WEB_SESSION_SECRET`, with optional
+`FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS` defaulting to `2000`. The web process exposes
+`/api/web/v1/health/live` without an orchestrator check and
+`/api/web/v1/health/ready` with a bounded orchestrator readiness check. See
+`docs/production/web_service.md` and `web/favn_web/README.md`.
 
 `mix favn.bootstrap.single` bootstraps the backend control-plane side of the
 single-node shape through orchestrator APIs. Required inputs can be passed as

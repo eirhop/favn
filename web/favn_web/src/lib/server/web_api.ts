@@ -1,4 +1,5 @@
 import type { RequestEvent } from '@sveltejs/kit';
+import { isSanitizedResponse } from './sanitized_response';
 import { validateWebSession } from './session_guard';
 
 type JsonRecord = Record<string, unknown>;
@@ -25,6 +26,15 @@ export async function requireSession(event: RequestEvent): Promise<Response | nu
 export async function relayJson(upstream: Response): Promise<Response> {
 	if (upstream.status === 204 || upstream.status === 205 || upstream.status === 304) {
 		return new Response(null, { status: upstream.status });
+	}
+
+	if (isSanitizedResponse(upstream)) {
+		return upstream;
+	}
+
+	if (upstream.status >= 500) {
+		await upstream.body?.cancel().catch(() => undefined);
+		return jsonError(502, 'bad_gateway', 'Orchestrator service returned an unavailable response');
 	}
 
 	let payload: unknown;

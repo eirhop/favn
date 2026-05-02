@@ -10,7 +10,10 @@ Code:
 - Favn components under `web/favn_web/src/lib/components/favn/`
 - BFF/server helpers under `web/favn_web/src/lib/server/`
 - Production runtime config validation in `web/favn_web/src/lib/server/runtime_config.ts`
+- Web readiness aggregation in `web/favn_web/src/lib/server/readiness.ts`
 - web API routes under `web/favn_web/src/routes/api/web/v1/`
+- Web health/readiness routes under `web/favn_web/src/routes/api/web/v1/health/`
+- Production Node adapter config in `web/favn_web/svelte.config.js`
 
 Tests:
 
