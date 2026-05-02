@@ -43,8 +43,8 @@ defmodule FavnOrchestrator.Auth do
   end
 
   @spec introspect_session(String.t()) :: {:ok, session(), actor()} | {:error, term()}
-  def introspect_session(session_id) when is_binary(session_id) do
-    Store.introspect_session(session_id)
+  def introspect_session(session_token) when is_binary(session_token) do
+    Store.introspect_session(session_token)
   end
 
   @spec revoke_session(String.t()) :: :ok
@@ -76,12 +76,16 @@ defmodule FavnOrchestrator.Auth do
   @spec get_actor(String.t()) :: {:ok, actor()} | {:error, term()}
   def get_actor(actor_id), do: Store.get_actor(actor_id)
 
-  @spec actor_from_forwarded_context(String.t(), String.t()) ::
+  @spec actor_from_session_token(String.t()) :: {:ok, session(), actor()} | {:error, term()}
+  def actor_from_session_token(session_token) when is_binary(session_token) do
+    Store.introspect_session(session_token)
+  end
+
+  @spec actor_from_forwarded_context(String.t() | nil, String.t()) ::
           {:ok, session(), actor()} | {:error, term()}
-  def actor_from_forwarded_context(actor_id, session_id)
-      when is_binary(actor_id) and is_binary(session_id) do
-    with {:ok, session, actor} <- Store.introspect_session(session_id),
-         true <- actor.id == actor_id do
+  def actor_from_forwarded_context(actor_id, session_token) when is_binary(session_token) do
+    with {:ok, session, actor} <- Store.introspect_session(session_token),
+         true <- is_nil(actor_id) or actor_id == "" or actor.id == actor_id do
       {:ok, session, actor}
     else
       false -> {:error, :actor_session_mismatch}

@@ -36,7 +36,7 @@ defmodule Favn.SQLiteStorageTest do
       File.rm(db_path)
     end)
 
-    :ok
+    {:ok, db_path: db_path}
   end
 
   test "persists and fetches runs" do
@@ -68,6 +68,68 @@ defmodule Favn.SQLiteStorageTest do
 
   test "returns :not_found for missing run id" do
     assert {:error, :not_found} = Storage.get_run("missing-sqlite-run")
+  end
+
+  test "auth actors credentials sessions revocations and audits survive repo restart", %{
+    db_path: db_path
+  } do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    actor = %{
+      id: "act_sqlite",
+      username: "admin",
+      display_name: "Admin",
+      roles: [:admin],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    credential = %{
+      algorithm: :pbkdf2_sha256,
+      iterations: 100_000,
+      salt: Base.encode64(:crypto.strong_rand_bytes(16)),
+      digest: Base.encode64(:crypto.strong_rand_bytes(32))
+    }
+
+    session = %{
+      id: "ses_sqlite",
+      token_hash: Base.url_encode64(:crypto.hash(:sha256, "raw-token"), padding: false),
+      actor_id: actor.id,
+      provider: "password_local",
+      issued_at: now,
+      expires_at: DateTime.add(now, 3600, :second),
+      revoked_at: nil
+    }
+
+    audit = %{
+      id: "aud_sqlite",
+      occurred_at: now,
+      action: "auth.test",
+      actor_id: actor.id,
+      session_id: session.id,
+      outcome: "accepted"
+    }
+
+    assert :ok = OrchestratorStorage.put_auth_actor(actor)
+    assert :ok = OrchestratorStorage.put_auth_credential(actor.id, credential)
+    assert :ok = OrchestratorStorage.put_auth_session(session)
+    assert :ok = OrchestratorStorage.revoke_auth_session(session.id, now)
+    assert :ok = OrchestratorStorage.put_auth_audit(audit)
+
+    :ok = stop_supervised(Repo)
+    start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+
+    assert {:ok, ^actor} = OrchestratorStorage.get_auth_actor(actor.id)
+    assert {:ok, ^actor} = OrchestratorStorage.get_auth_actor_by_username(actor.username)
+    assert {:ok, ^credential} = OrchestratorStorage.get_auth_credential(actor.id)
+
+    assert {:ok, restored_session} =
+             OrchestratorStorage.get_auth_session_by_token_hash(session.token_hash)
+
+    assert restored_session.id == session.id
+    assert restored_session.revoked_at == now
+    assert {:ok, [^audit]} = OrchestratorStorage.list_auth_audit(limit: 10)
   end
 
   test "does not keep run_write_orders helper table after migrations" do

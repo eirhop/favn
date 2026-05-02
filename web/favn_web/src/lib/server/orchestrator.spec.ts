@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WebSession } from './session';
 
 const session: WebSession = {
+	session_token: 'opaque-session-token-1',
 	session_id: 'sess_test',
 	actor_id: 'actor_test',
 	provider: 'password_local',
@@ -42,7 +43,31 @@ describe('orchestrator client', () => {
 		expect(headers.get('authorization')).toBe('Bearer orchestrator-service-token-32-char-minimum');
 		expect(headers.get('x-favn-service')).toBe('favn_web');
 		expect(headers.get('x-favn-actor-id')).toBe('actor_test');
-		expect(headers.get('x-favn-session-id')).toBe('sess_test');
+		expect(headers.get('x-favn-session-token')).toBe('opaque-session-token-1');
+		expect(headers.has('x-favn-session-id')).toBe(false);
+	});
+
+	it('revokes the durable session with service auth and session token header', async () => {
+		setValidEnv();
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+		const { orchestratorRevokeSession } = await import('./orchestrator');
+
+		await orchestratorRevokeSession(session);
+
+		expect(fetchMock).toHaveBeenCalledOnce();
+		const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+		const headers = new Headers(init.headers);
+
+		expect(url.toString()).toBe(
+			'https://orchestrator.internal:4101/api/orchestrator/v1/auth/sessions/revoke'
+		);
+		expect(init.method).toBe('POST');
+		expect(init.body).toBeUndefined();
+		expect(headers.get('authorization')).toBe('Bearer orchestrator-service-token-32-char-minimum');
+		expect(headers.get('x-favn-service')).toBe('favn_web');
+		expect(headers.get('x-favn-session-token')).toBe('opaque-session-token-1');
+		expect(headers.has('x-favn-session-id')).toBe(false);
 	});
 
 	it('returns a sanitized response when orchestrator is unreachable', async () => {
@@ -90,7 +115,5 @@ describe('orchestrator client', () => {
 				message: 'Orchestrator service did not respond in time'
 			}
 		});
-
-		vi.useRealTimers();
 	});
 });

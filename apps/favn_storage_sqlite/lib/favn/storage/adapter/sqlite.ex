@@ -619,8 +619,281 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
+  @impl true
+  def put_auth_actor(actor, opts) when is_map(actor) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = """
+      INSERT INTO favn_auth_actors (actor_id, username, display_name, roles_blob, status, inserted_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      ON CONFLICT(actor_id) DO UPDATE SET
+        username = excluded.username,
+        display_name = excluded.display_name,
+        roles_blob = excluded.roles_blob,
+        status = excluded.status,
+        updated_at = excluded.updated_at
+      """
+
+      params = [
+        actor.id,
+        actor.username,
+        actor.display_name,
+        encode_payload(actor.roles),
+        encode_atom(actor.status),
+        encode_datetime(actor.inserted_at),
+        encode_datetime(actor.updated_at)
+      ]
+
+      query_ok(repo, sql, params)
+    end
+  end
+
+  @impl true
+  def get_auth_actor(actor_id, opts) when is_binary(actor_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      fetch_auth_actor(repo, "actor_id = ?1", [actor_id])
+    end
+  end
+
+  @impl true
+  def get_auth_actor_by_username(username, opts) when is_binary(username) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      fetch_auth_actor(repo, "username = ?1", [username])
+    end
+  end
+
+  @impl true
+  def list_auth_actors(opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = "SELECT #{auth_actor_columns()} FROM favn_auth_actors ORDER BY username ASC"
+      decode_rows(repo, sql, [], &decode_auth_actor_row/1)
+    end
+  end
+
+  @impl true
+  def put_auth_credential(actor_id, credential, opts)
+      when is_binary(actor_id) and is_map(credential) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = """
+      INSERT INTO favn_auth_credentials (actor_id, credential_blob, updated_at)
+      VALUES (?1, ?2, ?3)
+      ON CONFLICT(actor_id) DO UPDATE SET
+        credential_blob = excluded.credential_blob,
+        updated_at = excluded.updated_at
+      """
+
+      query_ok(repo, sql, [
+        actor_id,
+        encode_payload(credential),
+        encode_datetime(DateTime.utc_now())
+      ])
+    end
+  end
+
+  @impl true
+  def get_auth_credential(actor_id, opts) when is_binary(actor_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = "SELECT credential_blob FROM favn_auth_credentials WHERE actor_id = ?1 LIMIT 1"
+
+      case SQL.query(repo, sql, [actor_id]) do
+        {:ok, %{rows: [[payload]]}} -> decode_payload(payload)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def put_auth_session(session, opts) when is_map(session) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = """
+      INSERT INTO favn_auth_sessions (session_id, token_hash, actor_id, provider, issued_at, expires_at, revoked_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      ON CONFLICT(session_id) DO UPDATE SET
+        token_hash = excluded.token_hash,
+        actor_id = excluded.actor_id,
+        provider = excluded.provider,
+        issued_at = excluded.issued_at,
+        expires_at = excluded.expires_at,
+        revoked_at = excluded.revoked_at
+      """
+
+      params = [
+        session.id,
+        session.token_hash,
+        session.actor_id,
+        session.provider,
+        encode_datetime(session.issued_at),
+        encode_datetime(session.expires_at),
+        encode_datetime(session.revoked_at)
+      ]
+
+      query_ok(repo, sql, params)
+    end
+  end
+
+  @impl true
+  def get_auth_session(session_id, opts) when is_binary(session_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      fetch_auth_session(repo, "session_id = ?1", [session_id])
+    end
+  end
+
+  @impl true
+  def get_auth_session_by_token_hash(token_hash, opts)
+      when is_binary(token_hash) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      fetch_auth_session(repo, "token_hash = ?1", [token_hash])
+    end
+  end
+
+  @impl true
+  def revoke_auth_session(session_id, revoked_at, opts)
+      when is_binary(session_id) and is_struct(revoked_at, DateTime) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        "UPDATE favn_auth_sessions SET revoked_at = ?1 WHERE session_id = ?2 AND revoked_at IS NULL"
+
+      query_ok(repo, sql, [encode_datetime(revoked_at), session_id])
+    end
+  end
+
+  @impl true
+  def revoke_auth_sessions_for_actor(actor_id, revoked_at, opts)
+      when is_binary(actor_id) and is_struct(revoked_at, DateTime) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        "UPDATE favn_auth_sessions SET revoked_at = ?1 WHERE actor_id = ?2 AND revoked_at IS NULL"
+
+      query_ok(repo, sql, [encode_datetime(revoked_at), actor_id])
+    end
+  end
+
+  @impl true
+  def put_auth_audit(entry, opts) when is_map(entry) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = """
+      INSERT INTO favn_auth_audits (audit_id, occurred_at, action, actor_id, session_id, outcome, entry_blob)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      """
+
+      params = [
+        Map.fetch!(entry, :id),
+        encode_datetime(Map.fetch!(entry, :occurred_at)),
+        Map.get(entry, :action),
+        Map.get(entry, :actor_id),
+        Map.get(entry, :session_id),
+        Map.get(entry, :outcome),
+        encode_payload(entry)
+      ]
+
+      query_ok(repo, sql, params)
+    end
+  end
+
+  @impl true
+  def list_auth_audit(audit_opts, opts) when is_list(audit_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      limit = audit_opts |> Keyword.get(:limit, 100) |> max(1) |> min(500)
+
+      sql =
+        "SELECT entry_blob FROM favn_auth_audits ORDER BY occurred_at DESC, audit_id DESC LIMIT ?1"
+
+      case SQL.query(repo, sql, [limit]) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
+            case decode_payload(payload) do
+              {:ok, entry} when is_map(entry) -> {:cont, {:ok, [entry | acc]}}
+              {:ok, other} -> {:halt, {:error, {:invalid_auth_audit_payload, other}}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+          |> case do
+            {:ok, entries} -> {:ok, Enum.reverse(entries)}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
   defp coverage_baseline_columns do
     "baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted, window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id, manifest_version_id, status, errors_blob, metadata_blob, created_at, updated_at"
+  end
+
+  defp auth_actor_columns do
+    "actor_id, username, display_name, roles_blob, status, inserted_at, updated_at"
+  end
+
+  defp auth_session_columns do
+    "session_id, token_hash, actor_id, provider, issued_at, expires_at, revoked_at"
+  end
+
+  defp fetch_auth_actor(repo, where_sql, params) do
+    sql = "SELECT #{auth_actor_columns()} FROM favn_auth_actors WHERE #{where_sql} LIMIT 1"
+
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: [row]}} -> decode_auth_actor_row(row)
+      {:ok, %{rows: []}} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_auth_session(repo, where_sql, params) do
+    sql = "SELECT #{auth_session_columns()} FROM favn_auth_sessions WHERE #{where_sql} LIMIT 1"
+
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: [row]}} -> decode_auth_session_row(row)
+      {:ok, %{rows: []}} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_auth_actor_row([
+         actor_id,
+         username,
+         display_name,
+         roles_blob,
+         status,
+         inserted_at,
+         updated_at
+       ]) do
+    with {:ok, roles} <- decode_payload(roles_blob),
+         {:ok, status} <- existing_atom(status) do
+      {:ok,
+       %{
+         id: actor_id,
+         username: username,
+         display_name: display_name,
+         roles: roles,
+         status: status,
+         inserted_at: decode_datetime(inserted_at),
+         updated_at: decode_datetime(updated_at)
+       }}
+    end
+  end
+
+  defp decode_auth_session_row([
+         session_id,
+         token_hash,
+         actor_id,
+         provider,
+         issued_at,
+         expires_at,
+         revoked_at
+       ]) do
+    {:ok,
+     %{
+       id: session_id,
+       token_hash: token_hash,
+       actor_id: actor_id,
+       provider: provider,
+       issued_at: decode_datetime(issued_at),
+       expires_at: decode_datetime(expires_at),
+       revoked_at: decode_datetime(revoked_at)
+     }}
   end
 
   defp backfill_window_columns do
@@ -858,6 +1131,13 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp query_ok(repo, sql, params) do
+    case SQL.query(repo, sql, params) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp delete_scoped(repo, table, [], _columns) do

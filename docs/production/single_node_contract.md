@@ -19,16 +19,16 @@ This is an architecture and documentation contract. The current
 launcher, but it is not yet marked as an operational production artifact. It
 depends on the recorded installed runtime source root rather than a
 self-contained runtime closure, and generated `bin/start`/`bin/stop` still need
-executed artifact verification. Full release packaging, backup automation, and
-auth/session persistence remain follow-up implementation work. `favn_web` now has
-an explicit Node production service path documented in
+executed artifact verification. Full release packaging and backup automation
+remain follow-up implementation work. `favn_web` now has an explicit Node
+production service path documented in
 `docs/production/web_service.md`, but it is not yet bundled into
 `mix favn.build.single`.
 
-Phase 1 runtime config validation, backend control-plane bootstrap, and explicit
-web service startup/readiness have landed, while full operator runbooks,
-production web hardening, and auth/session persistence remain follow-up
-implementation work.
+Phase 1 runtime config validation, backend control-plane bootstrap, explicit web
+service startup/readiness, and SQLite-backed auth/session/audit persistence have
+landed, while full operator runbooks and production web hardening remain
+follow-up implementation work.
 
 Follow-up issues must treat this document as the product contract they are
 making real.
@@ -42,9 +42,9 @@ register the persisted manifest with the local runner through
 verifies active-manifest selection through the service-auth-only
 `/api/orchestrator/v1/bootstrap/active-manifest` endpoint. The implemented SQLite
 acceptance verification covers manifest persistence, active-manifest selection,
-scheduler state, runner registration, and restart survival. Durable first-admin/
-browser-login setup, durable sessions, actors, credentials, and audit logs are
-deliberately deferred to #249 / Phase 3.
+scheduler state, runner registration, and restart survival. Focused storage
+coverage verifies SQLite restart survival for actors, credential hashes,
+session-token hashes, revocations, and redacted audit entries.
 
 ## Supported V1 Topology
 
@@ -121,8 +121,8 @@ SQLite stores the control-plane state needed to operate the backend, including:
 - Run snapshots and run events.
 - Scheduler cursors/state.
 - Operational backfill read models.
-- Durable auth, sessions, actors, and audit data after the corresponding
-  production persistence issue lands.
+- Durable auth actors, credential hashes, session-token hashes, revocation
+  timestamps, and redacted audit entries.
 - Future command idempotency state after the command-safety issue lands.
 
 In-memory storage is not a production mode. Postgres support exists as adapter

@@ -556,6 +556,46 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
+  @impl true
+  def put_auth_actor(_actor, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def get_auth_actor(_actor_id, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def get_auth_actor_by_username(_username, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def list_auth_actors(_opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def put_auth_credential(_actor_id, _credential, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def get_auth_credential(_actor_id, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def put_auth_session(_session, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def get_auth_session(_session_id, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def get_auth_session_by_token_hash(_token_hash, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def revoke_auth_session(_session_id, _revoked_at, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def revoke_auth_sessions_for_actor(_actor_id, _revoked_at, _opts),
+    do: auth_persistence_not_supported()
+
+  @impl true
+  def put_auth_audit(_entry, _opts), do: auth_persistence_not_supported()
+
+  @impl true
+  def list_auth_audit(_audit_opts, _opts), do: auth_persistence_not_supported()
+
   defp coverage_baseline_params(%CoverageBaseline{} = baseline) do
     [
       baseline.baseline_id,
@@ -1373,6 +1413,8 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp decode_payload(payload) when is_binary(payload), do: PayloadCodec.decode(payload)
+
+  defp auth_persistence_not_supported, do: {:error, :auth_persistence_not_supported}
 
   defp existing_atom(value) when is_binary(value) do
     {:ok, String.to_existing_atom(value)}

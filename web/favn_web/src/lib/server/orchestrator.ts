@@ -45,7 +45,7 @@ async function orchestratorRequest(
 
 	if (session) {
 		headers.set('x-favn-actor-id', session.actor_id);
-		headers.set('x-favn-session-id', session.session_id);
+		headers.set('x-favn-session-token', session.session_token);
 	}
 
 	try {
@@ -85,6 +85,13 @@ export function orchestratorAuthed(
 
 export function orchestratorGetMe(session: WebSession): Promise<Response> {
 	return orchestratorAuthed('/api/orchestrator/v1/me', session, {
+		headers: { accept: 'application/json' }
+	});
+}
+
+export function orchestratorRevokeSession(session: WebSession): Promise<Response> {
+	return orchestratorAuthed('/api/orchestrator/v1/auth/sessions/revoke', session, {
+		method: 'POST',
 		headers: { accept: 'application/json' }
 	});
 }

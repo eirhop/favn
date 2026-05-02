@@ -416,6 +416,10 @@ on the web login page. If bootstrap credentials are not configured, local
 tooling keeps using the generated local operator credentials stored under
 `.favn/secrets.json`. Missing local secrets are generated on demand, but corrupt
 or unreadable secrets files fail startup instead of being silently replaced.
+Password login now returns an opaque session token once; clients must forward it
+to the private orchestrator API as `x-favn-session-token`. SQLite storage keeps
+only password credential hashes, deterministic session-token hashes, revocation
+timestamps, actor metadata, and redacted audit entries.
 
 Local numeric config values, including dev ports and Postgres port/pool size,
 are accepted only as positive integers or strings that contain exactly a
@@ -544,6 +548,8 @@ the schema as empty, ready, missing, upgrade-required, newer than the running
 release, or inconsistent. Local/default SQLite startup still auto-runs
 migrations, while manual startup can reject non-ready existing databases and can
 initialize empty databases when explicitly enabled.
+SQLite is also the first durable backend for orchestrator auth/session/audit
+state; Postgres auth persistence remains deferred.
 
 Detailed operator diagnostics are available through the private orchestrator
 HTTP endpoint `GET /api/orchestrator/v1/diagnostics` with service auth and the

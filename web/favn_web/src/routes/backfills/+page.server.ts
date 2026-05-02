@@ -1,9 +1,10 @@
 import { redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { clearWebSessionCookie } from '$lib/server/session';
+import { clearWebSessionCookie, publicWebSession } from '$lib/server/session';
 import {
 	orchestratorGetActiveManifest,
-	orchestratorListCoverageBaselines
+	orchestratorListCoverageBaselines,
+	orchestratorRevokeSession
 } from '$lib/server/orchestrator';
 import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
 import { normalizePipelineTargets } from '$lib/pipeline_run_submission';
@@ -55,7 +56,7 @@ export const load: PageServerLoad = async (event) => {
 	const baselinesPayload = baselinesResponse.ok ? await readJsonOr(baselinesResponse, []) : [];
 
 	return {
-		session: locals.session,
+		session: publicWebSession(session),
 		activeManifestVersionId: normalizeActiveManifest(activeManifestPayload),
 		pipelineTargets: normalizePipelineTargets(activeManifestPayload),
 		coverageBaselines: normalizeCoverageBaselines(baselinesPayload),
@@ -65,6 +66,7 @@ export const load: PageServerLoad = async (event) => {
 
 export const actions: Actions = {
 	logout: async ({ cookies, locals }) => {
+		if (locals.session) await orchestratorRevokeSession(locals.session).catch(() => null);
 		clearWebSessionCookie(cookies);
 		locals.session = null;
 		throw redirect(303, '/login');
