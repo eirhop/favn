@@ -68,6 +68,34 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Registers a persisted manifest version with the configured runner boundary.
+  """
+  @spec register_manifest_with_runner(String.t()) :: {:ok, map()} | {:error, term()}
+  def register_manifest_with_runner(manifest_version_id) when is_binary(manifest_version_id) do
+    runner_client = configured_runner_client()
+    runner_opts = configured_runner_opts()
+
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         :ok <- validate_runner_client(runner_client) do
+      content_hash = version.content_hash
+
+      case runner_client.register_manifest(version, runner_opts) do
+        :ok ->
+          {:ok, runner_manifest_registration(version, runner_client, :accepted)}
+
+        {:error, {:manifest_version_conflict, ^manifest_version_id, ^content_hash, ^content_hash}} ->
+          {:ok, runner_manifest_registration(version, runner_client, :already_registered)}
+
+        {:error, {:manifest_version_conflict, ^manifest_version_id, _existing, _incoming}} ->
+          {:error, :runner_manifest_conflict}
+
+        {:error, reason} ->
+          {:error, runner_registration_error(reason)}
+      end
+    end
+  end
+
+  @doc """
   Lists persisted manifest versions.
   """
   @spec list_manifests() :: {:ok, [Version.t()]} | {:error, term()}
@@ -742,6 +770,29 @@ defmodule FavnOrchestrator do
   end
 
   defp validate_runner_client(_module), do: {:error, :runner_client_not_available}
+
+  defp runner_manifest_registration(%Version{} = version, runner_client, status) do
+    %{
+      manifest_version_id: version.manifest_version_id,
+      content_hash: version.content_hash,
+      runner_client: atom_name(runner_client),
+      status: atom_name(status)
+    }
+  end
+
+  defp runner_registration_error(:runner_client_not_available), do: :runner_client_not_available
+  defp runner_registration_error({:runner_node_unreachable, _node}), do: :runner_unavailable
+  defp runner_registration_error({:runner_node_ignored, _node}), do: :runner_unavailable
+
+  defp runner_registration_error({:runner_function_undefined, _module, _function, _arity}),
+    do: :runner_client_not_available
+
+  defp runner_registration_error({:runner_dispatch_failed, _details}), do: :runner_unavailable
+
+  defp runner_registration_error({:manifest_version_conflict, _id, _existing, _incoming}),
+    do: :runner_manifest_conflict
+
+  defp runner_registration_error(_reason), do: :runner_unavailable
 
   defp ref_to_string({module, name}) when is_atom(module) and is_atom(name) do
     Atom.to_string(module) <> ":" <> Atom.to_string(name)

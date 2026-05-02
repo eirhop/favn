@@ -18,4 +18,5 @@ Tests:
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`
 
 Use when changing run lifecycle, scheduling, private API behavior, SSE/events,
-auth, backfill orchestration, or storage contract semantics.
+auth, bootstrap service-token/runner-registration endpoints, backfill
+orchestration, or storage contract semantics.

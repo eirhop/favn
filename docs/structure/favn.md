@@ -12,6 +12,7 @@ Code:
 Tests:
 - `apps/favn/test/`
 - public Mix task tests under `apps/favn/test/mix_tasks/`
+- bootstrap task argument/default coverage in `apps/favn/test/mix_tasks/public_tasks_test.exs`
 
 Use when changing public APIs, public docs breadcrumbs, public SQL client access,
-or public Mix task argument/dispatch behavior.
+or public Mix task argument/dispatch behavior, including `mix favn.bootstrap.single`.

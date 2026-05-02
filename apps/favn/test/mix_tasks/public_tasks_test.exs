@@ -3,9 +3,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
   import ExUnit.CaptureIO
 
+  alias Favn.Dev.Bootstrap.Single, as: BootstrapSingle
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
   alias Mix.Tasks.Favn.Backfill, as: BackfillTask
+  alias Mix.Tasks.Favn.Bootstrap.Single, as: BootstrapSingleTask
   alias Mix.Tasks.Favn.Build.Orchestrator, as: BuildOrchestratorTask
   alias Mix.Tasks.Favn.Build.Runner, as: BuildRunnerTask
   alias Mix.Tasks.Favn.Build.Single, as: BuildSingleTask
@@ -88,6 +90,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       {BuildRunnerTask, "favn.build.runner"},
       {BuildSingleTask, "favn.build.single"},
       {BuildWebTask, "favn.build.web"},
+      {BootstrapSingleTask, "favn.bootstrap.single"},
       {DevTask, "favn.dev"},
       {InstallTask, "favn.install"},
       {LogsTask, "favn.logs"},
@@ -105,6 +108,82 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       assert_raise Mix.Error, ~r/unexpected argument for mix #{Regex.escape(task_name)}/, fn ->
         task.run(["extra"])
       end
+    end
+  end
+
+  test "mix favn.bootstrap.single requires manifest, orchestrator URL, and service token" do
+    previous_env = bootstrap_env()
+    clear_bootstrap_env()
+    on_exit(fn -> restore_bootstrap_env(previous_env) end)
+
+    assert_raise Mix.Error,
+                 ~r/missing required option\(s\): --manifest, --orchestrator-url, --service-token/,
+                 fn -> BootstrapSingleTask.parse_args([]) end
+  end
+
+  test "mix favn.bootstrap.single reads env defaults and lets flags win" do
+    previous_env = bootstrap_env()
+    clear_bootstrap_env()
+
+    System.put_env("FAVN_BOOTSTRAP_MANIFEST_PATH", "/env/manifest.json")
+    System.put_env("FAVN_WEB_ORCHESTRATOR_BASE_URL", "http://127.0.0.1:4000")
+    System.put_env("FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN", "env-token")
+
+    on_exit(fn -> restore_bootstrap_env(previous_env) end)
+
+    opts = BootstrapSingleTask.parse_args(["--manifest", "/flag/manifest.json"])
+
+    assert Keyword.fetch!(opts, :manifest_path) == "/flag/manifest.json"
+    assert Keyword.fetch!(opts, :orchestrator_url) == "http://127.0.0.1:4000"
+    assert Keyword.fetch!(opts, :service_token) == "env-token"
+  end
+
+  test "mix favn.bootstrap.single parses activation flag" do
+    opts =
+      BootstrapSingleTask.parse_args([
+        "--manifest",
+        "/tmp/manifest.json",
+        "--orchestrator-url",
+        "http://127.0.0.1:4101",
+        "--service-token",
+        "token",
+        "--no-activate"
+      ])
+
+    assert Keyword.fetch!(opts, :activate?) == false
+  end
+
+  test "mix favn.bootstrap.single prints matched active-manifest verification", %{
+    root_dir: root_dir
+  } do
+    manifest_path = write_bootstrap_manifest(root_dir)
+    {:ok, version} = BootstrapSingle.read_manifest_version(manifest_path)
+    {:ok, base_url, _server} = start_bootstrap_server({:matched, version.manifest_version_id})
+
+    output =
+      capture_io(fn ->
+        BootstrapSingleTask.run(bootstrap_args(manifest_path, base_url))
+      end)
+
+    assert output =~ "Favn single-node bootstrap complete"
+    assert output =~ "active manifest verification: matched"
+  end
+
+  test "mix favn.bootstrap.single safely prints tuple active-manifest verification", %{
+    root_dir: root_dir
+  } do
+    manifest_path = write_bootstrap_manifest(root_dir)
+
+    for verification <- [:skipped, :mismatch] do
+      {:ok, base_url, _server} = start_bootstrap_server({verification, "mv_other"})
+
+      output =
+        capture_io(fn ->
+          BootstrapSingleTask.run(bootstrap_args(manifest_path, base_url))
+        end)
+
+      assert output =~ "Favn single-node bootstrap complete"
+      assert output =~ "active manifest verification: {:#{verification},"
     end
   end
 
@@ -708,10 +787,138 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "/.favn/dist/single/"
   end
 
+  defp write_bootstrap_manifest(root_dir) do
+    path = Path.join(root_dir, "bootstrap_manifest.json")
+
+    File.write!(
+      path,
+      JSON.encode_to_iodata!(%{
+        schema_version: 1,
+        runner_contract_version: 1,
+        assets: [],
+        pipelines: [],
+        schedules: [],
+        graph: %{},
+        metadata: %{}
+      })
+    )
+
+    path
+  end
+
+  defp bootstrap_args(manifest_path, base_url) do
+    [
+      "--manifest",
+      manifest_path,
+      "--orchestrator-url",
+      base_url,
+      "--service-token",
+      "token-1"
+    ]
+  end
+
+  defp start_bootstrap_server(verification) do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: false, packet: :raw])
+    {:ok, port} = :inet.port(socket)
+
+    server =
+      spawn_link(fn ->
+        serve_bootstrap_requests(socket, verification, 5)
+      end)
+
+    {:ok, "http://127.0.0.1:#{port}", server}
+  end
+
+  defp serve_bootstrap_requests(socket, _verification, 0), do: :gen_tcp.close(socket)
+
+  defp serve_bootstrap_requests(socket, verification, remaining) do
+    {:ok, client} = :gen_tcp.accept(socket, 2_000)
+    {:ok, request} = :gen_tcp.recv(client, 0, 2_000)
+    send_bootstrap_response(client, request, verification)
+    :gen_tcp.close(client)
+    serve_bootstrap_requests(socket, verification, remaining - 1)
+  end
+
+  defp send_bootstrap_response(client, request, verification) do
+    [request_line | _headers] = String.split(request, "\r\n", parts: 2)
+    [_method, path, _version] = String.split(request_line, " ", parts: 3)
+
+    cond do
+      path == "/api/orchestrator/v1/bootstrap/service-token" ->
+        send_json(client, 200, %{data: %{status: "ok"}})
+
+      path == "/api/orchestrator/v1/manifests" ->
+        send_json(client, 200, %{data: %{manifest: %{}}})
+
+      path == "/api/orchestrator/v1/bootstrap/active-manifest" ->
+        send_active_manifest_response(client, verification)
+
+      String.contains?(path, "/api/orchestrator/v1/manifests/") and
+          String.contains?(path, "/runner/register") ->
+        send_json(client, 200, %{data: %{runner: %{}}})
+
+      String.contains?(path, "/api/orchestrator/v1/manifests/") and
+          String.contains?(path, "/activate") ->
+        send_json(client, 200, %{data: %{activated: true}})
+
+      true ->
+        send_json(client, 404, %{error: %{reason: "not_found"}})
+    end
+  end
+
+  defp send_active_manifest_response(client, {status, manifest_version_id})
+       when status in [:matched, :mismatch] do
+    send_json(client, 200, %{data: %{manifest_version_id: manifest_version_id}})
+  end
+
+  defp send_active_manifest_response(client, {:skipped, _reason}) do
+    send_json(client, 503, %{error: %{reason: "unavailable"}})
+  end
+
+  defp send_json(client, status, payload) do
+    body = JSON.encode!(payload)
+    reason = if status == 200, do: "OK", else: "Error"
+
+    :gen_tcp.send(client, [
+      "HTTP/1.1 #{status} #{reason}\r\n",
+      "content-type: application/json\r\n",
+      "content-length: #{byte_size(body)}\r\n",
+      "connection: close\r\n",
+      "\r\n",
+      body
+    ])
+  end
+
   defp free_port do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, false}])
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp clear_bootstrap_env do
+    bootstrap_env_names()
+    |> Enum.each(&System.delete_env/1)
+  end
+
+  defp bootstrap_env do
+    Map.new(bootstrap_env_names(), fn name -> {name, System.get_env(name)} end)
+  end
+
+  defp restore_bootstrap_env(env) when is_map(env) do
+    Enum.each(env, fn
+      {name, nil} -> System.delete_env(name)
+      {name, value} -> System.put_env(name, value)
+    end)
+  end
+
+  defp bootstrap_env_names do
+    [
+      "FAVN_BOOTSTRAP_MANIFEST_PATH",
+      "FAVN_WEB_ORCHESTRATOR_BASE_URL",
+      "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_ORCHESTRATOR_SERVICE_TOKEN"
+    ]
   end
 end

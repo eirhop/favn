@@ -66,12 +66,54 @@ defmodule Favn.Dev.OrchestratorClientTest do
     refute body =~ ~s("__struct__")
   end
 
+  test "verify_service_token/2 checks bootstrap service-token endpoint" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"authenticated":true,"service_tokens":{"redacted":true}}}), 200,
+        parent: parent
+      )
+
+    assert :ok = OrchestratorClient.verify_service_token(base_url, "token")
+    assert_receive {:request_path, "/api/orchestrator/v1/bootstrap/service-token"}
+  end
+
   test "health/1 checks the orchestrator health endpoint" do
     parent = self()
     {:ok, base_url, _server} = start_server(~s({"data":{"status":"ok"}}), 200, parent: parent)
 
     assert :ok = OrchestratorClient.health(base_url)
     assert_receive {:request_path, "/api/orchestrator/v1/health"}
+  end
+
+  test "register_runner/3 asks orchestrator to register manifest with runner" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"registration":{"manifest_version_id":"mv_1"}}}), 200,
+        parent: parent
+      )
+
+    assert {:ok, %{"data" => %{"registration" => %{"manifest_version_id" => "mv_1"}}}} =
+             OrchestratorClient.register_runner(base_url, "token", %{
+               manifest_version_id: "mv_1"
+             })
+
+    assert_receive {:request_path, "/api/orchestrator/v1/manifests/mv_1/runner/register"}
+    assert_receive {:request_body, body}
+    assert body == "{}"
+  end
+
+  test "bootstrap_active_manifest/2 reads service-auth bootstrap active manifest endpoint" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"manifest":{"manifest_version_id":"mv_1"}}}), 200, parent: parent)
+
+    assert {:ok, %{"manifest" => %{"manifest_version_id" => "mv_1"}}} =
+             OrchestratorClient.bootstrap_active_manifest(base_url, "token")
+
+    assert_receive {:request_path, "/api/orchestrator/v1/bootstrap/active-manifest"}
   end
 
   test "password_login/4 returns forwarded session context" do
@@ -111,7 +153,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
       )
 
     assert {:ok, %{"items" => [%{"baseline_id" => "base_1"}]}} =
-              OrchestratorClient.list_coverage_baselines(
+             OrchestratorClient.list_coverage_baselines(
                base_url,
                "token",
                %{"actor_id" => "act_1", "session_id" => "sess_1"},
@@ -134,7 +176,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
       )
 
     assert {:ok, %{"items" => [%{"window_key" => "day:2026-01-01:Etc/UTC"}]}} =
-              OrchestratorClient.list_asset_window_states(
+             OrchestratorClient.list_asset_window_states(
                base_url,
                "token",
                %{"actor_id" => "act_1", "session_id" => "sess_1"},

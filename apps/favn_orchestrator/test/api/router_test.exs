@@ -58,6 +58,41 @@ defmodule FavnOrchestrator.API.RouterTest do
     end
   end
 
+  defmodule RunnerClientConfigurableStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(version, _opts) do
+      send(self(), {:runner_register_manifest, version})
+      Process.get(:runner_register_manifest_result, :ok)
+    end
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      {:ok, %RunnerResult{status: :ok, asset_results: [], metadata: %{}}}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(request, _opts) do
+      {:ok,
+       %Favn.Contracts.RelationInspectionResult{
+         asset_ref: request.asset_ref,
+         relation_ref: %Favn.RelationRef{connection: :warehouse, schema: "raw", name: "orders"},
+         relation: %Favn.SQL.Relation{schema: "raw", name: "orders", type: :table},
+         columns: [%Favn.SQL.Column{name: "id", position: 1, data_type: "INTEGER"}],
+         row_count: 2,
+         sample: %{limit: request.sample_limit, columns: ["id"], rows: [%{"id" => 1}]},
+         inspected_at: ~U[2026-01-01 00:00:00Z]
+       }}
+    end
+  end
+
   setup do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
@@ -74,6 +109,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Admin User")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
+    Process.delete(:runner_register_manifest_result)
 
     auth_start = ensure_auth_store_started()
     :ok = AuthStore.reset()
@@ -88,6 +124,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       restore_env(:favn_orchestrator, :auth_bootstrap_password, previous_password)
       restore_env(:favn_orchestrator, :auth_bootstrap_display_name, previous_display)
       restore_env(:favn_orchestrator, :auth_bootstrap_roles, previous_roles)
+      Process.delete(:runner_register_manifest_result)
       maybe_stop_auth_store(auth_start)
     end)
 
@@ -129,6 +166,156 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert Enum.any?(checks, &(&1["name"] == "runner" and &1["status"] == "error"))
     refute ready_conn.resp_body =~ secret
+  end
+
+  test "valid service token verification returns redacted diagnostics" do
+    response =
+      conn(:get, "/api/orchestrator/v1/bootstrap/service-token")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-service", "bootstrap-cli")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "authenticated" => true,
+               "service_identity" => "bootstrap-cli",
+               "service_tokens" => %{"configured_count" => 1, "redacted" => true}
+             }
+           } = Jason.decode!(response.resp_body)
+
+    refute response.resp_body =~ "test-service-token"
+  end
+
+  test "invalid service token verification is rejected" do
+    response =
+      conn(:get, "/api/orchestrator/v1/bootstrap/service-token")
+      |> put_req_header("authorization", "Bearer wrong-token")
+      |> Router.call(@opts)
+
+    assert response.status == 401
+    assert %{"error" => %{"code" => "service_unauthorized"}} = Jason.decode!(response.resp_body)
+    refute response.resp_body =~ "test-service-token"
+    refute response.resp_body =~ "wrong-token"
+  end
+
+  test "bootstrap active manifest verification uses service auth only" do
+    version = schedule_manifest_version("mv_bootstrap_active")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    response =
+      conn(:get, "/api/orchestrator/v1/bootstrap/active-manifest")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"manifest" => %{"manifest_version_id" => "mv_bootstrap_active"}}} =
+             Jason.decode!(response.resp_body)
+  end
+
+  test "runner registration fetches persisted manifest and calls configured runner" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientConfigurableStub)
+    version = schedule_manifest_version("mv_runner_register")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests/mv_runner_register/runner/register")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "registration" => %{
+                 "manifest_version_id" => "mv_runner_register",
+                 "content_hash" => content_hash,
+                 "status" => "accepted"
+               }
+             }
+           } = Jason.decode!(response.resp_body)
+
+    assert content_hash == version.content_hash
+    assert_received {:runner_register_manifest, ^version}
+  end
+
+  test "runner registration treats same runner manifest as idempotent success" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientConfigurableStub)
+    version = schedule_manifest_version("mv_runner_idempotent")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    Process.put(
+      :runner_register_manifest_result,
+      {:error,
+       {:manifest_version_conflict, version.manifest_version_id, version.content_hash,
+        version.content_hash}}
+    )
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests/mv_runner_idempotent/runner/register")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"registration" => %{"status" => "already_registered"}}} =
+             Jason.decode!(response.resp_body)
+  end
+
+  test "runner registration returns not found for missing manifest" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientConfigurableStub)
+
+    response =
+      conn(:post, "/api/orchestrator/v1/manifests/missing_manifest/runner/register")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 404
+    assert %{"error" => %{"code" => "not_found"}} = Jason.decode!(response.resp_body)
+    refute_received {:runner_register_manifest, _version}
+  end
+
+  test "runner registration returns unavailable and conflict errors" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientConfigurableStub)
+    unavailable_version = schedule_manifest_version("mv_runner_unavailable")
+    conflict_version = schedule_manifest_version("mv_runner_conflict")
+    assert :ok = FavnOrchestrator.register_manifest(unavailable_version)
+    assert :ok = FavnOrchestrator.register_manifest(conflict_version)
+
+    Process.put(
+      :runner_register_manifest_result,
+      {:error, {:runner_node_unreachable, :runner@host}}
+    )
+
+    unavailable_response =
+      conn(:post, "/api/orchestrator/v1/manifests/mv_runner_unavailable/runner/register")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert unavailable_response.status == 503
+
+    assert %{"error" => %{"code" => "runner_unavailable"}} =
+             Jason.decode!(unavailable_response.resp_body)
+
+    Process.put(
+      :runner_register_manifest_result,
+      {:error,
+       {:manifest_version_conflict, conflict_version.manifest_version_id, "existing-hash",
+        conflict_version.content_hash}}
+    )
+
+    conflict_response =
+      conn(:post, "/api/orchestrator/v1/manifests/mv_runner_conflict/runner/register")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert conflict_response.status == 409
+
+    assert %{"error" => %{"code" => "runner_manifest_conflict"}} =
+             Jason.decode!(conflict_response.resp_body)
   end
 
   test "password session login and me endpoint" do

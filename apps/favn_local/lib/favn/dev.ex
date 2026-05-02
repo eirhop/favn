@@ -31,12 +31,14 @@ defmodule Favn.Dev do
   - `reload/1`: rebuild and republish the manifest
   - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
     project-local packaging flows
+  - `bootstrap_single/1`: API-driven single-node backend bootstrap
 
   See `apps/favn_local/README.md` for the full local-tooling contract and `.favn/`
   layout details.
   """
 
   alias Favn.Dev.Backfill
+  alias Favn.Dev.Bootstrap.Single, as: SingleBootstrap
   alias Favn.Dev.Build.Orchestrator, as: OrchestratorBuild
   alias Favn.Dev.Build.Runner, as: RunnerBuild
   alias Favn.Dev.Build.Single, as: SingleBuild
@@ -112,6 +114,12 @@ defmodule Favn.Dev do
   """
   @spec build_single(lifecycle_opts()) :: {:ok, map()} | {:error, term()}
   def build_single(opts \\ []) when is_list(opts), do: SingleBuild.run(opts)
+
+  @doc """
+  Bootstraps a single-node backend through orchestrator HTTP APIs.
+  """
+  @spec bootstrap_single(keyword()) :: {:ok, map()} | {:error, term()}
+  def bootstrap_single(opts \\ []) when is_list(opts), do: SingleBootstrap.run(opts)
 
   @doc """
   Starts local stack in foreground mode.

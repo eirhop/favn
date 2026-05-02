@@ -24,7 +24,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 2. Make Deployment Outputs Real
 
 - Turn `build.single` from a project-local backend launcher into a self-contained, verified operational artifact, turn `build.web` and `build.orchestrator` from metadata outputs into genuinely runnable, supportable deployment artifacts, and align all deployment outputs with the documented production operator path.
-- Verify the SQLite-first single-node deployment path end to end with realistic runtime flows before split-topology production work.
+- Extend the SQLite-first single-node deployment path beyond the implemented Phase 1 backend bootstrap acceptance into realistic runnable-artifact startup, operator runbook, and runtime-flow verification before split-topology production work.
 - Keep `build.runner` aligned with the same production deployment contract.
 
 ### 3. Harden Auth, Sessions, Audit, And Service Trust
@@ -43,6 +43,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 5. Close Storage And Persistence Gaps
 
 - Extend the new orchestrator production readiness surface into operator-facing migration commands/runbooks and coordinate clearly with separate DuckDB data-plane backups for the single-node production contract.
+- Add documented backup/restore procedures and verification for the SQLite control plane and the separate DuckDB/plugin data plane.
 - Move Postgres live verification into the next production mode after SQLite single-node readiness, not the first `v1` gate.
 
 ### 6. Harden The Production-Grade Runtime
@@ -51,6 +52,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Add run-level runtime config preflight for planned SQL assets so SQL connection env refs fail before any asset starts, not only when an adapter connection is opened.
 - Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
 - Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
+- Broaden operator diagnostics beyond the current health/readiness and Phase 1 bootstrap checks, including startup/runbook diagnostics for migrations, active manifest, scheduler, runner availability, and data-plane failures.
 
 ## Later / Future Ideas
 
