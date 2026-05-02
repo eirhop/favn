@@ -13,10 +13,12 @@ defmodule FavnRunner.SQLRuntimePreflight do
 
   @spec run(RunnerWork.t(), Version.t()) :: :ok | {:error, map()}
   def run(%RunnerWork{} = work, %Version{} = version) do
-    version
-    |> planned_assets(work)
-    |> sql_connection_names()
-    |> preflight_connections()
+    requirements =
+      version
+      |> planned_assets(work)
+      |> sql_connection_requirements()
+
+    preflight_connections(requirements)
   end
 
   defp planned_assets(%Version{manifest: %{assets: assets}}, %RunnerWork{} = work)
@@ -35,22 +37,18 @@ defmodule FavnRunner.SQLRuntimePreflight do
 
   defp planned_assets(_version, _work), do: []
 
-  defp planned_refs(%RunnerWork{metadata: metadata} = work) when is_map(metadata) do
-    case Map.get(metadata, :planned_asset_refs) do
-      refs when is_list(refs) and refs != [] -> normalize_refs(refs)
-      _other -> planned_refs_without_metadata(work)
-    end
-  end
+  defp planned_refs(%RunnerWork{planned_asset_refs: refs}) when is_list(refs) and refs != [],
+    do: normalize_refs(refs)
 
-  defp planned_refs(%RunnerWork{} = work), do: planned_refs_without_metadata(work)
+  defp planned_refs(%RunnerWork{} = work), do: planned_refs_without_plan(work)
 
-  defp planned_refs_without_metadata(%RunnerWork{asset_refs: refs})
+  defp planned_refs_without_plan(%RunnerWork{asset_refs: refs})
        when is_list(refs) and refs != [] do
     normalize_refs(refs)
   end
 
-  defp planned_refs_without_metadata(%RunnerWork{asset_ref: ref}) when is_tuple(ref), do: [ref]
-  defp planned_refs_without_metadata(_work), do: []
+  defp planned_refs_without_plan(%RunnerWork{asset_ref: ref}) when is_tuple(ref), do: [ref]
+  defp planned_refs_without_plan(_work), do: []
 
   defp normalize_refs(refs) do
     refs
@@ -59,23 +57,30 @@ defmodule FavnRunner.SQLRuntimePreflight do
     |> Enum.sort(&compare_refs/2)
   end
 
-  defp sql_connection_names(assets) do
-    assets
-    |> Enum.flat_map(fn
-      %Asset{type: :sql, relation: %RelationRef{connection: connection}}
-      when is_atom(connection) ->
-        [connection]
+  defp sql_connection_requirements(assets) do
+    entries =
+      Enum.flat_map(assets, fn
+        %Asset{type: :sql, ref: asset_ref, relation: %RelationRef{connection: connection}}
+        when is_atom(connection) ->
+          [{connection, asset_ref}]
 
-      _asset ->
-        []
-    end)
-    |> Enum.uniq()
-    |> Enum.sort()
+        _asset ->
+          []
+      end)
+
+    %{
+      connections: entries |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> Enum.sort(),
+      sql_asset_refs: entries |> Enum.map(&elem(&1, 1)) |> normalize_refs(),
+      connection_asset_refs:
+        entries
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+        |> Map.new(fn {connection, refs} -> {connection, normalize_refs(refs)} end)
+    }
   end
 
-  defp preflight_connections([]), do: :ok
+  defp preflight_connections(%{connections: []}), do: :ok
 
-  defp preflight_connections(connection_names) do
+  defp preflight_connections(%{connections: connection_names} = requirements) do
     case Loader.resolve_required(connection_names) do
       {:ok, _resolved} ->
         :ok
@@ -85,7 +90,7 @@ defmodule FavnRunner.SQLRuntimePreflight do
         |> ignore_registry_resolved_missing_connections()
         |> case do
           [] -> :ok
-          remaining -> {:error, diagnostic(connection_names, remaining)}
+          remaining -> {:error, diagnostic(requirements, remaining)}
         end
     end
   end
@@ -106,13 +111,15 @@ defmodule FavnRunner.SQLRuntimePreflight do
     :exit, _reason -> errors
   end
 
-  defp diagnostic(connection_names, errors) do
+  defp diagnostic(requirements, errors) do
     %{
       type: :missing_runtime_config,
       phase: :sql_preflight,
       message: "missing required SQL runtime config",
       details: %{
-        connections: connection_names,
+        connections: requirements.connections,
+        sql_asset_refs: requirements.sql_asset_refs,
+        connection_asset_refs: requirements.connection_asset_refs,
         errors: Enum.map(errors, &safe_error/1)
       }
     }

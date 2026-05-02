@@ -72,6 +72,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     assert result.error.type == :missing_runtime_config
     assert result.error.phase == :sql_preflight
     assert result.error.details.connections == [:preflight_sql]
+    assert result.error.details.sql_asset_refs == [sql_ref]
 
     assert [%{type: :missing_env, env: @missing_secret_env, secret?: true}] =
              result.error.details.errors
@@ -90,6 +91,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     assert result.status == :error
     assert result.asset_results == []
     assert result.error.type == :missing_runtime_config
+    assert result.error.details.sql_asset_refs == [sql_ref]
     refute_receive :preflight_elixir_executed, 200
   end
 
@@ -121,6 +123,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
     assert {:ok, result} = FavnRunner.run(work(version, left_ref, [left_ref, right_ref]))
     assert result.status == :error
     assert result.error.details.connections == [:preflight_sql]
+    assert result.error.details.sql_asset_refs == [left_ref, right_ref]
     assert [_one_error] = result.error.details.errors
   end
 
@@ -228,7 +231,8 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
       manifest_content_hash: version.content_hash,
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
-      metadata: %{planned_asset_refs: planned_refs}
+      planned_asset_refs: planned_refs,
+      metadata: %{}
     }
   end
 

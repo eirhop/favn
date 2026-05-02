@@ -533,6 +533,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       manifest_content_hash: version.content_hash,
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
+      planned_asset_refs: planned_asset_refs(run_state),
       params: run_state.params,
       trigger:
         run_state.trigger
@@ -543,8 +544,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           attempt: attempt,
           max_attempts: run_state.max_attempts,
           stage: stage,
-          node_key: node_key,
-          planned_asset_refs: planned_asset_refs(run_state)
+          node_key: node_key
         })
     }
   end
@@ -668,6 +668,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         manifest_content_hash: version.content_hash,
         asset_ref: asset_ref,
         asset_refs: [asset_ref],
+        planned_asset_refs: planned_asset_refs(run_state),
         params: run_state.params,
         trigger: run_state.trigger,
         metadata:
@@ -675,8 +676,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
             attempt: attempt,
             max_attempts: max_attempts,
             stage: stage,
-            node_key: {asset_ref, nil},
-            planned_asset_refs: planned_asset_refs(run_state)
+            node_key: {asset_ref, nil}
           })
       }
 

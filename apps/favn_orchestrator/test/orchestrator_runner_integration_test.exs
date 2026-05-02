@@ -72,7 +72,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     assert run.target_refs == [{__MODULE__.SleepAsset, :asset}]
   end
 
-  test "planned SQL runtime config is preflighted before an earlier Elixir dependency starts" do
+  test "pipeline SQL preflight fails before an earlier Elixir dependency stage starts" do
     configure_missing_secret_connection()
 
     version = preflight_manifest_version("mv_runner_sql_preflight")
@@ -81,12 +81,13 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
 
-    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run(sql_ref)
+    assert {:ok, run_id} = FavnOrchestrator.submit_pipeline_run([sql_ref])
     assert {:ok, run} = await_terminal_run(run_id)
 
     assert run.status == :error
     assert run.error.type == :missing_runtime_config
     assert run.error.phase == :sql_preflight
+    assert run.error.details.sql_asset_refs == [sql_ref]
     assert [%{env: @missing_secret_env, secret?: true}] = run.error.details.errors
     refute_receive :orchestrator_preflight_elixir_executed, 200
   end
