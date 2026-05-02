@@ -3,8 +3,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
   import ExUnit.CaptureIO
 
-  alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.Bootstrap.Single, as: BootstrapSingle
+  alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
   alias Mix.Tasks.Favn.Backfill, as: BackfillTask
   alias Mix.Tasks.Favn.Bootstrap.Single, as: BootstrapSingleTask
@@ -850,19 +850,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       path == "/api/orchestrator/v1/manifests" ->
         send_json(client, 200, %{data: %{manifest: %{}}})
 
-      path == "/api/orchestrator/v1/bootstrap/active-manifest" and
-          match?({:matched, _manifest_version_id}, verification) ->
-        {:matched, manifest_version_id} = verification
-        send_json(client, 200, %{data: %{manifest_version_id: manifest_version_id}})
-
-      path == "/api/orchestrator/v1/bootstrap/active-manifest" and
-          match?({:mismatch, _manifest_version_id}, verification) ->
-        {:mismatch, manifest_version_id} = verification
-        send_json(client, 200, %{data: %{manifest_version_id: manifest_version_id}})
-
-      path == "/api/orchestrator/v1/bootstrap/active-manifest" and
-          match?({:skipped, _reason}, verification) ->
-        send_json(client, 503, %{error: %{reason: "unavailable"}})
+      path == "/api/orchestrator/v1/bootstrap/active-manifest" ->
+        send_active_manifest_response(client, verification)
 
       String.contains?(path, "/api/orchestrator/v1/manifests/") and
           String.contains?(path, "/runner/register") ->
@@ -875,6 +864,15 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       true ->
         send_json(client, 404, %{error: %{reason: "not_found"}})
     end
+  end
+
+  defp send_active_manifest_response(client, {status, manifest_version_id})
+       when status in [:matched, :mismatch] do
+    send_json(client, 200, %{data: %{manifest_version_id: manifest_version_id}})
+  end
+
+  defp send_active_manifest_response(client, {:skipped, _reason}) do
+    send_json(client, 503, %{error: %{reason: "unavailable"}})
   end
 
   defp send_json(client, status, payload) do
