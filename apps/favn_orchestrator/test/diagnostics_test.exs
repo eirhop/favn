@@ -1,10 +1,13 @@
 defmodule FavnOrchestrator.DiagnosticsTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Favn.Contracts.RunnerClient
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias FavnOrchestrator.Diagnostics
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
@@ -28,6 +31,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_used}
 
+    @impl true
     def diagnostics(_opts),
       do: Process.get(:runner_diagnostics_result, {:ok, %{available?: true}})
   end
@@ -256,6 +260,43 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     _report = Diagnostics.report()
 
     assert_receive {:metrics_hook, :diagnostics_report_generated, %{check_count: 6}, _metadata}
+  end
+
+  test "operational events redact untrusted reasons, paths, URLs, and key material" do
+    parent = self()
+
+    hook = fn event, _measurements, metadata ->
+      send(parent, {:metrics_hook, event, metadata})
+    end
+
+    Application.put_env(:favn_orchestrator, :metrics_hook, hook)
+
+    log =
+      capture_log(fn ->
+        OperationalEvents.emit(
+          :storage_failed,
+          %{},
+          %{
+            reason: "postgres://user:secret@localhost/db?sslmode=require",
+            database_path: "/var/lib/favn/secret.sqlite3",
+            url: "https://operator:token@example.test",
+            api_key: "api-secret",
+            nested: %{detail: "failed with password=secret"}
+          },
+          level: :warning
+        )
+      end)
+
+    assert_receive {:metrics_hook, :storage_failed, metadata}
+
+    refute inspect(metadata) =~ "postgres://"
+    refute inspect(metadata) =~ "/var/lib/favn/secret.sqlite3"
+    refute inspect(metadata) =~ "api-secret"
+    refute inspect(metadata) =~ "password=secret"
+    refute log =~ "postgres://"
+    refute log =~ "/var/lib/favn/secret.sqlite3"
+    refute log =~ "api-secret"
+    refute log =~ "password=secret"
   end
 
   defp put_run!(id, status, error) do

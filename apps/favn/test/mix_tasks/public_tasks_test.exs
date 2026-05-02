@@ -164,9 +164,9 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     runtime = %{
       "orchestrator_base_url" => base_url,
       "services" => %{
-        "web" => %{"pid" => current_pid},
+        "web" => %{"pid" => 999_997},
         "orchestrator" => %{"pid" => current_pid},
-        "runner" => %{"pid" => current_pid}
+        "runner" => %{"pid" => 999_998}
       }
     }
 
@@ -181,8 +181,10 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert output =~ "Favn operator diagnostics"
-    assert output =~ "status: ok"
+    assert output =~ "status: degraded"
     assert output =~ "storage_readiness: ok"
+    assert output =~ "runner: error"
+    assert output =~ "runner_not_available"
     refute output =~ "diagnostics-service-token"
   end
 
@@ -207,7 +209,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         DiagnosticsTask.run(["--root-dir", root_dir, "--json"])
       end)
 
-    assert %{"status" => "ok", "checks" => checks} = JSON.decode!(output)
+    assert %{"status" => "degraded", "checks" => checks} = JSON.decode!(output)
     assert Enum.any?(checks, &(&1["check"] == "storage_readiness"))
   end
 
@@ -908,7 +910,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       path == "/api/orchestrator/v1/diagnostics" ->
         send_json(client, 200, %{
           data: %{
-            status: "ok",
+            status: "degraded",
             generated_at: "2026-05-02T00:00:00Z",
             checks: [
               %{
@@ -916,6 +918,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
                 status: "ok",
                 summary: "Storage is ready",
                 details: %{}
+              },
+              %{
+                check: "runner",
+                status: "error",
+                summary: "Runner is unavailable",
+                reason: "runner_not_available",
+                details: %{client: "Elixir.FavnOrchestrator.RunnerClient.LocalNode"}
               }
             ]
           }

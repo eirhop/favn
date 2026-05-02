@@ -75,7 +75,9 @@ defmodule FavnOrchestrator.Readiness do
 
     with true <- is_atom(module),
          {:module, ^module} <- Code.ensure_loaded(module),
-         callbacks <- RunnerClient.behaviour_info(:callbacks),
+         callbacks <-
+           RunnerClient.behaviour_info(:callbacks) --
+             RunnerClient.behaviour_info(:optional_callbacks),
          true <-
            Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end),
          :ok <- runner_runtime_check(module) do

@@ -739,7 +739,8 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp validate_runner_client(module) when is_atom(module) do
-    callbacks = RunnerClient.behaviour_info(:callbacks)
+    callbacks =
+      RunnerClient.behaviour_info(:callbacks) -- RunnerClient.behaviour_info(:optional_callbacks)
 
     with {:module, ^module} <- Code.ensure_loaded(module),
          true <-

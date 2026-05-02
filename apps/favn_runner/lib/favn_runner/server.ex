@@ -370,7 +370,7 @@ defmodule FavnRunner.Server do
       status: :error,
       asset_results: [],
       error: diagnostic,
-      metadata: work.metadata |> Kernel.||(%{}) |> Map.put(:preflight, :sql_runtime_config)
+      metadata: Map.put(work.metadata, :preflight, :sql_runtime_config)
     }
   end
 

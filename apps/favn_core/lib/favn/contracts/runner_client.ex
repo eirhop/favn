@@ -26,4 +26,8 @@ defmodule Favn.Contracts.RunnerClient do
 
   @callback inspect_relation(RelationInspectionRequest.t(), keyword()) ::
               {:ok, RelationInspectionResult.t()} | {:error, term()}
+
+  @callback diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
+
+  @optional_callbacks diagnostics: 1
 end

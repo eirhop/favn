@@ -22,8 +22,8 @@ defmodule FavnOrchestrator.OperationalEvents do
   def emit(event, measurements \\ %{}, metadata \\ %{}, opts \\ [])
       when is_atom(event) and is_map(measurements) and is_map(metadata) and is_list(opts) do
     level = Keyword.get(opts, :level, :info)
-    safe_measurements = Redaction.redact(measurements)
-    safe_metadata = Redaction.redact(metadata)
+    safe_measurements = Redaction.redact_operational(measurements)
+    safe_metadata = Redaction.redact_operational(metadata)
 
     Logger.log(
       level,

@@ -3,8 +3,43 @@ defmodule FavnOrchestrator.Redaction do
   Redacts untrusted operator diagnostics, logs, and hook metadata.
   """
 
-  @sensitive_atom_keys [:token, :tokens, :password, :secret, :authorization, :cookie]
-  @sensitive_fragments ["token", "password", "secret", "authorization", "cookie", "credential"]
+  @sensitive_atom_keys [
+    :token,
+    :tokens,
+    :password,
+    :secret,
+    :authorization,
+    :cookie,
+    :database,
+    :database_path,
+    :dsn,
+    :url,
+    :uri,
+    :api_key,
+    :access_key,
+    :private_key
+  ]
+
+  @sensitive_fragments [
+    "token",
+    "password",
+    "secret",
+    "authorization",
+    "cookie",
+    "credential",
+    "database",
+    "dsn",
+    "url",
+    "uri",
+    "api_key",
+    "apikey",
+    "access_key",
+    "accesskey",
+    "private_key",
+    "privatekey"
+  ]
+
+  @operational_untrusted_keys [:reason, :message, :detail, :details, :error, :exception]
 
   @doc """
   Redacts sensitive fields while preserving safe scalar values.
@@ -34,6 +69,15 @@ defmodule FavnOrchestrator.Redaction do
   def redact(value) when is_binary(value), do: value
   def redact(nil), do: nil
   def redact(value), do: inspect(value)
+
+  @doc """
+  Redacts operational log and metrics metadata.
+
+  Unlike general diagnostics redaction, common error-bearing fields are treated
+  as untrusted because adapter/runtime errors can embed secrets in messages.
+  """
+  @spec redact_operational(term()) :: term()
+  def redact_operational(value), do: redact_operational(nil, value)
 
   @doc """
   Redacts an untrusted value without preserving binary contents.
@@ -80,8 +124,59 @@ defmodule FavnOrchestrator.Redaction do
 
   defp redact(_key, value), do: redact(value)
 
+  defp redact_operational(key, value) when key in @operational_untrusted_keys,
+    do: redact_untrusted(value)
+
+  defp redact_operational(key, _value) when key in @sensitive_atom_keys, do: "[REDACTED]"
+
+  defp redact_operational(key, value) when is_binary(key) do
+    cond do
+      sensitive_key?(key) -> "[REDACTED]"
+      operational_untrusted_key?(key) -> redact_untrusted(value)
+      true -> redact_operational(nil, value)
+    end
+  end
+
+  defp redact_operational(nil, nil), do: nil
+
+  defp redact_operational(nil, value)
+       when is_atom(value) or is_integer(value) or is_float(value) or is_boolean(value) or
+              is_binary(value),
+       do: value
+
+  defp redact_operational(key, value) when is_atom(key) and not is_nil(key) do
+    key
+    |> Atom.to_string()
+    |> redact_operational(value)
+  end
+
+  defp redact_operational(_key, %DateTime{} = value), do: value
+
+  defp redact_operational(_key, value) when is_map(value) do
+    Map.new(value, fn {child_key, child_value} ->
+      {child_key, redact_operational(child_key, child_value)}
+    end)
+  end
+
+  defp redact_operational(_key, value) when is_list(value),
+    do: Enum.map(value, &redact_operational(nil, &1))
+
+  defp redact_operational(_key, value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&redact_operational(nil, &1))
+    |> List.to_tuple()
+  end
+
+  defp redact_operational(_key, value), do: redact(value)
+
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
     Enum.any?(@sensitive_fragments, &String.contains?(key, &1))
+  end
+
+  defp operational_untrusted_key?(key) when is_binary(key) do
+    key = String.downcase(key)
+    Enum.any?(@operational_untrusted_keys, &(key == Atom.to_string(&1)))
   end
 end

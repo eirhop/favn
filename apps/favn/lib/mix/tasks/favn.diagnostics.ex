@@ -37,6 +37,11 @@ defmodule Mix.Tasks.Favn.Diagnostics do
       IO.puts(
         "- #{check["check"] || check[:check]}: #{check["status"] || check[:status]} - #{check["summary"] || check[:summary]}"
       )
+
+      if non_ok?(check) do
+        print_optional("  reason", check["reason"] || check[:reason])
+        print_optional("  details", check["details"] || check[:details])
+      end
     end)
   end
 
@@ -44,10 +49,16 @@ defmodule Mix.Tasks.Favn.Diagnostics do
   defp checks(%{checks: checks}) when is_list(checks), do: checks
   defp checks(_report), do: []
 
+  defp non_ok?(check), do: (check["status"] || check[:status]) not in ["ok", :ok]
+
+  defp print_optional(_label, nil), do: :ok
+  defp print_optional(_label, value) when value == %{}, do: :ok
+  defp print_optional(label, value), do: IO.puts("#{label}: #{inspect(value)}")
+
   defp error_message(:stack_not_running), do: "local stack is not running; run mix favn.dev first"
 
-  defp error_message(:stack_not_healthy),
-    do: "local stack is not healthy; run mix favn.status for details"
+  defp error_message(:orchestrator_not_running),
+    do: "local orchestrator is not running; run mix favn.status for details"
 
   defp error_message(:missing_service_token), do: "local service token is missing"
   defp error_message(reason), do: inspect(reason)

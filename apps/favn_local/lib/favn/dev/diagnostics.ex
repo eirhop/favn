@@ -15,7 +15,7 @@ defmodule Favn.Dev.Diagnostics do
   """
   @spec fetch(opts()) :: {:ok, map()} | {:error, term()}
   def fetch(opts \\ []) when is_list(opts) do
-    with :ok <- ensure_running(opts),
+    with :ok <- ensure_orchestrator_reachable(opts),
          {:ok, runtime} <- State.read_runtime(opts),
          {:ok, secrets} <- State.read_secrets(opts),
          {:ok, service_token} <- service_token(secrets) do
@@ -23,11 +23,21 @@ defmodule Favn.Dev.Diagnostics do
     end
   end
 
-  defp ensure_running(opts) do
-    case Status.inspect_stack(opts).stack_status do
-      :running -> :ok
-      :partial -> {:error, :stack_not_healthy}
-      _other -> {:error, :stack_not_running}
+  defp ensure_orchestrator_reachable(opts) do
+    status = Status.inspect_stack(opts)
+
+    cond do
+      status.stack_status == :running ->
+        :ok
+
+      get_in(status, [:services, :orchestrator, :status]) == :running ->
+        :ok
+
+      status.stack_status == :partial ->
+        {:error, :orchestrator_not_running}
+
+      true ->
+        {:error, :stack_not_running}
     end
   end
 

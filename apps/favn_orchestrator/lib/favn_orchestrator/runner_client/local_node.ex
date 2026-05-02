@@ -52,6 +52,7 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   @doc """
   Reports runner availability through the same local/remote dispatch boundary.
   """
+  @impl true
   @spec diagnostics([opt()]) :: {:ok, map()} | {:error, term()}
   def diagnostics(opts \\ []) when is_list(opts) do
     runner_module = Keyword.get(opts, :runner_module, FavnRunner)
