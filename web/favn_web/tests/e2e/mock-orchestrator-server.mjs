@@ -434,6 +434,7 @@ const ASSET_WINDOW_STATES = [
 
 let lastBackfillSubmitPayload = null;
 let lastBackfillRerunPayload = null;
+let readinessStatus = 200;
 
 /** @type {Map<string, { actorId: string; provider: string }>} */
 const sessions = new Map();
@@ -452,6 +453,22 @@ function sendSse(response, status, eventLines) {
 		connection: 'keep-alive'
 	});
 	response.end(`${eventLines.join('\n')}\n\n`);
+}
+
+function handleHealthReady(response) {
+	sendJson(response, readinessStatus, {
+		service: 'favn_orchestrator',
+		status: readinessStatus === 200 ? 'ready' : 'not_ready'
+	});
+}
+
+function handleSetReadiness(request, response) {
+	readJsonBody(request).then((body) => {
+		const status = Number(body?.status ?? 200);
+
+		readinessStatus = Number.isInteger(status) && status >= 200 && status <= 599 ? status : 200;
+		sendJson(response, 200, { data: { status: readinessStatus } });
+	});
 }
 
 function authHeaderValid(request) {
@@ -971,8 +988,18 @@ const server = createServer((request, response) => {
 		return;
 	}
 
+	if (method === 'POST' && url.pathname === '/__mock/readiness') {
+		handleSetReadiness(request, response);
+		return;
+	}
+
 	if (method === 'GET' && url.pathname === '/__mock/backfills') {
 		handleBackfillMockState(response);
+		return;
+	}
+
+	if (method === 'GET' && url.pathname === '/api/orchestrator/v1/health/ready') {
+		handleHealthReady(response);
 		return;
 	}
 

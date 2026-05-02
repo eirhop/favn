@@ -19,13 +19,16 @@ This is an architecture and documentation contract. The current
 launcher, but it is not yet marked as an operational production artifact. It
 depends on the recorded installed runtime source root rather than a
 self-contained runtime closure, and generated `bin/start`/`bin/stop` still need
-executed artifact verification. Full release packaging, backup automation,
-production web startup, and auth/session persistence remain follow-up
-implementation work.
+executed artifact verification. Full release packaging, backup automation, and
+auth/session persistence remain follow-up implementation work. `favn_web` now has
+an explicit Node production service path documented in
+`docs/production/web_service.md`, but it is not yet bundled into
+`mix favn.build.single`.
 
-Phase 1 runtime config validation and backend control-plane bootstrap have
-landed, while full operator runbooks, production web hardening, and
-auth/session persistence remain follow-up implementation work.
+Phase 1 runtime config validation, backend control-plane bootstrap, and explicit
+web service startup/readiness have landed, while full operator runbooks,
+production web hardening, and auth/session persistence remain follow-up
+implementation work.
 
 Follow-up issues must treat this document as the product contract they are
 making real.
@@ -380,6 +383,13 @@ and the local `mix favn.diagnostics` wrapper; the detailed report includes
 active manifest, storage/schema readiness, scheduler, runner, redacted
 data-plane connection summaries, in-flight runs, and recent failed-run
 summaries.
+
+The web service exposes unauthenticated `/api/web/v1/health/live` and
+`/api/web/v1/health/ready` endpoints. Web liveness is process-only and does not
+call the orchestrator. Web readiness verifies web config and calls orchestrator
+readiness through the configured API boundary with a bounded timeout, returning
+`503` with redacted diagnostics when the web config is invalid, the orchestrator
+is unreachable, times out, or reports not-ready.
 
 ## Explicitly Unsupported In V1
 

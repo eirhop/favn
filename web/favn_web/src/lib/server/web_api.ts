@@ -27,6 +27,15 @@ export async function relayJson(upstream: Response): Promise<Response> {
 		return new Response(null, { status: upstream.status });
 	}
 
+	if (upstream.headers.get('x-favn-web-sanitized-error') === 'true') {
+		return upstream;
+	}
+
+	if (upstream.status >= 500) {
+		await upstream.body?.cancel().catch(() => undefined);
+		return jsonError(502, 'bad_gateway', 'Orchestrator service returned an unavailable response');
+	}
+
 	let payload: unknown;
 	let status = upstream.status;
 

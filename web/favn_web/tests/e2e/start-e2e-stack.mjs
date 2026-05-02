@@ -34,15 +34,11 @@ const mockServer = spawnChild(
 	}
 );
 
-const previewServer = spawnChild('svelte preview', 'npm', [
-	'run',
-	'preview',
-	'--',
-	'--host',
+const previewServer = spawnChild('favn_web production server', 'node', ['build'], {
 	HOST,
-	'--port',
-	String(PREVIEW_PORT)
-]);
+	ORIGIN: `http://${HOST}:${PREVIEW_PORT}`,
+	PORT: String(PREVIEW_PORT)
+});
 
 function handleUnexpectedExit(name, code, signal) {
 	if (shuttingDown) {
@@ -56,7 +52,9 @@ function handleUnexpectedExit(name, code, signal) {
 }
 
 mockServer.on('exit', (code, signal) => handleUnexpectedExit('mock orchestrator', code, signal));
-previewServer.on('exit', (code, signal) => handleUnexpectedExit('svelte preview', code, signal));
+previewServer.on('exit', (code, signal) =>
+	handleUnexpectedExit('favn_web production server', code, signal)
+);
 
 function terminateChild(child, signal) {
 	if (!child || child.killed || child.exitCode !== null || child.signalCode !== null) {
