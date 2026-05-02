@@ -40,6 +40,22 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec diagnostics() :: {:ok, map()} | {:error, term()}
+  def diagnostics do
+    adapter_call(fn adapter, opts ->
+      cond do
+        function_exported?(adapter, :diagnostics, 1) ->
+          adapter.diagnostics(opts)
+
+        function_exported?(adapter, :readiness, 1) ->
+          adapter.readiness(opts)
+
+        true ->
+          {:ok, %{status: :ready, ready?: true, adapter: adapter}}
+      end
+    end)
+  end
+
   @spec put_manifest_version(Version.t()) :: :ok | {:error, term()}
   def put_manifest_version(%Version{} = version) do
     adapter_call(fn adapter, opts -> adapter.put_manifest_version(version, opts) end)

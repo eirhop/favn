@@ -43,9 +43,11 @@ defmodule Favn.Storage.Adapter do
   @type scheduler_key :: {module(), atom() | nil}
   @type child_spec_result :: {:ok, Supervisor.child_spec()} | :none | {:error, error()}
   @type readiness_diagnostics :: map()
+  @type diagnostics :: map()
 
   @callback child_spec(adapter_opts()) :: child_spec_result()
   @callback readiness(adapter_opts()) :: {:ok, readiness_diagnostics()} | {:error, error()}
+  @callback diagnostics(adapter_opts()) :: {:ok, diagnostics()} | {:error, error()}
 
   @callback put_manifest_version(Version.t(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_manifest_version(String.t(), adapter_opts()) ::
@@ -99,5 +101,5 @@ defmodule Favn.Storage.Adapter do
               adapter_opts()
             ) :: :ok | {:error, error()}
 
-  @optional_callbacks readiness: 1
+  @optional_callbacks readiness: 1, diagnostics: 1
 end

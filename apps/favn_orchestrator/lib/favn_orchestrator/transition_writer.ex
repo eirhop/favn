@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.TransitionWriter do
 
   alias FavnOrchestrator.Backfill
   alias FavnOrchestrator.Events
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
@@ -19,6 +20,13 @@ defmodule FavnOrchestrator.TransitionWriter do
 
     case Storage.persist_run_transition(run_state, RunEvent.to_map(event)) do
       :ok ->
+        OperationalEvents.emit(:run_transition_persisted, %{count: 1}, %{
+          run_id: run_state.id,
+          event_type: event_type,
+          status: run_state.status,
+          submit_kind: run_state.submit_kind
+        })
+
         Events.broadcast_run_event(event)
         project_derived_state(run_state, event_type, data)
         :ok
@@ -27,6 +35,17 @@ defmodule FavnOrchestrator.TransitionWriter do
         :ok
 
       {:error, reason} ->
+        OperationalEvents.emit(
+          :run_transition_failed,
+          %{},
+          %{
+            run_id: run_state.id,
+            event_type: event_type,
+            reason: reason
+          },
+          level: :error
+        )
+
         {:error, reason}
     end
   end

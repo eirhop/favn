@@ -32,6 +32,14 @@ defmodule FavnRunner do
   end
 
   @doc """
+  Returns redacted runner availability diagnostics.
+  """
+  @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
+  def diagnostics(opts \\ []) when is_list(opts) do
+    Server.diagnostics(opts)
+  end
+
+  @doc """
   Registers one pinned manifest version in the runner.
   """
   @spec register_manifest(Version.t(), keyword()) :: :ok | {:error, term()}

@@ -28,6 +28,7 @@ defmodule Favn.Dev do
   - `doctor/1`: validate local project setup before running
   - `dev/1`: start local runner, orchestrator, and web processes
   - `status/1`: inspect current stack state
+  - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
   - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
     project-local packaging flows
@@ -43,6 +44,7 @@ defmodule Favn.Dev do
   alias Favn.Dev.Build.Runner, as: RunnerBuild
   alias Favn.Dev.Build.Single, as: SingleBuild
   alias Favn.Dev.Build.Web, as: WebBuild
+  alias Favn.Dev.Diagnostics
   alias Favn.Dev.Doctor
   alias Favn.Dev.Init
   alias Favn.Dev.Install
@@ -188,6 +190,12 @@ defmodule Favn.Dev do
   @spec repair_backfill_projections(keyword()) :: {:ok, map()} | {:error, term()}
   def repair_backfill_projections(opts \\ []) when is_list(opts),
     do: Backfill.repair_projections(opts)
+
+  @doc """
+  Fetches operator diagnostics from the running local stack.
+  """
+  @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
+  def diagnostics(opts \\ []) when is_list(opts), do: Diagnostics.fetch(opts)
 
   @doc """
   Returns local stack status for the current project.

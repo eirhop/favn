@@ -5,6 +5,8 @@ defmodule FavnRunner.Server do
 
   use GenServer
 
+  alias Favn.Connection.Registry, as: ConnectionRegistry
+  alias Favn.Connection.Resolved
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
@@ -83,6 +85,16 @@ defmodule FavnRunner.Server do
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:inspect_relation, request}, Keyword.get(opts, :timeout, 15_000))
+  end
+
+  @spec diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
+  def diagnostics(opts \\ []) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+
+    case Process.whereis(server) do
+      nil -> {:error, :runner_not_available}
+      _pid -> GenServer.call(server, :diagnostics)
+    end
   end
 
   @impl true
@@ -191,6 +203,22 @@ defmodule FavnRunner.Server do
              ) do
         Inspection.inspect_relation(request, version)
       end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call(:diagnostics, _from, state) do
+    executions = Map.values(state.executions)
+
+    reply =
+      {:ok,
+       %{
+         available?: true,
+         server: __MODULE__,
+         in_flight_executions: Enum.count(executions, &(&1.status == :running)),
+         completed_executions: Enum.count(executions, &(&1.status == :completed)),
+         data_plane: data_plane_diagnostics()
+       }}
 
     {:reply, reply, state}
   end
@@ -344,6 +372,107 @@ defmodule FavnRunner.Server do
       error: diagnostic,
       metadata: work.metadata |> Kernel.||(%{}) |> Map.put(:preflight, :sql_runtime_config)
     }
+  end
+
+  defp data_plane_diagnostics do
+    case ConnectionRegistry.list(registry_name: FavnRunner.ConnectionRegistry) do
+      connections when is_list(connections) ->
+        %{
+          status: :ok,
+          connection_count: length(connections),
+          connections: Enum.map(connections, &connection_diagnostics/1)
+        }
+    end
+  rescue
+    exception ->
+      %{
+        status: :error,
+        reason: %{kind: :raised, exception: exception.__struct__}
+      }
+  catch
+    kind, reason ->
+      %{status: :error, reason: redact(%{kind: kind, reason: reason})}
+  end
+
+  defp connection_diagnostics(%Resolved{} = resolved) do
+    base = %{
+      name: resolved.name,
+      adapter: resolved.adapter,
+      module: resolved.module,
+      required_keys: resolved.required_keys,
+      secret_fields: resolved.secret_fields,
+      schema_keys: resolved.schema_keys,
+      config: safe_connection_config(resolved.config || %{})
+    }
+
+    adapter_connection_diagnostics(resolved, base)
+  end
+
+  defp adapter_connection_diagnostics(%Resolved{} = resolved, base) do
+    if is_atom(resolved.adapter) and function_exported?(resolved.adapter, :diagnostics, 2) do
+      case resolved.adapter.diagnostics(resolved, []) do
+        {:ok, details} -> Map.merge(base, %{status: :ok, details: redact(details)})
+        {:error, reason} -> Map.merge(base, %{status: :error, reason: redact(reason)})
+      end
+    else
+      Map.merge(base, %{status: :unknown, summary: :adapter_diagnostics_not_supported})
+    end
+  rescue
+    exception ->
+      Map.merge(base, %{status: :error, reason: %{kind: :raised, exception: exception.__struct__}})
+  catch
+    kind, reason ->
+      Map.merge(base, %{status: :error, reason: redact(%{kind: kind, reason: reason})})
+  end
+
+  defp safe_connection_config(config) when is_map(config) do
+    %{
+      production?: Map.get(config, :production?),
+      duckdb_storage: Map.get(config, :duckdb_storage),
+      database_path: if(Map.has_key?(config, :database), do: :redacted, else: nil)
+    }
+  end
+
+  defp redact(value) when is_map(value) do
+    Map.new(value, fn {key, map_value} -> {key, redact(key, map_value)} end)
+  end
+
+  defp redact(value) when is_list(value), do: Enum.map(value, &redact/1)
+
+  defp redact(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&redact/1)
+    |> List.to_tuple()
+  end
+
+  defp redact(value) when is_atom(value), do: value
+  defp redact(value) when is_integer(value), do: value
+  defp redact(value) when is_boolean(value), do: value
+  defp redact(value) when is_binary(value), do: value
+  defp redact(nil), do: nil
+  defp redact(value), do: inspect(value)
+
+  defp redact(key, _value)
+       when key in [:token, :tokens, :password, :secret, :database, :database_path],
+       do: "[REDACTED]"
+
+  defp redact(key, value) when is_atom(key) do
+    if sensitive_key?(Atom.to_string(key)), do: "[REDACTED]", else: redact(value)
+  end
+
+  defp redact(key, value) when is_binary(key) do
+    if sensitive_key?(key), do: "[REDACTED]", else: redact(value)
+  end
+
+  defp redact(_key, value), do: redact(value)
+
+  defp sensitive_key?(key) when is_binary(key) do
+    key = String.downcase(key)
+
+    String.contains?(key, "token") or String.contains?(key, "password") or
+      String.contains?(key, "secret") or String.contains?(key, "credential") or
+      String.contains?(key, "database")
   end
 
   defp new_execution_id do

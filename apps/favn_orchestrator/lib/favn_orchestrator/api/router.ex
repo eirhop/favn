@@ -55,6 +55,16 @@ defmodule FavnOrchestrator.API.Router do
     data(conn, status, normalize_data(readiness))
   end
 
+  get "/api/orchestrator/v1/diagnostics" do
+    case ensure_service_auth(conn) do
+      :ok ->
+        data(conn, 200, normalize_data(FavnOrchestrator.diagnostics()))
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+    end
+  end
+
   get "/api/orchestrator/v1/bootstrap/service-token" do
     case ensure_service_auth(conn) do
       :ok ->
@@ -2285,6 +2295,7 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp normalize_data(%AssetResult{} = value), do: asset_result_dto(value)
+  defp normalize_data(%DateTime{} = value), do: datetime(value)
 
   defp normalize_data(value) when is_map(value) do
     value
@@ -2294,7 +2305,6 @@ defmodule FavnOrchestrator.API.Router do
 
   defp normalize_data(value) when is_list(value), do: Enum.map(value, &normalize_data/1)
   defp normalize_data({module, name}), do: ref_to_string({module, name})
-  defp normalize_data(%DateTime{} = value), do: datetime(value)
   defp normalize_data(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_data(value), do: value
 

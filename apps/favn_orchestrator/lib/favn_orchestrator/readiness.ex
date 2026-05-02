@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Readiness do
 
   alias Favn.Contracts.RunnerClient
   alias FavnOrchestrator.API.Config, as: APIConfig
+  alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
 
@@ -32,8 +33,8 @@ defmodule FavnOrchestrator.Readiness do
   rescue
     exception -> error(name, %{kind: :raised, exception: module_name(exception.__struct__)})
   catch
-    :exit, reason -> error(name, %{kind: :exited, reason: redact_untrusted(reason)})
-    kind, reason -> error(name, %{kind: kind, reason: redact_untrusted(reason)})
+    :exit, reason -> error(name, %{kind: :exited, reason: Redaction.redact_untrusted(reason)})
+    kind, reason -> error(name, %{kind: kind, reason: Redaction.redact_untrusted(reason)})
   end
 
   defp api_check do
@@ -106,59 +107,15 @@ defmodule FavnOrchestrator.Readiness do
   end
 
   defp normalize_storage_error({:thrown, reason}),
-    do: %{kind: :thrown, reason: redact_untrusted(reason)}
+    do: %{kind: :thrown, reason: Redaction.redact_untrusted(reason)}
 
   defp normalize_storage_error({:exited, reason}),
-    do: %{kind: :exited, reason: redact_untrusted(reason)}
+    do: %{kind: :exited, reason: Redaction.redact_untrusted(reason)}
 
   defp normalize_storage_error(reason), do: reason
 
-  defp ok(name, details), do: %{name: name, status: :ok, details: redact_diagnostics(details)}
-  defp error(name, reason), do: %{name: name, status: :error, error: redact_diagnostics(reason)}
-
-  defp redact_diagnostics(value) when is_map(value) do
-    value
-    |> Enum.map(fn {key, val} -> {key, redact_diagnostics(key, val)} end)
-    |> Map.new()
-  end
-
-  defp redact_diagnostics(value) when is_list(value), do: Enum.map(value, &redact_diagnostics/1)
-  defp redact_diagnostics(value) when is_atom(value), do: value
-  defp redact_diagnostics(value) when is_integer(value), do: value
-  defp redact_diagnostics(value) when is_boolean(value), do: value
-  defp redact_diagnostics(value) when is_binary(value), do: value
-  defp redact_diagnostics(value), do: inspect(value)
-
-  defp redact_diagnostics(key, _value) when key in [:token, :tokens, :password, :secret],
-    do: "[REDACTED]"
-
-  defp redact_diagnostics(key, value) when is_binary(key) do
-    if sensitive_key?(key), do: "[REDACTED]", else: redact_diagnostics(value)
-  end
-
-  defp redact_diagnostics(_key, value), do: redact_diagnostics(value)
-
-  defp sensitive_key?(key) do
-    key = String.downcase(key)
-
-    String.contains?(key, "token") or String.contains?(key, "password") or
-      String.contains?(key, "secret")
-  end
-
-  defp redact_untrusted(value) when is_atom(value), do: value
-  defp redact_untrusted(value) when is_integer(value), do: value
-  defp redact_untrusted(value) when is_boolean(value), do: value
-  defp redact_untrusted(value) when is_binary(value), do: "[REDACTED]"
-
-  defp redact_untrusted(value) when is_tuple(value),
-    do: value |> Tuple.to_list() |> Enum.map(&redact_untrusted/1) |> List.to_tuple()
-
-  defp redact_untrusted(value) when is_list(value), do: Enum.map(value, &redact_untrusted/1)
-
-  defp redact_untrusted(value) when is_map(value),
-    do: Map.new(value, fn {key, val} -> {key, redact_untrusted(val)} end)
-
-  defp redact_untrusted(_value), do: "[REDACTED]"
+  defp ok(name, details), do: %{name: name, status: :ok, details: Redaction.redact(details)}
+  defp error(name, reason), do: %{name: name, status: :error, error: Redaction.redact(reason)}
 
   defp module_name(nil), do: nil
   defp module_name(module) when is_atom(module), do: Atom.to_string(module)

@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   alias Favn.Scheduler.State
   alias Favn.Window.Policy
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Scheduler.Cron
   alias FavnOrchestrator.Scheduler.ManifestEntries
   alias FavnOrchestrator.SchedulerEntry
@@ -24,6 +25,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   def reload(server \\ __MODULE__), do: GenServer.call(server, :reload, :infinity)
   def tick(server \\ __MODULE__), do: GenServer.call(server, :tick, :infinity)
   def scheduled(server \\ __MODULE__), do: GenServer.call(server, :scheduled, :infinity)
+  def diagnostics(server \\ __MODULE__), do: GenServer.call(server, :diagnostics, :infinity)
 
   def inspect_entries(server \\ __MODULE__),
     do: GenServer.call(server, :inspect_entries, :infinity)
@@ -36,6 +38,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     case load_runtime(tick_ms, auto_tick?) do
       {:ok, state} ->
         if state.auto_tick?, do: schedule_tick(next_tick_delay_ms(state.tick_ms))
+        emit_scheduler_loaded(state)
         {:ok, state}
 
       {:error, reason} ->
@@ -47,6 +50,7 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
   def handle_call(:reload, _from, state) do
     case load_runtime(state.tick_ms, state.auto_tick?) do
       {:ok, next} ->
+        emit_scheduler_loaded(next)
         {:reply, :ok, next}
 
       {:error, reason} ->
@@ -64,6 +68,9 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
 
   def handle_call(:tick, _from, state), do: {:reply, :ok, evaluate_all(state)}
   def handle_call(:scheduled, _from, state), do: {:reply, Map.values(state.entries), state}
+
+  def handle_call(:diagnostics, _from, state),
+    do: {:reply, {:ok, diagnostics_payload(state)}, state}
 
   def handle_call(:inspect_entries, _from, state) do
     entries =
@@ -112,6 +119,39 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
         {:error, reason}
     end
   end
+
+  defp diagnostics_payload(state) do
+    states = Map.values(state.states)
+
+    %{
+      running?: true,
+      manifest_version_id: manifest_version_id(state.version),
+      entry_count: map_size(state.entries),
+      active_schedule_count: count_entries(state.entries, fn entry -> entry.schedule.active end),
+      inactive_schedule_count:
+        count_entries(state.entries, fn entry -> not entry.schedule.active end),
+      in_flight_schedule_count: Enum.count(states, &is_binary(Map.get(&1, :in_flight_run_id))),
+      queued_schedule_count: Enum.count(states, &(not is_nil(Map.get(&1, :queued_due_at)))),
+      tick_ms: state.tick_ms,
+      auto_tick?: state.auto_tick?
+    }
+  end
+
+  defp emit_scheduler_loaded(state) do
+    OperationalEvents.emit(:scheduler_loaded, %{entry_count: map_size(state.entries)}, %{
+      manifest_version_id: manifest_version_id(state.version),
+      auto_tick?: state.auto_tick?
+    })
+  end
+
+  defp count_entries(entries, fun) when is_map(entries) and is_function(fun, 1) do
+    entries
+    |> Map.values()
+    |> Enum.count(fun)
+  end
+
+  defp manifest_version_id(nil), do: nil
+  defp manifest_version_id(%{manifest_version_id: manifest_version_id}), do: manifest_version_id
 
   defp load_active_manifest_index do
     with {:ok, manifest_version_id} <- ManifestStore.get_active_manifest(),

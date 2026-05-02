@@ -41,12 +41,12 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
   DuckDB-backed SQL assets or uses DuckDB through `Favn.SQLClient`
 - storage, orchestrator, runner, local tooling, and web apps are internal runtime
   or product components, not ordinary user dependencies
-- local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, explicit service wrapper pid/log-write failures, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
 - the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
-- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation now covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/session secret config, while backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
+- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/session secret config, and the orchestrator now exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
@@ -534,6 +534,15 @@ the schema as empty, ready, missing, upgrade-required, newer than the running
 release, or inconsistent. Local/default SQLite startup still auto-runs
 migrations, while manual startup can reject non-ready existing databases and can
 initialize empty databases when explicitly enabled.
+
+Detailed operator diagnostics are available through the private orchestrator
+HTTP endpoint `GET /api/orchestrator/v1/diagnostics` with service auth and the
+local `mix favn.diagnostics` wrapper. Each check returns `check`, `status`,
+`summary`, `details`, and optional `reason`, and all diagnostics are redacted
+before being returned, logged, or passed to the optional
+`:favn_orchestrator, :metrics_hook` callback. Runner diagnostics include
+redacted data-plane connection summaries when the runner can expose them through
+the adapter boundary.
 
 ### favn_local implementation notes
 

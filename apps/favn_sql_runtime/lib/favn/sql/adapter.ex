@@ -23,6 +23,8 @@ defmodule Favn.SQL.Adapter do
 
   @callback capabilities(Resolved.t(), opts()) :: {:ok, Capabilities.t()} | {:error, Error.t()}
 
+  @callback diagnostics(Resolved.t(), opts()) :: {:ok, map()} | {:error, term()}
+
   @callback default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
 
   @callback execute(conn(), statement(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
@@ -56,6 +58,7 @@ defmodule Favn.SQL.Adapter do
   @optional_callbacks [
     ping: 2,
     bootstrap: 3,
+    diagnostics: 2,
     schema_exists?: 3,
     relation: 3,
     list_schemas: 2,

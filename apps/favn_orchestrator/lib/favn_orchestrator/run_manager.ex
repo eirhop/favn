@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.RunManager do
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -81,8 +82,23 @@ defmodule FavnOrchestrator.RunManager do
       end
 
     case reply do
-      {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {{:ok, run_id}, next_state} ->
+        OperationalEvents.emit(:run_submitted, %{count: 1}, %{
+          run_id: run_id,
+          submit_kind: :manual
+        })
+
+        {:reply, {:ok, run_id}, next_state}
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :run_submission_failed,
+          %{},
+          %{submit_kind: :manual, reason: reason},
+          level: :warning
+        )
+
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -111,8 +127,23 @@ defmodule FavnOrchestrator.RunManager do
       end
 
     case reply do
-      {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {{:ok, run_id}, next_state} ->
+        OperationalEvents.emit(:run_submitted, %{count: 1}, %{
+          run_id: run_id,
+          submit_kind: :pipeline
+        })
+
+        {:reply, {:ok, run_id}, next_state}
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :run_submission_failed,
+          %{},
+          %{submit_kind: :pipeline, reason: reason},
+          level: :warning
+        )
+
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -138,8 +169,23 @@ defmodule FavnOrchestrator.RunManager do
       end
 
     case reply do
-      {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {{:ok, run_id}, next_state} ->
+        OperationalEvents.emit(:run_submitted, %{count: 1}, %{
+          run_id: run_id,
+          submit_kind: :pipeline
+        })
+
+        {:reply, {:ok, run_id}, next_state}
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :run_submission_failed,
+          %{},
+          %{submit_kind: :pipeline, reason: reason},
+          level: :warning
+        )
+
+        {:reply, {:error, reason}, state}
     end
   end
 
@@ -167,8 +213,20 @@ defmodule FavnOrchestrator.RunManager do
       end
 
     case reply do
-      {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {{:ok, run_id}, next_state} ->
+        OperationalEvents.emit(:run_submitted, %{count: 1}, %{run_id: run_id, submit_kind: :rerun})
+
+        {:reply, {:ok, run_id}, next_state}
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :run_submission_failed,
+          %{},
+          %{submit_kind: :rerun, reason: reason},
+          level: :warning
+        )
+
+        {:reply, {:error, reason}, state}
     end
   end
 
