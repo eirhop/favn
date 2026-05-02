@@ -188,6 +188,35 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   @impl true
+  @spec diagnostics(Resolved.t(), opts()) :: {:ok, map()} | {:error, map()}
+  def diagnostics(%Resolved{config: config} = resolved, _opts) do
+    config = config || %{}
+
+    case validate_production_storage(resolved) do
+      :ok ->
+        {:ok,
+         %{
+           status: :ok,
+           adapter: __MODULE__,
+           storage: %{
+             production?: Map.get(config, @production_key, false),
+             mode: Map.get(config, @storage_key, @local_file_storage),
+             database_path: :redacted
+           }
+         }}
+
+      {:error, %Error{} = error} ->
+        {:error,
+         %{
+           status: :invalid_config,
+           adapter: __MODULE__,
+           message: error.message,
+           details: Map.drop(error.details, [:database, :parent])
+         }}
+    end
+  end
+
+  @impl true
   @spec default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
   def default_concurrency_policy(%Resolved{config: %{mode: :ducklake}} = resolved) do
     ConcurrencyPolicy.unlimited(resolved)

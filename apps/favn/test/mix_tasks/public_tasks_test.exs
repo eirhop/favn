@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Build.Single, as: BuildSingleTask
   alias Mix.Tasks.Favn.Build.Web, as: BuildWebTask
   alias Mix.Tasks.Favn.Dev, as: DevTask
+  alias Mix.Tasks.Favn.Diagnostics, as: DiagnosticsTask
   alias Mix.Tasks.Favn.Doctor, as: DoctorTask
   alias Mix.Tasks.Favn.Init, as: InitTask
   alias Mix.Tasks.Favn.Install, as: InstallTask
@@ -91,6 +92,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       {BuildSingleTask, "favn.build.single"},
       {BuildWebTask, "favn.build.web"},
       {BootstrapSingleTask, "favn.bootstrap.single"},
+      {DiagnosticsTask, "favn.diagnostics"},
       {DevTask, "favn.dev"},
       {InstallTask, "favn.install"},
       {LogsTask, "favn.logs"},
@@ -151,6 +153,64 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       ])
 
     assert Keyword.fetch!(opts, :activate?) == false
+  end
+
+  test "mix favn.diagnostics prints service-authenticated operator diagnostics", %{
+    root_dir: root_dir
+  } do
+    {:ok, base_url, _server} = start_bootstrap_server(:ok)
+    current_pid = :os.getpid() |> List.to_string() |> String.to_integer()
+
+    runtime = %{
+      "orchestrator_base_url" => base_url,
+      "services" => %{
+        "web" => %{"pid" => 999_997},
+        "orchestrator" => %{"pid" => current_pid},
+        "runner" => %{"pid" => 999_998}
+      }
+    }
+
+    secrets = %{"service_token" => "diagnostics-service-token"}
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+    assert :ok = State.write_secrets(secrets, root_dir: root_dir)
+
+    output =
+      capture_io(fn ->
+        DiagnosticsTask.run(["--root-dir", root_dir])
+      end)
+
+    assert output =~ "Favn operator diagnostics"
+    assert output =~ "status: degraded"
+    assert output =~ "storage_readiness: ok"
+    assert output =~ "runner: error"
+    assert output =~ "runner_not_available"
+    refute output =~ "diagnostics-service-token"
+  end
+
+  test "mix favn.diagnostics --json prints machine-readable diagnostics", %{root_dir: root_dir} do
+    {:ok, base_url, _server} = start_bootstrap_server(:ok)
+    current_pid = :os.getpid() |> List.to_string() |> String.to_integer()
+
+    runtime = %{
+      "orchestrator_base_url" => base_url,
+      "services" => %{
+        "web" => %{"pid" => current_pid},
+        "orchestrator" => %{"pid" => current_pid},
+        "runner" => %{"pid" => current_pid}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+    assert :ok = State.write_secrets(%{"service_token" => "token"}, root_dir: root_dir)
+
+    output =
+      capture_io(fn ->
+        DiagnosticsTask.run(["--root-dir", root_dir, "--json"])
+      end)
+
+    assert %{"status" => "degraded", "checks" => checks} = JSON.decode!(output)
+    assert Enum.any?(checks, &(&1["check"] == "storage_readiness"))
   end
 
   test "mix favn.bootstrap.single prints matched active-manifest verification", %{
@@ -846,6 +906,29 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     cond do
       path == "/api/orchestrator/v1/bootstrap/service-token" ->
         send_json(client, 200, %{data: %{status: "ok"}})
+
+      path == "/api/orchestrator/v1/diagnostics" ->
+        send_json(client, 200, %{
+          data: %{
+            status: "degraded",
+            generated_at: "2026-05-02T00:00:00Z",
+            checks: [
+              %{
+                check: "storage_readiness",
+                status: "ok",
+                summary: "Storage is ready",
+                details: %{}
+              },
+              %{
+                check: "runner",
+                status: "error",
+                summary: "Runner is unavailable",
+                reason: "runner_not_available",
+                details: %{client: "Elixir.FavnOrchestrator.RunnerClient.LocalNode"}
+              }
+            ]
+          }
+        })
 
       path == "/api/orchestrator/v1/manifests" ->
         send_json(client, 200, %{data: %{manifest: %{}}})

@@ -49,6 +49,34 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
     dispatch(opts, :inspect_relation, [request, opts])
   end
 
+  @doc """
+  Reports runner availability through the same local/remote dispatch boundary.
+  """
+  @impl true
+  @spec diagnostics([opt()]) :: {:ok, map()} | {:error, term()}
+  def diagnostics(opts \\ []) when is_list(opts) do
+    runner_module = Keyword.get(opts, :runner_module, FavnRunner)
+
+    case fetch_runner_node(opts) do
+      {:ok, nil} ->
+        runner_module_diagnostics(runner_module, opts)
+
+      {:ok, runner_node} ->
+        with :ok <- ensure_connected(runner_node) do
+          dispatch_safely(runner_module, :diagnostics, [opts], fn ->
+            result =
+              if function_exported?(runner_module, :diagnostics, 1) do
+                :erpc.call(runner_node, runner_module, :diagnostics, [opts], 15_000)
+              else
+                :erpc.call(runner_node, runner_module, :readiness, [], 15_000)
+              end
+
+            normalize_diagnostics_result(result, runner_module)
+          end)
+        end
+    end
+  end
+
   defp dispatch(opts, function, args)
        when is_list(opts) and is_atom(function) and is_list(args) do
     runner_module = Keyword.get(opts, :runner_module, FavnRunner)
@@ -86,6 +114,35 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
       end)
     end
   end
+
+  defp runner_module_diagnostics(runner_module, opts) when is_atom(runner_module) do
+    cond do
+      function_exported?(runner_module, :diagnostics, 1) ->
+        dispatch_safely(runner_module, :diagnostics, [opts], fn ->
+          runner_module.diagnostics(opts)
+        end)
+
+      function_exported?(runner_module, :readiness, 0) ->
+        dispatch_safely(runner_module, :readiness, [], fn ->
+          runner_module.readiness()
+          |> normalize_diagnostics_result(runner_module)
+        end)
+
+      true ->
+        {:error, {:runner_function_undefined, runner_module, :diagnostics, 1}}
+    end
+  end
+
+  defp normalize_diagnostics_result({:ok, diagnostics}, _runner_module) when is_map(diagnostics),
+    do: {:ok, diagnostics}
+
+  defp normalize_diagnostics_result(:ok, runner_module),
+    do: {:ok, %{available?: true, runner_module: runner_module}}
+
+  defp normalize_diagnostics_result({:error, reason}, _runner_module), do: {:error, reason}
+
+  defp normalize_diagnostics_result(other, _runner_module),
+    do: {:error, {:invalid_runner_diagnostics, other}}
 
   defp dispatch_safely(runner_module, function, args, callback) do
     callback.()

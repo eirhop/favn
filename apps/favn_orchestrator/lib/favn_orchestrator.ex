@@ -15,6 +15,7 @@ defmodule FavnOrchestrator do
   alias Favn.Window.Policy
   alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
   alias FavnOrchestrator.BackfillManager
+  alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Projector
@@ -52,6 +53,12 @@ defmodule FavnOrchestrator do
           required(:assets) => [manifest_target_option()],
           required(:pipelines) => [manifest_target_option()]
         }
+
+  @doc """
+  Returns redacted operator diagnostics for the orchestrator runtime.
+  """
+  @spec diagnostics(keyword()) :: map()
+  def diagnostics(opts \\ []) when is_list(opts), do: Diagnostics.report(opts)
 
   @doc """
   Registers one manifest version in orchestrator storage.
@@ -758,7 +765,8 @@ defmodule FavnOrchestrator do
   end
 
   defp validate_runner_client(module) when is_atom(module) do
-    callbacks = RunnerClient.behaviour_info(:callbacks)
+    callbacks =
+      RunnerClient.behaviour_info(:callbacks) -- RunnerClient.behaviour_info(:optional_callbacks)
 
     with {:module, ^module} <- Code.ensure_loaded(module),
          true <-

@@ -340,12 +340,13 @@ Production startup must have explicit schema-readiness behavior:
   unsupported; persisted state must be reset, recreated, or migrated only through
   a documented production migration path.
 
-The SQLite adapter has internal schema-readiness diagnostics that distinguish
-empty, ready, missing, upgrade-required, newer-than-release, and inconsistent
-schemas, and it has stopped-backend restore verification coverage for current
-control-plane state. Production runtime issues must still expose those
-diagnostics through operator-facing startup, migration, readiness, and runbook
-flows.
+The SQLite adapter has schema-readiness diagnostics that distinguish empty,
+ready, missing, upgrade-required, newer-than-release, and inconsistent schemas,
+and it has stopped-backend restore verification coverage for current
+control-plane state. The orchestrator exposes those diagnostics through
+readiness and the service-authenticated operator diagnostics endpoint; migration
+commands and full backup/restore runbooks remain separate production-hardening
+work.
 
 ## Health, Readiness, And Diagnostics
 
@@ -373,9 +374,12 @@ process can serve the route. Readiness returns `200` only when all aggregated
 checks pass and `503` with redacted check diagnostics otherwise. Readiness
 delegates storage checks through the storage adapter boundary and isolates check
 raises/exits/throws so degraded dependencies produce structured `503`
-diagnostics rather than unhandled `500` responses. Broader CLI/runbook surfaces
-remain follow-up implementation work beyond the implemented Phase 1 bootstrap
-command.
+diagnostics rather than unhandled `500` responses. Detailed diagnostics are
+available through service-authenticated `GET /api/orchestrator/v1/diagnostics`
+and the local `mix favn.diagnostics` wrapper; the detailed report includes
+active manifest, storage/schema readiness, scheduler, runner, redacted
+data-plane connection summaries, in-flight runs, and recent failed-run
+summaries.
 
 ## Explicitly Unsupported In V1
 

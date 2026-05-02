@@ -168,6 +168,32 @@ defmodule FavnOrchestrator.API.RouterTest do
     refute ready_conn.resp_body =~ secret
   end
 
+  test "diagnostics endpoint requires service auth and returns structured diagnostics" do
+    unauthorized =
+      conn(:get, "/api/orchestrator/v1/diagnostics")
+      |> Router.call(@opts)
+
+    assert unauthorized.status == 401
+
+    version = dependency_manifest_version("mv_http_diagnostics")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    response =
+      conn(:get, "/api/orchestrator/v1/diagnostics")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"status" => "ok", "checks" => checks}} =
+             Jason.decode!(response.resp_body)
+
+    assert Enum.any?(checks, &(&1["check"] == "storage_readiness" and &1["status"] == "ok"))
+    assert Enum.any?(checks, &(&1["check"] == "active_manifest" and &1["status"] == "ok"))
+    refute response.resp_body =~ "test-service-token"
+  end
+
   test "valid service token verification returns redacted diagnostics" do
     response =
       conn(:get, "/api/orchestrator/v1/bootstrap/service-token")

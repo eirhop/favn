@@ -1,6 +1,8 @@
 defmodule FavnRunnerTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Connection.Registry, as: ConnectionRegistry
+  alias Favn.Connection.Resolved
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -52,6 +54,43 @@ defmodule FavnRunnerTest do
     end)
 
     assert {:error, :runner_not_available} = FavnRunner.readiness()
+  end
+
+  test "diagnostics reports runner and redacted data-plane connection details" do
+    connection = %Resolved{
+      name: :warehouse,
+      adapter: FavnRunnerTest.DiagnosticsAdapter,
+      module: FavnRunnerTest.ConnectionModule,
+      config: %{
+        database: "/tmp/secret/path.duckdb",
+        token: "connection-secret",
+        production?: true,
+        duckdb_storage: :local_file
+      },
+      required_keys: [:database],
+      secret_fields: [:token],
+      schema_keys: [:database, :token]
+    }
+
+    :ok =
+      ConnectionRegistry.reload(%{warehouse: connection},
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+
+    on_exit(fn ->
+      :ok = ConnectionRegistry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
+    end)
+
+    assert {:ok, diagnostics} = FavnRunner.diagnostics()
+    assert diagnostics.available? == true
+    assert diagnostics.data_plane.connection_count == 1
+
+    assert [entry] = diagnostics.data_plane.connections
+    assert entry.status == :ok
+    assert entry.config.database_path == :redacted
+    assert entry.details.token == "[REDACTED]"
+    refute inspect(diagnostics) =~ "connection-secret"
+    refute inspect(diagnostics) =~ "/tmp/secret/path.duckdb"
   end
 
   test "runs a local plain Elixir asset through runner execution boundary", %{version: version} do
@@ -173,4 +212,13 @@ defmodule FavnRunnerTest.ElixirAsset do
 end
 
 defmodule FavnRunnerTest.SourceAsset do
+end
+
+defmodule FavnRunnerTest.ConnectionModule do
+end
+
+defmodule FavnRunnerTest.DiagnosticsAdapter do
+  def diagnostics(_resolved, _opts) do
+    {:ok, %{status: :ok, token: "connection-secret", database: "/tmp/secret/path.duckdb"}}
+  end
 end

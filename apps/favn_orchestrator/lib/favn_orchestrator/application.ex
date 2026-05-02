@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
@@ -17,6 +18,16 @@ defmodule FavnOrchestrator.Application do
          _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),
          {:ok, storage_children} <- Storage.child_specs() do
+      OperationalEvents.emit(
+        :orchestrator_starting,
+        %{storage_child_count: length(storage_children)},
+        %{
+          storage_adapter: Storage.adapter_module(),
+          scheduler_enabled?: scheduler_enabled?(),
+          api_enabled?: api_enabled?()
+        }
+      )
+
       children =
         storage_children ++
           [
@@ -32,6 +43,7 @@ defmodule FavnOrchestrator.Application do
                name: FavnOrchestrator.Supervisor
              ),
            :ok <- Auth.bootstrap_configured_actor() do
+        OperationalEvents.emit(:orchestrator_started, %{}, %{})
         {:ok, supervisor}
       end
     end
@@ -43,8 +55,15 @@ defmodule FavnOrchestrator.Application do
     if Keyword.get(scheduler_opts, :enabled, false) do
       [{SchedulerRuntime, scheduler_opts}]
     else
+      OperationalEvents.emit(:scheduler_disabled, %{}, %{})
       []
     end
+  end
+
+  defp scheduler_enabled? do
+    :favn_orchestrator
+    |> Application.get_env(:scheduler, [])
+    |> Keyword.get(:enabled, false)
   end
 
   defp pubsub_name do
@@ -62,6 +81,12 @@ defmodule FavnOrchestrator.Application do
     else
       []
     end
+  end
+
+  defp api_enabled? do
+    :favn_orchestrator
+    |> Application.get_env(:api_server, [])
+    |> Keyword.get(:enabled, false)
   end
 
   defp api_server_options(api_opts) do

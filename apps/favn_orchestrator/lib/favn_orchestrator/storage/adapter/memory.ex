@@ -63,6 +63,18 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     end
   end
 
+  @impl true
+  def diagnostics(opts) when is_list(opts) do
+    {:ok,
+     %{
+       status: :ready,
+       ready?: true,
+       mode: :memory,
+       adapter: __MODULE__,
+       runtime: %{running?: runtime_started?(runtime_name(opts))}
+     }}
+  end
+
   @spec scheduler_child_spec(keyword()) :: Favn.Storage.Adapter.child_spec_result()
   def scheduler_child_spec(opts \\ []) when is_list(opts) do
     child_spec(opts)
@@ -419,7 +431,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       state.runs
       |> Map.values()
       |> filter_runs(run_opts)
-      |> Enum.sort_by(& &1.updated_at, {:desc, DateTime})
+      |> Enum.sort_by(&run_sort_key/1, :desc)
       |> maybe_limit_runs(run_opts)
 
     {:reply, {:ok, runs}, state}
@@ -612,6 +624,11 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       status -> Enum.filter(runs, &(&1.status == status))
     end
   end
+
+  defp run_sort_key(%RunState{updated_at: %DateTime{} = updated_at}),
+    do: DateTime.to_unix(updated_at, :microsecond)
+
+  defp run_sort_key(%RunState{}), do: 0
 
   defp fetch_or_not_found(values, key) do
     case Map.fetch(values, key) do

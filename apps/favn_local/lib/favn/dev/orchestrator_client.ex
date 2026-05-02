@@ -297,6 +297,23 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
+  @spec diagnostics(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def diagnostics(base_url, service_token)
+      when is_binary(base_url) and is_binary(service_token) do
+    url = base_url <> "/api/orchestrator/v1/diagnostics"
+
+    case request_get(:diagnostics, url, service_token) do
+      {:ok, %{"data" => diagnostics}} when is_map(diagnostics) ->
+        {:ok, diagnostics}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:diagnostics, :get, url, :invalid_response)}
+    end
+  end
+
   @spec health(String.t()) :: :ok | {:error, term()}
   def health(base_url) when is_binary(base_url) do
     url = base_url <> "/api/orchestrator/v1/health"
