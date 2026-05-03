@@ -1,10 +1,11 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { clearWebSessionCookie } from '$lib/server/session';
+import { clearWebSessionCookie, publicWebSession } from '$lib/server/session';
 import {
 	orchestratorGetActiveManifest,
 	orchestratorGetRun,
-	orchestratorListBackfillWindows
+	orchestratorListBackfillWindows,
+	orchestratorRevokeSession
 } from '$lib/server/orchestrator';
 import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
 import { normalizeRunDetail } from '$lib/server/run_views';
@@ -62,7 +63,7 @@ export const load: PageServerLoad = async (event) => {
 		: null;
 
 	return {
-		session: locals.session,
+		session: publicWebSession(session),
 		activeManifestVersionId: normalizeActiveManifest(activeManifestPayload),
 		run: normalizeRunDetail(runPayload, params.run_id),
 		windowsPage: normalizeBackfillWindows(windowsPayload),
@@ -72,6 +73,7 @@ export const load: PageServerLoad = async (event) => {
 
 export const actions: Actions = {
 	logout: async ({ cookies, locals }) => {
+		if (locals.session) await orchestratorRevokeSession(locals.session).catch(() => null);
 		clearWebSessionCookie(cookies);
 		locals.session = null;
 		throw redirect(303, '/login');

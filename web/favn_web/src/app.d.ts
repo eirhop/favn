@@ -5,6 +5,7 @@ declare global {
 		// interface Error {}
 		interface Locals {
 			session: {
+				session_token: string;
 				session_id: string;
 				actor_id: string;
 				provider: string;

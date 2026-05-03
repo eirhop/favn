@@ -3,6 +3,10 @@ defmodule FavnOrchestrator.Auth.Store do
 
   use GenServer
 
+  alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.Adapter.Memory
+
   @type actor :: %{
           required(:id) => String.t(),
           required(:username) => String.t(),
@@ -19,7 +23,9 @@ defmodule FavnOrchestrator.Auth.Store do
           required(:provider) => String.t(),
           required(:issued_at) => DateTime.t(),
           required(:expires_at) => DateTime.t(),
-          required(:revoked_at) => DateTime.t() | nil
+          required(:revoked_at) => DateTime.t() | nil,
+          optional(:token) => String.t(),
+          optional(:token_hash) => String.t()
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -33,7 +39,7 @@ defmodule FavnOrchestrator.Auth.Store do
     GenServer.call(__MODULE__, :reset)
   end
 
-  @spec create_actor(String.t(), String.t(), String.t(), [atom()]) ::
+  @spec create_actor(String.t(), String.t(), String.t(), [atom() | String.t()]) ::
           {:ok, actor()} | {:error, term()}
   def create_actor(username, password, display_name, roles)
       when is_binary(username) and is_binary(password) and is_binary(display_name) and
@@ -42,9 +48,7 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   @spec list_actors() :: [actor()]
-  def list_actors do
-    GenServer.call(__MODULE__, :list_actors)
-  end
+  def list_actors, do: GenServer.call(__MODULE__, :list_actors)
 
   @spec update_actor_roles(String.t(), [atom() | String.t()]) ::
           {:ok, actor()} | {:error, :actor_not_found}
@@ -54,8 +58,7 @@ defmodule FavnOrchestrator.Auth.Store do
 
   @spec set_actor_password(String.t(), String.t()) ::
           :ok | {:error, :actor_not_found | :password_too_short}
-  def set_actor_password(actor_id, password)
-      when is_binary(actor_id) and is_binary(password) do
+  def set_actor_password(actor_id, password) when is_binary(actor_id) and is_binary(password) do
     GenServer.call(__MODULE__, {:set_actor_password, actor_id, password})
   end
 
@@ -78,16 +81,16 @@ defmodule FavnOrchestrator.Auth.Store do
 
   @spec introspect_session(String.t()) ::
           {:ok, session(), actor()} | {:error, :invalid_session | :actor_not_found}
-  def introspect_session(session_id) when is_binary(session_id) do
-    GenServer.call(__MODULE__, {:introspect_session, session_id})
+  def introspect_session(session_token) when is_binary(session_token) do
+    GenServer.call(__MODULE__, {:introspect_session, session_token})
   end
 
-  @spec revoke_session(String.t()) :: :ok
+  @spec revoke_session(String.t()) :: :ok | {:error, term()}
   def revoke_session(session_id) when is_binary(session_id) do
     GenServer.call(__MODULE__, {:revoke_session, session_id})
   end
 
-  @spec add_audit(map()) :: :ok
+  @spec add_audit(map()) :: :ok | {:error, term()}
   def add_audit(entry) when is_map(entry) do
     GenServer.call(__MODULE__, {:add_audit, entry})
   end
@@ -98,27 +101,19 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   @impl true
-  def init(_state) do
-    {:ok,
-     %{
-       actors: %{},
-       usernames: %{},
-       credentials: %{},
-       sessions: %{},
-       audits: []
-     }}
-  end
+  def init(_state), do: {:ok, %{}}
 
   @impl true
-  def handle_call(:reset, _from, _state) do
-    {:reply, :ok,
-     %{
-       actors: %{},
-       usernames: %{},
-       credentials: %{},
-       sessions: %{},
-       audits: []
-     }}
+  def handle_call(:reset, _from, state) do
+    case Storage.adapter_module() do
+      Memory ->
+        :ok = Memory.reset(Storage.adapter_opts())
+
+      _adapter ->
+        :ok
+    end
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:create_actor, username, password, display_name, roles}, _from, state) do
@@ -131,15 +126,14 @@ defmodule FavnOrchestrator.Auth.Store do
       byte_size(password) < 8 ->
         {:reply, {:error, :password_too_short}, state}
 
-      Map.has_key?(state.usernames, normalized_username) ->
+      match?({:ok, _actor}, Storage.get_auth_actor_by_username(normalized_username)) ->
         {:reply, {:error, :username_taken}, state}
 
       true ->
         now = DateTime.utc_now()
-        actor_id = "act_" <> random_id()
 
         actor = %{
-          id: actor_id,
+          id: "act_" <> random_id(),
           username: normalized_username,
           display_name: display_name,
           roles: normalize_roles(roles),
@@ -148,184 +142,139 @@ defmodule FavnOrchestrator.Auth.Store do
           updated_at: now
         }
 
-        credential = hash_password(password)
-
-        next_state = %{
-          state
-          | actors: Map.put(state.actors, actor_id, actor),
-            usernames: Map.put(state.usernames, normalized_username, actor_id),
-            credentials: Map.put(state.credentials, actor_id, credential)
-        }
-
-        {:reply, {:ok, actor}, next_state}
+        case Storage.put_auth_actor_with_credential(actor, hash_password(password)) do
+          :ok -> {:reply, {:ok, actor}, state}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
     end
   end
 
   def handle_call(:list_actors, _from, state) do
-    actors =
-      state.actors
-      |> Map.values()
-      |> Enum.sort_by(& &1.username)
-
-    {:reply, actors, state}
+    {:reply, Storage.list_auth_actors() |> unwrap_list(), state}
   end
 
   def handle_call({:update_actor_roles, actor_id, roles}, _from, state) do
-    now = DateTime.utc_now()
-
-    case Map.fetch(state.actors, actor_id) do
+    case Storage.get_auth_actor(actor_id) do
       {:ok, actor} ->
-        updated_actor = %{actor | roles: normalize_roles(roles), updated_at: now}
+        updated_actor = %{actor | roles: normalize_roles(roles), updated_at: DateTime.utc_now()}
 
-        {:reply, {:ok, updated_actor},
-         %{state | actors: Map.put(state.actors, actor_id, updated_actor)}}
+        case Storage.put_auth_actor(updated_actor) do
+          :ok -> {:reply, {:ok, updated_actor}, state}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
 
-      :error ->
+      {:error, _reason} ->
         {:reply, {:error, :actor_not_found}, state}
     end
   end
 
   def handle_call({:set_actor_password, actor_id, password}, _from, state) do
-    cond do
-      byte_size(password) < 8 ->
-        {:reply, {:error, :password_too_short}, state}
+    if byte_size(password) < 8 do
+      {:reply, {:error, :password_too_short}, state}
+    else
+      case Storage.get_auth_actor(actor_id) do
+        {:ok, actor} ->
+          now = DateTime.utc_now()
+          updated_actor = %{actor | updated_at: now}
 
-      not Map.has_key?(state.actors, actor_id) ->
-        {:reply, {:error, :actor_not_found}, state}
+          case Storage.update_auth_actor_password(
+                 actor_id,
+                 updated_actor,
+                 hash_password(password),
+                 now
+               ) do
+            :ok -> {:reply, :ok, state}
+            {:error, reason} -> {:reply, {:error, reason}, state}
+          end
 
-      true ->
-        now = DateTime.utc_now()
-        updated_credential = hash_password(password)
-
-        actors =
-          Map.update!(state.actors, actor_id, fn actor ->
-            %{actor | updated_at: now}
-          end)
-
-        sessions =
-          Enum.reduce(state.sessions, state.sessions, fn {session_id, session}, acc ->
-            if session.actor_id == actor_id and is_nil(session.revoked_at) do
-              Map.put(acc, session_id, %{session | revoked_at: now})
-            else
-              acc
-            end
-          end)
-
-        next_state = %{
-          state
-          | actors: actors,
-            credentials: Map.put(state.credentials, actor_id, updated_credential),
-            sessions: sessions
-        }
-
-        {:reply, :ok, next_state}
+        {:error, _reason} ->
+          {:reply, {:error, :actor_not_found}, state}
+      end
     end
   end
 
   def handle_call({:get_actor, actor_id}, _from, state) do
-    case Map.fetch(state.actors, actor_id) do
-      {:ok, actor} -> {:reply, {:ok, actor}, state}
-      :error -> {:reply, {:error, :actor_not_found}, state}
-    end
+    {:reply, normalize_actor_result(Storage.get_auth_actor(actor_id)), state}
   end
 
   def handle_call({:authenticate_password, username, password}, _from, state) do
     normalized_username = String.trim(username)
 
-    with {:ok, actor_id} <- fetch_username(state, normalized_username),
-         {:ok, actor} <- fetch_actor(state, actor_id),
+    with {:ok, actor} <- Storage.get_auth_actor_by_username(normalized_username),
          :ok <- ensure_actor_active(actor),
-         {:ok, credential} <- fetch_credential(state, actor_id),
+         {:ok, credential} <- Storage.get_auth_credential(actor.id),
          :ok <- verify_password(password, credential) do
       {:reply, {:ok, actor}, state}
     else
-      _other ->
-        {:reply, {:error, :invalid_credentials}, state}
+      _other -> {:reply, {:error, :invalid_credentials}, state}
     end
   end
 
   def handle_call({:issue_session, actor_id, opts}, _from, state) do
-    with {:ok, actor} <- fetch_actor(state, actor_id),
+    with {:ok, actor} <- Storage.get_auth_actor(actor_id),
          :ok <- ensure_actor_active(actor) do
       now = DateTime.utc_now()
       ttl_seconds = Keyword.get(opts, :ttl_seconds, default_session_ttl_seconds())
-      expires_at = DateTime.add(now, ttl_seconds, :second)
+      token = raw_session_token()
 
       session = %{
         id: "ses_" <> random_id(),
         actor_id: actor_id,
         provider: Keyword.get(opts, :provider, "password_local"),
         issued_at: now,
-        expires_at: expires_at,
-        revoked_at: nil
+        expires_at: DateTime.add(now, ttl_seconds, :second),
+        revoked_at: nil,
+        token_hash: token_hash(token)
       }
 
-      {:reply, {:ok, session}, %{state | sessions: Map.put(state.sessions, session.id, session)}}
+      case Storage.put_auth_session(session) do
+        :ok ->
+          {:reply, {:ok, session |> Map.drop([:token_hash]) |> Map.put(:token, token)}, state}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
     else
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {:error, _reason} -> {:reply, {:error, :actor_not_found}, state}
     end
   end
 
-  def handle_call({:introspect_session, session_id}, _from, state) do
-    with {:ok, session} <- fetch_session(state, session_id),
+  def handle_call({:introspect_session, session_token}, _from, state) do
+    with {:ok, session} <- Storage.get_auth_session_by_token_hash(token_hash(session_token)),
          :ok <- ensure_session_active(session),
-         {:ok, actor} <- fetch_actor(state, session.actor_id),
+         {:ok, actor} <- Storage.get_auth_actor(session.actor_id),
          :ok <- ensure_actor_active(actor) do
-      {:reply, {:ok, session, actor}, state}
+      {:reply, {:ok, Map.drop(session, [:token_hash]), actor}, state}
     else
+      {:error, :not_found} -> {:reply, {:error, :invalid_session}, state}
       {:error, :actor_not_found} -> {:reply, {:error, :actor_not_found}, state}
-      _ -> {:reply, {:error, :invalid_session}, state}
+      _other -> {:reply, {:error, :invalid_session}, state}
     end
   end
 
   def handle_call({:revoke_session, session_id}, _from, state) do
-    now = DateTime.utc_now()
-
-    sessions =
-      Map.update(state.sessions, session_id, nil, fn session ->
-        if is_nil(session.revoked_at), do: %{session | revoked_at: now}, else: session
-      end)
-
-    {:reply, :ok, %{state | sessions: sessions}}
+    {:reply, Storage.revoke_auth_session(session_id, DateTime.utc_now()), state}
   end
 
   def handle_call({:add_audit, entry}, _from, state) do
-    normalized = Map.put_new(entry, :occurred_at, DateTime.utc_now())
-    {:reply, :ok, %{state | audits: [normalized | state.audits]}}
+    normalized =
+      entry
+      |> Redaction.redact()
+      |> Map.put_new(:id, "aud_" <> random_id())
+      |> Map.put_new(:occurred_at, DateTime.utc_now())
+
+    {:reply, Storage.put_auth_audit(normalized), state}
   end
 
   def handle_call({:list_audit, opts}, _from, state) do
-    limit = Keyword.get(opts, :limit, 100)
-    {:reply, state.audits |> Enum.take(limit) |> Enum.reverse(), state}
+    {:reply, Storage.list_auth_audit(opts) |> unwrap_list(), state}
   end
 
-  defp fetch_username(state, username) do
-    case Map.fetch(state.usernames, username) do
-      {:ok, actor_id} -> {:ok, actor_id}
-      :error -> {:error, :actor_not_found}
-    end
-  end
+  defp normalize_actor_result({:ok, actor}), do: {:ok, actor}
+  defp normalize_actor_result({:error, _reason}), do: {:error, :actor_not_found}
 
-  defp fetch_actor(state, actor_id) do
-    case Map.fetch(state.actors, actor_id) do
-      {:ok, actor} -> {:ok, actor}
-      :error -> {:error, :actor_not_found}
-    end
-  end
-
-  defp fetch_credential(state, actor_id) do
-    case Map.fetch(state.credentials, actor_id) do
-      {:ok, credential} -> {:ok, credential}
-      :error -> {:error, :credential_not_found}
-    end
-  end
-
-  defp fetch_session(state, session_id) do
-    case Map.fetch(state.sessions, session_id) do
-      {:ok, session} -> {:ok, session}
-      :error -> {:error, :session_not_found}
-    end
-  end
+  defp unwrap_list({:ok, values}), do: values
+  defp unwrap_list({:error, _reason}), do: []
 
   defp ensure_actor_active(%{status: :active}), do: :ok
   defp ensure_actor_active(_actor), do: {:error, :actor_disabled}
@@ -384,8 +333,21 @@ defmodule FavnOrchestrator.Auth.Store do
     end
   end
 
+  defp raw_session_token do
+    32
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp token_hash(token) do
+    :sha256
+    |> :crypto.hash(token)
+    |> Base.url_encode64(padding: false)
+  end
+
   defp random_id do
-    :crypto.strong_rand_bytes(10)
+    10
+    |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
   end
 

@@ -25,7 +25,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           scheduler_states: %{required({module(), atom() | nil}) => map()},
           coverage_baselines: %{required(String.t()) => CoverageBaseline.t()},
           backfill_windows: %{required({String.t(), module(), String.t()}) => BackfillWindow.t()},
-          asset_window_states: %{required({module(), atom(), String.t()}) => AssetWindowState.t()}
+          asset_window_states: %{required({module(), atom(), String.t()}) => AssetWindowState.t()},
+          auth_actors: %{required(String.t()) => map()},
+          auth_usernames: %{required(String.t()) => String.t()},
+          auth_credentials: %{required(String.t()) => map()},
+          auth_sessions: %{required(String.t()) => map()},
+          auth_session_hashes: %{required(String.t()) => String.t()},
+          auth_audits: [map()]
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -290,6 +296,103 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def put_auth_actor(actor, opts) when is_map(actor) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_auth_actor, actor})
+  end
+
+  @impl true
+  def put_auth_actor_with_credential(actor, credential, opts)
+      when is_map(actor) and is_map(credential) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_auth_actor_with_credential, actor, credential})
+  end
+
+  @impl true
+  def get_auth_actor(actor_id, opts) when is_binary(actor_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_auth_actor, actor_id})
+  end
+
+  @impl true
+  def get_auth_actor_by_username(username, opts) when is_binary(username) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_auth_actor_by_username, username})
+  end
+
+  @impl true
+  def list_auth_actors(opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, :list_auth_actors)
+  end
+
+  @impl true
+  def put_auth_credential(actor_id, credential, opts)
+      when is_binary(actor_id) and is_map(credential) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_auth_credential, actor_id, credential})
+  end
+
+  @impl true
+  def update_auth_actor_password(actor_id, actor, credential, revoked_at, opts)
+      when is_binary(actor_id) and is_map(actor) and is_map(credential) and
+             is_struct(revoked_at, DateTime) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:update_auth_actor_password, actor_id, actor, credential, revoked_at})
+  end
+
+  @impl true
+  def get_auth_credential(actor_id, opts) when is_binary(actor_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_auth_credential, actor_id})
+  end
+
+  @impl true
+  def put_auth_session(session, opts) when is_map(session) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_auth_session, session})
+  end
+
+  @impl true
+  def get_auth_session(session_id, opts) when is_binary(session_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_auth_session, session_id})
+  end
+
+  @impl true
+  def get_auth_session_by_token_hash(token_hash, opts)
+      when is_binary(token_hash) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_auth_session_by_token_hash, token_hash})
+  end
+
+  @impl true
+  def revoke_auth_session(session_id, revoked_at, opts)
+      when is_binary(session_id) and is_struct(revoked_at, DateTime) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:revoke_auth_session, session_id, revoked_at})
+  end
+
+  @impl true
+  def revoke_auth_sessions_for_actor(actor_id, revoked_at, opts)
+      when is_binary(actor_id) and is_struct(revoked_at, DateTime) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:revoke_auth_sessions_for_actor, actor_id, revoked_at})
+  end
+
+  @impl true
+  def put_auth_audit(entry, opts) when is_map(entry) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_auth_audit, entry})
+  end
+
+  @impl true
+  def list_auth_audit(audit_opts, opts) when is_list(audit_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_auth_audit, audit_opts})
+  end
+
+  @impl true
   def init(_args) do
     {:ok, initial_state()}
   end
@@ -303,7 +406,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       scheduler_states: %{},
       coverage_baselines: %{},
       backfill_windows: %{},
-      asset_window_states: %{}
+      asset_window_states: %{},
+      auth_actors: %{},
+      auth_usernames: %{},
+      auth_credentials: %{},
+      auth_sessions: %{},
+      auth_session_hashes: %{},
+      auth_audits: []
     }
   end
 
@@ -591,6 +700,141 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     }
 
     {:reply, :ok, next_state}
+  end
+
+  def handle_call({:put_auth_actor, actor}, _from, state) do
+    next_state = %{
+      state
+      | auth_actors: Map.put(state.auth_actors, actor.id, actor),
+        auth_usernames: Map.put(state.auth_usernames, actor.username, actor.id)
+    }
+
+    {:reply, :ok, next_state}
+  end
+
+  def handle_call({:put_auth_actor_with_credential, actor, credential}, _from, state) do
+    next_state = %{
+      state
+      | auth_actors: Map.put(state.auth_actors, actor.id, actor),
+        auth_usernames: Map.put(state.auth_usernames, actor.username, actor.id),
+        auth_credentials: Map.put(state.auth_credentials, actor.id, credential)
+    }
+
+    {:reply, :ok, next_state}
+  end
+
+  def handle_call({:get_auth_actor, actor_id}, _from, state) do
+    {:reply, fetch_or_not_found(state.auth_actors, actor_id), state}
+  end
+
+  def handle_call({:get_auth_actor_by_username, username}, _from, state) do
+    reply =
+      with {:ok, actor_id} <- fetch_or_not_found(state.auth_usernames, username) do
+        fetch_or_not_found(state.auth_actors, actor_id)
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call(:list_auth_actors, _from, state) do
+    actors = state.auth_actors |> Map.values() |> Enum.sort_by(& &1.username)
+    {:reply, {:ok, actors}, state}
+  end
+
+  def handle_call({:put_auth_credential, actor_id, credential}, _from, state) do
+    {:reply, :ok,
+     %{state | auth_credentials: Map.put(state.auth_credentials, actor_id, credential)}}
+  end
+
+  def handle_call(
+        {:update_auth_actor_password, actor_id, actor, credential, revoked_at},
+        _from,
+        state
+      ) do
+    sessions =
+      Map.new(state.auth_sessions, fn {session_id, session} ->
+        if session.actor_id == actor_id and is_nil(session.revoked_at) do
+          {session_id, %{session | revoked_at: revoked_at}}
+        else
+          {session_id, session}
+        end
+      end)
+
+    next_state = %{
+      state
+      | auth_actors: Map.put(state.auth_actors, actor_id, actor),
+        auth_usernames: Map.put(state.auth_usernames, actor.username, actor_id),
+        auth_credentials: Map.put(state.auth_credentials, actor_id, credential),
+        auth_sessions: sessions
+    }
+
+    {:reply, :ok, next_state}
+  end
+
+  def handle_call({:get_auth_credential, actor_id}, _from, state) do
+    {:reply, fetch_or_not_found(state.auth_credentials, actor_id), state}
+  end
+
+  def handle_call({:put_auth_session, session}, _from, state) do
+    next_state = %{
+      state
+      | auth_sessions: Map.put(state.auth_sessions, session.id, session),
+        auth_session_hashes: Map.put(state.auth_session_hashes, session.token_hash, session.id)
+    }
+
+    {:reply, :ok, next_state}
+  end
+
+  def handle_call({:get_auth_session, session_id}, _from, state) do
+    {:reply, fetch_or_not_found(state.auth_sessions, session_id), state}
+  end
+
+  def handle_call({:get_auth_session_by_token_hash, token_hash}, _from, state) do
+    reply =
+      with {:ok, session_id} <- fetch_or_not_found(state.auth_session_hashes, token_hash) do
+        fetch_or_not_found(state.auth_sessions, session_id)
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:revoke_auth_session, session_id, revoked_at}, _from, state) do
+    case Map.fetch(state.auth_sessions, session_id) do
+      {:ok, session} ->
+        sessions =
+          Map.put(
+            state.auth_sessions,
+            session_id,
+            if(is_nil(session.revoked_at), do: %{session | revoked_at: revoked_at}, else: session)
+          )
+
+        {:reply, :ok, %{state | auth_sessions: sessions}}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:revoke_auth_sessions_for_actor, actor_id, revoked_at}, _from, state) do
+    sessions =
+      Map.new(state.auth_sessions, fn {session_id, session} ->
+        if session.actor_id == actor_id and is_nil(session.revoked_at) do
+          {session_id, %{session | revoked_at: revoked_at}}
+        else
+          {session_id, session}
+        end
+      end)
+
+    {:reply, :ok, %{state | auth_sessions: sessions}}
+  end
+
+  def handle_call({:put_auth_audit, entry}, _from, state) do
+    {:reply, :ok, %{state | auth_audits: [entry | state.auth_audits]}}
+  end
+
+  def handle_call({:list_auth_audit, opts}, _from, state) do
+    limit = opts |> Keyword.get(:limit, 100) |> max(1) |> min(500)
+    {:reply, {:ok, state.auth_audits |> Enum.take(limit) |> Enum.reverse()}, state}
   end
 
   defp put_run_with_semantics(runs, %RunState{} = incoming) do

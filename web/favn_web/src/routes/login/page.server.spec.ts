@@ -25,6 +25,7 @@ function createRequest(formValues: Record<string, string>): Request {
 }
 
 const baseSession: WebSession = {
+	session_token: 'opaque-session-token-1',
 	session_id: 'sess-1',
 	actor_id: 'actor-1',
 	provider: 'password_local',
@@ -83,10 +84,19 @@ describe('login page actions', () => {
 
 	it('sets session cookie and redirects on successful login', async () => {
 		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
-			new Response(JSON.stringify({ data: { session_id: 'sess-1', actor_id: 'actor-1' } }), {
-				status: 201,
-				headers: { 'content-type': 'application/json' }
-			})
+			new Response(
+				JSON.stringify({
+					data: {
+						session_token: 'opaque-session-token-1',
+						session: { session_id: 'sess-1' },
+						actor: { id: 'actor-1' }
+					}
+				}),
+				{
+					status: 201,
+					headers: { 'content-type': 'application/json' }
+				}
+			)
 		);
 		vi.mocked(webSessionFromLoginPayload).mockReturnValue(baseSession);
 
@@ -102,7 +112,11 @@ describe('login page actions', () => {
 		).rejects.toMatchObject({ status: 303, location: '/runs' });
 
 		expect(webSessionFromLoginPayload).toHaveBeenCalledWith({
-			data: { session_id: 'sess-1', actor_id: 'actor-1' }
+			data: {
+				session_token: 'opaque-session-token-1',
+				session: { session_id: 'sess-1' },
+				actor: { id: 'actor-1' }
+			}
 		});
 		expect(setWebSessionCookie).toHaveBeenCalledWith(cookies, baseSession);
 		expect(locals.session).toEqual(baseSession);
@@ -110,10 +124,13 @@ describe('login page actions', () => {
 
 	it('requires a valid orchestrator response before creating a web session', async () => {
 		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
-			new Response(JSON.stringify({ data: { session_id: 'sess-1', actor_id: 'actor-1' } }), {
-				status: 201,
-				headers: { 'content-type': 'application/json' }
-			})
+			new Response(
+				JSON.stringify({ data: { session_token: 'opaque-session-token-1', actor_id: 'actor-1' } }),
+				{
+					status: 201,
+					headers: { 'content-type': 'application/json' }
+				}
+			)
 		);
 		vi.mocked(webSessionFromLoginPayload).mockReturnValue(baseSession);
 

@@ -101,5 +101,43 @@ defmodule Favn.Storage.Adapter do
               adapter_opts()
             ) :: :ok | {:error, error()}
 
-  @optional_callbacks readiness: 1, diagnostics: 1
+  @callback put_auth_actor(map(), adapter_opts()) :: :ok | {:error, error()}
+  @callback put_auth_actor_with_credential(map(), map(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_auth_actor(String.t(), adapter_opts()) :: {:ok, map()} | {:error, error()}
+  @callback get_auth_actor_by_username(String.t(), adapter_opts()) ::
+              {:ok, map()} | {:error, error()}
+  @callback list_auth_actors(adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+  @callback put_auth_credential(String.t(), map(), adapter_opts()) :: :ok | {:error, error()}
+  @callback update_auth_actor_password(String.t(), map(), map(), DateTime.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_auth_credential(String.t(), adapter_opts()) :: {:ok, map()} | {:error, error()}
+  @callback put_auth_session(map(), adapter_opts()) :: :ok | {:error, error()}
+  @callback get_auth_session(String.t(), adapter_opts()) :: {:ok, map()} | {:error, error()}
+  @callback get_auth_session_by_token_hash(String.t(), adapter_opts()) ::
+              {:ok, map()} | {:error, error()}
+  @callback revoke_auth_session(String.t(), DateTime.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback revoke_auth_sessions_for_actor(String.t(), DateTime.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback put_auth_audit(map(), adapter_opts()) :: :ok | {:error, error()}
+  @callback list_auth_audit(keyword(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+
+  @optional_callbacks readiness: 1,
+                      diagnostics: 1,
+                      put_auth_actor: 2,
+                      put_auth_actor_with_credential: 3,
+                      get_auth_actor: 2,
+                      get_auth_actor_by_username: 2,
+                      list_auth_actors: 1,
+                      put_auth_credential: 3,
+                      update_auth_actor_password: 5,
+                      get_auth_credential: 2,
+                      put_auth_session: 2,
+                      get_auth_session: 2,
+                      get_auth_session_by_token_hash: 2,
+                      revoke_auth_session: 3,
+                      revoke_auth_sessions_for_actor: 3,
+                      put_auth_audit: 2,
+                      list_auth_audit: 2
 end

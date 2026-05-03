@@ -355,7 +355,13 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert login_conn.status == 201
 
-    assert %{"data" => %{"session" => session, "actor" => actor}} =
+    assert %{
+             "data" => %{
+               "session" => _session,
+               "session_token" => session_token,
+               "actor" => actor
+             }
+           } =
              Jason.decode!(login_conn.resp_body)
 
     assert actor["username"] == "admin"
@@ -364,13 +370,133 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/me")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor["id"])
-      |> put_req_header("x-favn-session-id", session["id"])
+      |> put_req_header("x-favn-session-token", session_token)
       |> Router.call(@opts)
 
     assert me_conn.status == 200
     assert %{"data" => %{"actor" => me_actor}} = Jason.decode!(me_conn.resp_body)
     assert me_actor["id"] == actor["id"]
     assert me_actor["roles"] == ["admin"]
+  end
+
+  test "password login returns opaque token once without hashes or password material" do
+    login_conn =
+      conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
+        username: "admin",
+        password: "admin-password"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert login_conn.status == 201
+    body = Jason.decode!(login_conn.resp_body)
+    assert %{"data" => %{"session_token" => session_token, "session" => session}} = body
+    assert is_binary(session_token)
+    refute Map.has_key?(session, "token")
+    refute login_conn.resp_body =~ "token_hash"
+    refute login_conn.resp_body =~ "admin-password"
+    refute login_conn.resp_body =~ "credential"
+
+    introspect_conn =
+      conn(:post, "/api/orchestrator/v1/auth/sessions/introspect", %{
+        "session_token" => session_token
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert introspect_conn.status == 200
+    refute introspect_conn.resp_body =~ session_token
+    refute introspect_conn.resp_body =~ "token_hash"
+  end
+
+  test "current session revoke accepts raw token and returns no token material" do
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/auth/sessions/revoke", %{
+        "session_token" => session.token
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "revoked" => true,
+               "session" => revoked_session,
+               "actor" => %{"id" => actor_id}
+             }
+           } = Jason.decode!(response.resp_body)
+
+    assert revoked_session["id"] == session.id
+    assert actor_id == actor.id
+    assert is_binary(revoked_session["revoked_at"])
+    refute response.resp_body =~ session.token
+    refute response.resp_body =~ "token_hash"
+
+    assert {:error, :invalid_session} = Auth.introspect_session(session.token)
+
+    invalid =
+      conn(:post, "/api/orchestrator/v1/auth/sessions/revoke", %{
+        "session_token" => "invalid-token"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert invalid.status == 401
+  end
+
+  test "current session revoke accepts session token header without JSON body" do
+    {:ok, session, _actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/auth/sessions/revoke")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{"data" => %{"revoked" => true, "session" => revoked_session}} =
+             Jason.decode!(response.resp_body)
+
+    assert revoked_session["id"] == session.id
+    refute response.resp_body =~ session.token
+    refute response.resp_body =~ "token_hash"
+    assert {:error, :invalid_session} = Auth.introspect_session(session.token)
+  end
+
+  test "forwarded actor context trusts session token and rejects revoked tokens" do
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/me")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"actor" => %{"id" => actor_id}}} = Jason.decode!(response.resp_body)
+    assert actor_id == actor.id
+
+    invalid =
+      conn(:get, "/api/orchestrator/v1/me")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-session-token", "invalid-token")
+      |> Router.call(@opts)
+
+    assert invalid.status == 401
+
+    :ok = Auth.revoke_session(session.id)
+
+    revoked =
+      conn(:get, "/api/orchestrator/v1/me")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+
+    assert revoked.status == 401
   end
 
   test "rejects requests missing service credentials" do
@@ -389,7 +515,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/streams/runs")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> put_req_header("last-event-id", "runs:cursor_1")
       |> Router.call(@opts)
 
@@ -409,7 +535,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/streams/runs/run_stream_b")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> put_req_header("last-event-id", "run:run_stream_b:2")
       |> Router.call(@opts)
 
@@ -426,7 +552,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/streams/runs")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> put_req_header("last-event-id", "bad id with spaces")
       |> Router.call(@opts)
 
@@ -470,7 +596,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/schedules")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -495,7 +621,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       )
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -514,7 +640,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:post, "/api/orchestrator/v1/manifests/mv_activate_router/activate")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -545,7 +671,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/manifests/active")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -574,7 +700,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/manifests/active")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -644,7 +770,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/runs/run_detail_metadata")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -700,7 +826,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/runs")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -727,7 +853,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       )
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -773,7 +899,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/runs")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", "actor_stale")
-      |> put_req_header("x-favn-session-id", "session_stale")
+      |> put_req_header("x-favn-session-token", "session_stale")
       |> Router.call(@opts)
 
     assert response.status == 401
@@ -794,7 +920,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 201
@@ -802,6 +928,12 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert {:ok, run} = FavnOrchestrator.get_run(run_id)
     assert run.manifest_version_id == "mv_dependency_scope"
     assert run.plan.topo_order == [{MyApp.Assets.Gold, :asset}]
+
+    assert [%{action: "run.submit", actor_id: actor_id, session_id: session_id}] =
+             Auth.list_audit(limit: 1)
+
+    assert actor_id == actor.id
+    assert session_id == session.id
   end
 
   test "run submission rejects invalid dependency mode" do
@@ -818,7 +950,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -839,7 +971,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -859,7 +991,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -886,7 +1018,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -921,7 +1053,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert submit_response.status == 201
@@ -937,7 +1069,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/backfills/#{backfill_run_id}/windows")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert list_response.status == 200
@@ -969,7 +1101,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1019,7 +1151,7 @@ defmodule FavnOrchestrator.API.RouterTest do
         conn(:post, "/api/orchestrator/v1/backfills", payload)
         |> put_req_header("authorization", "Bearer test-service-token")
         |> put_req_header("x-favn-actor-id", actor.id)
-        |> put_req_header("x-favn-session-id", session.id)
+        |> put_req_header("x-favn-session-token", session.token)
         |> Router.call(@opts)
 
       assert response.status == 422
@@ -1057,7 +1189,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1083,7 +1215,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       )
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert baseline_response.status == 200
@@ -1108,7 +1240,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       )
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert state_response.status == 200
@@ -1130,7 +1262,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/backfills/coverage-baselines?limit=501")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1148,7 +1280,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
     end
 
     assert conn(:get, "/api/orchestrator/v1/backfills/backfill_http/windows?status=bad")
@@ -1206,12 +1338,12 @@ defmodule FavnOrchestrator.API.RouterTest do
       )
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
-    assert response.status == 400
+    assert response.status == 401
 
-    assert %{"error" => %{"code" => "bad_request", "message" => "Request failed"}} =
+    assert %{"error" => %{"code" => "unauthenticated"}} =
              Jason.decode!(response.resp_body)
   end
 
@@ -1228,7 +1360,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 201
@@ -1276,7 +1408,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:post, "/api/orchestrator/v1/runs/backfill_parent_http/cancel")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert cancel_response.status == 409
@@ -1286,7 +1418,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:post, "/api/orchestrator/v1/runs/backfill_parent_http/rerun")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert rerun_response.status == 409
@@ -1376,7 +1508,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:post, "/api/orchestrator/v1/manifests/mv_activate_forbidden/activate")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 403
@@ -1392,7 +1524,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/actors")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", admin_actor.id)
-      |> put_req_header("x-favn-session-id", admin_session.id)
+      |> put_req_header("x-favn-session-token", admin_session.token)
       |> Router.call(@opts)
 
     assert admin_response.status == 200
@@ -1406,7 +1538,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/actors")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", viewer_actor.id)
-      |> put_req_header("x-favn-session-id", viewer_session.id)
+      |> put_req_header("x-favn-session-token", viewer_session.token)
       |> Router.call(@opts)
 
     assert viewer_response.status == 403
@@ -1423,7 +1555,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:get, "/api/orchestrator/v1/actors/#{viewer.id}")
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -1444,7 +1576,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 201
@@ -1465,7 +1597,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -1477,6 +1609,9 @@ defmodule FavnOrchestrator.API.RouterTest do
     {:ok, managed_actor} =
       AuthStore.create_actor("managed_password", "managed-pass-1", "Managed Password", [:viewer])
 
+    {:ok, managed_session, _managed_actor} =
+      Auth.password_login("managed_password", "managed-pass-1")
+
     {:ok, session, actor} = Auth.password_login("admin", "admin-password")
 
     reset_response =
@@ -1485,7 +1620,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert reset_response.status == 200
@@ -1496,6 +1631,8 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert {:ok, _new_session, _managed_actor} =
              Auth.password_login("managed_password", "managed-pass-2")
+
+    assert {:error, :invalid_session} = Auth.introspect_session(managed_session.token)
   end
 
   test "viewer is forbidden from actor management commands" do
@@ -1512,7 +1649,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert create_response.status == 403
@@ -1523,7 +1660,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-id", session.id)
+      |> put_req_header("x-favn-session-token", session.token)
       |> Router.call(@opts)
 
     assert password_response.status == 403

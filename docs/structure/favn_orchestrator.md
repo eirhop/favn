@@ -14,6 +14,7 @@ Code:
 Tests:
 - `apps/favn_orchestrator/test/`
 - API contract tests under `apps/favn_orchestrator/test/api/`
+- Auth storage/facade tests under `apps/favn_orchestrator/test/auth/`
 - Production runtime config/readiness/diagnostics tests under `apps/favn_orchestrator/test/production_runtime_config_test.exs`, `apps/favn_orchestrator/test/readiness_test.exs`, and `apps/favn_orchestrator/test/diagnostics_test.exs`
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`
 

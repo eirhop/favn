@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	FAVN_WEB_SESSION_COOKIE,
+	publicWebSession,
 	readWebSessionCookie,
 	setWebSessionCookie,
 	webSessionFromLoginPayload,
@@ -29,6 +30,7 @@ class MockCookies {
 
 function createSession(overrides: Partial<WebSession> = {}): WebSession {
 	return {
+		session_token: 'opaque-session-token-1',
 		session_id: 'sess-1',
 		actor_id: 'actor-1',
 		provider: 'password_local',
@@ -48,7 +50,7 @@ describe('readWebSessionCookie', () => {
 
 	it('returns null for malformed decoded payload', () => {
 		const cookies = new MockCookies();
-		const malformed = Buffer.from(JSON.stringify({ session_id: 'sess-1' }), 'utf8').toString(
+		const malformed = Buffer.from(JSON.stringify({ session_token: 'token-1' }), 'utf8').toString(
 			'base64url'
 		);
 		cookies.set(FAVN_WEB_SESSION_COOKIE, malformed, {});
@@ -97,6 +99,7 @@ describe('webSessionFromLoginPayload', () => {
 	it('normalizes nested data/session/actor payloads', () => {
 		const session = webSessionFromLoginPayload({
 			data: {
+				session_token: 'opaque-token-2',
 				session: {
 					session_id: 'sess-2',
 					provider: 'password_local',
@@ -109,6 +112,7 @@ describe('webSessionFromLoginPayload', () => {
 		});
 
 		expect(session).toEqual({
+			session_token: 'opaque-token-2',
 			session_id: 'sess-2',
 			actor_id: 'actor-2',
 			provider: 'password_local',
@@ -117,10 +121,11 @@ describe('webSessionFromLoginPayload', () => {
 		});
 	});
 
-	it('falls back to session.id + actor.id and default provider', () => {
+	it('keeps safe session metadata without treating session id as the bearer token', () => {
 		const session = webSessionFromLoginPayload({
 			data: {
 				session: {
+					session_token: 'opaque-token-3',
 					id: 'sess-3',
 					provider: '',
 					created_at: '2026-01-02T00:00:00.000Z'
@@ -132,6 +137,7 @@ describe('webSessionFromLoginPayload', () => {
 		});
 
 		expect(session).toEqual({
+			session_token: 'opaque-token-3',
 			session_id: 'sess-3',
 			actor_id: 'actor-3',
 			provider: 'password_local',
@@ -144,6 +150,21 @@ describe('webSessionFromLoginPayload', () => {
 		expect(
 			webSessionFromLoginPayload({ data: { session: { provider: 'password_local' } } })
 		).toBeNull();
+		expect(
+			webSessionFromLoginPayload({ data: { session_id: 'sess-4', actor_id: 'actor-4' } })
+		).toBeNull();
 		expect(webSessionFromLoginPayload(null)).toBeNull();
+	});
+});
+
+describe('publicWebSession', () => {
+	it('omits the raw opaque session token from browser-facing session data', () => {
+		expect(publicWebSession(createSession())).toEqual({
+			session_id: 'sess-1',
+			actor_id: 'actor-1',
+			provider: 'password_local',
+			expires_at: '2999-01-01T00:00:00.000Z',
+			issued_at: '2026-01-01T00:00:00.000Z'
+		});
 	});
 });

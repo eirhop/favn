@@ -6,12 +6,14 @@ schema migrations and canonical payload persistence.
 Code:
 - `apps/favn_storage_sqlite/lib/favn/storage/adapter/sqlite.ex`
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/`
+- Auth/session/audit schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_auth_state.ex`
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/diagnostics.ex`
 
 Tests:
 - `apps/favn_storage_sqlite/test/`
 - SQLite readiness diagnostics: `apps/favn_storage_sqlite/test/sqlite_readiness_test.exs`
 - Stopped-backend control-plane restore verification: `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs`
+- Auth/session/audit storage restart coverage: `apps/favn_storage_sqlite/test/sqlite_storage_test.exs`
 - Single-node bootstrap acceptance verification: `apps/favn_storage_sqlite/test/sqlite_single_node_bootstrap_acceptance_test.exs`
 
 Use when changing SQLite persistence, migrations, adapter lifecycle, readiness

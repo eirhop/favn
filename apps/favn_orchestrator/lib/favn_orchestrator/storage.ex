@@ -213,6 +213,93 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec put_auth_actor(map()) :: :ok | {:error, term()}
+  def put_auth_actor(actor) when is_map(actor) do
+    adapter_call(fn adapter, opts -> adapter.put_auth_actor(actor, opts) end)
+  end
+
+  @spec put_auth_actor_with_credential(map(), map()) :: :ok | {:error, term()}
+  def put_auth_actor_with_credential(actor, credential)
+      when is_map(actor) and is_map(credential) do
+    adapter_call(fn adapter, opts ->
+      adapter.put_auth_actor_with_credential(actor, credential, opts)
+    end)
+  end
+
+  @spec get_auth_actor(String.t()) :: {:ok, map()} | {:error, term()}
+  def get_auth_actor(actor_id) when is_binary(actor_id) do
+    adapter_call(fn adapter, opts -> adapter.get_auth_actor(actor_id, opts) end)
+  end
+
+  @spec get_auth_actor_by_username(String.t()) :: {:ok, map()} | {:error, term()}
+  def get_auth_actor_by_username(username) when is_binary(username) do
+    adapter_call(fn adapter, opts -> adapter.get_auth_actor_by_username(username, opts) end)
+  end
+
+  @spec list_auth_actors() :: {:ok, [map()]} | {:error, term()}
+  def list_auth_actors do
+    adapter_call(fn adapter, opts -> adapter.list_auth_actors(opts) end)
+  end
+
+  @spec put_auth_credential(String.t(), map()) :: :ok | {:error, term()}
+  def put_auth_credential(actor_id, credential) when is_binary(actor_id) and is_map(credential) do
+    adapter_call(fn adapter, opts -> adapter.put_auth_credential(actor_id, credential, opts) end)
+  end
+
+  @spec update_auth_actor_password(String.t(), map(), map(), DateTime.t()) ::
+          :ok | {:error, term()}
+  def update_auth_actor_password(actor_id, actor, credential, %DateTime{} = revoked_at)
+      when is_binary(actor_id) and is_map(actor) and is_map(credential) do
+    adapter_call(fn adapter, opts ->
+      adapter.update_auth_actor_password(actor_id, actor, credential, revoked_at, opts)
+    end)
+  end
+
+  @spec get_auth_credential(String.t()) :: {:ok, map()} | {:error, term()}
+  def get_auth_credential(actor_id) when is_binary(actor_id) do
+    adapter_call(fn adapter, opts -> adapter.get_auth_credential(actor_id, opts) end)
+  end
+
+  @spec put_auth_session(map()) :: :ok | {:error, term()}
+  def put_auth_session(session) when is_map(session) do
+    adapter_call(fn adapter, opts -> adapter.put_auth_session(session, opts) end)
+  end
+
+  @spec get_auth_session(String.t()) :: {:ok, map()} | {:error, term()}
+  def get_auth_session(session_id) when is_binary(session_id) do
+    adapter_call(fn adapter, opts -> adapter.get_auth_session(session_id, opts) end)
+  end
+
+  @spec get_auth_session_by_token_hash(String.t()) :: {:ok, map()} | {:error, term()}
+  def get_auth_session_by_token_hash(token_hash) when is_binary(token_hash) do
+    adapter_call(fn adapter, opts -> adapter.get_auth_session_by_token_hash(token_hash, opts) end)
+  end
+
+  @spec revoke_auth_session(String.t(), DateTime.t()) :: :ok | {:error, term()}
+  def revoke_auth_session(session_id, %DateTime{} = revoked_at) when is_binary(session_id) do
+    adapter_call(fn adapter, opts ->
+      adapter.revoke_auth_session(session_id, revoked_at, opts)
+    end)
+  end
+
+  @spec revoke_auth_sessions_for_actor(String.t(), DateTime.t()) :: :ok | {:error, term()}
+  def revoke_auth_sessions_for_actor(actor_id, %DateTime{} = revoked_at)
+      when is_binary(actor_id) do
+    adapter_call(fn adapter, opts ->
+      adapter.revoke_auth_sessions_for_actor(actor_id, revoked_at, opts)
+    end)
+  end
+
+  @spec put_auth_audit(map()) :: :ok | {:error, term()}
+  def put_auth_audit(entry) when is_map(entry) do
+    adapter_call(fn adapter, opts -> adapter.put_auth_audit(entry, opts) end)
+  end
+
+  @spec list_auth_audit(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_auth_audit(opts \\ []) when is_list(opts) do
+    adapter_call(fn adapter, adapter_opts -> adapter.list_auth_audit(opts, adapter_opts) end)
+  end
+
   @spec adapter_module() :: module()
   def adapter_module do
     Application.get_env(:favn_orchestrator, :storage_adapter, Memory)

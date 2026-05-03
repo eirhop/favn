@@ -436,8 +436,19 @@ let lastBackfillSubmitPayload = null;
 let lastBackfillRerunPayload = null;
 let readinessStatus = 200;
 
-/** @type {Map<string, { actorId: string; provider: string }>} */
+/** @type {Map<string, { sessionId: string; actorId: string; provider: string; issuedAt: string; expiresAt: string }>} */
 const sessions = new Map();
+
+function publicSessionMetadata(session, overrides = {}) {
+	return {
+		session_id: session.sessionId,
+		actor_id: session.actorId,
+		provider: session.provider,
+		issued_at: session.issuedAt,
+		expires_at: session.expiresAt,
+		...overrides
+	};
+}
 
 function sendJson(response, status, payload) {
 	response.writeHead(status, {
@@ -489,23 +500,23 @@ function requireAuthenticatedSession(request, response) {
 	}
 
 	const actorId = request.headers['x-favn-actor-id'];
-	const sessionId = request.headers['x-favn-session-id'];
+	const sessionToken = request.headers['x-favn-session-token'];
 
-	if (typeof actorId !== 'string' || typeof sessionId !== 'string') {
+	if (typeof actorId !== 'string' || typeof sessionToken !== 'string') {
 		sendJson(response, 401, {
-			error: { message: 'Missing actor/session headers' }
+			error: { message: 'Missing actor/session token headers' }
 		});
 		return null;
 	}
 
-	const session = sessions.get(sessionId);
+	const session = sessions.get(sessionToken);
 
 	if (!session || session.actorId !== actorId) {
 		sendJson(response, 401, { error: { message: 'Unknown session' } });
 		return null;
 	}
 
-	return { actorId, sessionId };
+	return { ...session, sessionToken };
 }
 
 async function readJsonBody(request) {
@@ -554,17 +565,22 @@ function handleLogin(request, response) {
 
 			const actorId = `actor_${username}`;
 			const sessionId = `sess_${randomUUID()}`;
+			const sessionToken = `favn_mock_${randomUUID()}_${randomUUID()}`;
 			const issuedAt = new Date().toISOString();
 			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 			activeManifestVersionId = 'manifest_v2';
 
-			sessions.set(sessionId, {
+			sessions.set(sessionToken, {
+				sessionId,
 				actorId,
-				provider: 'password_local'
+				provider: 'password_local',
+				issuedAt,
+				expiresAt
 			});
 
 			sendJson(response, 200, {
 				data: {
+					session_token: sessionToken,
 					session: {
 						session_id: sessionId,
 						actor_id: actorId,
@@ -605,13 +621,24 @@ function handleMe(request, response) {
 		data: {
 			actor: {
 				actor_id: session.actorId,
-				provider: 'password_local'
+				provider: session.provider
 			},
-			session: {
-				session_id: session.sessionId,
-				actor_id: session.actorId,
-				provider: 'password_local'
-			}
+			session: publicSessionMetadata(session)
+		}
+	});
+}
+
+function handleRevokeSession(request, response) {
+	const session = requireAuthenticatedSession(request, response);
+	if (!session) return;
+
+	sessions.delete(session.sessionToken);
+
+	sendJson(response, 200, {
+		data: {
+			session: publicSessionMetadata(session, {
+				revoked_at: new Date().toISOString()
+			})
 		}
 	});
 }
@@ -980,6 +1007,11 @@ const server = createServer((request, response) => {
 
 	if (method === 'POST' && url.pathname === '/api/orchestrator/v1/auth/password/sessions') {
 		handleLogin(request, response);
+		return;
+	}
+
+	if (method === 'POST' && url.pathname === '/api/orchestrator/v1/auth/sessions/revoke') {
+		handleRevokeSession(request, response);
 		return;
 	}
 
