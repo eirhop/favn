@@ -123,9 +123,9 @@ defmodule Favn.Dev.Build.Single do
     |> Map.put("assembly", assembly)
     |> Map.put("artifact", %{
       "kind" => "project_local_backend_launcher",
-      "operational" => false,
-      "truthfulness" =>
-        "project_local_launcher_requires_runtime_source_and_start_stop_verification"
+      "operational" => true,
+      "relocatable" => false,
+      "truthfulness" => "project_local_launcher_verified_start_stop_non_relocatable"
     })
     |> Map.put("topology", %{
       "boundary" => "orchestrator+runner+scheduler",
@@ -288,6 +288,16 @@ defmodule Favn.Dev.Build.Single do
 
     if File.dir?(runner_ebin) do
       Code.prepend_path(runner_ebin)
+
+      runner_ebin
+      |> Path.join("*.beam")
+      |> Path.wildcard()
+      |> Enum.each(fn beam_path ->
+        beam_path
+        |> Path.rootname()
+        |> String.to_charlist()
+        |> :code.load_abs()
+      end)
     end
 
     env = System.get_env()
@@ -299,13 +309,20 @@ defmodule Favn.Dev.Build.Single do
          {:ok, _} <- Application.ensure_all_started(:favn_storage_sqlite),
          {:ok, _} <- Application.ensure_all_started(:favn_orchestrator) do
       manifest_path = Path.join([artifact_root, "runner", "manifest.json"])
+      metadata_path = Path.join([artifact_root, "runner", "metadata.json"])
 
       if File.regular?(manifest_path) do
         with {:ok, encoded} <- File.read(manifest_path),
-             {:ok, manifest} <- Favn.Manifest.Serializer.decode_manifest(encoded),
-             {:ok, version} <- Favn.Manifest.Version.new(manifest),
-             :ok <- FavnRunner.register_manifest(version),
-             :ok <- FavnOrchestrator.register_manifest(version) do
+              {:ok, manifest} <- Favn.Manifest.Serializer.decode_manifest(encoded),
+              {:ok, metadata_encoded} <- File.read(metadata_path),
+              {:ok, %{"manifest" => manifest_metadata}} <- JSON.decode(metadata_encoded),
+              {:ok, version} <-
+                Favn.Manifest.Version.from_published(manifest,
+                  manifest_version_id: Map.fetch!(manifest_metadata, "manifest_version_id"),
+                  content_hash: Map.fetch!(manifest_metadata, "content_hash")
+                ),
+              :ok <- FavnRunner.register_manifest(version),
+              :ok <- FavnOrchestrator.register_manifest(version) do
           :ok
         else
           {:error, reason} -> raise "failed to register packaged manifest: #{inspect(reason)}"
@@ -448,9 +465,9 @@ defmodule Favn.Dev.Build.Single do
     notes = [
       "# Favn Single Artifact Notes",
       "",
-      "This output is a project-local backend-only SQLite launcher, not a",
-      "self-contained operational production artifact yet. It depends on the",
-      "recorded orchestrator source/runtime root used by the install step.",
+      "This output is a verified project-local backend-only SQLite launcher,",
+      "not a self-contained or relocatable production release. It depends on",
+      "the recorded orchestrator source/runtime root used by the install step.",
       "The launcher starts one BEAM runtime containing the runner, SQLite storage",
       "adapter, orchestrator API, and scheduler when FAVN_SCHEDULER_ENABLED allows it.",
       "",

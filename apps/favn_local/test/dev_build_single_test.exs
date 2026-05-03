@@ -84,7 +84,8 @@ defmodule Favn.Dev.Build.SingleTest do
     assert %{
              "artifact" => %{
                "kind" => "project_local_backend_launcher",
-               "operational" => false
+                "operational" => true,
+                "relocatable" => false
              },
              "compatibility" => %{
                "storage_modes" => ["sqlite"],

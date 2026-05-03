@@ -14,6 +14,7 @@ Code:
 Tests:
 - `apps/favn_local/test/`
 - integration-style local tooling tests under `apps/favn_local/test/integration/`
+- single-node artifact runtime smoke coverage under `apps/favn_local/test/integration/single_node_artifact_runtime_test.exs`
 - single-node bootstrap tests under `apps/favn_local/test/dev_bootstrap_single_test.exs`
 - orchestrator bootstrap HTTP client tests under `apps/favn_local/test/dev_orchestrator_client_test.exs`
 
