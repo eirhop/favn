@@ -867,7 +867,18 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
          %{state | idempotency_records: Map.put(state.idempotency_records, stored.id, stored)}}
 
       {:ok, stored} ->
-        {:reply, classify_idempotency_record(stored, record.request_fingerprint), state}
+        if expired_idempotency_record?(stored) do
+          replacement = normalize_idempotency_record(record)
+
+          {:reply, {:ok, {:reserved, replacement}},
+           %{
+             state
+             | idempotency_records:
+                 Map.put(state.idempotency_records, replacement.id, replacement)
+           }}
+        else
+          {:reply, classify_idempotency_record(stored, record.request_fingerprint), state}
+        end
     end
   end
 
@@ -965,6 +976,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   defp normalize_status(status) when is_atom(status), do: status
   defp normalize_status(status) when is_binary(status), do: String.to_existing_atom(status)
+
+  defp expired_idempotency_record?(%{expires_at: %DateTime{} = expires_at}) do
+    DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+  end
+
+  defp expired_idempotency_record?(_record), do: false
 
   defp filter_by(values, filters) do
     filters = Keyword.drop(filters, [:limit, :offset])

@@ -211,6 +211,38 @@ defmodule Favn.SQLiteStorageTest do
              OrchestratorStorage.reserve_idempotency_record(conflict)
   end
 
+  test "expired idempotency records are replaced on reservation" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    record =
+      Idempotency.new_record(
+        %{
+          operation: "run.submit",
+          actor_id: "act_sqlite",
+          session_id: "ses_sqlite",
+          service_identity: "favn_web",
+          idempotency_key_hash: Idempotency.key_hash("expired-key")
+        },
+        Idempotency.request_fingerprint(%{payload: 1})
+      )
+
+    expired = %{
+      record
+      | created_at: DateTime.add(now, -120, :second),
+        updated_at: DateTime.add(now, -120, :second),
+        expires_at: DateTime.add(now, -60, :second)
+    }
+
+    replacement = %{record | request_fingerprint: Idempotency.request_fingerprint(%{payload: 2})}
+
+    assert {:ok, {:reserved, _reserved}} = OrchestratorStorage.reserve_idempotency_record(expired)
+
+    assert {:ok, {:reserved, replaced}} =
+             OrchestratorStorage.reserve_idempotency_record(replacement)
+
+    assert replaced.request_fingerprint == replacement.request_fingerprint
+  end
+
   test "does not keep run_write_orders helper table after migrations" do
     assert {:ok, %{rows: [[0]]}} =
              SQL.query(

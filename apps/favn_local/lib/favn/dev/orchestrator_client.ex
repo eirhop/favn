@@ -48,7 +48,9 @@ defmodule Favn.Dev.OrchestratorClient do
       :activate_manifest,
       base_url <> "/api/orchestrator/v1/manifests/#{manifest_version_id}/activate",
       service_token,
-      %{}
+      %{},
+      nil,
+      idempotency_key(:activate_manifest, nil, %{manifest_version_id: manifest_version_id})
     )
   end
 
@@ -95,7 +97,9 @@ defmodule Favn.Dev.OrchestratorClient do
       :cancel_run,
       base_url <> "/api/orchestrator/v1/runs/#{run_id}/cancel",
       service_token,
-      %{}
+      %{},
+      nil,
+      idempotency_key(:cancel_run, nil, %{run_id: run_id})
     )
   end
 
@@ -146,7 +150,14 @@ defmodule Favn.Dev.OrchestratorClient do
              is_map(payload) do
     url = base_url <> "/api/orchestrator/v1/runs"
 
-    case request_post(:submit_run, url, service_token, payload, session_context) do
+    case request_post(
+           :submit_run,
+           url,
+           service_token,
+           payload,
+           session_context,
+           idempotency_key(:submit_run, session_context, payload)
+         ) do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
 
@@ -165,7 +176,14 @@ defmodule Favn.Dev.OrchestratorClient do
              is_map(payload) do
     url = base_url <> "/api/orchestrator/v1/backfills"
 
-    case request_post(:submit_backfill, url, service_token, payload, session_context) do
+    case request_post(
+           :submit_backfill,
+           url,
+           service_token,
+           payload,
+           session_context,
+           idempotency_key(:submit_backfill, session_context, payload)
+         ) do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
 
@@ -210,7 +228,11 @@ defmodule Favn.Dev.OrchestratorClient do
            url,
            service_token,
            %{window_key: window_key},
-           session_context
+           session_context,
+           idempotency_key(:rerun_backfill_window, session_context, %{
+             backfill_run_id: backfill_run_id,
+             window_key: window_key
+           })
          ) do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
@@ -333,14 +355,21 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  defp request_post(operation, url, service_token, payload, session_context \\ nil) do
+  defp request_post(
+         operation,
+         url,
+         service_token,
+         payload,
+         session_context \\ nil,
+         idempotency_key \\ nil
+       ) do
     body = JSON.encode!(payload)
 
-    request(operation, :post, url, service_token, body, session_context)
+    request(operation, :post, url, service_token, body, session_context, idempotency_key)
   end
 
   defp request_get(operation, url, service_token, session_context \\ nil) do
-    request(operation, :get, url, service_token, nil, session_context)
+    request(operation, :get, url, service_token, nil, session_context, nil)
   end
 
   defp request_page(operation, url, service_token, session_context) do
@@ -377,13 +406,14 @@ defmodule Favn.Dev.OrchestratorClient do
   defp query_value(value) when is_atom(value), do: Atom.to_string(value)
   defp query_value(value), do: to_string(value)
 
-  defp request(operation, method, url, service_token, body, session_context) do
+  defp request(operation, method, url, service_token, body, session_context, idempotency_key) do
     headers =
       [
         {"accept", "application/json"},
         {"authorization", "Bearer #{service_token}"}
       ]
       |> add_session_headers(session_context)
+      |> add_idempotency_header(idempotency_key)
 
     case LocalHttpClient.request(method, url, headers, body) do
       {:ok, decoded} -> {:ok, decoded}
@@ -397,6 +427,51 @@ defmodule Favn.Dev.OrchestratorClient do
   end
 
   defp add_session_headers(headers, _session_context), do: headers
+
+  defp add_idempotency_header(headers, key) when is_binary(key) and key != "" do
+    headers ++ [{"idempotency-key", key}]
+  end
+
+  defp add_idempotency_header(headers, _key), do: headers
+
+  defp idempotency_key(operation, session_context, input) when is_atom(operation) do
+    fingerprint =
+      %{operation: operation, session: session_context || %{}, input: input}
+      |> canonicalize()
+      |> JSON.encode!()
+
+    digest = :crypto.hash(:sha256, fingerprint)
+
+    "favn-local-" <> Base.url_encode64(digest, padding: false)
+  end
+
+  defp canonicalize(nil), do: %{"__type__" => "null"}
+
+  defp canonicalize(value) when is_boolean(value),
+    do: %{"__type__" => "boolean", "value" => value}
+
+  defp canonicalize(value) when is_binary(value), do: %{"__type__" => "string", "value" => value}
+
+  defp canonicalize(value) when is_integer(value),
+    do: %{"__type__" => "integer", "value" => value}
+
+  defp canonicalize(value) when is_float(value), do: %{"__type__" => "float", "value" => value}
+
+  defp canonicalize(value) when is_map(value) do
+    entries =
+      value
+      |> Enum.map(fn {key, val} -> [to_string(key), canonicalize(val)] end)
+      |> Enum.sort_by(fn [key, _val] -> key end)
+
+    %{"__type__" => "map", "entries" => entries}
+  end
+
+  defp canonicalize(value) when is_list(value) do
+    %{"__type__" => "list", "items" => Enum.map(value, &canonicalize/1)}
+  end
+
+  defp canonicalize(value) when is_atom(value),
+    do: %{"__type__" => "atom", "value" => Atom.to_string(value)}
 
   defp operation_error(operation, method, url, reason) do
     %{operation: operation, method: method, url: url, reason: reason}

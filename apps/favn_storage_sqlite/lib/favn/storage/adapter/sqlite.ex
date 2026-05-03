@@ -862,28 +862,40 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def reserve_idempotency_record(record, opts) when is_map(record) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
-      sql = """
-      INSERT OR IGNORE INTO favn_idempotency_records (
-        idempotency_record_id, operation, idempotency_key_hash, actor_id, session_id,
-        service_identity, request_fingerprint, status, response_status, response_body_blob,
-        resource_type, resource_id, created_at, updated_at, expires_at, completed_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-      """
-
-      params = idempotency_record_params(record)
-
-      case SQL.query(repo, sql, params) do
-        {:ok, %{num_rows: 1}} ->
-          {:ok, {:reserved, record}}
-
-        {:ok, _result} ->
-          with {:ok, stored} <- fetch_idempotency_record(repo, record.id) do
-            classify_idempotency_record(stored, record.request_fingerprint)
-          end
-
-        {:error, reason} ->
-          {:error, reason}
+      repo.transact(fn ->
+        reserve_idempotency_record_in_transaction(repo, record)
+        |> case do
+          {:ok, result} -> {:ok, result}
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, result} -> {:ok, result}
+        {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  defp reserve_idempotency_record_in_transaction(repo, record) do
+    case fetch_idempotency_record(repo, record.id) do
+      {:error, :not_found} ->
+        insert_idempotency_record(repo, record)
+
+      {:ok, stored} ->
+        reserve_existing_idempotency_record(repo, stored, record)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reserve_existing_idempotency_record(repo, stored, record) do
+    if expired_idempotency_record?(stored) do
+      with :ok <- delete_idempotency_record(repo, stored.id) do
+        insert_idempotency_record(repo, record)
+      end
+    else
+      classify_idempotency_record(stored, record.request_fingerprint)
     end
   end
 
@@ -949,6 +961,33 @@ defmodule Favn.Storage.Adapter.SQLite do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp insert_idempotency_record(repo, record) do
+    sql = """
+    INSERT INTO favn_idempotency_records (
+      idempotency_record_id, operation, idempotency_key_hash, actor_id, session_id,
+      service_identity, request_fingerprint, status, response_status, response_body_blob,
+      resource_type, resource_id, created_at, updated_at, expires_at, completed_at
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+    """
+
+    case SQL.query(repo, sql, idempotency_record_params(record)) do
+      {:ok, _result} -> {:ok, {:reserved, record}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_idempotency_record(repo, record_id) do
+    query_ok(repo, "DELETE FROM favn_idempotency_records WHERE idempotency_record_id = ?1", [
+      record_id
+    ])
+  end
+
+  defp expired_idempotency_record?(%{expires_at: %DateTime{} = expires_at}) do
+    DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+  end
+
+  defp expired_idempotency_record?(_record), do: false
 
   defp classify_idempotency_record(stored, request_fingerprint) do
     cond do
