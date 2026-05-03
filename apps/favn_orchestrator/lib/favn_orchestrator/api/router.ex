@@ -264,6 +264,7 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, version} <- build_manifest_version(params),
+         {:ok, registration_status} <- manifest_registration_status(version),
          :ok <- FavnOrchestrator.register_manifest(version),
          {:ok, summary} <- FavnOrchestrator.get_manifest_summary(version.manifest_version_id),
          :ok <-
@@ -275,7 +276,13 @@ defmodule FavnOrchestrator.API.Router do
              outcome: "accepted",
              service_identity: service_identity(conn)
            }) do
-      data(conn, 201, %{manifest: summary})
+      data(conn, 201, %{
+        manifest: summary,
+        registration: %{
+          status: registration_status,
+          manifest_version_id: version.manifest_version_id
+        }
+      })
     else
       {:error, {:missing_field, field}} ->
         error(conn, 422, "validation_failed", "Missing required field", %{field: field})
@@ -1554,6 +1561,22 @@ defmodule FavnOrchestrator.API.Router do
       nil -> {:error, {:missing_field, "manifest"}}
       {:error, _reason} = error -> error
       _other -> {:error, {:missing_field, "manifest"}}
+    end
+  end
+
+  defp manifest_registration_status(%Version{} = version) do
+    case FavnOrchestrator.get_manifest(version.manifest_version_id) do
+      {:ok, %Version{content_hash: content_hash}} when content_hash == version.content_hash ->
+        {:ok, "already_published"}
+
+      {:ok, %Version{}} ->
+        {:ok, "accepted"}
+
+      {:error, reason} when reason in [:manifest_version_not_found, :not_found] ->
+        {:ok, "accepted"}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

@@ -51,7 +51,8 @@ defmodule Favn.Dev.BackfillTest do
     {:ok, base_url, _server} =
       start_server(
         [
-          {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+          {201,
+           ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
           {200,
            ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
           {201,
@@ -86,7 +87,8 @@ defmodule Favn.Dev.BackfillTest do
     {:ok, base_url, _server} =
       start_server(
         [
-          {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+          {201,
+           ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
           {200,
            ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
           {201,
@@ -127,10 +129,12 @@ defmodule Favn.Dev.BackfillTest do
     {:ok, base_url, _server} =
       start_server(
         [
-          {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+          {201,
+           ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
           {200,
            ~s({"data":{"items":[{"window_key":"day:2026-01-01:Etc/UTC"}],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null}}})},
-          {201, ~s({"data":{"session":{"id":"sess_2"},"actor":{"id":"act_1"}}})},
+          {201,
+           ~s({"data":{"session":{"id":"sess_2"},"session_token":"raw_session_token_2","actor":{"id":"act_1"}}})},
           {201, ~s({"data":{"run":{"id":"rerun_1","status":"running"}}})}
         ],
         parent: parent
@@ -159,7 +163,8 @@ defmodule Favn.Dev.BackfillTest do
     {:ok, base_url, _server} =
       start_server(
         [
-          {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+          {201,
+           ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
           {200,
            ~s({"data":{"repair":{"apply":true,"counts":{"coverage_baselines":0,"backfill_windows":1,"asset_window_states":1,"skips":0},"skips":[]}}})}
         ],

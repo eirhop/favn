@@ -556,8 +556,12 @@ registers the manifest, activates it by default, and calls
 `/api/orchestrator/v1/manifests/:manifest_version_id/runner/register` so the
 orchestrator registers the persisted manifest with the local runner. Repeating
 the command with the same manifest and runner registration is safe and
-repeatable. Active-manifest verification uses the service-auth-only
-`/api/orchestrator/v1/bootstrap/active-manifest` endpoint.
+repeatable, and the command prints manifest registration, runner registration,
+and active-manifest verification status. Active-manifest verification uses the
+service-auth-only `/api/orchestrator/v1/bootstrap/active-manifest` endpoint. The
+single-node integration path now verifies first-admin login, manifest-pinned run
+submission, run history, auth/session state, diagnostics, and restart survival
+against the generated backend artifact with fresh SQLite storage.
 
 Storage adapter startup reports recoverable configuration failures as
 `{:error, reason}`. Scheduler state keys are exact across built-in adapters:

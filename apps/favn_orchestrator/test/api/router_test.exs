@@ -1809,8 +1809,38 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 201
 
-    assert %{"data" => %{"manifest" => manifest}} = Jason.decode!(response.resp_body)
+    assert %{
+             "data" => %{
+               "manifest" => manifest,
+               "registration" => %{
+                 "status" => "accepted",
+                 "manifest_version_id" => "mv_register_router"
+               }
+             }
+           } = Jason.decode!(response.resp_body)
+
     assert manifest["manifest_version_id"] == "mv_register_router"
+  end
+
+  test "repeated identical manifest publication reports already published" do
+    version = schedule_manifest_version("mv_register_repeat")
+    payload = manifest_publish_payload(version)
+
+    first_response =
+      conn(:post, "/api/orchestrator/v1/manifests", payload)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    repeated_response =
+      conn(:post, "/api/orchestrator/v1/manifests", payload)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert first_response.status == 201
+    assert repeated_response.status == 201
+
+    assert %{"data" => %{"registration" => %{"status" => "already_published"}}} =
+             Jason.decode!(repeated_response.resp_body)
   end
 
   test "returns conflict when manifest version id changes content" do
@@ -2117,6 +2147,17 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
+  end
+
+  defp manifest_publish_payload(version) do
+    %{
+      manifest_version_id: version.manifest_version_id,
+      content_hash: version.content_hash,
+      schema_version: version.schema_version,
+      runner_contract_version: version.runner_contract_version,
+      serialization_format: version.serialization_format,
+      manifest: version.manifest
+    }
   end
 
   defp dependency_manifest_version(manifest_version_id) do

@@ -226,7 +226,38 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert output =~ "Favn single-node bootstrap complete"
+    assert output =~ "manifest registration: accepted"
+    assert output =~ "runner registration: accepted"
     assert output =~ "active manifest verification: matched"
+  end
+
+  test "mix favn.bootstrap.single reports missing manifest files clearly", %{root_dir: root_dir} do
+    missing_path = Path.join(root_dir, "missing_manifest.json")
+    {:ok, base_url, _server} = start_bootstrap_server(:ok)
+
+    assert_raise Mix.Error, ~r/bootstrap failed: manifest file not found:/, fn ->
+      BootstrapSingleTask.run(bootstrap_args(missing_path, base_url))
+    end
+  end
+
+  test "mix favn.bootstrap.single reports invalid service token clearly", %{root_dir: root_dir} do
+    manifest_path = write_bootstrap_manifest(root_dir)
+    {:ok, base_url, _server} = start_bootstrap_server(:invalid_service_token)
+
+    assert_raise Mix.Error,
+                 ~r/bootstrap failed: service token was rejected by orchestrator/,
+                 fn ->
+                   BootstrapSingleTask.run(bootstrap_args(manifest_path, base_url))
+                 end
+  end
+
+  test "mix favn.bootstrap.single reports manifest conflicts clearly", %{root_dir: root_dir} do
+    manifest_path = write_bootstrap_manifest(root_dir)
+    {:ok, base_url, _server} = start_bootstrap_server(:manifest_conflict)
+
+    assert_raise Mix.Error, ~r/bootstrap failed: manifest version conflict/, fn ->
+      BootstrapSingleTask.run(bootstrap_args(manifest_path, base_url))
+    end
   end
 
   test "mix favn.bootstrap.single safely prints tuple active-manifest verification", %{
@@ -892,11 +923,16 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   defp serve_bootstrap_requests(socket, _verification, 0), do: :gen_tcp.close(socket)
 
   defp serve_bootstrap_requests(socket, verification, remaining) do
-    {:ok, client} = :gen_tcp.accept(socket, 2_000)
-    {:ok, request} = :gen_tcp.recv(client, 0, 2_000)
-    send_bootstrap_response(client, request, verification)
-    :gen_tcp.close(client)
-    serve_bootstrap_requests(socket, verification, remaining - 1)
+    case :gen_tcp.accept(socket, 2_000) do
+      {:ok, client} ->
+        {:ok, request} = :gen_tcp.recv(client, 0, 2_000)
+        send_bootstrap_response(client, request, verification)
+        :gen_tcp.close(client)
+        serve_bootstrap_requests(socket, verification, remaining - 1)
+
+      {:error, :timeout} ->
+        :gen_tcp.close(socket)
+    end
   end
 
   defp send_bootstrap_response(client, request, verification) do
@@ -905,7 +941,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     cond do
       path == "/api/orchestrator/v1/bootstrap/service-token" ->
-        send_json(client, 200, %{data: %{status: "ok"}})
+        send_service_token_response(client, verification)
 
       path == "/api/orchestrator/v1/diagnostics" ->
         send_json(client, 200, %{
@@ -931,14 +967,14 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         })
 
       path == "/api/orchestrator/v1/manifests" ->
-        send_json(client, 200, %{data: %{manifest: %{}}})
+        send_manifest_publish_response(client, verification)
 
       path == "/api/orchestrator/v1/bootstrap/active-manifest" ->
         send_active_manifest_response(client, verification)
 
       String.contains?(path, "/api/orchestrator/v1/manifests/") and
           String.contains?(path, "/runner/register") ->
-        send_json(client, 200, %{data: %{runner: %{}}})
+        send_json(client, 200, %{data: %{registration: %{status: "accepted"}}})
 
       String.contains?(path, "/api/orchestrator/v1/manifests/") and
           String.contains?(path, "/activate") ->
@@ -947,6 +983,24 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       true ->
         send_json(client, 404, %{error: %{reason: "not_found"}})
     end
+  end
+
+  defp send_service_token_response(client, :invalid_service_token) do
+    send_json(client, 401, %{error: %{code: "service_unauthorized"}})
+  end
+
+  defp send_service_token_response(client, _verification) do
+    send_json(client, 200, %{data: %{status: "ok"}})
+  end
+
+  defp send_manifest_publish_response(client, :manifest_conflict) do
+    send_json(client, 409, %{error: %{code: "manifest_conflict"}})
+  end
+
+  defp send_manifest_publish_response(client, _verification) do
+    send_json(client, 200, %{
+      data: %{manifest: %{}, registration: %{status: "accepted"}}
+    })
   end
 
   defp send_active_manifest_response(client, {status, manifest_version_id})

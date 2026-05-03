@@ -197,8 +197,12 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
   defp decode_existing_atom(value) when is_binary(value) do
     {:ok, String.to_existing_atom(value)}
   rescue
-    ArgumentError -> {:error, {:unknown_atom, value}}
+    ArgumentError -> decode_persisted_atom(value)
   end
+
+  # Adapter payloads are trusted storage records and may contain consumer module atoms
+  # that are not loaded until a persisted run is decoded after a fresh VM start.
+  defp decode_persisted_atom(value), do: {:ok, String.to_atom(value)}
 
   defp validate_struct_fields(decoded_fields, _raw_fields) when is_map(decoded_fields), do: :ok
 
