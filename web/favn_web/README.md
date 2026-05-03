@@ -92,6 +92,29 @@ Local-dev-only `FAVN_DEV_*` names are not part of the production web contract.
 private orchestrator API directly and must never receive the raw orchestrator
 service token or raw session token.
 
+Authentication is enforced deny-by-default in `src/hooks.server.ts`. Every
+product page and `/api/web/v1/*` BFF route requires a valid web session unless
+the exact method/path pair is explicitly allowlisted as public. The current
+public allowlist is intentionally tiny:
+
+- `GET /login`
+- `POST /login`
+
+Unauthenticated BFF/API requests receive JSON `401` responses with
+`{ "error": { "code": "unauthorized", "message": "Authentication required" } }`.
+Unauthenticated page requests redirect with `303` to `/login?next=...`, where
+`next` is a same-origin relative path; successful login falls back to `/runs` if
+`next` is absent or unsafe. Route-local guards such as
+`requireProtectedPageSession(...)` and `requireSession(...)` remain as
+defense-in-depth, but the hook is the primary perimeter for current and future
+routes.
+
+SvelteKit hooks do not protect static assets or pages that have already been
+prerendered. The root route layout exports `prerender = false` and keeps SSR
+enabled so protected operator pages stay dynamically rendered through the hook.
+Do not place sensitive internal data under `static/`, and do not enable
+prerendering for protected product pages.
+
 Web sessions use a host-only `__Host-favn_web_session` cookie with `HttpOnly`,
 `Secure`, `SameSite=Strict`, `path=/`, and an expiry/max-age derived from the
 orchestrator session lifetime when available. The cookie value is an opaque web
@@ -116,18 +139,22 @@ limiter.
 
 ## Health and readiness
 
-`GET /api/web/v1/health/live` is a cheap liveness probe. It does not call the
-orchestrator.
+Health endpoints are protected by the same hook-level web-session gate as other
+BFF routes. `GET /api/web/v1/health/live` is a cheap authenticated liveness
+probe. It does not call the orchestrator.
 
 ```json
 { "service": "favn_web", "status": "ok" }
 ```
 
 `GET /api/web/v1/health/ready` validates web config and checks orchestrator
-readiness through `FAVN_WEB_ORCHESTRATOR_BASE_URL` at
+readiness for authenticated operators through `FAVN_WEB_ORCHESTRATOR_BASE_URL` at
 `/api/orchestrator/v1/health/ready` using the configured bounded timeout. It
 returns `200` when ready and `503` with redacted check diagnostics when web config
 is invalid, the orchestrator is unreachable, times out, or reports not-ready.
+Unauthenticated health requests receive the same minimal JSON `401` envelope as
+other protected BFF routes and never reveal session, token, config, path, stack,
+or service-token details.
 
 ## Deployment modes
 

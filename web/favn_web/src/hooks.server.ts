@@ -1,4 +1,4 @@
-import type { Handle } from '@sveltejs/kit';
+import type { Handle, RequestEvent } from '@sveltejs/kit';
 import {
 	clearWebSessionCookie,
 	FAVN_WEB_SESSION_COOKIE,
@@ -12,18 +12,47 @@ import { jsonError, rateLimitedResponse } from '$lib/server/web_api';
 
 ensureCurrentWebProductionRuntimeConfig();
 
-function shouldApplyNoStore(event: Parameters<Handle>[0]['event']): boolean {
+export const PUBLIC_ROUTES = [
+	{ method: 'GET', path: '/login' },
+	{ method: 'POST', path: '/login' }
+] as const;
+
+export function isPublicRoute(event: RequestEvent): boolean {
+	const method = event.request.method.toUpperCase();
 	const path = event.url.pathname;
-	return (
-		Boolean(event.locals.session) ||
-		path.startsWith('/api/web/v1/') ||
-		path.startsWith('/runs') ||
-		path.startsWith('/assets') ||
-		path.startsWith('/backfills')
-	);
+	return PUBLIC_ROUTES.some((route) => route.method === method && route.path === path);
 }
 
-function finalizeResponse(event: Parameters<Handle>[0]['event'], response: Response): Response {
+export function isWebApiRoute(pathname: string): boolean {
+	return pathname.startsWith('/api/web/v1/');
+}
+
+export function isPageRequest(event: RequestEvent): boolean {
+	return !isWebApiRoute(event.url.pathname);
+}
+
+function loginRedirectPath(event: RequestEvent): string {
+	const next = `${event.url.pathname}${event.url.search}`;
+	return next === '/' ? '/login?next=%2F' : `/login?next=${encodeURIComponent(next)}`;
+}
+
+export function unauthenticatedResponse(event: RequestEvent): Response {
+	if (isWebApiRoute(event.url.pathname)) {
+		return jsonError(401, 'unauthorized', 'Authentication required');
+	}
+
+	return new Response(null, {
+		status: 303,
+		headers: { location: loginRedirectPath(event) }
+	});
+}
+
+function shouldApplyNoStore(event: RequestEvent): boolean {
+	const path = event.url.pathname;
+	return Boolean(event.locals.session) || isWebApiRoute(path) || !isPublicRoute(event);
+}
+
+function finalizeResponse(event: RequestEvent, response: Response): Response {
 	const secured = applySecurityHeaders(response);
 	return shouldApplyNoStore(event) ? applyNoStoreHeaders(secured) : secured;
 }
@@ -43,10 +72,18 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	if (isUnsafeMethod(event.request.method) && event.url.pathname !== '/login') {
+		if (!isPublicRoute(event) && !event.locals.session) {
+			return finalizeResponse(event, unauthenticatedResponse(event));
+		}
+
 		const rateLimit = checkMutationRateLimit(event);
 		if (!rateLimit.allowed) {
 			return finalizeResponse(event, rateLimitedResponse(rateLimit.retryAfterSeconds));
 		}
+	}
+
+	if (!isPublicRoute(event) && !event.locals.session) {
+		return finalizeResponse(event, unauthenticatedResponse(event));
 	}
 
 	return finalizeResponse(event, await resolve(event));

@@ -395,12 +395,14 @@ active manifest, storage/schema readiness, scheduler, runner, redacted
 data-plane connection summaries, in-flight runs, and recent failed-run
 summaries.
 
-The web service exposes unauthenticated `/api/web/v1/health/live` and
-`/api/web/v1/health/ready` endpoints. Web liveness is process-only and does not
-call the orchestrator. Web readiness verifies web config and calls orchestrator
-readiness through the configured API boundary with a bounded timeout, returning
-`503` with redacted diagnostics when the web config is invalid, the orchestrator
-is unreachable, times out, or reports not-ready.
+The web service protects `/api/web/v1/health/live` and
+`/api/web/v1/health/ready` with the same hook-level web-session gate as other
+BFF routes. Web liveness is process-only and does not call the orchestrator. Web
+readiness verifies web config and calls orchestrator readiness through the
+configured API boundary with a bounded timeout, returning `503` with redacted
+diagnostics when the web config is invalid, the orchestrator is unreachable,
+times out, or reports not-ready. Unauthenticated health requests return the same
+minimal JSON `401` envelope as other protected BFF routes.
 
 ## Explicitly Unsupported In V1
 

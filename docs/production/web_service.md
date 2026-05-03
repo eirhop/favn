@@ -41,8 +41,17 @@ headers, and `SHUTDOWN_TIMEOUT` are documented in `web/favn_web/README.md`.
 
 ## Browser-edge controls
 
-The SvelteKit server hook rejects unsafe methods unless Fetch Metadata proves
-`same-origin` or the request has an exact `Origin`/`Referer` match with
+The SvelteKit server hook is the primary deny-by-default authentication
+perimeter. Every product page and `/api/web/v1/*` BFF route requires a valid web
+session unless an exact method/path pair is explicitly allowlisted as public.
+The current public allowlist is only `GET /login` and `POST /login`.
+Unauthenticated BFF/API requests return JSON `401` with code `unauthorized`;
+unauthenticated page requests redirect `303` to `/login?next=...` using only safe
+same-origin relative `next` targets. Route-local guards remain as
+defense-in-depth, but they are not the primary perimeter.
+
+The hook also rejects unsafe methods unless Fetch Metadata proves `same-origin`
+or the request has an exact `Origin`/`Referer` match with
 `FAVN_WEB_PUBLIC_ORIGIN`. Session cookies are host-only
 `__Host-favn_web_session` cookies with an opaque web-session id, `HttpOnly`,
 `Secure`, `SameSite=Strict`, and an expiry bounded by the orchestrator session
@@ -56,14 +65,20 @@ permissions headers, and safe upstream error mapping before responses reach
 browser clients. The web-session store and rate limits are single-node v1
 controls; multi-node web deployment needs shared durable replacements.
 
+SvelteKit hooks do not protect static files or already-prerendered pages. The
+operator UI keeps root `prerender = false` and SSR enabled; protected product
+content must not be placed under `static/` or exposed through prerendered pages.
+
 ## Probes
 
-- `GET /api/web/v1/health/live` returns process liveness and does not call the
-  orchestrator.
-- `GET /api/web/v1/health/ready` verifies web config and orchestrator readiness
-  through `/api/orchestrator/v1/health/ready` with the configured timeout. It
-  returns `503` with redacted diagnostics when config is invalid, the
-  orchestrator is unreachable, times out, or reports not-ready.
+- `GET /api/web/v1/health/live` is authenticated, returns process liveness, and
+  does not call the orchestrator.
+- `GET /api/web/v1/health/ready` is authenticated and verifies web config plus
+  orchestrator readiness through `/api/orchestrator/v1/health/ready` with the
+  configured timeout. It returns `503` with redacted diagnostics when config is
+  invalid, the orchestrator is unreachable, times out, or reports not-ready.
+- Unauthenticated health requests receive the same minimal JSON `401` envelope as
+  other protected BFF routes.
 
 ## Placement modes
 

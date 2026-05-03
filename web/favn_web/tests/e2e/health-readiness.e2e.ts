@@ -1,6 +1,28 @@
 import { expect, test } from '@playwright/test';
 import { spawn } from 'node:child_process';
 
+const VALID_USERNAME = 'alice';
+const VALID_PASSWORD = 'password123';
+
+async function login(page: import('@playwright/test').Page): Promise<void> {
+	await page.goto('/login');
+	await page.getByLabel('Username').fill(VALID_USERNAME);
+	await page.getByLabel('Password').fill(VALID_PASSWORD);
+	await page.getByRole('button', { name: 'Log in' }).click();
+	await expect(page).toHaveURL(/\/runs$/);
+}
+
+async function pageGetJson(page: import('@playwright/test').Page, path: string) {
+	return page.evaluate(async (pathArg) => {
+		const response = await fetch(pathArg);
+		return {
+			status: response.status,
+			body: await response.json(),
+			headers: Object.fromEntries(response.headers.entries())
+		};
+	}, path);
+}
+
 async function setMockReadiness(status: number): Promise<void> {
 	const response = await fetch('http://127.0.0.1:4101/__mock/readiness', {
 		method: 'POST',
@@ -16,16 +38,18 @@ test.afterEach(async () => {
 });
 
 test.describe('web health and readiness', () => {
-	test('liveness is cheap and readiness checks orchestrator reachability', async ({ request }) => {
-		const live = await request.get('/api/web/v1/health/live');
-		const ready = await request.get('/api/web/v1/health/ready');
+	test('liveness is cheap and readiness checks orchestrator reachability', async ({ page }) => {
+		await login(page);
 
-		expect(live.status()).toBe(200);
-		expect(await live.json()).toEqual({ service: 'favn_web', status: 'ok' });
-		expect(live.headers()['cache-control']).toBe('no-store');
+		const live = await pageGetJson(page, '/api/web/v1/health/live');
+		const ready = await pageGetJson(page, '/api/web/v1/health/ready');
 
-		expect(ready.status()).toBe(200);
-		expect(await ready.json()).toEqual({
+		expect(live.status).toBe(200);
+		expect(live.body).toEqual({ service: 'favn_web', status: 'ok' });
+		expect(live.headers['cache-control']).toBe('no-store');
+
+		expect(ready.status).toBe(200);
+		expect(ready.body).toEqual({
 			service: 'favn_web',
 			status: 'ready',
 			checks: [
@@ -33,17 +57,17 @@ test.describe('web health and readiness', () => {
 				{ check: 'orchestrator', status: 'ok' }
 			]
 		});
-		expect(ready.headers()['cache-control']).toBe('no-store');
+		expect(ready.headers['cache-control']).toBe('no-store');
 	});
 
-	test('readiness returns 503 when orchestrator readiness is degraded', async ({ request }) => {
+	test('readiness returns 503 when orchestrator readiness is degraded', async ({ page }) => {
 		await setMockReadiness(503);
+		await login(page);
 
-		const response = await request.get('/api/web/v1/health/ready');
-		const body = await response.json();
+		const response = await pageGetJson(page, '/api/web/v1/health/ready');
 
-		expect(response.status()).toBe(503);
-		expect(body).toMatchObject({
+		expect(response.status).toBe(503);
+		expect(response.body).toMatchObject({
 			service: 'favn_web',
 			status: 'not_ready',
 			checks: [

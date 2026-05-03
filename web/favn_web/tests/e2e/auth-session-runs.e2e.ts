@@ -105,7 +105,7 @@ test.describe('auth/session/runs flow', () => {
 	test('unauthenticated user visiting / is redirected to /login', async ({ page }) => {
 		await page.goto('/');
 
-		await expect(page).toHaveURL(/\/login$/);
+		await expect(page).toHaveURL(`${BASE_URL}/login?next=%2F`);
 		await expect(page.getByRole('heading', { name: 'Login' })).toBeVisible();
 	});
 
@@ -230,7 +230,7 @@ test.describe('auth/session/runs flow', () => {
 
 		await expect(page).toHaveURL(/\/login$/);
 		await page.goto('/');
-		await expect(page).toHaveURL(/\/login$/);
+		await expect(page).toHaveURL(`${BASE_URL}/login?next=%2F`);
 
 		await addSessionCookie(page, sessionCookie!.value);
 		const revokedResponse = await page.request.get(`${BASE_URL}/api/web/v1/runs`);
@@ -251,7 +251,7 @@ test.describe('auth/session/runs flow', () => {
 
 		await page.goto('/');
 
-		await expect(page).toHaveURL(/\/login$/);
+		await expect(page).toHaveURL(`${BASE_URL}/login?next=%2F`);
 		await expect
 			.poll(async () => {
 				return hasSessionCookie(page);
@@ -266,7 +266,7 @@ test.describe('auth/session/runs flow', () => {
 
 		await page.goto('/runs');
 
-		await expect(page).toHaveURL(/\/login$/);
+		await expect(page).toHaveURL(`${BASE_URL}/login?next=%2Fruns`);
 		await expect.poll(() => hasSessionCookie(page)).toBe(false);
 	});
 
@@ -465,10 +465,10 @@ test.describe('auth/session/runs flow', () => {
 			data: expect.objectContaining({ run_id: 'run_001_rerun_001', status: 'queued' })
 		});
 
-		const safeGet = await page.request.get(`${BASE_URL}/api/web/v1/health/live`, {
+		const safeGet = await page.request.get(`${BASE_URL}/api/web/v1/runs`, {
 			headers: { 'sec-fetch-site': 'cross-site' }
 		});
-		expect(safeGet.status()).toBe(200);
+		expect(safeGet.status()).toBe(401);
 	});
 
 	test('normal responses include explicit security headers and CSP frame protection', async ({

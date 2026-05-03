@@ -16,6 +16,18 @@ async function tryReadJson(response: Response): Promise<unknown> {
 	}
 }
 
+function safePostLoginRedirect(next: string | null): string {
+	if (!next || !next.startsWith('/') || next.startsWith('//')) return '/runs';
+
+	try {
+		const parsed = new URL(next, 'http://favn.local');
+		if (parsed.origin !== 'http://favn.local') return '/runs';
+		return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+	} catch {
+		return '/runs';
+	}
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.session) {
 		throw redirect(303, '/runs');
@@ -25,7 +37,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ request, cookies, locals, getClientAddress, setHeaders }) => {
+	default: async ({ request, cookies, locals, getClientAddress, setHeaders, url }) => {
 		const formData = await request.formData();
 		const username = String(formData.get('username') ?? '').trim();
 		const password = String(formData.get('password') ?? '');
@@ -82,7 +94,7 @@ export const actions: Actions = {
 			clearLoginThrottleFor(clientContext, username);
 			locals.session = session;
 
-			throw redirect(303, '/runs');
+			throw redirect(303, safePostLoginRedirect(url.searchParams.get('next')));
 		}
 
 		recordFailedLogin(clientContext, username);
