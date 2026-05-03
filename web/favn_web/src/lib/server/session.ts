@@ -114,13 +114,15 @@ export function readWebSessionCookie(cookies: Cookies): WebSession | null {
 
 export function setWebSessionCookie(cookies: Cookies, session: WebSession): void {
 	const expires = parseDate(session.expires_at);
+	const maxAge = expires ? Math.max(0, Math.floor((expires.getTime() - Date.now()) / 1000)) : null;
 
 	cookies.set(FAVN_WEB_SESSION_COOKIE, encodeSession(session), {
 		httpOnly: true,
-		sameSite: 'lax',
+		sameSite: 'strict',
 		secure: !dev,
 		path: '/',
-		...(expires ? { expires } : {})
+		...(expires ? { expires } : {}),
+		...(maxAge !== null ? { maxAge } : {})
 	});
 }
 

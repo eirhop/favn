@@ -11,6 +11,7 @@ export type WebProductionRuntimeConfig = {
 	orchestratorBaseUrl: string;
 	orchestratorServiceToken: string;
 	orchestratorTimeoutMs: number;
+	publicWebOrigin: string;
 	sessionSecret: string;
 };
 
@@ -47,6 +48,7 @@ export function currentWebRuntimeEnv(): RuntimeEnv {
 			env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN ?? process.env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN,
 		FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS:
 			env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS ?? process.env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS,
+		FAVN_WEB_PUBLIC_ORIGIN: env.FAVN_WEB_PUBLIC_ORIGIN ?? process.env.FAVN_WEB_PUBLIC_ORIGIN,
 		FAVN_WEB_SESSION_SECRET: env.FAVN_WEB_SESSION_SECRET ?? process.env.FAVN_WEB_SESSION_SECRET
 	};
 }
@@ -91,6 +93,32 @@ function validateAbsoluteHttpUrl(variable: string, value: string | undefined) {
 		return {
 			variable,
 			message: 'must not include embedded credentials',
+			value: redacted(value)
+		};
+	}
+
+	return null;
+}
+
+function validateAbsoluteOrigin(variable: string, value: string | undefined) {
+	const baseIssue = validateAbsoluteHttpUrl(variable, value);
+	if (baseIssue) return baseIssue;
+
+	const parsed = new URL(value as string);
+
+	if (parsed.username || parsed.password) {
+		return {
+			variable,
+			message: 'must not include embedded credentials',
+			value: redacted(value)
+		};
+	}
+
+	const hasPath = parsed.pathname !== '' && parsed.pathname !== '/';
+	if (hasPath || parsed.search || parsed.hash) {
+		return {
+			variable,
+			message: 'must be an origin only, without path, query, or fragment',
 			value: redacted(value)
 		};
 	}
@@ -169,6 +197,7 @@ export function validateWebProductionRuntimeConfig(
 			'FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS',
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS
 		),
+		validateAbsoluteOrigin('FAVN_WEB_PUBLIC_ORIGIN', runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN),
 		validateRequiredSecret('FAVN_WEB_SESSION_SECRET', runtimeEnv.FAVN_WEB_SESSION_SECRET)
 	].filter((issue): issue is WebProductionRuntimeConfigIssue => issue !== null);
 
@@ -184,6 +213,7 @@ export function validateWebProductionRuntimeConfig(
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS.length === 0
 				? DEFAULT_ORCHESTRATOR_TIMEOUT_MS
 				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
+		publicWebOrigin: new URL(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN as string).origin,
 		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET as string
 	};
 }
@@ -240,6 +270,9 @@ export function currentWebRuntimeConfig(): WebProductionRuntimeConfig {
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS.length === 0
 				? DEFAULT_ORCHESTRATOR_TIMEOUT_MS
 				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
+		publicWebOrigin: runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN
+			? new URL(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN).origin
+			: '',
 		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET || ''
 	};
 }

@@ -1,6 +1,7 @@
 import type { RequestEvent } from '@sveltejs/kit';
 import { isSanitizedResponse } from './sanitized_response';
 import { validateWebSession } from './session_guard';
+import { sanitizeUpstreamPayload } from './upstream_errors';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -13,6 +14,12 @@ export function jsonError(status: number, code: string, message: string): Respon
 		status,
 		headers: { 'content-type': 'application/json; charset=utf-8' }
 	});
+}
+
+export function rateLimitedResponse(retryAfterSeconds: number): Response {
+	const response = jsonError(429, 'rate_limited', 'Too many requests');
+	response.headers.set('retry-after', String(retryAfterSeconds));
+	return response;
 }
 
 export async function requireSession(event: RequestEvent): Promise<Response | null> {
@@ -50,8 +57,10 @@ export async function relayJson(upstream: Response): Promise<Response> {
 	const headers = new Headers();
 	headers.set('content-type', 'application/json; charset=utf-8');
 
-	return new Response(JSON.stringify(payload), {
-		status,
+	const sanitized = sanitizeUpstreamPayload(status, payload);
+
+	return new Response(JSON.stringify(sanitized.payload), {
+		status: sanitized.status,
 		headers
 	});
 }

@@ -2,6 +2,11 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { orchestratorLoginPassword } from '$lib/server/orchestrator';
 import { setWebSessionCookie, webSessionFromLoginPayload } from '$lib/server/session';
+import {
+	checkLoginAllowed,
+	clearLoginThrottleFor,
+	recordFailedLogin
+} from '$lib/server/login_throttle';
 
 async function tryReadJson(response: Response): Promise<unknown> {
 	try {
@@ -9,19 +14,6 @@ async function tryReadJson(response: Response): Promise<unknown> {
 	} catch {
 		return null;
 	}
-}
-
-function loginErrorMessage(payload: unknown): string {
-	if (payload && typeof payload === 'object' && payload !== null && 'error' in payload) {
-		const errorValue = (payload as { error?: unknown }).error;
-
-		if (errorValue && typeof errorValue === 'object' && 'message' in errorValue) {
-			const messageValue = (errorValue as { message?: unknown }).message;
-			if (typeof messageValue === 'string') return messageValue;
-		}
-	}
-
-	return 'Login failed';
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -33,7 +25,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ request, cookies, locals }) => {
+	default: async ({ request, cookies, locals, getClientAddress }) => {
 		const formData = await request.formData();
 		const username = String(formData.get('username') ?? '').trim();
 		const password = String(formData.get('password') ?? '');
@@ -41,6 +33,15 @@ export const actions: Actions = {
 		if (!username || !password) {
 			return fail(400, {
 				message: 'Username and password are required',
+				username
+			});
+		}
+
+		const clientContext = { getClientAddress };
+		const throttle = checkLoginAllowed(clientContext, username);
+		if (!throttle.allowed) {
+			return fail(429, {
+				message: 'Too many login attempts. Try again later.',
 				username
 			});
 		}
@@ -77,13 +78,16 @@ export const actions: Actions = {
 			}
 
 			setWebSessionCookie(cookies, session);
+			clearLoginThrottleFor(clientContext, username);
 			locals.session = session;
 
 			throw redirect(303, '/runs');
 		}
 
+		recordFailedLogin(clientContext, username);
+
 		return fail(response.status === 401 ? 401 : 400, {
-			message: loginErrorMessage(payload),
+			message: 'Invalid username or password',
 			username
 		});
 	}

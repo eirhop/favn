@@ -76,6 +76,22 @@ describe('readWebSessionCookie', () => {
 		expect(readWebSessionCookie(cookies as never)).toEqual(session);
 	});
 
+	it('sets safe bounded browser session cookie options', () => {
+		const cookies = new MockCookies();
+		const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+		setWebSessionCookie(cookies as never, createSession({ expires_at: expiresAt }));
+
+		expect(cookies.setCalls).toHaveLength(1);
+		expect(cookies.setCalls[0].name).toBe(FAVN_WEB_SESSION_COOKIE);
+		expect(cookies.setCalls[0].options).toMatchObject({
+			httpOnly: true,
+			sameSite: 'strict',
+			path: '/',
+			maxAge: expect.any(Number)
+		});
+		expect(cookies.setCalls[0].options).not.toHaveProperty('domain');
+	});
+
 	it('returns null for tampered signed payload', () => {
 		const cookies = new MockCookies();
 		setWebSessionCookie(cookies as never, createSession());

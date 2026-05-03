@@ -76,12 +76,14 @@ async function pageGetJson(
 async function pagePostJson(
 	page: Page,
 	path: string,
-	body?: Record<string, unknown>
+	body?: Record<string, unknown>,
+	extraHeaders: Record<string, string> = {}
 ): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
 	return page.evaluate(
-		async ({ pathArg, bodyArg }) => {
+		async ({ pathArg, bodyArg, extraHeadersArg }) => {
 			const headers: Record<string, string> = {
-				accept: 'application/json'
+				accept: 'application/json',
+				...extraHeadersArg
 			};
 
 			let payload: string | undefined;
@@ -103,7 +105,7 @@ async function pagePostJson(
 				headers: Object.fromEntries(response.headers.entries())
 			};
 		},
-		{ pathArg: path, bodyArg: body }
+		{ pathArg: path, bodyArg: body, extraHeadersArg: extraHeaders }
 	);
 }
 
@@ -126,10 +128,37 @@ test.describe('auth/session/runs flow', () => {
 		await expect(page.getByLabel('Username')).toHaveValue('not-a-real-user');
 	});
 
+	test('failed login response is generic and repeated attempts are throttled', async ({ page }) => {
+		await page.goto('/login');
+
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			await page.getByLabel('Username').fill('throttle-target');
+			await page.getByLabel('Password').fill(`wrong-password-${attempt}`);
+			await page.getByRole('button', { name: 'Log in' }).click();
+			await expect(page.getByText('Invalid username or password')).toBeVisible();
+		}
+
+		await page.getByLabel('Username').fill('throttle-target');
+		await page.getByLabel('Password').fill('wrong-password-final');
+		await page.getByRole('button', { name: 'Log in' }).click();
+
+		await expect(page.getByText('Too many login attempts. Try again later.')).toBeVisible();
+		await expect(page.getByText(/not found|unknown user/i)).not.toBeVisible();
+	});
+
 	test('login success redirects to /runs and shows the run inspector', async ({ page }) => {
 		await loginAsValidUser(page);
 
 		await expect(page).toHaveURL(/\/runs$/);
+		const sessionCookie = (await page.context().cookies()).find(
+			(cookie) => cookie.name === FAVN_WEB_SESSION_COOKIE
+		);
+		expect(sessionCookie).toMatchObject({
+			httpOnly: true,
+			secure: true,
+			sameSite: 'Strict',
+			path: '/'
+		});
 		await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
 		await expect(page.getByText('local-operator')).toBeVisible();
 		await expect(page.getByText(/^Manifest manifest_v2$/)).toBeVisible();
@@ -297,6 +326,8 @@ test.describe('auth/session/runs flow', () => {
 				dependencies: 'none'
 			})
 		});
+		const idempotencyState = await (await fetch('http://127.0.0.1:4101/__mock/backfills')).json();
+		expect(idempotencyState.data.lastIdempotencyKey).toMatch(/^favn-web-submit-run-[a-f0-9]{64}$/);
 
 		const pipelineSubmitWithDependencies = await pagePostJson(page, '/api/web/v1/runs', {
 			target: { type: 'pipeline', id: 'pipeline.reconcile' },
@@ -403,6 +434,86 @@ test.describe('auth/session/runs flow', () => {
 				message: 'No local materialization is available for this asset'
 			}
 		});
+	});
+
+	test('web edge rejects cross-site and unverifiable unsafe mutations', async ({ page }) => {
+		await loginAndReachHome(page);
+
+		const crossSite = await page.request.post(`${BASE_URL}/api/web/v1/runs/run_001/rerun`, {
+			headers: {
+				accept: 'application/json',
+				'sec-fetch-site': 'cross-site'
+			}
+		});
+		expect(crossSite.status()).toBe(403);
+		expect(await crossSite.json()).toEqual({
+			error: { code: 'csrf_rejected', message: 'Cross-site unsafe requests are not allowed' }
+		});
+
+		const invalidOrigin = await page.request.post(`${BASE_URL}/api/web/v1/runs/run_001/rerun`, {
+			headers: {
+				accept: 'application/json',
+				origin: 'https://favn.example.com.attacker.test'
+			}
+		});
+		expect(invalidOrigin.status()).toBe(403);
+
+		const missingProof = await page.request.post(`${BASE_URL}/api/web/v1/runs/run_001/rerun`, {
+			headers: { accept: 'application/json' }
+		});
+		expect(missingProof.status()).toBe(403);
+
+		const sessionCookie = (await page.context().cookies()).find(
+			(cookie) => cookie.name === FAVN_WEB_SESSION_COOKIE
+		);
+		expect(sessionCookie?.value).toBeTruthy();
+
+		const validOrigin = await page.request.post(`${BASE_URL}/api/web/v1/runs/run_001/rerun`, {
+			headers: {
+				accept: 'application/json',
+				cookie: `${FAVN_WEB_SESSION_COOKIE}=${sessionCookie!.value}`,
+				origin: BASE_URL
+			}
+		});
+		expect(validOrigin.status()).toBe(202);
+		expect(await validOrigin.json()).toEqual({
+			data: expect.objectContaining({ run_id: 'run_001_rerun_001', status: 'queued' })
+		});
+
+		const safeGet = await page.request.get(`${BASE_URL}/api/web/v1/health/live`, {
+			headers: { 'sec-fetch-site': 'cross-site' }
+		});
+		expect(safeGet.status()).toBe(200);
+	});
+
+	test('normal responses include explicit security headers and CSP frame protection', async ({
+		request
+	}) => {
+		const response = await request.get('/login');
+		const headers = response.headers();
+
+		expect(headers['x-content-type-options']).toBe('nosniff');
+		expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+		expect(headers['x-frame-options']).toBe('DENY');
+		expect(headers['permissions-policy']).toContain('camera=()');
+		expect(headers['content-security-policy']).toContain("frame-ancestors 'none'");
+	});
+
+	test('upstream raw orchestrator errors are sanitized before reaching browsers', async ({
+		page
+	}) => {
+		await loginAndReachHome(page);
+
+		const response = await pageGetJson(page, '/api/web/v1/runs/raw_secret_error');
+		const serialized = JSON.stringify(response.body);
+
+		expect(response.status).toBe(422);
+		expect(response.body).toEqual({
+			error: { code: 'validation_failed', message: 'Request validation failed' }
+		});
+		expect(serialized).not.toContain('/var/lib/favn');
+		expect(serialized).not.toContain('favn_mock_secret');
+		expect(serialized).not.toContain('DuckDB failed');
 	});
 
 	test('run stream relay smoke includes Last-Event-ID passthrough and validation', async ({

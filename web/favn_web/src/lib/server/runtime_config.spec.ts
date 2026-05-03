@@ -9,6 +9,7 @@ import {
 const validEnv = {
 	FAVN_WEB_ORCHESTRATOR_BASE_URL: 'https://orchestrator.internal:4101',
 	FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN: 'orchestrator-service-token-32-char-minimum',
+	FAVN_WEB_PUBLIC_ORIGIN: 'https://favn.example.com',
 	FAVN_WEB_SESSION_SECRET: 'web-session-secret-32-char-minimum'
 };
 
@@ -31,6 +32,7 @@ describe('validateWebProductionRuntimeConfig', () => {
 			orchestratorBaseUrl: 'https://orchestrator.internal:4101',
 			orchestratorServiceToken: 'orchestrator-service-token-32-char-minimum',
 			orchestratorTimeoutMs: DEFAULT_ORCHESTRATOR_TIMEOUT_MS,
+			publicWebOrigin: 'https://favn.example.com',
 			sessionSecret: 'web-session-secret-32-char-minimum'
 		});
 	});
@@ -76,10 +78,33 @@ describe('validateWebProductionRuntimeConfig', () => {
 		expect(String(error)).not.toContain('password');
 	});
 
+	it('requires the public web origin to be an exact origin', () => {
+		const missing = validationErrorFor({
+			...validEnv,
+			FAVN_WEB_PUBLIC_ORIGIN: undefined
+		});
+		expect(missing.issues).toContainEqual({
+			variable: 'FAVN_WEB_PUBLIC_ORIGIN',
+			message: 'is required and must be an absolute http:// or https:// URL',
+			value: '[missing]'
+		});
+
+		const withPath = validationErrorFor({
+			...validEnv,
+			FAVN_WEB_PUBLIC_ORIGIN: 'https://favn.example.com/app'
+		});
+		expect(withPath.issues).toContainEqual({
+			variable: 'FAVN_WEB_PUBLIC_ORIGIN',
+			message: 'must be an origin only, without path, query, or fragment',
+			value: '[redacted]'
+		});
+	});
+
 	it('requires long production secrets and redacts diagnostics', () => {
 		const error = validationErrorFor({
 			FAVN_WEB_ORCHESTRATOR_BASE_URL: 'https://orchestrator.internal',
 			FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN: 'short-token',
+			FAVN_WEB_PUBLIC_ORIGIN: 'https://favn.example.com',
 			FAVN_WEB_SESSION_SECRET: undefined
 		});
 		expect(error.issues).toEqual([

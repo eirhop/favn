@@ -7,6 +7,7 @@ import {
 	webSessionFromLoginPayload,
 	type WebSession
 } from '$lib/server/session';
+import { resetAllRateLimits } from '$lib/server/rate_limit';
 
 vi.mock('$lib/server/orchestrator', () => ({
 	orchestratorLoginPassword: vi.fn()
@@ -36,6 +37,7 @@ const baseSession: WebSession = {
 describe('login page actions', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		resetAllRateLimits();
 	});
 
 	it('returns validation failure when username or password is missing', async () => {
@@ -57,7 +59,7 @@ describe('login page actions', () => {
 		}
 	});
 
-	it('returns upstream failure payload message for invalid credentials', async () => {
+	it('returns generic failure message for invalid credentials', async () => {
 		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
 			new Response(JSON.stringify({ error: { message: 'Invalid credentials' } }), {
 				status: 401,
@@ -76,7 +78,7 @@ describe('login page actions', () => {
 		if (isActionFailure(result)) {
 			expect(result.status).toBe(401);
 			expect(result.data).toEqual({
-				message: 'Invalid credentials',
+				message: 'Invalid username or password',
 				username: 'alice'
 			});
 		}
@@ -181,7 +183,7 @@ describe('login page actions', () => {
 		if (isActionFailure(result)) {
 			expect(result.status).toBe(401);
 			expect(result.data).toEqual({
-				message: 'Invalid credentials',
+				message: 'Invalid username or password',
 				username: 'admin'
 			});
 		}

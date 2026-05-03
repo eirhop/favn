@@ -10,6 +10,9 @@ Code:
 - Favn components under `web/favn_web/src/lib/components/favn/`
 - BFF/server helpers under `web/favn_web/src/lib/server/`
 - Production runtime config validation in `web/favn_web/src/lib/server/runtime_config.ts`
+- Web edge security helpers in `web/favn_web/src/lib/server/same_origin.ts`,
+  `security_headers.ts`, `rate_limit.ts`, `login_throttle.ts`,
+  `mutation_rate_limit.ts`, and `upstream_errors.ts`
 - Web readiness aggregation in `web/favn_web/src/lib/server/readiness.ts`
 - web API routes under `web/favn_web/src/routes/api/web/v1/`
 - Web health/readiness routes under `web/favn_web/src/routes/api/web/v1/health/`

@@ -25,6 +25,8 @@ co-located on the backend host.
   private orchestrator API, with no embedded credentials.
 - `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`: service-to-service token, at least 32
   characters, server-only.
+- `FAVN_WEB_PUBLIC_ORIGIN`: exact browser-facing origin used for unsafe request
+  `Origin`/`Referer` validation, for example `https://favn.example.com`.
 - `FAVN_WEB_SESSION_SECRET`: web session signing secret, at least 32 characters.
 - `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`: optional bounded request timeout in
   milliseconds, defaulting to `2000` and accepting `100..30000`.
@@ -35,6 +37,16 @@ values.
 
 Node adapter process variables such as `HOST`, `PORT`, `ORIGIN`, trusted proxy
 headers, and `SHUTDOWN_TIMEOUT` are documented in `web/favn_web/README.md`.
+
+## Browser-edge controls
+
+The SvelteKit server hook rejects unsafe methods unless Fetch Metadata proves
+`same-origin` or the request has an exact `Origin`/`Referer` match with
+`FAVN_WEB_PUBLIC_ORIGIN`. Session cookies are host-only, signed, `HttpOnly`,
+`Secure` in production, `SameSite=Strict`, and bounded by the orchestrator session
+expiry when available. The web edge also applies process-local login throttling,
+process-local mutation rate limits, CSP/frame/referrer/content-type/permissions
+headers, and safe upstream error mapping before responses reach browser clients.
 
 ## Probes
 

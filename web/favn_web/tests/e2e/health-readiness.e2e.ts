@@ -68,6 +68,7 @@ test('production server fails before serving traffic when required env is missin
 			HOST: '127.0.0.1',
 			PORT: '4199',
 			FAVN_WEB_ORCHESTRATOR_BASE_URL: 'http://127.0.0.1:4101',
+			FAVN_WEB_PUBLIC_ORIGIN: 'http://127.0.0.1:4199',
 			FAVN_WEB_SESSION_SECRET: 'playwright-session-secret-32-char-minimum',
 			FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN: ''
 		}

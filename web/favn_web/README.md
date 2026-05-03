@@ -18,6 +18,7 @@ Create a local `.env` file when running the web service directly in development:
 ```sh
 FAVN_WEB_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101
 FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN=replace-with-a-long-random-service-token
+FAVN_WEB_PUBLIC_ORIGIN=http://localhost:5173
 FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-session-secret
 ```
 
@@ -49,6 +50,7 @@ PORT=3000 \
 ORIGIN=https://favn.example.com \
 FAVN_WEB_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101 \
 FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN=replace-with-a-long-random-service-token \
+FAVN_WEB_PUBLIC_ORIGIN=https://favn.example.com \
 FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-session-secret \
 npm run start
 ```
@@ -65,6 +67,10 @@ Required Favn web variables:
   private orchestrator API host. Embedded credentials are rejected.
 - `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`: web-to-orchestrator service token, at
   least 32 characters. This is server-only and must never be exposed to browsers.
+- `FAVN_WEB_PUBLIC_ORIGIN`: exact browser-facing origin, for example
+  `https://favn.example.com`. This is used for unsafe request Origin/Referer
+  validation; do not replace it with suffix/prefix host matching or arbitrary
+  forwarded-header inference.
 - `FAVN_WEB_SESSION_SECRET`: web session signing secret, at least 32 characters.
 - `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`: optional orchestrator request timeout in
   milliseconds. Defaults to `2000`; accepted range is `100..30000`.
@@ -78,6 +84,27 @@ Useful Node adapter variables:
 - `SHUTDOWN_TIMEOUT` controls graceful shutdown timeout in seconds.
 
 Local-dev-only `FAVN_DEV_*` names are not part of the production web contract.
+
+## Browser-edge security controls
+
+`favn_web` is the browser-facing BFF. Browser JavaScript must not call the
+private orchestrator API directly and must never receive the raw orchestrator
+service token or raw session token.
+
+Production web sessions use a signed host-only `favn_web_session` cookie with
+`HttpOnly`, `Secure`, `SameSite=Strict`, `path=/`, and an expiry/max-age derived
+from the orchestrator session lifetime when available.
+
+All unsafe methods (`POST`, `PUT`, `PATCH`, and `DELETE`) are checked in
+`src/hooks.server.ts` before route handling. Fetch Metadata allows only
+`Sec-Fetch-Site: same-origin`; `cross-site`, `same-site`, and unsafe `none`
+contexts are rejected. When Fetch Metadata is unavailable, `Origin` or `Referer`
+must exactly match `FAVN_WEB_PUBLIC_ORIGIN`.
+
+The web edge also applies in-memory v1 login throttling, basic mutation rate
+limits, explicit security headers/CSP frame protection, and safe upstream error
+mapping. These limits are process-local and suitable for the current single-node
+deployment; multi-node deployment will need a shared durable limiter.
 
 ## Health and readiness
 
