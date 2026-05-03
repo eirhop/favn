@@ -1,12 +1,12 @@
 import { redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { clearWebSessionCookie, publicWebSession } from '$lib/server/session';
+import { publicWebSession } from '$lib/server/session';
+import { orchestratorGetActiveManifest, orchestratorListRuns } from '$lib/server/orchestrator';
 import {
-	orchestratorGetActiveManifest,
-	orchestratorListRuns,
-	orchestratorRevokeSession
-} from '$lib/server/orchestrator';
-import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
+	clearLocalSession,
+	logoutWebSession,
+	requireProtectedPageSession
+} from '$lib/server/session_guard';
 import {
 	filterAssetCatalogItems,
 	normalizeAssetCatalogList
@@ -72,10 +72,8 @@ export const load: PageServerLoad = async (event) => {
 };
 
 export const actions: Actions = {
-	logout: async ({ cookies, locals }) => {
-		if (locals.session) await orchestratorRevokeSession(locals.session).catch(() => null);
-		clearWebSessionCookie(cookies);
-		locals.session = null;
+	logout: async ({ cookies, locals, setHeaders }) => {
+		await logoutWebSession({ cookies, locals, setHeaders });
 		throw redirect(303, '/login');
 	}
 };

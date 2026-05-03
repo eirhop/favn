@@ -14,7 +14,10 @@ type Bucket = {
 	resetAt: number;
 };
 
+const MAX_RATE_LIMIT_BUCKETS = 10_000;
+const PRUNE_INTERVAL_MS = 60_000;
 const buckets = new Map<string, Bucket>();
+let lastPrunedAt = 0;
 
 export function clientAddress(event: Pick<RequestEvent, 'getClientAddress'>): string {
 	try {
@@ -29,6 +32,8 @@ export function checkRateLimit(
 	policy: RateLimitPolicy,
 	now = Date.now()
 ): RateLimitDecision {
+	maybePruneRateLimitBuckets(now);
+
 	const existing = buckets.get(key);
 	const bucket =
 		existing && existing.resetAt > now ? existing : { count: 0, resetAt: now + policy.windowMs };
@@ -44,6 +49,7 @@ export function checkRateLimit(
 
 	bucket.count += 1;
 	buckets.set(key, bucket);
+	enforceRateLimitBucketLimit();
 	return { allowed: true };
 }
 
@@ -52,6 +58,8 @@ export function peekRateLimit(
 	policy: RateLimitPolicy,
 	now = Date.now()
 ): RateLimitDecision {
+	maybePruneRateLimitBuckets(now);
+
 	const existing = buckets.get(key);
 	if (!existing || existing.resetAt <= now || existing.count < policy.limit)
 		return { allowed: true };
@@ -69,4 +77,30 @@ export function resetRateLimit(key: string): void {
 
 export function resetAllRateLimits(): void {
 	buckets.clear();
+	lastPrunedAt = 0;
+}
+
+export function pruneRateLimitBuckets(now = Date.now()): void {
+	for (const [key, bucket] of buckets) {
+		if (bucket.resetAt <= now) buckets.delete(key);
+	}
+	lastPrunedAt = now;
+}
+
+export function rateLimitBucketCount(): number {
+	return buckets.size;
+}
+
+function enforceRateLimitBucketLimit(): void {
+	while (buckets.size > MAX_RATE_LIMIT_BUCKETS) {
+		const oldest = buckets.keys().next().value as string | undefined;
+		if (!oldest) return;
+		buckets.delete(oldest);
+	}
+}
+
+function maybePruneRateLimitBuckets(now: number): void {
+	if (now >= lastPrunedAt + PRUNE_INTERVAL_MS) {
+		pruneRateLimitBuckets(now);
+	}
 }

@@ -1,7 +1,8 @@
 # Favn Web
 
 `favn_web` is Favn's SvelteKit browser edge/BFF service. It owns browser UI,
-signed web-session cookies, and server-side relays to the private orchestrator
+opaque web-session cookies, a process-local server-side web-session store, and
+server-side relays to the private orchestrator
 HTTP API. It must call the orchestrator API boundary and must not access SQLite,
 runner internals, orchestrator internals, or local-dev BEAM plumbing directly.
 
@@ -19,11 +20,11 @@ Create a local `.env` file when running the web service directly in development:
 FAVN_WEB_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101
 FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN=replace-with-a-long-random-service-token
 FAVN_WEB_PUBLIC_ORIGIN=http://localhost:5173
-FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-session-secret
 ```
 
-Login uses orchestrator-owned username/password auth. The web tier stores only
-the signed browser session derived from the orchestrator login response.
+Login uses orchestrator-owned username/password auth. The web tier stores the raw
+orchestrator session token only in its server-side web-session store. Browsers
+receive only an opaque web-session id in an `HttpOnly` cookie.
 
 ## Production build and start
 
@@ -51,7 +52,6 @@ ORIGIN=https://favn.example.com \
 FAVN_WEB_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101 \
 FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN=replace-with-a-long-random-service-token \
 FAVN_WEB_PUBLIC_ORIGIN=https://favn.example.com \
-FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-session-secret \
 npm run start
 ```
 
@@ -71,7 +71,6 @@ Required Favn web variables:
   `https://favn.example.com`. This is used for unsafe request Origin/Referer
   validation; do not replace it with suffix/prefix host matching or arbitrary
   forwarded-header inference.
-- `FAVN_WEB_SESSION_SECRET`: web session signing secret, at least 32 characters.
 - `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`: optional orchestrator request timeout in
   milliseconds. Defaults to `2000`; accepted range is `100..30000`.
 
@@ -91,9 +90,13 @@ Local-dev-only `FAVN_DEV_*` names are not part of the production web contract.
 private orchestrator API directly and must never receive the raw orchestrator
 service token or raw session token.
 
-Production web sessions use a signed host-only `favn_web_session` cookie with
-`HttpOnly`, `Secure`, `SameSite=Strict`, `path=/`, and an expiry/max-age derived
-from the orchestrator session lifetime when available.
+Web sessions use a host-only `__Host-favn_web_session` cookie with `HttpOnly`,
+`Secure`, `SameSite=Strict`, `path=/`, and an expiry/max-age derived from the
+orchestrator session lifetime when available. The cookie value is an opaque web
+session id only; the raw orchestrator `session_token` stays server-side and is
+deleted from the process-local store on logout or expiry. This v1 store is
+single-node only; multi-node web deployment needs a shared durable web-session
+store.
 
 All unsafe methods (`POST`, `PUT`, `PATCH`, and `DELETE`) are checked in
 `src/hooks.server.ts` before route handling. Fetch Metadata allows only
@@ -102,9 +105,12 @@ contexts are rejected. When Fetch Metadata is unavailable, `Origin` or `Referer`
 must exactly match `FAVN_WEB_PUBLIC_ORIGIN`.
 
 The web edge also applies in-memory v1 login throttling, basic mutation rate
-limits, explicit security headers/CSP frame protection, and safe upstream error
-mapping. These limits are process-local and suitable for the current single-node
-deployment; multi-node deployment will need a shared durable limiter.
+limits, explicit security headers/CSP frame protection, production HTTPS HSTS
+(`Strict-Transport-Security: max-age=31536000`), `no-store` cache headers on
+authenticated pages and BFF JSON, logout `Clear-Site-Data: "cache"`, and safe
+upstream error mapping. These limits are process-local and suitable for the
+current single-node deployment; multi-node deployment will need a shared durable
+limiter.
 
 ## Health and readiness
 

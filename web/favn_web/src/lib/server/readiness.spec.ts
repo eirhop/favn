@@ -4,7 +4,6 @@ function setValidEnv(extra: Record<string, string | undefined> = {}) {
 	vi.stubEnv('FAVN_WEB_ORCHESTRATOR_BASE_URL', 'https://orchestrator.internal:4101');
 	vi.stubEnv('FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN', 'orchestrator-service-token-32-char-minimum');
 	vi.stubEnv('FAVN_WEB_PUBLIC_ORIGIN', 'https://favn.example.com');
-	vi.stubEnv('FAVN_WEB_SESSION_SECRET', 'web-session-secret-32-char-minimum');
 	if (extra.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS !== undefined) {
 		vi.stubEnv('FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS', extra.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS);
 	}
@@ -111,7 +110,7 @@ describe('checkWebReadiness', () => {
 							variable: 'FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN',
 							value: '[redacted]'
 						}),
-						expect.objectContaining({ variable: 'FAVN_WEB_SESSION_SECRET', value: '[missing]' })
+						expect.objectContaining({ variable: 'FAVN_WEB_PUBLIC_ORIGIN', value: '[missing]' })
 					])
 				}
 			}

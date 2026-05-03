@@ -1,8 +1,8 @@
 # favn_web
 
-Purpose: separate SvelteKit web/BFF workspace for browser UI, signed cookie
-sessions, server-side relays to the private orchestrator API, and local operator
-surfaces.
+Purpose: separate SvelteKit web/BFF workspace for browser UI, opaque web-session
+cookies backed by a process-local server-side session store, server-side relays
+to the private orchestrator API, and local operator surfaces.
 
 Code:
 

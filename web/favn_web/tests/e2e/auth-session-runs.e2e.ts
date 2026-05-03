@@ -1,34 +1,22 @@
 import { expect, test, type Page } from '@playwright/test';
-import { createHmac } from 'node:crypto';
 
 const VALID_USERNAME = 'alice';
 const VALID_PASSWORD = 'password123';
 
-const FAVN_WEB_SESSION_COOKIE = 'favn_web_session';
+const FAVN_WEB_SESSION_COOKIE = '__Host-favn_web_session';
 const BASE_URL = 'http://127.0.0.1:4173';
-const SESSION_SECRET = 'playwright-session-secret-32-char-minimum';
+const UNKNOWN_WEB_SESSION_ID = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const INVALID_RUN_TARGET_MESSAGE =
 	'Expected target with type "asset"|"pipeline", non-empty id, optional dependencies "all"|"none" for asset targets only, and optional window { mode: "single", kind: "hour"|"day"|"month"|"year", value, timezone? } for pipeline targets only';
 
-function encodeSessionCookie(payload: Record<string, unknown>): string {
-	return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-}
-
-function signedSessionCookie(payload: Record<string, unknown>): string {
-	const encoded = encodeSessionCookie(payload);
-	const signature = createHmac('sha256', SESSION_SECRET).update(encoded).digest('base64url');
-	return `${encoded}.${signature}`;
-}
-
 async function addSessionCookie(page: Page, value: string): Promise<void> {
-	await page.context().addCookies([
-		{
-			name: FAVN_WEB_SESSION_COOKIE,
-			value,
-			domain: '127.0.0.1',
-			path: '/'
-		}
-	]);
+	await page.goto('/login');
+	await page.evaluate(
+		({ name, cookieValue }) => {
+			document.cookie = `${name}=${cookieValue}; Path=/; Secure; SameSite=Strict`;
+		},
+		{ name: FAVN_WEB_SESSION_COOKIE, cookieValue: value }
+	);
 }
 
 async function hasSessionCookie(page: Page): Promise<boolean> {
@@ -62,12 +50,16 @@ async function pageGetJson(
 	page: Page,
 	path: string,
 	headers: Record<string, string> = {}
-): Promise<{ status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
 	return page.evaluate(
 		async ({ pathArg, headersArg }) => {
 			const response = await fetch(pathArg, { method: 'GET', headers: headersArg });
 			const body = await response.json();
-			return { status: response.status, body };
+			return {
+				status: response.status,
+				body,
+				headers: Object.fromEntries(response.headers.entries())
+			};
 		},
 		{ pathArg: path, headersArg: headers }
 	);
@@ -159,11 +151,15 @@ test.describe('auth/session/runs flow', () => {
 			sameSite: 'Strict',
 			path: '/'
 		});
+		expect(sessionCookie?.value).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(sessionCookie?.value).not.toContain('favn_mock_');
 		await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible();
 		await expect(page.getByText('local-operator')).toBeVisible();
 		await expect(page.getByText(/^Manifest manifest_v2$/)).toBeVisible();
 		await expect(page.getByRole('row', { name: /run_001/ })).toContainText('succeeded');
 		await expect(page.getByRole('row', { name: /run_002/ })).toContainText('failed');
+		expect(await page.content()).not.toContain('session_token');
+		expect(await page.content()).not.toContain('favn_mock_');
 	});
 
 	test('login to runs list and open failed run detail', async ({ page }) => {
@@ -248,16 +244,10 @@ test.describe('auth/session/runs flow', () => {
 		await expect.poll(() => hasSessionCookie(page)).toBe(false);
 	});
 
-	test('expired session cookie is cleared and user is redirected to /login', async ({ page }) => {
-		const expiredCookie = encodeSessionCookie({
-			session_id: 'sess_expired',
-			actor_id: 'actor_expired',
-			provider: 'password_local',
-			expires_at: '2000-01-01T00:00:00.000Z',
-			issued_at: '1999-12-31T00:00:00.000Z'
-		});
-
-		await addSessionCookie(page, expiredCookie);
+	test('unknown web session cookie is cleared and user is redirected to /login', async ({
+		page
+	}) => {
+		await addSessionCookie(page, UNKNOWN_WEB_SESSION_ID);
 
 		await page.goto('/');
 
@@ -269,19 +259,10 @@ test.describe('auth/session/runs flow', () => {
 			.toBe(false);
 	});
 
-	test('stale signed session cookie redirects /runs to /login and clears cookie', async ({
+	test('legacy signed session cookie redirects /runs to /login and clears cookie', async ({
 		page
 	}) => {
-		await addSessionCookie(
-			page,
-			signedSessionCookie({
-				session_id: 'sess_stale_signed',
-				actor_id: 'actor_stale_signed',
-				provider: 'password_local',
-				expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-				issued_at: new Date().toISOString()
-			})
-		);
+		await addSessionCookie(page, 'legacy.payload.signature');
 
 		await page.goto('/runs');
 
@@ -294,6 +275,10 @@ test.describe('auth/session/runs flow', () => {
 
 		const runsList = await pageGetJson(page, '/api/web/v1/runs');
 		expect(runsList.status).toBe(200);
+		expect(runsList.headers['cache-control']).toBe('no-store');
+		expect(runsList.headers.pragma).toBe('no-cache');
+		expect(JSON.stringify(runsList.body)).not.toContain('session_token');
+		expect(JSON.stringify(runsList.body)).not.toContain('playwright-test-token-32-char-minimum');
 		expect(runsList.body).toMatchObject({
 			data: expect.objectContaining({
 				items: expect.arrayContaining([
@@ -497,6 +482,17 @@ test.describe('auth/session/runs flow', () => {
 		expect(headers['x-frame-options']).toBe('DENY');
 		expect(headers['permissions-policy']).toContain('camera=()');
 		expect(headers['content-security-policy']).toContain("frame-ancestors 'none'");
+		expect(headers['strict-transport-security']).toBeUndefined();
+	});
+
+	test('authenticated pages include no-store cache controls', async ({ page }) => {
+		await loginAndReachHome(page);
+		const response = await page.goto('/runs');
+		const headers = response?.headers() ?? {};
+
+		expect(headers['cache-control']).toBe('no-store');
+		expect(headers.pragma).toBe('no-cache');
+		expect(headers.expires).toBe('0');
 	});
 
 	test('upstream raw orchestrator errors are sanitized before reaching browsers', async ({
@@ -637,19 +633,10 @@ test.describe('auth/session/runs flow', () => {
 		});
 	});
 
-	test('stale signed session cookie returns BFF 401 envelope and clears cookie', async ({
+	test('legacy signed session cookie returns BFF 401 envelope and clears cookie', async ({
 		page
 	}) => {
-		await addSessionCookie(
-			page,
-			signedSessionCookie({
-				session_id: 'sess_stale_bff',
-				actor_id: 'actor_stale_bff',
-				provider: 'password_local',
-				expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-				issued_at: new Date().toISOString()
-			})
-		);
+		await addSessionCookie(page, 'legacy.payload.signature');
 
 		const response = await page.request.get(`${BASE_URL}/api/web/v1/runs`);
 

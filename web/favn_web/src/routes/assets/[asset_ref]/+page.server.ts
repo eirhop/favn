@@ -1,14 +1,17 @@
 import { error, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { clearWebSessionCookie, publicWebSession } from '$lib/server/session';
+import { publicWebSession } from '$lib/server/session';
 import {
 	orchestratorGetActiveManifest,
 	orchestratorListRuns,
-	orchestratorRevokeSession,
 	orchestratorSubmitRun
 } from '$lib/server/orchestrator';
 import { normalizeAssetCatalogDetail } from '$lib/server/asset_catalog_views';
-import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
+import {
+	clearLocalSession,
+	logoutWebSession,
+	requireProtectedPageSession
+} from '$lib/server/session_guard';
 
 async function readJsonOr(response: Response, fallback: unknown): Promise<unknown> {
 	try {
@@ -84,10 +87,8 @@ export const load: PageServerLoad = async ({ locals, cookies, params }) => {
 };
 
 export const actions: Actions = {
-	logout: async ({ cookies, locals }) => {
-		if (locals.session) await orchestratorRevokeSession(locals.session).catch(() => null);
-		clearWebSessionCookie(cookies);
-		locals.session = null;
+	logout: async ({ cookies, locals, setHeaders }) => {
+		await logoutWebSession({ cookies, locals, setHeaders });
 		throw redirect(303, '/login');
 	},
 	runWithUpstream: async ({ request, cookies, locals, params }) => {

@@ -9,8 +9,7 @@ import {
 const validEnv = {
 	FAVN_WEB_ORCHESTRATOR_BASE_URL: 'https://orchestrator.internal:4101',
 	FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN: 'orchestrator-service-token-32-char-minimum',
-	FAVN_WEB_PUBLIC_ORIGIN: 'https://favn.example.com',
-	FAVN_WEB_SESSION_SECRET: 'web-session-secret-32-char-minimum'
+	FAVN_WEB_PUBLIC_ORIGIN: 'https://favn.example.com'
 };
 
 function validationErrorFor(
@@ -32,8 +31,7 @@ describe('validateWebProductionRuntimeConfig', () => {
 			orchestratorBaseUrl: 'https://orchestrator.internal:4101',
 			orchestratorServiceToken: 'orchestrator-service-token-32-char-minimum',
 			orchestratorTimeoutMs: DEFAULT_ORCHESTRATOR_TIMEOUT_MS,
-			publicWebOrigin: 'https://favn.example.com',
-			sessionSecret: 'web-session-secret-32-char-minimum'
+			publicWebOrigin: 'https://favn.example.com'
 		});
 	});
 
@@ -104,19 +102,13 @@ describe('validateWebProductionRuntimeConfig', () => {
 		const error = validationErrorFor({
 			FAVN_WEB_ORCHESTRATOR_BASE_URL: 'https://orchestrator.internal',
 			FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN: 'short-token',
-			FAVN_WEB_PUBLIC_ORIGIN: 'https://favn.example.com',
-			FAVN_WEB_SESSION_SECRET: undefined
+			FAVN_WEB_PUBLIC_ORIGIN: 'https://favn.example.com'
 		});
 		expect(error.issues).toEqual([
 			{
 				variable: 'FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN',
 				message: 'must be at least 32 characters',
 				value: '[redacted]'
-			},
-			{
-				variable: 'FAVN_WEB_SESSION_SECRET',
-				message: 'is required and must be at least 32 characters',
-				value: '[missing]'
 			}
 		]);
 		expect(String(error)).not.toContain('short-token');

@@ -84,6 +84,48 @@ describe('login page actions', () => {
 		}
 	});
 
+	it('sets Retry-After when login attempts are rate limited', async () => {
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(JSON.stringify({ error: { message: 'Invalid credentials' } }), {
+				status: 401,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		const baseEvent = {
+			cookies: {},
+			locals: { session: null },
+			getClientAddress: () => '203.0.113.10'
+		};
+
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			const result = await actions.default({
+				...baseEvent,
+				request: createRequest({ username: 'alice', password: `wrong-${attempt}` })
+			} as never);
+
+			expect(isActionFailure(result)).toBe(true);
+		}
+
+		const setHeaders = vi.fn();
+		const result = await actions.default({
+			...baseEvent,
+			setHeaders,
+			request: createRequest({ username: 'alice', password: 'wrong-again' })
+		} as never);
+
+		expect(isActionFailure(result)).toBe(true);
+		expect(setHeaders).toHaveBeenCalledWith({ 'retry-after': '600' });
+
+		if (isActionFailure(result)) {
+			expect(result.status).toBe(429);
+			expect(result.data).toEqual({
+				message: 'Too many login attempts. Try again later.',
+				username: 'alice'
+			});
+		}
+	});
+
 	it('sets session cookie and redirects on successful login', async () => {
 		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
 			new Response(

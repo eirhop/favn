@@ -968,9 +968,9 @@ Options:
 - server-side web session store plus opaque browser session id
 - cookie carrying a self-contained web-issued session token
 
-Recommended default:
+Implemented default:
 
-- encrypted/signed cookie containing orchestrator `session_id` and minimal actor reference fields; orchestrator remains the authority via introspection and per-request validation
+- server-side web session store plus opaque browser session id; orchestrator remains the authority via introspection and per-request validation
 
 ### 3) SSE relay strategy in `favn_web`
 

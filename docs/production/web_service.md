@@ -27,7 +27,6 @@ co-located on the backend host.
   characters, server-only.
 - `FAVN_WEB_PUBLIC_ORIGIN`: exact browser-facing origin used for unsafe request
   `Origin`/`Referer` validation, for example `https://favn.example.com`.
-- `FAVN_WEB_SESSION_SECRET`: web session signing secret, at least 32 characters.
 - `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`: optional bounded request timeout in
   milliseconds, defaulting to `2000` and accepting `100..30000`.
 
@@ -42,11 +41,18 @@ headers, and `SHUTDOWN_TIMEOUT` are documented in `web/favn_web/README.md`.
 
 The SvelteKit server hook rejects unsafe methods unless Fetch Metadata proves
 `same-origin` or the request has an exact `Origin`/`Referer` match with
-`FAVN_WEB_PUBLIC_ORIGIN`. Session cookies are host-only, signed, `HttpOnly`,
-`Secure` in production, `SameSite=Strict`, and bounded by the orchestrator session
-expiry when available. The web edge also applies process-local login throttling,
-process-local mutation rate limits, CSP/frame/referrer/content-type/permissions
-headers, and safe upstream error mapping before responses reach browser clients.
+`FAVN_WEB_PUBLIC_ORIGIN`. Session cookies are host-only
+`__Host-favn_web_session` cookies with an opaque web-session id, `HttpOnly`,
+`Secure`, `SameSite=Strict`, and an expiry bounded by the orchestrator session
+expiry when available. Raw orchestrator session tokens stay in the server-side
+process-local web-session store only. Authenticated pages and BFF JSON responses
+use `Cache-Control: no-store`; logout also sends `Clear-Site-Data: "cache"`.
+Production HTTPS public origins get `Strict-Transport-Security: max-age=31536000`
+without preload by default. The web edge also applies process-local login
+throttling, process-local mutation rate limits, CSP/frame/referrer/content-type/
+permissions headers, and safe upstream error mapping before responses reach
+browser clients. The web-session store and rate limits are single-node v1
+controls; multi-node web deployment needs shared durable replacements.
 
 ## Probes
 

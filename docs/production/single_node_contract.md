@@ -266,11 +266,11 @@ At minimum, the production single-node runtime needs:
   `http://` or `https://` URL without embedded credentials.
 - `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, required by `favn_web`, at least 32
   characters, for web-to-orchestrator service auth.
+- `FAVN_WEB_PUBLIC_ORIGIN`, required by `favn_web`, as the exact browser-facing
+  origin for unsafe request `Origin`/`Referer` validation.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
   tooling unless `--service-token` is passed, at least 32 characters, and present
   as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.
-- `FAVN_WEB_SESSION_SECRET`, required by `favn_web`, at least 32 characters, for
-  current session signing and future web session encryption/signing expansion.
 - Durable first-admin/browser-login setup, durable sessions, actors,
   credentials, and audit logs. Password credentials are stored as encoded
   Argon2id hash strings, accepted passwords must be 15 to 1,024 characters,
@@ -305,7 +305,7 @@ Ownership is split by app boundary. `favn_orchestrator` validates and applies
 orchestrator API, service-token, SQLite storage, scheduler, and local-runner
 client config before supervised runtime traffic starts. `favn_runner` validates
 runner mode before runner supervision starts. `favn_web` validates web-to-
-orchestrator URL/token and web session secret before handling production web
+orchestrator URL/token and public web origin before handling production web
 requests. Local-dev-only `FAVN_DEV_*` names are not accepted by this production
 contract.
 

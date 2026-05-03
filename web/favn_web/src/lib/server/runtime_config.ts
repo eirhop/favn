@@ -12,7 +12,6 @@ export type WebProductionRuntimeConfig = {
 	orchestratorServiceToken: string;
 	orchestratorTimeoutMs: number;
 	publicWebOrigin: string;
-	sessionSecret: string;
 };
 
 export type WebProductionRuntimeConfigIssue = {
@@ -48,8 +47,7 @@ export function currentWebRuntimeEnv(): RuntimeEnv {
 			env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN ?? process.env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN,
 		FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS:
 			env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS ?? process.env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS,
-		FAVN_WEB_PUBLIC_ORIGIN: env.FAVN_WEB_PUBLIC_ORIGIN ?? process.env.FAVN_WEB_PUBLIC_ORIGIN,
-		FAVN_WEB_SESSION_SECRET: env.FAVN_WEB_SESSION_SECRET ?? process.env.FAVN_WEB_SESSION_SECRET
+		FAVN_WEB_PUBLIC_ORIGIN: env.FAVN_WEB_PUBLIC_ORIGIN ?? process.env.FAVN_WEB_PUBLIC_ORIGIN
 	};
 }
 
@@ -197,8 +195,7 @@ export function validateWebProductionRuntimeConfig(
 			'FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS',
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS
 		),
-		validateAbsoluteOrigin('FAVN_WEB_PUBLIC_ORIGIN', runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN),
-		validateRequiredSecret('FAVN_WEB_SESSION_SECRET', runtimeEnv.FAVN_WEB_SESSION_SECRET)
+		validateAbsoluteOrigin('FAVN_WEB_PUBLIC_ORIGIN', runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN)
 	].filter((issue): issue is WebProductionRuntimeConfigIssue => issue !== null);
 
 	if (issues.length > 0) {
@@ -213,8 +210,7 @@ export function validateWebProductionRuntimeConfig(
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS.length === 0
 				? DEFAULT_ORCHESTRATOR_TIMEOUT_MS
 				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
-		publicWebOrigin: new URL(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN as string).origin,
-		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET as string
+		publicWebOrigin: new URL(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN as string).origin
 	};
 }
 
@@ -272,7 +268,6 @@ export function currentWebRuntimeConfig(): WebProductionRuntimeConfig {
 				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
 		publicWebOrigin: runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN
 			? new URL(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN).origin
-			: '',
-		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET || ''
+			: ''
 	};
 }

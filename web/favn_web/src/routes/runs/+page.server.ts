@@ -1,13 +1,13 @@
 import { redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { clearWebSessionCookie, publicWebSession } from '$lib/server/session';
-import {
-	orchestratorGetActiveManifest,
-	orchestratorListRuns,
-	orchestratorRevokeSession
-} from '$lib/server/orchestrator';
+import { publicWebSession } from '$lib/server/session';
+import { orchestratorGetActiveManifest, orchestratorListRuns } from '$lib/server/orchestrator';
 import { normalizeRunSummaries } from '$lib/server/run_views';
-import { clearLocalSession, requireProtectedPageSession } from '$lib/server/session_guard';
+import {
+	clearLocalSession,
+	logoutWebSession,
+	requireProtectedPageSession
+} from '$lib/server/session_guard';
 import { normalizePipelineTargets } from '$lib/pipeline_run_submission';
 
 type JsonRecord = Record<string, unknown>;
@@ -66,10 +66,8 @@ export const load: PageServerLoad = async (event) => {
 };
 
 export const actions: Actions = {
-	logout: async ({ cookies, locals }) => {
-		if (locals.session) await orchestratorRevokeSession(locals.session).catch(() => null);
-		clearWebSessionCookie(cookies);
-		locals.session = null;
+	logout: async ({ cookies, locals, setHeaders }) => {
+		await logoutWebSession({ cookies, locals, setHeaders });
 		throw redirect(303, '/login');
 	}
 };

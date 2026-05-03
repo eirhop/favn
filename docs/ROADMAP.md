@@ -29,7 +29,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 3. Harden Auth, Sessions, Audit, And Service Trust
 
-- Replace the current single-node in-memory browser-edge abuse controls with a shared durable limiter if Favn gains a multi-node web deployment mode.
+- Replace the current single-node in-memory web-session store and browser-edge abuse controls with shared durable stores if Favn gains a multi-node web deployment mode.
 - Decide whether to add session idle timeout and sudo/re-auth modes once concrete operator flows need them.
 
 ### 4. Finish The Live Event And Command Safety Model

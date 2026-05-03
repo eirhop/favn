@@ -25,7 +25,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ request, cookies, locals, getClientAddress }) => {
+	default: async ({ request, cookies, locals, getClientAddress, setHeaders }) => {
 		const formData = await request.formData();
 		const username = String(formData.get('username') ?? '').trim();
 		const password = String(formData.get('password') ?? '');
@@ -40,6 +40,7 @@ export const actions: Actions = {
 		const clientContext = { getClientAddress };
 		const throttle = checkLoginAllowed(clientContext, username);
 		if (!throttle.allowed) {
+			setHeaders({ 'retry-after': String(throttle.retryAfterSeconds) });
 			return fail(429, {
 				message: 'Too many login attempts. Try again later.',
 				username

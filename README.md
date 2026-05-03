@@ -48,7 +48,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
 - run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, heartbeats, and SvelteKit BFF relays that keep orchestrator service tokens server-side
 - production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus redacted normalized responses
-- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/session secret config, and the orchestrator now exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
+- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/public-origin config, and the orchestrator now exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
@@ -537,9 +537,10 @@ bootstrap auth responses without exposing raw token values.
 `npm run build` and start it with `npm run start` from `web/favn_web`; the start
 script runs `node build`. Required production env is
 `FAVN_WEB_ORCHESTRATOR_BASE_URL`, `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, and
-`FAVN_WEB_SESSION_SECRET`, with optional
-`FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS` defaulting to `2000`. The web process exposes
-`/api/web/v1/health/live` without an orchestrator check and
+`FAVN_WEB_PUBLIC_ORIGIN`, with optional `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`
+defaulting to `2000`. The web process stores raw orchestrator session tokens in a
+process-local server-side web-session store and gives browsers only opaque
+`__Host-favn_web_session` ids. It exposes `/api/web/v1/health/live` without an orchestrator check and
 `/api/web/v1/health/ready` with a bounded orchestrator readiness check. See
 `docs/production/web_service.md` and `web/favn_web/README.md`.
 
