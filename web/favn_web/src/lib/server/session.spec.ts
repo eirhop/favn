@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
+	clearWebSessionCookie,
 	FAVN_WEB_SESSION_COOKIE,
+	pruneWebSessionStore,
 	publicWebSession,
 	readWebSessionCookie,
+	resetWebSessionStore,
 	setWebSessionCookie,
+	webSessionStoreSize,
 	webSessionFromLoginPayload,
 	type WebSession
 } from './session';
@@ -28,6 +32,8 @@ class MockCookies {
 	}
 }
 
+afterEach(() => resetWebSessionStore());
+
 function createSession(overrides: Partial<WebSession> = {}): WebSession {
 	return {
 		session_token: 'opaque-session-token-1',
@@ -41,19 +47,16 @@ function createSession(overrides: Partial<WebSession> = {}): WebSession {
 }
 
 describe('readWebSessionCookie', () => {
-	it('returns null for invalid cookie encoding', () => {
+	it('returns null for invalid web session id encoding', () => {
 		const cookies = new MockCookies();
-		cookies.set(FAVN_WEB_SESSION_COOKIE, 'not-base64url-json', {});
+		cookies.set(FAVN_WEB_SESSION_COOKIE, 'not-a-valid-web-session-id', {});
 
 		expect(readWebSessionCookie(cookies as never)).toBeNull();
 	});
 
-	it('returns null for malformed decoded payload', () => {
+	it('returns null for syntactically valid but unknown web session id', () => {
 		const cookies = new MockCookies();
-		const malformed = Buffer.from(JSON.stringify({ session_token: 'token-1' }), 'utf8').toString(
-			'base64url'
-		);
-		cookies.set(FAVN_WEB_SESSION_COOKIE, malformed, {});
+		cookies.set(FAVN_WEB_SESSION_COOKIE, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', {});
 
 		expect(readWebSessionCookie(cookies as never)).toBeNull();
 	});
@@ -66,9 +69,10 @@ describe('readWebSessionCookie', () => {
 		);
 
 		expect(readWebSessionCookie(cookies as never)).toBeNull();
+		expect(webSessionStoreSize()).toBe(0);
 	});
 
-	it('returns decoded session for valid non-expired cookie', () => {
+	it('returns server-side session for valid non-expired web session cookie', () => {
 		const cookies = new MockCookies();
 		const session = createSession();
 		setWebSessionCookie(cookies as never, session);
@@ -76,20 +80,61 @@ describe('readWebSessionCookie', () => {
 		expect(readWebSessionCookie(cookies as never)).toEqual(session);
 	});
 
-	it('returns null for tampered signed payload', () => {
+	it('sets only an opaque web session id in the browser cookie', () => {
+		const cookies = new MockCookies();
+		const session = createSession({ session_token: 'raw-orchestrator-session-token' });
+		const webSessionId = setWebSessionCookie(cookies as never, session);
+		const cookieValue = cookies.get(FAVN_WEB_SESSION_COOKIE);
+
+		expect(cookieValue).toBe(webSessionId);
+		expect(cookieValue).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		expect(cookieValue).not.toContain(session.session_token);
+		expect(cookieValue).not.toContain('actor-1');
+	});
+
+	it('sets safe bounded browser session cookie options', () => {
+		const cookies = new MockCookies();
+		const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+		setWebSessionCookie(cookies as never, createSession({ expires_at: expiresAt }));
+
+		expect(cookies.setCalls).toHaveLength(1);
+		expect(cookies.setCalls[0].name).toBe(FAVN_WEB_SESSION_COOKIE);
+		expect(cookies.setCalls[0].options).toMatchObject({
+			httpOnly: true,
+			sameSite: 'strict',
+			path: '/',
+			maxAge: expect.any(Number)
+		});
+		expect(cookies.setCalls[0].options).not.toHaveProperty('domain');
+	});
+
+	it('deletes the server-side session when clearing the cookie', () => {
 		const cookies = new MockCookies();
 		setWebSessionCookie(cookies as never, createSession());
 
-		const encoded = cookies.get(FAVN_WEB_SESSION_COOKIE);
-		expect(encoded).toBeTruthy();
+		expect(webSessionStoreSize()).toBe(1);
+		clearWebSessionCookie(cookies as never);
+		expect(webSessionStoreSize()).toBe(0);
+		expect(readWebSessionCookie(cookies as never)).toBeNull();
+	});
 
-		if (!encoded) {
-			throw new Error('Expected encoded cookie to be present');
-		}
+	it('prunes expired server-side sessions', () => {
+		const cookies = new MockCookies();
+		setWebSessionCookie(
+			cookies as never,
+			createSession({ expires_at: '2026-01-01T00:00:00.000Z' })
+		);
 
-		const [payload, signature] = encoded.split('.');
-		const tamperedPayload = `${payload}x`;
-		cookies.set(FAVN_WEB_SESSION_COOKIE, `${tamperedPayload}.${signature}`, {});
+		expect(webSessionStoreSize()).toBe(1);
+		pruneWebSessionStore(new Date('2026-01-01T00:00:00.000Z').getTime());
+		expect(webSessionStoreSize()).toBe(0);
+	});
+
+	it('returns null for tampered web session id', () => {
+		const cookies = new MockCookies();
+		setWebSessionCookie(cookies as never, createSession());
+
+		cookies.set(FAVN_WEB_SESSION_COOKIE, 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', {});
 
 		expect(readWebSessionCookie(cookies as never)).toBeNull();
 	});

@@ -1,10 +1,15 @@
 import { redirect, type Cookies } from '@sveltejs/kit';
-import { orchestratorGetMe } from './orchestrator';
+import { orchestratorGetMe, orchestratorRevokeSession } from './orchestrator';
+import { LOGOUT_CACHE_CLEAR_HEADERS } from './security_headers';
 import { clearWebSessionCookie, type WebSession } from './session';
 
 type SessionContext = {
 	locals: App.Locals;
 	cookies: Cookies;
+};
+
+type LogoutContext = SessionContext & {
+	setHeaders?: (headers: Record<string, string>) => void;
 };
 
 export function clearLocalSession(context: SessionContext): void {
@@ -24,6 +29,15 @@ export async function validateWebSession(context: SessionContext): Promise<WebSe
 	}
 
 	return session;
+}
+
+export async function logoutWebSession(context: LogoutContext): Promise<void> {
+	if (context.locals.session) {
+		await orchestratorRevokeSession(context.locals.session).catch(() => null);
+	}
+
+	clearLocalSession(context);
+	context.setHeaders?.(LOGOUT_CACHE_CLEAR_HEADERS);
 }
 
 export async function requireProtectedPageSession(context: SessionContext): Promise<WebSession> {

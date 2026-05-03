@@ -11,7 +11,7 @@ export type WebProductionRuntimeConfig = {
 	orchestratorBaseUrl: string;
 	orchestratorServiceToken: string;
 	orchestratorTimeoutMs: number;
-	sessionSecret: string;
+	publicWebOrigin: string;
 };
 
 export type WebProductionRuntimeConfigIssue = {
@@ -47,7 +47,7 @@ export function currentWebRuntimeEnv(): RuntimeEnv {
 			env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN ?? process.env.FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN,
 		FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS:
 			env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS ?? process.env.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS,
-		FAVN_WEB_SESSION_SECRET: env.FAVN_WEB_SESSION_SECRET ?? process.env.FAVN_WEB_SESSION_SECRET
+		FAVN_WEB_PUBLIC_ORIGIN: env.FAVN_WEB_PUBLIC_ORIGIN ?? process.env.FAVN_WEB_PUBLIC_ORIGIN
 	};
 }
 
@@ -96,6 +96,56 @@ function validateAbsoluteHttpUrl(variable: string, value: string | undefined) {
 	}
 
 	return null;
+}
+
+function validateAbsoluteOrigin(variable: string, value: string | undefined) {
+	const baseIssue = validateAbsoluteHttpUrl(variable, value);
+	if (baseIssue) return baseIssue;
+
+	const parsed = new URL(value as string);
+
+	if (parsed.username || parsed.password) {
+		return {
+			variable,
+			message: 'must not include embedded credentials',
+			value: redacted(value)
+		};
+	}
+
+	const hasPath = parsed.pathname !== '' && parsed.pathname !== '/';
+	if (hasPath || parsed.search || parsed.hash) {
+		return {
+			variable,
+			message: 'must be an origin only, without path, query, or fragment',
+			value: redacted(value)
+		};
+	}
+
+	return null;
+}
+
+function isLocalPublicOrigin(parsed: URL): boolean {
+	const hostname = parsed.hostname.toLowerCase();
+	return (
+		hostname === 'localhost' ||
+		hostname === '127.0.0.1' ||
+		hostname === '::1' ||
+		hostname === '[::1]'
+	);
+}
+
+function validatePublicWebOrigin(variable: string, value: string | undefined) {
+	const originIssue = validateAbsoluteOrigin(variable, value);
+	if (originIssue) return originIssue;
+
+	const parsed = new URL(value as string);
+	if (parsed.protocol === 'https:' || isLocalPublicOrigin(parsed)) return null;
+
+	return {
+		variable,
+		message: 'must use https:// unless the host is localhost, 127.0.0.1, or ::1',
+		value: redacted(value)
+	};
 }
 
 function validateRequiredSecret(variable: string, value: string | undefined) {
@@ -169,7 +219,7 @@ export function validateWebProductionRuntimeConfig(
 			'FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS',
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS
 		),
-		validateRequiredSecret('FAVN_WEB_SESSION_SECRET', runtimeEnv.FAVN_WEB_SESSION_SECRET)
+		validatePublicWebOrigin('FAVN_WEB_PUBLIC_ORIGIN', runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN)
 	].filter((issue): issue is WebProductionRuntimeConfigIssue => issue !== null);
 
 	if (issues.length > 0) {
@@ -184,7 +234,7 @@ export function validateWebProductionRuntimeConfig(
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS.length === 0
 				? DEFAULT_ORCHESTRATOR_TIMEOUT_MS
 				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
-		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET as string
+		publicWebOrigin: new URL(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN as string).origin
 	};
 }
 
@@ -240,6 +290,8 @@ export function currentWebRuntimeConfig(): WebProductionRuntimeConfig {
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS.length === 0
 				? DEFAULT_ORCHESTRATOR_TIMEOUT_MS
 				: Number(runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS),
-		sessionSecret: runtimeEnv.FAVN_WEB_SESSION_SECRET || ''
+		publicWebOrigin: runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN
+			? new URL(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN).origin
+			: ''
 	};
 }

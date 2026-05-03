@@ -1,9 +1,11 @@
-import { dev } from '$app/environment';
-import { env } from '$env/dynamic/private';
 import type { Cookies } from '@sveltejs/kit';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
-export const FAVN_WEB_SESSION_COOKIE = 'favn_web_session';
+export const FAVN_WEB_SESSION_COOKIE = '__Host-favn_web_session';
+
+const WEB_SESSION_ID_BYTES = 32;
+const WEB_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const MAX_WEB_SESSION_STORE_SIZE = 10_000;
 
 export type WebSession = {
 	session_token: string;
@@ -18,6 +20,13 @@ export type PublicWebSession = Omit<WebSession, 'session_token'>;
 
 type JsonRecord = Record<string, unknown>;
 
+type StoredWebSession = {
+	session: WebSession;
+	expiresAt: number | null;
+};
+
+const webSessionStore = new Map<string, StoredWebSession>();
+
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -26,108 +35,108 @@ function asString(value: unknown): string | null {
 	return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function encodeSession(session: WebSession): string {
-	const payload = Buffer.from(JSON.stringify(session), 'utf8').toString('base64url');
-	const signature = sessionSignature(payload);
-	return `${payload}.${signature}`;
-}
-
-function decodeSession(value: string): WebSession | null {
-	try {
-		const parts = value.split('.');
-		if (parts.length !== 2) return null;
-
-		const [payload, signature] = parts;
-		if (!payload || !signature) return null;
-
-		if (!sessionSignatureMatches(payload, signature)) return null;
-
-		const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown;
-		if (!isRecord(parsed)) return null;
-
-		const session_token = asString(parsed.session_token);
-		const session_id = asString(parsed.session_id);
-		const actor_id = asString(parsed.actor_id);
-		const provider = asString(parsed.provider);
-
-		if (!session_token || !actor_id || !provider) return null;
-
-		return {
-			session_token,
-			session_id: session_id ?? '',
-			actor_id,
-			provider,
-			expires_at: asString(parsed.expires_at),
-			issued_at: asString(parsed.issued_at)
-		};
-	} catch {
-		return null;
-	}
-}
-
-function sessionSecret(): string {
-	const configured = env.FAVN_WEB_SESSION_SECRET;
-
-	if (configured && configured.length > 0) {
-		return configured;
-	}
-
-	if (dev || env.NODE_ENV === 'test') {
-		return 'favn-web-dev-session-secret-change-me';
-	}
-
-	throw new Error('Missing FAVN_WEB_SESSION_SECRET for session cookie signing');
-}
-
-function sessionSignature(payload: string): string {
-	return createHmac('sha256', sessionSecret()).update(payload).digest('base64url');
-}
-
-function sessionSignatureMatches(payload: string, provided: string): boolean {
-	const expected = sessionSignature(payload);
-	const expectedBuffer = Buffer.from(expected, 'utf8');
-	const providedBuffer = Buffer.from(provided, 'utf8');
-
-	if (expectedBuffer.length !== providedBuffer.length) return false;
-
-	return timingSafeEqual(expectedBuffer, providedBuffer);
-}
-
 function parseDate(value: string | null): Date | null {
 	if (!value) return null;
 	const date = new Date(value);
 	return Number.isNaN(date.getTime()) ? null : date;
 }
 
-export function readWebSessionCookie(cookies: Cookies): WebSession | null {
-	const raw = cookies.get(FAVN_WEB_SESSION_COOKIE);
-	if (!raw) return null;
-
-	const session = decodeSession(raw);
-	if (!session) return null;
-
-	const expiresAt = parseDate(session.expires_at);
-	if (expiresAt && expiresAt.getTime() <= Date.now()) return null;
-
-	return session;
+function generateWebSessionId(): string {
+	return randomBytes(WEB_SESSION_ID_BYTES).toString('base64url');
 }
 
-export function setWebSessionCookie(cookies: Cookies, session: WebSession): void {
-	const expires = parseDate(session.expires_at);
+function validWebSessionId(value: string): boolean {
+	return WEB_SESSION_ID_PATTERN.test(value);
+}
 
-	cookies.set(FAVN_WEB_SESSION_COOKIE, encodeSession(session), {
-		httpOnly: true,
-		sameSite: 'lax',
-		secure: !dev,
-		path: '/',
-		...(expires ? { expires } : {})
+function pruneExpiredWebSessions(now = Date.now()): void {
+	for (const [webSessionId, stored] of webSessionStore) {
+		if (stored.expiresAt !== null && stored.expiresAt <= now) {
+			webSessionStore.delete(webSessionId);
+		}
+	}
+}
+
+function enforceWebSessionStoreLimit(): void {
+	while (webSessionStore.size > MAX_WEB_SESSION_STORE_SIZE) {
+		const oldest = webSessionStore.keys().next().value as string | undefined;
+		if (!oldest) return;
+		webSessionStore.delete(oldest);
+	}
+}
+
+function storeWebSession(webSessionId: string, session: WebSession, now = Date.now()): void {
+	pruneExpiredWebSessions(now);
+
+	const expires = parseDate(session.expires_at);
+	webSessionStore.set(webSessionId, {
+		session,
+		expiresAt: expires ? expires.getTime() : null
 	});
+	enforceWebSessionStoreLimit();
+}
+
+function readStoredWebSession(webSessionId: string, now = Date.now()): WebSession | null {
+	const stored = webSessionStore.get(webSessionId);
+	if (!stored) return null;
+
+	if (stored.expiresAt !== null && stored.expiresAt <= now) {
+		webSessionStore.delete(webSessionId);
+		return null;
+	}
+
+	return stored.session;
+}
+
+export function readWebSessionCookie(cookies: Cookies): WebSession | null {
+	const webSessionId = cookies.get(FAVN_WEB_SESSION_COOKIE);
+	if (!webSessionId || !validWebSessionId(webSessionId)) return null;
+
+	return readStoredWebSession(webSessionId);
+}
+
+export function setWebSessionCookie(cookies: Cookies, session: WebSession): string {
+	const expires = parseDate(session.expires_at);
+	const maxAge = expires ? Math.max(0, Math.floor((expires.getTime() - Date.now()) / 1000)) : null;
+	const webSessionId = generateWebSessionId();
+
+	storeWebSession(webSessionId, session);
+
+	cookies.set(FAVN_WEB_SESSION_COOKIE, webSessionId, {
+		httpOnly: true,
+		sameSite: 'strict',
+		secure: true,
+		path: '/',
+		...(expires ? { expires } : {}),
+		...(maxAge !== null ? { maxAge } : {})
+	});
+
+	return webSessionId;
 }
 
 export function clearWebSessionCookie(cookies: Cookies): void {
+	const webSessionId = cookies.get(FAVN_WEB_SESSION_COOKIE);
+	if (webSessionId && validWebSessionId(webSessionId)) {
+		webSessionStore.delete(webSessionId);
+	}
+
 	cookies.delete(FAVN_WEB_SESSION_COOKIE, {
-		path: '/'
+		path: '/',
+		secure: true,
+		sameSite: 'strict'
 	});
+}
+
+export function resetWebSessionStore(): void {
+	webSessionStore.clear();
+}
+
+export function webSessionStoreSize(): number {
+	return webSessionStore.size;
+}
+
+export function pruneWebSessionStore(now = Date.now()): void {
+	pruneExpiredWebSessions(now);
 }
 
 export function publicWebSession(session: WebSession): PublicWebSession {

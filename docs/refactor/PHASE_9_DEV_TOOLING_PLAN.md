@@ -699,7 +699,7 @@ Required metadata should include at least:
 - build id
 - Favn version
 - supported orchestrator API version
-- required env such as orchestrator base URL, service token, and session secret
+- required env such as orchestrator base URL, service token, and public web origin
 
 ### `mix favn.build.orchestrator`
 

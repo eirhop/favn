@@ -434,6 +434,7 @@ const ASSET_WINDOW_STATES = [
 
 let lastBackfillSubmitPayload = null;
 let lastBackfillRerunPayload = null;
+let lastIdempotencyKey = null;
 let readinessStatus = 200;
 
 /** @type {Map<string, { sessionId: string; actorId: string; provider: string; issuedAt: string; expiresAt: string }>} */
@@ -464,6 +465,10 @@ function sendSse(response, status, eventLines) {
 		connection: 'keep-alive'
 	});
 	response.end(`${eventLines.join('\n')}\n\n`);
+}
+
+function recordIdempotencyKey(request) {
+	lastIdempotencyKey = request.headers['idempotency-key'] ?? null;
 }
 
 function handleHealthReady(response) {
@@ -647,6 +652,17 @@ function handleGetRun(request, response, runId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
 
+	if (runId === 'raw_secret_error') {
+		sendJson(response, 422, {
+			error: {
+				code: 'validation_failed',
+				message:
+					'DuckDB failed at /var/lib/favn/prod.duckdb with token favn_mock_secret and stack trace'
+			}
+		});
+		return;
+	}
+
 	const run = RUN_DETAILS.get(runId);
 
 	if (!run) {
@@ -660,6 +676,7 @@ function handleGetRun(request, response, runId) {
 function handleSubmitRun(request, response) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
+	recordIdempotencyKey(request);
 
 	readJsonBody(request)
 		.then((body) => {
@@ -742,6 +759,7 @@ function handleSubmitRun(request, response) {
 function handleCancelRun(request, response, runId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
+	recordIdempotencyKey(request);
 
 	sendJson(response, 200, {
 		data: {
@@ -754,6 +772,7 @@ function handleCancelRun(request, response, runId) {
 function handleRerunRun(request, response, runId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
+	recordIdempotencyKey(request);
 
 	sendJson(response, 202, {
 		data: {
@@ -830,6 +849,7 @@ function handleSetActiveManifest(request, response) {
 function handleActivateManifest(request, response, manifestVersionId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
+	recordIdempotencyKey(request);
 
 	sendJson(response, 200, {
 		data: {
@@ -906,6 +926,7 @@ function handleListSchedules(request, response) {
 function handleSubmitBackfill(request, response) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
+	recordIdempotencyKey(request);
 
 	readJsonBody(request)
 		.then((body) => {
@@ -928,6 +949,7 @@ function handleListBackfillWindows(request, response, backfillRunId) {
 function handleRerunBackfillWindow(request, response, backfillRunId) {
 	const session = requireAuthenticatedSession(request, response);
 	if (!session) return;
+	recordIdempotencyKey(request);
 
 	readJsonBody(request)
 		.then((body) => {
@@ -964,7 +986,9 @@ function handleListAssetWindowStates(request, response) {
 }
 
 function handleBackfillMockState(response) {
-	sendJson(response, 200, { data: { lastBackfillSubmitPayload, lastBackfillRerunPayload } });
+	sendJson(response, 200, {
+		data: { lastBackfillSubmitPayload, lastBackfillRerunPayload, lastIdempotencyKey }
+	});
 }
 
 function handleScheduleDetail(request, response, scheduleId) {

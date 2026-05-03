@@ -7,6 +7,7 @@ import {
 	webSessionFromLoginPayload,
 	type WebSession
 } from '$lib/server/session';
+import { resetAllRateLimits } from '$lib/server/rate_limit';
 
 vi.mock('$lib/server/orchestrator', () => ({
 	orchestratorLoginPassword: vi.fn()
@@ -36,6 +37,7 @@ const baseSession: WebSession = {
 describe('login page actions', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		resetAllRateLimits();
 	});
 
 	it('returns validation failure when username or password is missing', async () => {
@@ -57,7 +59,7 @@ describe('login page actions', () => {
 		}
 	});
 
-	it('returns upstream failure payload message for invalid credentials', async () => {
+	it('returns generic failure message for invalid credentials', async () => {
 		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
 			new Response(JSON.stringify({ error: { message: 'Invalid credentials' } }), {
 				status: 401,
@@ -76,7 +78,49 @@ describe('login page actions', () => {
 		if (isActionFailure(result)) {
 			expect(result.status).toBe(401);
 			expect(result.data).toEqual({
-				message: 'Invalid credentials',
+				message: 'Invalid username or password',
+				username: 'alice'
+			});
+		}
+	});
+
+	it('sets Retry-After when login attempts are rate limited', async () => {
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(JSON.stringify({ error: { message: 'Invalid credentials' } }), {
+				status: 401,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		const baseEvent = {
+			cookies: {},
+			locals: { session: null },
+			getClientAddress: () => '203.0.113.10'
+		};
+
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			const result = await actions.default({
+				...baseEvent,
+				request: createRequest({ username: 'alice', password: `wrong-${attempt}` })
+			} as never);
+
+			expect(isActionFailure(result)).toBe(true);
+		}
+
+		const setHeaders = vi.fn();
+		const result = await actions.default({
+			...baseEvent,
+			setHeaders,
+			request: createRequest({ username: 'alice', password: 'wrong-again' })
+		} as never);
+
+		expect(isActionFailure(result)).toBe(true);
+		expect(setHeaders).toHaveBeenCalledWith({ 'retry-after': '600' });
+
+		if (isActionFailure(result)) {
+			expect(result.status).toBe(429);
+			expect(result.data).toEqual({
+				message: 'Too many login attempts. Try again later.',
 				username: 'alice'
 			});
 		}
@@ -106,6 +150,7 @@ describe('login page actions', () => {
 		await expect(
 			actions.default({
 				request: createRequest({ username: 'alice', password: 'good-password' }),
+				url: new URL('http://localhost/login'),
 				cookies,
 				locals
 			} as never)
@@ -120,6 +165,62 @@ describe('login page actions', () => {
 		});
 		expect(setWebSessionCookie).toHaveBeenCalledWith(cookies, baseSession);
 		expect(locals.session).toEqual(baseSession);
+	});
+
+	it('redirects to a safe relative next path after successful login', async () => {
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					data: {
+						session_token: 'opaque-session-token-1',
+						session: { session_id: 'sess-1' },
+						actor: { id: 'actor-1' }
+					}
+				}),
+				{
+					status: 201,
+					headers: { 'content-type': 'application/json' }
+				}
+			)
+		);
+		vi.mocked(webSessionFromLoginPayload).mockReturnValue(baseSession);
+
+		await expect(
+			actions.default({
+				request: createRequest({ username: 'alice', password: 'good-password' }),
+				url: new URL('http://localhost/login?next=%2Fassets%3Fq%3Dorders'),
+				cookies: {},
+				locals: { session: null }
+			} as never)
+		).rejects.toMatchObject({ status: 303, location: '/assets?q=orders' });
+	});
+
+	it('rejects absolute post-login next values', async () => {
+		vi.mocked(orchestratorLoginPassword).mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					data: {
+						session_token: 'opaque-session-token-1',
+						session: { session_id: 'sess-1' },
+						actor: { id: 'actor-1' }
+					}
+				}),
+				{
+					status: 201,
+					headers: { 'content-type': 'application/json' }
+				}
+			)
+		);
+		vi.mocked(webSessionFromLoginPayload).mockReturnValue(baseSession);
+
+		await expect(
+			actions.default({
+				request: createRequest({ username: 'alice', password: 'good-password' }),
+				url: new URL('http://localhost/login?next=https%3A%2F%2Fattacker.test%2Fruns'),
+				cookies: {},
+				locals: { session: null }
+			} as never)
+		).rejects.toMatchObject({ status: 303, location: '/runs' });
 	});
 
 	it('requires a valid orchestrator response before creating a web session', async () => {
@@ -140,6 +241,7 @@ describe('login page actions', () => {
 		await expect(
 			actions.default({
 				request: createRequest({ username: 'alice', password: 'good-password' }),
+				url: new URL('http://localhost/login'),
 				cookies,
 				locals
 			} as never)
@@ -181,7 +283,7 @@ describe('login page actions', () => {
 		if (isActionFailure(result)) {
 			expect(result.status).toBe(401);
 			expect(result.data).toEqual({
-				message: 'Invalid credentials',
+				message: 'Invalid username or password',
 				username: 'admin'
 			});
 		}

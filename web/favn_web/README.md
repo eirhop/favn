@@ -1,7 +1,8 @@
 # Favn Web
 
 `favn_web` is Favn's SvelteKit browser edge/BFF service. It owns browser UI,
-signed web-session cookies, and server-side relays to the private orchestrator
+opaque web-session cookies, a process-local server-side web-session store, and
+server-side relays to the private orchestrator
 HTTP API. It must call the orchestrator API boundary and must not access SQLite,
 runner internals, orchestrator internals, or local-dev BEAM plumbing directly.
 
@@ -18,11 +19,12 @@ Create a local `.env` file when running the web service directly in development:
 ```sh
 FAVN_WEB_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101
 FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN=replace-with-a-long-random-service-token
-FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-session-secret
+FAVN_WEB_PUBLIC_ORIGIN=http://localhost:5173
 ```
 
-Login uses orchestrator-owned username/password auth. The web tier stores only
-the signed browser session derived from the orchestrator login response.
+Login uses orchestrator-owned username/password auth. The web tier stores the raw
+orchestrator session token only in its server-side web-session store. Browsers
+receive only an opaque web-session id in an `HttpOnly` cookie.
 
 ## Production build and start
 
@@ -49,7 +51,7 @@ PORT=3000 \
 ORIGIN=https://favn.example.com \
 FAVN_WEB_ORCHESTRATOR_BASE_URL=http://127.0.0.1:4101 \
 FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN=replace-with-a-long-random-service-token \
-FAVN_WEB_SESSION_SECRET=replace-with-a-long-random-session-secret \
+FAVN_WEB_PUBLIC_ORIGIN=https://favn.example.com \
 npm run start
 ```
 
@@ -65,7 +67,12 @@ Required Favn web variables:
   private orchestrator API host. Embedded credentials are rejected.
 - `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`: web-to-orchestrator service token, at
   least 32 characters. This is server-only and must never be exposed to browsers.
-- `FAVN_WEB_SESSION_SECRET`: web session signing secret, at least 32 characters.
+- `FAVN_WEB_PUBLIC_ORIGIN`: exact browser-facing origin, for example
+  `https://favn.example.com`. This is used for unsafe request Origin/Referer
+  validation; do not replace it with suffix/prefix host matching or arbitrary
+  forwarded-header inference. Production validation rejects non-local `http://`
+  origins; use `https://` except for local-only `localhost`, `127.0.0.1`, or
+  `::1` smoke-test origins.
 - `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`: optional orchestrator request timeout in
   milliseconds. Defaults to `2000`; accepted range is `100..30000`.
 
@@ -79,20 +86,75 @@ Useful Node adapter variables:
 
 Local-dev-only `FAVN_DEV_*` names are not part of the production web contract.
 
+## Browser-edge security controls
+
+`favn_web` is the browser-facing BFF. Browser JavaScript must not call the
+private orchestrator API directly and must never receive the raw orchestrator
+service token or raw session token.
+
+Authentication is enforced deny-by-default in `src/hooks.server.ts`. Every
+product page and `/api/web/v1/*` BFF route requires a valid web session unless
+the exact method/path pair is explicitly allowlisted as public. The current
+public allowlist is intentionally tiny:
+
+- `GET /login`
+- `POST /login`
+
+Unauthenticated BFF/API requests receive JSON `401` responses with
+`{ "error": { "code": "unauthorized", "message": "Authentication required" } }`.
+Unauthenticated page requests redirect with `303` to `/login?next=...`, where
+`next` is a same-origin relative path; successful login falls back to `/runs` if
+`next` is absent or unsafe. Route-local guards such as
+`requireProtectedPageSession(...)` and `requireSession(...)` remain as
+defense-in-depth, but the hook is the primary perimeter for current and future
+routes.
+
+SvelteKit hooks do not protect static assets or pages that have already been
+prerendered. The root route layout exports `prerender = false` and keeps SSR
+enabled so protected operator pages stay dynamically rendered through the hook.
+Do not place sensitive internal data under `static/`, and do not enable
+prerendering for protected product pages.
+
+Web sessions use a host-only `__Host-favn_web_session` cookie with `HttpOnly`,
+`Secure`, `SameSite=Strict`, `path=/`, and an expiry/max-age derived from the
+orchestrator session lifetime when available. The cookie value is an opaque web
+session id only; the raw orchestrator `session_token` stays server-side and is
+deleted from the process-local store on logout or expiry. This v1 store is
+single-node only; multi-node web deployment needs a shared durable web-session
+store.
+
+All unsafe methods (`POST`, `PUT`, `PATCH`, and `DELETE`) are checked in
+`src/hooks.server.ts` before route handling. Fetch Metadata allows only
+`Sec-Fetch-Site: same-origin`; `cross-site`, `same-site`, and unsafe `none`
+contexts are rejected. When Fetch Metadata is unavailable, `Origin` or `Referer`
+must exactly match `FAVN_WEB_PUBLIC_ORIGIN`.
+
+The web edge also applies in-memory v1 login throttling, basic mutation rate
+limits, explicit security headers/CSP frame protection, production HTTPS HSTS
+(`Strict-Transport-Security: max-age=31536000`), `no-store` cache headers on
+authenticated pages and BFF JSON, logout `Clear-Site-Data: "cache"`, and safe
+upstream error mapping. These limits are process-local and suitable for the
+current single-node deployment; multi-node deployment will need a shared durable
+limiter.
+
 ## Health and readiness
 
-`GET /api/web/v1/health/live` is a cheap liveness probe. It does not call the
-orchestrator.
+Health endpoints are protected by the same hook-level web-session gate as other
+BFF routes. `GET /api/web/v1/health/live` is a cheap authenticated liveness
+probe. It does not call the orchestrator.
 
 ```json
 { "service": "favn_web", "status": "ok" }
 ```
 
 `GET /api/web/v1/health/ready` validates web config and checks orchestrator
-readiness through `FAVN_WEB_ORCHESTRATOR_BASE_URL` at
+readiness for authenticated operators through `FAVN_WEB_ORCHESTRATOR_BASE_URL` at
 `/api/orchestrator/v1/health/ready` using the configured bounded timeout. It
 returns `200` when ready and `503` with redacted check diagnostics when web config
 is invalid, the orchestrator is unreachable, times out, or reports not-ready.
+Unauthenticated health requests receive the same minimal JSON `401` envelope as
+other protected BFF routes and never reveal session, token, config, path, stack,
+or service-token details.
 
 ## Deployment modes
 

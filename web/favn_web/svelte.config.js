@@ -10,7 +10,22 @@ const config = {
 		adapter: adapter({
 			out: 'build',
 			precompress: true
-		})
+		}),
+		csp: {
+			mode: 'auto',
+			directives: {
+				'default-src': ['self'],
+				'base-uri': ['self'],
+				'object-src': ['none'],
+				'frame-ancestors': ['none'],
+				'form-action': ['self'],
+				'script-src': ['self'],
+				'style-src': ['self'],
+				'img-src': ['self', 'data:'],
+				'font-src': ['self', 'data:'],
+				'connect-src': ['self']
+			}
+		}
 	}
 };
 
