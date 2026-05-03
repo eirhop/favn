@@ -10,6 +10,7 @@ Code:
 - `apps/favn_local/lib/favn/dev/`
 - single-node bootstrap implementation under `apps/favn_local/lib/favn/dev/bootstrap/`
 - `apps/favn_local/lib/favn_local.ex`
+- single-node artifact integration test harness under `apps/favn_local/test_support/`
 
 Tests:
 - `apps/favn_local/test/`

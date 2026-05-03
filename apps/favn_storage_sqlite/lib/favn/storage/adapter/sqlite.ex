@@ -188,7 +188,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       sql = "SELECT run_blob FROM favn_runs WHERE run_id = ?1 LIMIT 1"
 
       case SQL.query(repo, sql, [run_id]) do
-        {:ok, %{rows: [[payload]]}} -> decode_run(payload)
+        {:ok, %{rows: [[payload]]}} -> decode_run(payload, repo)
         {:ok, %{rows: []}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
       end
@@ -204,7 +204,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:ok, %{rows: rows}} ->
           rows
           |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
-            case decode_run(payload) do
+            case decode_run(payload, repo) do
               {:ok, run} -> {:cont, {:ok, [run | acc]}}
               {:error, reason} -> {:halt, {:error, reason}}
             end
@@ -2025,8 +2025,9 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  defp decode_run(payload) do
-    with {:ok, decoded} <- decode_payload(payload),
+  defp decode_run(payload, repo) do
+    with {:ok, allowed_atom_strings} <- manifest_atom_strings(repo),
+         {:ok, decoded} <- decode_run_payload(payload, allowed_atom_strings),
          %RunState{} = run_state <- decoded,
          {:ok, normalized} <- RunStateCodec.normalize(run_state) do
       {:ok, normalized}
@@ -2035,6 +2036,84 @@ defmodule Favn.Storage.Adapter.SQLite do
       other -> {:error, {:invalid_run_payload, other}}
     end
   end
+
+  defp decode_run_payload(payload, allowed_atom_strings) when is_binary(payload) do
+    # Run snapshots are trusted storage records written by Favn. They may contain
+    # consumer atoms that are not loaded when a fresh VM decodes persisted state,
+    # so only this recovery path opts into the explicit atom-string allow-list.
+    PayloadCodec.decode(payload,
+      allowed_atom_strings: Enum.uniq(allowed_atom_strings ++ run_atom_strings(payload))
+    )
+  end
+
+  defp run_atom_strings(payload) when is_binary(payload) do
+    case JSON.decode(payload) do
+      {:ok, decoded} -> atom_strings_from_payload(decoded)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp atom_strings_from_payload(%{"__type__" => "atom", "value" => value})
+       when is_binary(value) and value != "" do
+    [value]
+  end
+
+  defp atom_strings_from_payload(%{} = value) do
+    value
+    |> Map.values()
+    |> Enum.flat_map(&atom_strings_from_payload/1)
+  end
+
+  defp atom_strings_from_payload(values) when is_list(values) do
+    Enum.flat_map(values, &atom_strings_from_payload/1)
+  end
+
+  defp atom_strings_from_payload(_value), do: []
+
+  defp manifest_atom_strings(repo) do
+    case SQL.query(repo, "SELECT manifest_json FROM favn_manifest_versions", []) do
+      {:ok, %{rows: rows}} ->
+        atoms =
+          rows
+          |> Enum.flat_map(fn [manifest_json] ->
+            manifest_atom_strings_from_json(manifest_json)
+          end)
+          |> Enum.uniq()
+
+        {:ok, atoms}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp manifest_atom_strings_from_json(manifest_json) when is_binary(manifest_json) do
+    case JSON.decode(manifest_json) do
+      {:ok, decoded} -> manifest_atom_strings_from_value(decoded)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp manifest_atom_strings_from_json(_manifest_json), do: []
+
+  defp manifest_atom_strings_from_value(%{} = value) do
+    current =
+      [Map.get(value, "module"), Map.get(value, "name")]
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+
+    nested =
+      value
+      |> Map.values()
+      |> Enum.flat_map(&manifest_atom_strings_from_value/1)
+
+    current ++ nested
+  end
+
+  defp manifest_atom_strings_from_value(values) when is_list(values) do
+    Enum.flat_map(values, &manifest_atom_strings_from_value/1)
+  end
+
+  defp manifest_atom_strings_from_value(_value), do: []
 
   defp validate_transition_alignment(%RunState{} = run, event) when is_map(event) do
     cond do
