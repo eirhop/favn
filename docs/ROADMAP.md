@@ -36,7 +36,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 4. Finish The Live Event And Command Safety Model
 
-- Define and implement the durable idempotency contract for command-style API operations where that behavior is exposed.
+- Extend command idempotency from the implemented SQLite single-node scope into any future distributed/Postgres production mode when that mode is introduced.
 - Strengthen SSE from a thin prototype into a dependable live-update model, especially for the global runs stream and replay/cursor behavior.
 - Add real end-to-end integration coverage against the live orchestrator boundary rather than relying mostly on local mocks or thin route tests.
 

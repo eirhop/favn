@@ -228,7 +228,13 @@ defmodule FavnStorageSqlite.ReadinessTest do
 
     assert {:ok, diagnostics} = Migrations.schema_diagnostics(Repo)
     assert diagnostics.status == :upgrade_required
-    assert diagnostics.missing_versions == ["20260428100000", "20260502100000"]
+
+    assert diagnostics.missing_versions == [
+             "20260428100000",
+             "20260502100000",
+             "20260503100000"
+           ]
+
     refute Migrations.schema_ready?(Repo)
 
     File.rm(db_path)

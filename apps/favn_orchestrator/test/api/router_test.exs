@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -597,6 +598,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-dependency-scope")
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -622,6 +624,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-invalid-dependency-scope")
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -641,6 +644,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("activate-router")
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -654,10 +658,36 @@ defmodule FavnOrchestrator.API.RouterTest do
     response =
       conn(:post, "/api/orchestrator/v1/manifests/mv_activate_service/activate")
       |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_idempotency_key("activate-service")
       |> Router.call(@opts)
 
     assert response.status == 200
     assert %{"data" => %{"activated" => true}} = Jason.decode!(response.resp_body)
+  end
+
+  test "manifest activation duplicate replays without duplicate audit" do
+    version = schedule_manifest_version("mv_activate_idempotent")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    request = fn ->
+      conn(:post, "/api/orchestrator/v1/manifests/mv_activate_idempotent/activate")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("activate-idempotent")
+      |> Router.call(@opts)
+    end
+
+    first = request.()
+    duplicate = request.()
+
+    assert first.status == 200
+    assert duplicate.status == 200
+    assert Jason.decode!(first.resp_body) == Jason.decode!(duplicate.resp_body)
+    assert {:ok, "mv_activate_idempotent"} = FavnOrchestrator.active_manifest()
+    assert [%{action: "manifest.activate"}] = Auth.list_audit(limit: 10)
   end
 
   test "active manifest target payload exposes pipeline window policy" do
@@ -701,6 +731,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("pipeline-window-missing")
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -771,6 +802,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("pipeline-window-mismatch")
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -827,6 +859,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-submit-http")
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -854,6 +887,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-too-large-http")
       |> Router.call(@opts)
 
     assert response.status == 200
@@ -921,6 +955,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-cancel")
       |> Router.call(@opts)
 
     assert response.status == 201
@@ -934,6 +969,133 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert actor_id == actor.id
     assert session_id == session.id
+  end
+
+  test "run submission replays duplicate idempotency key and rejects conflicts" do
+    version = dependency_manifest_version("mv_run_idempotency")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    payload = %{
+      target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+      manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+      dependencies: "none"
+    }
+
+    request = fn body ->
+      conn(:post, "/api/orchestrator/v1/runs", body)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-submit-retry")
+      |> Router.call(@opts)
+    end
+
+    first = request.(payload)
+    duplicate = request.(payload)
+    conflict = request.(Map.put(payload, :dependencies, "upstream"))
+
+    assert first.status == 201
+    assert duplicate.status == 201
+    assert conflict.status == 409
+
+    assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(first.resp_body)
+    assert %{"data" => %{"run" => %{"id" => ^run_id}}} = Jason.decode!(duplicate.resp_body)
+    assert %{"error" => %{"code" => "idempotency_conflict"}} = Jason.decode!(conflict.resp_body)
+
+    assert {:ok, runs} = Storage.list_runs()
+    assert Enum.count(runs, &(&1.id == run_id)) == 1
+    assert [%{action: "run.submit"}] = Auth.list_audit(limit: 10)
+  end
+
+  test "run submission returns in-progress for duplicate while original is reserved" do
+    version = dependency_manifest_version("mv_run_idempotency_in_progress")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    payload = %{
+      target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+      manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+      dependencies: "none"
+    }
+
+    record = command_record("run.submit", "run-submit-busy", actor, session, payload)
+    assert {:ok, {:reserved, _record}} = Storage.reserve_idempotency_record(record)
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", payload)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-submit-busy")
+      |> Router.call(@opts)
+
+    assert response.status == 409
+    assert %{"error" => %{"code" => "operation_in_progress"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "run rerun duplicate replays same rerun" do
+    version = dependency_manifest_version("mv_run_rerun_idempotency")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    submit_response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        dependencies: "none"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-rerun-source")
+      |> Router.call(@opts)
+
+    assert %{"data" => %{"run" => %{"id" => source_run_id}}} =
+             Jason.decode!(submit_response.resp_body)
+
+    request = fn ->
+      conn(:post, "/api/orchestrator/v1/runs/#{source_run_id}/rerun")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("run-rerun-retry")
+      |> Router.call(@opts)
+    end
+
+    first = request.()
+    duplicate = request.()
+
+    assert first.status == 201
+    assert duplicate.status == 201
+    assert %{"data" => %{"run" => %{"id" => rerun_id}}} = Jason.decode!(first.resp_body)
+    assert %{"data" => %{"run" => %{"id" => ^rerun_id}}} = Jason.decode!(duplicate.resp_body)
+  end
+
+  test "run submission requires idempotency key" do
+    version = dependency_manifest_version("mv_run_idempotency_missing")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+        dependencies: "none"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{"error" => %{"message" => "Missing required Idempotency-Key header"}} =
+             Jason.decode!(response.resp_body)
   end
 
   test "run submission rejects invalid dependency mode" do
@@ -951,6 +1113,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-rerun")
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -972,6 +1135,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("pipeline-window-missing")
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -992,6 +1156,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("pipeline-window-mismatch")
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1019,6 +1184,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-submit-http")
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1054,6 +1220,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-too-large-http")
       |> Router.call(@opts)
 
     assert submit_response.status == 201
@@ -1070,6 +1237,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-window-rerun-http")
       |> Router.call(@opts)
 
     assert list_response.status == 200
@@ -1077,6 +1245,50 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert length(windows) == 2
     assert Enum.all?(windows, &(&1["backfill_run_id"] == backfill_run_id))
     assert Enum.all?(windows, &(&1["pipeline_module"] == "Elixir.MyApp.Pipelines.DailyOrders"))
+  end
+
+  test "backfill submit duplicate does not create another backfill" do
+    version = schedule_manifest_version("mv_backfill_idempotency_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    payload = %{
+      "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+      "manifest_selection" => %{
+        "mode" => "version",
+        "manifest_version_id" => version.manifest_version_id
+      },
+      "range" => %{
+        "from" => "2026-01-01",
+        "to" => "2026-01-02",
+        "kind" => "day",
+        "timezone" => "Etc/UTC"
+      }
+    }
+
+    request = fn ->
+      conn(:post, "/api/orchestrator/v1/backfills", payload)
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-submit-retry")
+      |> Router.call(@opts)
+    end
+
+    first = request.()
+    duplicate = request.()
+
+    assert first.status == 201
+    assert duplicate.status == 201
+    assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(first.resp_body)
+    assert %{"data" => %{"run" => %{"id" => ^run_id}}} = Jason.decode!(duplicate.resp_body)
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    assert Enum.count(runs, fn run ->
+             run.submit_kind == :backfill_pipeline and run.id == run_id
+           end) == 1
   end
 
   test "backfill submit endpoint rejects oversized ranges with validation details" do
@@ -1102,6 +1314,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-cancel")
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1152,6 +1365,7 @@ defmodule FavnOrchestrator.API.RouterTest do
         |> put_req_header("authorization", "Bearer test-service-token")
         |> put_req_header("x-favn-actor-id", actor.id)
         |> put_req_header("x-favn-session-token", session.token)
+        |> put_idempotency_key("backfill-#{@option}-rejected-http")
         |> Router.call(@opts)
 
       assert response.status == 422
@@ -1190,6 +1404,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-missing-baseline-http")
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1216,6 +1431,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-rerun")
       |> Router.call(@opts)
 
     assert baseline_response.status == 200
@@ -1241,6 +1457,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-window-rerun-http")
       |> Router.call(@opts)
 
     assert state_response.status == 200
@@ -1263,6 +1480,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-cancel")
       |> Router.call(@opts)
 
     assert response.status == 422
@@ -1339,6 +1557,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-rerun")
       |> Router.call(@opts)
 
     assert response.status == 401
@@ -1361,6 +1580,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-window-rerun-http")
       |> Router.call(@opts)
 
     assert response.status == 201
@@ -1374,18 +1594,68 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert rerun.trigger.window_key == window_key
   end
 
+  test "backfill window rerun duplicate replays same rerun" do
+    version = schedule_manifest_version("mv_backfill_rerun_idempotent_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    %{window_key: window_key} = seed_backfill_http_state!(version.manifest_version_id)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    request = fn ->
+      conn(:post, "/api/orchestrator/v1/backfills/backfill_http/windows/rerun", %{
+        "window_key" => window_key
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-window-rerun-retry")
+      |> Router.call(@opts)
+    end
+
+    first = request.()
+    duplicate = request.()
+
+    assert first.status == 201
+    assert duplicate.status == 201
+    assert %{"data" => %{"run" => %{"id" => rerun_id}}} = Jason.decode!(first.resp_body)
+    assert %{"data" => %{"run" => %{"id" => ^rerun_id}}} = Jason.decode!(duplicate.resp_body)
+  end
+
   test "service token can cancel run without actor headers" do
     seed_run_events!("run_cancel_service", [1])
 
     response =
       conn(:post, "/api/orchestrator/v1/runs/run_cancel_service/cancel")
       |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_idempotency_key("cancel-service")
       |> Router.call(@opts)
 
     assert response.status == 200
 
     assert %{"data" => %{"cancelled" => true, "run_id" => "run_cancel_service"}} =
              Jason.decode!(response.resp_body)
+  end
+
+  test "cancel duplicate replays without duplicate audit" do
+    seed_run_events!("run_cancel_retry", [1])
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+
+    request = fn ->
+      conn(:post, "/api/orchestrator/v1/runs/run_cancel_retry/cancel")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("cancel-retry")
+      |> Router.call(@opts)
+    end
+
+    first = request.()
+    duplicate = request.()
+
+    assert first.status == 200
+    assert duplicate.status == 200
+    assert Jason.decode!(first.resp_body) == Jason.decode!(duplicate.resp_body)
+    assert [%{action: "run.cancel"}] = Auth.list_audit(limit: 10)
   end
 
   test "generic cancel and rerun return conflict for backfill parent runs" do
@@ -1409,6 +1679,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-cancel")
       |> Router.call(@opts)
 
     assert cancel_response.status == 409
@@ -1419,6 +1690,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-parent-rerun")
       |> Router.call(@opts)
 
     assert rerun_response.status == 409
@@ -1664,6 +1936,25 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> Router.call(@opts)
 
     assert password_response.status == 403
+  end
+
+  defp put_idempotency_key(conn, key) when is_binary(key) do
+    put_req_header(conn, "idempotency-key", key)
+  end
+
+  defp command_record(operation, key, actor, session, request) do
+    key_hash = Idempotency.key_hash(key)
+
+    Idempotency.new_record(
+      %{
+        operation: operation,
+        actor_id: actor.id,
+        session_id: session.id,
+        service_identity: "favn_web",
+        idempotency_key_hash: key_hash
+      },
+      Idempotency.request_fingerprint(%{operation: operation, request: request})
+    )
   end
 
   defp ensure_auth_store_started do

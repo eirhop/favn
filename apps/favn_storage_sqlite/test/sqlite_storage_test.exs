@@ -9,6 +9,7 @@ defmodule Favn.SQLiteStorageTest do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
@@ -130,6 +131,84 @@ defmodule Favn.SQLiteStorageTest do
     assert restored_session.id == session.id
     assert restored_session.revoked_at == now
     assert {:ok, [^audit]} = OrchestratorStorage.list_auth_audit(limit: 10)
+  end
+
+  test "idempotency records survive repo restart and replay without raw payload", %{
+    db_path: db_path
+  } do
+    raw_key = "client-secret-key"
+    secret_value = "super-secret-session-token"
+    request = %{operation: "run.submit", payload: %{token: secret_value}}
+    key_hash = Idempotency.key_hash(raw_key)
+
+    record =
+      Idempotency.new_record(
+        %{
+          operation: "run.submit",
+          actor_id: "act_sqlite",
+          session_id: "ses_sqlite",
+          service_identity: "favn_web",
+          idempotency_key_hash: key_hash
+        },
+        Idempotency.request_fingerprint(request)
+      )
+
+    assert {:ok, {:reserved, reserved}} = OrchestratorStorage.reserve_idempotency_record(record)
+
+    assert :ok =
+             OrchestratorStorage.complete_idempotency_record(reserved.id, %{
+               status: :completed,
+               response_status: 201,
+               response_body: %{"run" => %{"id" => "run_sqlite_idempotent"}},
+               resource_type: "run",
+               resource_id: "run_sqlite_idempotent",
+               updated_at: DateTime.utc_now() |> DateTime.truncate(:second),
+               completed_at: DateTime.utc_now() |> DateTime.truncate(:second)
+             })
+
+    :ok = stop_supervised(Repo)
+    start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+
+    assert {:ok, {:replay, replay}} = OrchestratorStorage.reserve_idempotency_record(record)
+    assert replay.response_status == 201
+    assert replay.response_body == %{"run" => %{"id" => "run_sqlite_idempotent"}}
+    assert replay.idempotency_key_hash == key_hash
+    refute replay.idempotency_key_hash == raw_key
+
+    assert {:ok, %{rows: [[stored_key_hash, request_fingerprint, response_body_blob]]}} =
+             SQL.query(
+               Repo,
+               "SELECT idempotency_key_hash, request_fingerprint, response_body_blob FROM favn_idempotency_records WHERE idempotency_record_id = ?1",
+               [reserved.id]
+             )
+
+    stored = inspect({stored_key_hash, request_fingerprint, response_body_blob})
+    refute stored =~ raw_key
+    refute stored =~ secret_value
+  end
+
+  test "idempotency records reject fingerprint conflicts and report in-progress duplicates" do
+    record =
+      Idempotency.new_record(
+        %{
+          operation: "run.submit",
+          actor_id: "act_sqlite",
+          session_id: "ses_sqlite",
+          service_identity: "favn_web",
+          idempotency_key_hash: Idempotency.key_hash("same-key")
+        },
+        Idempotency.request_fingerprint(%{payload: 1})
+      )
+
+    conflict = %{record | request_fingerprint: Idempotency.request_fingerprint(%{payload: 2})}
+
+    assert {:ok, {:reserved, _reserved}} = OrchestratorStorage.reserve_idempotency_record(record)
+
+    assert {:error, :operation_in_progress} =
+             OrchestratorStorage.reserve_idempotency_record(record)
+
+    assert {:error, :idempotency_conflict} =
+             OrchestratorStorage.reserve_idempotency_record(conflict)
   end
 
   test "does not keep run_write_orders helper table after migrations" do
