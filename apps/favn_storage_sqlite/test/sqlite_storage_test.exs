@@ -211,6 +211,30 @@ defmodule Favn.SQLiteStorageTest do
              OrchestratorStorage.reserve_idempotency_record(conflict)
   end
 
+  test "concurrent fresh idempotency reservations do not surface storage errors" do
+    record =
+      Idempotency.new_record(
+        %{
+          operation: "run.submit",
+          actor_id: "act_sqlite",
+          session_id: "ses_sqlite",
+          service_identity: "favn_web",
+          idempotency_key_hash: Idempotency.key_hash("concurrent-key")
+        },
+        Idempotency.request_fingerprint(%{payload: "same"})
+      )
+
+    results =
+      1..2
+      |> Enum.map(fn _index ->
+        Task.async(fn -> OrchestratorStorage.reserve_idempotency_record(record) end)
+      end)
+      |> Enum.map(&Task.await(&1, 5_000))
+
+    assert Enum.count(results, &match?({:ok, {:reserved, _record}}, &1)) == 1
+    assert Enum.count(results, &match?({:error, :operation_in_progress}, &1)) == 1
+  end
+
   test "expired idempotency records are replaced on reservation" do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 

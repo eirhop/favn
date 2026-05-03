@@ -877,10 +877,20 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp reserve_idempotency_record_in_transaction(repo, record) do
-    case fetch_idempotency_record(repo, record.id) do
-      {:error, :not_found} ->
-        insert_idempotency_record(repo, record)
+    case insert_idempotency_record(repo, record, :ignore_conflict) do
+      {:ok, {:reserved, _record}} = reserved ->
+        reserved
 
+      {:ok, :ignored} ->
+        classify_or_replace_existing_idempotency_record(repo, record)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp classify_or_replace_existing_idempotency_record(repo, record) do
+    case fetch_idempotency_record(repo, record.id) do
       {:ok, stored} ->
         reserve_existing_idempotency_record(repo, stored, record)
 
@@ -890,12 +900,15 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp reserve_existing_idempotency_record(repo, stored, record) do
-    if expired_idempotency_record?(stored) do
-      with :ok <- delete_idempotency_record(repo, stored.id) do
+    cond do
+      not expired_idempotency_record?(stored) ->
+        classify_idempotency_record(stored, record.request_fingerprint)
+
+      delete_expired_idempotency_record(repo, stored.id) == :ok ->
         insert_idempotency_record(repo, record)
-      end
-    else
-      classify_idempotency_record(stored, record.request_fingerprint)
+
+      true ->
+        classify_or_replace_existing_idempotency_record(repo, record)
     end
   end
 
@@ -977,10 +990,31 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  defp delete_idempotency_record(repo, record_id) do
-    query_ok(repo, "DELETE FROM favn_idempotency_records WHERE idempotency_record_id = ?1", [
-      record_id
-    ])
+  defp insert_idempotency_record(repo, record, :ignore_conflict) do
+    sql = """
+    INSERT OR IGNORE INTO favn_idempotency_records (
+      idempotency_record_id, operation, idempotency_key_hash, actor_id, session_id,
+      service_identity, request_fingerprint, status, response_status, response_body_blob,
+      resource_type, resource_id, created_at, updated_at, expires_at, completed_at
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+    """
+
+    case SQL.query(repo, sql, idempotency_record_params(record)) do
+      {:ok, %{num_rows: 1}} -> {:ok, {:reserved, record}}
+      {:ok, _result} -> {:ok, :ignored}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_expired_idempotency_record(repo, record_id) do
+    sql =
+      "DELETE FROM favn_idempotency_records WHERE idempotency_record_id = ?1 AND expires_at <= ?2"
+
+    case SQL.query(repo, sql, [record_id, encode_datetime(DateTime.utc_now())]) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, _result} -> :not_deleted
+      {:error, _reason} -> :not_deleted
+    end
   end
 
   defp expired_idempotency_record?(%{expires_at: %DateTime{} = expires_at}) do
