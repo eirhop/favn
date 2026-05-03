@@ -162,6 +162,7 @@ defmodule Favn.SQLiteStorageTest do
                updated_at: DateTime.utc_now() |> DateTime.truncate(:second),
                completed_at: DateTime.utc_now() |> DateTime.truncate(:second)
              })
+
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
 
@@ -258,7 +259,7 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, {:reserved, _reserved}} = OrchestratorStorage.reserve_idempotency_record(expired)
 
     assert {:ok, {:reserved, replaced}} =
-              OrchestratorStorage.reserve_idempotency_record(replacement)
+             OrchestratorStorage.reserve_idempotency_record(replacement)
 
     assert replaced.request_fingerprint == replacement.request_fingerprint
   end

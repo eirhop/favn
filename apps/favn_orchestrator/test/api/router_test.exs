@@ -707,7 +707,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_activate_idempotent")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     request = fn ->
       conn(:post, "/api/orchestrator/v1/manifests/mv_activate_idempotent/activate")
@@ -1013,7 +1013,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = dependency_manifest_version("mv_run_idempotency")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     payload = %{
       target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
@@ -1051,7 +1051,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = dependency_manifest_version("mv_run_idempotency_in_progress")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     payload = %{
       target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
@@ -1078,7 +1078,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = dependency_manifest_version("mv_run_rerun_idempotency")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     submit_response =
       conn(:post, "/api/orchestrator/v1/runs", %{
@@ -1117,7 +1117,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = dependency_manifest_version("mv_run_idempotency_missing")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/runs", %{
@@ -1289,7 +1289,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_backfill_idempotency_http")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     payload = %{
       "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
@@ -1637,7 +1637,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     %{window_key: window_key} = seed_backfill_http_state!(version.manifest_version_id)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     request = fn ->
       conn(:post, "/api/orchestrator/v1/backfills/backfill_http/windows/rerun", %{
@@ -1676,7 +1676,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   test "cancel duplicate replays without duplicate audit" do
     seed_run_events!("run_cancel_retry", [1])
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     request = fn ->
       conn(:post, "/api/orchestrator/v1/runs/run_cancel_retry/cancel")
