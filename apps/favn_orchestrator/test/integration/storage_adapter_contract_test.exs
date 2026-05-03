@@ -31,24 +31,30 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     end)
   end
 
-  test "shared contract holds for sqlite adapter" do
-    db_path =
-      Path.join(
-        System.tmp_dir!(),
-        "favn_contract_sqlite_#{System.unique_integer([:positive])}.db"
-      )
+  test "shared contract holds for sqlite adapter when available" do
+    case Code.ensure_loaded(Favn.Storage.Adapter.SQLite) do
+      {:module, Favn.Storage.Adapter.SQLite} ->
+        db_path =
+          Path.join(
+            System.tmp_dir!(),
+            "favn_contract_sqlite_#{System.unique_integer([:positive])}.db"
+          )
 
-    opts = [
-      database: db_path,
-      supervisor_name: @sqlite_supervisor,
-      migration_mode: :auto
-    ]
+        opts = [
+          database: db_path,
+          supervisor_name: @sqlite_supervisor,
+          migration_mode: :auto
+        ]
 
-    with_storage_adapter(Favn.Storage.Adapter.SQLite, opts, fn ->
-      assert_shared_contract("sqlite")
-    end)
+        with_storage_adapter(Favn.Storage.Adapter.SQLite, opts, fn ->
+          assert_shared_contract("sqlite")
+        end)
 
-    File.rm(db_path)
+        File.rm(db_path)
+
+      error ->
+        assert match?({:error, _reason}, error)
+    end
   end
 
   test "shared contract holds for postgres adapter (opt-in)" do

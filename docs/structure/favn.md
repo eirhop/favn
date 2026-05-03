@@ -11,6 +11,7 @@ Code:
 
 Tests:
 - `apps/favn/test/`
+- `apps/favn/test/favn_test.exs` doctests the public facade and depends on docs being emitted for `Favn`
 - public Mix task tests under `apps/favn/test/mix_tasks/`
 - bootstrap and diagnostics task argument/default coverage in `apps/favn/test/mix_tasks/public_tasks_test.exs`
 
