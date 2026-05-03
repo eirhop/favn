@@ -900,15 +900,14 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp reserve_existing_idempotency_record(repo, stored, record) do
-    cond do
-      not expired_idempotency_record?(stored) ->
-        classify_idempotency_record(stored, record.request_fingerprint)
-
-      delete_expired_idempotency_record(repo, stored.id) == :ok ->
-        insert_idempotency_record(repo, record)
-
-      true ->
-        classify_or_replace_existing_idempotency_record(repo, record)
+    if expired_idempotency_record?(stored) do
+      case delete_expired_idempotency_record(repo, stored.id) do
+        :ok -> insert_idempotency_record(repo, record)
+        :not_deleted -> classify_or_replace_existing_idempotency_record(repo, record)
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      classify_idempotency_record(stored, record.request_fingerprint)
     end
   end
 
@@ -1013,7 +1012,7 @@ defmodule Favn.Storage.Adapter.SQLite do
     case SQL.query(repo, sql, [record_id, encode_datetime(DateTime.utc_now())]) do
       {:ok, %{num_rows: 1}} -> :ok
       {:ok, _result} -> :not_deleted
-      {:error, _reason} -> :not_deleted
+      {:error, reason} -> {:error, reason}
     end
   end
 
