@@ -27,6 +27,7 @@ defmodule FavnOrchestrator.MixProject do
     [
       internal_dep(:favn_core, "../favn_core"),
       internal_dep(:favn_authoring, "../favn_authoring", only: :test),
+      internal_dep(:favn_runner, "../favn_runner", only: :test),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime", only: :test),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:phoenix_pubsub, "~> 2.2"},

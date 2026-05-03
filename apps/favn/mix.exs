@@ -11,6 +11,7 @@ defmodule Favn.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       elixir: "~> 1.19",
+      elixirc_options: [docs: true],
       start_permanent: Mix.env() == :prod,
       deps: deps()
     ]
@@ -28,6 +29,7 @@ defmodule Favn.MixProject do
       internal_dep(:favn_local, "../favn_local"),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
       internal_dep(:favn_orchestrator, "../favn_orchestrator", only: :test),
+      internal_dep(:favn_runner, "../favn_runner", only: :test),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test)
     ]
   end
