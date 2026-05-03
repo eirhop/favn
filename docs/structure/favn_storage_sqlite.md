@@ -8,6 +8,7 @@ Code:
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/`
 - Auth/session/audit schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_auth_state.ex`
 - Command idempotency schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_idempotency_records.ex`
+- Run-event global sequence migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_run_event_global_sequence.ex`
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/diagnostics.ex`
 
 Tests:

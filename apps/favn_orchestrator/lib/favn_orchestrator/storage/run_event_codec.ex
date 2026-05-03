@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
          entity: normalize_entity(Map.get(event, :entity), event_type),
          occurred_at: occurred_at,
          status: status,
+         global_sequence: normalize_global_sequence(Map.get(event, :global_sequence)),
          manifest_version_id: normalize_optional_binary(Map.get(event, :manifest_version_id)),
          manifest_content_hash: normalize_optional_binary(Map.get(event, :manifest_content_hash)),
          asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), data),
@@ -30,6 +31,9 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
 
   defp normalize_schema_version(value) when is_integer(value) and value > 0, do: value
   defp normalize_schema_version(_value), do: 1
+
+  defp normalize_global_sequence(value) when is_integer(value) and value > 0, do: value
+  defp normalize_global_sequence(_value), do: nil
 
   defp validate_sequence(sequence) when is_integer(sequence) and sequence > 0, do: {:ok, sequence}
   defp validate_sequence(value), do: {:error, {:invalid_run_event_field, :sequence, value}}

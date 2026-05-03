@@ -423,7 +423,7 @@ test.describe('auth/session/runs flow', () => {
 
 		const stream = await page.evaluate(async () => {
 			const response = await fetch('/api/web/v1/streams/runs/run_002', {
-				headers: { 'Last-Event-ID': 'evt_123' }
+				headers: { 'Last-Event-ID': 'run:run_002:1' }
 			});
 
 			const reader = response.body?.getReader();
@@ -450,10 +450,10 @@ test.describe('auth/session/runs flow', () => {
 		expect(stream.status).toBe(200);
 		expect(stream.contentType).toContain('text/event-stream');
 		const body = stream.body;
-		expect(body).toContain('id: evt_001');
+		expect(body).toContain('id: run:run_002:2');
 		expect(body).toContain('event: run_status');
 		expect(body).toContain('"run_id":"run_002"');
-		expect(body).toContain('"last_event_id_received":"evt_123"');
+		expect(body).toContain('"last_event_id_received":"run:run_002:1"');
 	});
 
 	test('operational backfill UI submits, opens detail, reruns failed window, and renders read models', async ({

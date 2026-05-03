@@ -465,6 +465,28 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Lists replayable events for the global runs stream after an optional persisted cursor.
+  """
+  @spec list_global_run_stream_events(keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_global_run_stream_events(opts \\ []) when is_list(opts) do
+    after_global_sequence = Keyword.get(opts, :after_global_sequence)
+    limit = Keyword.get(opts, :limit, 200)
+
+    with true <- is_integer(limit) and limit > 0,
+         true <- is_nil(after_global_sequence) or is_integer(after_global_sequence),
+         {:ok, events} <-
+           Storage.list_global_run_events(
+             after_global_sequence: after_global_sequence,
+             limit: limit
+           ) do
+      {:ok, Enum.map(events, &RunEvent.from_map/1)}
+    else
+      false -> {:error, :cursor_invalid}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Subscribes the current process to one run-scoped live event stream.
   """
   @spec subscribe_run(run_id()) :: :ok | {:error, term()}

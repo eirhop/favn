@@ -24,10 +24,14 @@ defmodule FavnOrchestrator.Storage.WriteSemantics do
   def decide_run_event_append(nil, incoming) when is_map(incoming), do: :insert
 
   def decide_run_event_append(existing, incoming) when is_map(existing) and is_map(incoming) do
-    if existing == incoming do
+    if comparable_run_event(existing) == comparable_run_event(incoming) do
       :idempotent
     else
       {:error, :conflicting_event_sequence}
     end
+  end
+
+  defp comparable_run_event(event) when is_map(event) do
+    Map.drop(event, [:global_sequence, "global_sequence"])
   end
 end

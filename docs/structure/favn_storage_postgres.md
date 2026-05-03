@@ -7,6 +7,7 @@ persistence.
 Code:
 - `apps/favn_storage_postgres/lib/favn/storage/adapter/postgres.ex`
 - `apps/favn_storage_postgres/lib/favn_storage_postgres/`
+- Run-event global sequence migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_run_event_global_sequence.ex`
 
 Tests:
 - `apps/favn_storage_postgres/test/`

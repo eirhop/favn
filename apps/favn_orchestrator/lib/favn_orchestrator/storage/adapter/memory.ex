@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           active_manifest_version_id: String.t() | nil,
           runs: %{required(String.t()) => RunState.t()},
           run_events: %{required(String.t()) => [map()]},
+          run_event_global_sequence: non_neg_integer(),
           scheduler_states: %{required({module(), atom() | nil}) => map()},
           coverage_baselines: %{required(String.t()) => CoverageBaseline.t()},
           backfill_windows: %{required({String.t(), module(), String.t()}) => BackfillWindow.t()},
@@ -163,6 +164,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:list_run_events, run_id})
+  end
+
+  @impl true
+  def list_global_run_events(run_event_opts, opts)
+      when is_list(run_event_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_global_run_events, run_event_opts})
   end
 
   @impl true
@@ -423,6 +431,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       active_manifest_version_id: nil,
       runs: %{},
       run_events: %{},
+      run_event_global_sequence: 0,
       scheduler_states: %{},
       coverage_baselines: %{},
       backfill_windows: %{},
@@ -521,12 +530,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       run_write_result when run_write_result in [:ok, :idempotent] ->
         current = Map.get(state.run_events, run.id, [])
 
-        case append_event_with_semantics(current, event) do
-          {:ok, event_write_result, next_events} ->
+        case append_event_with_semantics(current, event, state.run_event_global_sequence) do
+          {:ok, event_write_result, next_events, next_global_sequence} ->
             next_state = %{
               state
               | runs: runs,
-                run_events: Map.put(state.run_events, run.id, next_events)
+                run_events: Map.put(state.run_events, run.id, next_events),
+                run_event_global_sequence: next_global_sequence
             }
 
             result =
@@ -570,9 +580,15 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def handle_call({:append_run_event, run_id, event}, _from, state) do
     current = Map.get(state.run_events, run_id, [])
 
-    case append_event_with_semantics(current, event) do
-      {:ok, _event_write_result, next_events} ->
-        {:reply, :ok, put_in(state, [:run_events, run_id], next_events)}
+    case append_event_with_semantics(current, event, state.run_event_global_sequence) do
+      {:ok, _event_write_result, next_events, next_global_sequence} ->
+        next_state = %{
+          state
+          | run_events: Map.put(state.run_events, run_id, next_events),
+            run_event_global_sequence: next_global_sequence
+        }
+
+        {:reply, :ok, next_state}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -582,6 +598,47 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def handle_call({:list_run_events, run_id}, _from, state) do
     events = Map.get(state.run_events, run_id, [])
     {:reply, {:ok, events}, state}
+  end
+
+  def handle_call({:list_global_run_events, opts}, _from, state) do
+    after_sequence = Keyword.get(opts, :after_global_sequence)
+    limit = Keyword.get(opts, :limit, 200)
+
+    events =
+      state.run_events
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.filter(
+        &(is_integer(Map.get(&1, :global_sequence)) and Map.get(&1, :global_sequence) > 0)
+      )
+      |> Enum.sort_by(&Map.fetch!(&1, :global_sequence))
+
+    reply =
+      cond do
+        not (is_integer(limit) and limit > 0) ->
+          {:error, :cursor_invalid}
+
+        is_nil(after_sequence) ->
+          {:ok, events |> Enum.reverse() |> Enum.take(limit) |> Enum.reverse()}
+
+        is_integer(after_sequence) and after_sequence == 0 ->
+          {:ok, Enum.take(events, limit)}
+
+        is_integer(after_sequence) and after_sequence > 0 ->
+          if Enum.any?(events, &(Map.get(&1, :global_sequence) == after_sequence)) do
+            {:ok,
+             events
+             |> Enum.filter(&(Map.get(&1, :global_sequence) > after_sequence))
+             |> Enum.take(limit)}
+          else
+            {:error, :cursor_invalid}
+          end
+
+        true ->
+          {:error, :cursor_invalid}
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call({:put_scheduler_state, key, scheduler_state}, _from, state) do
@@ -1058,17 +1115,22 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     end
   end
 
-  defp append_event_with_semantics(current_events, event) when is_list(current_events) do
+  defp append_event_with_semantics(current_events, event, current_global_sequence)
+       when is_list(current_events) and is_integer(current_global_sequence) do
     sequence = Map.get(event, :sequence)
 
     existing = Enum.find(current_events, &(Map.get(&1, :sequence) == sequence))
 
     case WriteSemantics.decide_run_event_append(existing, event) do
       :insert ->
-        {:ok, :ok, Enum.sort_by(current_events ++ [event], &Map.get(&1, :sequence, 0))}
+        next_global_sequence = current_global_sequence + 1
+        event = Map.put(event, :global_sequence, next_global_sequence)
+
+        {:ok, :ok, Enum.sort_by(current_events ++ [event], &Map.get(&1, :sequence, 0)),
+         next_global_sequence}
 
       :idempotent ->
-        {:ok, :idempotent, current_events}
+        {:ok, :idempotent, current_events, current_global_sequence}
 
       {:error, reason} ->
         {:error, reason}

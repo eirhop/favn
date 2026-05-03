@@ -547,7 +547,9 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"error" => %{"code" => "service_unauthorized"}} = Jason.decode!(response.resp_body)
   end
 
-  test "SSE global stream returns baseline ready event" do
+  test "SSE global stream replays persisted run events and heartbeat contract" do
+    seed_run_events!("run_stream_global", [1, 2])
+
     {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
@@ -555,14 +557,16 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
       |> put_req_header("x-favn-session-token", session.token)
-      |> put_req_header("last-event-id", "runs:cursor_1")
       |> Router.call(@opts)
 
     assert response.status == 200
     assert ["text/event-stream; charset=utf-8"] = get_resp_header(response, "content-type")
+    assert response.resp_body =~ "retry: 3000"
+    assert response.resp_body =~ "id: global:"
+    assert response.resp_body =~ "event: run_updated"
     assert response.resp_body =~ "event: stream.ready"
-    assert response.resp_body =~ "id: runs:cursor_1"
     assert response.resp_body =~ "stream\":\"runs\""
+    assert response.resp_body =~ ": heartbeat"
   end
 
   test "SSE run stream replays persisted events after run cursor" do
@@ -582,6 +586,43 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert response.resp_body =~ "id: run:run_stream_b:3"
     assert response.resp_body =~ "event: run_updated"
     assert response.resp_body =~ "event: stream.ready"
+    assert response.resp_body =~ "retry: 3000"
+  end
+
+  test "SSE run stream rejects cursors more than one replay page behind" do
+    seed_run_events!("run_stream_replay_gap", Enum.to_list(1..202))
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/streams/runs/run_stream_replay_gap")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_req_header("last-event-id", "run:run_stream_replay_gap:1")
+      |> Router.call(@opts)
+
+    assert response.status == 410
+    assert %{"error" => %{"code" => "cursor_expired"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "SSE global stream rejects cursors more than one replay page behind" do
+    run_id = "run_stream_global_replay_gap"
+    seed_run_events!(run_id, Enum.to_list(1..202))
+    assert {:ok, [first_event | _events]} = FavnOrchestrator.list_run_events(run_id)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/streams/runs")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_req_header("last-event-id", "global:#{first_event.global_sequence}")
+      |> Router.call(@opts)
+
+    assert response.status == 410
+    assert %{"error" => %{"code" => "cursor_expired"}} = Jason.decode!(response.resp_body)
   end
 
   test "SSE stream rejects invalid last-event-id header" do
@@ -595,8 +636,24 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> put_req_header("last-event-id", "bad id with spaces")
       |> Router.call(@opts)
 
-    assert response.status == 422
+    assert response.status == 400
     assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "SSE run stream returns cursor-expired for unknown well-formed cursor" do
+    seed_run_events!("run_stream_unknown_cursor", [1])
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/streams/runs/run_stream_unknown_cursor")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_req_header("last-event-id", "run:run_stream_unknown_cursor:99")
+      |> Router.call(@opts)
+
+    assert response.status == 410
+    assert %{"error" => %{"code" => "cursor_expired"}} = Jason.decode!(response.resp_body)
   end
 
   test "password login returns invalid credentials without rate-limiting branch" do

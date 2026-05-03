@@ -101,6 +101,21 @@ defmodule FavnStorageSqlite.AdapterTest do
     assert {:ok, [stored_event]} = Adapter.list_run_events("run_sqlite_events", opts)
     assert stored_event.sequence == 1
     assert stored_event.run_id == "run_sqlite_events"
+    assert is_integer(stored_event.global_sequence)
+
+    assert {:ok, [global_event]} =
+             Adapter.list_global_run_events([after_global_sequence: nil, limit: 10], opts)
+
+    assert global_event.run_id == "run_sqlite_events"
+
+    assert {:ok, []} =
+             Adapter.list_global_run_events(
+               [after_global_sequence: global_event.global_sequence, limit: 10],
+               opts
+             )
+
+    assert {:error, :cursor_invalid} =
+             Adapter.list_global_run_events([after_global_sequence: 999_999, limit: 10], opts)
 
     key = {MyApp.Pipeline, :daily}
 

@@ -232,7 +232,8 @@ defmodule FavnStorageSqlite.ReadinessTest do
     assert diagnostics.missing_versions == [
              "20260428100000",
              "20260502100000",
-             "20260503100000"
+             "20260503100000",
+             "20260503120000"
            ]
 
     refute Migrations.schema_ready?(Repo)

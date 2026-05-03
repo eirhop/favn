@@ -7,51 +7,29 @@
     "schema_version",
     "event_id",
     "stream",
-    "topic",
     "event_type",
     "occurred_at",
-    "actor",
-    "resource",
+    "run_id",
+    "status",
     "sequence",
+    "global_sequence",
     "cursor",
-    "data"
+    "summary",
+    "details"
   ],
   "additionalProperties": false,
   "properties": {
     "schema_version": { "type": "integer", "minimum": 1 },
     "event_id": { "type": "string", "minLength": 1 },
     "stream": { "type": "string", "minLength": 1 },
-    "topic": {
-      "type": "object",
-      "required": ["type", "id"],
-      "additionalProperties": false,
-      "properties": {
-        "type": { "type": "string", "enum": ["run"] },
-        "id": { "type": "string", "minLength": 1 }
-      }
-    },
     "event_type": { "type": "string", "minLength": 1 },
     "occurred_at": { "type": ["string", "null"] },
-    "actor": {
-      "type": "object",
-      "required": ["type", "id"],
-      "additionalProperties": false,
-      "properties": {
-        "type": { "type": "string", "minLength": 1 },
-        "id": { "type": "string", "minLength": 1 }
-      }
-    },
-    "resource": {
-      "type": "object",
-      "required": ["type", "id"],
-      "additionalProperties": false,
-      "properties": {
-        "type": { "type": "string", "enum": ["run"] },
-        "id": { "type": "string", "minLength": 1 }
-      }
-    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "status": { "type": ["string", "null"] },
     "sequence": { "type": "integer", "minimum": 1 },
+    "global_sequence": { "type": ["integer", "null"], "minimum": 1 },
     "cursor": { "type": "string", "minLength": 1 },
-    "data": { "type": "object" }
+    "summary": { "type": "string" },
+    "details": { "type": "object" }
   }
 }

@@ -989,7 +989,7 @@ function handleRunStream(request, response, runId) {
 		typeof request.headers['last-event-id'] === 'string' ? request.headers['last-event-id'] : null;
 
 	sendSse(response, 200, [
-		'id: evt_001',
+		`id: run:${runId}:2`,
 		'event: run_status',
 		`data: ${JSON.stringify({
 			run_id: runId,
