@@ -6,13 +6,16 @@ defmodule FavnOrchestrator.API.ConfigTest do
   test "validate/0 requires service tokens when API server enabled" do
     previous_server = Application.get_env(:favn_orchestrator, :api_server)
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
+    previous_token_env = Application.get_env(:favn_orchestrator, :api_service_tokens_env)
 
     Application.put_env(:favn_orchestrator, :api_server, enabled: true)
     Application.put_env(:favn_orchestrator, :api_service_tokens, [])
+    Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
 
     on_exit(fn ->
       restore_env(:favn_orchestrator, :api_server, previous_server)
       restore_env(:favn_orchestrator, :api_service_tokens, previous_tokens)
+      restore_env(:favn_orchestrator, :api_service_tokens_env, previous_token_env)
     end)
 
     assert {:error, {:invalid_api_config, :missing_service_tokens}} = Config.validate()
@@ -42,7 +45,9 @@ defmodule FavnOrchestrator.API.ConfigTest do
       bind_ip: "not-an-ip"
     )
 
-    Application.put_env(:favn_orchestrator, :api_service_tokens, ["token"])
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [service_identity: "favn_web", token: "token", enabled: true]
+    ])
 
     on_exit(fn ->
       restore_env(:favn_orchestrator, :api_server, previous_server)

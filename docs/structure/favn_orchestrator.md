@@ -7,6 +7,7 @@ and storage contracts.
 Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator.ex`
 - `apps/favn_orchestrator/lib/favn_orchestrator/`
+- Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - HTTP contract schemas under `apps/favn_orchestrator/priv/http_contract/v1/`

@@ -264,7 +264,7 @@ keys to `examples/basic-workflow-tutorial/.env` before running `mix favn.dev`:
 
 ```sh
 FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
-FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=admin-password
+FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=admin-password-long
 FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Favn Admin
 FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
 ```

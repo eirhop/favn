@@ -346,6 +346,12 @@ mix favn.read_doc Favn generate_manifest
 These supported `mix favn.*` commands are the stable public entrypoints for
 local iteration.
 
+Security-sensitive Elixir changes should also run the repo-local audit tooling:
+`mix deps.audit` for known dependency vulnerabilities, `mix hex.audit` when Hex
+package freshness or metadata is relevant, and Sobelow for HTTP/Plug-facing code.
+Treat findings as review input: fix high/critical issues and document any
+intentional false positives.
+
 For a fresh standalone Mix consumer project with local path dependencies back to
 this checkout, `mix favn.init --duckdb --sample` generates the first dogfooding
 path: a DuckDB connection module, raw and gold namespace modules, one Elixir raw
@@ -417,10 +423,13 @@ on the web login page. If bootstrap credentials are not configured, local
 tooling keeps using the generated local operator credentials stored under
 `.favn/secrets.json`. Missing local secrets are generated on demand, but corrupt
 or unreadable secrets files fail startup instead of being silently replaced.
-Password login now returns an opaque session token once; clients must forward it
-to the private orchestrator API as `x-favn-session-token`. SQLite storage keeps
-only password credential hashes, deterministic session-token hashes, revocation
-timestamps, actor metadata, and redacted audit entries.
+Password login now uses Argon2id password hashes, returns an opaque session token
+once, and applies an explicit absolute session TTL. Passwords must be nonblank,
+15 to 1,024 characters, and are not subject to arbitrary composition rules.
+Clients must forward the session token to the private orchestrator API as
+`x-favn-session-token`. SQLite storage keeps only encoded Argon2 password hashes,
+deterministic session-token hashes, revocation timestamps, actor metadata, and
+redacted audit entries; password changes revoke active sessions for that actor.
 
 Local numeric config values, including dev ports and Postgres port/pool size,
 are accepted only as positive integers or strings that contain exactly a
@@ -513,6 +522,15 @@ runner, SQLite adapter, and orchestrator in one backend BEAM runtime, but it is
 not yet a self-contained operational production artifact because it depends on
 the installed runtime source root. Postgres production mode is not included, and
 the web service is still deployed as a separate explicit process.
+
+Production orchestrator service tokens are configured as comma-separated
+`service_identity:token` entries in `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`.
+Each token must be at least 32 characters and must not look like a placeholder,
+example, password, secret, test value, todo, or token-label string; identities
+must be nonblank and unique. Rotation is supported by configuring multiple active
+identities. The orchestrator stores only token hashes from production runtime
+config and records the matched `service_identity` in audit logs, diagnostics, and
+bootstrap auth responses without exposing raw token values.
 
 `web/favn_web` has an explicit SvelteKit Node production path. Build it with
 `npm run build` and start it with `npm run start` from `web/favn_web`; the start

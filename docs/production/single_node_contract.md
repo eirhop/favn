@@ -249,8 +249,13 @@ At minimum, the production single-node runtime needs:
 - `FAVN_ORCHESTRATOR_API_BIND_HOST`, defaulting to `127.0.0.1`, as an IPv4
   address.
 - `FAVN_ORCHESTRATOR_API_PORT`, defaulting to `4101`, in `1..65535`.
-- `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`, required as comma-separated secrets
-  where each token is at least 32 characters.
+- `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`, required as comma-separated
+  `service_identity:token` entries. Each service identity must be nonblank and
+  unique; each token must be at least 32 characters and not contain weak
+  placeholder fragments such as `replace`, `change`, `placeholder`, `example`,
+  `secret`, `password`, `test`, `token`, or `todo`.
+- `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL`, defaulting to `43200`, as a positive
+  integer absolute session TTL in seconds.
 - `FAVN_SCHEDULER_ENABLED`, defaulting to `true`, as a boolean.
 - `FAVN_SCHEDULER_TICK_MS`, defaulting to `15000`, minimum `100`.
 - `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES`, defaulting to `1000`, as a
@@ -263,11 +268,14 @@ At minimum, the production single-node runtime needs:
   characters, for web-to-orchestrator service auth.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
   tooling unless `--service-token` is passed, at least 32 characters, and present
-  in `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`.
+  as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.
 - `FAVN_WEB_SESSION_SECRET`, required by `favn_web`, at least 32 characters, for
   current session signing and future web session encryption/signing expansion.
 - Durable first-admin/browser-login setup, durable sessions, actors,
-  credentials, and audit logs after #249 / Phase 3 lands.
+  credentials, and audit logs. Password credentials are stored as encoded
+  Argon2id hash strings, accepted passwords must be 15 to 1,024 characters,
+  session revocation is durable, and audit records include stable service
+  identities for service-authenticated requests.
 - Runtime config values required by authored assets and named SQL connections,
   expressed through manifest-safe refs such as `env!/1` and `secret_env!/1`.
 - DuckDB connection paths, bootstrap secrets, extension settings, and external

@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.ReadinessTest do
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerClient
+  alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Readiness
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -122,6 +123,7 @@ defmodule FavnOrchestrator.ReadinessTest do
     keys = [
       :api_server,
       :api_service_tokens,
+      :api_service_tokens_env,
       :storage_adapter,
       :storage_adapter_opts,
       :scheduler,
@@ -137,7 +139,14 @@ defmodule FavnOrchestrator.ReadinessTest do
       port: 4101
     )
 
-    Application.put_env(:favn_orchestrator, :api_service_tokens, [String.duplicate("a", 32)])
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [
+        service_identity: "favn_web",
+        token_hash: ServiceTokens.hash_token(String.duplicate("a", 32)),
+        enabled: true
+      ]
+    ])
+
     Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
     Application.put_env(:favn_orchestrator, :scheduler, enabled: false)
@@ -159,6 +168,7 @@ defmodule FavnOrchestrator.ReadinessTest do
 
   test "readiness reports failed checks without secrets" do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [])
+    Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
     Application.delete_env(:favn_orchestrator, :runner_client)
 
     assert %{status: :not_ready, checks: checks} = Readiness.readiness()
