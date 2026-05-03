@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias FavnOrchestrator
   alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -104,13 +105,17 @@ defmodule FavnOrchestrator.API.RouterTest do
     previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
-      [service_identity: "favn_web", token: "test-service-token", enabled: true]
+      [
+        service_identity: "favn_web",
+        token_hash: ServiceTokens.hash_token("test-service-token"),
+        enabled: true
+      ]
     ])
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")
-    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password-long")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Admin User")
     Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
     Process.delete(:runner_register_manifest_result)
@@ -220,14 +225,22 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   test "multiple named service tokens support rotation and audit identity" do
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
-      [service_identity: "favn_web", token: "test-service-token", enabled: true],
-      [service_identity: "bootstrap_cli", token: "rotation-service-token", enabled: true]
+      [
+        service_identity: "favn_web",
+        token_hash: ServiceTokens.hash_token("test-service-token"),
+        enabled: true
+      ],
+      [
+        service_identity: "bootstrap_cli",
+        token_hash: ServiceTokens.hash_token("rotation-service-token"),
+        enabled: true
+      ]
     ])
 
     response =
       conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
         username: "admin",
-        password: "admin-password"
+        password: "admin-password-long"
       })
       |> put_req_header("authorization", "Bearer rotation-service-token")
       |> Router.call(@opts)
@@ -374,7 +387,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     login_conn =
       conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
         username: "admin",
-        password: "admin-password"
+        password: "admin-password-long"
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> Router.call(@opts)
@@ -409,7 +422,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     login_conn =
       conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
         username: "admin",
-        password: "admin-password"
+        password: "admin-password-long"
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> Router.call(@opts)
@@ -420,7 +433,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert is_binary(session_token)
     refute Map.has_key?(session, "token")
     refute login_conn.resp_body =~ "token_hash"
-    refute login_conn.resp_body =~ "admin-password"
+    refute login_conn.resp_body =~ "admin-password-long"
     refute login_conn.resp_body =~ "credential"
 
     introspect_conn =
@@ -436,7 +449,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "current session revoke accepts raw token and returns no token material" do
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/auth/sessions/revoke", %{
@@ -474,7 +487,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "current session revoke accepts session token header without JSON body" do
-    {:ok, session, _actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, _actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/auth/sessions/revoke")
@@ -494,7 +507,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "forwarded actor context trusts session token and rejects revoked tokens" do
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/me")
@@ -535,7 +548,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "SSE global stream returns baseline ready event" do
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/streams/runs")
@@ -555,7 +568,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   test "SSE run stream replays persisted events after run cursor" do
     seed_run_events!("run_stream_b", [1, 2, 3])
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/streams/runs/run_stream_b")
@@ -572,7 +585,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "SSE stream rejects invalid last-event-id header" do
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/streams/runs")
@@ -616,7 +629,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/schedules")
@@ -639,7 +652,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(
@@ -662,7 +675,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_activate_router")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/manifests/mv_activate_router/activate")
@@ -720,7 +733,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/manifests/active")
@@ -749,7 +762,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/manifests/active")
@@ -820,7 +833,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert :ok = Storage.put_run(run_state)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/runs/run_detail_metadata")
@@ -877,7 +890,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert :ok = Storage.put_run(run_state)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/runs")
@@ -902,7 +915,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = dependency_manifest_version("mv_inspection")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(
@@ -969,7 +982,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = dependency_manifest_version("mv_dependency_scope")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/runs", %{
@@ -1127,7 +1140,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = dependency_manifest_version("mv_invalid_dependency_scope")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/runs", %{
@@ -1149,7 +1162,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_pipeline_dependency_rejected")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/runs", %{
@@ -1171,7 +1184,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_pipeline_window_missing")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/runs", %{
@@ -1198,7 +1211,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_pipeline_window_mismatch")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/runs", %{
@@ -1226,7 +1239,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_backfill_submit_http")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     submit_response =
       conn(:post, "/api/orchestrator/v1/backfills", %{
@@ -1320,7 +1333,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_backfill_too_large_http")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/backfills", %{
@@ -1361,7 +1374,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       version = schedule_manifest_version("mv_backfill_#{@option}_rejected_http")
       assert :ok = FavnOrchestrator.register_manifest(version)
 
-      {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+      {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
       payload =
         Map.put(
@@ -1409,7 +1422,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     version = schedule_manifest_version("mv_backfill_missing_baseline_http")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/backfills", %{
@@ -1446,7 +1459,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   test "lists backfill coverage baselines and asset window states" do
     %{window_key: window_key} = seed_backfill_http_state!()
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     baseline_response =
       conn(
@@ -1498,7 +1511,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   test "backfill read endpoints reject invalid pagination" do
     seed_backfill_http_state!()
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/backfills/coverage-baselines?limit=501")
@@ -1517,7 +1530,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   test "backfill read endpoints reject invalid filters" do
     seed_backfill_http_state!()
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     headers = fn conn ->
       conn
@@ -1567,7 +1580,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "backfill read filter lookup failures are operational errors" do
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
     previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
 
     on_exit(fn -> restore_env(:favn_orchestrator, :storage_adapter, previous_adapter) end)
@@ -1596,7 +1609,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     %{window_key: window_key} = seed_backfill_http_state!(version.manifest_version_id)
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/backfills/backfill_http/windows/rerun", %{
@@ -1697,7 +1710,7 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> RunState.with_snapshot_hash()
 
     assert :ok = Storage.put_run(parent)
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     cancel_response =
       conn(:post, "/api/orchestrator/v1/runs/backfill_parent_http/cancel")
@@ -1797,9 +1810,9 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
 
     {:ok, _viewer} =
-      AuthStore.create_actor("viewer_user", "viewer-pass-1", "Viewer User", [:viewer])
+      AuthStore.create_actor("viewer_user", "viewer-password-long-1", "Viewer User", [:viewer])
 
-    {:ok, session, actor} = Auth.password_login("viewer_user", "viewer-pass-1")
+    {:ok, session, actor} = Auth.password_login("viewer_user", "viewer-password-long-1")
 
     response =
       conn(:post, "/api/orchestrator/v1/manifests/mv_activate_forbidden/activate")
@@ -1813,9 +1826,10 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "admin can list actors but viewer cannot" do
-    {:ok, _viewer} = AuthStore.create_actor("viewer2", "viewer-pass-2", "Viewer Two", [:viewer])
+    {:ok, _viewer} =
+      AuthStore.create_actor("viewer2", "viewer-password-long-2", "Viewer Two", [:viewer])
 
-    {:ok, admin_session, admin_actor} = Auth.password_login("admin", "admin-password")
+    {:ok, admin_session, admin_actor} = Auth.password_login("admin", "admin-password-long")
 
     admin_response =
       conn(:get, "/api/orchestrator/v1/actors")
@@ -1829,7 +1843,7 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert Enum.any?(actors, &(&1["username"] == "admin"))
     assert Enum.any?(actors, &(&1["username"] == "viewer2"))
 
-    {:ok, viewer_session, viewer_actor} = Auth.password_login("viewer2", "viewer-pass-2")
+    {:ok, viewer_session, viewer_actor} = Auth.password_login("viewer2", "viewer-password-long-2")
 
     viewer_response =
       conn(:get, "/api/orchestrator/v1/actors")
@@ -1844,9 +1858,9 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   test "admin can get one actor by id" do
     {:ok, viewer} =
-      AuthStore.create_actor("viewer_lookup", "viewer-pass-3", "Viewer Lookup", [:viewer])
+      AuthStore.create_actor("viewer_lookup", "viewer-password-long-3", "Viewer Lookup", [:viewer])
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:get, "/api/orchestrator/v1/actors/#{viewer.id}")
@@ -1862,12 +1876,12 @@ defmodule FavnOrchestrator.API.RouterTest do
   end
 
   test "admin can create actor via API" do
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:post, "/api/orchestrator/v1/actors", %{
         username: "operator_user",
-        password: "operator-pass-1",
+        password: "operator-password-long-1",
         display_name: "Operator User",
         roles: ["operator"]
       })
@@ -1884,9 +1898,9 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   test "admin can update actor roles via API" do
     {:ok, managed_actor} =
-      AuthStore.create_actor("managed_role", "managed-pass-1", "Managed", [:viewer])
+      AuthStore.create_actor("managed_role", "managed-password-long-1", "Managed", [:viewer])
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     response =
       conn(:put, "/api/orchestrator/v1/actors/#{managed_actor.id}/roles", %{
@@ -1904,16 +1918,18 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   test "admin can reset actor password and old password is revoked" do
     {:ok, managed_actor} =
-      AuthStore.create_actor("managed_password", "managed-pass-1", "Managed Password", [:viewer])
+      AuthStore.create_actor("managed_password", "managed-password-long-1", "Managed Password", [
+        :viewer
+      ])
 
     {:ok, managed_session, _managed_actor} =
-      Auth.password_login("managed_password", "managed-pass-1")
+      Auth.password_login("managed_password", "managed-password-long-1")
 
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password")
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
     reset_response =
       conn(:put, "/api/orchestrator/v1/actors/#{managed_actor.id}/password", %{
-        password: "managed-pass-2"
+        password: "managed-password-long-2"
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
@@ -1924,24 +1940,24 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"data" => %{"updated" => true}} = Jason.decode!(reset_response.resp_body)
 
     assert {:error, :invalid_credentials} =
-             Auth.password_login("managed_password", "managed-pass-1")
+             Auth.password_login("managed_password", "managed-password-long-1")
 
     assert {:ok, _new_session, _managed_actor} =
-             Auth.password_login("managed_password", "managed-pass-2")
+             Auth.password_login("managed_password", "managed-password-long-2")
 
     assert {:error, :invalid_session} = Auth.introspect_session(managed_session.token)
   end
 
   test "viewer is forbidden from actor management commands" do
     {:ok, _viewer} =
-      AuthStore.create_actor("viewer_cmd", "viewer-pass-4", "Viewer Cmd", [:viewer])
+      AuthStore.create_actor("viewer_cmd", "viewer-password-long-4", "Viewer Cmd", [:viewer])
 
-    {:ok, session, actor} = Auth.password_login("viewer_cmd", "viewer-pass-4")
+    {:ok, session, actor} = Auth.password_login("viewer_cmd", "viewer-password-long-4")
 
     create_response =
       conn(:post, "/api/orchestrator/v1/actors", %{
         username: "blocked_create",
-        password: "blocked-pass-1",
+        password: "blocked-password-long-1",
         roles: ["viewer"]
       })
       |> put_req_header("authorization", "Bearer test-service-token")
@@ -1953,7 +1969,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     password_response =
       conn(:put, "/api/orchestrator/v1/actors/#{actor.id}/password", %{
-        password: "viewer-pass-5"
+        password: "viewer-password-long-5"
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)

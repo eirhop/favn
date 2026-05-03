@@ -17,7 +17,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.ProductionRuntimeConfig
 
-  @token "orchestrator-service-token-32-char-min"
+  @token "alpha-credential-value-1234567890abcd"
   @token_env "favn_web:#{@token}"
 
   test "validate/1 accepts the Phase 1 production defaults" do
@@ -57,7 +57,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_ORCHESTRATOR_API_BIND_HOST" => "0.0.0.0",
       "FAVN_ORCHESTRATOR_API_PORT" => "4444",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
-        "favn_web:#{@token},bootstrap_cli:#{String.duplicate("bc", 17)}",
+        "favn_web:#{@token},bootstrap_cli:#{@token <> "-bravo"}",
       "FAVN_RUNNER_MODE" => "local",
       "FAVN_SCHEDULER_ENABLED" => "false",
       "FAVN_SCHEDULER_TICK_MS" => "250",
@@ -122,7 +122,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              base
              |> Map.put(
                "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
-               "favn_web:#{@token},favn_web:#{String.duplicate("bc", 17)}"
+               "favn_web:#{@token},favn_web:#{@token <> "-bravo"}"
              )
              |> ProductionRuntimeConfig.validate()
 
@@ -149,6 +149,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :storage_adapter_opts,
       :api_server,
       :api_service_tokens,
+      :api_service_tokens_env,
+      :auth_session_ttl_seconds,
       :scheduler,
       :runner_client,
       :runner_client_opts,
@@ -158,6 +160,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     previous = Map.new(keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
 
     on_exit(fn -> Enum.each(previous, fn {key, value} -> restore_env(key, value) end) end)
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens_env, @token_env)
 
     assert :ok =
              ProductionRuntimeConfig.apply_from_env(%{
@@ -180,6 +184,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
                enabled: true
              }
            ]
+
+    refute Application.get_env(:favn_orchestrator, :api_service_tokens_env)
 
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
 

@@ -50,6 +50,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       Application.put_env(:favn_orchestrator, :storage_adapter_opts, config.sqlite)
       Application.put_env(:favn_orchestrator, :api_server, config.api_server)
       Application.put_env(:favn_orchestrator, :api_service_tokens, config.api_service_tokens)
+      Application.delete_env(:favn_orchestrator, :api_service_tokens_env)
 
       Application.put_env(
         :favn_orchestrator,

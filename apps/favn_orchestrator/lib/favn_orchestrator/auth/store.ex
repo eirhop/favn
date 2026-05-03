@@ -7,6 +7,9 @@ defmodule FavnOrchestrator.Auth.Store do
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
+  @min_password_length 15
+  @max_password_length 1_024
+
   @type actor :: %{
           required(:id) => String.t(),
           required(:username) => String.t(),
@@ -57,7 +60,9 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   @spec set_actor_password(String.t(), String.t()) ::
-          :ok | {:error, :actor_not_found | :password_too_short | :password_blank}
+          :ok
+          | {:error,
+             :actor_not_found | :password_too_short | :password_too_long | :password_blank}
   def set_actor_password(actor_id, password) when is_binary(actor_id) and is_binary(password) do
     GenServer.call(__MODULE__, {:set_actor_password, actor_id, password})
   end
@@ -205,17 +210,10 @@ defmodule FavnOrchestrator.Auth.Store do
     reply =
       case Storage.get_auth_actor_by_username(normalized_username) do
         {:ok, actor} ->
-          with :ok <- ensure_actor_active(actor),
-               {:ok, credential} <- Storage.get_auth_credential(actor.id),
-               :ok <- verify_password(password, credential) do
-            {:ok, actor}
-          else
-            _other -> {:error, :invalid_credentials}
-          end
+          authenticate_existing_actor(actor, password)
 
         {:error, _reason} ->
-          Argon2.no_user_verify()
-          {:error, :invalid_credentials}
+          dummy_password_verify()
       end
 
     {:reply, reply, state}
@@ -328,19 +326,49 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   defp verify_password(password, %{password_hash: password_hash}) when is_binary(password_hash) do
-    if Argon2.verify_pass(password, password_hash) do
-      :ok
+    if String.starts_with?(password_hash, "$argon2") do
+      case Argon2.verify_pass(password, password_hash) do
+        true -> :ok
+        false -> {:error, :invalid_credentials}
+      end
     else
-      {:error, :invalid_credentials}
+      dummy_password_verify()
+    end
+  rescue
+    _exception -> dummy_password_verify()
+  end
+
+  defp verify_password(_password, _credential), do: dummy_password_verify()
+
+  defp authenticate_existing_actor(actor, password) do
+    case Storage.get_auth_credential(actor.id) do
+      {:ok, credential} ->
+        password_result = verify_password(password, credential)
+
+        with :ok <- ensure_actor_active(actor),
+             :ok <- password_result do
+          {:ok, actor}
+        else
+          _other -> {:error, :invalid_credentials}
+        end
+
+      {:error, _reason} ->
+        dummy_password_verify()
     end
   end
 
-  defp verify_password(_password, _credential), do: {:error, :invalid_credentials}
+  defp dummy_password_verify do
+    Argon2.no_user_verify()
+    {:error, :invalid_credentials}
+  end
 
   defp validate_password_policy(password) do
+    password_length = password |> String.trim() |> String.length()
+
     cond do
       String.trim(password) == "" -> {:error, :password_blank}
-      byte_size(password) < 12 -> {:error, :password_too_short}
+      password_length < @min_password_length -> {:error, :password_too_short}
+      password_length > @max_password_length -> {:error, :password_too_long}
       true -> :ok
     end
   end

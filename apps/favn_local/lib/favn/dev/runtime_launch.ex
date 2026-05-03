@@ -111,8 +111,13 @@ defmodule Favn.Dev.RuntimeLaunch do
       Application.put_env(
         :favn_orchestrator,
         :api_service_tokens,
+        []
+      )
+
+      Application.put_env(
+        :favn_orchestrator,
+        :api_service_tokens_env,
         System.fetch_env!("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS")
-        |> String.split(",", trim: true)
       )
 
       case storage do
@@ -219,7 +224,7 @@ defmodule Favn.Dev.RuntimeLaunch do
             if(config.orchestrator_api_enabled, do: "1", else: "0"),
           "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
           "FAVN_ORCHESTRATOR_API_BIND_IP" => @loopback_host,
-          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => secrets["service_token"],
+          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_web:" <> secrets["service_token"],
           "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => secrets["local_operator_username"],
           "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => secrets["local_operator_password"],
           "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Local Operator",

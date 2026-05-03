@@ -251,7 +251,9 @@ At minimum, the production single-node runtime needs:
 - `FAVN_ORCHESTRATOR_API_PORT`, defaulting to `4101`, in `1..65535`.
 - `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS`, required as comma-separated
   `service_identity:token` entries. Each service identity must be nonblank and
-  unique; each token must be at least 32 characters and not a weak placeholder.
+  unique; each token must be at least 32 characters and not contain weak
+  placeholder fragments such as `replace`, `change`, `placeholder`, `example`,
+  `secret`, `password`, `test`, `token`, or `todo`.
 - `FAVN_ORCHESTRATOR_AUTH_SESSION_TTL`, defaulting to `43200`, as a positive
   integer absolute session TTL in seconds.
 - `FAVN_SCHEDULER_ENABLED`, defaulting to `true`, as a boolean.
@@ -271,8 +273,9 @@ At minimum, the production single-node runtime needs:
   current session signing and future web session encryption/signing expansion.
 - Durable first-admin/browser-login setup, durable sessions, actors,
   credentials, and audit logs. Password credentials are stored as encoded
-  Argon2id hash strings, session revocation is durable, and audit records include
-  stable service identities for service-authenticated requests.
+  Argon2id hash strings, accepted passwords must be 15 to 1,024 characters,
+  session revocation is durable, and audit records include stable service
+  identities for service-authenticated requests.
 - Runtime config values required by authored assets and named SQL connections,
   expressed through manifest-safe refs such as `env!/1` and `secret_env!/1`.
 - DuckDB connection paths, bootstrap secrets, extension settings, and external

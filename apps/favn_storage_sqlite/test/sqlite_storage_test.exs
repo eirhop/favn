@@ -269,9 +269,9 @@ defmodule Favn.SQLiteStorageTest do
     auth_start = ensure_auth_store_started()
     on_exit(fn -> maybe_stop_auth_store(auth_start) end)
 
-    assert {:ok, actor} = Auth.create_actor("admin", "admin-password", "Admin", [:admin])
-    assert {:ok, session, ^actor} = Auth.password_login("admin", "admin-password")
-    assert :ok = Auth.set_actor_password(actor.id, "new-admin-password")
+    assert {:ok, actor} = Auth.create_actor("admin", "admin-password-long", "Admin", [:admin])
+    assert {:ok, session, ^actor} = Auth.password_login("admin", "admin-password-long")
+    assert :ok = Auth.set_actor_password(actor.id, "new-admin-password-long-long")
 
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})

@@ -1130,7 +1130,8 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :username_taken} ->
         error(conn, 409, "conflict", "Username already exists")
 
-      {:error, reason} when reason in [:password_too_short, :password_blank] ->
+      {:error, reason}
+      when reason in [:password_too_short, :password_too_long, :password_blank] ->
         error(conn, 422, "validation_failed", "Password does not meet policy")
 
       {:error, :forbidden} ->
@@ -1223,7 +1224,8 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :actor_not_found} ->
         error(conn, 404, "not_found", "Actor was not found")
 
-      {:error, reason} when reason in [:password_too_short, :password_blank] ->
+      {:error, reason}
+      when reason in [:password_too_short, :password_too_long, :password_blank] ->
         error(conn, 422, "validation_failed", "Password does not meet policy")
 
       {:error, {:missing_field, field}} ->
@@ -1362,7 +1364,7 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp configured_service_tokens do
-    Application.get_env(:favn_orchestrator, :api_service_tokens, [])
+    ServiceTokens.configured_tokens()
   end
 
   defp header(conn, key) do

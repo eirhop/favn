@@ -9,9 +9,16 @@ defmodule FavnOrchestrator.API.Config do
 
     if Keyword.get(api_opts, :enabled, false) do
       with :ok <- validate_bind_ip(api_opts) do
-        :favn_orchestrator
-        |> Application.get_env(:api_service_tokens, [])
-        |> ServiceTokens.validate_config()
+        case ServiceTokens.validate_runtime_config() do
+          :ok ->
+            :ok
+
+          {:error, {:missing_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"}} ->
+            {:error, {:invalid_api_config, :missing_service_tokens}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     else
       :ok
