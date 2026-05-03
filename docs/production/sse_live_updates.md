@@ -36,14 +36,17 @@ Global cursors use:
 global:<global_sequence>
 ```
 
-`Last-Event-ID` is supported for both streams. A missing run-scoped cursor
-replays the selected run from the beginning. A missing global cursor replays the
-latest persisted run events up to the endpoint limit, currently 200, in
-ascending persisted order. A valid cursor replays only events after the cursor
-and then continues live.
+`Last-Event-ID` is supported for both streams. Replay is capped at 200 persisted
+events per stream connection. A missing run-scoped cursor replays the selected
+run from the beginning when it fits inside that cap. A missing global cursor
+replays the latest persisted run events up to the cap in ascending persisted
+order. A valid cursor replays only events after the cursor and then continues
+live when the full replay fits inside the cap.
 
 Malformed cursors return a safe `400 validation_failed` response. Well-formed
-cursors that are not known/replayable return `410 cursor_expired`.
+cursors that are not known/replayable return `410 cursor_expired`. If more than
+200 persisted events would need replay after a cursor, the stream also returns
+`410 cursor_expired` instead of entering live mode with a replay gap.
 
 Global ordering is based on a persisted monotonic `global_sequence` assigned
 when the run event is stored. It is not wall-clock ordering.

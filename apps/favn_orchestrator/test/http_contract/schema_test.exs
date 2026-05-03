@@ -46,16 +46,22 @@ defmodule FavnOrchestrator.HTTPContract.SchemaTest do
 
     assert_required_keys(schema, %{
       "schema_version" => 1,
-      "event_id" => "evt:run_1:1",
+      "event_id" => "global:1",
       "stream" => "runs",
-      "topic" => %{"type" => "run", "id" => "run_1"},
       "event_type" => "run_updated",
       "occurred_at" => "2026-01-01T00:00:00Z",
-      "actor" => %{"type" => "system", "id" => "orchestrator"},
-      "resource" => %{"type" => "run", "id" => "run_1"},
+      "run_id" => "run_1",
+      "status" => "running",
       "sequence" => 1,
-      "cursor" => "runs:run_1:1",
-      "data" => %{}
+      "global_sequence" => 1,
+      "cursor" => "global:1",
+      "summary" => "Run run_1 run_updated",
+      "details" => %{
+        "entity" => "run",
+        "manifest_version_id" => "mv_1",
+        "asset_ref" => nil,
+        "stage" => nil
+      }
     })
   end
 

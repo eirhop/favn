@@ -80,6 +80,9 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     def list_run_events(_run_id, _opts), do: {:ok, []}
 
     @impl true
+    def list_global_run_events(_filters, _opts), do: {:ok, []}
+
+    @impl true
     def put_scheduler_state(_key, _state, _opts), do: :ok
 
     @impl true
