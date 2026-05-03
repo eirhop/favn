@@ -1,14 +1,48 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RequestEvent } from '@sveltejs/kit';
-import { isPublicRoute, isWebApiRoute, unauthenticatedResponse } from './hooks.server';
+import { resetAllRateLimits } from '$lib/server/rate_limit';
+import { handle, isPublicRoute, isWebApiRoute, unauthenticatedResponse } from './hooks.server';
+
+const LOCAL_ORIGIN = 'http://localhost';
+const CLIENT_ADDRESS = '198.51.100.7';
 
 function event(method: string, path: string): RequestEvent {
 	return {
-		request: new Request(`http://localhost${path}`, { method }),
-		url: new URL(`http://localhost${path}`),
+		request: new Request(`${LOCAL_ORIGIN}${path}`, { method }),
+		url: new URL(`${LOCAL_ORIGIN}${path}`),
 		locals: { session: null }
 	} as RequestEvent;
 }
+
+function hookEvent(method: string, path: string, headers: HeadersInit = {}): RequestEvent {
+	return {
+		request: new Request(`${LOCAL_ORIGIN}${path}`, { method, headers }),
+		url: new URL(`${LOCAL_ORIGIN}${path}`),
+		locals: { session: null },
+		cookies: {
+			get: () => undefined,
+			getAll: () => [],
+			set: vi.fn(),
+			delete: vi.fn(),
+			serialize: vi.fn()
+		},
+		getClientAddress: () => CLIENT_ADDRESS
+	} as unknown as RequestEvent;
+}
+
+async function runHook(method: string, path: string, headers: HeadersInit = {}) {
+	const resolve = vi.fn(async () => new Response('resolved', { status: 200 }));
+	const response = await handle({
+		event: hookEvent(method, path, headers),
+		resolve
+	} as Parameters<typeof handle>[0]);
+
+	return { response, resolve };
+}
+
+beforeEach(() => {
+	resetAllRateLimits();
+});
 
 describe('web hook route classification', () => {
 	it('keeps the public route allowlist exact and method-aware', () => {
@@ -41,5 +75,61 @@ describe('web hook route classification', () => {
 
 		expect(response.status).toBe(303);
 		expect(response.headers.get('location')).toBe('/login?next=%2Fruns%3Fstatus%3Dfailed');
+	});
+
+	it('rate limits unauthenticated unsafe protected API requests before returning 401', async () => {
+		const headers = { origin: LOCAL_ORIGIN, accept: 'application/json' };
+
+		for (let attempt = 0; attempt < 120; attempt += 1) {
+			const { response, resolve } = await runHook('POST', '/api/web/v1/runs', headers);
+
+			expect(response.status).toBe(401);
+			expect(await response.json()).toEqual({
+				error: { code: 'unauthorized', message: 'Authentication required' }
+			});
+			expect(resolve).not.toHaveBeenCalled();
+		}
+
+		const { response, resolve } = await runHook('POST', '/api/web/v1/runs', headers);
+
+		expect(response.status).toBe(429);
+		expect(response.headers.get('retry-after')).toBeTruthy();
+		expect(await response.json()).toEqual({
+			error: { code: 'rate_limited', message: 'Too many requests' }
+		});
+		expect(resolve).not.toHaveBeenCalled();
+	});
+
+	it('does not apply mutation rate limiting to POST /login', async () => {
+		const headers = { origin: LOCAL_ORIGIN, accept: 'application/json' };
+
+		for (let attempt = 0; attempt < 120; attempt += 1) {
+			await runHook('POST', '/api/web/v1/runs', headers);
+		}
+
+		const { response, resolve } = await runHook('POST', '/login', headers);
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe('resolved');
+		expect(resolve).toHaveBeenCalledOnce();
+	});
+
+	it('rejects cross-site unsafe requests before mutation rate limiting', async () => {
+		const headers = { origin: LOCAL_ORIGIN, accept: 'application/json' };
+
+		for (let attempt = 0; attempt < 120; attempt += 1) {
+			await runHook('POST', '/api/web/v1/runs', headers);
+		}
+
+		const { response, resolve } = await runHook('POST', '/api/web/v1/runs', {
+			origin: 'https://attacker.example',
+			accept: 'application/json'
+		});
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({
+			error: { code: 'csrf_rejected', message: 'Request Origin does not match the web origin' }
+		});
+		expect(resolve).not.toHaveBeenCalled();
 	});
 });

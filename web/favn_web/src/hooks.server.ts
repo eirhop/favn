@@ -72,10 +72,6 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	if (isUnsafeMethod(event.request.method) && event.url.pathname !== '/login') {
-		if (!isPublicRoute(event) && !event.locals.session) {
-			return finalizeResponse(event, unauthenticatedResponse(event));
-		}
-
 		const rateLimit = checkMutationRateLimit(event);
 		if (!rateLimit.allowed) {
 			return finalizeResponse(event, rateLimitedResponse(rateLimit.retryAfterSeconds));
