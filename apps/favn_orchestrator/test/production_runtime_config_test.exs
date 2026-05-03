@@ -1,16 +1,31 @@
+unless Code.ensure_loaded?(FavnRunner.ProductionRuntimeConfig) do
+  defmodule FavnRunner.ProductionRuntimeConfig do
+    @moduledoc false
+
+    def validate(env) do
+      case Map.get(env, "FAVN_RUNNER_MODE", "local") do
+        "local" -> {:ok, %{mode: :local, topology: :single_node}}
+        value -> {:error, %{error: {:invalid_env, "FAVN_RUNNER_MODE", value, "local"}}}
+      end
+    end
+  end
+end
+
 defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
   use ExUnit.Case, async: false
 
+  alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.ProductionRuntimeConfig
 
-  @token String.duplicate("a", 32)
+  @token "orchestrator-service-token-32-char-min"
+  @token_env "favn_web:#{@token}"
 
   test "validate/1 accepts the Phase 1 production defaults" do
     assert {:ok, config} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_STORAGE" => "sqlite",
                "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
              })
 
     assert config.storage == :sqlite
@@ -19,7 +34,15 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.sqlite[:busy_timeout] == 5_000
     assert config.sqlite[:pool_size] == 1
     assert config.api_server == [enabled: true, host: "127.0.0.1", port: 4101]
-    assert config.api_service_tokens == [@token]
+
+    assert config.api_service_tokens == [
+             %{
+               service_identity: "favn_web",
+               token_hash: ServiceTokens.hash_token(@token),
+               enabled: true
+             }
+           ]
+
     assert config.scheduler == [enabled: true, tick_ms: 15_000, max_missed_all_occurrences: 1_000]
     assert config.runner == %{mode: :local, topology: :single_node}
   end
@@ -33,7 +56,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_SQLITE_POOL_SIZE" => "1",
       "FAVN_ORCHESTRATOR_API_BIND_HOST" => "0.0.0.0",
       "FAVN_ORCHESTRATOR_API_PORT" => "4444",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "#{@token},#{String.duplicate("b", 33)}",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
+        "favn_web:#{@token},bootstrap_cli:#{String.duplicate("bc", 17)}",
       "FAVN_RUNNER_MODE" => "local",
       "FAVN_SCHEDULER_ENABLED" => "false",
       "FAVN_SCHEDULER_TICK_MS" => "250",
@@ -59,14 +83,14 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              ProductionRuntimeConfig.validate(%{
                "FAVN_STORAGE" => "postgres",
                "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
              })
 
     assert {:error, %{error: {:invalid_env, "FAVN_SQLITE_PATH", "absolute path"}}} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_STORAGE" => "sqlite",
                "FAVN_SQLITE_PATH" => "relative.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
              })
   end
 
@@ -74,7 +98,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     base = %{
       "FAVN_STORAGE" => "sqlite",
       "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
     }
 
     assert {:error, %{error: {:invalid_env, "FAVN_SQLITE_POOL_SIZE", 1}}} =
@@ -90,7 +114,27 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert {:error,
             %{error: {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_short}}} =
              base
-             |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "short-secret")
+             |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "favn_web:short-secret")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{error: {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :duplicate_identity}}} =
+             base
+             |> Map.put(
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
+               "favn_web:#{@token},favn_web:#{String.duplicate("bc", 17)}"
+             )
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error,
+            %{error: {:invalid_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :blank_identity}}} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", ":#{@token}")
+             |> ProductionRuntimeConfig.validate()
+
+    assert {:error, %{error: {:invalid_env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", ">= 1"}}} =
+             base
+             |> Map.put("FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "0")
              |> ProductionRuntimeConfig.validate()
 
     assert {:error, %{error: {:invalid_env, "FAVN_RUNNER_MODE", "local"}}} =
@@ -119,7 +163,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              ProductionRuntimeConfig.apply_from_env(%{
                "FAVN_STORAGE" => "sqlite",
                "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token,
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
                "FAVN_SCHEDULER_ENABLED" => "0"
              })
 
@@ -129,7 +173,14 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert Application.get_env(:favn_orchestrator, :storage_adapter_opts)[:database] ==
              "/var/lib/favn/orchestrator.sqlite3"
 
-    assert Application.get_env(:favn_orchestrator, :api_service_tokens) == [@token]
+    assert Application.get_env(:favn_orchestrator, :api_service_tokens) == [
+             %{
+               service_identity: "favn_web",
+               token_hash: ServiceTokens.hash_token(@token),
+               enabled: true
+             }
+           ]
+
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
 
     assert Application.get_env(:favn_orchestrator, :runner_client) ==

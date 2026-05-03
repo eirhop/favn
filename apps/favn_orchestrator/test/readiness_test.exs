@@ -137,7 +137,10 @@ defmodule FavnOrchestrator.ReadinessTest do
       port: 4101
     )
 
-    Application.put_env(:favn_orchestrator, :api_service_tokens, [String.duplicate("a", 32)])
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [service_identity: "favn_web", token: String.duplicate("a", 32), enabled: true]
+    ])
+
     Application.put_env(:favn_orchestrator, :storage_adapter, Memory)
     Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
     Application.put_env(:favn_orchestrator, :scheduler, enabled: false)

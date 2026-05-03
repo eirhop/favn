@@ -29,10 +29,8 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 3. Harden Auth, Sessions, Audit, And Service Trust
 
-- Replace the in-memory auth/session/audit store with durable persistence.
-- Replace the current prototype-grade password and session foundations with a more boring production baseline.
 - Add real browser-edge abuse controls for any web-facing release.
-- Harden the web-to-orchestrator service boundary with identity binding, credential rotation, and a review of service-only privileged operations.
+- Decide whether to add session idle timeout and sudo/re-auth modes once concrete operator flows need them.
 
 ### 4. Finish The Live Event And Command Safety Model
 

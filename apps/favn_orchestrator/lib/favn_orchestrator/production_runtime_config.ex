@@ -8,11 +8,14 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   supervised runtime components start.
   """
 
+  alias FavnOrchestrator.Auth.ServiceTokens
+
   @type config :: %{
           storage: :sqlite,
           sqlite: keyword(),
           api_server: keyword(),
-          api_service_tokens: [String.t()],
+          api_service_tokens: [ServiceTokens.token_config()],
+          auth_session_ttl_seconds: pos_integer(),
           scheduler: keyword(),
           runner: map(),
           runner_client: module(),
@@ -47,6 +50,13 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       Application.put_env(:favn_orchestrator, :storage_adapter_opts, config.sqlite)
       Application.put_env(:favn_orchestrator, :api_server, config.api_server)
       Application.put_env(:favn_orchestrator, :api_service_tokens, config.api_service_tokens)
+
+      Application.put_env(
+        :favn_orchestrator,
+        :auth_session_ttl_seconds,
+        config.auth_session_ttl_seconds
+      )
+
       Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
       Application.put_env(:favn_orchestrator, :runner_client, config.runner_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, config.runner_client_opts)
@@ -70,6 +80,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, sqlite} <- sqlite(env),
          {:ok, api_server} <- api_server(env),
          {:ok, tokens} <- api_service_tokens(env),
+         {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, scheduler} <- scheduler(env),
          {:ok, runner} <- runner(env) do
       {:ok,
@@ -78,6 +89,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          sqlite: sqlite,
          api_server: api_server,
          api_service_tokens: tokens,
+         auth_session_ttl_seconds: auth_session_ttl_seconds,
          scheduler: scheduler,
          runner: runner,
          runner_client: FavnOrchestrator.RunnerClient.LocalNode,
@@ -107,6 +119,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         port: Keyword.fetch!(config.api_server, :port)
       },
       api_service_tokens: %{count: length(config.api_service_tokens), redacted: true},
+      auth_session: %{ttl_seconds: config.auth_session_ttl_seconds},
       scheduler: Map.new(config.scheduler),
       runner: config.runner
     }
@@ -152,22 +165,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
   defp api_service_tokens(env) do
     with {:ok, raw} <- required(env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS") do
-      tokens =
-        raw
-        |> String.split(",", trim: true)
-        |> Enum.map(&String.trim/1)
-
-      cond do
-        tokens == [] ->
-          {:error, {:missing_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS"}}
-
-        Enum.any?(tokens, &(String.length(&1) < 32)) ->
-          {:error, {:invalid_secret_env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", :too_short}}
-
-        true ->
-          {:ok, tokens}
-      end
+      ServiceTokens.from_env_string(raw)
     end
+  end
+
+  defp auth_session_ttl_seconds(env) do
+    int(env, "FAVN_ORCHESTRATOR_AUTH_SESSION_TTL", "43200", 1, nil)
   end
 
   defp scheduler(env) do

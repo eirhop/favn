@@ -1,18 +1,17 @@
 defmodule FavnOrchestrator.API.Config do
   @moduledoc false
 
+  alias FavnOrchestrator.Auth.ServiceTokens
+
   @spec validate() :: :ok | {:error, term()}
   def validate do
     api_opts = Application.get_env(:favn_orchestrator, :api_server, [])
 
     if Keyword.get(api_opts, :enabled, false) do
       with :ok <- validate_bind_ip(api_opts) do
-        tokens = Application.get_env(:favn_orchestrator, :api_service_tokens, [])
-
-        case Enum.filter(tokens, &(is_binary(&1) and &1 != "")) do
-          [] -> {:error, {:invalid_api_config, :missing_service_tokens}}
-          _ -> :ok
-        end
+        :favn_orchestrator
+        |> Application.get_env(:api_service_tokens, [])
+        |> ServiceTokens.validate_config()
       end
     else
       :ok

@@ -6,6 +6,8 @@ defmodule Favn.SQLiteStorageTest do
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
   alias Favn.Storage.Adapter.SQLite, as: Adapter
+  alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -86,12 +88,7 @@ defmodule Favn.SQLiteStorageTest do
       updated_at: now
     }
 
-    credential = %{
-      algorithm: :pbkdf2_sha256,
-      iterations: 100_000,
-      salt: Base.encode64(:crypto.strong_rand_bytes(16)),
-      digest: Base.encode64(:crypto.strong_rand_bytes(32))
-    }
+    credential = %{password_hash: "$argon2id$v=19$m=256,t=1,p=1$encoded-salt$encoded-hash"}
 
     session = %{
       id: "ses_sqlite",
@@ -165,7 +162,6 @@ defmodule Favn.SQLiteStorageTest do
                updated_at: DateTime.utc_now() |> DateTime.truncate(:second),
                completed_at: DateTime.utc_now() |> DateTime.truncate(:second)
              })
-
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
 
@@ -262,9 +258,45 @@ defmodule Favn.SQLiteStorageTest do
     assert {:ok, {:reserved, _reserved}} = OrchestratorStorage.reserve_idempotency_record(expired)
 
     assert {:ok, {:reserved, replaced}} =
-             OrchestratorStorage.reserve_idempotency_record(replacement)
+              OrchestratorStorage.reserve_idempotency_record(replacement)
 
     assert replaced.request_fingerprint == replacement.request_fingerprint
+  end
+
+  test "revoked and expired sessions fail auth introspection after repo restart", %{
+    db_path: db_path
+  } do
+    auth_start = ensure_auth_store_started()
+    on_exit(fn -> maybe_stop_auth_store(auth_start) end)
+
+    assert {:ok, actor} = Auth.create_actor("admin", "admin-password", "Admin", [:admin])
+    assert {:ok, session, ^actor} = Auth.password_login("admin", "admin-password")
+    assert :ok = Auth.set_actor_password(actor.id, "new-admin-password")
+
+    :ok = stop_supervised(Repo)
+    start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+
+    assert {:error, :invalid_session} = Auth.introspect_session(session.token)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    expired_token = "expired-sqlite-token"
+
+    expired_session = %{
+      id: "ses_sqlite_expired",
+      token_hash: token_hash(expired_token),
+      actor_id: actor.id,
+      provider: "password_local",
+      issued_at: DateTime.add(now, -120, :second),
+      expires_at: DateTime.add(now, -60, :second),
+      revoked_at: nil
+    }
+
+    assert :ok = OrchestratorStorage.put_auth_session(expired_session)
+
+    :ok = stop_supervised(Repo)
+    start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+
+    assert {:error, :invalid_session} = Auth.introspect_session(expired_token)
   end
 
   test "does not keep run_write_orders helper table after migrations" do
@@ -942,5 +974,31 @@ defmodule Favn.SQLiteStorageTest do
       })
 
     state
+  end
+
+  defp ensure_auth_store_started do
+    case Process.whereis(AuthStore) do
+      nil ->
+        start_supervised!({AuthStore, []})
+        :started
+
+      _pid ->
+        :existing
+    end
+  end
+
+  defp maybe_stop_auth_store(:existing), do: :ok
+
+  defp maybe_stop_auth_store(:started) do
+    case Process.whereis(AuthStore) do
+      nil -> :ok
+      pid -> GenServer.stop(pid, :normal)
+    end
+  end
+
+  defp token_hash(token) do
+    :sha256
+    |> :crypto.hash(token)
+    |> Base.url_encode64(padding: false)
   end
 end

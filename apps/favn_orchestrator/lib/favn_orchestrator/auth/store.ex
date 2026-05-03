@@ -57,7 +57,7 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   @spec set_actor_password(String.t(), String.t()) ::
-          :ok | {:error, :actor_not_found | :password_too_short}
+          :ok | {:error, :actor_not_found | :password_too_short | :password_blank}
   def set_actor_password(actor_id, password) when is_binary(actor_id) and is_binary(password) do
     GenServer.call(__MODULE__, {:set_actor_password, actor_id, password})
   end
@@ -123,8 +123,9 @@ defmodule FavnOrchestrator.Auth.Store do
       normalized_username == "" ->
         {:reply, {:error, :invalid_username}, state}
 
-      byte_size(password) < 8 ->
-        {:reply, {:error, :password_too_short}, state}
+      match?({:error, _reason}, validate_password_policy(password)) ->
+        {:error, reason} = validate_password_policy(password)
+        {:reply, {:error, reason}, state}
 
       match?({:ok, _actor}, Storage.get_auth_actor_by_username(normalized_username)) ->
         {:reply, {:error, :username_taken}, state}
@@ -169,8 +170,9 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   def handle_call({:set_actor_password, actor_id, password}, _from, state) do
-    if byte_size(password) < 8 do
-      {:reply, {:error, :password_too_short}, state}
+    if match?({:error, _reason}, validate_password_policy(password)) do
+      {:error, reason} = validate_password_policy(password)
+      {:reply, {:error, reason}, state}
     else
       case Storage.get_auth_actor(actor_id) do
         {:ok, actor} ->
@@ -200,36 +202,51 @@ defmodule FavnOrchestrator.Auth.Store do
   def handle_call({:authenticate_password, username, password}, _from, state) do
     normalized_username = String.trim(username)
 
-    with {:ok, actor} <- Storage.get_auth_actor_by_username(normalized_username),
-         :ok <- ensure_actor_active(actor),
-         {:ok, credential} <- Storage.get_auth_credential(actor.id),
-         :ok <- verify_password(password, credential) do
-      {:reply, {:ok, actor}, state}
-    else
-      _other -> {:reply, {:error, :invalid_credentials}, state}
-    end
+    reply =
+      case Storage.get_auth_actor_by_username(normalized_username) do
+        {:ok, actor} ->
+          with :ok <- ensure_actor_active(actor),
+               {:ok, credential} <- Storage.get_auth_credential(actor.id),
+               :ok <- verify_password(password, credential) do
+            {:ok, actor}
+          else
+            _other -> {:error, :invalid_credentials}
+          end
+
+        {:error, _reason} ->
+          Argon2.no_user_verify()
+          {:error, :invalid_credentials}
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call({:issue_session, actor_id, opts}, _from, state) do
     with {:ok, actor} <- Storage.get_auth_actor(actor_id),
          :ok <- ensure_actor_active(actor) do
       now = DateTime.utc_now()
-      ttl_seconds = Keyword.get(opts, :ttl_seconds, default_session_ttl_seconds())
-      token = raw_session_token()
 
-      session = %{
-        id: "ses_" <> random_id(),
-        actor_id: actor_id,
-        provider: Keyword.get(opts, :provider, "password_local"),
-        issued_at: now,
-        expires_at: DateTime.add(now, ttl_seconds, :second),
-        revoked_at: nil,
-        token_hash: token_hash(token)
-      }
+      case session_ttl_seconds(opts) do
+        {:ok, ttl_seconds} ->
+          token = raw_session_token()
 
-      case Storage.put_auth_session(session) do
-        :ok ->
-          {:reply, {:ok, session |> Map.drop([:token_hash]) |> Map.put(:token, token)}, state}
+          session = %{
+            id: "ses_" <> random_id(),
+            actor_id: actor_id,
+            provider: Keyword.get(opts, :provider, "password_local"),
+            issued_at: now,
+            expires_at: DateTime.add(now, ttl_seconds, :second),
+            revoked_at: nil,
+            token_hash: token_hash(token)
+          }
+
+          case Storage.put_auth_session(session) do
+            :ok ->
+              {:reply, {:ok, session |> Map.drop([:token_hash]) |> Map.put(:token, token)}, state}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, state}
+          end
 
         {:error, reason} ->
           {:reply, {:error, reason}, state}
@@ -307,29 +324,33 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   defp hash_password(password) do
-    salt = :crypto.strong_rand_bytes(16)
-    iterations = 100_000
-    digest = :crypto.pbkdf2_hmac(:sha256, password, salt, iterations, 32)
-
-    %{
-      algorithm: :pbkdf2_sha256,
-      iterations: iterations,
-      salt: Base.encode64(salt),
-      digest: Base.encode64(digest)
-    }
+    %{password_hash: Argon2.hash_pwd_salt(password)}
   end
 
-  defp verify_password(password, credential) do
-    salt = Base.decode64!(credential.salt)
-    expected = Base.decode64!(credential.digest)
-
-    candidate =
-      :crypto.pbkdf2_hmac(:sha256, password, salt, credential.iterations, byte_size(expected))
-
-    if Plug.Crypto.secure_compare(expected, candidate) do
+  defp verify_password(password, %{password_hash: password_hash}) when is_binary(password_hash) do
+    if Argon2.verify_pass(password, password_hash) do
       :ok
     else
       {:error, :invalid_credentials}
+    end
+  end
+
+  defp verify_password(_password, _credential), do: {:error, :invalid_credentials}
+
+  defp validate_password_policy(password) do
+    cond do
+      String.trim(password) == "" -> {:error, :password_blank}
+      byte_size(password) < 12 -> {:error, :password_too_short}
+      true -> :ok
+    end
+  end
+
+  defp session_ttl_seconds(opts) do
+    opts
+    |> Keyword.get(:ttl_seconds, default_session_ttl_seconds())
+    |> case do
+      ttl when is_integer(ttl) and ttl > 0 -> {:ok, ttl}
+      _ttl -> {:error, :invalid_session_ttl}
     end
   end
 

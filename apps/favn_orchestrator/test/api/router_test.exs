@@ -103,7 +103,10 @@ defmodule FavnOrchestrator.API.RouterTest do
     previous_display = Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name)
     previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
 
-    Application.put_env(:favn_orchestrator, :api_service_tokens, ["test-service-token"])
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [service_identity: "favn_web", token: "test-service-token", enabled: true]
+    ])
+
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
     Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")
@@ -207,12 +210,34 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{
              "data" => %{
                "authenticated" => true,
-               "service_identity" => "bootstrap-cli",
+               "service_identity" => "favn_web",
                "service_tokens" => %{"configured_count" => 1, "redacted" => true}
              }
            } = Jason.decode!(response.resp_body)
 
     refute response.resp_body =~ "test-service-token"
+  end
+
+  test "multiple named service tokens support rotation and audit identity" do
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [service_identity: "favn_web", token: "test-service-token", enabled: true],
+      [service_identity: "bootstrap_cli", token: "rotation-service-token", enabled: true]
+    ])
+
+    response =
+      conn(:post, "/api/orchestrator/v1/auth/password/sessions", %{
+        username: "admin",
+        password: "admin-password"
+      })
+      |> put_req_header("authorization", "Bearer rotation-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 201
+
+    assert [%{action: "auth.password.login", service_identity: "bootstrap_cli"}] =
+             Auth.list_audit(limit: 1)
+
+    refute inspect(Auth.list_audit(limit: 1)) =~ "rotation-service-token"
   end
 
   test "invalid service token verification is rejected" do

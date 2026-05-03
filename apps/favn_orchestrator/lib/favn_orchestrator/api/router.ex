@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.API.Router do
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -1129,8 +1130,8 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :username_taken} ->
         error(conn, 409, "conflict", "Username already exists")
 
-      {:error, :password_too_short} ->
-        error(conn, 422, "validation_failed", "Password is too short")
+      {:error, reason} when reason in [:password_too_short, :password_blank] ->
+        error(conn, 422, "validation_failed", "Password does not meet policy")
 
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -1222,8 +1223,8 @@ defmodule FavnOrchestrator.API.Router do
       {:error, :actor_not_found} ->
         error(conn, 404, "not_found", "Actor was not found")
 
-      {:error, :password_too_short} ->
-        error(conn, 422, "validation_failed", "Password is too short")
+      {:error, reason} when reason in [:password_too_short, :password_blank] ->
+        error(conn, 422, "validation_failed", "Password does not meet policy")
 
       {:error, {:missing_field, field}} ->
         error(conn, 422, "validation_failed", "Missing required field", %{field: field})
@@ -1246,23 +1247,20 @@ defmodule FavnOrchestrator.API.Router do
   defp ensure_service_auth(conn) do
     provided = bearer_token(conn)
 
-    valid_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens, [])
-
-    if valid_service_token?(provided, valid_tokens) do
-      :ok
-    else
-      {:error, :service_unauthorized}
+    case ServiceTokens.authenticate(provided, configured_service_tokens()) do
+      {:ok, _service_identity} -> :ok
+      {:error, :service_unauthorized} -> {:error, :service_unauthorized}
     end
   end
 
   defp service_token_diagnostics(conn) do
-    configured_tokens =
-      List.wrap(Application.get_env(:favn_orchestrator, :api_service_tokens, []))
-
     %{
       authenticated: true,
       service_identity: service_identity(conn),
-      service_tokens: %{configured_count: length(configured_tokens), redacted: true}
+      service_tokens: %{
+        configured_count: ServiceTokens.configured_count(configured_service_tokens()),
+        redacted: true
+      }
     }
   end
 
@@ -1349,16 +1347,6 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp valid_service_token?(provided, valid_tokens)
-       when is_binary(provided) and is_list(valid_tokens) do
-    Enum.any?(valid_tokens, fn token ->
-      is_binary(token) and byte_size(token) == byte_size(provided) and
-        Plug.Crypto.secure_compare(token, provided)
-    end)
-  end
-
-  defp valid_service_token?(_provided, _valid_tokens), do: false
-
   defp bearer_token(conn) do
     case get_req_header(conn, "authorization") do
       ["Bearer " <> token] -> token
@@ -1367,7 +1355,14 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp service_identity(conn) do
-    header(conn, "x-favn-service") || "favn_web"
+    case ServiceTokens.authenticate(bearer_token(conn), configured_service_tokens()) do
+      {:ok, identity} -> identity
+      {:error, :service_unauthorized} -> nil
+    end
+  end
+
+  defp configured_service_tokens do
+    Application.get_env(:favn_orchestrator, :api_service_tokens, [])
   end
 
   defp header(conn, key) do

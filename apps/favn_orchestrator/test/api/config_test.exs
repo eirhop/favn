@@ -42,7 +42,9 @@ defmodule FavnOrchestrator.API.ConfigTest do
       bind_ip: "not-an-ip"
     )
 
-    Application.put_env(:favn_orchestrator, :api_service_tokens, ["token"])
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [service_identity: "favn_web", token: "token", enabled: true]
+    ])
 
     on_exit(fn ->
       restore_env(:favn_orchestrator, :api_server, previous_server)
