@@ -1,6 +1,6 @@
 import type { RequestHandler } from './$types';
 import { orchestratorAuthed } from '$lib/server/orchestrator';
-import { jsonError, requireSession } from '$lib/server/web_api';
+import { jsonError, relayJson, requireSession } from '$lib/server/web_api';
 
 function normalizeLastEventId(value: string | null): string | null {
 	if (!value) return null;
@@ -40,6 +40,10 @@ export const GET: RequestHandler = async (event) => {
 		}
 	);
 
+	if (!upstream.ok) {
+		return relayJson(upstream);
+	}
+
 	if (!upstream.body) {
 		const text = await upstream.text();
 		return new Response(text || 'Bad gateway', {
@@ -50,7 +54,12 @@ export const GET: RequestHandler = async (event) => {
 
 	const headers = new Headers();
 	headers.set('content-type', upstream.headers.get('content-type') ?? 'text/event-stream');
-	headers.set('cache-control', upstream.headers.get('cache-control') ?? 'no-cache');
+	headers.set('cache-control', upstream.headers.get('cache-control') ?? 'no-cache, no-transform');
+	headers.set('x-accel-buffering', upstream.headers.get('x-accel-buffering') ?? 'no');
+
+	request.signal.addEventListener('abort', () => {
+		void upstream.body?.cancel().catch(() => undefined);
+	});
 
 	return new Response(upstream.body, {
 		status: upstream.status,

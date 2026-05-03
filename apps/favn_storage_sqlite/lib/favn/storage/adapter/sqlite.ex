@@ -25,6 +25,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @active_manifest_key "active_manifest_version_id"
   @write_counter_key "run_write_order"
+  @run_event_global_sequence_key "run_event_global_sequence"
   @nil_schedule_id "__nil__"
 
   @impl true
@@ -235,18 +236,33 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def list_run_events(run_id, opts) when is_binary(run_id) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
-      sql = "SELECT event_blob FROM favn_run_events WHERE run_id = ?1 ORDER BY sequence ASC"
+      sql =
+        "SELECT global_sequence, event_blob FROM favn_run_events WHERE run_id = ?1 ORDER BY sequence ASC"
 
       case SQL.query(repo, sql, [run_id]) do
         {:ok, %{rows: rows}} ->
           rows
-          |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
-            case decode_payload(payload) do
-              {:ok, event} when is_map(event) -> {:cont, {:ok, [event | acc]}}
-              {:ok, other} -> {:halt, {:error, {:invalid_event_payload, other}}}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-          end)
+          |> decode_event_rows()
+          |> case do
+            {:ok, events} -> {:ok, Enum.reverse(events)}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_global_run_events(run_event_opts, opts)
+      when is_list(run_event_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, query, params} <- global_run_events_query(repo, run_event_opts) do
+      case SQL.query(repo, query, params) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> decode_event_rows()
           |> case do
             {:ok, events} -> {:ok, Enum.reverse(events)}
             {:error, reason} -> {:error, reason}
@@ -1575,28 +1591,38 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp guarded_append_run_event(repo, run_id, event) do
-    sql =
-      """
-      INSERT INTO favn_run_events (run_id, sequence, occurred_at, event_blob)
-      VALUES (?1, ?2, ?3, ?4)
-      """
+    with {:ok, global_sequence} <- next_run_event_global_sequence(repo) do
+      event = Map.put(event, :global_sequence, global_sequence)
 
-    case SQL.query(repo, sql, [run_id, event.sequence, event.occurred_at, encode_payload(event)]) do
-      {:ok, _} ->
-        :ok
+      sql =
+        """
+        INSERT INTO favn_run_events (run_id, sequence, global_sequence, occurred_at, event_blob)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        """
 
-      {:error, %{sqlite: %{code: :constraint_failed}}} ->
-        resolve_existing_event_conflict(repo, run_id, event)
+      case SQL.query(repo, sql, [
+             run_id,
+             event.sequence,
+             global_sequence,
+             event.occurred_at,
+             encode_payload(event)
+           ]) do
+        {:ok, _} ->
+          :ok
 
-      {:error, %Exqlite.Error{message: message} = reason} when is_binary(message) ->
-        if String.contains?(message, "UNIQUE constraint failed") do
+        {:error, %{sqlite: %{code: :constraint_failed}}} ->
           resolve_existing_event_conflict(repo, run_id, event)
-        else
-          {:error, reason}
-        end
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, %Exqlite.Error{message: message} = reason} when is_binary(message) ->
+          if String.contains?(message, "UNIQUE constraint failed") do
+            resolve_existing_event_conflict(repo, run_id, event)
+          else
+            {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -1712,6 +1738,22 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
+  defp next_run_event_global_sequence(repo) do
+    sql =
+      """
+      INSERT INTO favn_counters (name, value)
+      VALUES (?1, 1)
+      ON CONFLICT(name) DO UPDATE SET value = value + 1
+      RETURNING value
+      """
+
+    case SQL.query(repo, sql, [@run_event_global_sequence_key]) do
+      {:ok, %{rows: [[value]]}} when is_integer(value) -> {:ok, value}
+      {:ok, _} -> {:error, :invalid_counter_value}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp fetch_manifest_hash(repo, manifest_version_id) do
     sql = "SELECT content_hash FROM favn_manifest_versions WHERE manifest_version_id = ?1 LIMIT 1"
 
@@ -1802,21 +1844,100 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp fetch_event_by_sequence(repo, run_id, sequence) do
     sql =
-      "SELECT event_blob FROM favn_run_events WHERE run_id = ?1 AND sequence = ?2 LIMIT 1"
+      "SELECT global_sequence, event_blob FROM favn_run_events WHERE run_id = ?1 AND sequence = ?2 LIMIT 1"
 
     case SQL.query(repo, sql, [run_id, sequence]) do
-      {:ok, %{rows: [[blob]]}} ->
-        case decode_payload(blob) do
-          {:ok, event} when is_map(event) -> {:ok, event}
-          {:ok, other} -> {:error, {:invalid_event_payload, other}}
-          {:error, reason} -> {:error, reason}
-        end
+      {:ok, %{rows: [[global_sequence, blob]]}} ->
+        decode_event_row(global_sequence, blob)
 
       {:ok, %{rows: []}} ->
         {:ok, nil}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp global_run_events_query(repo, opts) do
+    after_sequence = Keyword.get(opts, :after_global_sequence)
+    limit = Keyword.get(opts, :limit, 200)
+
+    cond do
+      not (is_integer(limit) and limit > 0) ->
+        {:error, :cursor_invalid}
+
+      is_nil(after_sequence) ->
+        {:ok,
+         """
+         SELECT global_sequence, event_blob
+         FROM (
+           SELECT global_sequence, event_blob
+           FROM favn_run_events
+           WHERE global_sequence IS NOT NULL
+           ORDER BY global_sequence DESC
+           LIMIT ?1
+         )
+         ORDER BY global_sequence ASC
+         """, [limit]}
+
+      is_integer(after_sequence) and after_sequence == 0 ->
+        {:ok,
+         """
+         SELECT global_sequence, event_blob
+         FROM favn_run_events
+         WHERE global_sequence IS NOT NULL
+         ORDER BY global_sequence ASC
+         LIMIT ?1
+         """, [limit]}
+
+      is_integer(after_sequence) and after_sequence > 0 ->
+        case global_sequence_exists?(repo, after_sequence) do
+          true ->
+            {:ok,
+             """
+             SELECT global_sequence, event_blob
+             FROM favn_run_events
+             WHERE global_sequence > ?1
+             ORDER BY global_sequence ASC
+             LIMIT ?2
+             """, [after_sequence, limit]}
+
+          false ->
+            {:error, :cursor_invalid}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      true ->
+        {:error, :cursor_invalid}
+    end
+  end
+
+  defp global_sequence_exists?(repo, sequence) do
+    sql = "SELECT 1 FROM favn_run_events WHERE global_sequence = ?1 LIMIT 1"
+
+    case SQL.query(repo, sql, [sequence]) do
+      {:ok, %{rows: [[1]]}} -> true
+      {:ok, %{rows: []}} -> false
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_event_rows(rows) do
+    Enum.reduce_while(rows, {:ok, []}, fn [global_sequence, payload], {:ok, acc} ->
+      case decode_event_row(global_sequence, payload) do
+        {:ok, event} -> {:cont, {:ok, [event | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp decode_event_row(global_sequence, payload) do
+    case decode_payload(payload) do
+      {:ok, event} when is_map(event) -> {:ok, Map.put(event, :global_sequence, global_sequence)}
+      {:ok, other} -> {:error, {:invalid_event_payload, other}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

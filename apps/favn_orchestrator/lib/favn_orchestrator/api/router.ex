@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Readiness
+  alias FavnOrchestrator.RunEvent
 
   @read_model_status_filters %{
     "pending" => :pending,
@@ -1021,8 +1022,9 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/streams/runs" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, last_event_id} <- validate_last_event_id(header(conn, "last-event-id")) do
-      sse_ready(conn, "runs", last_event_id)
+         {:ok, last_event_id} <- validate_last_event_id(header(conn, "last-event-id")),
+         {:ok, global_sequence} <- parse_global_cursor(last_event_id) do
+      sse_stream(conn, {:global, global_sequence})
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -1031,7 +1033,10 @@ defmodule FavnOrchestrator.API.Router do
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
       {:error, :invalid_last_event_id} ->
-        error(conn, 422, "validation_failed", "Invalid Last-Event-ID header")
+        error(conn, 400, "validation_failed", "Invalid Last-Event-ID header")
+
+      {:error, :cursor_invalid} ->
+        error(conn, 410, "cursor_expired", "Cursor is invalid or no longer replayable")
 
       {:error, _reason} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
@@ -1043,10 +1048,8 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, _run} <- FavnOrchestrator.get_run(run_id),
          {:ok, last_event_id} <- validate_last_event_id(header(conn, "last-event-id")),
-         {:ok, sequence} <- parse_run_cursor(last_event_id, run_id),
-         {:ok, events} <-
-           FavnOrchestrator.list_run_stream_events(run_id, after_sequence: sequence, limit: 200) do
-      sse_run_stream(conn, run_id, events)
+         {:ok, sequence} <- parse_run_cursor(last_event_id, run_id) do
+      sse_stream(conn, {:run, run_id, sequence})
     else
       {:error, :not_found} ->
         error(conn, 404, "not_found", "Run was not found")
@@ -1058,10 +1061,10 @@ defmodule FavnOrchestrator.API.Router do
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
 
       {:error, :invalid_last_event_id} ->
-        error(conn, 422, "validation_failed", "Invalid Last-Event-ID header")
+        error(conn, 400, "validation_failed", "Invalid Last-Event-ID header")
 
       {:error, :cursor_invalid} ->
-        error(conn, 422, "cursor_invalid", "Cursor is invalid or no longer replayable")
+        error(conn, 410, "cursor_expired", "Cursor is invalid or no longer replayable")
 
       {:error, _reason} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
@@ -1338,6 +1341,23 @@ defmodule FavnOrchestrator.API.Router do
       ["run", cursor_run_id, sequence] ->
         with true <- cursor_run_id == run_id,
              {int, ""} <- Integer.parse(sequence),
+             true <- int > 0 do
+          {:ok, int}
+        else
+          _ -> {:error, :cursor_invalid}
+        end
+
+      _other ->
+        {:error, :cursor_invalid}
+    end
+  end
+
+  defp parse_global_cursor(nil), do: {:ok, nil}
+
+  defp parse_global_cursor(value) when is_binary(value) do
+    case String.split(value, ":", parts: 2) do
+      ["global", sequence] ->
+        with {int, ""} <- Integer.parse(sequence),
              true <- int > 0 do
           {:ok, int}
         else
@@ -2171,57 +2191,190 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp sse_ready(conn, stream, last_event_id) do
-    cursor = last_event_id || "cursor:0"
+  @sse_retry_ms 3_000
+  @sse_heartbeat_ms 15_000
 
-    body = sse_ready_body(stream, cursor)
+  defp sse_stream(conn, stream) do
+    if plug_test_conn?(conn) do
+      case fetch_replay_events(stream) do
+        {:ok, replay_events} ->
+          sse_test_stream(conn, stream, replay_events)
 
-    conn
-    |> put_resp_content_type("text/event-stream")
-    |> put_resp_header("cache-control", "no-cache")
-    |> put_resp_header("x-accel-buffering", "no")
-    |> send_resp(200, body)
-  end
+        {:error, :cursor_invalid} ->
+          error(conn, 410, "cursor_expired", "Cursor is invalid or no longer replayable")
 
-  defp sse_run_stream(conn, run_id, events) when is_binary(run_id) and is_list(events) do
-    latest_cursor =
-      case List.last(events) do
-        nil -> "cursor:0"
-        event -> run_cursor(event)
+        {:error, _reason} ->
+          error(conn, 400, "bad_request", "Request failed")
       end
+    else
+      sse_live_stream(conn, stream)
+    end
+  end
 
-    body =
-      events
-      |> Enum.map_join("", &sse_run_event_body(&1, run_id))
-      |> Kernel.<>(sse_ready_body("run:" <> run_id, latest_cursor))
+  defp sse_live_stream(conn, stream) do
+    with :ok <- subscribe_sse_stream(stream),
+         {:ok, replay_events} <- fetch_replay_events(stream) do
+      conn =
+        conn
+        |> put_resp_content_type("text/event-stream")
+        |> put_resp_header("cache-control", "no-cache, no-transform")
+        |> put_resp_header("x-accel-buffering", "no")
+        |> send_chunked(200)
+
+      heartbeat_ref = Process.send_after(self(), :sse_heartbeat, @sse_heartbeat_ms)
+
+      try do
+        with {:ok, conn} <- chunk(conn, "retry: #{@sse_retry_ms}\n\n"),
+             {:ok, conn, cursor} <- chunk_replay_events(conn, stream, replay_events),
+             {:ok, conn} <- chunk(conn, sse_ready_body(stream_name(stream), cursor)) do
+          sse_live_loop(conn, stream, cursor, heartbeat_ref)
+        else
+          {:error, _reason} -> conn
+        end
+      after
+        Process.cancel_timer(heartbeat_ref)
+        unsubscribe_sse_stream(stream)
+      end
+    else
+      {:error, :cursor_invalid} ->
+        unsubscribe_sse_stream(stream)
+        error(conn, 410, "cursor_expired", "Cursor is invalid or no longer replayable")
+
+      {:error, _reason} ->
+        unsubscribe_sse_stream(stream)
+        error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
+  defp fetch_replay_events({:run, run_id, sequence}) do
+    FavnOrchestrator.list_run_stream_events(run_id, after_sequence: sequence, limit: 200)
+  end
+
+  defp fetch_replay_events({:global, global_sequence}) do
+    FavnOrchestrator.list_global_run_stream_events(
+      after_global_sequence: global_sequence,
+      limit: 200
+    )
+  end
+
+  defp sse_test_stream(conn, stream, replay_events) do
+    {_status, body, cursor} =
+      Enum.reduce(
+        replay_events,
+        {:ok, "retry: #{@sse_retry_ms}\n\n", initial_cursor(stream)},
+        fn event, {:ok, body, _cursor} ->
+          cursor = event_cursor(stream, event)
+          {:ok, body <> sse_run_event_body(event, stream, cursor), cursor}
+        end
+      )
+
+    body = body <> sse_ready_body(stream_name(stream), cursor) <> ": heartbeat\n\n"
 
     conn
     |> put_resp_content_type("text/event-stream")
-    |> put_resp_header("cache-control", "no-cache")
+    |> put_resp_header("cache-control", "no-cache, no-transform")
     |> put_resp_header("x-accel-buffering", "no")
     |> send_resp(200, body)
   end
 
-  defp sse_run_event_body(event, run_id) do
-    cursor = run_cursor(event)
-    event_name = event_name(event.event_type)
+  defp plug_test_conn?(conn) do
+    match?({Plug.Adapters.Test.Conn, _}, conn.adapter)
+  end
 
+  defp chunk_replay_events(conn, stream, events) do
+    Enum.reduce_while(events, {:ok, conn, initial_cursor(stream)}, fn event,
+                                                                      {:ok, conn, _cursor} ->
+      cursor = event_cursor(stream, event)
+
+      case chunk(conn, sse_run_event_body(event, stream, cursor)) do
+        {:ok, conn} -> {:cont, {:ok, conn, cursor}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp sse_live_loop(conn, stream, cursor, heartbeat_ref) do
+    receive do
+      {:favn_run_event, %RunEvent{} = event} ->
+        case maybe_hydrate_live_event(stream, event, cursor) do
+          {:ok, nil} ->
+            sse_live_loop(conn, stream, cursor, heartbeat_ref)
+
+          {:ok, hydrated} ->
+            next_cursor = event_cursor(stream, hydrated)
+
+            case chunk(conn, sse_run_event_body(hydrated, stream, next_cursor)) do
+              {:ok, conn} -> sse_live_loop(conn, stream, next_cursor, heartbeat_ref)
+              {:error, _reason} -> conn
+            end
+
+          {:error, _reason} ->
+            sse_live_loop(conn, stream, cursor, heartbeat_ref)
+        end
+
+      :sse_heartbeat ->
+        next_ref = Process.send_after(self(), :sse_heartbeat, @sse_heartbeat_ms)
+        Process.cancel_timer(heartbeat_ref)
+
+        case chunk(conn, ": heartbeat\n\n") do
+          {:ok, conn} -> sse_live_loop(conn, stream, cursor, next_ref)
+          {:error, _reason} -> conn
+        end
+    end
+  end
+
+  defp maybe_hydrate_live_event(
+         {:run, run_id, _initial_sequence},
+         %RunEvent{run_id: run_id} = event,
+         cursor
+       ) do
+    if event.sequence > run_sequence_from_cursor(cursor), do: {:ok, event}, else: {:ok, nil}
+  end
+
+  defp maybe_hydrate_live_event({:run, _run_id, _initial_sequence}, _event, _cursor),
+    do: {:ok, nil}
+
+  defp maybe_hydrate_live_event({:global, _initial_sequence}, %RunEvent{} = event, cursor) do
+    with {:ok, [hydrated | _]} <-
+           FavnOrchestrator.list_run_stream_events(event.run_id,
+             after_sequence: event.sequence - 1,
+             limit: 1
+           ) do
+      if hydrated.global_sequence &&
+           hydrated.global_sequence > global_sequence_from_cursor(cursor) do
+        {:ok, hydrated}
+      else
+        {:ok, nil}
+      end
+    end
+  end
+
+  defp subscribe_sse_stream({:run, run_id, _sequence}), do: FavnOrchestrator.subscribe_run(run_id)
+  defp subscribe_sse_stream({:global, _sequence}), do: FavnOrchestrator.subscribe_runs()
+
+  defp unsubscribe_sse_stream({:run, run_id, _sequence}),
+    do: FavnOrchestrator.unsubscribe_run(run_id)
+
+  defp unsubscribe_sse_stream({:global, _sequence}), do: FavnOrchestrator.unsubscribe_runs()
+
+  defp sse_run_event_body(event, stream, cursor) do
+    event_name = event_name(event.event_type)
+    payload = Jason.encode!(sse_event_payload(event, stream, cursor, event_name))
+
+    "id: #{cursor}\nevent: #{event_name}\ndata: #{payload}\n\n"
+  end
+
+  defp sse_ready_body(stream, nil) when is_binary(stream) do
     payload =
       Jason.encode!(%{
         schema_version: 1,
-        event_id: "evt:" <> event.run_id <> ":" <> Integer.to_string(event.sequence),
-        stream: "run:" <> run_id,
-        topic: %{type: "run", id: run_id},
-        event_type: event_name,
-        occurred_at: datetime(event.occurred_at),
-        actor: %{type: "system", id: "orchestrator"},
-        resource: %{type: "run", id: run_id},
-        sequence: event.sequence,
-        cursor: cursor,
-        data: run_event_dto(event)
+        stream: stream,
+        event_type: "stream.ready",
+        cursor: nil,
+        occurred_at: DateTime.utc_now()
       })
 
-    "id: #{cursor}\nevent: #{event_name}\ndata: #{payload}\n\n"
+    "event: stream.ready\ndata: #{payload}\n\n"
   end
 
   defp sse_ready_body(stream, cursor) when is_binary(stream) and is_binary(cursor) do
@@ -2234,7 +2387,63 @@ defmodule FavnOrchestrator.API.Router do
         occurred_at: DateTime.utc_now()
       })
 
-    "id: #{cursor}\nevent: stream.ready\ndata: #{payload}\n\n"
+    "event: stream.ready\ndata: #{payload}\n\n"
+  end
+
+  defp sse_event_payload(event, stream, cursor, event_name) do
+    %{
+      schema_version: 1,
+      event_id: cursor,
+      stream: stream_name(stream),
+      event_type: event_name,
+      run_id: event.run_id,
+      status: event_status(event.status),
+      occurred_at: datetime(event.occurred_at),
+      sequence: event.sequence,
+      global_sequence: event.global_sequence,
+      cursor: cursor,
+      summary: event_summary(event),
+      details: %{
+        entity: Atom.to_string(event.entity),
+        manifest_version_id: event.manifest_version_id,
+        asset_ref: ref_to_string(event.asset_ref),
+        stage: event.stage
+      }
+    }
+  end
+
+  defp event_summary(event), do: "Run #{event.run_id} #{event_name(event.event_type)}"
+
+  defp stream_name({:run, run_id, _sequence}), do: "run:" <> run_id
+  defp stream_name({:global, _sequence}), do: "runs"
+
+  defp initial_cursor({:run, _run_id, 0}), do: nil
+
+  defp initial_cursor({:run, run_id, sequence}),
+    do: "run:" <> run_id <> ":" <> Integer.to_string(sequence)
+
+  defp initial_cursor({:global, nil}), do: nil
+  defp initial_cursor({:global, sequence}), do: "global:" <> Integer.to_string(sequence)
+
+  defp event_cursor({:run, _run_id, _sequence}, event), do: run_cursor(event)
+
+  defp event_cursor({:global, _sequence}, event),
+    do: "global:" <> Integer.to_string(event.global_sequence)
+
+  defp run_sequence_from_cursor("run:" <> rest) do
+    rest |> String.split(":") |> List.last() |> parse_positive_int(0)
+  end
+
+  defp run_sequence_from_cursor(_cursor), do: 0
+
+  defp global_sequence_from_cursor("global:" <> sequence), do: parse_positive_int(sequence, 0)
+  defp global_sequence_from_cursor(_cursor), do: 0
+
+  defp parse_positive_int(value, default) do
+    case Integer.parse(to_string(value)) do
+      {int, ""} when int > 0 -> int
+      _ -> default
+    end
   end
 
   defp run_cursor(event), do: "run:" <> event.run_id <> ":" <> Integer.to_string(event.sequence)

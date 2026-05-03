@@ -13,6 +13,7 @@ Code:
 - Web readiness aggregation in `web/favn_web/src/lib/server/readiness.ts`
 - web API routes under `web/favn_web/src/routes/api/web/v1/`
 - Web health/readiness routes under `web/favn_web/src/routes/api/web/v1/health/`
+- Web SSE relay routes under `web/favn_web/src/routes/api/web/v1/streams/`
 - Production Node adapter config in `web/favn_web/svelte.config.js`
 
 Tests:

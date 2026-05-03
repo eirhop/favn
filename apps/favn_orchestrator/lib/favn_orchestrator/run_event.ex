@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.RunEvent do
           entity: :run | :step,
           occurred_at: DateTime.t(),
           status: atom() | String.t() | nil,
+          global_sequence: pos_integer() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,
           asset_ref: Favn.Ref.t() | nil,
@@ -26,6 +27,7 @@ defmodule FavnOrchestrator.RunEvent do
     schema_version: 1,
     entity: :run,
     status: nil,
+    global_sequence: nil,
     manifest_version_id: nil,
     manifest_content_hash: nil,
     asset_ref: nil,
@@ -46,6 +48,7 @@ defmodule FavnOrchestrator.RunEvent do
       entity: entity,
       occurred_at: normalize_occurred_at(Map.get(event, :occurred_at)),
       status: Map.get(event, :status),
+      global_sequence: normalize_global_sequence(Map.get(event, :global_sequence)),
       manifest_version_id: Map.get(event, :manifest_version_id),
       manifest_content_hash: Map.get(event, :manifest_content_hash),
       asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), Map.get(event, :data), entity),
@@ -64,6 +67,7 @@ defmodule FavnOrchestrator.RunEvent do
       entity: event.entity,
       occurred_at: event.occurred_at,
       status: event.status,
+      global_sequence: event.global_sequence,
       manifest_version_id: event.manifest_version_id,
       manifest_content_hash: event.manifest_content_hash,
       asset_ref: event.asset_ref,
@@ -74,6 +78,9 @@ defmodule FavnOrchestrator.RunEvent do
 
   defp normalize_schema_version(value) when is_integer(value) and value > 0, do: value
   defp normalize_schema_version(_value), do: 1
+
+  defp normalize_global_sequence(value) when is_integer(value) and value > 0, do: value
+  defp normalize_global_sequence(_value), do: nil
 
   defp normalize_occurred_at(%DateTime{} = occurred_at), do: occurred_at
 

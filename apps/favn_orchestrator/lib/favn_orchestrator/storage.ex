@@ -113,6 +113,11 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.list_run_events(run_id, opts) end)
   end
 
+  @spec list_global_run_events(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_global_run_events(run_event_opts \\ []) when is_list(run_event_opts) do
+    adapter_call(fn adapter, opts -> adapter.list_global_run_events(run_event_opts, opts) end)
+  end
+
   @spec put_scheduler_state({module(), atom() | nil}, map()) :: :ok | {:error, term()}
   def put_scheduler_state({module, schedule_id} = key, state)
       when is_atom(module) and is_map(state) do

@@ -56,3 +56,16 @@ URL, for example
 
 In both modes, public browser exposure belongs to `favn_web`, while the
 orchestrator API remains private backend infrastructure.
+
+## Live updates
+
+Browser SSE clients should use the web/BFF stream routes:
+
+- `GET /api/web/v1/streams/runs`
+- `GET /api/web/v1/streams/runs/:run_id`
+
+The web service validates the browser session cookie and opens the private
+orchestrator SSE request server-side with the configured service token plus the
+actor session token. The browser never receives the orchestrator service token.
+See `docs/production/sse_live_updates.md` for cursor, replay, heartbeat, and
+disconnect behavior.

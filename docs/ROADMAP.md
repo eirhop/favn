@@ -35,8 +35,8 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 4. Finish The Live Event And Command Safety Model
 
 - Extend command idempotency from the implemented SQLite single-node scope into any future distributed/Postgres production mode when that mode is introduced.
-- Strengthen SSE from a thin prototype into a dependable live-update model, especially for the global runs stream and replay/cursor behavior.
-- Add real end-to-end integration coverage against the live orchestrator boundary rather than relying mostly on local mocks or thin route tests.
+- Extend the new single-node SSE contract into future distributed/Postgres production modes when those modes are introduced.
+- Add broader end-to-end integration coverage against the live orchestrator stream boundary beyond the focused single-node cursor/replay tests.
 
 ### 5. Close Storage And Persistence Gaps
 

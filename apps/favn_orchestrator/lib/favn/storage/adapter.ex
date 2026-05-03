@@ -65,6 +65,8 @@ defmodule Favn.Storage.Adapter do
 
   @callback append_run_event(String.t(), map(), adapter_opts()) :: :ok | {:error, error()}
   @callback list_run_events(String.t(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+  @callback list_global_run_events(filter_opts(), adapter_opts()) ::
+              {:ok, [map()]} | {:error, error()}
 
   @callback put_scheduler_state(scheduler_key(), map(), adapter_opts()) ::
               :ok | {:error, error()}
