@@ -267,7 +267,9 @@ At minimum, the production single-node runtime needs:
 - `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, required by `favn_web`, at least 32
   characters, for web-to-orchestrator service auth.
 - `FAVN_WEB_PUBLIC_ORIGIN`, required by `favn_web`, as the exact browser-facing
-  origin for unsafe request `Origin`/`Referer` validation.
+  origin for unsafe request `Origin`/`Referer` validation. Production web origins
+  must use `https://` except for local-only `localhost`, `127.0.0.1`, or `::1`
+  smoke-test origins.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
   tooling unless `--service-token` is passed, at least 32 characters, and present
   as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.

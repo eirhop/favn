@@ -70,7 +70,9 @@ Required Favn web variables:
 - `FAVN_WEB_PUBLIC_ORIGIN`: exact browser-facing origin, for example
   `https://favn.example.com`. This is used for unsafe request Origin/Referer
   validation; do not replace it with suffix/prefix host matching or arbitrary
-  forwarded-header inference.
+  forwarded-header inference. Production validation rejects non-local `http://`
+  origins; use `https://` except for local-only `localhost`, `127.0.0.1`, or
+  `::1` smoke-test origins.
 - `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`: optional orchestrator request timeout in
   milliseconds. Defaults to `2000`; accepted range is `100..30000`.
 

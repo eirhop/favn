@@ -27,6 +27,8 @@ co-located on the backend host.
   characters, server-only.
 - `FAVN_WEB_PUBLIC_ORIGIN`: exact browser-facing origin used for unsafe request
   `Origin`/`Referer` validation, for example `https://favn.example.com`.
+  Production validation rejects non-local `http://` origins; only `localhost`,
+  `127.0.0.1`, and `::1` may use `http://` for local-only smoke tests.
 - `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`: optional bounded request timeout in
   milliseconds, defaulting to `2000` and accepting `100..30000`.
 

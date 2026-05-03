@@ -121,7 +121,9 @@ export function clearWebSessionCookie(cookies: Cookies): void {
 	}
 
 	cookies.delete(FAVN_WEB_SESSION_COOKIE, {
-		path: '/'
+		path: '/',
+		secure: true,
+		sameSite: 'strict'
 	});
 }
 

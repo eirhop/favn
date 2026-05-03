@@ -124,6 +124,30 @@ function validateAbsoluteOrigin(variable: string, value: string | undefined) {
 	return null;
 }
 
+function isLocalPublicOrigin(parsed: URL): boolean {
+	const hostname = parsed.hostname.toLowerCase();
+	return (
+		hostname === 'localhost' ||
+		hostname === '127.0.0.1' ||
+		hostname === '::1' ||
+		hostname === '[::1]'
+	);
+}
+
+function validatePublicWebOrigin(variable: string, value: string | undefined) {
+	const originIssue = validateAbsoluteOrigin(variable, value);
+	if (originIssue) return originIssue;
+
+	const parsed = new URL(value as string);
+	if (parsed.protocol === 'https:' || isLocalPublicOrigin(parsed)) return null;
+
+	return {
+		variable,
+		message: 'must use https:// unless the host is localhost, 127.0.0.1, or ::1',
+		value: redacted(value)
+	};
+}
+
 function validateRequiredSecret(variable: string, value: string | undefined) {
 	if (!isPresent(value)) {
 		return {
@@ -195,7 +219,7 @@ export function validateWebProductionRuntimeConfig(
 			'FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS',
 			runtimeEnv.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS
 		),
-		validateAbsoluteOrigin('FAVN_WEB_PUBLIC_ORIGIN', runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN)
+		validatePublicWebOrigin('FAVN_WEB_PUBLIC_ORIGIN', runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN)
 	].filter((issue): issue is WebProductionRuntimeConfigIssue => issue !== null);
 
 	if (issues.length > 0) {

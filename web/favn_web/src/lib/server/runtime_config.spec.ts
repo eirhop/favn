@@ -98,6 +98,34 @@ describe('validateWebProductionRuntimeConfig', () => {
 		});
 	});
 
+	it('rejects non-local http public web origins in production config', () => {
+		const error = validationErrorFor({
+			...validEnv,
+			FAVN_WEB_PUBLIC_ORIGIN: 'http://favn.example.com'
+		});
+
+		expect(error.issues).toContainEqual({
+			variable: 'FAVN_WEB_PUBLIC_ORIGIN',
+			message: 'must use https:// unless the host is localhost, 127.0.0.1, or ::1',
+			value: '[redacted]'
+		});
+	});
+
+	it('allows local http public web origins for local-only production smoke tests', () => {
+		for (const publicOrigin of [
+			'http://localhost:4173',
+			'http://127.0.0.1:4173',
+			'http://[::1]:4173'
+		]) {
+			expect(
+				validateWebProductionRuntimeConfig({
+					...validEnv,
+					FAVN_WEB_PUBLIC_ORIGIN: publicOrigin
+				})
+			).toMatchObject({ publicWebOrigin: publicOrigin });
+		}
+	});
+
 	it('requires long production secrets and redacts diagnostics', () => {
 		const error = validationErrorFor({
 			FAVN_WEB_ORCHESTRATOR_BASE_URL: 'https://orchestrator.internal',
