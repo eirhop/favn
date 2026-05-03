@@ -15,13 +15,12 @@ documented separately in `docs/production/public_api_boundary.md`.
 ## Current Implementation Status
 
 This is an architecture and documentation contract. The current
-`mix favn.build.single` output includes a project-local backend-only SQLite
-launcher, but it is not yet marked as an operational production artifact. It
-depends on the recorded installed runtime source root rather than a
-self-contained runtime closure, and generated `bin/start`/`bin/stop` still need
-executed artifact verification. Full release packaging and backup automation
-remain follow-up implementation work. `favn_web` now has an explicit Node
-production service path documented in
+`mix favn.build.single` output includes a verified project-local backend-only
+SQLite launcher with generated `bin/start` and `bin/stop` scripts. It depends on
+the recorded installed runtime source root rather than a self-contained or
+relocatable runtime closure. Full release packaging and backup automation remain
+follow-up implementation work. `favn_web` now has an explicit Node production
+service path documented in
 `docs/production/web_service.md`, but it is not yet bundled into
 `mix favn.build.single`.
 

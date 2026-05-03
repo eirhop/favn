@@ -23,8 +23,8 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 2. Make Deployment Outputs Real
 
-- Turn `build.single` from a project-local backend launcher into a self-contained, verified operational artifact, turn `build.web` and `build.orchestrator` from metadata outputs into genuinely runnable, supportable deployment artifacts, and align all deployment outputs with the documented production operator path.
-- Extend the SQLite-first single-node deployment path beyond the implemented Phase 1 backend bootstrap acceptance into realistic runnable-artifact startup, operator runbook, and runtime-flow verification before split-topology production work.
+- Turn `build.single` from a verified project-local backend launcher into a self-contained release artifact, turn `build.web` and `build.orchestrator` from metadata outputs into genuinely runnable, supportable deployment artifacts, and align all deployment outputs with the documented production operator path.
+- Extend the SQLite-first single-node deployment path beyond the implemented artifact startup and Phase 1 backend bootstrap acceptance into an operator runbook and full runtime-flow verification before split-topology production work.
 - Keep `build.runner` aligned with the same production deployment contract.
 
 ### 3. Harden Auth, Sessions, Audit, And Service Trust
