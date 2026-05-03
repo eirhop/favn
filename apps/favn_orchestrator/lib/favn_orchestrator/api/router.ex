@@ -2193,6 +2193,7 @@ defmodule FavnOrchestrator.API.Router do
 
   @sse_retry_ms 3_000
   @sse_heartbeat_ms 15_000
+  @sse_replay_limit 200
 
   defp sse_stream(conn, stream) do
     if plug_test_conn?(conn) do
@@ -2247,15 +2248,33 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp fetch_replay_events({:run, run_id, sequence}) do
-    FavnOrchestrator.list_run_stream_events(run_id, after_sequence: sequence, limit: 200)
+    run_id
+    |> FavnOrchestrator.list_run_stream_events(
+      after_sequence: sequence,
+      limit: @sse_replay_limit + 1
+    )
+    |> reject_incomplete_replay_page()
+  end
+
+  defp fetch_replay_events({:global, nil}) do
+    FavnOrchestrator.list_global_run_stream_events(
+      after_global_sequence: nil,
+      limit: @sse_replay_limit
+    )
   end
 
   defp fetch_replay_events({:global, global_sequence}) do
-    FavnOrchestrator.list_global_run_stream_events(
-      after_global_sequence: global_sequence,
-      limit: 200
-    )
+    [after_global_sequence: global_sequence, limit: @sse_replay_limit + 1]
+    |> FavnOrchestrator.list_global_run_stream_events()
+    |> reject_incomplete_replay_page()
   end
+
+  defp reject_incomplete_replay_page({:ok, events}) when length(events) > @sse_replay_limit do
+    {:error, :cursor_invalid}
+  end
+
+  defp reject_incomplete_replay_page({:ok, events}), do: {:ok, events}
+  defp reject_incomplete_replay_page({:error, _reason} = error), do: error
 
   defp sse_test_stream(conn, stream, replay_events) do
     {_status, body, cursor} =

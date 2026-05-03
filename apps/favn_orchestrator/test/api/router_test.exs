@@ -589,6 +589,42 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert response.resp_body =~ "retry: 3000"
   end
 
+  test "SSE run stream rejects cursors more than one replay page behind" do
+    seed_run_events!("run_stream_replay_gap", Enum.to_list(1..202))
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/streams/runs/run_stream_replay_gap")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_req_header("last-event-id", "run:run_stream_replay_gap:1")
+      |> Router.call(@opts)
+
+    assert response.status == 410
+    assert %{"error" => %{"code" => "cursor_expired"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "SSE global stream rejects cursors more than one replay page behind" do
+    run_id = "run_stream_global_replay_gap"
+    seed_run_events!(run_id, Enum.to_list(1..202))
+    assert {:ok, [first_event | _events]} = FavnOrchestrator.list_run_events(run_id)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:get, "/api/orchestrator/v1/streams/runs")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_req_header("last-event-id", "global:#{first_event.global_sequence}")
+      |> Router.call(@opts)
+
+    assert response.status == 410
+    assert %{"error" => %{"code" => "cursor_expired"}} = Jason.decode!(response.resp_body)
+  end
+
   test "SSE stream rejects invalid last-event-id header" do
     {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
 
