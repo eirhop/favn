@@ -123,7 +123,8 @@ SQLite stores the control-plane state needed to operate the backend, including:
 - Operational backfill read models.
 - Durable auth actors, credential hashes, session-token hashes, revocation
   timestamps, and redacted audit entries.
-- Future command idempotency state after the command-safety issue lands.
+- Command idempotency records with hashed keys, request fingerprints, normalized
+  redacted responses, status, resource identity, and retention timestamps.
 
 In-memory storage is not a production mode. Postgres support exists as adapter
 work today, but Postgres production mode is planned after SQLite single-node

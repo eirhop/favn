@@ -45,6 +45,78 @@ describe('orchestrator client', () => {
 		expect(headers.get('x-favn-actor-id')).toBe('actor_test');
 		expect(headers.get('x-favn-session-token')).toBe('opaque-session-token-1');
 		expect(headers.has('x-favn-session-id')).toBe(false);
+		expect(headers.has('Idempotency-Key')).toBe(false);
+	});
+
+	it('adds stable idempotency keys to mutating command requests without secrets', async () => {
+		setValidEnv();
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+		const {
+			orchestratorActivateManifest,
+			orchestratorCancelRun,
+			orchestratorRerunBackfillWindow,
+			orchestratorRerunRun,
+			orchestratorSubmitBackfill,
+			orchestratorSubmitRun
+		} = await import('./orchestrator');
+
+		const submitRunPayload = {
+			target: { type: 'asset' as const, id: 'asset_a' },
+			dependencies: 'all' as const
+		};
+		const submitBackfillPayload = {
+			pipeline_module: 'Demo.Pipeline',
+			window_kind: 'day',
+			window_from: '2026-01-01',
+			window_to: '2026-01-02'
+		};
+
+		await orchestratorSubmitRun(session, submitRunPayload);
+		await orchestratorCancelRun(session, 'run_1');
+		await orchestratorRerunRun(session, 'run_1');
+		await orchestratorActivateManifest(session, 'manifest_1');
+		await orchestratorSubmitBackfill(session, submitBackfillPayload);
+		await orchestratorRerunBackfillWindow(session, 'backfill_1', { window_key: 'day:2026-01-01' });
+
+		expect(fetchMock).toHaveBeenCalledTimes(6);
+		const idempotencyKeys = fetchMock.mock.calls.map(([, init]) => {
+			const headers = new Headers((init as RequestInit).headers);
+			return headers.get('Idempotency-Key');
+		});
+
+		expect(idempotencyKeys).toHaveLength(6);
+		for (const key of idempotencyKeys) {
+			expect(key).toMatch(/^favn-web-[a-z-]+-[a-f0-9]{64}$/);
+			expect(key).not.toContain('opaque-session-token-1');
+			expect(key).not.toContain('orchestrator-service-token-32-char-minimum');
+		}
+		expect(new Set(idempotencyKeys).size).toBe(6);
+
+		await orchestratorSubmitRun(session, submitRunPayload);
+		const repeatHeaders = new Headers((fetchMock.mock.calls[6][1] as RequestInit).headers);
+		expect(repeatHeaders.get('Idempotency-Key')).toBe(idempotencyKeys[0]);
+	});
+
+	it('distinguishes boolean and string command input values in idempotency keys', async () => {
+		setValidEnv();
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+		const { orchestratorSubmitBackfill } = await import('./orchestrator');
+
+		await orchestratorSubmitBackfill(session, { dry_run: true });
+		await orchestratorSubmitBackfill(session, { dry_run: 'true' });
+		await orchestratorSubmitBackfill(session, { dry_run: true });
+
+		const idempotencyKeys = fetchMock.mock.calls.map(([, init]) => {
+			const headers = new Headers((init as RequestInit).headers);
+			return headers.get('Idempotency-Key');
+		});
+
+		expect(idempotencyKeys[0]).toMatch(/^favn-web-submit-backfill-[a-f0-9]{64}$/);
+		expect(idempotencyKeys[1]).toMatch(/^favn-web-submit-backfill-[a-f0-9]{64}$/);
+		expect(idempotencyKeys[0]).not.toBe(idempotencyKeys[1]);
+		expect(idempotencyKeys[2]).toBe(idempotencyKeys[0]);
 	});
 
 	it('revokes the durable session with service auth and session token header', async () => {

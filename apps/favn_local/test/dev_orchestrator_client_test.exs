@@ -140,6 +140,36 @@ defmodule Favn.Dev.OrchestratorClientTest do
     assert_receive {:request_headers, headers}
     assert headers["x-favn-actor-id"] == "act_1"
     assert headers["x-favn-session-id"] == "sess_1"
+    assert_idempotency_header(headers)
+  end
+
+  test "mutating command helpers send idempotency keys without secrets" do
+    session_context = %{"actor_id" => "act_1", "session_id" => "sess_1"}
+
+    assert_mutating_header(fn base_url, token ->
+      OrchestratorClient.activate_manifest(base_url, token, "mv_1")
+    end)
+
+    assert_mutating_header(fn base_url, token ->
+      OrchestratorClient.cancel_run(base_url, token, "run_1")
+    end)
+
+    assert_mutating_header(fn base_url, token ->
+      OrchestratorClient.submit_backfill(base_url, token, session_context, %{
+        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"},
+        range: %{from: "2026-01-01", to: "2026-01-02", kind: "day"}
+      })
+    end)
+
+    assert_mutating_header(fn base_url, token ->
+      OrchestratorClient.rerun_backfill_window(
+        base_url,
+        token,
+        session_context,
+        "backfill_1",
+        "day:2026-01-01:Etc/UTC"
+      )
+    end)
   end
 
   test "backfill list helpers parse item responses and encode filters" do
@@ -287,6 +317,24 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
   defp reason(status) when status in 200..299, do: "OK"
   defp reason(_status), do: "Error"
+
+  defp assert_mutating_header(fun) when is_function(fun, 2) do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"run":{"id":"run_1"}}}), 200, parent: parent)
+
+    _ = fun.(base_url, "service-token-secret")
+
+    assert_receive {:request_headers, headers}
+    assert_idempotency_header(headers)
+  end
+
+  defp assert_idempotency_header(headers) do
+    assert "favn-local-" <> _ = key = headers["idempotency-key"]
+    refute key =~ "service-token-secret"
+    refute key =~ "sess_1"
+  end
 
   defp unused_port do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])

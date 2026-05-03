@@ -31,7 +31,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           auth_credentials: %{required(String.t()) => map()},
           auth_sessions: %{required(String.t()) => map()},
           auth_session_hashes: %{required(String.t()) => String.t()},
-          auth_audits: [map()]
+          auth_audits: [map()],
+          idempotency_records: %{required(String.t()) => map()}
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -393,6 +394,25 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def reserve_idempotency_record(record, opts) when is_map(record) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:reserve_idempotency_record, record})
+  end
+
+  @impl true
+  def complete_idempotency_record(record_id, attrs, opts)
+      when is_binary(record_id) and is_map(attrs) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:complete_idempotency_record, record_id, attrs})
+  end
+
+  @impl true
+  def get_idempotency_record(record_id, opts) when is_binary(record_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_idempotency_record, record_id})
+  end
+
+  @impl true
   def init(_args) do
     {:ok, initial_state()}
   end
@@ -412,7 +432,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       auth_credentials: %{},
       auth_sessions: %{},
       auth_session_hashes: %{},
-      auth_audits: []
+      auth_audits: [],
+      idempotency_records: %{}
     }
   end
 
@@ -837,6 +858,47 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, state.auth_audits |> Enum.take(limit) |> Enum.reverse()}, state}
   end
 
+  def handle_call({:reserve_idempotency_record, record}, _from, state) do
+    case Map.fetch(state.idempotency_records, record.id) do
+      :error ->
+        stored = normalize_idempotency_record(record)
+
+        {:reply, {:ok, {:reserved, stored}},
+         %{state | idempotency_records: Map.put(state.idempotency_records, stored.id, stored)}}
+
+      {:ok, stored} ->
+        if expired_idempotency_record?(stored) do
+          replacement = normalize_idempotency_record(record)
+
+          {:reply, {:ok, {:reserved, replacement}},
+           %{
+             state
+             | idempotency_records:
+                 Map.put(state.idempotency_records, replacement.id, replacement)
+           }}
+        else
+          {:reply, classify_idempotency_record(stored, record.request_fingerprint), state}
+        end
+    end
+  end
+
+  def handle_call({:complete_idempotency_record, record_id, attrs}, _from, state) do
+    case Map.fetch(state.idempotency_records, record_id) do
+      {:ok, stored} ->
+        updated = stored |> Map.merge(attrs) |> normalize_idempotency_record()
+
+        {:reply, :ok,
+         %{state | idempotency_records: Map.put(state.idempotency_records, record_id, updated)}}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:get_idempotency_record, record_id}, _from, state) do
+    {:reply, fetch_or_not_found(state.idempotency_records, record_id), state}
+  end
+
   defp put_run_with_semantics(runs, %RunState{} = incoming) do
     case Map.fetch(runs, incoming.id) do
       :error ->
@@ -880,6 +942,46 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       :error -> {:error, :not_found}
     end
   end
+
+  defp classify_idempotency_record(stored, request_fingerprint) do
+    cond do
+      stored.request_fingerprint != request_fingerprint ->
+        {:error, :idempotency_conflict}
+
+      stored.status == :in_progress ->
+        {:error, :operation_in_progress}
+
+      stored.status in [:completed, :failed] ->
+        {:ok, {:replay, stored}}
+
+      true ->
+        {:error, {:invalid_idempotency_status, stored.status}}
+    end
+  end
+
+  defp normalize_idempotency_record(record) when is_map(record) do
+    record
+    |> atomize_known_keys()
+    |> Map.update!(:status, &normalize_status/1)
+  end
+
+  defp atomize_known_keys(record) do
+    Enum.reduce(record, %{}, fn {key, value}, acc ->
+      Map.put(acc, atomize_idempotency_key(key), value)
+    end)
+  end
+
+  defp atomize_idempotency_key(key) when is_atom(key), do: key
+  defp atomize_idempotency_key(key) when is_binary(key), do: String.to_existing_atom(key)
+
+  defp normalize_status(status) when is_atom(status), do: status
+  defp normalize_status(status) when is_binary(status), do: String.to_existing_atom(status)
+
+  defp expired_idempotency_record?(%{expires_at: %DateTime{} = expires_at}) do
+    DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+  end
+
+  defp expired_idempotency_record?(_record), do: false
 
   defp filter_by(values, filters) do
     filters = Keyword.drop(filters, [:limit, :offset])

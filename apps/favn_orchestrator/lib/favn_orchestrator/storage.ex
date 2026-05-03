@@ -300,6 +300,24 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, adapter_opts -> adapter.list_auth_audit(opts, adapter_opts) end)
   end
 
+  @spec reserve_idempotency_record(map()) ::
+          {:ok, {:reserved, map()} | {:replay, map()}}
+          | {:error, :idempotency_conflict | :operation_in_progress | term()}
+  def reserve_idempotency_record(record) when is_map(record) do
+    optional_adapter_call(:reserve_idempotency_record, [record])
+  end
+
+  @spec complete_idempotency_record(String.t(), map()) :: :ok | {:error, term()}
+  def complete_idempotency_record(record_id, attrs)
+      when is_binary(record_id) and is_map(attrs) do
+    optional_adapter_call(:complete_idempotency_record, [record_id, attrs])
+  end
+
+  @spec get_idempotency_record(String.t()) :: {:ok, map()} | {:error, term()}
+  def get_idempotency_record(record_id) when is_binary(record_id) do
+    optional_adapter_call(:get_idempotency_record, [record_id])
+  end
+
   @spec adapter_module() :: module()
   def adapter_module do
     Application.get_env(:favn_orchestrator, :storage_adapter, Memory)
@@ -333,6 +351,16 @@ defmodule FavnOrchestrator.Storage do
   catch
     :throw, reason -> {:error, {:thrown, reason}}
     :exit, reason -> {:error, {:exited, reason}}
+  end
+
+  defp optional_adapter_call(function, args) when is_atom(function) and is_list(args) do
+    adapter_call(fn adapter, opts ->
+      if function_exported?(adapter, function, length(args) + 1) do
+        apply(adapter, function, args ++ [opts])
+      else
+        {:error, :idempotency_not_supported}
+      end
+    end)
   end
 
   defp paginated_adapter_call(filters, fun) when is_list(filters) and is_function(fun, 3) do

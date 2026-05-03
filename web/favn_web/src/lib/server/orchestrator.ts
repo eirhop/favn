@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { WebSession } from './session';
 import { markSanitizedResponse } from './sanitized_response';
 import { currentWebRuntimeConfig } from './runtime_config';
@@ -28,6 +29,50 @@ export function orchestratorFailureResponse(code: OrchestratorFailureCode): Resp
 
 function timeoutFailure(signal: AbortSignal): OrchestratorFailureCode {
 	return signal.aborted ? 'orchestrator_timeout' : 'orchestrator_unavailable';
+}
+
+function canonicalize(value: unknown): unknown {
+	if (value === null) return ['null'];
+	if (typeof value === 'boolean') return ['boolean', value];
+	if (typeof value === 'string') return ['string', value];
+	if (typeof value === 'number') return [Number.isInteger(value) ? 'integer' : 'number', value];
+	if (Array.isArray(value)) return ['array', value.map(canonicalize)];
+	if (value && typeof value === 'object') {
+		return [
+			'object',
+			Object.entries(value)
+				.filter(([, nested]) => nested !== undefined)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, nested]) => [key, canonicalize(nested)])
+		];
+	}
+	return [typeof value, String(value)];
+}
+
+function idempotencyKey(operation: string, session: WebSession, input: unknown): string {
+	const fingerprint = JSON.stringify(
+		canonicalize({
+			operation,
+			actor_id: session.actor_id,
+			session_id: session.session_id,
+			provider: session.provider,
+			service: 'favn_web',
+			input
+		})
+	);
+	const digest = createHash('sha256').update(fingerprint).digest('hex');
+	return `favn-web-${operation}-${digest}`;
+}
+
+function commandHeaders(
+	session: WebSession,
+	operation: string,
+	input: unknown,
+	headers: HeadersInit = {}
+): Headers {
+	const output = new Headers(headers);
+	output.set('Idempotency-Key', idempotencyKey(operation, session, input));
+	return output;
 }
 
 async function orchestratorRequest(
@@ -124,10 +169,10 @@ export function orchestratorSubmitRun(
 ): Promise<Response> {
 	return orchestratorAuthed('/api/orchestrator/v1/runs', session, {
 		method: 'POST',
-		headers: {
+		headers: commandHeaders(session, 'submit-run', payload, {
 			accept: 'application/json',
 			'content-type': 'application/json'
-		},
+		}),
 		body: JSON.stringify(payload)
 	});
 }
@@ -138,7 +183,12 @@ export function orchestratorCancelRun(session: WebSession, runId: string): Promi
 		session,
 		{
 			method: 'POST',
-			headers: { accept: 'application/json' }
+			headers: commandHeaders(
+				session,
+				'cancel-run',
+				{ run_id: runId },
+				{ accept: 'application/json' }
+			)
 		}
 	);
 }
@@ -149,7 +199,12 @@ export function orchestratorRerunRun(session: WebSession, runId: string): Promis
 		session,
 		{
 			method: 'POST',
-			headers: { accept: 'application/json' }
+			headers: commandHeaders(
+				session,
+				'rerun-run',
+				{ run_id: runId },
+				{ accept: 'application/json' }
+			)
 		}
 	);
 }
@@ -175,7 +230,12 @@ export function orchestratorActivateManifest(
 		session,
 		{
 			method: 'POST',
-			headers: { accept: 'application/json' }
+			headers: commandHeaders(
+				session,
+				'activate-manifest',
+				{ manifest_version_id: manifestVersionId },
+				{ accept: 'application/json' }
+			)
 		}
 	);
 }
@@ -209,10 +269,10 @@ export function orchestratorSubmitBackfill(
 ): Promise<Response> {
 	return orchestratorAuthed('/api/orchestrator/v1/backfills', session, {
 		method: 'POST',
-		headers: {
+		headers: commandHeaders(session, 'submit-backfill', payload, {
 			accept: 'application/json',
 			'content-type': 'application/json'
-		},
+		}),
 		body: JSON.stringify(payload)
 	});
 }
@@ -260,10 +320,15 @@ export function orchestratorRerunBackfillWindow(
 		session,
 		{
 			method: 'POST',
-			headers: {
-				accept: 'application/json',
-				'content-type': 'application/json'
-			},
+			headers: commandHeaders(
+				session,
+				'rerun-backfill-window',
+				{ backfill_run_id: backfillRunId, ...payload },
+				{
+					accept: 'application/json',
+					'content-type': 'application/json'
+				}
+			),
 			body: JSON.stringify(payload)
 		}
 	);

@@ -859,6 +859,94 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
+  @impl true
+  def reserve_idempotency_record(record, opts) when is_map(record) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      repo.transact(fn ->
+        reserve_idempotency_record_in_transaction(repo, record)
+        |> case do
+          {:ok, result} -> {:ok, result}
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, result} -> {:ok, result}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp reserve_idempotency_record_in_transaction(repo, record) do
+    case insert_idempotency_record(repo, record, :ignore_conflict) do
+      {:ok, {:reserved, _record}} = reserved ->
+        reserved
+
+      {:ok, :ignored} ->
+        classify_or_replace_existing_idempotency_record(repo, record)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp classify_or_replace_existing_idempotency_record(repo, record) do
+    case fetch_idempotency_record(repo, record.id) do
+      {:ok, stored} ->
+        reserve_existing_idempotency_record(repo, stored, record)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp reserve_existing_idempotency_record(repo, stored, record) do
+    if expired_idempotency_record?(stored) do
+      case delete_expired_idempotency_record(repo, stored.id) do
+        :ok -> insert_idempotency_record(repo, record)
+        :not_deleted -> classify_or_replace_existing_idempotency_record(repo, record)
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      classify_idempotency_record(stored, record.request_fingerprint)
+    end
+  end
+
+  @impl true
+  def complete_idempotency_record(record_id, attrs, opts)
+      when is_binary(record_id) and is_map(attrs) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = """
+      UPDATE favn_idempotency_records
+      SET status = ?1,
+          response_status = ?2,
+          response_body_blob = ?3,
+          resource_type = ?4,
+          resource_id = ?5,
+          updated_at = ?6,
+          completed_at = ?7
+      WHERE idempotency_record_id = ?8
+      """
+
+      params = [
+        encode_atom(Map.fetch!(attrs, :status)),
+        Map.get(attrs, :response_status),
+        encode_optional_payload(Map.get(attrs, :response_body)),
+        Map.get(attrs, :resource_type),
+        Map.get(attrs, :resource_id),
+        encode_datetime(Map.fetch!(attrs, :updated_at)),
+        encode_datetime(Map.fetch!(attrs, :completed_at)),
+        record_id
+      ]
+
+      query_ok(repo, sql, params)
+    end
+  end
+
+  @impl true
+  def get_idempotency_record(record_id, opts) when is_binary(record_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts), do: fetch_idempotency_record(repo, record_id)
+  end
+
   defp coverage_baseline_columns do
     "baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted, window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id, manifest_version_id, status, errors_blob, metadata_blob, created_at, updated_at"
   end
@@ -869,6 +957,85 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp auth_session_columns do
     "session_id, token_hash, actor_id, provider, issued_at, expires_at, revoked_at"
+  end
+
+  defp idempotency_record_columns do
+    "idempotency_record_id, operation, idempotency_key_hash, actor_id, session_id, service_identity, request_fingerprint, status, response_status, response_body_blob, resource_type, resource_id, created_at, updated_at, expires_at, completed_at"
+  end
+
+  defp fetch_idempotency_record(repo, record_id) do
+    sql =
+      "SELECT #{idempotency_record_columns()} FROM favn_idempotency_records WHERE idempotency_record_id = ?1 LIMIT 1"
+
+    case SQL.query(repo, sql, [record_id]) do
+      {:ok, %{rows: [row]}} -> decode_idempotency_record_row(row)
+      {:ok, %{rows: []}} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp insert_idempotency_record(repo, record) do
+    sql = """
+    INSERT INTO favn_idempotency_records (
+      idempotency_record_id, operation, idempotency_key_hash, actor_id, session_id,
+      service_identity, request_fingerprint, status, response_status, response_body_blob,
+      resource_type, resource_id, created_at, updated_at, expires_at, completed_at
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+    """
+
+    case SQL.query(repo, sql, idempotency_record_params(record)) do
+      {:ok, _result} -> {:ok, {:reserved, record}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp insert_idempotency_record(repo, record, :ignore_conflict) do
+    sql = """
+    INSERT OR IGNORE INTO favn_idempotency_records (
+      idempotency_record_id, operation, idempotency_key_hash, actor_id, session_id,
+      service_identity, request_fingerprint, status, response_status, response_body_blob,
+      resource_type, resource_id, created_at, updated_at, expires_at, completed_at
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+    """
+
+    case SQL.query(repo, sql, idempotency_record_params(record)) do
+      {:ok, %{num_rows: 1}} -> {:ok, {:reserved, record}}
+      {:ok, _result} -> {:ok, :ignored}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_expired_idempotency_record(repo, record_id) do
+    sql =
+      "DELETE FROM favn_idempotency_records WHERE idempotency_record_id = ?1 AND expires_at <= ?2"
+
+    case SQL.query(repo, sql, [record_id, encode_datetime(DateTime.utc_now())]) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, _result} -> :not_deleted
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp expired_idempotency_record?(%{expires_at: %DateTime{} = expires_at}) do
+    DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+  end
+
+  defp expired_idempotency_record?(_record), do: false
+
+  defp classify_idempotency_record(stored, request_fingerprint) do
+    cond do
+      stored.request_fingerprint != request_fingerprint ->
+        {:error, :idempotency_conflict}
+
+      stored.status == :in_progress ->
+        {:error, :operation_in_progress}
+
+      stored.status in [:completed, :failed] ->
+        {:ok, {:replay, stored}}
+
+      true ->
+        {:error, {:invalid_idempotency_status, stored.status}}
+    end
   end
 
   defp fetch_auth_actor(repo, where_sql, params) do
@@ -934,6 +1101,48 @@ defmodule Favn.Storage.Adapter.SQLite do
        expires_at: decode_datetime(expires_at),
        revoked_at: decode_datetime(revoked_at)
      }}
+  end
+
+  defp decode_idempotency_record_row([
+         record_id,
+         operation,
+         key_hash,
+         actor_id,
+         session_id,
+         service_identity,
+         request_fingerprint,
+         status,
+         response_status,
+         response_body_blob,
+         resource_type,
+         resource_id,
+         created_at,
+         updated_at,
+         expires_at,
+         completed_at
+       ]) do
+    with {:ok, status} <- existing_atom(status),
+         {:ok, response_body} <- decode_optional_payload(response_body_blob) do
+      {:ok,
+       %{
+         id: record_id,
+         operation: operation,
+         idempotency_key_hash: key_hash,
+         actor_id: decode_scope_value(actor_id),
+         session_id: decode_scope_value(session_id),
+         service_identity: decode_scope_value(service_identity),
+         request_fingerprint: request_fingerprint,
+         status: status,
+         response_status: response_status,
+         response_body: response_body,
+         resource_type: resource_type,
+         resource_id: resource_id,
+         created_at: decode_datetime(created_at),
+         updated_at: decode_datetime(updated_at),
+         expires_at: decode_datetime(expires_at),
+         completed_at: decode_datetime(completed_at)
+       }}
+    end
   end
 
   defp backfill_window_columns do
@@ -1242,6 +1451,33 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp encode_datetime(nil), do: nil
   defp encode_datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp idempotency_record_params(record) do
+    [
+      Map.fetch!(record, :id),
+      Map.fetch!(record, :operation),
+      Map.fetch!(record, :idempotency_key_hash),
+      encode_scope_value(Map.get(record, :actor_id)),
+      encode_scope_value(Map.get(record, :session_id)),
+      encode_scope_value(Map.get(record, :service_identity)),
+      Map.fetch!(record, :request_fingerprint),
+      encode_atom(Map.fetch!(record, :status)),
+      Map.get(record, :response_status),
+      encode_optional_payload(Map.get(record, :response_body)),
+      Map.get(record, :resource_type),
+      Map.get(record, :resource_id),
+      encode_datetime(Map.fetch!(record, :created_at)),
+      encode_datetime(Map.fetch!(record, :updated_at)),
+      encode_datetime(Map.fetch!(record, :expires_at)),
+      encode_datetime(Map.get(record, :completed_at))
+    ]
+  end
+
+  defp encode_scope_value(nil), do: ""
+  defp encode_scope_value(value) when is_binary(value), do: value
+
+  defp decode_scope_value(""), do: nil
+  defp decode_scope_value(value), do: value
 
   defp decode_datetime(nil), do: nil
 
@@ -1695,6 +1931,12 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp decode_payload(payload) when is_binary(payload), do: PayloadCodec.decode(payload)
+
+  defp encode_optional_payload(nil), do: nil
+  defp encode_optional_payload(value), do: encode_payload(value)
+
+  defp decode_optional_payload(nil), do: {:ok, nil}
+  defp decode_optional_payload(payload) when is_binary(payload), do: decode_payload(payload)
 
   defp repo_name(opts) do
     with {:ok, normalized} <- normalize_opts(opts),

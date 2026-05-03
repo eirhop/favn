@@ -123,6 +123,14 @@ defmodule Favn.Storage.Adapter do
   @callback put_auth_audit(map(), adapter_opts()) :: :ok | {:error, error()}
   @callback list_auth_audit(keyword(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}
 
+  @callback reserve_idempotency_record(map(), adapter_opts()) ::
+              {:ok, {:reserved, map()} | {:replay, map()}}
+              | {:error, :idempotency_conflict | :operation_in_progress | error()}
+  @callback complete_idempotency_record(String.t(), map(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_idempotency_record(String.t(), adapter_opts()) ::
+              {:ok, map()} | {:error, error()}
+
   @optional_callbacks readiness: 1,
                       diagnostics: 1,
                       put_auth_actor: 2,
@@ -139,5 +147,8 @@ defmodule Favn.Storage.Adapter do
                       revoke_auth_session: 3,
                       revoke_auth_sessions_for_actor: 3,
                       put_auth_audit: 2,
-                      list_auth_audit: 2
+                      list_auth_audit: 2,
+                      reserve_idempotency_record: 2,
+                      complete_idempotency_record: 3,
+                      get_idempotency_record: 2
 end

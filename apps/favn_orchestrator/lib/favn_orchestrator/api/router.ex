@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Readiness
 
   @read_model_status_filters %{
@@ -333,9 +334,6 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
-
-      {:error, _reason} ->
-        error(conn, 400, "bad_request", "Request failed")
     end
   end
 
@@ -414,35 +412,46 @@ defmodule FavnOrchestrator.API.Router do
 
   post "/api/orchestrator/v1/manifests/:manifest_version_id/activate" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, actor_id, session_id} <- ensure_activation_context(conn),
-         :ok <- FavnOrchestrator.activate_manifest(manifest_version_id),
-         :ok <- maybe_reload_scheduler(),
-         :ok <-
-           Auth.put_audit(%{
-             action: "manifest.activate",
-             actor_id: actor_id,
-             session_id: session_id,
-             resource_type: "manifest",
-             resource_id: manifest_version_id,
-             outcome: "accepted",
-             service_identity: service_identity(conn)
-           }) do
-      data(conn, 200, %{activated: true, manifest_version_id: manifest_version_id})
-    else
-      {:error, :manifest_version_not_found} ->
-        error(conn, 404, "not_found", "Manifest version was not found")
+         {:ok, actor_id, session_id} <- ensure_activation_context(conn) do
+      run_idempotent_command(
+        conn,
+        "manifest.activate",
+        actor_id,
+        session_id,
+        %{manifest_version_id: manifest_version_id},
+        fn idempotency ->
+          with :ok <- FavnOrchestrator.activate_manifest(manifest_version_id),
+               :ok <- maybe_reload_scheduler(),
+               :ok <-
+                 Auth.put_audit(
+                   %{
+                     action: "manifest.activate",
+                     actor_id: actor_id,
+                     session_id: session_id,
+                     resource_type: "manifest",
+                     resource_id: manifest_version_id,
+                     outcome: "accepted",
+                     service_identity: service_identity(conn)
+                   }
+                   |> Map.merge(audit_idempotency(idempotency, "accepted"))
+                 ) do
+            {:ok, 200, %{activated: true, manifest_version_id: manifest_version_id}, "manifest",
+             manifest_version_id}
+          else
+            {:error, :manifest_version_not_found} ->
+              {:error, 404, "not_found", "Manifest version was not found", %{}}
 
+            {:error, _reason} ->
+              {:error, 400, "bad_request", "Request failed", %{}}
+          end
+        end
+      )
+    else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
-
-      {:error, :unauthenticated} ->
-        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
-
-      {:error, _reason} ->
-        error(conn, 400, "bad_request", "Request failed")
     end
   end
 
@@ -490,9 +499,6 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
-
-      {:error, _reason} ->
-        error(conn, 400, "bad_request", "Request failed")
     end
   end
 
@@ -614,42 +620,51 @@ defmodule FavnOrchestrator.API.Router do
   post "/api/orchestrator/v1/runs" do
     with :ok <- ensure_service_auth(conn),
          {:ok, session, actor} <- ensure_actor_context(conn, :operator),
-         {:ok, params} <- fetch_json_body(conn),
-         {:ok, run_id} <- submit_run_from_request(params),
-         {:ok, run} <- FavnOrchestrator.get_run(run_id),
-         :ok <-
-           Auth.put_audit(%{
-             action: "run.submit",
-             actor_id: actor.id,
-             session_id: session.id,
-             resource_type: "run",
-             resource_id: run_id,
-             outcome: "accepted",
-             service_identity: service_identity(conn)
-           }) do
-      data(conn, 201, %{run: run_summary_dto(run)})
+         {:ok, params} <- fetch_json_body(conn) do
+      run_idempotent_command(conn, "run.submit", actor.id, session.id, params, fn idempotency ->
+        with {:ok, run_id} <- submit_run_from_request(params),
+             {:ok, run} <- FavnOrchestrator.get_run(run_id),
+             :ok <-
+               Auth.put_audit(
+                 %{
+                   action: "run.submit",
+                   actor_id: actor.id,
+                   session_id: session.id,
+                   resource_type: "run",
+                   resource_id: run_id,
+                   outcome: "accepted",
+                   service_identity: service_identity(conn)
+                 }
+                 |> Map.merge(audit_idempotency(idempotency, "accepted"))
+               ) do
+          {:ok, 201, %{run: run_summary_dto(run)}, "run", run_id}
+        else
+          {:error, :invalid_target} ->
+            {:error, 422, "validation_failed", "Invalid run target request", %{}}
+
+          {:error, :invalid_manifest_selection} ->
+            {:error, 422, "validation_failed", "Invalid manifest selection", %{}}
+
+          {:error, :invalid_dependencies} ->
+            {:error, 422, "validation_failed", "Invalid dependency mode", %{}}
+
+          {:error, :invalid_asset_target} ->
+            {:error, 422, "validation_failed", "Invalid asset target id", %{}}
+
+          {:error, :invalid_pipeline_target} ->
+            {:error, 422, "validation_failed", "Invalid pipeline target id", %{}}
+
+          {:error, reason} when is_tuple(reason) ->
+            command_window_policy_error(reason)
+
+          {:error, :active_manifest_not_set} ->
+            {:error, 404, "not_found", "Active manifest is not set", %{}}
+
+          {:error, _reason} ->
+            {:error, 400, "bad_request", "Request failed", %{}}
+        end
+      end)
     else
-      {:error, :invalid_target} ->
-        error(conn, 422, "validation_failed", "Invalid run target request")
-
-      {:error, :invalid_manifest_selection} ->
-        error(conn, 422, "validation_failed", "Invalid manifest selection")
-
-      {:error, :invalid_dependencies} ->
-        error(conn, 422, "validation_failed", "Invalid dependency mode")
-
-      {:error, :invalid_asset_target} ->
-        error(conn, 422, "validation_failed", "Invalid asset target id")
-
-      {:error, :invalid_pipeline_target} ->
-        error(conn, 422, "validation_failed", "Invalid pipeline target id")
-
-      {:error, reason} when is_tuple(reason) ->
-        maybe_window_policy_error(conn, reason)
-
-      {:error, :active_manifest_not_set} ->
-        error(conn, 404, "not_found", "Active manifest is not set")
-
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
@@ -658,83 +673,89 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
-
-      {:error, _reason} ->
-        error(conn, 400, "bad_request", "Request failed")
     end
   end
 
   post "/api/orchestrator/v1/runs/:run_id/cancel" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, actor_id, session_id} <- ensure_operator_context(conn),
-         :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor_id}),
-         :ok <-
-           Auth.put_audit(%{
-             action: "run.cancel",
-             actor_id: actor_id,
-             session_id: session_id,
-             resource_type: "run",
-             resource_id: run_id,
-             outcome: "accepted",
-             service_identity: service_identity(conn)
-           }) do
-      data(conn, 200, %{cancelled: true, run_id: run_id})
+         {:ok, actor_id, session_id} <- ensure_operator_context(conn) do
+      run_idempotent_command(conn, "run.cancel", actor_id, session_id, %{run_id: run_id}, fn
+        idempotency ->
+          with :ok <- FavnOrchestrator.cancel_run(run_id, %{actor_id: actor_id}),
+               :ok <-
+                 Auth.put_audit(
+                   %{
+                     action: "run.cancel",
+                     actor_id: actor_id,
+                     session_id: session_id,
+                     resource_type: "run",
+                     resource_id: run_id,
+                     outcome: "accepted",
+                     service_identity: service_identity(conn)
+                   }
+                   |> Map.merge(audit_idempotency(idempotency, "accepted"))
+                 ) do
+            {:ok, 200, %{cancelled: true, run_id: run_id}, "run", run_id}
+          else
+            {:error, :not_found} ->
+              {:error, 404, "not_found", "Run was not found", %{}}
+
+            {:error, :backfill_parent_cancel_not_supported} ->
+              {:error, 409, "conflict",
+               "Backfill parent runs cannot be cancelled through generic run cancellation", %{}}
+
+            {:error, _reason} ->
+              {:error, 400, "bad_request", "Request failed", %{}}
+          end
+      end)
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
-
-      {:error, :not_found} ->
-        error(conn, 404, "not_found", "Run was not found")
-
-      {:error, :backfill_parent_cancel_not_supported} ->
-        error(
-          conn,
-          409,
-          "conflict",
-          "Backfill parent runs cannot be cancelled through generic run cancellation"
-        )
-
-      {:error, _reason} ->
-        error(conn, 400, "bad_request", "Request failed")
     end
   end
 
   post "/api/orchestrator/v1/runs/:run_id/rerun" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, session, actor} <- ensure_actor_context(conn, :operator),
-         {:ok, rerun_id} <- FavnOrchestrator.rerun(run_id),
-         {:ok, rerun_run} <- FavnOrchestrator.get_run(rerun_id),
-         :ok <-
-           Auth.put_audit(%{
-             action: "run.rerun",
-             actor_id: actor.id,
-             session_id: session.id,
-             resource_type: "run",
-             resource_id: rerun_id,
-             outcome: "accepted",
-             service_identity: service_identity(conn)
-           }) do
-      data(conn, 201, %{run: run_summary_dto(rerun_run)})
+         {:ok, session, actor} <- ensure_actor_context(conn, :operator) do
+      run_idempotent_command(conn, "run.rerun", actor.id, session.id, %{run_id: run_id}, fn
+        idempotency ->
+          with {:ok, rerun_id} <- FavnOrchestrator.rerun(run_id),
+               {:ok, rerun_run} <- FavnOrchestrator.get_run(rerun_id),
+               :ok <-
+                 Auth.put_audit(
+                   %{
+                     action: "run.rerun",
+                     actor_id: actor.id,
+                     session_id: session.id,
+                     resource_type: "run",
+                     resource_id: rerun_id,
+                     outcome: "accepted",
+                     service_identity: service_identity(conn)
+                   }
+                   |> Map.merge(audit_idempotency(idempotency, "accepted"))
+                 ) do
+            {:ok, 201, %{run: run_summary_dto(rerun_run)}, "run", rerun_id}
+          else
+            {:error, :not_found} ->
+              {:error, 404, "not_found", "Run was not found", %{}}
+
+            {:error, :backfill_parent_rerun_not_supported} ->
+              {:error, 409, "conflict",
+               "Backfill parent runs cannot be rerun through generic run rerun", %{}}
+
+            {:error, _reason} ->
+              {:error, 400, "bad_request", "Request failed", %{}}
+          end
+      end)
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
-
-      {:error, :not_found} ->
-        error(conn, 404, "not_found", "Run was not found")
-
-      {:error, :backfill_parent_rerun_not_supported} ->
-        error(
-          conn,
-          409,
-          "conflict",
-          "Backfill parent runs cannot be rerun through generic run rerun"
-        )
 
       {:error, _reason} ->
         error(conn, 400, "bad_request", "Request failed")
@@ -744,36 +765,46 @@ defmodule FavnOrchestrator.API.Router do
   post "/api/orchestrator/v1/backfills" do
     with :ok <- ensure_service_auth(conn),
          {:ok, session, actor} <- ensure_actor_context(conn, :operator),
-         {:ok, params} <- fetch_json_body(conn),
-         {:ok, run_id} <- submit_backfill_from_request(params),
-         {:ok, run} <- FavnOrchestrator.get_run(run_id),
-         :ok <-
-           Auth.put_audit(%{
-             action: "backfill.submit",
-             actor_id: actor.id,
-             session_id: session.id,
-             resource_type: "run",
-             resource_id: run_id,
-             outcome: "accepted",
-             service_identity: service_identity(conn)
-           }) do
-      data(conn, 201, %{run: run_summary_dto(run)})
+         {:ok, params} <- fetch_json_body(conn) do
+      run_idempotent_command(conn, "backfill.submit", actor.id, session.id, params, fn
+        idempotency ->
+          with {:ok, run_id} <- submit_backfill_from_request(params),
+               {:ok, run} <- FavnOrchestrator.get_run(run_id),
+               :ok <-
+                 Auth.put_audit(
+                   %{
+                     action: "backfill.submit",
+                     actor_id: actor.id,
+                     session_id: session.id,
+                     resource_type: "run",
+                     resource_id: run_id,
+                     outcome: "accepted",
+                     service_identity: service_identity(conn)
+                   }
+                   |> Map.merge(audit_idempotency(idempotency, "accepted"))
+                 ) do
+            {:ok, 201, %{run: run_summary_dto(run)}, "run", run_id}
+          else
+            {:error, :invalid_target} ->
+              {:error, 422, "validation_failed", "Invalid backfill target request", %{}}
+
+            {:error, :invalid_manifest_selection} ->
+              {:error, 422, "validation_failed", "Invalid manifest selection", %{}}
+
+            {:error, :invalid_backfill_range_request} ->
+              {:error, 422, "validation_failed", "Invalid backfill range request", %{}}
+
+            {:error, reason} when is_tuple(reason) ->
+              command_backfill_range_error(reason)
+
+            {:error, :active_manifest_not_set} ->
+              {:error, 404, "not_found", "Active manifest is not set", %{}}
+
+            {:error, _reason} ->
+              {:error, 400, "bad_request", "Request failed", %{}}
+          end
+      end)
     else
-      {:error, :invalid_target} ->
-        error(conn, 422, "validation_failed", "Invalid backfill target request")
-
-      {:error, :invalid_manifest_selection} ->
-        error(conn, 422, "validation_failed", "Invalid manifest selection")
-
-      {:error, :invalid_backfill_range_request} ->
-        error(conn, 422, "validation_failed", "Invalid backfill range request")
-
-      {:error, reason} when is_tuple(reason) ->
-        maybe_backfill_range_error(conn, reason)
-
-      {:error, :active_manifest_not_set} ->
-        error(conn, 404, "not_found", "Active manifest is not set")
-
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
@@ -782,9 +813,6 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
-
-      {:error, _reason} ->
-        error(conn, 400, "bad_request", "Request failed")
     end
   end
 
@@ -824,37 +852,53 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, window_key} <- fetch_required_string(params, "window_key"),
-         {:ok, window} <- find_backfill_window(backfill_run_id, window_key),
-         {:ok, rerun_id} <-
-           FavnOrchestrator.rerun_backfill_window(
-             backfill_run_id,
-             window.pipeline_module,
-             window.window_key
-           ),
-         {:ok, run} <- FavnOrchestrator.get_run(rerun_id),
-         :ok <-
-           Auth.put_audit(%{
-             action: "backfill.window.rerun",
-             actor_id: actor.id,
-             session_id: session.id,
-             resource_type: "run",
-             resource_id: rerun_id,
-             outcome: "accepted",
-             service_identity: service_identity(conn)
-           }) do
-      data(conn, 201, %{run: run_summary_dto(run)})
+         {:ok, window} <- find_backfill_window(backfill_run_id, window_key) do
+      run_idempotent_command(
+        conn,
+        "backfill.window.rerun",
+        actor.id,
+        session.id,
+        %{backfill_run_id: backfill_run_id, window_key: window_key},
+        fn idempotency ->
+          with {:ok, rerun_id} <-
+                 FavnOrchestrator.rerun_backfill_window(
+                   backfill_run_id,
+                   window.pipeline_module,
+                   window.window_key
+                 ),
+               {:ok, run} <- FavnOrchestrator.get_run(rerun_id),
+               :ok <-
+                 Auth.put_audit(
+                   %{
+                     action: "backfill.window.rerun",
+                     actor_id: actor.id,
+                     session_id: session.id,
+                     resource_type: "run",
+                     resource_id: rerun_id,
+                     outcome: "accepted",
+                     service_identity: service_identity(conn)
+                   }
+                   |> Map.merge(audit_idempotency(idempotency, "accepted"))
+                 ) do
+            {:ok, 201, %{run: run_summary_dto(run)}, "run", rerun_id}
+          else
+            {:error, :backfill_window_not_rerunnable} ->
+              {:error, 409, "conflict", "Backfill window is not rerunnable", %{}}
+
+            {:error, :backfill_window_has_no_attempt} ->
+              {:error, 409, "conflict", "Backfill window has no attempt to rerun", %{}}
+
+            {:error, _reason} ->
+              {:error, 400, "bad_request", "Request failed", %{}}
+          end
+        end
+      )
     else
       {:error, {:missing_field, field}} ->
         error(conn, 422, "validation_failed", "Missing required field", %{field: field})
 
       {:error, :not_found} ->
         error(conn, 404, "not_found", "Backfill window was not found")
-
-      {:error, :backfill_window_not_rerunnable} ->
-        error(conn, 409, "conflict", "Backfill window is not rerunnable")
-
-      {:error, :backfill_window_has_no_attempt} ->
-        error(conn, 409, "conflict", "Backfill window has no attempt to rerun")
 
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -1350,6 +1394,136 @@ defmodule FavnOrchestrator.API.Router do
       _ -> {:error, {:missing_field, "session_token"}}
     end
   end
+
+  defp run_idempotent_command(conn, operation, actor_id, session_id, request_input, execute_fun)
+       when is_binary(operation) and is_function(execute_fun, 1) do
+    case idempotency_key_hash(conn) do
+      {:ok, key_hash} ->
+        fingerprint =
+          Idempotency.request_fingerprint(%{
+            operation: operation,
+            request: request_input
+          })
+
+        scope = %{
+          operation: operation,
+          actor_id: actor_id,
+          session_id: session_id,
+          service_identity: service_identity(conn),
+          idempotency_key_hash: key_hash
+        }
+
+        record = Idempotency.new_record(scope, fingerprint)
+
+        case Idempotency.reserve(record) do
+          {:ok, {:reserved, reserved}} ->
+            execute_idempotent_command(
+              conn,
+              reserved,
+              %{operation: operation, key_hash: key_hash},
+              execute_fun
+            )
+
+          {:ok, {:replay, stored}} ->
+            replay_idempotent_response(conn, stored)
+
+          {:error, :idempotency_conflict} ->
+            error(
+              conn,
+              409,
+              "idempotency_conflict",
+              "Idempotency key was reused with different input"
+            )
+
+          {:error, :operation_in_progress} ->
+            error(conn, 409, "operation_in_progress", "Original operation is still in progress")
+
+          {:error, reason} ->
+            Logger.error("idempotency.reserve failed: #{inspect(reason)}")
+            error(conn, 500, "internal_error", "Idempotency reservation failed")
+        end
+
+      {:error, :missing_idempotency_key} ->
+        error(conn, 422, "validation_failed", "Missing required Idempotency-Key header", %{
+          header: "Idempotency-Key"
+        })
+
+      {:error, :invalid_idempotency_key} ->
+        error(conn, 422, "validation_failed", "Invalid Idempotency-Key header", %{
+          header: "Idempotency-Key"
+        })
+    end
+  end
+
+  defp execute_idempotent_command(conn, record, idempotency, execute_fun) do
+    case execute_fun.(idempotency) do
+      {:ok, status, payload, resource_type, resource_id} ->
+        :ok =
+          Idempotency.complete(record.id, %{
+            status: :completed,
+            response_status: status,
+            response_body: normalize_data(payload),
+            resource_type: resource_type,
+            resource_id: resource_id
+          })
+
+        data(conn, status, payload)
+
+      {:error, status, code, message, details} ->
+        :ok =
+          Idempotency.complete(record.id, %{
+            status: :failed,
+            response_status: status,
+            response_body: normalize_data(%{code: code, message: message, details: details}),
+            resource_type: nil,
+            resource_id: nil
+          })
+
+        error(conn, status, code, message, details)
+    end
+  end
+
+  defp replay_idempotent_response(conn, %{status: :completed} = record) do
+    data(conn, record.response_status, record.response_body || %{})
+  end
+
+  defp replay_idempotent_response(conn, %{status: :failed} = record) do
+    body = record.response_body || %{}
+
+    error(
+      conn,
+      record.response_status,
+      body_field(body, "code") || "bad_request",
+      body_field(body, "message") || "Request failed",
+      body_field(body, "details") || %{}
+    )
+  end
+
+  defp idempotency_key_hash(conn) do
+    case header(conn, "idempotency-key") do
+      nil ->
+        {:error, :missing_idempotency_key}
+
+      value ->
+        value = String.trim(value)
+
+        if value != "" and byte_size(value) <= 512 do
+          {:ok, Idempotency.key_hash(value)}
+        else
+          {:error, :invalid_idempotency_key}
+        end
+    end
+  end
+
+  defp audit_idempotency(%{operation: operation, key_hash: key_hash}, outcome) do
+    %{
+      operation: operation,
+      idempotency: %{outcome: outcome, key_hash: key_hash}
+    }
+  end
+
+  defp body_field(body, key) when is_map(body),
+    do: Map.get(body, key) || Map.get(body, String.to_atom(key))
 
   defp maybe_put_audit(true, entry), do: Auth.put_audit(entry)
   defp maybe_put_audit(false, _entry), do: :ok
@@ -1889,10 +2063,10 @@ defmodule FavnOrchestrator.API.Router do
     |> send_resp(status, body)
   end
 
-  defp maybe_window_policy_error(conn, reason) do
+  defp command_window_policy_error(reason) do
     case window_policy_error(reason) do
-      {:ok, message, details} -> error(conn, 422, "validation_failed", message, details)
-      :error -> error(conn, 400, "bad_request", "Request failed")
+      {:ok, message, details} -> {:error, 422, "validation_failed", message, details}
+      :error -> {:error, 400, "bad_request", "Request failed", %{}}
     end
   end
 
@@ -1929,10 +2103,10 @@ defmodule FavnOrchestrator.API.Router do
 
   defp window_policy_error(_reason), do: :error
 
-  defp maybe_backfill_range_error(conn, reason) do
+  defp command_backfill_range_error(reason) do
     case backfill_range_error(reason) do
-      {:ok, message, details} -> error(conn, 422, "validation_failed", message, details)
-      :error -> error(conn, 400, "bad_request", "Request failed")
+      {:ok, message, details} -> {:error, 422, "validation_failed", message, details}
+      :error -> {:error, 400, "bad_request", "Request failed", %{}}
     end
   end
 
@@ -2360,6 +2534,8 @@ defmodule FavnOrchestrator.API.Router do
 
   defp normalize_data(value) when is_list(value), do: Enum.map(value, &normalize_data/1)
   defp normalize_data({module, name}), do: ref_to_string({module, name})
+  defp normalize_data(nil), do: nil
+  defp normalize_data(value) when is_boolean(value), do: value
   defp normalize_data(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_data(value), do: value
 

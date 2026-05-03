@@ -1,7 +1,8 @@
 # favn_orchestrator
 
 Purpose: control plane and system of record for manifests, runs, schedules,
-events, auth/authz/audit, private HTTP API, backfill state, and storage contracts.
+events, auth/authz/audit, command idempotency, private HTTP API, backfill state,
+and storage contracts.
 
 Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator.ex`
@@ -10,6 +11,7 @@ Code:
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - HTTP contract schemas under `apps/favn_orchestrator/priv/http_contract/v1/`
 - Production runtime config, readiness, diagnostics, redaction, and operational event modules under `apps/favn_orchestrator/lib/favn_orchestrator/`
+- Command idempotency helpers under `apps/favn_orchestrator/lib/favn_orchestrator/idempotency.ex`
 
 Tests:
 - `apps/favn_orchestrator/test/`
@@ -19,5 +21,5 @@ Tests:
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`
 
 Use when changing run lifecycle, scheduling, private API behavior, SSE/events,
-auth, bootstrap service-token/runner-registration endpoints, backfill
+auth, command idempotency, bootstrap service-token/runner-registration endpoints, backfill
 orchestration, or storage contract semantics.
