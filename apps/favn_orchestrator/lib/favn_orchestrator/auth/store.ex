@@ -363,12 +363,13 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   defp validate_password_policy(password) do
-    password_length = password |> String.trim() |> String.length()
+    trimmed_password = String.trim(password)
+    raw_password_length = String.length(password)
 
     cond do
-      String.trim(password) == "" -> {:error, :password_blank}
-      password_length < @min_password_length -> {:error, :password_too_short}
-      password_length > @max_password_length -> {:error, :password_too_long}
+      trimmed_password == "" -> {:error, :password_blank}
+      raw_password_length < @min_password_length -> {:error, :password_too_short}
+      raw_password_length > @max_password_length -> {:error, :password_too_long}
       true -> :ok
     end
   end

@@ -44,6 +44,14 @@ defmodule FavnOrchestrator.Auth.StoreTest do
     assert {:error, :password_too_long} =
              Auth.create_actor("huge", String.duplicate("a", 1_025), "Huge", [:admin])
 
+    assert {:error, :password_too_long} =
+             Auth.create_actor(
+               "huge_spaced",
+               String.duplicate(" ", 1_025) <> "valid-password-long",
+               "Huge Spaced",
+               [:admin]
+             )
+
     assert {:ok, _actor} = Auth.create_actor("admin", "admin-password-long", "Admin", [:admin])
     assert {:error, :invalid_credentials} = Auth.password_login("admin", "wrong-password")
     assert {:error, :invalid_credentials} = Auth.password_login("missing", "wrong-password")
