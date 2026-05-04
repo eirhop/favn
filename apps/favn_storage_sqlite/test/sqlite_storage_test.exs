@@ -4,6 +4,7 @@ defmodule Favn.SQLiteStorageTest do
   alias Ecto.Adapters.SQL
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Identity
   alias Favn.Manifest.Version
   alias Favn.Run
   alias Favn.Scheduler.State, as: SchedulerState
@@ -86,7 +87,11 @@ defmodule Favn.SQLiteStorageTest do
 
     assert :ok = Storage.put_run(run)
     replace_run_atom(run.id, existing_module, unknown_module)
-    replace_manifest_value(run.manifest_version_id, existing_module, unknown_module)
+
+    content_hash =
+      replace_manifest_value(run.manifest_version_id, existing_module, unknown_module)
+
+    replace_run_manifest_content_hash(run.id, run.manifest_content_hash, content_hash)
 
     assert {:ok, fetched} = Storage.get_run(run.id)
     assert {module, :sample_asset} = fetched.asset_ref
@@ -913,7 +918,7 @@ defmodule Favn.SQLiteStorageTest do
     %Run{
       id: id,
       manifest_version_id: "manifest_v1",
-      manifest_content_hash: "manifest_hash_v1",
+      manifest_content_hash: manifest_content_hash(),
       asset_ref: {Favn.SQLiteStorageTest, :sample_asset},
       target_refs: [],
       plan: nil,
@@ -943,6 +948,8 @@ defmodule Favn.SQLiteStorageTest do
     version
   end
 
+  defp manifest_content_hash, do: manifest_version("manifest_v1").content_hash
+
   defp replace_run_atom(run_id, from, to) do
     assert {:ok, %{rows: [[payload]]}} =
              SQL.query(Repo, "SELECT run_blob FROM favn_runs WHERE run_id = ?1", [run_id])
@@ -965,13 +972,29 @@ defmodule Favn.SQLiteStorageTest do
              )
 
     manifest_json = replace_string_value(manifest_json, from, to)
+    content_hash = manifest_content_hash!(manifest_json)
 
     assert {:ok, _} =
              SQL.query(
                Repo,
-               "UPDATE favn_manifest_versions SET manifest_json = ?1 WHERE manifest_version_id = ?2",
-               [manifest_json, manifest_version_id]
+               "UPDATE favn_manifest_versions SET manifest_json = ?1, content_hash = ?2 WHERE manifest_version_id = ?3",
+               [manifest_json, content_hash, manifest_version_id]
              )
+
+    content_hash
+  end
+
+  defp replace_run_manifest_content_hash(run_id, from, to) do
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT run_blob FROM favn_runs WHERE run_id = ?1", [run_id])
+
+    payload = replace_string_value(payload, from, to)
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_runs SET run_blob = ?1 WHERE run_id = ?2", [
+               payload,
+               run_id
+             ])
   end
 
   defp replace_atom_value(encoded, from, to) do
@@ -1013,6 +1036,15 @@ defmodule Favn.SQLiteStorageTest do
   end
 
   defp replace_string_value_in_term(value, _from, _to), do: value
+
+  defp manifest_content_hash!(manifest_json) do
+    manifest_json
+    |> JSON.decode!()
+    |> Identity.hash_manifest()
+    |> case do
+      {:ok, hash} -> hash
+    end
+  end
 
   defp sample_coverage_baseline(baseline_id, status, now) do
     {:ok, baseline} =

@@ -3,6 +3,7 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest
+  alias Favn.Manifest.Identity
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter.Postgres, as: Adapter
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -109,11 +110,46 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert :ok = Adapter.put_manifest_version(version, opts)
         assert :ok = Adapter.put_run(run, opts)
         replace_run_atom(run.id, existing_module, unknown_module)
-        replace_manifest_value(run.manifest_version_id, existing_module, unknown_module)
+
+        content_hash =
+          replace_manifest_value(run.manifest_version_id, existing_module, unknown_module)
+
+        replace_run_manifest_content_hash(run.id, run.manifest_content_hash, content_hash)
 
         assert {:ok, fetched} = Adapter.get_run(run.id, opts)
         assert {module, :asset} = fetched.asset_ref
         assert Atom.to_string(module) == unknown_module
+    end
+  end
+
+  test "run recovery rejects consumer module atoms absent from the run manifest", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        version =
+          manifest_version("mv_pg_run_snapshot_reject_#{System.unique_integer([:positive])}")
+
+        existing_module = Atom.to_string(MyApp.Asset)
+
+        unknown_module =
+          "Elixir.Favn.PostgresLiveTest.UnknownAsset#{System.unique_integer([:positive])}"
+
+        run =
+          RunState.new(
+            id: "run_pg_snapshot_reject_#{System.unique_integer([:positive])}",
+            manifest_version_id: version.manifest_version_id,
+            manifest_content_hash: version.content_hash,
+            asset_ref: {MyApp.Asset, :asset}
+          )
+
+        assert :ok = Adapter.put_manifest_version(version, opts)
+        assert :ok = Adapter.put_run(run, opts)
+        replace_run_atom(run.id, existing_module, unknown_module)
+
+        assert {:error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}} =
+                 Adapter.get_run(run.id, opts)
     end
   end
 
@@ -948,13 +984,29 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
              )
 
     manifest_json = replace_string_value(manifest_json, from, to)
+    content_hash = manifest_content_hash!(manifest_json)
 
     assert {:ok, _} =
              SQL.query(
                Repo,
-               "UPDATE favn_manifest_versions SET manifest_json = $1 WHERE manifest_version_id = $2",
-               [manifest_json, manifest_version_id]
+               "UPDATE favn_manifest_versions SET manifest_json = $1, content_hash = $2 WHERE manifest_version_id = $3",
+               [manifest_json, content_hash, manifest_version_id]
              )
+
+    content_hash
+  end
+
+  defp replace_run_manifest_content_hash(run_id, from, to) do
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT run_blob FROM favn_runs WHERE run_id = $1", [run_id])
+
+    payload = replace_string_value(payload, from, to)
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_runs SET run_blob = $1 WHERE run_id = $2", [
+               payload,
+               run_id
+             ])
   end
 
   defp replace_atom_value(encoded, from, to) do
@@ -996,6 +1048,15 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
   end
 
   defp replace_string_value_in_term(value, _from, _to), do: value
+
+  defp manifest_content_hash!(manifest_json) do
+    manifest_json
+    |> JSON.decode!()
+    |> Identity.hash_manifest()
+    |> case do
+      {:ok, hash} -> hash
+    end
+  end
 
   defp concurrent_results(fun_a, fun_b) do
     parent = self()

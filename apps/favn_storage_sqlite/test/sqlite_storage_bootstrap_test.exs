@@ -51,7 +51,7 @@ defmodule Favn.SQLiteStorageBootstrapTest do
     %Run{
       id: id,
       manifest_version_id: "manifest_v1",
-      manifest_content_hash: "manifest_hash_v1",
+      manifest_content_hash: manifest_content_hash(),
       asset_ref: {Favn.SQLiteStorageBootstrapTest, :sample_asset},
       target_refs: [],
       plan: nil,
@@ -76,4 +76,6 @@ defmodule Favn.SQLiteStorageBootstrapTest do
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
   end
+
+  defp manifest_content_hash, do: manifest_version("manifest_v1").content_hash
 end
