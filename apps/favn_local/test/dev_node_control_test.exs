@@ -61,12 +61,12 @@ defmodule Favn.Dev.NodeControlTest do
                put_application_env: fn app, key, value ->
                  send(parent, {:application_env, app, key, value})
                end,
-               local_distribution: [
-                 localhost: fn -> ~c"wslhost" end,
-                 resolver: fn ~c"wslhost" -> {:ok, [{127, 0, 1, 1}]} end,
-                 epmd_executable: false
-               ]
-             )
+                local_distribution: [
+                  localhost: fn -> ~c"WSLHOST" end,
+                  resolver: fn ~c"WSLHOST" -> {:ok, [{127, 0, 1, 1}]} end,
+                  epmd_executable: false
+                ]
+              )
 
     assert_received {:system_env, "ERL_EPMD_ADDRESS", "127.0.1.1"}
     assert_received {:application_env, :kernel, :inet_dist_use_interface, {127, 0, 1, 1}}

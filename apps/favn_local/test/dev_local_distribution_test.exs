@@ -5,13 +5,13 @@ defmodule Favn.Dev.LocalDistributionTest do
 
   test "preflight derives loopback bind IP from short hostname resolution" do
     assert {:ok, distribution} =
-             LocalDistribution.preflight(
-               localhost: fn -> ~c"wslhost.localdomain" end,
-               resolver: fn ~c"wslhost" -> {:ok, [{192, 168, 1, 10}, {127, 0, 1, 1}]} end,
-               epmd_executable: false
-             )
+              LocalDistribution.preflight(
+                localhost: fn -> ~c"WSLHOST.localdomain" end,
+                resolver: fn ~c"WSLHOST" -> {:ok, [{192, 168, 1, 10}, {127, 0, 1, 1}]} end,
+                epmd_executable: false
+              )
 
-    assert distribution.short_host == "wslhost"
+    assert distribution.short_host == "WSLHOST"
     assert distribution.bind_ip == "127.0.1.1"
     assert distribution.bind_tuple == {127, 0, 1, 1}
 
@@ -22,6 +22,17 @@ defmodule Favn.Dev.LocalDistributionTest do
            ]
 
     assert LocalDistribution.erl_flags(distribution, 45_123) =~ "{127,0,1,1}"
+  end
+
+  test "preflight preserves short hostname case for Erlang node compatibility" do
+    assert {:ok, distribution} =
+             LocalDistribution.preflight(
+               localhost: fn -> ~c"EFB-PF55VAFN.localdomain" end,
+               resolver: fn ~c"EFB-PF55VAFN" -> {:ok, [{127, 0, 0, 1}]} end,
+               epmd_executable: false
+             )
+
+    assert distribution.short_host == "EFB-PF55VAFN"
   end
 
   test "preflight rejects non-loopback short hostname resolution" do

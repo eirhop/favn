@@ -90,7 +90,7 @@ defmodule Favn.Dev.LocalDistribution do
   end
 
   defp normalize_short_host(host) when is_binary(host) and host != "" do
-    host = host |> String.trim() |> String.downcase() |> String.split(".", parts: 2) |> hd()
+    host = host |> String.trim() |> String.split(".", parts: 2) |> hd()
 
     if DistributedErlang.valid_short_host?(host) do
       {:ok, host}
