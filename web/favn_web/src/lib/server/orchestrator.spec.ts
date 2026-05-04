@@ -11,11 +11,17 @@ const session: WebSession = {
 };
 
 function setValidEnv(extra: Record<string, string | undefined> = {}) {
-	vi.stubEnv('FAVN_WEB_ORCHESTRATOR_BASE_URL', 'https://orchestrator.internal:4101');
+	vi.stubEnv(
+		'FAVN_WEB_ORCHESTRATOR_BASE_URL',
+		extra.FAVN_WEB_ORCHESTRATOR_BASE_URL ?? 'https://orchestrator.internal:4101'
+	);
 	vi.stubEnv('FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN', 'orchestrator-service-token-32-char-minimum');
-	vi.stubEnv('FAVN_WEB_PUBLIC_ORIGIN', 'https://favn.example.com');
+	vi.stubEnv('FAVN_WEB_PUBLIC_ORIGIN', extra.FAVN_WEB_PUBLIC_ORIGIN ?? 'https://favn.example.com');
 	if (extra.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS !== undefined) {
 		vi.stubEnv('FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS', extra.FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS);
+	}
+	if (extra.FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH !== undefined) {
+		vi.stubEnv('FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH', extra.FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH);
 	}
 }
 
@@ -140,6 +146,27 @@ describe('orchestrator client', () => {
 		expect(headers.get('x-favn-service')).toBe('favn_web');
 		expect(headers.get('x-favn-session-token')).toBe('opaque-session-token-1');
 		expect(headers.has('x-favn-session-id')).toBe(false);
+	});
+
+	it('uses trusted local dev context without forwarding synthetic session credentials', async () => {
+		setValidEnv({
+			FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH: '1',
+			FAVN_WEB_PUBLIC_ORIGIN: 'http://127.0.0.1:4199',
+			FAVN_WEB_ORCHESTRATOR_BASE_URL: 'http://127.0.0.1:4101'
+		});
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', fetchMock);
+		const { localDevTrustedWebSession } = await import('./local_dev_trusted_auth');
+		const { orchestratorListRuns } = await import('./orchestrator');
+
+		await orchestratorListRuns(localDevTrustedWebSession());
+
+		expect(fetchMock).toHaveBeenCalledOnce();
+		const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+		const headers = new Headers(init.headers);
+		expect(headers.get('x-favn-local-dev-context')).toBe('trusted');
+		expect(headers.has('x-favn-actor-id')).toBe(false);
+		expect(headers.has('x-favn-session-token')).toBe(false);
 	});
 
 	it('returns a sanitized response when orchestrator is unreachable', async () => {

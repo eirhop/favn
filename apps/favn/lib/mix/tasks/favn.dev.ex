@@ -14,7 +14,7 @@ defmodule Mix.Tasks.Favn.Dev do
 
   @impl Mix.Task
   def run(args) do
-    opts = parse_args(args)
+    opts = args |> parse_args() |> Keyword.put(:progress_fun, &IO.puts/1)
 
     case Dev.dev(opts) do
       :ok ->

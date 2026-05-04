@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import type { WebSession } from './session';
 import { markSanitizedResponse } from './sanitized_response';
 import { currentWebRuntimeConfig } from './runtime_config';
+import {
+	applyLocalDevTrustedAuthHeader,
+	isLocalDevTrustedWebSession
+} from './local_dev_trusted_auth';
 
 export type OrchestratorFailureCode = 'orchestrator_unavailable' | 'orchestrator_timeout';
 
@@ -87,8 +91,9 @@ async function orchestratorRequest(
 
 	headers.set('authorization', `Bearer ${config.orchestratorServiceToken}`);
 	headers.set('x-favn-service', 'favn_web');
+	applyLocalDevTrustedAuthHeader(headers);
 
-	if (session) {
+	if (session && !isLocalDevTrustedWebSession(session)) {
 		headers.set('x-favn-actor-id', session.actor_id);
 		headers.set('x-favn-session-token', session.session_token);
 	}

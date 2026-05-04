@@ -249,7 +249,8 @@ defmodule Favn.Dev.RuntimeLaunch do
         "FAVN_WEB_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
         "FAVN_WEB_PUBLIC_ORIGIN" => config.web_base_url,
         "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
-        "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"]
+        "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"],
+        "FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH" => "1"
       }
     }
   end

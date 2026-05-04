@@ -407,16 +407,18 @@ hash of the copied runtime source tree, excluding generated dependency/build
 directories, so source-only Favn updates refresh the installed runtime. `mix
 favn.dev` validates that fingerprint and compiles the installed runtime
 workspace before startup so live runner/orchestrator processes do not boot stale
-internal runtime beams. `--root-dir` remains an install/runtime-source override
-for split-root workflows.
+internal runtime beams. During foreground startup it prints concise terminal
+progress lines before slow phases such as runtime compile, project compile,
+service startup, manifest publication, and HTTP readiness checks. `--root-dir`
+remains an install/runtime-source override for split-root workflows.
 
 Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
 developer loop. The local stack enables an explicit trusted local-dev context
-for CLI calls only while the orchestrator API is bound to `127.*`, so
-`mix favn.dev`, `mix favn.run`, and local backfill commands do not require
-usernames or passwords and do not persist local service tokens, passwords, RPC
-cookies, or session secrets under `.favn/`.
+while the web UI and orchestrator API are bound to loopback, so `mix favn.dev`,
+the bundled local web UI, `mix favn.run`, and local backfill commands do not
+require usernames or passwords and do not persist local service tokens,
+passwords, RPC cookies, or session secrets under `.favn/`.
 
 Production/server startup is separate from local dev. When production runtime
 configuration is enabled, the orchestrator requires explicit

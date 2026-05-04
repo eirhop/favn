@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.Run.AssetResult
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -367,6 +368,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          _runner_client,
          _runner_opts
        ) do
+    result = sanitize_runner_result(result)
     cleared = clear_inflight_execution(run_state, execution_id)
     step_status = map_runner_status(result.status)
     {event_type, retryable?} = step_outcome(step_status)
@@ -761,6 +763,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ) do
     case runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts) do
       {:ok, %RunnerResult{} = result} ->
+        result = sanitize_runner_result(result)
+
         step_finished =
           RunState.transition(running_with_execution,
             status: map_runner_status(result.status),
@@ -946,8 +950,102 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp step_outcome(:error), do: {:step_failed, true}
   defp step_outcome(_other), do: {:step_failed, true}
 
-  defp normalize_results(results) when is_list(results), do: results
+  defp normalize_results(results) when is_list(results),
+    do: Enum.map(results, &sanitize_asset_result/1)
+
   defp normalize_results(_other), do: []
+
+  defp sanitize_runner_result(%RunnerResult{} = result) do
+    %{
+      result
+      | error: sanitize_error(result.error),
+        asset_results: normalize_results(result.asset_results)
+    }
+  end
+
+  defp sanitize_asset_result(%AssetResult{} = result) do
+    %{result | error: sanitize_error(result.error), attempts: sanitize_attempts(result.attempts)}
+  end
+
+  defp sanitize_asset_result(result), do: result
+
+  defp sanitize_attempts(attempts) when is_list(attempts) do
+    Enum.map(attempts, fn
+      %{error: error} = attempt -> %{attempt | error: sanitize_error(error)}
+      %{"error" => error} = attempt -> %{attempt | "error" => sanitize_error(error)}
+      attempt -> attempt
+    end)
+  end
+
+  defp sanitize_attempts(_attempts), do: []
+
+  defp sanitize_error(nil), do: nil
+
+  defp sanitize_error(
+         %{"kind" => _kind, "message" => _message, "reason" => _reason, "type" => _type} = error
+       ),
+       do: error
+
+  defp sanitize_error(%{kind: kind} = error) do
+    reason = Map.get(error, :reason)
+    message = Map.get(error, :message) || error_message(reason)
+
+    %{
+      "kind" => string_value(kind),
+      "message" => string_value(message || reason),
+      "reason" => inspect_value(reason),
+      "type" => error_type(reason)
+    }
+  end
+
+  defp sanitize_error(error) do
+    %{
+      "kind" => "error",
+      "message" => string_value(error_message(error) || error),
+      "reason" => inspect_value(error),
+      "type" => error_type(error)
+    }
+  end
+
+  defp error_message(%{__exception__: true} = exception) do
+    Exception.message(exception)
+  rescue
+    _error -> nil
+  end
+
+  defp error_message(_error), do: nil
+
+  defp error_type(%{__exception__: true, __struct__: module}), do: Atom.to_string(module)
+  defp error_type(error) when is_atom(error), do: Atom.to_string(error)
+  defp error_type(error), do: error |> term_type() |> Atom.to_string()
+
+  defp term_type(term) when is_map(term), do: :map
+  defp term_type(term) when is_tuple(term), do: :tuple
+  defp term_type(term) when is_list(term), do: :list
+  defp term_type(term) when is_binary(term), do: :string
+  defp term_type(term) when is_number(term), do: :number
+  defp term_type(term) when is_boolean(term), do: :boolean
+  defp term_type(_term), do: :term
+
+  defp string_value(value) when is_binary(value), do: truncate_string(value)
+  defp string_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp string_value(value), do: inspect_value(value)
+
+  defp inspect_value(value) do
+    value
+    |> inspect(limit: 20, printable_limit: 4_096)
+    |> truncate_string()
+  rescue
+    _error -> "#Inspect.Error<>"
+  end
+
+  defp truncate_string(value) when is_binary(value) do
+    if byte_size(value) > 8_192 do
+      String.slice(value, 0, 8_192) <> "..."
+    else
+      value
+    end
+  end
 
   defp merge_runner_metadata(run_metadata, runner_metadata)
        when is_map(run_metadata) and is_map(runner_metadata) do

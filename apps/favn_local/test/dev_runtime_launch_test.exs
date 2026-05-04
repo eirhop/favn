@@ -45,6 +45,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert hd(web.args) == Path.join(runtime["web_root"], "node_modules/vite/bin/vite.js")
     assert "preview" in web.args
     assert web.env["FAVN_WEB_PUBLIC_ORIGIN"] == config.web_base_url
+    assert web.env["FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH"] == "1"
   end
 
   test "runtime specs bind local HTTP and distributed Erlang to loopback" do
@@ -377,5 +378,4 @@ defmodule Favn.Dev.RuntimeLaunchTest do
   defp restore_env(key, value) when is_binary(key), do: System.put_env(key, value)
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
   defp restore_env(key, value), do: Application.put_env(:favn, key, value)
-
 end

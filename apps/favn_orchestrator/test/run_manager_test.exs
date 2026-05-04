@@ -208,6 +208,56 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientKeyErrorStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      error = %{
+        kind: :error,
+        reason: %KeyError{key: :rest, term: %{"rest" => %{"path" => "orders"}}},
+        stacktrace: [{{__MODULE__, :await_result, 3}, [file: ~c"test.exs", line: 1]}],
+        message: "key :rest not found in: %{}"
+      }
+
+      {:ok,
+       %RunnerResult{
+         status: :error,
+         error: error,
+         asset_results: [asset_result(error)],
+         metadata: %{}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp asset_result(error) do
+      %Favn.Run.AssetResult{
+        ref: {MyApp.Assets.Gold, :asset},
+        stage: 0,
+        status: :error,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: error,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: [%{attempt: 1, status: :error, error: error}]
+      }
+    end
+  end
+
   defmodule RunnerClientFlakyPerAssetStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -602,6 +652,27 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:error, :invalid_run_metadata} =
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
+  end
+
+  test "runner exception errors are stored as JSON-safe run data" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientKeyErrorStub)
+
+    version = manifest_version("mv_runner_key_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_runner_key_error")
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, run} = await_terminal_run(run_id)
+
+    assert run.status == :error
+    assert %{"kind" => "error", "message" => message, "type" => "Elixir.KeyError"} = run.error
+    assert message =~ "key :rest not found"
+
+    assert [%{error: asset_error, attempts: [%{error: attempt_error}]}] = run.result.asset_results
+    assert asset_error == run.error
+    assert attempt_error == run.error
+    refute inspect(run.error) =~ "__struct__"
+    refute inspect(run.error) =~ "stacktrace"
   end
 
   test "submits multi-target pipeline run in one run plan" do
