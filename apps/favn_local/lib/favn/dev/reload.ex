@@ -14,6 +14,7 @@ defmodule Favn.Dev.Reload do
   alias Favn.Dev.DistributedErlang
   alias Favn.Dev.LocalContext
   alias Favn.Dev.Lock
+  alias Favn.Dev.NodeControl
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RunnerControl
@@ -36,12 +37,12 @@ defmodule Favn.Dev.Reload do
          {:ok, runtime_after_restart} <- restart_runner(runtime, installed_runtime, secrets, opts),
          {:ok, published} <- publish_manifest(version, runtime_after_restart, secrets, opts),
          canonical_manifest_version_id <- canonical_manifest_version_id(published, version),
-          :ok <-
-            register_manifest_in_runner(
-              %{version | manifest_version_id: canonical_manifest_version_id},
-              runtime_after_restart,
-              secrets
-            ),
+         :ok <-
+           register_manifest_in_runner(
+             %{version | manifest_version_id: canonical_manifest_version_id},
+             runtime_after_restart,
+             secrets
+           ),
          :ok <- write_manifest_cache(version, canonical_manifest_version_id, opts),
          {:ok, activated} <-
            activate_manifest(canonical_manifest_version_id, runtime_after_restart, secrets, opts),
@@ -127,7 +128,7 @@ defmodule Favn.Dev.Reload do
             |> put_runner_replacement_marker(started_marker)
 
           with :ok <- write_runtime_snapshot(runtime_started, opts),
-               :ok <- wait_runner_node_reachable(runner_node, opts) do
+               :ok <- wait_runner_node_reachable(runner_node, secrets, opts) do
             completed_marker =
               started_marker
               |> Map.put("status", "completed")
@@ -229,18 +230,36 @@ defmodule Favn.Dev.Reload do
 
   defp runner_generation(_runner), do: 1
 
-  defp wait_runner_node_reachable(runner_node, opts) when is_binary(runner_node) do
+  @doc false
+  @spec wait_runner_node_reachable(String.t(), map(), keyword()) :: :ok | {:error, term()}
+  def wait_runner_node_reachable(runner_node, secrets, opts \\ [])
+      when is_binary(runner_node) and is_map(secrets) and is_list(opts) do
     timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 10_000)
 
-    case Keyword.get(opts, :runner_node_wait_fun) do
-      fun when is_function(fun, 2) ->
-        fun.(runner_node, timeout_ms)
+    with {:ok, rpc_cookie} <- fetch_rpc_cookie(secrets),
+         :ok <- ensure_local_control_node_started(rpc_cookie, opts) do
+      case Keyword.get(opts, :runner_node_wait_fun) do
+        fun when is_function(fun, 2) ->
+          fun.(runner_node, timeout_ms)
 
-      _ ->
-        with {:ok, node} <- DistributedErlang.node_name_to_atom(runner_node) do
-          deadline = System.monotonic_time(:millisecond) + timeout_ms
-          do_wait_runner_node_reachable(node, deadline)
-        end
+        _ ->
+          with {:ok, node} <- DistributedErlang.node_name_to_atom(runner_node) do
+            deadline = System.monotonic_time(:millisecond) + timeout_ms
+            do_wait_runner_node_reachable(node, deadline)
+          end
+      end
+    end
+  end
+
+  defp fetch_rpc_cookie(%{"rpc_cookie" => cookie}) when is_binary(cookie) and cookie != "",
+    do: {:ok, cookie}
+
+  defp fetch_rpc_cookie(_secrets), do: {:error, :missing_rpc_cookie}
+
+  defp ensure_local_control_node_started(rpc_cookie, opts) do
+    case Keyword.get(opts, :node_control_fun) do
+      fun when is_function(fun, 1) -> fun.(rpc_cookie)
+      _ -> NodeControl.ensure_local_node_started(rpc_cookie)
     end
   end
 
@@ -352,5 +371,4 @@ defmodule Favn.Dev.Reload do
 
   defp canonical_manifest_version_id(manifest_version_id) when is_binary(manifest_version_id),
     do: manifest_version_id
-
 end

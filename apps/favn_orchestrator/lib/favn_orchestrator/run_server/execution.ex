@@ -1005,6 +1005,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
     }
   end
 
+  defp sanitize_error(%{type: _type} = error), do: sanitize_structured_error(error)
+  defp sanitize_error(%{"type" => _type} = error), do: sanitize_structured_error(error)
+
   defp sanitize_error(error) do
     %{
       "kind" => "error",
@@ -1031,6 +1034,59 @@ defmodule FavnOrchestrator.RunServer.Execution do
   rescue
     _error -> "[REDACTED]"
   end
+
+  defp sanitize_structured_error(error) when is_map(error) do
+    error
+    |> Map.drop([:stacktrace, "stacktrace"])
+    |> Map.new(fn {key, value} -> {key, sanitize_structured_error_value(key, value)} end)
+  end
+
+  defp sanitize_structured_error_value(key, value) do
+    cond do
+      operational_error_key?(key) ->
+        redact_error_field(normalize_error_key(key), value)
+
+      is_map(value) ->
+        sanitize_structured_error(value)
+
+      is_list(value) ->
+        Enum.map(value, &sanitize_structured_error_nested/1)
+
+      is_tuple(value) ->
+        value
+        |> Tuple.to_list()
+        |> Enum.map(&sanitize_structured_error_nested/1)
+        |> List.to_tuple()
+
+      true ->
+        value
+    end
+  end
+
+  defp sanitize_structured_error_nested(value) when is_map(value),
+    do: sanitize_structured_error(value)
+
+  defp sanitize_structured_error_nested(value) when is_list(value),
+    do: Enum.map(value, &sanitize_structured_error_nested/1)
+
+  defp sanitize_structured_error_nested(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&sanitize_structured_error_nested/1)
+    |> List.to_tuple()
+  end
+
+  defp sanitize_structured_error_nested(value), do: value
+
+  defp operational_error_key?(key) when key in [:message, :reason, :error, :exception], do: true
+
+  defp operational_error_key?(key) when key in ["message", "reason", "error", "exception"],
+    do: true
+
+  defp operational_error_key?(_key), do: false
+
+  defp normalize_error_key(key) when is_atom(key), do: key
+  defp normalize_error_key(key) when is_binary(key), do: String.to_existing_atom(key)
 
   defp error_message(%{__exception__: true} = exception) do
     Exception.message(exception)

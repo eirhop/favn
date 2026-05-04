@@ -407,14 +407,37 @@ defmodule Favn.Dev.LifecycleTest do
     end
   end
 
-  defp service_specs(root_dir) do
+  test "foreground reports service exit instead of normal wrapper down", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+    specs = service_specs(root_dir, runner_args: ["-lc", "exit 0"])
+
+    ExUnit.CaptureIO.capture_io(fn ->
+      assert {:error, {:service_exit, "runner", 0}} =
+               Dev.dev(
+                 root_dir: root_dir,
+                 orchestrator_port: free_port(),
+                 web_port: free_port(),
+                 skip_install_check: true,
+                 skip_bootstrap: true,
+                 skip_readiness: true,
+                 service_specs_override: specs
+               )
+    end)
+
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  after
+    _ = Dev.stop(root_dir: root_dir)
+  end
+
+  defp service_specs(root_dir, opts \\ []) do
     shell = System.find_executable("bash") || "/bin/bash"
+    runner_args = Keyword.get(opts, :runner_args, ["-lc", "sleep 60"])
 
     [
       %{
         name: "runner",
         exec: shell,
-        args: ["-lc", "sleep 60"],
+        args: runner_args,
         cwd: root_dir,
         log_path: Paths.runner_log_path(root_dir),
         env: %{}

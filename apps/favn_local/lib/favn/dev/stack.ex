@@ -217,7 +217,7 @@ defmodule Favn.Dev.Stack do
     case :gen_tcp.listen(port, [
            :binary,
            {:active, false},
-           {:reuseaddr, false},
+           {:reuseaddr, true},
            {:ip, {127, 0, 0, 1}}
          ]) do
       {:ok, socket} ->
@@ -645,8 +645,8 @@ defmodule Favn.Dev.Stack do
 
     case wait_ready(config, opts) do
       :ok ->
-        monitor_services(services)
-        wait_for_service_exit(startup, opts)
+        monitor_refs = monitor_services(services)
+        wait_for_service_exit(startup, opts, monitor_refs)
 
       {:error, reason} ->
         cleanup_after_failure(reason, opts, startup)
@@ -731,37 +731,54 @@ defmodule Favn.Dev.Stack do
   end
 
   defp monitor_services(services) do
-    Enum.each(services, fn {_name, info} ->
-      Process.monitor(info.wrapper_pid)
-    end)
+    Map.new(services, fn {name, info} -> {Process.monitor(info.wrapper_pid), name} end)
   end
 
-  defp wait_for_service_exit(startup, opts) do
+  defp wait_for_service_exit(startup, opts, monitor_refs) when is_map(monitor_refs) do
     receive do
       {:service_exit, service, status} ->
-        reason = {:service_exit, service, status}
+        handle_service_exit(service, status, startup, opts, monitor_refs)
 
-        if intentional_runner_replacement_exit?(service, status, startup, opts) do
-          wait_for_service_exit(startup, opts)
-        else
-          cleanup_after_failure(reason, opts, startup)
-          {:error, reason}
+      {:DOWN, ref, :process, _pid, reason} ->
+        case receive_pending_service_exit() do
+          {:service_exit, service, status} ->
+            handle_service_exit(service, status, startup, opts, Map.delete(monitor_refs, ref))
+
+          nil ->
+            service = Map.get(monitor_refs, ref, "unknown")
+            failure = {:service_down, service, reason}
+            cleanup_after_failure(failure, opts, startup)
+            {:error, failure}
         end
-
-      {:DOWN, _ref, :process, _pid, reason} ->
-        failure = {:service_down, reason}
-        cleanup_after_failure(failure, opts, startup)
-        {:error, failure}
     after
       1_000 ->
         case poll_replacement_runner(opts) do
           :ok ->
-            wait_for_service_exit(startup, opts)
+            wait_for_service_exit(startup, opts, monitor_refs)
 
           {:error, reason} ->
             cleanup_after_failure(reason, opts, startup)
             {:error, reason}
         end
+    end
+  end
+
+  defp receive_pending_service_exit do
+    receive do
+      {:service_exit, service, status} -> {:service_exit, service, status}
+    after
+      50 -> nil
+    end
+  end
+
+  defp handle_service_exit(service, status, startup, opts, monitor_refs) do
+    reason = {:service_exit, service, status}
+
+    if intentional_runner_replacement_exit?(service, status, startup, opts) do
+      wait_for_service_exit(startup, opts, monitor_refs)
+    else
+      cleanup_after_failure(reason, opts, startup)
+      {:error, reason}
     end
   end
 

@@ -53,6 +53,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "ref",
     "relation",
     "rerun_of_run_id",
+    "resolved_refs",
     "result",
     "retry_backoff_ms",
     "retrying",

@@ -45,6 +45,33 @@ defmodule Favn.Dev.ReloadTest do
     assert "favn_runner_123" == Reload.runner_sname("favn_runner_123")
   end
 
+  test "runner reachability starts local control node before waiting" do
+    caller = self()
+
+    assert :ok =
+             Reload.wait_runner_node_reachable(
+               "favn_runner_123@localhost",
+               %{"rpc_cookie" => "reload-cookie"},
+               node_control_fun: fn cookie ->
+                 send(caller, {:control_node_started, cookie})
+                 :ok
+               end,
+               runner_node_wait_fun: fn runner_node, timeout_ms ->
+                 assert_received {:control_node_started, "reload-cookie"}
+                 send(caller, {:runner_wait, runner_node, timeout_ms})
+                 :ok
+               end,
+               runner_wait_timeout_ms: 250
+             )
+
+    assert_received {:runner_wait, "favn_runner_123@localhost", 250}
+  end
+
+  test "runner reachability rejects missing RPC cookie" do
+    assert {:error, :missing_rpc_cookie} =
+             Reload.wait_runner_node_reachable("favn_runner_123@localhost", %{})
+  end
+
   test "runner_replacement_marker/3 captures old runner identity and next generation" do
     runtime = %{
       "services" => %{

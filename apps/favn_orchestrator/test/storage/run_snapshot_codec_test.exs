@@ -115,6 +115,28 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert version_hash == version.content_hash
   end
 
+  test "decodes internal pipeline context resolved refs atom" do
+    existing_module = __MODULE__.ExistingAsset
+    version = manifest_version("mv_run_snapshot_resolved_refs", existing_module)
+
+    run =
+      RunState.new(
+        id: "run_snapshot_resolved_refs",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {existing_module, :asset},
+        metadata: %{pipeline_context: %{resolved_refs: [{existing_module, :asset}]}}
+      )
+
+    assert {:ok, run_blob} = PayloadCodec.encode(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    run_record = %{run_blob: run_blob, manifest_version_id: version.manifest_version_id}
+
+    assert {:ok, decoded} = RunSnapshotCodec.decode_run(run_record, manifest_record)
+    assert decoded.metadata.pipeline_context.resolved_refs == [{existing_module, :asset}]
+  end
+
   test "ignores unrelated manifest module and name fields" do
     existing_module = __MODULE__.ExistingAsset
     unknown_module = "Elixir.Favn.RunSnapshotCodecTest.MetadataModule"
