@@ -44,6 +44,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert web.exec == (System.find_executable("node") || "node")
     assert hd(web.args) == Path.join(runtime["web_root"], "node_modules/vite/bin/vite.js")
     assert "preview" in web.args
+    assert web.env["FAVN_WEB_PUBLIC_ORIGIN"] == config.web_base_url
   end
 
   test "runtime specs bind local HTTP and distributed Erlang to loopback" do
