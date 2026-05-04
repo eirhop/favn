@@ -30,17 +30,26 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.SQLAsset.Materialization
   alias Favn.Window.{Policy, Spec}
 
-  @max_manifest_atom_length 128
-  @max_manifest_module_length 512
+  @max_manifest_atom_length 255
+  @max_manifest_module_length 255
+  @max_manifest_atom_refs 100_000
+  @min_manifest_atom_headroom 100_000
 
-  @type error :: {:invalid_manifest_input, term()} | {:invalid_manifest_payload, term()}
+  @type error ::
+          {:invalid_manifest_input, term()}
+          | {:invalid_manifest_payload, term()}
+          | {:manifest_atom_limit_exceeded, non_neg_integer(), pos_integer()}
+          | {:manifest_atom_headroom_exceeded, non_neg_integer(), non_neg_integer(),
+             pos_integer()}
 
   @spec manifest(map() | struct() | Build.t()) :: {:ok, Manifest.t()} | {:error, error()}
   def manifest(%Build{manifest: manifest}), do: manifest(manifest)
   def manifest(%Manifest{} = manifest), do: {:ok, manifest}
 
   def manifest(value) when is_map(value) do
-    {:ok, build_manifest(value)}
+    with :ok <- validate_manifest_atom_budget(value) do
+      {:ok, build_manifest(value)}
+    end
   rescue
     error -> {:error, {:invalid_manifest_payload, error}}
   end
@@ -747,18 +756,72 @@ defmodule Favn.Manifest.Rehydrate do
 
   defp decode_manifest_module!(value) do
     if valid_manifest_module?(value) do
-      decode_existing_atom!(value)
+      # Manifest atoms are open-world identifiers emitted from compiled user
+      # code and transported as JSON strings. We trust that source for
+      # local/project manifests, but validate shape and budget them before
+      # creating atoms so malformed manifests cannot exhaust the BEAM atom table.
+      String.to_atom(value)
     else
       raise ArgumentError, "invalid module reference #{inspect(value)}"
     end
   end
 
+  defp validate_manifest_atom_budget(value) do
+    atom_refs = collect_manifest_atom_refs(value, MapSet.new())
+    atom_ref_count = MapSet.size(atom_refs)
+
+    if atom_ref_count > @max_manifest_atom_refs do
+      {:error, {:manifest_atom_limit_exceeded, atom_ref_count, @max_manifest_atom_refs}}
+    else
+      validate_manifest_atom_headroom(atom_refs)
+    end
+  end
+
+  defp validate_manifest_atom_headroom(atom_refs) do
+    new_atom_count = Enum.count(atom_refs, &(maybe_existing_atom(&1) == :error))
+    atom_count = :erlang.system_info(:atom_count)
+    atom_limit = :erlang.system_info(:atom_limit)
+
+    if atom_limit - atom_count - new_atom_count >= @min_manifest_atom_headroom do
+      :ok
+    else
+      {:error, {:manifest_atom_headroom_exceeded, atom_count, atom_limit, new_atom_count}}
+    end
+  end
+
+  defp collect_manifest_atom_refs(%_{} = struct, refs) do
+    struct
+    |> Map.from_struct()
+    |> collect_manifest_atom_refs(refs)
+  end
+
+  defp collect_manifest_atom_refs(map, refs) when is_map(map) do
+    Enum.reduce(map, refs, fn {key, value}, acc ->
+      refs = collect_manifest_atom_refs(key, acc)
+      collect_manifest_atom_refs(value, refs)
+    end)
+  end
+
+  defp collect_manifest_atom_refs(list, refs) when is_list(list) do
+    Enum.reduce(list, refs, &collect_manifest_atom_refs/2)
+  end
+
+  defp collect_manifest_atom_refs(value, refs) when is_binary(value) do
+    if valid_manifest_atom_ref?(value), do: MapSet.put(refs, value), else: refs
+  end
+
+  defp collect_manifest_atom_refs(_other, refs), do: refs
+
   defp decode_manifest_atom!(value) do
     if valid_manifest_atom?(value) do
-      decode_existing_atom!(value)
+      String.to_atom(value)
     else
       raise ArgumentError, "invalid atom reference #{inspect(value)}"
     end
+  end
+
+  defp valid_manifest_atom_ref?(value) do
+    valid_manifest_atom?(value) or valid_manifest_module?(value)
   end
 
   defp valid_manifest_module?(value) when is_binary(value) do
