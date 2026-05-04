@@ -59,14 +59,17 @@ defmodule FavnStorageSqlite.AdapterTest do
   end
 
   test "enforces run snapshot write semantics", %{opts: opts} do
+    version = manifest_version("mv_sqlite")
+
     base =
       RunState.new(
         id: "run_sqlite_1",
-        manifest_version_id: "mv_sqlite",
-        manifest_content_hash: "hash_sqlite",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
         asset_ref: {MyApp.Asset, :asset}
       )
 
+    assert :ok = Adapter.put_manifest_version(version, opts)
     assert :ok = Adapter.put_run(base, opts)
     assert :ok = Adapter.put_run(base, opts)
 

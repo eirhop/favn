@@ -122,6 +122,14 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
              PayloadCodec.decode(payload)
   end
 
+  test "decodes explicitly allowed unknown atoms" do
+    unknown_atom = "favn_explicitly_allowed_payload_atom"
+    payload = ~s({"format":"json-v1","value":{"__type__":"atom","value":"#{unknown_atom}"}})
+
+    assert {:ok, atom} = PayloadCodec.decode(payload, allowed_atom_strings: [unknown_atom])
+    assert Atom.to_string(atom) == unknown_atom
+  end
+
   test "decodes explicitly allowed consumer module atoms in persisted run snapshots" do
     unknown_module = "Elixir.Favn.PayloadCodecRestartFixture.Asset"
     existing_module = __MODULE__.ExistingAsset

@@ -86,6 +86,37 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "run recovery accepts only consumer module atoms from the run manifest", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        version = manifest_version("mv_pg_run_snapshot_#{System.unique_integer([:positive])}")
+        existing_module = Atom.to_string(MyApp.Asset)
+
+        unknown_module =
+          "Elixir.Favn.PostgresLiveTest.RestartAsset#{System.unique_integer([:positive])}"
+
+        run =
+          RunState.new(
+            id: "run_pg_snapshot_#{System.unique_integer([:positive])}",
+            manifest_version_id: version.manifest_version_id,
+            manifest_content_hash: version.content_hash,
+            asset_ref: {MyApp.Asset, :asset}
+          )
+
+        assert :ok = Adapter.put_manifest_version(version, opts)
+        assert :ok = Adapter.put_run(run, opts)
+        replace_run_atom(run.id, existing_module, unknown_module)
+        replace_manifest_value(run.manifest_version_id, existing_module, unknown_module)
+
+        assert {:ok, fetched} = Adapter.get_run(run.id, opts)
+        assert {module, :asset} = fetched.asset_ref
+        assert Atom.to_string(module) == unknown_module
+    end
+  end
+
   test "same-seq idempotent and stale/conflict semantics", context do
     case context[:opts] do
       nil ->
@@ -894,6 +925,77 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
   end
+
+  defp replace_run_atom(run_id, from, to) do
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT run_blob FROM favn_runs WHERE run_id = $1", [run_id])
+
+    payload = replace_atom_value(payload, from, to)
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_runs SET run_blob = $1 WHERE run_id = $2", [
+               payload,
+               run_id
+             ])
+  end
+
+  defp replace_manifest_value(manifest_version_id, from, to) do
+    assert {:ok, %{rows: [[manifest_json]]}} =
+             SQL.query(
+               Repo,
+               "SELECT manifest_json FROM favn_manifest_versions WHERE manifest_version_id = $1",
+               [manifest_version_id]
+             )
+
+    manifest_json = replace_string_value(manifest_json, from, to)
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_manifest_versions SET manifest_json = $1 WHERE manifest_version_id = $2",
+               [manifest_json, manifest_version_id]
+             )
+  end
+
+  defp replace_atom_value(encoded, from, to) do
+    encoded
+    |> JSON.decode!()
+    |> replace_atom_value_in_term(from, to)
+    |> JSON.encode!()
+  end
+
+  defp replace_atom_value_in_term(%{"__type__" => "atom", "value" => value} = term, value, to) do
+    %{term | "value" => to}
+  end
+
+  defp replace_atom_value_in_term(%{} = term, from, to) do
+    Map.new(term, fn {key, value} -> {key, replace_atom_value_in_term(value, from, to)} end)
+  end
+
+  defp replace_atom_value_in_term(values, from, to) when is_list(values) do
+    Enum.map(values, &replace_atom_value_in_term(&1, from, to))
+  end
+
+  defp replace_atom_value_in_term(value, _from, _to), do: value
+
+  defp replace_string_value(encoded, from, to) do
+    encoded
+    |> JSON.decode!()
+    |> replace_string_value_in_term(from, to)
+    |> JSON.encode!()
+  end
+
+  defp replace_string_value_in_term(value, value, to) when is_binary(value), do: to
+
+  defp replace_string_value_in_term(%{} = term, from, to) do
+    Map.new(term, fn {key, value} -> {key, replace_string_value_in_term(value, from, to)} end)
+  end
+
+  defp replace_string_value_in_term(values, from, to) when is_list(values) do
+    Enum.map(values, &replace_string_value_in_term(&1, from, to))
+  end
+
+  defp replace_string_value_in_term(value, _from, _to), do: value
 
   defp concurrent_results(fun_a, fun_b) do
     parent = self()

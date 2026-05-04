@@ -15,6 +15,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
+  alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.WriteSemantics
@@ -185,10 +186,10 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def get_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
-      sql = "SELECT run_blob FROM favn_runs WHERE run_id = ?1 LIMIT 1"
+      sql = run_snapshot_select() <> " WHERE r.run_id = ?1 LIMIT 1"
 
       case SQL.query(repo, sql, [run_id]) do
-        {:ok, %{rows: [[payload]]}} -> decode_run(payload, repo)
+        {:ok, %{rows: [row]}} -> decode_run_row(row)
         {:ok, %{rows: []}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
       end
@@ -203,8 +204,8 @@ defmodule Favn.Storage.Adapter.SQLite do
       case SQL.query(repo, sql, params) do
         {:ok, %{rows: rows}} ->
           rows
-          |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
-            case decode_run(payload, repo) do
+          |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+            case decode_run_row(row) do
               {:ok, run} -> {:cont, {:ok, [run | acc]}}
               {:error, reason} -> {:halt, {:error, reason}}
             end
@@ -2005,115 +2006,92 @@ defmodule Favn.Storage.Adapter.SQLite do
 
     cond do
       is_nil(status) and is_nil(limit) ->
-        {"SELECT run_blob FROM favn_runs ORDER BY updated_seq DESC, run_id DESC", []}
+        {run_snapshot_select() <> " ORDER BY r.updated_seq DESC, r.run_id DESC", []}
 
       is_nil(status) ->
-        {"SELECT run_blob FROM favn_runs ORDER BY updated_seq DESC, run_id DESC LIMIT ?1",
-         [limit]}
+        {run_snapshot_select() <> " ORDER BY r.updated_seq DESC, r.run_id DESC LIMIT ?1", [limit]}
 
       is_nil(limit) ->
         {
-          "SELECT run_blob FROM favn_runs WHERE status = ?1 ORDER BY updated_seq DESC, run_id DESC",
+          run_snapshot_select() <>
+            " WHERE r.status = ?1 ORDER BY r.updated_seq DESC, r.run_id DESC",
           [Atom.to_string(status)]
         }
 
       true ->
         {
-          "SELECT run_blob FROM favn_runs WHERE status = ?1 ORDER BY updated_seq DESC, run_id DESC LIMIT ?2",
+          run_snapshot_select() <>
+            " WHERE r.status = ?1 ORDER BY r.updated_seq DESC, r.run_id DESC LIMIT ?2",
           [Atom.to_string(status), limit]
         }
     end
   end
 
-  defp decode_run(payload, repo) do
-    with {:ok, allowed_atom_strings} <- manifest_atom_strings(repo),
-         {:ok, decoded} <- decode_run_payload(payload, allowed_atom_strings),
-         %RunState{} = run_state <- decoded,
-         {:ok, normalized} <- RunStateCodec.normalize(run_state) do
-      {:ok, normalized}
-    else
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_run_payload, other}}
-    end
+  defp run_snapshot_select do
+    """
+    SELECT r.run_blob, r.manifest_version_id, m.manifest_version_id, m.content_hash, m.schema_version, m.runner_contract_version, m.serialization_format, m.manifest_json, m.inserted_at
+    FROM favn_runs AS r
+    LEFT JOIN favn_manifest_versions AS m ON m.manifest_version_id = r.manifest_version_id
+    """
   end
 
-  defp decode_run_payload(payload, allowed_atom_strings) when is_binary(payload) do
-    # Run snapshots are trusted storage records written by Favn. They may contain
-    # consumer atoms that are not loaded when a fresh VM decodes persisted state,
-    # so only this recovery path opts into the explicit atom-string allow-list.
-    PayloadCodec.decode(payload,
-      allowed_atom_strings: Enum.uniq(allowed_atom_strings ++ run_atom_strings(payload))
-    )
+  defp decode_run_row([
+         run_blob,
+         run_manifest_version_id,
+         manifest_version_id,
+         content_hash,
+         schema_version,
+         runner_contract_version,
+         serialization_format,
+         manifest_json,
+         inserted_at
+       ]) do
+    run_record = %{run_blob: run_blob, manifest_version_id: run_manifest_version_id}
+
+    manifest_record =
+      manifest_record(
+        manifest_version_id,
+        content_hash,
+        schema_version,
+        runner_contract_version,
+        serialization_format,
+        manifest_json,
+        inserted_at
+      )
+
+    RunSnapshotCodec.decode_run(run_record, manifest_record)
   end
 
-  defp run_atom_strings(payload) when is_binary(payload) do
-    case JSON.decode(payload) do
-      {:ok, decoded} -> atom_strings_from_payload(decoded)
-      {:error, _reason} -> []
-    end
+  defp manifest_record(
+         nil,
+         _hash,
+         _schema,
+         _runner_contract,
+         _format,
+         _manifest_json,
+         _inserted_at
+       ),
+       do: nil
+
+  defp manifest_record(
+         manifest_version_id,
+         content_hash,
+         schema_version,
+         runner_contract_version,
+         serialization_format,
+         manifest_json,
+         inserted_at
+       ) do
+    %{
+      manifest_version_id: manifest_version_id,
+      content_hash: content_hash,
+      schema_version: schema_version,
+      runner_contract_version: runner_contract_version,
+      serialization_format: serialization_format,
+      manifest_json: manifest_json,
+      inserted_at: inserted_at
+    }
   end
-
-  defp atom_strings_from_payload(%{"__type__" => "atom", "value" => value})
-       when is_binary(value) and value != "" do
-    [value]
-  end
-
-  defp atom_strings_from_payload(%{} = value) do
-    value
-    |> Map.values()
-    |> Enum.flat_map(&atom_strings_from_payload/1)
-  end
-
-  defp atom_strings_from_payload(values) when is_list(values) do
-    Enum.flat_map(values, &atom_strings_from_payload/1)
-  end
-
-  defp atom_strings_from_payload(_value), do: []
-
-  defp manifest_atom_strings(repo) do
-    case SQL.query(repo, "SELECT manifest_json FROM favn_manifest_versions", []) do
-      {:ok, %{rows: rows}} ->
-        atoms =
-          rows
-          |> Enum.flat_map(fn [manifest_json] ->
-            manifest_atom_strings_from_json(manifest_json)
-          end)
-          |> Enum.uniq()
-
-        {:ok, atoms}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp manifest_atom_strings_from_json(manifest_json) when is_binary(manifest_json) do
-    case JSON.decode(manifest_json) do
-      {:ok, decoded} -> manifest_atom_strings_from_value(decoded)
-      {:error, _reason} -> []
-    end
-  end
-
-  defp manifest_atom_strings_from_json(_manifest_json), do: []
-
-  defp manifest_atom_strings_from_value(%{} = value) do
-    current =
-      [Map.get(value, "module"), Map.get(value, "name")]
-      |> Enum.filter(&(is_binary(&1) and &1 != ""))
-
-    nested =
-      value
-      |> Map.values()
-      |> Enum.flat_map(&manifest_atom_strings_from_value/1)
-
-    current ++ nested
-  end
-
-  defp manifest_atom_strings_from_value(values) when is_list(values) do
-    Enum.flat_map(values, &manifest_atom_strings_from_value/1)
-  end
-
-  defp manifest_atom_strings_from_value(_value), do: []
 
   defp validate_transition_alignment(%RunState{} = run, event) when is_map(event) do
     cond do

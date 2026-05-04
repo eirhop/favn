@@ -1,6 +1,9 @@
 defmodule Favn.SQLiteStorageBootstrapTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Manifest
+  alias Favn.Manifest.Asset
+  alias Favn.Manifest.Version
   alias Favn.Run
   alias Favn.Storage
   alias Favn.Storage.Adapter.SQLite, as: Adapter
@@ -28,6 +31,8 @@ defmodule Favn.SQLiteStorageBootstrapTest do
     {:ok, child_spec} = Adapter.child_spec(database: db_path, pool_size: 1)
     start_supervised!(child_spec)
 
+    assert :ok = Storage.put_manifest_version(manifest_version("manifest_v1"))
+
     run = sample_run("bootstrap-run", :running)
     assert :ok = Storage.put_run(run)
     assert {:ok, stored} = Storage.get_run("bootstrap-run")
@@ -54,5 +59,20 @@ defmodule Favn.SQLiteStorageBootstrapTest do
       started_at: now,
       finished_at: if(status in [:ok, :error, :cancelled, :timed_out], do: now, else: nil)
     }
+  end
+
+  defp manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Asset{
+          ref: {Favn.SQLiteStorageBootstrapTest, :sample_asset},
+          module: Favn.SQLiteStorageBootstrapTest,
+          name: :sample_asset
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
   end
 end
