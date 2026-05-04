@@ -69,7 +69,8 @@ defmodule Favn.Dev.RunTest do
   test "run_pipeline/2 submits and waits for a successful local pipeline run", %{root_dir: root_dir} do
     {:ok, base_url, _server} =
       start_server([
-        {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+        {201,
+         ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
         {200,
          ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
         {201,
@@ -129,7 +130,8 @@ defmodule Favn.Dev.RunTest do
   test "run_pipeline/2 surfaces orchestrator validation messages", %{root_dir: root_dir} do
     {:ok, base_url, _server} =
       start_server([
-        {201, ~s({"data":{"session":{"id":"sess_1"},"actor":{"id":"act_1"}}})},
+        {201,
+         ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
         {200,
          ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
         {422,

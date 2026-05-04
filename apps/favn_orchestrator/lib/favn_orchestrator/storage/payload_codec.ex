@@ -72,11 +72,13 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     error -> {:error, {:payload_encode_failed, error}}
   end
 
-  @spec decode(String.t()) :: {:ok, term()} | {:error, term()}
-  def decode(payload) when is_binary(payload) do
+  @spec decode(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
+  def decode(payload, opts \\ []) when is_binary(payload) and is_list(opts) do
+    allowed_atom_strings = allowed_atom_strings(opts)
+
     with {:ok, decoded} <- Jason.decode(payload),
          %{"format" => @format, "value" => value} <- decoded,
-         {:ok, term} <- decode_term(value) do
+         {:ok, term} <- decode_term(value, allowed_atom_strings) do
       {:ok, term}
     else
       {:error, reason} -> {:error, {:payload_decode_failed, reason}}
@@ -125,16 +127,27 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
   defp encode_term(value) when is_boolean(value), do: value
   defp encode_term(nil), do: nil
 
-  defp decode_term(%{"__type__" => "datetime", "value" => value}) when is_binary(value) do
+  defp allowed_atom_strings(opts) when is_list(opts) do
+    opts
+    |> Keyword.get(:allowed_atom_strings, [])
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> MapSet.new()
+  end
+
+  defp decode_term(%{"__type__" => "datetime", "value" => value}, _allowed_atom_strings)
+       when is_binary(value) do
     case DateTime.from_iso8601(value) do
       {:ok, datetime, _offset} -> {:ok, datetime}
       _ -> {:error, {:invalid_datetime, value}}
     end
   end
 
-  defp decode_term(%{"__type__" => "struct", "module" => module, "fields" => fields})
+  defp decode_term(
+         %{"__type__" => "struct", "module" => module, "fields" => fields},
+         allowed_atom_strings
+       )
        when is_binary(module) do
-    with {:ok, decoded_fields} <- decode_term(fields),
+    with {:ok, decoded_fields} <- decode_term(fields, allowed_atom_strings),
          :ok <- validate_struct_fields(decoded_fields, fields),
          {:ok, module_atom} <- allowed_struct_module(module),
          :ok <- validate_struct_module(module_atom, module) do
@@ -146,11 +159,12 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     error -> {:error, {:invalid_struct_decode, module, error}}
   end
 
-  defp decode_term(%{"__type__" => "map", "entries" => entries}) when is_list(entries) do
+  defp decode_term(%{"__type__" => "map", "entries" => entries}, allowed_atom_strings)
+       when is_list(entries) do
     Enum.reduce_while(entries, {:ok, %{}}, fn
       [encoded_key, encoded_value], {:ok, acc} ->
-        with {:ok, key} <- decode_term(encoded_key),
-             {:ok, value} <- decode_term(encoded_value) do
+        with {:ok, key} <- decode_term(encoded_key, allowed_atom_strings),
+             {:ok, value} <- decode_term(encoded_value, allowed_atom_strings) do
           {:cont, {:ok, Map.put(acc, key, value)}}
         else
           {:error, reason} -> {:halt, {:error, reason}}
@@ -161,29 +175,35 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     end)
   end
 
-  defp decode_term(%{"__type__" => "tuple", "items" => items}) when is_list(items) do
-    with {:ok, decoded_items} <- decode_list(items) do
+  defp decode_term(%{"__type__" => "tuple", "items" => items}, allowed_atom_strings)
+       when is_list(items) do
+    with {:ok, decoded_items} <- decode_list(items, allowed_atom_strings) do
       {:ok, List.to_tuple(decoded_items)}
     end
   end
 
-  defp decode_term(%{"__type__" => "atom", "value" => value}) when is_binary(value) do
-    decode_existing_atom(value)
+  defp decode_term(%{"__type__" => "atom", "value" => value}, allowed_atom_strings)
+       when is_binary(value) do
+    decode_atom(value, allowed_atom_strings)
   end
 
-  defp decode_term(%{"__type__" => type} = value),
+  defp decode_term(%{"__type__" => type} = value, _allowed_atom_strings),
     do: {:error, {:unsupported_payload_type, type, value}}
 
-  defp decode_term(list) when is_list(list), do: decode_list(list)
-  defp decode_term(value) when is_binary(value), do: {:ok, value}
-  defp decode_term(value) when is_number(value), do: {:ok, value}
-  defp decode_term(value) when is_boolean(value), do: {:ok, value}
-  defp decode_term(nil), do: {:ok, nil}
-  defp decode_term(other), do: {:error, {:unsupported_payload_value, other}}
+  defp decode_term(list, allowed_atom_strings) when is_list(list),
+    do: decode_list(list, allowed_atom_strings)
 
-  defp decode_list(list) do
+  defp decode_term(value, _allowed_atom_strings) when is_binary(value), do: {:ok, value}
+  defp decode_term(value, _allowed_atom_strings) when is_number(value), do: {:ok, value}
+  defp decode_term(value, _allowed_atom_strings) when is_boolean(value), do: {:ok, value}
+  defp decode_term(nil, _allowed_atom_strings), do: {:ok, nil}
+
+  defp decode_term(other, _allowed_atom_strings),
+    do: {:error, {:unsupported_payload_value, other}}
+
+  defp decode_list(list, allowed_atom_strings) do
     Enum.reduce_while(list, {:ok, []}, fn value, {:ok, acc} ->
-      case decode_term(value) do
+      case decode_term(value, allowed_atom_strings) do
         {:ok, decoded} -> {:cont, {:ok, [decoded | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -194,10 +214,18 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     end
   end
 
-  defp decode_existing_atom(value) when is_binary(value) do
+  defp decode_atom(value, allowed_atom_strings) when is_binary(value) do
     {:ok, String.to_existing_atom(value)}
   rescue
-    ArgumentError -> {:error, {:unknown_atom, value}}
+    ArgumentError -> decode_allowed_atom(value, allowed_atom_strings)
+  end
+
+  defp decode_allowed_atom(value, allowed_atom_strings) do
+    if MapSet.member?(allowed_atom_strings, value) do
+      {:ok, String.to_atom(value)}
+    else
+      {:error, {:unknown_atom, value}}
+    end
   end
 
   defp validate_struct_fields(decoded_fields, _raw_fields) when is_map(decoded_fields), do: :ok

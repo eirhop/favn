@@ -12,6 +12,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
   alias Favn.SQL.Template
   alias Favn.Triggers.Schedule
   alias Favn.Window.Policy
+  alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.PayloadCodec
 
   test "round-trips tagged runtime payload values" do
@@ -121,6 +122,42 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
              PayloadCodec.decode(payload)
   end
 
+  test "decodes explicitly allowed unknown atoms" do
+    unknown_atom = "favn_explicitly_allowed_payload_atom"
+    payload = ~s({"format":"json-v1","value":{"__type__":"atom","value":"#{unknown_atom}"}})
+
+    assert {:ok, atom} = PayloadCodec.decode(payload, allowed_atom_strings: [unknown_atom])
+    assert Atom.to_string(atom) == unknown_atom
+  end
+
+  test "decodes explicitly allowed consumer module atoms in persisted run snapshots" do
+    unknown_module = "Elixir.Favn.PayloadCodecRestartFixture.Asset"
+    existing_module = __MODULE__.ExistingAsset
+
+    run =
+      RunState.new(
+        id: "run_payload_restart",
+        manifest_version_id: "mv_payload_restart",
+        manifest_content_hash: String.duplicate("a", 64),
+        asset_ref: {existing_module, :asset},
+        target_refs: [{existing_module, :asset}]
+      )
+
+    assert {:ok, encoded} = PayloadCodec.encode(run)
+
+    encoded = replace_atom_value(encoded, Atom.to_string(existing_module), unknown_module)
+
+    assert {:error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}} =
+             PayloadCodec.decode(encoded)
+
+    assert {:ok, %RunState{} = decoded} =
+             PayloadCodec.decode(encoded, allowed_atom_strings: [unknown_module])
+
+    assert {module_atom, :asset} = decoded.asset_ref
+    assert Atom.to_string(module_atom) == unknown_module
+    assert decoded.target_refs == [{module_atom, :asset}]
+  end
+
   test "rejects unsupported struct modules during decode" do
     payload =
       ~s({"format":"json-v1","value":{"__type__":"struct","module":"Elixir.URI","fields":{"__type__":"map","entries":[]}}})
@@ -128,4 +165,25 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
     assert {:error, {:payload_decode_failed, {:unsupported_struct_module, "Elixir.URI"}}} =
              PayloadCodec.decode(payload)
   end
+
+  defp replace_atom_value(encoded, from, to) do
+    encoded
+    |> JSON.decode!()
+    |> replace_atom_value_in_term(from, to)
+    |> JSON.encode!()
+  end
+
+  defp replace_atom_value_in_term(%{"__type__" => "atom", "value" => value} = term, value, to) do
+    %{term | "value" => to}
+  end
+
+  defp replace_atom_value_in_term(%{} = term, from, to) do
+    Map.new(term, fn {key, value} -> {key, replace_atom_value_in_term(value, from, to)} end)
+  end
+
+  defp replace_atom_value_in_term(values, from, to) when is_list(values) do
+    Enum.map(values, &replace_atom_value_in_term(&1, from, to))
+  end
+
+  defp replace_atom_value_in_term(value, _from, _to), do: value
 end

@@ -11,7 +11,7 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
 
     def publish_manifest(url, token, payload) do
       send(test_pid(), {:publish_manifest, url, token, payload})
-      {:ok, %{"data" => %{"manifest" => %{}}}}
+      {:ok, %{"data" => %{"manifest" => %{}, "registration" => %{"status" => "accepted"}}}}
     end
 
     def activate_manifest(url, token, manifest_version_id) do
@@ -21,7 +21,7 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
 
     def register_runner(url, token, payload) do
       send(test_pid(), {:register_runner, url, token, payload})
-      {:ok, %{"data" => %{"runner" => payload}}}
+      {:ok, %{"data" => %{"registration" => %{"status" => "accepted"}}}}
     end
 
     def bootstrap_active_manifest(url, token) do
@@ -90,6 +90,8 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
     assert {:ok, summary} = Single.run(opts)
 
     assert summary.activated? == true
+    assert summary.manifest_registration == "accepted"
+    assert summary.runner_registration == "accepted"
     assert summary.active_manifest_verification == :matched
 
     assert_receive {:verify_service_token, "http://127.0.0.1:4000", "token-1"}
@@ -121,7 +123,14 @@ defmodule Favn.Dev.Bootstrap.SingleTest do
                orchestrator_url: "http://127.0.0.1:4000",
                service_token: "token-1",
                client: RunnerConflictClient
-             )
+              )
+  end
+
+  test "missing manifest file fails with structured read error", %{manifest_path: manifest_path} do
+    missing_path = manifest_path <> ".missing"
+
+    assert {:error, {:manifest_read_failed, ^missing_path, :enoent}} =
+             Single.read_manifest_version(missing_path)
   end
 
   defp write_manifest(root_dir) do

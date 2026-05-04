@@ -110,14 +110,22 @@ defmodule Favn.Dev.OrchestratorClient do
              is_binary(password) do
     url = base_url <> "/api/orchestrator/v1/auth/password/sessions"
 
-    with {:ok, %{"data" => %{"session" => %{"id" => session_id}, "actor" => %{"id" => actor_id}}}} <-
+    with {:ok,
+          %{
+            "data" => %{
+              "session" => %{"id" => session_id},
+              "session_token" => session_token,
+              "actor" => %{"id" => actor_id}
+            }
+          }} <-
            request_post(:password_login, url, service_token, %{
              username: username,
              password: password
            }),
-         true <- is_binary(session_id) and session_id != "",
-         true <- is_binary(actor_id) and actor_id != "" do
-      {:ok, %{"actor_id" => actor_id, "session_id" => session_id}}
+          true <- is_binary(session_id) and session_id != "",
+          true <- is_binary(actor_id) and actor_id != "",
+          true <- is_binary(session_token) and session_token != "" do
+      {:ok, %{"actor_id" => actor_id, "session_id" => session_id, "session_token" => session_token}}
     else
       false -> {:error, operation_error(:password_login, :post, url, :invalid_response)}
       {:error, _reason} = error -> error
@@ -421,9 +429,10 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  defp add_session_headers(headers, %{"actor_id" => actor_id, "session_id" => session_id})
-       when is_binary(actor_id) and actor_id != "" and is_binary(session_id) and session_id != "" do
-    headers ++ [{"x-favn-actor-id", actor_id}, {"x-favn-session-id", session_id}]
+  defp add_session_headers(headers, %{"actor_id" => actor_id, "session_token" => session_token})
+       when is_binary(actor_id) and actor_id != "" and is_binary(session_token) and
+              session_token != "" do
+    headers ++ [{"x-favn-actor-id", actor_id}, {"x-favn-session-token", session_token}]
   end
 
   defp add_session_headers(headers, _session_context), do: headers
@@ -436,7 +445,7 @@ defmodule Favn.Dev.OrchestratorClient do
 
   defp idempotency_key(operation, session_context, input) when is_atom(operation) do
     fingerprint =
-      %{operation: operation, session: session_context || %{}, input: input}
+      %{operation: operation, session: idempotency_session_context(session_context), input: input}
       |> canonicalize()
       |> JSON.encode!()
 
@@ -444,6 +453,15 @@ defmodule Favn.Dev.OrchestratorClient do
 
     "favn-local-" <> Base.url_encode64(digest, padding: false)
   end
+
+  defp idempotency_session_context(%{} = session_context) do
+    session_context
+    |> Map.take(["actor_id", "session_id"])
+    |> Enum.reject(fn {_key, value} -> not is_binary(value) or value == "" end)
+    |> Map.new()
+  end
+
+  defp idempotency_session_context(_session_context), do: %{}
 
   defp canonicalize(nil), do: %{"__type__" => "null"}
 

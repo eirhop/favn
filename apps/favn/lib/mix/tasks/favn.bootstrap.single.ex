@@ -27,6 +27,8 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
       {:ok, summary} ->
         IO.puts("Favn single-node bootstrap complete")
         IO.puts("manifest version: #{summary.manifest_version_id}")
+        IO.puts("manifest registration: #{summary.manifest_registration}")
+        IO.puts("runner registration: #{summary.runner_registration}")
         IO.puts("activated: #{summary.activated?}")
 
         IO.puts(
@@ -44,6 +46,12 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
 
       {:error, %{operation: :verify_service_token, reason: {:http_error, 401, _body}}} ->
         Mix.raise("bootstrap failed: service token was rejected by orchestrator")
+
+      {:error, {:manifest_read_failed, path, :enoent}} ->
+        Mix.raise("bootstrap failed: manifest file not found: #{path}")
+
+      {:error, {:manifest_read_failed, path, reason}} ->
+        Mix.raise("bootstrap failed: could not read manifest #{path}: #{inspect(reason)}")
 
       {:error, %{operation: operation, reason: reason}} ->
         Mix.raise("bootstrap failed during #{operation}: #{inspect(reason)}")

@@ -15,6 +15,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
+  alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.WriteSemantics
@@ -183,10 +184,10 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def get_run(run_id, opts) when is_binary(run_id) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts) do
-      sql = "SELECT run_blob FROM favn_runs WHERE run_id = $1 LIMIT 1"
+      sql = run_snapshot_select() <> " WHERE r.run_id = $1 LIMIT 1"
 
       case SQL.query(repo, sql, [run_id]) do
-        {:ok, %{rows: [[payload]]}} -> decode_run(payload)
+        {:ok, %{rows: [row]}} -> decode_run_row(row)
         {:ok, %{rows: []}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
       end
@@ -201,8 +202,8 @@ defmodule Favn.Storage.Adapter.Postgres do
       case SQL.query(repo, sql, params) do
         {:ok, %{rows: rows}} ->
           rows
-          |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
-            case decode_run(payload) do
+          |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+            case decode_run_row(row) do
               {:ok, run} -> {:cont, {:ok, [run | acc]}}
               {:error, reason} -> {:halt, {:error, reason}}
             end
@@ -1488,35 +1489,91 @@ defmodule Favn.Storage.Adapter.Postgres do
 
     cond do
       is_nil(status) and is_nil(limit) ->
-        {"SELECT run_blob FROM favn_runs ORDER BY updated_seq DESC, run_id DESC", []}
+        {run_snapshot_select() <> " ORDER BY r.updated_seq DESC, r.run_id DESC", []}
 
       is_nil(status) ->
-        {"SELECT run_blob FROM favn_runs ORDER BY updated_seq DESC, run_id DESC LIMIT $1",
-         [limit]}
+        {run_snapshot_select() <> " ORDER BY r.updated_seq DESC, r.run_id DESC LIMIT $1", [limit]}
 
       is_nil(limit) ->
         {
-          "SELECT run_blob FROM favn_runs WHERE status = $1 ORDER BY updated_seq DESC, run_id DESC",
+          run_snapshot_select() <>
+            " WHERE r.status = $1 ORDER BY r.updated_seq DESC, r.run_id DESC",
           [Atom.to_string(status)]
         }
 
       true ->
         {
-          "SELECT run_blob FROM favn_runs WHERE status = $1 ORDER BY updated_seq DESC, run_id DESC LIMIT $2",
+          run_snapshot_select() <>
+            " WHERE r.status = $1 ORDER BY r.updated_seq DESC, r.run_id DESC LIMIT $2",
           [Atom.to_string(status), limit]
         }
     end
   end
 
-  defp decode_run(payload) do
-    with {:ok, decoded} <- decode_payload(payload),
-         %RunState{} = run_state <- decoded,
-         {:ok, normalized} <- RunStateCodec.normalize(run_state) do
-      {:ok, normalized}
-    else
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_run_payload, other}}
-    end
+  defp run_snapshot_select do
+    """
+    SELECT r.run_blob, r.manifest_version_id, m.manifest_version_id, m.content_hash, m.schema_version, m.runner_contract_version, m.serialization_format, m.manifest_json, m.inserted_at
+    FROM favn_runs AS r
+    LEFT JOIN favn_manifest_versions AS m ON m.manifest_version_id = r.manifest_version_id
+    """
+  end
+
+  defp decode_run_row([
+         run_blob,
+         run_manifest_version_id,
+         manifest_version_id,
+         content_hash,
+         schema_version,
+         runner_contract_version,
+         serialization_format,
+         manifest_json,
+         inserted_at
+       ]) do
+    run_record = %{run_blob: run_blob, manifest_version_id: run_manifest_version_id}
+
+    manifest_record =
+      manifest_record(
+        manifest_version_id,
+        content_hash,
+        schema_version,
+        runner_contract_version,
+        serialization_format,
+        manifest_json,
+        inserted_at
+      )
+
+    RunSnapshotCodec.decode_run(run_record, manifest_record)
+  end
+
+  defp manifest_record(
+         nil,
+         _hash,
+         _schema,
+         _runner_contract,
+         _format,
+         _manifest_json,
+         _inserted_at
+       ),
+       do: nil
+
+  defp manifest_record(
+         manifest_version_id,
+         content_hash,
+         schema_version,
+         runner_contract_version,
+         serialization_format,
+         manifest_json,
+         inserted_at
+       ) do
+    %{
+      manifest_version_id: manifest_version_id,
+      content_hash: content_hash,
+      schema_version: schema_version,
+      runner_contract_version: runner_contract_version,
+      serialization_format: serialization_format,
+      manifest_json: manifest_json,
+      inserted_at: inserted_at
+    }
   end
 
   defp validate_transition_alignment(%RunState{} = run, event) when is_map(event) do

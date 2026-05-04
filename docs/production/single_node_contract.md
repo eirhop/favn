@@ -24,10 +24,10 @@ service path documented in
 `docs/production/web_service.md`, but it is not yet bundled into
 `mix favn.build.single`.
 
-Phase 1 runtime config validation, backend control-plane bootstrap, explicit web
-service startup/readiness, and SQLite-backed auth/session/audit persistence have
-landed, while full operator runbooks and production web hardening remain
-follow-up implementation work.
+Phase 1 runtime config validation, backend control-plane bootstrap, live
+single-node first-run verification, explicit web service startup/readiness, and
+SQLite-backed auth/session/audit persistence have landed, while full operator
+runbooks and production web hardening remain follow-up implementation work.
 
 Follow-up issues must treat this document as the product contract they are
 making real.
@@ -43,7 +43,10 @@ verifies active-manifest selection through the service-auth-only
 acceptance verification covers manifest persistence, active-manifest selection,
 scheduler state, runner registration, and restart survival. Focused storage
 coverage verifies SQLite restart survival for actors, credential hashes,
-session-token hashes, revocations, and redacted audit entries.
+session-token hashes, revocations, and redacted audit entries. Live generated
+artifact coverage verifies first-admin login, manifest-pinned run submission,
+run history, auth/session state, diagnostics, and restart survival against fresh
+SQLite storage.
 
 ## Supported V1 Topology
 
