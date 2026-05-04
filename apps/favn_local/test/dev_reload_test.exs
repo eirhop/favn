@@ -115,6 +115,27 @@ defmodule Favn.Dev.ReloadTest do
     refute Stack.runner_replacement_exit?(%{startup_runner | generation: 4}, marker, 0)
   end
 
+  test "runner_replacement_down?/3 accepts normal old-runner wrapper down for active markers" do
+    startup_runner = %{pid: 12_345, generation: 3}
+
+    marker = %{
+      "status" => "started",
+      "old_pid" => 12_345,
+      "old_generation" => 3
+    }
+
+    assert Stack.runner_replacement_down?(startup_runner, marker, :normal)
+
+    refute Stack.runner_replacement_down?(
+             startup_runner,
+             %{marker | "status" => "failed"},
+             :normal
+           )
+
+    refute Stack.runner_replacement_down?(startup_runner, marker, :killed)
+    refute Stack.runner_replacement_down?(%{startup_runner | pid: 54_321}, marker, :normal)
+  end
+
   test "foreground monitor deterministically validates completed runner replacement" do
     runtime = %{
       "services" => %{"runner" => %{"pid" => 54_321, "generation" => 4}},

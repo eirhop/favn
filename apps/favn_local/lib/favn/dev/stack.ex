@@ -86,10 +86,12 @@ defmodule Favn.Dev.Stack do
     case with_lock(opts, fn -> State.read_runtime(opts) end) do
       {:ok, runtime} ->
         stop_runtime(runtime, opts)
+        stop_known_local_nodes(opts)
         with_lock(opts, fn -> State.clear_runtime(opts) end)
         :ok
 
       {:error, :not_found} ->
+        stop_known_local_nodes(opts)
         :ok
 
       {:error, reason} ->
@@ -746,9 +748,19 @@ defmodule Favn.Dev.Stack do
 
           nil ->
             service = Map.get(monitor_refs, ref, "unknown")
-            failure = {:service_down, service, reason}
-            cleanup_after_failure(failure, opts, startup)
-            {:error, failure}
+
+            cond do
+              stack_stopped_externally?(opts) ->
+                :ok
+
+              intentional_runner_replacement_down?(service, reason, startup, opts) ->
+                wait_for_service_exit(startup, opts, Map.delete(monitor_refs, ref))
+
+              true ->
+                failure = {:service_down, service, reason}
+                cleanup_after_failure(failure, opts, startup)
+                {:error, failure}
+            end
         end
     after
       1_000 ->
@@ -774,11 +786,23 @@ defmodule Favn.Dev.Stack do
   defp handle_service_exit(service, status, startup, opts, monitor_refs) do
     reason = {:service_exit, service, status}
 
-    if intentional_runner_replacement_exit?(service, status, startup, opts) do
-      wait_for_service_exit(startup, opts, monitor_refs)
-    else
-      cleanup_after_failure(reason, opts, startup)
-      {:error, reason}
+    cond do
+      stack_stopped_externally?(opts) ->
+        :ok
+
+      intentional_runner_replacement_exit?(service, status, startup, opts) ->
+        wait_for_service_exit(startup, opts, monitor_refs)
+
+      true ->
+        cleanup_after_failure(reason, opts, startup)
+        {:error, reason}
+    end
+  end
+
+  defp stack_stopped_externally?(opts) do
+    case with_lock(opts, fn -> State.read_runtime(opts) end) do
+      {:error, :not_found} -> true
+      _other -> false
     end
   end
 
@@ -795,6 +819,15 @@ defmodule Favn.Dev.Stack do
 
   def runner_replacement_exit?(_startup_runner, _marker, _status), do: false
 
+  @doc false
+  @spec runner_replacement_down?(map(), map(), term()) :: boolean()
+  def runner_replacement_down?(startup_runner, marker, reason)
+      when is_map(startup_runner) and is_map(marker) do
+    reason == :normal and runner_replacement_exit?(startup_runner, marker, 0)
+  end
+
+  def runner_replacement_down?(_startup_runner, _marker, _reason), do: false
+
   defp intentional_runner_replacement_exit?("runner", status, startup, opts) do
     with {:ok, runtime} <- with_lock(opts, fn -> State.read_runtime(opts) end),
          marker when is_map(marker) <- get_in(runtime, ["reload", "runner_replacement"]),
@@ -806,6 +839,18 @@ defmodule Favn.Dev.Stack do
   end
 
   defp intentional_runner_replacement_exit?(_service, _status, _startup, _opts), do: false
+
+  defp intentional_runner_replacement_down?("runner", reason, startup, opts) do
+    with {:ok, runtime} <- with_lock(opts, fn -> State.read_runtime(opts) end),
+         marker when is_map(marker) <- get_in(runtime, ["reload", "runner_replacement"]),
+         startup_runner when is_map(startup_runner) <- get_in(startup, [:services, "runner"]) do
+      runner_replacement_down?(startup_runner, marker, reason)
+    else
+      _ -> false
+    end
+  end
+
+  defp intentional_runner_replacement_down?(_service, _reason, _startup, _opts), do: false
 
   defp poll_replacement_runner(opts) do
     case with_lock(opts, fn -> State.read_runtime(opts) end) do
@@ -963,6 +1008,8 @@ defmodule Favn.Dev.Stack do
         _ -> :ok
       end
     end)
+
+    wait_runtime_ports_released(runtime, opts)
   end
 
   defp stop_service_map(services) when is_map(services) do
@@ -973,6 +1020,122 @@ defmodule Favn.Dev.Stack do
         _ -> :ok
       end
     end)
+  end
+
+  defp stop_known_local_nodes(opts) do
+    config = Config.resolve(opts)
+
+    with {:ok, secrets} <- Secrets.resolve(config, opts),
+         %{"rpc_cookie" => rpc_cookie} when is_binary(rpc_cookie) and rpc_cookie != "" <- secrets,
+         {:ok, node_names} <- stop_node_names(opts),
+         :ok <-
+           NodeControl.ensure_local_node_started(rpc_cookie,
+             name: node_names.control_short,
+             distribution_port: RuntimeLaunch.distribution_port(:control, opts)
+           ) do
+      Enum.each([node_names.runner_full, node_names.orchestrator_full], &stop_local_node/1)
+      wait_ports_released(stop_node_distribution_ports(opts), opts)
+    else
+      _reason -> :ok
+    end
+
+    :ok
+  end
+
+  defp stop_node_names(opts) do
+    suffix = opts |> Paths.root_dir() |> :erlang.phash2(1_000_000) |> Integer.to_string()
+    runner_short = "favn_runner_#{suffix}"
+    orchestrator_short = "favn_orchestrator_#{suffix}"
+    control_short = "favn_local_ctl_#{suffix}"
+
+    with {:ok, runner_full} <- NodeControl.shortname_to_full(runner_short),
+         {:ok, orchestrator_full} <- NodeControl.shortname_to_full(orchestrator_short) do
+      {:ok,
+       %{
+         runner_full: runner_full,
+         orchestrator_full: orchestrator_full,
+         control_short: control_short
+       }}
+    end
+  end
+
+  defp stop_local_node(node_name) when is_binary(node_name) do
+    with {:ok, node} <- DistributedErlang.node_name_to_atom(node_name),
+         true <- Node.connect(node) do
+      _ = :erpc.call(node, :init, :stop, [], 2_000)
+      :ok
+    else
+      _reason -> :ok
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp wait_runtime_ports_released(runtime, opts) when is_map(runtime) do
+    runtime
+    |> runtime_ports(opts)
+    |> wait_ports_released(opts)
+  end
+
+  defp runtime_ports(runtime, opts) do
+    [
+      {:orchestrator, url_port(runtime["orchestrator_base_url"])},
+      {:web, url_port(runtime["web_base_url"])},
+      {:runner_distribution, get_in(runtime, ["distribution_ports", "runner"])},
+      {:orchestrator_distribution, get_in(runtime, ["distribution_ports", "orchestrator"])}
+    ]
+    |> Enum.map(&runtime_port(&1, opts))
+    |> Enum.filter(fn {_service, port} -> is_integer(port) and port > 0 end)
+  end
+
+  defp runtime_port({service, port}, _opts) when is_integer(port) and port > 0,
+    do: {service, port}
+
+  defp runtime_port({:runner_distribution, _port}, opts),
+    do: {:runner_distribution, RuntimeLaunch.distribution_port(:runner, opts)}
+
+  defp runtime_port({:orchestrator_distribution, _port}, opts),
+    do: {:orchestrator_distribution, RuntimeLaunch.distribution_port(:orchestrator, opts)}
+
+  defp runtime_port({service, _port}, _opts), do: {service, nil}
+
+  defp stop_node_distribution_ports(opts) do
+    [
+      {:runner_distribution, RuntimeLaunch.distribution_port(:runner, opts)},
+      {:orchestrator_distribution, RuntimeLaunch.distribution_port(:orchestrator, opts)}
+    ]
+  end
+
+  defp url_port(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{port: port} when is_integer(port) and port > 0 -> port
+      _other -> nil
+    end
+  end
+
+  defp url_port(_url), do: nil
+
+  defp wait_ports_released(ports, opts) when is_list(ports) do
+    timeout_ms = Keyword.get(opts, :stop_port_release_timeout_ms, 2_000)
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    Enum.each(ports, fn {service, port} -> wait_port_released(service, port, deadline) end)
+    :ok
+  end
+
+  defp wait_port_released(service, port, deadline_ms) do
+    case ensure_port_available(service, port) do
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          :ok
+        else
+          Process.sleep(100)
+          wait_port_released(service, port, deadline_ms)
+        end
+    end
   end
 
   defp cancel_in_flight_runs(runtime, _opts) do
