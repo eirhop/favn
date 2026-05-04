@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Idempotency
+  alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -833,7 +834,6 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     accepted =
       conn(:get, "/api/orchestrator/v1/manifests/active")
-      |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-local-dev-context", "trusted")
       |> Router.call(@opts)
 
@@ -861,6 +861,61 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert non_loopback.status == 403
     assert %{"error" => %{"code" => "forbidden"}} = Jason.decode!(non_loopback.resp_body)
+
+    Application.put_env(:favn_orchestrator, :api_server, enabled: true, bind_ip: "127.0.0.1")
+
+    remote_peer =
+      conn(:get, "/api/orchestrator/v1/manifests/active")
+      |> Map.put(:remote_ip, {10, 1, 0, 190})
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-local-dev-context", "trusted")
+      |> Router.call(@opts)
+
+    assert remote_peer.status == 403
+    assert %{"error" => %{"code" => "forbidden"}} = Jason.decode!(remote_peer.resp_body)
+  end
+
+  test "production runtime config prevents trusted local-dev auth bypass" do
+    keys = [
+      :storage_adapter,
+      :storage_adapter_opts,
+      :api_server,
+      :api_service_tokens,
+      :api_service_tokens_env,
+      :scheduler,
+      :runner_client,
+      :runner_client_opts,
+      :auth_bootstrap_username,
+      :auth_bootstrap_password,
+      :auth_bootstrap_display_name,
+      :auth_bootstrap_roles,
+      :local_dev_mode
+    ]
+
+    previous = Map.new(keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
+
+    on_exit(fn ->
+      Enum.each(previous, fn {key, value} -> restore_env(:favn_orchestrator, key, value) end)
+    end)
+
+    assert :ok =
+             ProductionRuntimeConfig.apply_from_env(%{
+               "FAVN_STORAGE" => "sqlite",
+               "FAVN_SQLITE_PATH" => "/tmp/favn-router-prod-auth.sqlite3",
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
+                 "favn_web:favnweb-runtime-credential-alpha-1234567890",
+               "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
+               "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long"
+             })
+
+    response =
+      conn(:get, "/api/orchestrator/v1/manifests/active")
+      |> put_req_header("x-favn-local-dev-context", "trusted")
+      |> Router.call(@opts)
+
+    assert response.status == 401
+    assert %{"error" => %{"code" => "service_unauthorized"}} = Jason.decode!(response.resp_body)
+    assert Application.get_env(:favn_orchestrator, :local_dev_mode) == false
   end
 
   test "active manifest asset targets expose relation and runtime metadata" do
@@ -898,6 +953,8 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"source_system" => %{"segment_id" => segment_id}} = gold["runtime_config"]
     assert segment_id["provider"] == "env"
     assert segment_id["secret"] == false
+    refute inspect(gold) =~ "__struct__"
+    assert gold["materialization"]["sql"] == "select 1"
   end
 
   test "run detail exposes stored per-asset result metadata" do
@@ -1086,7 +1143,6 @@ defmodule FavnOrchestrator.API.RouterTest do
         manifest_selection: %{mode: "active"},
         dependencies: "none"
       })
-      |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-local-dev-context", "trusted")
       |> put_idempotency_key("run-local-dev")
       |> Router.call(@opts)
@@ -2305,6 +2361,7 @@ defmodule FavnOrchestrator.API.RouterTest do
           depends_on: [{MyApp.Assets.Raw, :asset}],
           relation: %{connection: :warehouse, schema: "gold", name: "orders"},
           runtime_config: %{source_system: %{segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID")}},
+          materialization: %Favn.Manifest.SQLExecution{sql: "select 1", template: nil},
           metadata: %{owner: "analytics"}
         }
       ]

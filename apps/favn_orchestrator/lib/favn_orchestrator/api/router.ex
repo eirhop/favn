@@ -1259,7 +1259,7 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp ensure_service_auth(conn) do
-    if local_dev_context_requested?(conn) and Config.local_dev_trusted_context_allowed?() do
+    if local_dev_context_allowed_for_request?(conn) do
       :ok
     else
       provided = bearer_token(conn)
@@ -1309,7 +1309,7 @@ defmodule FavnOrchestrator.API.Router do
 
   defp ensure_local_dev_context(conn, required_role) do
     cond do
-      local_dev_context_requested?(conn) and Config.local_dev_trusted_context_allowed?() ->
+      local_dev_context_allowed_for_request?(conn) ->
         local_dev_actor_context(required_role)
 
       local_dev_context_requested?(conn) ->
@@ -1322,6 +1322,15 @@ defmodule FavnOrchestrator.API.Router do
 
   defp local_dev_context_requested?(conn),
     do: header(conn, "x-favn-local-dev-context") == "trusted"
+
+  defp local_dev_context_allowed_for_request?(conn) do
+    local_dev_context_requested?(conn) and Config.local_dev_trusted_context_allowed?() and
+      loopback_peer?(conn.remote_ip)
+  end
+
+  defp loopback_peer?({127, _b, _c, _d}), do: true
+  defp loopback_peer?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_peer?(_remote_ip), do: false
 
   defp local_dev_actor_context(required_role) do
     now = DateTime.utc_now()
@@ -1431,7 +1440,7 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp service_identity(conn) do
-    if local_dev_context_requested?(conn) and Config.local_dev_trusted_context_allowed?() do
+    if local_dev_context_allowed_for_request?(conn) do
       "local-dev-cli"
     else
       case ServiceTokens.authenticate(bearer_token(conn), configured_service_tokens()) do

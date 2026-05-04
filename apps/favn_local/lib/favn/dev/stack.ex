@@ -9,6 +9,7 @@ defmodule Favn.Dev.Stack do
   alias Favn.Dev.Config
   alias Favn.Dev.DistributedErlang
   alias Favn.Dev.Install
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.LocalHttpClient
   alias Favn.Dev.Lock
   alias Favn.Dev.NodeControl
@@ -540,7 +541,7 @@ defmodule Favn.Dev.Stack do
                serialization_format: version.serialization_format,
                manifest: version.manifest
              },
-             local_dev_context()
+              LocalContext.session_context()
            ),
          canonical_manifest_version_id <- canonical_manifest_version_id(published, version),
          :ok <- register_canonical_manifest(version, canonical_manifest_version_id, startup),
@@ -554,7 +555,7 @@ defmodule Favn.Dev.Stack do
              config.orchestrator_base_url,
              "",
              canonical_manifest_version_id,
-             local_dev_context()
+              LocalContext.session_context()
            ) do
       active_manifest_version_id =
         canonical_manifest_version_id(activated, canonical_manifest_version_id)
@@ -744,36 +745,42 @@ defmodule Favn.Dev.Stack do
   defp poll_replacement_runner(opts) do
     case with_lock(opts, fn -> State.read_runtime(opts) end) do
       {:ok, runtime} ->
-        marker = get_in(runtime, ["reload", "runner_replacement"])
-
-        cond do
-          not is_map(marker) ->
-            :ok
-
-          Map.get(marker, "status") in ["stopping_old", "started"] ->
-            :ok
-
-          Map.get(marker, "status") == "completed" ->
-            runner_pid = get_in(runtime, ["services", "runner", "pid"])
-
-            if is_integer(runner_pid) and runner_pid > 0 and DevProcess.alive?(runner_pid) do
-              :ok
-            else
-              {:error, {:service_exit, "runner", :replacement_not_running}}
-            end
-
-          Map.get(marker, "status") == "failed" ->
-            {:error, {:runner_replacement_failed, Map.get(marker, "error")}}
-
-          true ->
-            :ok
-        end
+        runner_replacement_monitor_status(runtime)
 
       {:error, :not_found} ->
         :ok
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec runner_replacement_monitor_status(map(), (integer() -> boolean())) :: :ok | {:error, term()}
+  def runner_replacement_monitor_status(runtime, alive? \\ &DevProcess.alive?/1) when is_map(runtime) do
+    marker = get_in(runtime, ["reload", "runner_replacement"])
+
+    cond do
+      not is_map(marker) ->
+        :ok
+
+      Map.get(marker, "status") in ["stopping_old", "started"] ->
+        :ok
+
+      Map.get(marker, "status") == "completed" ->
+        runner_pid = get_in(runtime, ["services", "runner", "pid"])
+
+        if is_integer(runner_pid) and runner_pid > 0 and alive?.(runner_pid) do
+          :ok
+        else
+          {:error, {:service_exit, "runner", :replacement_not_running}}
+        end
+
+      Map.get(marker, "status") == "failed" ->
+        {:error, {:runner_replacement_failed, Map.get(marker, "error")}}
+
+      true ->
+        :ok
     end
   end
 
@@ -902,7 +909,7 @@ defmodule Favn.Dev.Stack do
   end
 
   defp cancel_in_flight_runs(runtime, _opts) do
-    context = local_dev_context()
+    context = LocalContext.session_context()
 
     with base_url when is_binary(base_url) <- runtime["orchestrator_base_url"],
          {:ok, run_ids} <- OrchestratorClient.in_flight_runs(base_url, "", context) do
@@ -914,14 +921,6 @@ defmodule Favn.Dev.Stack do
     else
       _ -> :ok
     end
-  end
-
-  defp local_dev_context do
-    %{
-      "actor_id" => "local-dev-cli",
-      "session_id" => "local-dev-cli",
-      "local_dev_context" => "trusted"
-    }
   end
 
   defp print_start_summary(%{

@@ -764,6 +764,12 @@ defmodule FavnOrchestrator do
 
   defp normalize_data(%DateTime{} = value), do: DateTime.to_iso8601(value)
 
+  defp normalize_data(value) when is_struct(value) do
+    value
+    |> Map.from_struct()
+    |> normalize_data()
+  end
+
   defp normalize_data(value) when is_map(value) do
     value
     |> Enum.map(fn {key, val} -> {to_string(key), normalize_data(val)} end)

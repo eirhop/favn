@@ -654,7 +654,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       )
 
       assert_raise Mix.Error,
-                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|port conflict: .* cannot bind port)/,
+                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|local Erlang shortname host .* must resolve to a loopback 127\.\* address|port conflict: .* cannot bind port)/,
                    fn ->
                      DevTask.run(["--root-dir", root_dir])
                    end

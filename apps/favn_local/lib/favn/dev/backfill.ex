@@ -4,6 +4,7 @@ defmodule Favn.Dev.Backfill do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.Run
   alias Favn.Dev.State
@@ -217,7 +218,7 @@ defmodule Favn.Dev.Backfill do
   defp session(opts) do
     with :ok <- ensure_running(opts),
          {:ok, runtime} <- read_runtime_snapshot(opts) do
-      {:ok, base_url(runtime, opts), local_credentials(), local_dev_context()}
+      {:ok, base_url(runtime, opts), LocalContext.credentials(), LocalContext.session_context()}
     end
   end
 
@@ -231,16 +232,6 @@ defmodule Favn.Dev.Backfill do
 
   defp read_runtime_snapshot(opts) do
     State.read_runtime(opts)
-  end
-
-  defp local_credentials, do: %{service_token: ""}
-
-  defp local_dev_context do
-    %{
-      "actor_id" => "local-dev-cli",
-      "session_id" => "local-dev-cli",
-      "local_dev_context" => "trusted"
-    }
   end
 
   defp base_url(runtime, opts) do

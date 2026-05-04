@@ -4,6 +4,7 @@ defmodule Favn.Dev.Run do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.State
   alias Favn.Dev.Status
@@ -31,8 +32,8 @@ defmodule Favn.Dev.Run do
          {:ok, window_request} <- parse_window_request(opts),
          :ok <- ensure_running(opts),
          {:ok, runtime} <- read_runtime_snapshot(opts),
-         credentials = local_credentials(),
-         session_context = local_dev_context(),
+         credentials = LocalContext.credentials(),
+         session_context = LocalContext.session_context(),
          {:ok, active_manifest} <-
            OrchestratorClient.active_manifest(
              base_url(runtime, opts),
@@ -109,16 +110,6 @@ defmodule Favn.Dev.Run do
 
   defp read_runtime_snapshot(opts) do
     State.read_runtime(opts)
-  end
-
-  defp local_credentials, do: %{service_token: ""}
-
-  defp local_dev_context do
-    %{
-      "actor_id" => "local-dev-cli",
-      "session_id" => "local-dev-cli",
-      "local_dev_context" => "trusted"
-    }
   end
 
   defp base_url(runtime, opts) do

@@ -10,6 +10,8 @@ Code:
 - `apps/favn_local/lib/favn/dev/`
 - `apps/favn_local/lib/favn/dev/local_distribution.ex` for local distributed Erlang
   loopback and EPMD preflight
+- `apps/favn_local/lib/favn/dev/local_context.ex` for the shared trusted local-dev
+  API context used by local CLI commands
 - single-node bootstrap implementation under `apps/favn_local/lib/favn/dev/bootstrap/`
 - `apps/favn_local/lib/favn_local.ex`
 - single-node artifact integration test harness under `apps/favn_local/test_support/`

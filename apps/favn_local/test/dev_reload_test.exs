@@ -87,4 +87,30 @@ defmodule Favn.Dev.ReloadTest do
     refute Stack.runner_replacement_exit?(%{startup_runner | pid: 54_321}, marker, 0)
     refute Stack.runner_replacement_exit?(%{startup_runner | generation: 4}, marker, 0)
   end
+
+  test "foreground monitor deterministically validates completed runner replacement" do
+    runtime = %{
+      "services" => %{"runner" => %{"pid" => 54_321, "generation" => 4}},
+      "reload" => %{
+        "runner_replacement" => %{
+          "status" => "completed",
+          "old_pid" => 12_345,
+          "old_generation" => 3,
+          "new_pid" => 54_321,
+          "generation" => 4
+        }
+      }
+    }
+
+    assert :ok = Stack.runner_replacement_monitor_status(runtime, &(&1 == 54_321))
+
+    assert {:error, {:service_exit, "runner", :replacement_not_running}} =
+             Stack.runner_replacement_monitor_status(runtime, fn _pid -> false end)
+
+    failed = put_in(runtime, ["reload", "runner_replacement", "status"], "failed")
+    failed = put_in(failed, ["reload", "runner_replacement", "error"], ":boom")
+
+    assert {:error, {:runner_replacement_failed, ":boom"}} =
+             Stack.runner_replacement_monitor_status(failed, &(&1 == 54_321))
+  end
 end

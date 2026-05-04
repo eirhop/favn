@@ -316,7 +316,8 @@ defmodule Favn.Dev.LifecycleTest do
       )
 
     assert match?({:error, {:runtime_compile_failed, :runtime_root, _status, _output}}, result) or
-             match?({:error, {:shortname_host_unavailable, _reason}}, result)
+             match?({:error, {:shortname_host_unavailable, _reason}}, result) or
+             match?({:error, {:local_distribution_preflight_failed, _reason, _message}}, result)
 
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
     assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)

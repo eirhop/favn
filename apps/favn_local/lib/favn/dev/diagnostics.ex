@@ -4,6 +4,7 @@ defmodule Favn.Dev.Diagnostics do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.State
   alias Favn.Dev.Status
@@ -17,7 +18,7 @@ defmodule Favn.Dev.Diagnostics do
   def fetch(opts \\ []) when is_list(opts) do
     with :ok <- ensure_orchestrator_reachable(opts),
          {:ok, runtime} <- State.read_runtime(opts) do
-      OrchestratorClient.diagnostics(base_url(runtime, opts), "", local_dev_context())
+      OrchestratorClient.diagnostics(base_url(runtime, opts), "", LocalContext.session_context())
     end
   end
 
@@ -43,11 +44,4 @@ defmodule Favn.Dev.Diagnostics do
     runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
   end
 
-  defp local_dev_context do
-    %{
-      "actor_id" => "local-dev-cli",
-      "session_id" => "local-dev-cli",
-      "local_dev_context" => "trusted"
-    }
-  end
 end

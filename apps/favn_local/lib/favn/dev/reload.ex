@@ -12,6 +12,7 @@ defmodule Favn.Dev.Reload do
 
   alias Favn.Dev.Config
   alias Favn.Dev.DistributedErlang
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.Lock
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.Process, as: DevProcess
@@ -85,7 +86,7 @@ defmodule Favn.Dev.Reload do
     _ = secrets
     base_url = runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
 
-    case OrchestratorClient.in_flight_runs(base_url, "", local_dev_context()) do
+    case OrchestratorClient.in_flight_runs(base_url, "", LocalContext.session_context()) do
       {:ok, []} -> :ok
       {:ok, run_ids} -> {:error, {:in_flight_runs, run_ids}}
       {:error, _reason} = error -> error
@@ -293,21 +294,31 @@ defmodule Favn.Dev.Reload do
     _ = secrets
     base_url = runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
 
-    OrchestratorClient.publish_manifest(base_url, "", %{
-      manifest_version_id: version.manifest_version_id,
-      content_hash: version.content_hash,
-      schema_version: version.schema_version,
-      runner_contract_version: version.runner_contract_version,
-      serialization_format: version.serialization_format,
-      manifest: version.manifest
-    }, local_dev_context())
+    OrchestratorClient.publish_manifest(
+      base_url,
+      "",
+      %{
+        manifest_version_id: version.manifest_version_id,
+        content_hash: version.content_hash,
+        schema_version: version.schema_version,
+        runner_contract_version: version.runner_contract_version,
+        serialization_format: version.serialization_format,
+        manifest: version.manifest
+      },
+      LocalContext.session_context()
+    )
   end
 
   defp activate_manifest(manifest_version_id, runtime, secrets, opts) do
     _ = secrets
     base_url = runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
 
-    OrchestratorClient.activate_manifest(base_url, "", manifest_version_id, local_dev_context())
+    OrchestratorClient.activate_manifest(
+      base_url,
+      "",
+      manifest_version_id,
+      LocalContext.session_context()
+    )
   end
 
   defp update_runtime_manifest(manifest_version_id, opts) do
@@ -342,11 +353,4 @@ defmodule Favn.Dev.Reload do
   defp canonical_manifest_version_id(manifest_version_id) when is_binary(manifest_version_id),
     do: manifest_version_id
 
-  defp local_dev_context do
-    %{
-      "actor_id" => "local-dev-cli",
-      "session_id" => "local-dev-cli",
-      "local_dev_context" => "trusted"
-    }
-  end
 end
