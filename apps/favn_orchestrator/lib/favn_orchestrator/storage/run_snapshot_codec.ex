@@ -5,6 +5,77 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunStateCodec
 
+  # Favn-owned run snapshot atoms are fixed here; consumer module/name atoms come only from
+  # the associated manifest record.
+  @internal_atom_strings [
+    "action",
+    "asset",
+    "asset_dependencies",
+    "asset_ref",
+    "asset_results",
+    "attempt",
+    "attempt_count",
+    "attempts",
+    "cancelled",
+    "dependencies",
+    "downstream",
+    "duration_ms",
+    "error",
+    "event_seq",
+    "execution_id",
+    "finished_at",
+    "id",
+    "in_flight_execution_ids",
+    "inserted_at",
+    "kind",
+    "lineage_depth",
+    "manual",
+    "manifest_content_hash",
+    "manifest_version_id",
+    "max_attempts",
+    "meta",
+    "metadata",
+    "next_attempt",
+    "next_retry_at",
+    "nil",
+    "node_key",
+    "node_stages",
+    "nodes",
+    "none",
+    "ok",
+    "params",
+    "parent_run_id",
+    "plan",
+    "ref",
+    "relation",
+    "rerun_of_run_id",
+    "result",
+    "retry_backoff_ms",
+    "retrying",
+    "root_run_id",
+    "run",
+    "run_finished",
+    "runner_execution_id",
+    "rows_written",
+    "runner_metadata",
+    "snapshot_hash",
+    "source_run_id",
+    "stage",
+    "stages",
+    "started_at",
+    "status",
+    "submit_kind",
+    "target_node_keys",
+    "target_refs",
+    "terminal_event_type",
+    "timeout_ms",
+    "topo_order",
+    "trigger",
+    "updated_at",
+    "upstream",
+    "window"
+  ]
+
   @type run_record :: %{
           required(:run_blob) => String.t(),
           required(:manifest_version_id) => String.t()
@@ -20,7 +91,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   def decode_run(%{run_blob: payload, manifest_version_id: manifest_version_id}, manifest_record)
       when is_binary(payload) and is_binary(manifest_version_id) do
     with {:ok, manifest_record} <- validate_manifest_record(manifest_record, manifest_version_id),
-         {:ok, allowed_atom_strings} <- manifest_atom_strings(manifest_record),
+         {:ok, allowed_atom_strings} <- allowed_atom_strings(manifest_record),
          {:ok, decoded} <-
            PayloadCodec.decode(payload, allowed_atom_strings: allowed_atom_strings),
          %RunState{} = run_state <- decoded,
@@ -49,6 +120,12 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp validate_manifest_record(record, _manifest_version_id),
     do: {:error, {:invalid_manifest_record, record}}
+
+  defp allowed_atom_strings(manifest_record) do
+    with {:ok, manifest_atoms} <- manifest_atom_strings(manifest_record) do
+      {:ok, Enum.uniq(@internal_atom_strings ++ manifest_atoms)}
+    end
+  end
 
   defp manifest_atom_strings(%{manifest_json: manifest_json}) when is_binary(manifest_json) do
     case JSON.decode(manifest_json) do

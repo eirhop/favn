@@ -36,7 +36,7 @@ defmodule Favn.SQLiteStorageTest do
 
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
     :ok = Migrations.migrate!(Repo)
-    :ok = Storage.put_manifest_version(manifest_version("manifest_v1"))
+    :ok = OrchestratorStorage.put_manifest_version(manifest_version("manifest_v1"))
 
     on_exit(fn ->
       Favn.TestSetup.restore_state(state, clear_storage_adapter_env?: true)
@@ -103,7 +103,7 @@ defmodule Favn.SQLiteStorageTest do
     assert :ok = Storage.put_run(run)
     replace_run_atom(run.id, existing_module, unknown_module)
 
-    assert {:error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}} =
+    assert {:error, {:store_error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}}} =
              Storage.get_run(run.id)
   end
 

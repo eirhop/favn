@@ -7,6 +7,7 @@ defmodule Favn.SQLiteStorageBootstrapTest do
   alias Favn.Run
   alias Favn.Storage
   alias Favn.Storage.Adapter.SQLite, as: Adapter
+  alias FavnOrchestrator.Storage, as: OrchestratorStorage
 
   setup do
     state = Favn.TestSetup.capture_state()
@@ -31,7 +32,7 @@ defmodule Favn.SQLiteStorageBootstrapTest do
     {:ok, child_spec} = Adapter.child_spec(database: db_path, pool_size: 1)
     start_supervised!(child_spec)
 
-    assert :ok = Storage.put_manifest_version(manifest_version("manifest_v1"))
+    assert :ok = OrchestratorStorage.put_manifest_version(manifest_version("manifest_v1"))
 
     run = sample_run("bootstrap-run", :running)
     assert :ok = Storage.put_run(run)
