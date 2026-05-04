@@ -11,12 +11,14 @@ defmodule Favn.Dev.Reload do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.DistributedErlang
   alias Favn.Dev.Lock
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RunnerControl
   alias Favn.Dev.RuntimeLaunch
   alias Favn.Dev.RuntimeWorkspace
+  alias Favn.Dev.Secrets
   alias Favn.Dev.State
   alias Favn.Dev.Status
 
@@ -31,12 +33,21 @@ defmodule Favn.Dev.Reload do
          {:ok, build} <- FavnAuthoring.build_manifest(),
          {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
          {:ok, runtime_after_restart} <- restart_runner(runtime, installed_runtime, secrets, opts),
-         :ok <- register_manifest_in_runner(version, runtime_after_restart, secrets),
-         :ok <- write_manifest_cache(version, opts),
-         {:ok, _published} <- publish_manifest(version, runtime_after_restart, secrets, opts),
-         {:ok, _activated} <- activate_manifest(version, runtime_after_restart, secrets, opts),
-         :ok <- update_runtime_manifest(version.manifest_version_id, opts) do
-      IO.puts("Favn manifest reloaded: #{version.manifest_version_id}")
+         {:ok, published} <- publish_manifest(version, runtime_after_restart, secrets, opts),
+         canonical_manifest_version_id <- canonical_manifest_version_id(published, version),
+          :ok <-
+            register_manifest_in_runner(
+              %{version | manifest_version_id: canonical_manifest_version_id},
+              runtime_after_restart,
+              secrets
+            ),
+         :ok <- write_manifest_cache(version, canonical_manifest_version_id, opts),
+         {:ok, activated} <-
+           activate_manifest(canonical_manifest_version_id, runtime_after_restart, secrets, opts),
+         active_manifest_version_id <-
+           canonical_manifest_version_id(activated, canonical_manifest_version_id),
+         :ok <- update_runtime_manifest(active_manifest_version_id, opts) do
+      IO.puts("Favn manifest reloaded: #{active_manifest_version_id}")
       :ok
     end
   end
@@ -54,7 +65,7 @@ defmodule Favn.Dev.Reload do
     Lock.with_lock(opts, fn ->
       with {:ok, runtime} <- State.read_runtime(opts),
            {:ok, installed_runtime} <- RuntimeWorkspace.read(opts),
-           {:ok, secrets} <- State.read_secrets(opts) do
+           {:ok, secrets} <- Secrets.resolve(Config.resolve(opts), opts) do
         {:ok, runtime, installed_runtime, secrets}
       end
     end)
@@ -71,48 +82,179 @@ defmodule Favn.Dev.Reload do
   end
 
   defp ensure_no_in_flight_runs(runtime, secrets, opts) do
+    _ = secrets
     base_url = runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
 
-    case secrets["service_token"] do
-      token when is_binary(token) and token != "" ->
-        case OrchestratorClient.in_flight_runs(base_url, token) do
-          {:ok, []} -> :ok
-          {:ok, run_ids} -> {:error, {:in_flight_runs, run_ids}}
-          {:error, _reason} = error -> error
-        end
-
-      _ ->
-        {:error, :missing_service_token}
+    case OrchestratorClient.in_flight_runs(base_url, "", local_dev_context()) do
+      {:ok, []} -> :ok
+      {:ok, run_ids} -> {:error, {:in_flight_runs, run_ids}}
+      {:error, _reason} = error -> error
     end
   end
 
   defp restart_runner(runtime, installed_runtime, secrets, opts) do
     runner_node = get_in(runtime, ["services", "runner", "node_name"])
+    old_runner = Map.get(Map.get(runtime, "services", %{}), "runner", %{})
+    old_runner_pid = Map.get(old_runner, "pid")
+    old_generation = runner_generation(old_runner)
+    new_generation = old_generation + 1
 
-    old_runner_pid = get_in(runtime, ["services", "runner", "pid"])
+    marker = runner_replacement_marker(runtime, "stopping_old", new_generation)
 
-    if is_integer(old_runner_pid) and old_runner_pid > 0 do
-      :ok = DevProcess.stop_pid(old_runner_pid)
+    with :ok <- write_runner_replacement_marker(runtime, marker, opts) do
+      if is_integer(old_runner_pid) and old_runner_pid > 0 do
+        :ok = DevProcess.stop_pid(old_runner_pid)
+      end
+
+      node_names = %{runner_short: runner_sname(runner_node)}
+
+      case DevProcess.start_service(
+             RuntimeLaunch.runner_spec(installed_runtime, opts, node_names, secrets)
+           ) do
+        {:ok, info} ->
+          started_marker =
+            marker
+            |> Map.put("status", "started")
+            |> Map.put("new_pid", info.pid)
+            |> Map.put("new_node", runner_node)
+            |> Map.put("new_log_path", info.log_path)
+            |> Map.put("updated_at", datetime(DateTime.utc_now()))
+
+          runtime_started =
+            runtime
+            |> put_runner_runtime(info.pid, info.log_path, runner_node, new_generation)
+            |> put_runner_replacement_marker(started_marker)
+
+          with :ok <- write_runtime_snapshot(runtime_started, opts),
+               :ok <- wait_runner_node_reachable(runner_node, opts) do
+            completed_marker =
+              started_marker
+              |> Map.put("status", "completed")
+              |> Map.put("updated_at", datetime(DateTime.utc_now()))
+
+            runtime_completed = put_runner_replacement_marker(runtime_started, completed_marker)
+
+            case write_runtime_snapshot(runtime_completed, opts) do
+              :ok -> {:ok, runtime_completed}
+              {:error, reason} -> {:error, reason}
+            end
+          else
+            {:error, reason} ->
+              _ = write_runner_replacement_failed(runtime_started, reason, opts)
+              {:error, {:runner_restart_failed, reason}}
+          end
+
+        {:error, reason} ->
+          _ =
+            runtime
+            |> put_runner_replacement_marker(marker)
+            |> write_runner_replacement_failed(reason, opts)
+
+          {:error, {:runner_restart_failed, reason}}
+      end
     end
+  end
 
-    node_names = %{runner_short: runner_sname(runner_node)}
+  @doc false
+  @spec runner_replacement_marker(map(), String.t(), pos_integer()) :: map()
+  def runner_replacement_marker(runtime, status, generation)
+      when is_map(runtime) and is_binary(status) and is_integer(generation) and generation > 0 do
+    old_runner = Map.get(Map.get(runtime, "services", %{}), "runner", %{})
+    now = datetime(DateTime.utc_now())
 
-    case DevProcess.start_service(
-           RuntimeLaunch.runner_spec(installed_runtime, opts, node_names, secrets)
-         ) do
-      {:ok, info} ->
-        updated_runtime =
-          runtime
-          |> put_in(["services", "runner", "pid"], info.pid)
-          |> put_in(["services", "runner", "log_path"], info.log_path)
+    %{
+      "status" => status,
+      "generation" => generation,
+      "old_generation" => runner_generation(old_runner),
+      "old_pid" => Map.get(old_runner, "pid"),
+      "old_node" => Map.get(old_runner, "node_name"),
+      "started_at" => now,
+      "updated_at" => now
+    }
+  end
 
-        case Lock.with_lock(opts, fn -> State.write_runtime(updated_runtime, opts) end) do
-          :ok -> {:ok, updated_runtime}
-          {:error, reason} -> {:error, reason}
+  defp write_runner_replacement_marker(runtime, marker, opts) do
+    runtime
+    |> put_runner_replacement_marker(marker)
+    |> write_runtime_snapshot(opts)
+  end
+
+  defp write_runner_replacement_failed(runtime, reason, opts) do
+    marker =
+      runtime
+      |> get_in(["reload", "runner_replacement"])
+      |> case do
+        marker when is_map(marker) -> marker
+        _ -> runner_replacement_marker(runtime, "failed", runner_generation(runtime))
+      end
+      |> Map.put("status", "failed")
+      |> Map.put("error", inspect(reason))
+      |> Map.put("updated_at", datetime(DateTime.utc_now()))
+
+    write_runner_replacement_marker(runtime, marker, opts)
+  end
+
+  defp write_runtime_snapshot(runtime, opts) do
+    Lock.with_lock(opts, fn -> State.write_runtime(runtime, opts) end)
+  end
+
+  defp put_runner_runtime(runtime, pid, log_path, node_name, generation) do
+    services = Map.get(runtime, "services", %{})
+    runner = Map.get(services, "runner", %{})
+
+    runner =
+      runner
+      |> Map.put("pid", pid)
+      |> Map.put("log_path", log_path)
+      |> Map.put("node_name", node_name)
+      |> Map.put("generation", generation)
+
+    Map.put(runtime, "services", Map.put(services, "runner", runner))
+  end
+
+  defp put_runner_replacement_marker(runtime, marker) do
+    reload =
+      runtime
+      |> Map.get("reload", %{})
+      |> Map.put("runner_replacement", marker)
+
+    Map.put(runtime, "reload", reload)
+  end
+
+  defp runner_generation(%{"services" => %{"runner" => runner}}), do: runner_generation(runner)
+
+  defp runner_generation(%{"generation" => generation}) when is_integer(generation),
+    do: generation
+
+  defp runner_generation(_runner), do: 1
+
+  defp wait_runner_node_reachable(runner_node, opts) when is_binary(runner_node) do
+    timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 10_000)
+
+    case Keyword.get(opts, :runner_node_wait_fun) do
+      fun when is_function(fun, 2) ->
+        fun.(runner_node, timeout_ms)
+
+      _ ->
+        with {:ok, node} <- DistributedErlang.node_name_to_atom(runner_node) do
+          deadline = System.monotonic_time(:millisecond) + timeout_ms
+          do_wait_runner_node_reachable(node, deadline)
         end
+    end
+  end
 
-      {:error, reason} ->
-        {:error, {:runner_restart_failed, reason}}
+  defp do_wait_runner_node_reachable(node, deadline_ms) when is_atom(node) do
+    case :net_adm.ping(node) do
+      :pong ->
+        :ok
+
+      :pang ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          {:error, {:runner_node_unreachable, node}}
+        else
+          Process.sleep(100)
+          do_wait_runner_node_reachable(node, deadline_ms)
+        end
     end
   end
 
@@ -133,10 +275,10 @@ defmodule Favn.Dev.Reload do
     )
   end
 
-  defp write_manifest_cache(version, opts) do
+  defp write_manifest_cache(version, manifest_version_id, opts) do
     State.write_manifest_latest(
       %{
-        "manifest_version_id" => version.manifest_version_id,
+        "manifest_version_id" => manifest_version_id,
         "content_hash" => version.content_hash,
         "schema_version" => version.schema_version,
         "runner_contract_version" => version.runner_contract_version,
@@ -148,34 +290,24 @@ defmodule Favn.Dev.Reload do
   end
 
   defp publish_manifest(version, runtime, secrets, opts) do
+    _ = secrets
     base_url = runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
 
-    case secrets["service_token"] do
-      token when is_binary(token) and token != "" ->
-        OrchestratorClient.publish_manifest(base_url, token, %{
-          manifest_version_id: version.manifest_version_id,
-          content_hash: version.content_hash,
-          schema_version: version.schema_version,
-          runner_contract_version: version.runner_contract_version,
-          serialization_format: version.serialization_format,
-          manifest: version.manifest
-        })
-
-      _ ->
-        {:error, :missing_service_token}
-    end
+    OrchestratorClient.publish_manifest(base_url, "", %{
+      manifest_version_id: version.manifest_version_id,
+      content_hash: version.content_hash,
+      schema_version: version.schema_version,
+      runner_contract_version: version.runner_contract_version,
+      serialization_format: version.serialization_format,
+      manifest: version.manifest
+    }, local_dev_context())
   end
 
-  defp activate_manifest(version, runtime, secrets, opts) do
+  defp activate_manifest(manifest_version_id, runtime, secrets, opts) do
+    _ = secrets
     base_url = runtime["orchestrator_base_url"] || Config.resolve(opts).orchestrator_base_url
 
-    case secrets["service_token"] do
-      token when is_binary(token) and token != "" ->
-        OrchestratorClient.activate_manifest(base_url, token, version.manifest_version_id)
-
-      _ ->
-        {:error, :missing_service_token}
-    end
+    OrchestratorClient.activate_manifest(base_url, "", manifest_version_id, local_dev_context())
   end
 
   defp update_runtime_manifest(manifest_version_id, opts) do
@@ -191,4 +323,30 @@ defmodule Favn.Dev.Reload do
 
   defp datetime(nil), do: nil
   defp datetime(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp canonical_manifest_version_id(%{"data" => data}, fallback) when is_map(data) do
+    get_in(data, ["registration", "canonical_manifest_version_id"]) ||
+      get_in(data, ["manifest", "manifest_version_id"]) ||
+      Map.get(data, "manifest_version_id") || canonical_manifest_version_id(fallback)
+  end
+
+  defp canonical_manifest_version_id(%{"manifest_version_id" => manifest_version_id}, _fallback),
+    do: manifest_version_id
+
+  defp canonical_manifest_version_id(_response, fallback),
+    do: canonical_manifest_version_id(fallback)
+
+  defp canonical_manifest_version_id(%{manifest_version_id: manifest_version_id}),
+    do: manifest_version_id
+
+  defp canonical_manifest_version_id(manifest_version_id) when is_binary(manifest_version_id),
+    do: manifest_version_id
+
+  defp local_dev_context do
+    %{
+      "actor_id" => "local-dev-cli",
+      "session_id" => "local-dev-cli",
+      "local_dev_context" => "trusted"
+    }
+  end
 end

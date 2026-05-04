@@ -63,6 +63,27 @@ defmodule FavnOrchestrator.API.ConfigTest do
     assert {:error, {:invalid_bind_ip, "127.0.0.999"}} = Config.bind_ip(bind_ip: "127.0.0.999")
   end
 
+  test "local_dev_trusted_context_allowed?/0 requires explicit mode and loopback bind" do
+    previous_server = Application.get_env(:favn_orchestrator, :api_server)
+    previous_local_dev = Application.get_env(:favn_orchestrator, :local_dev_mode)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :api_server, previous_server)
+      restore_env(:favn_orchestrator, :local_dev_mode, previous_local_dev)
+    end)
+
+    Application.put_env(:favn_orchestrator, :local_dev_mode, true)
+    Application.put_env(:favn_orchestrator, :api_server, enabled: true, bind_ip: "127.0.0.1")
+    assert Config.local_dev_trusted_context_allowed?()
+
+    Application.put_env(:favn_orchestrator, :local_dev_mode, false)
+    refute Config.local_dev_trusted_context_allowed?()
+
+    Application.put_env(:favn_orchestrator, :local_dev_mode, true)
+    Application.put_env(:favn_orchestrator, :api_server, enabled: true, bind_ip: "0.0.0.0")
+    refute Config.local_dev_trusted_context_allowed?()
+  end
+
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 end

@@ -117,7 +117,9 @@ defmodule Favn.Dev.OrchestratorClientTest do
   end
 
   test "password_login/4 returns forwarded session context" do
-    body = ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})
+    body =
+      ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})
+
     {:ok, base_url, _server} = start_server(body, 201)
 
     assert {:ok,
@@ -136,21 +138,40 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
     assert {:ok, %{"id" => "run_1"}} =
              OrchestratorClient.submit_run(
-                base_url,
-                "token",
-                %{
-                  "actor_id" => "act_1",
-                  "session_id" => "sess_1",
-                  "session_token" => "raw_session_token_1"
-                },
-                %{target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"}}
-              )
+               base_url,
+               "token",
+               %{
+                 "actor_id" => "act_1",
+                 "session_id" => "sess_1",
+                 "session_token" => "raw_session_token_1"
+               },
+               %{target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"}}
+             )
 
     assert_receive {:request_headers, headers}
     assert headers["x-favn-actor-id"] == "act_1"
     assert headers["x-favn-session-token"] == "raw_session_token_1"
     refute Map.has_key?(headers, "x-favn-session-id")
     assert_idempotency_header(headers)
+  end
+
+  test "submit_run/4 sends trusted local-dev context header without session token" do
+    parent = self()
+    body = ~s({"data":{"run":{"id":"run_1","status":"running"}}})
+    {:ok, base_url, _server} = start_server(body, 201, parent: parent)
+
+    assert {:ok, %{"id" => "run_1"}} =
+             OrchestratorClient.submit_run(
+               base_url,
+               "token",
+               %{"local_dev_context" => "trusted"},
+               %{target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"}}
+             )
+
+    assert_receive {:request_headers, headers}
+    assert headers["x-favn-local-dev-context"] == "trusted"
+    refute Map.has_key?(headers, "x-favn-session-token")
+    refute Map.has_key?(headers, "x-favn-actor-id")
   end
 
   test "mutating command helpers send idempotency keys without secrets" do
@@ -200,11 +221,11 @@ defmodule Favn.Dev.OrchestratorClientTest do
              OrchestratorClient.list_coverage_baselines(
                base_url,
                "token",
-                %{
-                  "actor_id" => "act_1",
-                  "session_id" => "sess_1",
-                  "session_token" => "raw_session_token_1"
-                },
+               %{
+                 "actor_id" => "act_1",
+                 "session_id" => "sess_1",
+                 "session_token" => "raw_session_token_1"
+               },
                pipeline_module: "MyApp.Pipeline",
                status: "ok"
              )
@@ -227,11 +248,11 @@ defmodule Favn.Dev.OrchestratorClientTest do
              OrchestratorClient.list_asset_window_states(
                base_url,
                "token",
-                %{
-                  "actor_id" => "act_1",
-                  "session_id" => "sess_1",
-                  "session_token" => "raw_session_token_1"
-                },
+               %{
+                 "actor_id" => "act_1",
+                 "session_id" => "sess_1",
+                 "session_token" => "raw_session_token_1"
+               },
                asset_ref_module: "MyApp.Asset",
                asset_ref_name: "asset"
              )

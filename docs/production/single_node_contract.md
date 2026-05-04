@@ -87,7 +87,7 @@ preserve these boundaries:
 - `favn_storage_sqlite` is the first production control-plane storage adapter.
 - `favn_local` remains local tooling and packaging implementation. Production
   runtime behavior must not depend on local-dev-only assumptions such as loopback
-  dev service wrappers, generated `.favn/secrets.json`, or `FAVN_DEV_*` names.
+  dev service wrappers, trusted local-dev context, or `FAVN_DEV_*` names.
 
 The scheduler is part of the backend control plane. It must not run in multiple
 active instances against the same SQLite database.
@@ -302,8 +302,8 @@ The production path contract is intentionally explicit:
 - Runtime logs, crash dumps, and diagnostics must have documented paths or
   stdout/stderr behavior suitable for the chosen release packaging.
 - Build metadata paths under `.favn/dist` are not production persistence paths.
-- Local development state such as `.favn/runtime.json`, `.favn/secrets.json`, and
-  `FAVN_DEV_*` env values are not production contracts.
+- Local development state such as `.favn/runtime.json` and `FAVN_DEV_*` env values
+  are not production contracts.
 
 Ownership is split by app boundary. `favn_orchestrator` validates and applies
 orchestrator API, service-token, SQLite storage, scheduler, and local-runner

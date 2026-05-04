@@ -25,7 +25,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              ProductionRuntimeConfig.validate(%{
                "FAVN_STORAGE" => "sqlite",
                "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
+               "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
+               "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
+               "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long"
              })
 
     assert config.storage == :sqlite
@@ -58,6 +60,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       "FAVN_ORCHESTRATOR_API_PORT" => "4444",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" =>
         "favn_web:#{@token},bootstrap_cli:#{@token <> "-bravo"}",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long",
       "FAVN_RUNNER_MODE" => "local",
       "FAVN_SCHEDULER_ENABLED" => "false",
       "FAVN_SCHEDULER_TICK_MS" => "250",
@@ -98,7 +102,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     base = %{
       "FAVN_STORAGE" => "sqlite",
       "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long"
     }
 
     assert {:error, %{error: {:invalid_env, "FAVN_SQLITE_POOL_SIZE", 1}}} =
@@ -154,7 +160,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       :scheduler,
       :runner_client,
       :runner_client_opts,
-      :production_runtime_diagnostics
+      :production_runtime_diagnostics,
+      :auth_bootstrap_username,
+      :auth_bootstrap_password,
+      :auth_bootstrap_display_name,
+      :auth_bootstrap_roles,
+      :local_dev_mode
     ]
 
     previous = Map.new(keys, &{&1, Application.get_env(:favn_orchestrator, &1)})
@@ -168,6 +179,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
                "FAVN_STORAGE" => "sqlite",
                "FAVN_SQLITE_PATH" => "/var/lib/favn/orchestrator.sqlite3",
                "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => @token_env,
+               "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => "admin",
+               "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => "admin-password-long",
                "FAVN_SCHEDULER_ENABLED" => "0"
              })
 
@@ -188,6 +201,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     refute Application.get_env(:favn_orchestrator, :api_service_tokens_env)
 
     assert Application.get_env(:favn_orchestrator, :scheduler)[:enabled] == false
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_username) == "admin"
+    assert Application.get_env(:favn_orchestrator, :auth_bootstrap_roles) == ["admin"]
+    assert Application.get_env(:favn_orchestrator, :local_dev_mode) == false
 
     assert Application.get_env(:favn_orchestrator, :runner_client) ==
              FavnOrchestrator.RunnerClient.LocalNode

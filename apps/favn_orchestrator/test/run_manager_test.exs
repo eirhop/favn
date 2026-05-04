@@ -709,13 +709,8 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(submit_log) do
-        Agent.stop(submit_log)
-      end
-
-      if Process.alive?(attempt_counter) do
-        Agent.stop(attempt_counter)
-      end
+      stop_agent(submit_log)
+      stop_agent(attempt_counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRetryMetadataLeakStub)
@@ -753,9 +748,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -801,9 +794,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(per_asset_counter) do
-        Agent.stop(per_asset_counter)
-      end
+      stop_agent(per_asset_counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyPerAssetStub)
@@ -844,9 +835,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(counter) do
-        Agent.stop(counter)
-      end
+      stop_agent(counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
@@ -884,9 +873,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(counter) do
-        Agent.stop(counter)
-      end
+      stop_agent(counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
@@ -929,9 +916,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientTimeoutCancelableStub)
@@ -966,9 +951,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientPartialSubmitStub)
@@ -1002,9 +985,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -1055,9 +1036,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -1093,7 +1072,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
   test "rerun stays pinned to source manifest even when active manifest changes" do
     source_version = manifest_version("mv_source")
-    newer_version = manifest_version("mv_newer")
+    newer_version = manifest_version("mv_newer", pipeline_metadata: %{"revision" => "newer"})
 
     assert :ok = FavnOrchestrator.register_manifest(source_version)
     assert :ok = FavnOrchestrator.register_manifest(newer_version)
@@ -1202,9 +1181,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -1330,7 +1307,13 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
-  defp manifest_version(manifest_version_id) do
+  defp stop_agent(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: Agent.stop(pid)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp manifest_version(manifest_version_id, opts \\ []) do
     manifest =
       %Manifest{
         assets: [
@@ -1359,7 +1342,7 @@ defmodule FavnOrchestrator.RunManagerTest do
             selectors: [{:asset, {MyApp.Assets.Gold, :asset}}],
             deps: :all,
             schedule: nil,
-            metadata: %{}
+            metadata: Keyword.get(opts, :pipeline_metadata, %{})
           },
           %Favn.Manifest.Pipeline{
             module: MyApp.Pipelines.SingleAssetShorthand,

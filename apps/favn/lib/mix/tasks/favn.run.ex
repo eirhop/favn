@@ -64,9 +64,6 @@ defmodule Mix.Tasks.Favn.Run do
   defp error_message(:stack_not_healthy),
     do: "stack not healthy; use mix favn.stop then mix favn.dev"
 
-  defp error_message(:missing_local_operator_credentials),
-    do: "local operator credentials are missing; run mix favn.stop then mix favn.dev"
-
   defp error_message({:run_wait_timeout, run_id}), do: "timed out waiting for run #{run_id}"
   defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
 

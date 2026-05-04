@@ -42,14 +42,24 @@ defmodule FavnStorageSqlite.AdapterTest do
 
   test "stores manifest versions and supports activation", %{opts: opts} do
     version = manifest_version("mv_sqlite")
+    duplicate = manifest_version("mv_sqlite_duplicate")
 
     assert :ok = Adapter.put_manifest_version(version, opts)
     assert :ok = Adapter.put_manifest_version(version, opts)
+    assert :ok = Adapter.put_manifest_version(duplicate, opts)
 
     assert {:ok, stored} = Adapter.get_manifest_version("mv_sqlite", opts)
     assert stored.content_hash == version.content_hash
     assert %Manifest{} = stored.manifest
     assert [%Asset{ref: {MyApp.Asset, :asset}}] = stored.manifest.assets
+
+    assert {:ok, canonical} =
+             Adapter.get_manifest_version_by_content_hash(version.content_hash, opts)
+
+    assert canonical.manifest_version_id == "mv_sqlite"
+
+    assert {:error, :manifest_version_not_found} =
+             Adapter.get_manifest_version("mv_sqlite_duplicate", opts)
 
     assert {:ok, listed} = Adapter.list_manifest_versions(opts)
     assert [%Version{manifest: %Manifest{assets: [%Asset{ref: {MyApp.Asset, :asset}}]}}] = listed

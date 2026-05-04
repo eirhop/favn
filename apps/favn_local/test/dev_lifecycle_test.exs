@@ -4,11 +4,13 @@ defmodule Favn.Dev.LifecycleTest do
   @moduletag :integration
 
   alias Favn.Dev
+  alias Favn.Dev.Config
   alias Favn.Dev.Lock
   alias Favn.Dev.NodeControl
   alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RuntimeLaunch
+  alias Favn.Dev.Secrets
   alias Favn.Dev.State
 
   @run_real_stack_lifecycle? System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" and
@@ -452,7 +454,7 @@ defmodule Favn.Dev.LifecycleTest do
   end
 
   defp stop_remote_node(runner_full, root_dir) when is_binary(runner_full) do
-    with {:ok, secrets} <- State.read_secrets(root_dir: root_dir),
+    with {:ok, secrets} <- Secrets.resolve(Config.resolve(), root_dir: root_dir),
          cookie when is_binary(cookie) <- secrets["rpc_cookie"] do
       runner_node = String.to_atom(runner_full)
       true = Node.set_cookie(runner_node, String.to_atom(cookie))

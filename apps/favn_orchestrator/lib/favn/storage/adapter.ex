@@ -52,6 +52,8 @@ defmodule Favn.Storage.Adapter do
   @callback put_manifest_version(Version.t(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_manifest_version(String.t(), adapter_opts()) ::
               {:ok, Version.t()} | {:error, error()}
+  @callback get_manifest_version_by_content_hash(String.t(), adapter_opts()) ::
+              {:ok, Version.t()} | {:error, error()}
   @callback list_manifest_versions(adapter_opts()) :: {:ok, [Version.t()]} | {:error, error()}
 
   @callback set_active_manifest_version(String.t(), adapter_opts()) :: :ok | {:error, error()}

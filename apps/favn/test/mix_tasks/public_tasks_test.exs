@@ -170,10 +170,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       }
     }
 
-    secrets = %{"service_token" => "diagnostics-service-token"}
-
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
-    assert :ok = State.write_secrets(secrets, root_dir: root_dir)
 
     output =
       capture_io(fn ->
@@ -202,7 +199,6 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     }
 
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
-    assert :ok = State.write_secrets(%{"service_token" => "token"}, root_dir: root_dir)
 
     output =
       capture_io(fn ->

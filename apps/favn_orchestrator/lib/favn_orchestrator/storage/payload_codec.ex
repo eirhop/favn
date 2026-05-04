@@ -220,6 +220,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     ArgumentError -> decode_allowed_atom(value, allowed_atom_strings)
   end
 
+  # sobelow_skip ["DOS.StringToAtom"]
   defp decode_allowed_atom(value, allowed_atom_strings) do
     if MapSet.member?(allowed_atom_strings, value) do
       {:ok, String.to_atom(value)}

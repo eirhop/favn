@@ -66,6 +66,13 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.get_manifest_version(manifest_version_id, opts) end)
   end
 
+  @spec get_manifest_version_by_content_hash(String.t()) :: {:ok, Version.t()} | {:error, term()}
+  def get_manifest_version_by_content_hash(content_hash) when is_binary(content_hash) do
+    adapter_call(fn adapter, opts ->
+      adapter.get_manifest_version_by_content_hash(content_hash, opts)
+    end)
+  end
+
   @spec list_manifest_versions() :: {:ok, [Version.t()]} | {:error, term()}
   def list_manifest_versions do
     adapter_call(fn adapter, opts -> adapter.list_manifest_versions(opts) end)

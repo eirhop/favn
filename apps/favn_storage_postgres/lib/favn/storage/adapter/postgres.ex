@@ -62,11 +62,14 @@ defmodule Favn.Storage.Adapter.Postgres do
   def put_manifest_version(%Version{} = version, opts) when is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          {:ok, record} <- ManifestCodec.to_record(version),
-         {:ok, existing} <- fetch_manifest_hash(repo, record.manifest_version_id) do
-      case existing do
-        nil -> insert_manifest_record(repo, record)
-        hash when hash == record.content_hash -> :ok
-        _other -> {:error, :manifest_version_conflict}
+         {:ok, existing_id_hash} <- fetch_manifest_hash(repo, record.manifest_version_id),
+         {:ok, existing_content_hash} <-
+           fetch_manifest_record_by_content_hash(repo, record.content_hash) do
+      cond do
+        match?(%{}, existing_content_hash) -> :ok
+        is_nil(existing_id_hash) -> insert_manifest_record(repo, record)
+        existing_id_hash == record.content_hash -> :ok
+        true -> {:error, :manifest_version_conflict}
       end
     end
   end
@@ -76,6 +79,18 @@ defmodule Favn.Storage.Adapter.Postgres do
       when is_binary(manifest_version_id) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts),
          {:ok, row} <- fetch_manifest_record(repo, manifest_version_id) do
+      case row do
+        nil -> {:error, :manifest_version_not_found}
+        record -> ManifestCodec.from_record(record)
+      end
+    end
+  end
+
+  @impl true
+  def get_manifest_version_by_content_hash(content_hash, opts)
+      when is_binary(content_hash) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, row} <- fetch_manifest_record_by_content_hash(repo, content_hash) do
       case row do
         nil -> {:error, :manifest_version_not_found}
         record -> ManifestCodec.from_record(record)
@@ -1258,6 +1273,36 @@ defmodule Favn.Storage.Adapter.Postgres do
       """
 
     case SQL.query(repo, sql, [manifest_version_id]) do
+      {:ok, %{rows: [[id, hash, schema, runner_contract, format, manifest_json, inserted_at]]}} ->
+        {:ok,
+         %{
+           manifest_version_id: id,
+           content_hash: hash,
+           schema_version: schema,
+           runner_contract_version: runner_contract,
+           serialization_format: format,
+           manifest_json: manifest_json,
+           inserted_at: inserted_at
+         }}
+
+      {:ok, %{rows: []}} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp fetch_manifest_record_by_content_hash(repo, content_hash) do
+    sql =
+      """
+      SELECT manifest_version_id, content_hash, schema_version, runner_contract_version, serialization_format, manifest_json, inserted_at
+      FROM favn_manifest_versions
+      WHERE content_hash = $1
+      LIMIT 1
+      """
+
+    case SQL.query(repo, sql, [content_hash]) do
       {:ok, %{rows: [[id, hash, schema, runner_contract, format, manifest_json, inserted_at]]}} ->
         {:ok,
          %{

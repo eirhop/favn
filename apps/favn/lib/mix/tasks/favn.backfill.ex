@@ -289,9 +289,6 @@ defmodule Mix.Tasks.Favn.Backfill do
   defp error_message(:stack_not_healthy),
     do: "stack not healthy; use mix favn.stop then mix favn.dev"
 
-  defp error_message(:missing_local_operator_credentials),
-    do: "local operator credentials are missing; run mix favn.stop then mix favn.dev"
-
   defp error_message({:pipeline_not_found, requested, available}),
     do: pipeline_not_found_message(requested, available)
 

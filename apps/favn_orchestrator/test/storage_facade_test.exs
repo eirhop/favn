@@ -22,6 +22,9 @@ defmodule Favn.StorageFacadeTest do
     def get_manifest_version(_manifest_version_id, _opts), do: {:error, :not_found}
 
     @impl true
+    def get_manifest_version_by_content_hash(_content_hash, _opts), do: {:error, :not_found}
+
+    @impl true
     def list_manifest_versions(_opts), do: {:ok, []}
 
     @impl true
@@ -129,6 +132,9 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def get_manifest_version(_manifest_version_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def get_manifest_version_by_content_hash(_content_hash, _opts), do: {:error, :not_found}
 
     @impl true
     def list_manifest_versions(_opts), do: {:ok, []}

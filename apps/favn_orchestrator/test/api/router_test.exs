@@ -103,6 +103,8 @@ defmodule FavnOrchestrator.API.RouterTest do
     previous_password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
     previous_display = Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name)
     previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
+    previous_api_server = Application.get_env(:favn_orchestrator, :api_server)
+    previous_local_dev_mode = Application.get_env(:favn_orchestrator, :local_dev_mode)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
       [
@@ -133,6 +135,8 @@ defmodule FavnOrchestrator.API.RouterTest do
       restore_env(:favn_orchestrator, :auth_bootstrap_password, previous_password)
       restore_env(:favn_orchestrator, :auth_bootstrap_display_name, previous_display)
       restore_env(:favn_orchestrator, :auth_bootstrap_roles, previous_roles)
+      restore_env(:favn_orchestrator, :api_server, previous_api_server)
+      restore_env(:favn_orchestrator, :local_dev_mode, previous_local_dev_mode)
       Process.delete(:runner_register_manifest_result)
       maybe_stop_auth_store(auth_start)
     end)
@@ -346,7 +350,12 @@ defmodule FavnOrchestrator.API.RouterTest do
   test "runner registration returns unavailable and conflict errors" do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientConfigurableStub)
     unavailable_version = schedule_manifest_version("mv_runner_unavailable")
-    conflict_version = schedule_manifest_version("mv_runner_conflict")
+
+    conflict_version =
+      "mv_runner_conflict"
+      |> schedule_manifest_version()
+      |> put_manifest_metadata(%{runner: :conflict})
+
     assert :ok = FavnOrchestrator.register_manifest(unavailable_version)
     assert :ok = FavnOrchestrator.register_manifest(conflict_version)
 
@@ -814,6 +823,46 @@ defmodule FavnOrchestrator.API.RouterTest do
            }
   end
 
+  test "active manifest accepts trusted local-dev context only in local-dev loopback mode" do
+    version = schedule_manifest_version("mv_active_local_dev")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    Application.put_env(:favn_orchestrator, :local_dev_mode, true)
+    Application.put_env(:favn_orchestrator, :api_server, enabled: true, bind_ip: "127.0.0.1")
+
+    accepted =
+      conn(:get, "/api/orchestrator/v1/manifests/active")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-local-dev-context", "trusted")
+      |> Router.call(@opts)
+
+    assert accepted.status == 200
+
+    Application.put_env(:favn_orchestrator, :local_dev_mode, false)
+
+    disabled =
+      conn(:get, "/api/orchestrator/v1/manifests/active")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-local-dev-context", "trusted")
+      |> Router.call(@opts)
+
+    assert disabled.status == 403
+    assert %{"error" => %{"code" => "forbidden"}} = Jason.decode!(disabled.resp_body)
+
+    Application.put_env(:favn_orchestrator, :local_dev_mode, true)
+    Application.put_env(:favn_orchestrator, :api_server, enabled: true, bind_ip: "0.0.0.0")
+
+    non_loopback =
+      conn(:get, "/api/orchestrator/v1/manifests/active")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-local-dev-context", "trusted")
+      |> Router.call(@opts)
+
+    assert non_loopback.status == 403
+    assert %{"error" => %{"code" => "forbidden"}} = Jason.decode!(non_loopback.resp_body)
+  end
+
   test "active manifest asset targets expose relation and runtime metadata" do
     version = dependency_manifest_version("mv_asset_target_metadata")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1021,6 +1070,35 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert response.status == 401
     assert %{"error" => %{"code" => "unauthenticated"}} = Jason.decode!(response.resp_body)
+  end
+
+  test "run submission accepts trusted local-dev context in local-dev loopback mode" do
+    version = dependency_manifest_version("mv_run_local_dev")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    Application.put_env(:favn_orchestrator, :local_dev_mode, true)
+    Application.put_env(:favn_orchestrator, :api_server, enabled: true, bind_ip: "127.0.0.1")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/runs", %{
+        target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
+        manifest_selection: %{mode: "active"},
+        dependencies: "none"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-local-dev-context", "trusted")
+      |> put_idempotency_key("run-local-dev")
+      |> Router.call(@opts)
+
+    assert response.status == 201
+    assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(response.resp_body)
+
+    assert [%{action: "run.submit", actor_id: "local-dev-cli", session_id: "local-dev-cli"}] =
+             Auth.list_audit(limit: 1)
+
+    assert {:ok, run} = FavnOrchestrator.get_run(run_id)
+    assert run.manifest_version_id == "mv_run_local_dev"
   end
 
   test "read endpoints return unauthenticated for invalid forwarded actor sessions" do
@@ -1813,8 +1891,9 @@ defmodule FavnOrchestrator.API.RouterTest do
              "data" => %{
                "manifest" => manifest,
                "registration" => %{
-                 "status" => "accepted",
-                 "manifest_version_id" => "mv_register_router"
+                 "status" => "published",
+                 "manifest_version_id" => "mv_register_router",
+                 "canonical_manifest_version_id" => "mv_register_router"
                }
              }
            } = Jason.decode!(response.resp_body)
@@ -1837,10 +1916,52 @@ defmodule FavnOrchestrator.API.RouterTest do
       |> Router.call(@opts)
 
     assert first_response.status == 201
-    assert repeated_response.status == 201
+    assert repeated_response.status == 200
 
-    assert %{"data" => %{"registration" => %{"status" => "already_published"}}} =
+    assert %{
+             "data" => %{
+               "registration" => %{
+                 "status" => "already_published",
+                 "manifest_version_id" => "mv_register_repeat",
+                 "canonical_manifest_version_id" => "mv_register_repeat"
+               }
+             }
+           } =
              Jason.decode!(repeated_response.resp_body)
+  end
+
+  test "same manifest content with a different version id returns canonical manifest id" do
+    original = schedule_manifest_version("mv_register_canonical_original")
+    duplicate = schedule_manifest_version("mv_register_canonical_duplicate")
+
+    assert original.content_hash == duplicate.content_hash
+
+    first_response =
+      conn(:post, "/api/orchestrator/v1/manifests", manifest_publish_payload(original))
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    duplicate_response =
+      conn(:post, "/api/orchestrator/v1/manifests", manifest_publish_payload(duplicate))
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert first_response.status == 201
+    assert duplicate_response.status == 200
+
+    assert %{
+             "data" => %{
+               "manifest" => %{"manifest_version_id" => "mv_register_canonical_original"},
+               "registration" => %{
+                 "status" => "already_published",
+                 "manifest_version_id" => "mv_register_canonical_duplicate",
+                 "canonical_manifest_version_id" => "mv_register_canonical_original"
+               }
+             }
+           } = Jason.decode!(duplicate_response.resp_body)
+
+    assert {:error, :manifest_version_not_found} =
+             FavnOrchestrator.get_manifest("mv_register_canonical_duplicate")
   end
 
   test "returns conflict when manifest version id changes content" do
@@ -2158,6 +2279,12 @@ defmodule FavnOrchestrator.API.RouterTest do
       serialization_format: version.serialization_format,
       manifest: version.manifest
     }
+  end
+
+  defp put_manifest_metadata(%Version{} = version, metadata) when is_map(metadata) do
+    manifest = Map.put(version.manifest, :metadata, metadata)
+    {:ok, updated} = Version.new(manifest, manifest_version_id: version.manifest_version_id)
+    updated
   end
 
   defp dependency_manifest_version(manifest_version_id) do

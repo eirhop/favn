@@ -3,6 +3,7 @@ defmodule Favn.Dev.ReloadTest do
 
   alias Favn.Dev
   alias Favn.Dev.Reload
+  alias Favn.Dev.Stack
   alias Favn.Dev.State
 
   setup do
@@ -42,5 +43,48 @@ defmodule Favn.Dev.ReloadTest do
   test "runner_sname/1 returns short node name" do
     assert "favn_runner_123" == Reload.runner_sname("favn_runner_123@localhost")
     assert "favn_runner_123" == Reload.runner_sname("favn_runner_123")
+  end
+
+  test "runner_replacement_marker/3 captures old runner identity and next generation" do
+    runtime = %{
+      "services" => %{
+        "runner" => %{
+          "pid" => 12_345,
+          "node_name" => "favn_runner_123@localhost",
+          "generation" => 3
+        }
+      }
+    }
+
+    marker = Reload.runner_replacement_marker(runtime, "stopping_old", 4)
+
+    assert %{
+             "status" => "stopping_old",
+             "generation" => 4,
+             "old_generation" => 3,
+             "old_pid" => 12_345,
+             "old_node" => "favn_runner_123@localhost",
+             "started_at" => started_at,
+             "updated_at" => updated_at
+           } = marker
+
+    assert is_binary(started_at)
+    assert is_binary(updated_at)
+  end
+
+  test "runner_replacement_exit?/3 accepts only clean old-runner exits for active markers" do
+    startup_runner = %{pid: 12_345, generation: 3}
+
+    marker = %{
+      "status" => "completed",
+      "old_pid" => 12_345,
+      "old_generation" => 3
+    }
+
+    assert Stack.runner_replacement_exit?(startup_runner, marker, 0)
+    refute Stack.runner_replacement_exit?(startup_runner, %{marker | "status" => "failed"}, 0)
+    refute Stack.runner_replacement_exit?(startup_runner, marker, 1)
+    refute Stack.runner_replacement_exit?(%{startup_runner | pid: 54_321}, marker, 0)
+    refute Stack.runner_replacement_exit?(%{startup_runner | generation: 4}, marker, 0)
   end
 end
