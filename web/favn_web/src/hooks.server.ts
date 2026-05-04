@@ -10,7 +10,7 @@ import { applyNoStoreHeaders, applySecurityHeaders } from '$lib/server/security_
 import { checkMutationRateLimit } from '$lib/server/mutation_rate_limit';
 import { jsonError, rateLimitedResponse } from '$lib/server/web_api';
 import {
-	localDevTrustedAuthEnabled,
+	localDevTrustedAuthAllowedForRequest,
 	localDevTrustedWebSession
 } from '$lib/server/local_dev_trusted_auth';
 
@@ -69,7 +69,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	const session =
-		cookieSession ?? (localDevTrustedAuthEnabled() ? localDevTrustedWebSession() : null);
+		cookieSession ??
+		(localDevTrustedAuthAllowedForRequest(event) ? localDevTrustedWebSession() : null);
 
 	event.locals.session = session;
 

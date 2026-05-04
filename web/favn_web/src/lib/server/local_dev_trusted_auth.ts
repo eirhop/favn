@@ -1,3 +1,5 @@
+import type { RequestEvent } from '@sveltejs/kit';
+import { isIP } from 'node:net';
 import { currentWebRuntimeEnv } from './runtime_config';
 import type { WebSession } from './session';
 
@@ -9,16 +11,48 @@ function isLoopbackUrl(value: string | undefined): boolean {
 	if (!value) return false;
 
 	try {
-		const hostname = new URL(value).hostname.toLowerCase();
-		return (
-			hostname === 'localhost' ||
-			hostname === '127.0.0.1' ||
-			hostname === '[::1]' ||
-			hostname === '::1'
-		);
+		return isLoopbackHostname(new URL(value).hostname);
 	} catch {
 		return false;
 	}
+}
+
+function isLoopbackHostname(hostname: string | undefined): boolean {
+	if (!hostname) return false;
+
+	const normalized = hostname.toLowerCase();
+	return (
+		normalized === 'localhost' ||
+		normalized === '127.0.0.1' ||
+		normalized === '[::1]' ||
+		normalized === '::1'
+	);
+}
+
+function hostnameFromHostHeader(host: string | null): string | undefined {
+	if (!host) return undefined;
+
+	try {
+		return new URL(`http://${host}`).hostname;
+	} catch {
+		return undefined;
+	}
+}
+
+function isLoopbackClientAddress(address: string): boolean {
+	const normalized = address.toLowerCase();
+
+	if (normalized === '::1') return true;
+
+	if (normalized.startsWith('::ffff:')) {
+		return isLoopbackClientAddress(normalized.slice('::ffff:'.length));
+	}
+
+	if (isIP(normalized) === 4) {
+		return normalized.startsWith('127.');
+	}
+
+	return false;
 }
 
 export function localDevTrustedAuthEnabled(): boolean {
@@ -29,6 +63,20 @@ export function localDevTrustedAuthEnabled(): boolean {
 		isLoopbackUrl(runtimeEnv.FAVN_WEB_PUBLIC_ORIGIN) &&
 		isLoopbackUrl(runtimeEnv.FAVN_WEB_ORCHESTRATOR_BASE_URL)
 	);
+}
+
+export function localDevTrustedAuthAllowedForRequest(event: RequestEvent): boolean {
+	if (!localDevTrustedAuthEnabled()) return false;
+
+	const requestHostname =
+		hostnameFromHostHeader(event.request.headers.get('host')) ?? event.url.hostname;
+	if (!isLoopbackHostname(requestHostname)) return false;
+
+	try {
+		return isLoopbackClientAddress(event.getClientAddress());
+	} catch {
+		return false;
+	}
 }
 
 export function localDevTrustedWebSession(): WebSession {

@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
+  alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -983,17 +984,23 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp sanitize_error(
          %{"kind" => _kind, "message" => _message, "reason" => _reason, "type" => _type} = error
-       ),
-       do: error
+       ) do
+    %{
+      "kind" => string_value(Map.fetch!(error, "kind")),
+      "message" => safe_error_message(Map.fetch!(error, "message")),
+      "reason" => safe_error_reason(Map.fetch!(error, "reason")),
+      "type" => string_value(Map.fetch!(error, "type"))
+    }
+  end
 
   defp sanitize_error(%{kind: kind} = error) do
     reason = Map.get(error, :reason)
-    message = Map.get(error, :message) || error_message(reason)
+    message = Map.get(error, :message) || error_message(reason) || reason || "Runner error"
 
     %{
       "kind" => string_value(kind),
-      "message" => string_value(message || reason),
-      "reason" => inspect_value(reason),
+      "message" => safe_error_message(message),
+      "reason" => safe_error_reason(reason),
       "type" => error_type(reason)
     }
   end
@@ -1001,10 +1008,28 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp sanitize_error(error) do
     %{
       "kind" => "error",
-      "message" => string_value(error_message(error) || error),
-      "reason" => inspect_value(error),
+      "message" => safe_error_message(error_message(error) || error),
+      "reason" => safe_error_reason(error),
       "type" => error_type(error)
     }
+  end
+
+  defp safe_error_message(value) do
+    case redact_error_field(:message, value) do
+      nil -> "Runner error"
+      redacted -> string_value(redacted)
+    end
+  end
+
+  defp safe_error_reason(value), do: redact_error_field(:reason, value) |> inspect_value()
+
+  defp redact_error_field(key, value) when is_atom(key) do
+    case Redaction.redact_operational(%{key => value}) do
+      %{^key => redacted} -> redacted
+      _other -> "[REDACTED]"
+    end
+  rescue
+    _error -> "[REDACTED]"
   end
 
   defp error_message(%{__exception__: true} = exception) do
