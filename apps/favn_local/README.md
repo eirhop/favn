@@ -123,6 +123,16 @@ Storage selection:
 - `mix favn.dev --sqlite` forces `:sqlite`
 - `mix favn.dev --postgres` forces `:postgres`
 
+### Consumer dependency boundary
+
+Consumer projects select local control-plane storage through `config :favn,
+:local` or local tooling flags such as `mix favn.dev --sqlite`.
+
+Do not add `:favn_storage_sqlite`, `:favn_orchestrator`, `:favn_runner`, or
+`:favn_local` directly to a normal consumer `mix.exs` for local development.
+Those apps are Favn-owned runtime/package components materialized under `.favn/`
+by `mix favn.install` and used by `mix favn.dev`.
+
 Scheduler selection:
 
 - default: disabled

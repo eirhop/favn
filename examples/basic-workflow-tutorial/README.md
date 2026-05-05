@@ -332,11 +332,17 @@ config :favn, :local,
 
 Alternative modes:
 - `:memory` for ephemeral local state (fast, but not persisted)
-- `:sqlite` for SQLite-backed local control-plane state once configured with
-  `favn_storage_sqlite`
+- `:sqlite` for SQLite-backed local control-plane state, selected with
+  `config :favn, :local, storage: :sqlite, sqlite_path: "..."` or
+  `mix favn.dev --sqlite`
 - `:postgres` for Postgres-backed local control-plane storage
 
+Do not add `:favn_storage_sqlite` to this consumer project's `mix.exs` for local
+control-plane storage. SQLite storage is owned by Favn's local runtime/package
+setup under `.favn/`; the consumer selects it through local config or CLI flags.
+
 You can also switch at runtime with flags:
+- `mix favn.dev --sqlite`
 - `mix favn.dev --postgres`
 
 ### 3) Change DuckDB execution placement

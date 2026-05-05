@@ -12,6 +12,15 @@ defmodule Favn.SQL.Adapter.DuckDB do
   Bulk ingestion paths should prefer the DuckDB Appender path for substantial
   insert workloads instead of repeated prepared inserts.
 
+  ## Consumer setup
+
+  This adapter is exposed through the public `:favn_duckdb` package/plugin. Add
+  `:favn_duckdb` when a consumer project needs DuckDB-backed SQL assets,
+  `Favn.SQLClient` DuckDB connections, or DuckDB/DuckLake bootstrap support.
+
+  Do not add internal apps such as `:favn_sql_runtime` or `:favn_runner`
+  directly to consumer `mix.exs` files for DuckDB support.
+
   ## DuckLake bootstrap example
 
       defmodule MyApp.Connections.Warehouse do

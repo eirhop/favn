@@ -19,6 +19,18 @@ defmodule Favn.AI do
   - integration clients, pipelines, triggers, and reusable SQL live outside the
     warehouse asset tree.
 
+  ## Consumer Dependency Shape
+
+  A normal consumer project depends on `:favn` for the public DSL, helper
+  functions, and `mix favn.*` tasks. Add `:favn_duckdb` only when the project
+  executes DuckDB-backed SQL assets or uses DuckDB through `Favn.SQLClient`.
+
+  Do not add internal runtime/control-plane apps such as `:favn_storage_sqlite`,
+  `:favn_orchestrator`, `:favn_runner`, `:favn_local`, `:favn_core`, or
+  `:favn_sql_runtime` as ordinary consumer dependencies. Local SQLite
+  control-plane storage is selected through `config :favn, :local` or
+  `mix favn.dev --sqlite`.
+
   ## What To Read
 
   - To author one Elixir asset, read `Favn.Asset`, then `Favn.Namespace` and

@@ -115,11 +115,17 @@ Do not add internal runtime apps as ordinary consumer dependencies. Storage
 adapters such as `favn_storage_sqlite` and `favn_storage_postgres`, runtime apps
 such as `favn_orchestrator`, `favn_runner`, and `favn_local`, and the web app are
 owned by Favn's runtime/package tooling rather than by authored business code.
+Local SQLite control-plane storage is selected with `config :favn, :local` or
+`mix favn.dev --sqlite`, not by adding `:favn_storage_sqlite` to the consumer
+project.
 
 Multiple `git` dependencies with different `subdir` values from this monorepo
 are not the supported plugin-consumption model before Hex packaging because Mix
 checks them out as separate dependency projects. For real external consumption,
 Favn packages will be published as normal package dependencies.
+If a private git/subdir setup currently needs direct `override: true` entries for
+internal apps to satisfy Mix, treat that as a temporary private-development
+workaround only. It is not the intended consumer dependency model.
 
 ### 2. Define an asset
 
@@ -515,6 +521,11 @@ Storage modes:
 - `mix favn.dev --postgres` forces Postgres
 - `mix favn.dev --scheduler` enables local scheduled runs
 - `mix favn.dev --no-scheduler` disables local scheduled runs and overrides config
+
+Do not add `:favn_storage_sqlite` to a consumer `mix.exs` for local SQLite
+control-plane storage. The SQLite storage adapter is owned by Favn's local
+runtime/package setup under `.favn/`; consumer projects select it through the
+local config above or `mix favn.dev --sqlite`.
 
 `mix favn.build.single` emits a verified project-local backend-only SQLite launcher under
 `.favn/dist/single/<build_id>/`. Configure it by copying
