@@ -292,6 +292,34 @@ defmodule FavnOrchestrator.RunManagerTest do
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
   end
 
+  defmodule RunnerClientMixedCancelStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :nodedown}
+
+    @impl true
+    def cancel_work(execution_id, _reason, opts) do
+      cancel_log = Keyword.fetch!(opts, :cancel_log)
+      Agent.update(cancel_log, &[execution_id | &1])
+
+      case execution_id do
+        "exec_stale" -> {:error, :stale_execution_id}
+        "exec_down" -> {:error, :nodedown}
+        _other -> :ok
+      end
+    end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
+
   defmodule RunnerClientKeyErrorStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -1350,7 +1378,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, cancelled} = await_cancelled_run(run_id)
     assert cancelled.status == :cancelled
     assert cancelled.metadata[:cancel_forward_error].type == :runner_cancel_recovered
-    assert cancelled.metadata[:cancel_forward_error].reason =~ "stale_execution_id"
+    assert [%{reason: ":stale_execution_id"}] = cancelled.metadata[:cancel_forward_error].reasons
 
     assert {:ok, events} = Storage.list_run_events(run_id)
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_cancel_requested)
@@ -1680,7 +1708,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientCancelFailureStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
 
-    assert {:error, {:runner_cancel_failed, %{reason: ":nodedown"}}} =
+    assert {:error, {:runner_cancel_failed, %{reasons: [%{reason: ":nodedown"}]}}} =
              FavnOrchestrator.cancel_run(running.id, %{reason: :manual_cancel})
 
     assert {:ok, persisted} = Storage.get_run(running.id)
@@ -1688,6 +1716,55 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert persisted.runner_execution_id == "exec_unconfirmed"
     assert persisted.metadata.cancel_requested == true
     assert persisted.metadata.in_flight_execution_ids == ["exec_unconfirmed"]
+  end
+
+  test "cancel attempts all execution ids before refusing mixed stale and unconfirmed failures" do
+    version = manifest_version("mv_cancel_mixed_failures")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    running =
+      "run_cancel_mixed_failures"
+      |> run_state(version, :running)
+      |> RunState.transition(
+        runner_execution_id: "exec_stale",
+        metadata: %{in_flight_execution_ids: ["exec_stale", "exec_down"]}
+      )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(
+               %{running | status: :pending, event_seq: 1},
+               :run_created,
+               %{status: :pending}
+             )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(running, :run_started, %{
+               status: :running
+             })
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientMixedCancelStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
+
+    assert {:error, {:runner_cancel_failed, %{reasons: reasons}}} =
+             FavnOrchestrator.cancel_run(running.id, %{reason: :manual_cancel})
+
+    assert Enum.map(reasons, & &1.execution_id) == ["exec_down"]
+    assert Agent.get(cancel_log, &Enum.sort/1) == ["exec_down", "exec_stale"]
+
+    assert {:ok, persisted} = Storage.get_run(running.id)
+    assert persisted.status == :running
+    assert persisted.runner_execution_id == "exec_stale"
+    assert persisted.metadata.in_flight_execution_ids == ["exec_stale", "exec_down"]
   end
 
   test "rerun rejects manifest override mismatch" do

@@ -773,28 +773,60 @@ defmodule FavnOrchestrator.RunManager do
       :ok
     else
       with :ok <- validate_runner_client(runner_client) do
-        Enum.reduce_while(execution_ids, :ok, fn execution_id, :ok ->
-          case runner_client.cancel_work(
-                 execution_id,
-                 %{run_id: run.id, reason: reason, requested_at: DateTime.utc_now()},
-                 runner_opts
-               ) do
-            :ok -> {:cont, :ok}
-            {:error, _cancel_reason} = error -> {:halt, error}
-          end
-        end)
-      end
-      |> case do
-        :ok ->
-          :ok
-
-        {:error, reason} when reason in [:stale_execution_id, :not_found] ->
-          {:recoverable, %{type: :runner_cancel_recovered, reason: inspect(reason)}}
-
-        {:error, reason} ->
-          {:error, %{type: :runner_cancel_failed, reason: inspect(reason)}}
+        execution_ids
+        |> Enum.map(&cancel_execution_id(run.id, &1, reason, runner_client, runner_opts))
+        |> classify_cancel_results()
       end
     end
+  end
+
+  defp cancel_execution_id(run_id, execution_id, reason, runner_client, runner_opts) do
+    case runner_client.cancel_work(
+           execution_id,
+           %{run_id: run_id, reason: reason, requested_at: DateTime.utc_now()},
+           runner_opts
+         ) do
+      :ok -> {:ok, execution_id}
+      {:error, reason} -> {:error, execution_id, reason}
+    end
+  end
+
+  defp classify_cancel_results(results) do
+    unconfirmed_failures = Enum.reject(results, &cancel_recoverable?/1)
+    recoverable_failures = Enum.filter(results, &cancel_recovered?/1)
+
+    cond do
+      unconfirmed_failures != [] ->
+        {:error,
+         %{
+           type: :runner_cancel_failed,
+           reasons: Enum.map(unconfirmed_failures, &cancel_failure_reason/1)
+         }}
+
+      recoverable_failures != [] ->
+        {:recoverable,
+         %{
+           type: :runner_cancel_recovered,
+           reasons: Enum.map(recoverable_failures, &cancel_failure_reason/1)
+         }}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp cancel_recoverable?({:ok, _execution_id}), do: true
+
+  defp cancel_recoverable?({:error, _execution_id, reason}),
+    do: reason in [:stale_execution_id, :not_found]
+
+  defp cancel_recovered?({:error, _execution_id, reason}),
+    do: reason in [:stale_execution_id, :not_found]
+
+  defp cancel_recovered?(_result), do: false
+
+  defp cancel_failure_reason({:error, execution_id, reason}) do
+    %{execution_id: execution_id, reason: inspect(reason)}
   end
 
   defp maybe_put_cancel_forward_error(%RunState{} = run, error) when is_map(error) do
