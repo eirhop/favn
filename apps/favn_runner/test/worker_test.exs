@@ -226,6 +226,73 @@ defmodule FavnRunner.WorkerTest do
     end
   end
 
+  test "worker exposes multi-asset config ergonomically after manifest JSON roundtrip" do
+    previous_username = System.get_env("FAVN_TEST_MERCATUS_USERNAME")
+    previous_password = System.get_env("FAVN_TEST_MERCATUS_PASSWORD")
+
+    try do
+      System.put_env("FAVN_TEST_MERCATUS_USERNAME", "merchant")
+      System.put_env("FAVN_TEST_MERCATUS_PASSWORD", "merchant-secret")
+
+      result =
+        run_single_asset(FavnRunner.WorkerTest.MultiAssetConfigAsset,
+          roundtrip_asset?: true,
+          config: %{
+            rest: %{
+              path: "/orders",
+              params: %{:status => "ok", "format" => "json"},
+              extra: %{refresh_type: :full_refresh}
+            }
+          },
+          runtime_config: %{
+            mercatus: %{
+              username: Ref.env!("FAVN_TEST_MERCATUS_USERNAME"),
+              password: Ref.secret_env!("FAVN_TEST_MERCATUS_PASSWORD")
+            }
+          }
+        )
+
+      assert result.status == :ok
+
+      assert [asset_result] = result.asset_results
+      assert asset_result.meta.refresh_type == :full_refresh
+      assert asset_result.meta.path == "/orders"
+      assert asset_result.meta.param_status == "ok"
+      assert asset_result.meta.param_status_atom == nil
+      assert asset_result.meta.username == "merchant"
+      assert asset_result.meta.password_seen? == true
+    after
+      restore_env("FAVN_TEST_MERCATUS_USERNAME", previous_username)
+      restore_env("FAVN_TEST_MERCATUS_PASSWORD", previous_password)
+    end
+  end
+
+  test "worker preserves arbitrary extra strings after manifest JSON roundtrip" do
+    _existing_atoms = {:format, :json, :ok, :status}
+
+    result =
+      run_single_asset(FavnRunner.WorkerTest.MultiAssetArbitraryConfigAsset,
+        roundtrip_asset?: true,
+        config: %{
+          rest: %{
+            params: %{:status => "ok", "format" => "json"},
+            extra: %{status: "ok", format: "json"}
+          }
+        }
+      )
+
+    assert result.status == :ok
+    assert [asset_result] = result.asset_results
+
+    assert asset_result.meta.extra_status == "ok"
+    assert asset_result.meta.extra_format == "json"
+    assert asset_result.meta.extra_status_atom == nil
+    assert asset_result.meta.extra_format_atom == nil
+    assert asset_result.meta.param_status == "ok"
+    assert asset_result.meta.param_format == "json"
+    assert asset_result.meta.param_status_atom == nil
+  end
+
   defp assert_throw_exit_result(module, expected_kind) do
     result = run_single_asset(module)
     assert result.status == :error
@@ -242,6 +309,7 @@ defmodule FavnRunner.WorkerTest do
         name: :asset,
         type: :elixir,
         execution: Keyword.get(opts, :execution, %{entrypoint: :asset, arity: 1}),
+        config: Keyword.get(opts, :config, %{}),
         runtime_config: Keyword.get(opts, :runtime_config, %{})
       }
 
@@ -260,6 +328,9 @@ defmodule FavnRunner.WorkerTest do
       "mv_worker_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+
+    asset =
+      if Keyword.get(opts, :roundtrip_asset?, false), do: hd(version.manifest.assets), else: asset
 
     work =
       %RunnerWork{
@@ -352,5 +423,36 @@ defmodule FavnRunner.WorkerTest.RaiseLeakAsset do
   @spec asset(Favn.Run.Context.t()) :: no_return()
   def asset(ctx) do
     raise "request failed with token #{ctx.config.source_system.token}"
+  end
+end
+
+defmodule FavnRunner.WorkerTest.MultiAssetConfigAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(ctx) do
+    {:ok,
+     %{
+       refresh_type: ctx.asset.config.rest.extra.refresh_type,
+       path: ctx.asset.config.rest.path,
+       param_status: ctx.asset.config.rest.params["status"],
+       param_status_atom: Map.get(ctx.asset.config.rest.params, :status),
+       username: ctx.config.mercatus.username,
+       password_seen?: ctx.config.mercatus.password == "merchant-secret"
+     }}
+  end
+end
+
+defmodule FavnRunner.WorkerTest.MultiAssetArbitraryConfigAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(ctx) do
+    {:ok,
+     %{
+       extra_status: ctx.asset.config.rest.extra["status"],
+       extra_format: ctx.asset.config.rest.extra["format"],
+       extra_status_atom: Map.get(ctx.asset.config.rest.extra, :status),
+       extra_format_atom: Map.get(ctx.asset.config.rest.extra, :format),
+       param_status: ctx.asset.config.rest.params["status"],
+       param_format: ctx.asset.config.rest.params["format"],
+       param_status_atom: Map.get(ctx.asset.config.rest.params, :status)
+     }}
   end
 end

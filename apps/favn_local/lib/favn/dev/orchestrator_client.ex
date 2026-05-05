@@ -52,7 +52,9 @@ defmodule Favn.Dev.OrchestratorClient do
       service_token,
       %{},
       session_context,
-      idempotency_key(:activate_manifest, session_context, %{manifest_version_id: manifest_version_id})
+      idempotency_key(:activate_manifest, session_context, %{
+        manifest_version_id: manifest_version_id
+      })
     )
   end
 
@@ -155,12 +157,16 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec submit_run(String.t(), String.t(), session_context(), map()) ::
+  @spec submit_run(String.t(), String.t(), session_context(), map(), keyword()) ::
           {:ok, map()} | {:error, term()}
-  def submit_run(base_url, service_token, session_context, payload)
+  def submit_run(base_url, service_token, session_context, payload, opts \\ [])
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_map(payload) do
+             is_map(payload) and is_list(opts) do
     url = base_url <> "/api/orchestrator/v1/runs"
+
+    idempotency_key =
+      Keyword.get(opts, :idempotency_key)
+      |> submit_run_idempotency_key(session_context, payload)
 
     case request_post(
            :submit_run,
@@ -168,7 +174,7 @@ defmodule Favn.Dev.OrchestratorClient do
            service_token,
            payload,
            session_context,
-           idempotency_key(:submit_run, session_context, payload)
+           idempotency_key
          ) do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
@@ -332,7 +338,8 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec diagnostics(String.t(), String.t(), session_context() | nil) :: {:ok, map()} | {:error, term()}
+  @spec diagnostics(String.t(), String.t(), session_context() | nil) ::
+          {:ok, map()} | {:error, term()}
   def diagnostics(base_url, service_token, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) do
     url = base_url <> "/api/orchestrator/v1/diagnostics"
@@ -457,6 +464,15 @@ defmodule Favn.Dev.OrchestratorClient do
   end
 
   defp add_idempotency_header(headers, _key), do: headers
+
+  defp submit_run_idempotency_key(key, _session_context, _payload)
+       when is_binary(key) and key != "" do
+    key
+  end
+
+  defp submit_run_idempotency_key(_key, session_context, payload) do
+    idempotency_key(:submit_run, session_context, payload)
+  end
 
   defp idempotency_key(operation, session_context, input) when is_atom(operation) do
     fingerprint =

@@ -82,12 +82,65 @@ defmodule Favn.Dev.RunTest do
              )
   end
 
+  test "run_pipeline/2 uses a fresh idempotency key for each default submission", %{
+    root_dir: root_dir
+  } do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(
+        [
+          active_manifest_response(),
+          run_response("run_1"),
+          active_manifest_response(),
+          run_response("run_2")
+        ],
+        parent: parent
+      )
+
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:ok, %{"id" => "run_1", "status" => "running"}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, wait: false)
+
+    assert {:ok, %{"id" => "run_2", "status" => "running"}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, wait: false)
+
+    first_key = submit_idempotency_key()
+    second_key = submit_idempotency_key()
+
+    assert "favn-local-run-" <> _ = first_key
+    assert "favn-local-run-" <> _ = second_key
+    refute first_key == second_key
+  end
+
+  test "run_pipeline/2 uses explicit idempotency key when provided", %{root_dir: root_dir} do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server([active_manifest_response(), run_response("run_1")], parent: parent)
+
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:ok, %{"id" => "run_1", "status" => "running"}} =
+             Dev.run_pipeline(MyApp.Pipeline,
+               root_dir: root_dir,
+               wait: false,
+               idempotency_key: "manual-key-297"
+             )
+
+    assert submit_idempotency_key() == "manual-key-297"
+  end
+
   test "run_pipeline/2 validates polling options", %{root_dir: root_dir} do
     assert {:error, {:invalid_option, :timeout_ms}} =
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, timeout_ms: 0)
 
     assert {:error, {:invalid_option, :poll_interval_ms}} =
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, poll_interval_ms: -1)
+
+    assert {:error, {:invalid_option, :idempotency_key}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, idempotency_key: "")
   end
 
   test "run_pipeline/2 validates local window options before submission", %{root_dir: root_dir} do
@@ -127,27 +180,74 @@ defmodule Favn.Dev.RunTest do
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
   end
 
-  defp start_server(responses) when is_list(responses) do
+  defp start_server(responses, opts \\ []) when is_list(responses) do
+    parent = Keyword.get(opts, :parent)
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
     {:ok, {_addr, port}} = :inet.sockname(listen_socket)
 
     server =
       spawn_link(fn ->
-        serve_responses(listen_socket, responses)
+        serve_responses(listen_socket, responses, parent)
         :ok = :gen_tcp.close(listen_socket)
       end)
 
     {:ok, "http://127.0.0.1:#{port}", server}
   end
 
-  defp serve_responses(_listen_socket, []), do: :ok
+  defp serve_responses(_listen_socket, [], _parent), do: :ok
 
-  defp serve_responses(listen_socket, [{status, body} | rest]) do
+  defp serve_responses(listen_socket, [{status, body} | rest], parent) do
     {:ok, socket} = :gen_tcp.accept(listen_socket)
-    _request = receive_request(socket, "")
+    request = receive_request(socket, "")
     :ok = :gen_tcp.send(socket, response(status, body))
     :ok = :gen_tcp.close(socket)
-    serve_responses(listen_socket, rest)
+
+    if parent do
+      send(
+        parent,
+        {:request, request_path(request), request_headers(request), request_body(request)}
+      )
+    end
+
+    serve_responses(listen_socket, rest, parent)
+  end
+
+  defp active_manifest_response do
+    {200,
+     ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})}
+  end
+
+  defp run_response(run_id) do
+    {201, ~s({"data":{"run":{"id":"#{run_id}","status":"running","manifest_version_id":"mv_1"}}})}
+  end
+
+  defp write_running_runtime!(root_dir, base_url) do
+    pid = :os.getpid() |> List.to_string() |> String.to_integer()
+
+    assert :ok =
+             State.write_runtime(
+               %{
+                 "orchestrator_base_url" => base_url,
+                 "services" => %{
+                   "web" => %{"pid" => pid},
+                   "orchestrator" => %{"pid" => pid},
+                   "runner" => %{"pid" => pid}
+                 }
+               },
+               root_dir: root_dir
+             )
+  end
+
+  defp submit_idempotency_key do
+    receive do
+      {:request, "/api/orchestrator/v1/manifests/active", _headers, _body} ->
+        submit_idempotency_key()
+
+      {:request, "/api/orchestrator/v1/runs", headers, _body} ->
+        headers["idempotency-key"]
+    after
+      1_000 -> flunk("expected run submission request")
+    end
   end
 
   defp receive_request(socket, acc) do
@@ -180,6 +280,35 @@ defmodule Favn.Dev.RunTest do
 
         _other ->
           nil
+      end
+    end)
+  end
+
+  defp request_path(request) do
+    request
+    |> String.split("\r\n", parts: 2)
+    |> hd()
+    |> String.split(" ")
+    |> Enum.at(1)
+  end
+
+  defp request_body(request) do
+    case String.split(request, "\r\n\r\n", parts: 2) do
+      [_headers, body] -> body
+      _other -> ""
+    end
+  end
+
+  defp request_headers(request) do
+    request
+    |> String.split("\r\n\r\n", parts: 2)
+    |> hd()
+    |> String.split("\r\n")
+    |> Enum.drop(1)
+    |> Enum.reduce(%{}, fn line, acc ->
+      case String.split(line, ":", parts: 2) do
+        [key, value] -> Map.put(acc, String.downcase(key), String.trim(value))
+        _other -> acc
       end
     end)
   end

@@ -74,6 +74,9 @@ defmodule Favn.MultiAsset do
   - `@relation`
   - `asset :name do ... end`
 
+  Per module you can use `source_config/2` for runtime config shared by every
+  generated asset.
+
   `defaults do ... end` currently supports:
 
   - `meta ...`
@@ -111,7 +114,15 @@ defmodule Favn.MultiAsset do
   ## Runtime context notes
 
   The shared runtime usually reads `ctx.asset.config` to decide what to extract.
-  Relation ownership, metadata, and window specs remain per generated asset.
+  Module-level `source_config/2` declarations are compiled into every generated
+  asset and resolved into `ctx.config` by the runner. Relation ownership,
+  metadata, and window specs remain per generated asset.
+
+  At runtime, Favn rehydrates `ctx.asset.config.rest` structural keys and known
+  Favn enum fields so code can use idiomatic access such as
+  `ctx.asset.config.rest.path` and `ctx.asset.config.rest.extra.refresh_type`.
+  Arbitrary adapter-specific `rest.extra` payload keys and static `rest.params`
+  entries remain manifest/JSON-shaped unless Favn explicitly supports that key.
 
   ## Common mistakes
 
@@ -131,6 +142,7 @@ defmodule Favn.MultiAsset do
   alias Favn.DSL.Compiler, as: DSLCompiler
   alias Favn.Namespace
   alias Favn.Ref
+  alias Favn.RuntimeConfig.Requirements
   alias Favn.Window.Spec
 
   @doc false
@@ -139,6 +151,7 @@ defmodule Favn.MultiAsset do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
+      Module.register_attribute(__MODULE__, :runtime_config, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_multi_asset_defaults_raw, persist: true)
 
@@ -155,7 +168,45 @@ defmodule Favn.MultiAsset do
       @on_definition Favn.MultiAsset
       @before_compile Favn.MultiAsset
 
-      import Favn.MultiAsset, only: [defaults: 1, asset: 2]
+      import Favn.MultiAsset,
+        only: [defaults: 1, asset: 2, source_config: 2, env!: 1, secret_env!: 1]
+    end
+  end
+
+  @doc """
+  Declares runtime configuration required by every generated asset.
+
+  Values are resolved by the runner at execution time and exposed through
+  `ctx.config`. Runtime values are not embedded in the manifest.
+  """
+  defmacro source_config(scope, fields) do
+    quote bind_quoted: [scope: scope, fields: fields] do
+      {runtime_config_scope, runtime_config_fields} =
+        if is_atom(scope), do: {scope, fields}, else: {fields, scope}
+
+      Module.put_attribute(
+        __MODULE__,
+        :runtime_config,
+        %{runtime_config_scope => runtime_config_fields}
+      )
+    end
+  end
+
+  @doc """
+  Declares a required environment variable runtime config value.
+  """
+  defmacro env!(key) when is_binary(key) do
+    quote do
+      Favn.RuntimeConfig.Ref.env!(unquote(key))
+    end
+  end
+
+  @doc """
+  Declares a required secret environment variable runtime config value.
+  """
+  defmacro secret_env!(key) when is_binary(key) do
+    quote do
+      Favn.RuntimeConfig.Ref.secret_env!(unquote(key))
     end
   end
 
@@ -317,6 +368,11 @@ defmodule Favn.MultiAsset do
 
     ensure_no_pending_attributes!(env)
 
+    runtime_config =
+      env.module
+      |> Module.get_attribute(:runtime_config)
+      |> normalize_runtime_config!(env)
+
     raw_assets =
       env.module
       |> Module.get_attribute(:favn_multi_assets_raw)
@@ -331,7 +387,12 @@ defmodule Favn.MultiAsset do
     end
 
     _ = validate_unique_names!(raw_assets)
-    assets = raw_assets |> Enum.map(&build_asset!/1) |> resolve_relations!(env.module, env)
+
+    assets =
+      raw_assets
+      |> Enum.map(&build_asset!(&1, runtime_config))
+      |> resolve_relations!(env.module, env)
+
     _ = ensure_unique_relation_owners!(assets, env)
 
     Module.put_attribute(env.module, :favn_multi_asset_generating, true)
@@ -447,7 +508,7 @@ defmodule Favn.MultiAsset do
     raw_assets
   end
 
-  defp build_asset!(raw_asset) do
+  defp build_asset!(raw_asset, runtime_config) do
     depends_on = normalize_depends!(raw_asset.depends, raw_asset)
 
     asset = %Asset{
@@ -464,6 +525,7 @@ defmodule Favn.MultiAsset do
       meta: raw_asset.meta,
       depends_on: depends_on,
       config: raw_asset.config,
+      runtime_config: runtime_config,
       window_spec: raw_asset.window_spec
     }
 
@@ -473,6 +535,26 @@ defmodule Favn.MultiAsset do
       error in ArgumentError ->
         DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
     end
+  end
+
+  defp normalize_runtime_config!([], _env), do: %{}
+
+  defp normalize_runtime_config!(entries, env) do
+    entries
+    |> Enum.reverse()
+    |> Enum.reduce(%{}, &Map.merge(&2, &1))
+    |> normalize_runtime_config_entry_order()
+    |> Requirements.normalize!()
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(env.file, env.line, error.message)
+  end
+
+  defp normalize_runtime_config_entry_order(%{} = declarations) do
+    Map.new(declarations, fn
+      {scope, fields} when is_atom(scope) -> {scope, fields}
+      {fields, scope} when is_atom(scope) -> {scope, fields}
+    end)
   end
 
   defp normalize_defaults_block!(block, env) do
