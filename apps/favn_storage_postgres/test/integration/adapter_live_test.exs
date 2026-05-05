@@ -299,6 +299,25 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
 
         assert :ok = Adapter.put_scheduler_state({MyApp.Pipeline, nil}, %{version: 1}, opts)
 
+        assert {:ok, %{rows: [[nil_state_payload]]}} =
+                 SQL.query(
+                   Repo,
+                   """
+                   SELECT state_blob
+                   FROM favn_scheduler_cursors
+                   WHERE pipeline_module = $1 AND schedule_id = $2
+                   LIMIT 1
+                   """,
+                   [Atom.to_string(MyApp.Pipeline), "__nil__"]
+                 )
+
+        nil_state_dto = Jason.decode!(nil_state_payload)
+        assert nil_state_dto["format"] == "favn.scheduler_state.storage"
+        assert nil_state_dto["schema_version"] == 1
+        refute Map.has_key?(nil_state_dto["state"], "schedule_id")
+        refute nil_state_payload =~ "__type__"
+        refute nil_state_payload =~ "__struct__"
+
         assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} =
                  Adapter.get_scheduler_state({MyApp.Pipeline, nil}, opts)
     end

@@ -100,6 +100,23 @@ defmodule FavnOrchestrator.Storage.SchedulerStateCodecTest do
     assert decoded.version == nil
   end
 
+  test "preserves microseconds on encode and normalizes decoded datetime offsets" do
+    utc = ~U[2026-05-05 12:34:56.123456Z]
+
+    assert {:ok, encoded} = SchedulerStateCodec.encode_state(%{version: 1, last_due_at: utc})
+    assert Jason.decode!(encoded)["state"]["last_due_at"] == "2026-05-05T12:34:56.123456Z"
+
+    offset_payload =
+      Jason.encode!(%{
+        "format" => "favn.scheduler_state.storage",
+        "schema_version" => 1,
+        "state" => %{"last_due_at" => "2026-05-05T14:34:56.123456+02:00"}
+      })
+
+    assert {:ok, decoded} = SchedulerStateCodec.decode_state(offset_payload)
+    assert decoded.last_due_at == utc
+  end
+
   test "builds scheduler state struct from row identity and decoded state" do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
