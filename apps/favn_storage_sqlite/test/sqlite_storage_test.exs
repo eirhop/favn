@@ -351,6 +351,8 @@ defmodule Favn.SQLiteStorageTest do
   } do
     raw_key = "client-secret-key"
     secret_value = "super-secret-session-token"
+    response_secret = "stored-response-secret"
+    completed_at = ~U[2026-05-05 12:00:00Z]
     request = %{operation: "run.submit", payload: %{token: secret_value}}
     key_hash = Idempotency.key_hash(raw_key)
 
@@ -370,9 +372,17 @@ defmodule Favn.SQLiteStorageTest do
 
     assert :ok =
              OrchestratorStorage.complete_idempotency_record(reserved.id, %{
+               operation: "run.submit",
                status: :completed,
                response_status: 201,
-               response_body: %{"run" => %{"id" => "run_sqlite_idempotent"}},
+               response_body: %{
+                 run: %{
+                   id: "run_sqlite_idempotent",
+                   nested: %{atom_key: {:ok, completed_at}},
+                   struct: URI.parse("https://example.test/path"),
+                   token: response_secret
+                 }
+               },
                resource_type: "run",
                resource_id: "run_sqlite_idempotent",
                updated_at: DateTime.utc_now() |> DateTime.truncate(:second),
@@ -384,7 +394,25 @@ defmodule Favn.SQLiteStorageTest do
 
     assert {:ok, {:replay, replay}} = OrchestratorStorage.reserve_idempotency_record(record)
     assert replay.response_status == 201
-    assert replay.response_body == %{"run" => %{"id" => "run_sqlite_idempotent"}}
+
+    assert replay.response_body == %{
+             "run" => %{
+               "id" => "run_sqlite_idempotent",
+               "nested" => %{"atom_key" => ["ok", "2026-05-05T12:00:00Z"]},
+               "struct" => %{
+                 "authority" => "example.test",
+                 "fragment" => nil,
+                 "host" => "example.test",
+                 "path" => "/path",
+                 "port" => 443,
+                 "query" => nil,
+                 "scheme" => "https",
+                 "userinfo" => nil
+               },
+               "token" => "[REDACTED]"
+             }
+           }
+
     assert replay.idempotency_key_hash == key_hash
     refute replay.idempotency_key_hash == raw_key
 
@@ -398,6 +426,15 @@ defmodule Favn.SQLiteStorageTest do
     stored = inspect({stored_key_hash, request_fingerprint, response_body_blob})
     refute stored =~ raw_key
     refute stored =~ secret_value
+    refute stored =~ response_secret
+    refute stored =~ "__type__"
+    refute stored =~ "__struct__"
+
+    assert {:ok, stored_response} = Jason.decode(response_body_blob)
+    assert stored_response["format"] == "favn.idempotency_response.storage.v1"
+    assert stored_response["schema_version"] == 1
+    assert stored_response["operation"] == "run.submit"
+    assert stored_response["response_schema"] == "favn.command.run_submit.response.v1"
   end
 
   test "idempotency records reject fingerprint conflicts and report in-progress duplicates" do

@@ -13,6 +13,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.AuthCodec
+  alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
@@ -953,7 +954,10 @@ defmodule Favn.Storage.Adapter.SQLite do
       params = [
         encode_atom(Map.fetch!(attrs, :status)),
         Map.get(attrs, :response_status),
-        encode_optional_payload(Map.get(attrs, :response_body)),
+        encode_optional_idempotency_response(
+          Map.get(attrs, :response_body),
+          Map.fetch!(attrs, :operation)
+        ),
         Map.get(attrs, :resource_type),
         Map.get(attrs, :resource_id),
         encode_datetime(Map.fetch!(attrs, :updated_at)),
@@ -1145,7 +1149,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          completed_at
        ]) do
     with {:ok, status} <- existing_atom(status),
-         {:ok, response_body} <- decode_optional_payload(response_body_blob) do
+         {:ok, response_body} <- decode_optional_idempotency_response(response_body_blob) do
       {:ok,
        %{
          id: record_id,
@@ -1486,7 +1490,10 @@ defmodule Favn.Storage.Adapter.SQLite do
       Map.fetch!(record, :request_fingerprint),
       encode_atom(Map.fetch!(record, :status)),
       Map.get(record, :response_status),
-      encode_optional_payload(Map.get(record, :response_body)),
+      encode_optional_idempotency_response(
+        Map.get(record, :response_body),
+        Map.fetch!(record, :operation)
+      ),
       Map.get(record, :resource_type),
       Map.get(record, :resource_id),
       encode_datetime(Map.fetch!(record, :created_at)),
@@ -2169,11 +2176,23 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp decode_payload(payload) when is_binary(payload), do: PayloadCodec.decode(payload)
 
-  defp encode_optional_payload(nil), do: nil
-  defp encode_optional_payload(value), do: encode_payload(value)
+  defp encode_optional_idempotency_response(nil, _operation), do: nil
 
-  defp decode_optional_payload(nil), do: {:ok, nil}
-  defp decode_optional_payload(payload) when is_binary(payload), do: decode_payload(payload)
+  defp encode_optional_idempotency_response(value, operation) when is_binary(operation) do
+    case IdempotencyResponseCodec.encode(operation, value) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid idempotency response payload: #{inspect(reason)}"
+    end
+  end
+
+  defp decode_optional_idempotency_response(nil), do: {:ok, nil}
+
+  defp decode_optional_idempotency_response(payload) when is_binary(payload) do
+    IdempotencyResponseCodec.decode(payload)
+  end
 
   defp repo_name(opts) do
     with {:ok, normalized} <- normalize_opts(opts),
