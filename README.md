@@ -56,6 +56,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - single-node packaging now includes `mix favn.build.single` with a verified project-local backend-only SQLite launcher under `.favn/dist/single/<build_id>/`; it still depends on the installed runtime source root and is not a self-contained or relocatable release artifact (see `OPERATOR_NOTES.md` in each artifact)
 - backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
 - operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; operational backfill does not accept lookback-policy input until concrete runtime semantics exist
+- operational backfill read-model storage is derived projection state; the closeout migration to JSON-safe DTO storage rebuilds the durable backfill read-model tables, and operators can repopulate them with `mix favn.backfill repair --apply` from authoritative run snapshots/events when needed
 
 ## What Favn Gives You
 

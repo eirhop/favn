@@ -16,7 +16,6 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.ManifestCodec
-  alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -1465,13 +1464,6 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  defp encode_payload(value) do
-    case PayloadCodec.encode(value) do
-      {:ok, payload} -> payload
-      {:error, reason} -> raise ArgumentError, "invalid storage payload: #{inspect(reason)}"
-    end
-  end
-
   defp encode_coverage_baseline(%CoverageBaseline{} = baseline) do
     case CoverageBaselineCodec.encode(baseline) do
       {:ok, payload} ->
@@ -1525,8 +1517,6 @@ defmodule Favn.Storage.Adapter.Postgres do
         raise ArgumentError, "invalid scheduler state payload: #{inspect(reason)}"
     end
   end
-
-  defp decode_payload(payload) when is_binary(payload), do: PayloadCodec.decode(payload)
 
   defp auth_persistence_not_supported, do: {:error, :auth_persistence_not_supported}
 

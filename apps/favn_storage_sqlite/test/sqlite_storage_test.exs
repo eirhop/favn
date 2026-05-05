@@ -1599,17 +1599,6 @@ defmodule Favn.SQLiteStorageTest do
     state
   end
 
-  defp ensure_auth_store_started do
-    case Process.whereis(AuthStore) do
-      nil ->
-        start_supervised!({AuthStore, []})
-        :started
-
-      _pid ->
-        :existing
-    end
-  end
-
   defp sample_error(_message \\ "%{reason: :sample_error}") do
     %{
       "kind" => "error",
@@ -1638,15 +1627,6 @@ defmodule Favn.SQLiteStorageTest do
                corrupted,
                key_value
              ])
-  end
-
-  defp maybe_stop_auth_store(:existing), do: :ok
-
-  defp maybe_stop_auth_store(:started) do
-    case Process.whereis(AuthStore) do
-      nil -> :ok
-      pid -> GenServer.stop(pid, :normal)
-    end
   end
 
   defp token_hash(token) do
