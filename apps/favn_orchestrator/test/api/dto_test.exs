@@ -198,6 +198,23 @@ defmodule FavnOrchestrator.API.DTOTest do
     assert hd(detail.asset_results).error["type"] == "boom"
   end
 
+  test "asset results sort plain normalized maps with string keys" do
+    results = %{
+      second: %{
+        "asset_ref" => "Elixir.SampleAsset:second",
+        "stage" => 2,
+        "meta" => %{token: "hidden"}
+      },
+      first: %{asset_ref: "Elixir.SampleAsset:first", stage: 1, meta: %{rows: 1}}
+    }
+
+    assert [first, second] = DTO.asset_results(results)
+    assert first["asset_ref"] == "Elixir.SampleAsset:first"
+    assert first["stage"] == 1
+    assert second["asset_ref"] == "Elixir.SampleAsset:second"
+    assert second["meta"] == %{"token" => "[REDACTED]"}
+  end
+
   test "run event and inspection result DTOs normalize event data and inspection runtime fields" do
     event = %RunEvent{
       run_id: "run_1",

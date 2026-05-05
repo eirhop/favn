@@ -152,7 +152,7 @@ defmodule FavnOrchestrator.API.DTO do
     results
     |> Map.values()
     |> Enum.map(&asset_result/1)
-    |> Enum.sort_by(&{&1.stage || 0, &1.asset_ref || ""})
+    |> Enum.sort_by(&asset_result_sort_key/1)
   end
 
   def asset_results(_results), do: []
@@ -182,6 +182,13 @@ defmodule FavnOrchestrator.API.DTO do
   end
 
   def asset_result(result), do: %{asset_ref: nil, error: error_payload(result)}
+
+  defp asset_result_sort_key(result) when is_map(result) do
+    {
+      Map.get(result, :stage) || Map.get(result, "stage") || 0,
+      Map.get(result, :asset_ref) || Map.get(result, "asset_ref") || ""
+    }
+  end
 
   @spec node_results(map() | term()) :: [map()]
   def node_results(results) when is_map(results) do
