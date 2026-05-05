@@ -12,8 +12,10 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
+  alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
+  alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.ManifestCodec
-  alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -334,8 +336,8 @@ defmodule Favn.Storage.Adapter.Postgres do
         INSERT INTO favn_pipeline_coverage_baselines (
           baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted,
           window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id,
-          manifest_version_id, status, errors_payload, metadata_payload, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          manifest_version_id, status, record_payload, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT(baseline_id) DO UPDATE SET
           pipeline_module = EXCLUDED.pipeline_module,
           source_key = EXCLUDED.source_key,
@@ -348,8 +350,7 @@ defmodule Favn.Storage.Adapter.Postgres do
           created_by_run_id = EXCLUDED.created_by_run_id,
           manifest_version_id = EXCLUDED.manifest_version_id,
           status = EXCLUDED.status,
-          errors_payload = EXCLUDED.errors_payload,
-          metadata_payload = EXCLUDED.metadata_payload,
+          record_payload = EXCLUDED.record_payload,
           created_at = EXCLUDED.created_at,
           updated_at = EXCLUDED.updated_at
         """
@@ -397,9 +398,9 @@ defmodule Favn.Storage.Adapter.Postgres do
         INSERT INTO favn_backfill_windows (
           backfill_run_id, child_run_id, pipeline_module, manifest_version_id, coverage_baseline_id,
           window_kind, window_start_at, window_end_at, timezone, window_key, status,
-          attempt_count, latest_attempt_run_id, last_success_run_id, last_error_payload,
-          errors_payload, metadata_payload, started_at, finished_at, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+          attempt_count, latest_attempt_run_id, last_success_run_id, record_payload,
+          started_at, finished_at, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
         ON CONFLICT(backfill_run_id, pipeline_module, window_key) DO UPDATE SET
           child_run_id = EXCLUDED.child_run_id,
           manifest_version_id = EXCLUDED.manifest_version_id,
@@ -412,9 +413,7 @@ defmodule Favn.Storage.Adapter.Postgres do
           attempt_count = EXCLUDED.attempt_count,
           latest_attempt_run_id = EXCLUDED.latest_attempt_run_id,
           last_success_run_id = EXCLUDED.last_success_run_id,
-          last_error_payload = EXCLUDED.last_error_payload,
-          errors_payload = EXCLUDED.errors_payload,
-          metadata_payload = EXCLUDED.metadata_payload,
+          record_payload = EXCLUDED.record_payload,
           started_at = EXCLUDED.started_at,
           finished_at = EXCLUDED.finished_at,
           created_at = EXCLUDED.created_at,
@@ -470,9 +469,8 @@ defmodule Favn.Storage.Adapter.Postgres do
         INSERT INTO favn_asset_window_states (
           asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id, window_kind,
           window_start_at, window_end_at, timezone, window_key, status, latest_run_id,
-          latest_parent_run_id, latest_success_run_id, latest_error_payload, rows_written,
-          errors_payload, metadata_payload, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+          latest_parent_run_id, latest_success_run_id, rows_written, record_payload, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         ON CONFLICT(asset_ref_module, asset_ref_name, window_key) DO UPDATE SET
           pipeline_module = EXCLUDED.pipeline_module,
           manifest_version_id = EXCLUDED.manifest_version_id,
@@ -484,10 +482,8 @@ defmodule Favn.Storage.Adapter.Postgres do
           latest_run_id = EXCLUDED.latest_run_id,
           latest_parent_run_id = EXCLUDED.latest_parent_run_id,
           latest_success_run_id = EXCLUDED.latest_success_run_id,
-          latest_error_payload = EXCLUDED.latest_error_payload,
           rows_written = EXCLUDED.rows_written,
-          errors_payload = EXCLUDED.errors_payload,
-          metadata_payload = EXCLUDED.metadata_payload,
+          record_payload = EXCLUDED.record_payload,
           updated_at = EXCLUDED.updated_at
         """
 
@@ -637,8 +633,7 @@ defmodule Favn.Storage.Adapter.Postgres do
       baseline.created_by_run_id,
       baseline.manifest_version_id,
       Atom.to_string(baseline.status),
-      encode_payload(baseline.errors),
-      encode_payload(baseline.metadata),
+      encode_coverage_baseline(baseline),
       baseline.created_at,
       baseline.updated_at
     ]
@@ -660,9 +655,7 @@ defmodule Favn.Storage.Adapter.Postgres do
       window.attempt_count,
       window.latest_attempt_run_id,
       window.last_success_run_id,
-      encode_payload(window.last_error),
-      encode_payload(window.errors),
-      encode_payload(window.metadata),
+      encode_backfill_window(window),
       window.started_at,
       window.finished_at,
       window.created_at,
@@ -685,19 +678,15 @@ defmodule Favn.Storage.Adapter.Postgres do
       state.latest_run_id,
       state.latest_parent_run_id,
       state.latest_success_run_id,
-      encode_payload(state.latest_error),
       state.rows_written,
-      encode_payload(state.errors),
-      encode_payload(state.metadata),
+      encode_asset_window_state(state),
       state.updated_at
     ]
   end
 
   defp coverage_baseline_select do
     """
-    SELECT baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted,
-           window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id,
-           manifest_version_id, status, errors_payload, metadata_payload, created_at, updated_at
+    SELECT record_payload
     FROM favn_pipeline_coverage_baselines
     """
     |> String.trim_trailing()
@@ -705,10 +694,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp backfill_window_select do
     """
-    SELECT backfill_run_id, child_run_id, pipeline_module, manifest_version_id, coverage_baseline_id,
-           window_kind, window_start_at, window_end_at, timezone, window_key, status,
-           attempt_count, latest_attempt_run_id, last_success_run_id, last_error_payload,
-           errors_payload, metadata_payload, started_at, finished_at, created_at, updated_at
+    SELECT record_payload
     FROM favn_backfill_windows
     """
     |> String.trim_trailing()
@@ -716,10 +702,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp asset_window_state_select do
     """
-    SELECT asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id, window_kind,
-           window_start_at, window_end_at, timezone, window_key, status, latest_run_id,
-           latest_parent_run_id, latest_success_run_id, latest_error_payload, rows_written,
-           errors_payload, metadata_payload, updated_at
+    SELECT record_payload
     FROM favn_asset_window_states
     """
     |> String.trim_trailing()
@@ -875,149 +858,14 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp page_opts(filters), do: Page.normalize_opts(filters)
 
-  defp decode_coverage_baseline_row([
-         baseline_id,
-         pipeline_module,
-         source_key,
-         segment_key_hash,
-         segment_key_redacted,
-         window_kind,
-         timezone,
-         coverage_start_at,
-         coverage_until,
-         created_by_run_id,
-         manifest_version_id,
-         status,
-         errors_payload,
-         metadata_payload,
-         created_at,
-         updated_at
-       ]) do
-    with {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, errors} <- decode_payload(errors_payload),
-         {:ok, metadata} <- decode_payload(metadata_payload) do
-      CoverageBaseline.new(%{
-        baseline_id: baseline_id,
-        pipeline_module: pipeline_module,
-        source_key: source_key,
-        segment_key_hash: segment_key_hash,
-        segment_key_redacted: segment_key_redacted,
-        window_kind: window_kind,
-        timezone: timezone,
-        coverage_start_at: coverage_start_at,
-        coverage_until: coverage_until,
-        created_by_run_id: created_by_run_id,
-        manifest_version_id: manifest_version_id,
-        status: status,
-        errors: errors,
-        metadata: metadata,
-        created_at: created_at,
-        updated_at: updated_at
-      })
-    end
-  end
+  defp decode_coverage_baseline_row([record_payload]),
+    do: CoverageBaselineCodec.decode(record_payload)
 
-  defp decode_backfill_window_row([
-         backfill_run_id,
-         child_run_id,
-         pipeline_module,
-         manifest_version_id,
-         coverage_baseline_id,
-         window_kind,
-         window_start_at,
-         window_end_at,
-         timezone,
-         window_key,
-         status,
-         attempt_count,
-         latest_attempt_run_id,
-         last_success_run_id,
-         last_error_payload,
-         errors_payload,
-         metadata_payload,
-         started_at,
-         finished_at,
-         created_at,
-         updated_at
-       ]) do
-    with {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, last_error} <- decode_payload(last_error_payload),
-         {:ok, errors} <- decode_payload(errors_payload),
-         {:ok, metadata} <- decode_payload(metadata_payload) do
-      BackfillWindow.new(%{
-        backfill_run_id: backfill_run_id,
-        child_run_id: child_run_id,
-        pipeline_module: pipeline_module,
-        manifest_version_id: manifest_version_id,
-        coverage_baseline_id: coverage_baseline_id,
-        window_kind: window_kind,
-        window_start_at: window_start_at,
-        window_end_at: window_end_at,
-        timezone: timezone,
-        window_key: window_key,
-        status: status,
-        attempt_count: attempt_count,
-        latest_attempt_run_id: latest_attempt_run_id,
-        last_success_run_id: last_success_run_id,
-        last_error: last_error,
-        errors: errors,
-        metadata: metadata,
-        started_at: started_at,
-        finished_at: finished_at,
-        created_at: created_at,
-        updated_at: updated_at
-      })
-    end
-  end
+  defp decode_backfill_window_row([record_payload]),
+    do: BackfillWindowCodec.decode(record_payload)
 
-  defp decode_asset_window_state_row([
-         asset_ref_module,
-         asset_ref_name,
-         pipeline_module,
-         manifest_version_id,
-         window_kind,
-         window_start_at,
-         window_end_at,
-         timezone,
-         window_key,
-         status,
-         latest_run_id,
-         latest_parent_run_id,
-         latest_success_run_id,
-         latest_error_payload,
-         rows_written,
-         errors_payload,
-         metadata_payload,
-         updated_at
-       ]) do
-    with {:ok, asset_ref_module} <- existing_atom(asset_ref_module),
-         {:ok, asset_ref_name} <- existing_atom(asset_ref_name),
-         {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, latest_error} <- decode_payload(latest_error_payload),
-         {:ok, errors} <- decode_payload(errors_payload),
-         {:ok, metadata} <- decode_payload(metadata_payload) do
-      AssetWindowState.new(%{
-        asset_ref_module: asset_ref_module,
-        asset_ref_name: asset_ref_name,
-        pipeline_module: pipeline_module,
-        manifest_version_id: manifest_version_id,
-        window_kind: window_kind,
-        window_start_at: window_start_at,
-        window_end_at: window_end_at,
-        timezone: timezone,
-        window_key: window_key,
-        status: status,
-        latest_run_id: latest_run_id,
-        latest_parent_run_id: latest_parent_run_id,
-        latest_success_run_id: latest_success_run_id,
-        latest_error: latest_error,
-        rows_written: rows_written,
-        errors: errors,
-        metadata: metadata,
-        updated_at: updated_at
-      })
-    end
-  end
+  defp decode_asset_window_state_row([record_payload]),
+    do: AssetWindowStateCodec.decode(record_payload)
 
   defp persist_run(repo, run) do
     repo.transact(fn ->
@@ -1616,10 +1464,33 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  defp encode_payload(value) do
-    case PayloadCodec.encode(value) do
-      {:ok, payload} -> payload
-      {:error, reason} -> raise ArgumentError, "invalid storage payload: #{inspect(reason)}"
+  defp encode_coverage_baseline(%CoverageBaseline{} = baseline) do
+    case CoverageBaselineCodec.encode(baseline) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid coverage baseline payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_backfill_window(%BackfillWindow{} = window) do
+    case BackfillWindowCodec.encode(window) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid backfill window payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_asset_window_state(%AssetWindowState{} = state) do
+    case AssetWindowStateCodec.encode(state) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid asset window state payload: #{inspect(reason)}"
     end
   end
 
@@ -1647,15 +1518,7 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  defp decode_payload(payload) when is_binary(payload), do: PayloadCodec.decode(payload)
-
   defp auth_persistence_not_supported, do: {:error, :auth_persistence_not_supported}
-
-  defp existing_atom(value) when is_binary(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> {:error, {:unknown_atom, value}}
-  end
 
   defp resolve_repo(opts) do
     with {:ok, normalized} <- normalize_opts(opts) do

@@ -47,6 +47,11 @@ defmodule FavnOrchestrator.Redaction do
   @spec redact(term()) :: term()
   def redact(%DateTime{} = value), do: value
 
+  def redact(%{__exception__: true, __struct__: module}),
+    do: %{type: module, message: "[REDACTED]"}
+
+  def redact(%_struct{} = value), do: redact_struct(value)
+
   def redact(value) when is_map(value) do
     value
     |> Enum.map(fn {key, val} -> {key, redact(key, val)} end)
@@ -84,6 +89,7 @@ defmodule FavnOrchestrator.Redaction do
   """
   @spec redact_untrusted(term()) :: term()
   def redact_untrusted(%DateTime{} = value), do: value
+  def redact_untrusted(%_struct{}), do: "[REDACTED]"
   def redact_untrusted(value) when is_atom(value), do: value
   def redact_untrusted(value) when is_integer(value), do: value
   def redact_untrusted(value) when is_float(value), do: value
@@ -151,6 +157,7 @@ defmodule FavnOrchestrator.Redaction do
   end
 
   defp redact_operational(_key, %DateTime{} = value), do: value
+  defp redact_operational(_key, %_struct{}), do: "[REDACTED]"
 
   defp redact_operational(_key, value) when is_map(value) do
     Map.new(value, fn {child_key, child_value} ->
@@ -178,5 +185,12 @@ defmodule FavnOrchestrator.Redaction do
   defp operational_untrusted_key?(key) when is_binary(key) do
     key = String.downcase(key)
     Enum.any?(@operational_untrusted_keys, &(key == Atom.to_string(&1)))
+  end
+
+  defp redact_struct(value) do
+    value
+    |> Map.from_struct()
+    |> Map.new(fn {key, val} -> {key, redact(key, val)} end)
+    |> Map.put(:type, value.__struct__)
   end
 end

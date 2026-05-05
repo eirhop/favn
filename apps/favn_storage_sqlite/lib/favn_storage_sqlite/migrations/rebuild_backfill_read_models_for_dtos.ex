@@ -1,10 +1,14 @@
-defmodule FavnStorageSqlite.Migrations.AddBackfillState do
+defmodule FavnStorageSqlite.Migrations.RebuildBackfillReadModelsForDtos do
   @moduledoc false
 
   use Ecto.Migration
 
-  def change do
-    create_if_not_exists table(:favn_pipeline_coverage_baselines, primary_key: false) do
+  def up do
+    drop_if_exists(table(:favn_asset_window_states))
+    drop_if_exists(table(:favn_backfill_windows))
+    drop_if_exists(table(:favn_pipeline_coverage_baselines))
+
+    create table(:favn_pipeline_coverage_baselines, primary_key: false) do
       add(:baseline_id, :string, primary_key: true)
       add(:pipeline_module, :string, null: false)
       add(:source_key, :string, null: false)
@@ -22,13 +26,10 @@ defmodule FavnStorageSqlite.Migrations.AddBackfillState do
       add(:updated_at, :text, null: false)
     end
 
-    create_if_not_exists(index(:favn_pipeline_coverage_baselines, [:pipeline_module, :status]))
+    create(index(:favn_pipeline_coverage_baselines, [:pipeline_module, :status]))
+    create(index(:favn_pipeline_coverage_baselines, [:source_key, :segment_key_hash]))
 
-    create_if_not_exists(
-      index(:favn_pipeline_coverage_baselines, [:source_key, :segment_key_hash])
-    )
-
-    create_if_not_exists table(:favn_backfill_windows, primary_key: false) do
+    create table(:favn_backfill_windows, primary_key: false) do
       add(:backfill_run_id, :string, null: false)
       add(:child_run_id, :string)
       add(:pipeline_module, :string, null: false)
@@ -50,14 +51,14 @@ defmodule FavnStorageSqlite.Migrations.AddBackfillState do
       add(:updated_at, :text, null: false)
     end
 
-    create_if_not_exists(
+    create(
       unique_index(:favn_backfill_windows, [:backfill_run_id, :pipeline_module, :window_key])
     )
 
-    create_if_not_exists(index(:favn_backfill_windows, [:pipeline_module, :window_key]))
-    create_if_not_exists(index(:favn_backfill_windows, [:status, :updated_at]))
+    create(index(:favn_backfill_windows, [:pipeline_module, :window_key]))
+    create(index(:favn_backfill_windows, [:status, :updated_at]))
 
-    create_if_not_exists table(:favn_asset_window_states, primary_key: false) do
+    create table(:favn_asset_window_states, primary_key: false) do
       add(:asset_ref_module, :string, null: false)
       add(:asset_ref_name, :string, null: false)
       add(:pipeline_module, :string, null: false)
@@ -76,11 +77,17 @@ defmodule FavnStorageSqlite.Migrations.AddBackfillState do
       add(:updated_at, :text, null: false)
     end
 
-    create_if_not_exists(
+    create(
       unique_index(:favn_asset_window_states, [:asset_ref_module, :asset_ref_name, :window_key])
     )
 
-    create_if_not_exists(index(:favn_asset_window_states, [:pipeline_module, :window_key]))
-    create_if_not_exists(index(:favn_asset_window_states, [:status, :updated_at]))
+    create(index(:favn_asset_window_states, [:pipeline_module, :window_key]))
+    create(index(:favn_asset_window_states, [:status, :updated_at]))
+  end
+
+  def down do
+    drop_if_exists(table(:favn_asset_window_states))
+    drop_if_exists(table(:favn_backfill_windows))
+    drop_if_exists(table(:favn_pipeline_coverage_baselines))
   end
 end

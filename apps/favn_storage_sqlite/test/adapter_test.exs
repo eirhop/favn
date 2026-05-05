@@ -120,6 +120,88 @@ defmodule FavnStorageSqlite.AdapterTest do
     refute payload =~ "secret"
   end
 
+  test "persists backfill read models as full JSON-safe DTO records", %{opts: opts} do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    start_at = DateTime.add(now, -86_400, :second)
+
+    {:ok, baseline} =
+      CoverageBaseline.new(%{
+        baseline_id: "baseline_sqlite_record_payload",
+        pipeline_module: MyApp.Pipeline,
+        source_key: "orders",
+        segment_key_hash: "sha256:orders",
+        window_kind: :day,
+        timezone: "Etc/UTC",
+        coverage_until: now,
+        created_by_run_id: "run_baseline",
+        manifest_version_id: "mv_backfill_dto",
+        status: :ok,
+        errors: [%{password: "secret-password", reason: :failed}],
+        metadata: %{password: "secret-password", row_count: 12},
+        created_at: now,
+        updated_at: now
+      })
+
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: "backfill_sqlite_record_payload",
+        pipeline_module: MyApp.Pipeline,
+        manifest_version_id: "mv_backfill_dto",
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: now,
+        timezone: "Etc/UTC",
+        window_key: "day:record-payload",
+        status: :error,
+        last_error: %{password: "secret-password", reason: :failed},
+        metadata: %{source: :sqlite, password: "secret-password"},
+        updated_at: now
+      })
+
+    {:ok, state} =
+      AssetWindowState.new(%{
+        asset_ref_module: MyApp.Asset,
+        asset_ref_name: :asset,
+        pipeline_module: MyApp.Pipeline,
+        manifest_version_id: "mv_backfill_dto",
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: now,
+        timezone: "Etc/UTC",
+        window_key: "day:record-payload",
+        status: :error,
+        latest_run_id: "run_asset_record_payload",
+        latest_error: %{password: "secret-password", reason: :failed},
+        metadata: %{partition: :daily, credentials: "secret-password"},
+        updated_at: now
+      })
+
+    assert :ok = Adapter.put_coverage_baseline(baseline, opts)
+    assert :ok = Adapter.put_backfill_window(window, opts)
+    assert :ok = Adapter.put_asset_window_state(state, opts)
+
+    assert_raw_backfill_payload(
+      "favn_pipeline_coverage_baselines",
+      "baseline_id",
+      baseline.baseline_id,
+      "favn.backfill.coverage_baseline.storage.v1"
+    )
+
+    assert_raw_backfill_payload(
+      "favn_backfill_windows",
+      "window_key",
+      window.window_key,
+      "favn.backfill.window.storage.v1"
+    )
+
+    assert_raw_backfill_payload(
+      "favn_asset_window_states",
+      "window_key",
+      state.window_key,
+      "favn.backfill.asset_window_state.storage.v1"
+    )
+  end
+
   test "stores run events and scheduler cursor state", %{opts: opts} do
     event = %{
       sequence: 1,
@@ -530,6 +612,18 @@ defmodule FavnStorageSqlite.AdapterTest do
     send(task_b.pid, :go)
 
     [Task.await(task_a, 5_000), Task.await(task_b, 5_000)]
+  end
+
+  defp assert_raw_backfill_payload(table, key_column, key_value, format) do
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT record_payload FROM #{table} WHERE #{key_column} = ?1", [
+               key_value
+             ])
+
+    assert Jason.decode!(payload)["format"] == format
+    refute payload =~ "__type__"
+    refute payload =~ "__struct__"
+    refute payload =~ "secret-password"
   end
 
   defp await_release(parent, label, fun) do
