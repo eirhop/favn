@@ -4,6 +4,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   alias Favn.Asset
   alias Favn.Assets.Compiler
   alias Favn.RelationRef
+  alias Favn.RuntimeConfig.Ref
   alias Favn.Test.Fixtures.Assets.Basic.SampleAssets
   alias FavnTestSupport.Fixtures
 
@@ -347,6 +348,51 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
              schema: "sales",
              name: "orders"
            }
+  end
+
+  test "multi-asset module runtime config compiles into every generated asset" do
+    assets = Module.concat(__MODULE__, "MultiRuntimeConfig#{System.unique_integer([:positive])}")
+
+    Code.compile_string(
+      """
+      defmodule #{inspect(assets)} do
+        use Favn.MultiAsset
+
+        source_config :mercatus,
+          username: env!("MERCATUS_USERNAME"),
+          password: secret_env!("MERCATUS_PASSWORD")
+
+        asset :orders do
+          rest do
+            path "/orders"
+          end
+        end
+
+        asset :customers do
+          rest do
+            path "/customers"
+          end
+        end
+
+        def asset(_ctx), do: :ok
+      end
+      """,
+      "test/assets/compiler_parity_test.exs"
+    )
+
+    assert {:ok, compiled_assets} = Compiler.compile_module_assets(assets)
+    assert Enum.map(compiled_assets, & &1.name) == [:orders, :customers]
+
+    for asset <- compiled_assets do
+      assert asset.runtime_config == %{
+               mercatus: %{
+                 username: Ref.env!("MERCATUS_USERNAME"),
+                 password: Ref.secret_env!("MERCATUS_PASSWORD")
+               }
+             }
+
+      assert Favn.Manifest.Asset.from_asset(asset).runtime_config == asset.runtime_config
+    end
   end
 
   test "relation normalization rejects duplicate canonical keys" do

@@ -19,6 +19,7 @@ defmodule Favn.Dev.Run do
           wait: boolean(),
           window: String.t(),
           timezone: String.t(),
+          idempotency_key: String.t(),
           timeout_ms: non_neg_integer(),
           poll_interval_ms: pos_integer()
         ]
@@ -47,7 +48,8 @@ defmodule Favn.Dev.Run do
              credentials.service_token,
              session_context,
              target,
-             window_request
+             window_request,
+             run_idempotency_key(opts)
            ),
          {:ok, final_run} <-
            maybe_wait(run, runtime, credentials.service_token, session_context, opts),
@@ -61,8 +63,10 @@ defmodule Favn.Dev.Run do
   defp validate_opts(opts) do
     case validate_timezone_without_window(opts) do
       :ok ->
-        case validate_positive_integer(opts, :timeout_ms) do
-          :ok -> validate_positive_integer(opts, :poll_interval_ms)
+        with :ok <- validate_positive_integer(opts, :timeout_ms),
+             :ok <- validate_positive_integer(opts, :poll_interval_ms) do
+          validate_idempotency_key(opts)
+        else
           {:error, _reason} = error -> error
         end
 
@@ -82,6 +86,25 @@ defmodule Favn.Dev.Run do
       :error -> :ok
       {:ok, value} when is_integer(value) and value > 0 -> :ok
       {:ok, _value} -> {:error, {:invalid_option, key}}
+    end
+  end
+
+  defp validate_idempotency_key(opts) do
+    case Keyword.fetch(opts, :idempotency_key) do
+      :error ->
+        :ok
+
+      {:ok, key} when is_binary(key) ->
+        key = String.trim(key)
+
+        if key != "" and byte_size(key) <= 512 do
+          :ok
+        else
+          {:error, {:invalid_option, :idempotency_key}}
+        end
+
+      {:ok, _key} ->
+        {:error, {:invalid_option, :idempotency_key}}
     end
   end
 
@@ -135,7 +158,14 @@ defmodule Favn.Dev.Run do
     end
   end
 
-  defp submit_pipeline_run(base_url, service_token, session_context, target, window_request) do
+  defp submit_pipeline_run(
+         base_url,
+         service_token,
+         session_context,
+         target,
+         window_request,
+         idempotency_key
+       ) do
     case target do
       %{"target_id" => target_id} when is_binary(target_id) and target_id != "" ->
         payload =
@@ -145,7 +175,9 @@ defmodule Favn.Dev.Run do
           }
           |> maybe_put_window(window_request)
 
-        case OrchestratorClient.submit_run(base_url, service_token, session_context, payload) do
+        case OrchestratorClient.submit_run(base_url, service_token, session_context, payload,
+               idempotency_key: idempotency_key
+             ) do
           {:ok, _run} = ok -> ok
           {:error, reason} -> {:error, unwrap_submit_error(reason)}
         end
@@ -177,6 +209,17 @@ defmodule Favn.Dev.Run do
   end
 
   defp unwrap_submit_error(reason), do: reason
+
+  defp run_idempotency_key(opts) do
+    case Keyword.fetch(opts, :idempotency_key) do
+      {:ok, key} when is_binary(key) -> String.trim(key)
+      :error -> fresh_run_idempotency_key()
+    end
+  end
+
+  defp fresh_run_idempotency_key do
+    "favn-local-run-" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+  end
 
   defp maybe_wait(run, runtime, service_token, session_context, opts) do
     case {Keyword.get(opts, :wait, true), run} do

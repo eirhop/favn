@@ -167,12 +167,12 @@ and use schemas instead of catalogs if that is your platform convention.
 Keep asset-specific logic near the asset; move code to `integrations/` or `sql/`
 only when it is transport-specific or genuinely reusable.
 
-Assets can declare required runtime configuration with `source_config/2`,
-`env!/1`, and `secret_env!/1`. Manifests record the required environment keys
-and secret flags, but never embed resolved runtime values. The runner resolves
-the values before asset execution and exposes them through `ctx.config`, failing
-the run early with diagnostics such as `missing_env SOURCE_SYSTEM_TOKEN` when a
-required value is absent.
+Assets and generated multi-assets can declare required runtime configuration with
+`source_config/2`, `env!/1`, and `secret_env!/1`. Manifests record the required
+environment keys and secret flags, but never embed resolved runtime values. The
+runner resolves the values before asset execution and exposes them through
+`ctx.config`, failing the run early with diagnostics such as
+`missing_env SOURCE_SYSTEM_TOKEN` when a required value is absent.
 
 For source-system raw landing assets, keep the source client outside the asset,
 read source IDs/tokens through `ctx.config`, write raw rows through
@@ -442,7 +442,9 @@ local defaults.
 currently running local stack through the loopback-only local-dev context, so
 tutorial and local smoke runs do not require hand-written private orchestrator
 API requests or local passwords. This manual run path is the recommended default
-for one-time local ETL.
+for one-time local ETL. Each invocation uses a fresh idempotency key by default;
+pass `--idempotency-key KEY` only when you intentionally want deterministic
+orchestrator replay behavior for a local submission.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
 local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges,
@@ -624,7 +626,10 @@ part of the stable `v1` contract unless they are documented here or in
 
 `Favn.Assets` remains available as a compatibility-only authoring DSL for compact
 multi-asset modules. Prefer `Favn.Asset` for new single assets and
-`Favn.MultiAsset` for generated or repetitive multi-asset modules.
+`Favn.MultiAsset` for generated or repetitive multi-asset modules. Multi-assets
+support module-level `source_config/2`; each generated asset carries the same
+runtime config declarations and shared runtime code reads resolved values from
+`ctx.config`.
 
 ## Documentation
 

@@ -174,6 +174,24 @@ defmodule Favn.Dev.OrchestratorClientTest do
     refute Map.has_key?(headers, "x-favn-actor-id")
   end
 
+  test "submit_run/5 uses explicit idempotency key override" do
+    parent = self()
+    body = ~s({"data":{"run":{"id":"run_1","status":"running"}}})
+    {:ok, base_url, _server} = start_server(body, 201, parent: parent)
+
+    assert {:ok, %{"id" => "run_1"}} =
+             OrchestratorClient.submit_run(
+               base_url,
+               "token",
+               %{"local_dev_context" => "trusted"},
+               %{target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipeline"}},
+               idempotency_key: "manual-key-297"
+             )
+
+    assert_receive {:request_headers, headers}
+    assert headers["idempotency-key"] == "manual-key-297"
+  end
+
   test "mutating command helpers send idempotency keys without secrets" do
     session_context = %{
       "actor_id" => "act_1",

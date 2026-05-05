@@ -19,6 +19,7 @@ defmodule Mix.Tasks.Favn.Run do
     wait: :boolean,
     window: :string,
     timezone: :string,
+    idempotency_key: :string,
     timeout_ms: :integer,
     poll_interval_ms: :integer
   ]
@@ -69,6 +70,9 @@ defmodule Mix.Tasks.Favn.Run do
 
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :idempotency_key}),
+    do: "--idempotency-key must be a non-empty string up to 512 bytes"
 
   defp error_message({:invalid_option, :timezone_without_window}),
     do: "--timezone requires --window"
