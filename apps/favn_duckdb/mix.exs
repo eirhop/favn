@@ -27,7 +27,7 @@ defmodule FavnDuckdb.MixProject do
     [
       internal_dep(:favn_runner, "../favn_runner"),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
-      {:duckdbex, "~> 0.3.21"}
+      {:duckdbex, "~> 0.4.0"}
     ]
   end
 
