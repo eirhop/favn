@@ -7,8 +7,11 @@ defmodule FavnOrchestrator.RunManagerTest do
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias FavnOrchestrator
+  alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.Storage.ManifestCodec
+  alias FavnOrchestrator.Storage.RunSnapshotCodec
 
   defmodule RunnerClientStub do
     @behaviour Favn.Contracts.RunnerClient
@@ -928,6 +931,63 @@ defmodule FavnOrchestrator.RunManagerTest do
     forwarded = Agent.get(cancel_log, & &1)
     assert forwarded != []
     assert Enum.any?(forwarded, fn {execution_id, _reason} -> is_binary(execution_id) end)
+  end
+
+  test "cancels DTO-restored run and forwards restored in-flight execution ids" do
+    manifest = %Manifest{
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.Gold, :asset},
+          module: MyApp.Assets.Gold,
+          name: :asset
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_cancel_restored_inflight")
+
+    run =
+      RunState.new(
+        id: "run_cancel_restored_inflight",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        metadata: %{in_flight_execution_ids: ["exec_1", "exec_2"]}
+      )
+      |> RunState.transition(status: :running)
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert :ok = Storage.put_run(restored)
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
+
+    assert :ok = FavnOrchestrator.cancel_run(run.id, %{requested_by: :operator})
+
+    forwarded_ids =
+      cancel_log |> Agent.get(& &1) |> Enum.map(fn {execution_id, _reason} -> execution_id end)
+
+    assert Enum.sort(forwarded_ids) == ["exec_1", "exec_2"]
   end
 
   test "retries failed refs in stage-parallel pipeline mode" do

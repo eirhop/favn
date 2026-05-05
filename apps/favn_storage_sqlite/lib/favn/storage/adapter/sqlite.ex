@@ -1574,7 +1574,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         updated_seq,
         run.inserted_at,
         run.updated_at,
-        encode_payload(run)
+        encode_run_snapshot(run)
       ]
 
       case SQL.query(repo, sql, params) do
@@ -1621,7 +1621,7 @@ defmodule Favn.Storage.Adapter.SQLite do
              event.sequence,
              global_sequence,
              event.occurred_at,
-             encode_payload(event)
+             encode_run_event(event)
            ]) do
         {:ok, _} ->
           :ok
@@ -1980,9 +1980,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp decode_event_row(global_sequence, payload) do
-    case decode_payload(payload) do
+    case RunEventCodec.decode(payload) do
       {:ok, event} when is_map(event) -> {:ok, Map.put(event, :global_sequence, global_sequence)}
-      {:ok, other} -> {:error, {:invalid_event_payload, other}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -2150,6 +2149,20 @@ defmodule Favn.Storage.Adapter.SQLite do
     case PayloadCodec.encode(value) do
       {:ok, payload} -> payload
       {:error, reason} -> raise ArgumentError, "invalid storage payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_run_snapshot(run) do
+    case RunSnapshotCodec.encode_run(run) do
+      {:ok, payload} -> payload
+      {:error, reason} -> raise ArgumentError, "invalid run snapshot payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_run_event(event) do
+    case RunEventCodec.encode(event) do
+      {:ok, payload} -> payload
+      {:error, reason} -> raise ArgumentError, "invalid run event payload: #{inspect(reason)}"
     end
   end
 

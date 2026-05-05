@@ -8,6 +8,7 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnStorageSqlite.Repo
   alias FavnStorageSqlite.Supervisor, as: SQLiteSupervisor
@@ -74,6 +75,14 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
     assert {:ok, stored_run} = Adapter.get_run(run.id, restored_opts)
     assert stored_run.id == run.id
     assert stored_run.manifest_version_id == version.manifest_version_id
+    assert stored_run.metadata.replay_submit_kind == :pipeline
+    assert stored_run.metadata.replay_mode == :exact_replay
+    assert stored_run.metadata.in_flight_execution_ids == ["exec_1", "exec_2"]
+
+    projected = Projector.project_run(stored_run)
+    assert projected.submit_ref == MyApp.RestorePipeline
+    assert projected.replay_mode == :exact_replay
+    assert projected.pipeline.resolved_refs == [{MyApp.RestoreAsset, :restore_asset}]
 
     assert {:ok, [stored_event]} = Adapter.list_run_events(run.id, restored_opts)
     assert stored_event.run_id == run.id
@@ -131,6 +140,13 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
           module: MyApp.RestoreAsset,
           name: :restore_asset
         }
+      ],
+      pipelines: [
+        %Manifest.Pipeline{
+          module: MyApp.RestorePipeline,
+          name: :daily,
+          selectors: []
+        }
       ]
     }
 
@@ -143,7 +159,22 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
       id: id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: {MyApp.RestoreAsset, :restore_asset}
+      asset_ref: {MyApp.RestoreAsset, :restore_asset},
+      metadata: %{
+        in_flight_execution_ids: ["exec_1", "exec_2"],
+        replay_submit_kind: :pipeline,
+        replay_mode: :exact_replay,
+        pipeline_submit_ref: MyApp.RestorePipeline,
+        pipeline_target_refs: [{MyApp.RestoreAsset, :restore_asset}],
+        pipeline_context: %{
+          id: "daily",
+          name: "daily",
+          run_kind: :pipeline,
+          resolved_refs: [{MyApp.RestoreAsset, :restore_asset}],
+          deps: :all
+        }
+      },
+      submit_kind: :rerun
     )
   end
 

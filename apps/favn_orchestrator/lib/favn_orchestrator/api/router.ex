@@ -2861,6 +2861,11 @@ defmodule FavnOrchestrator.API.Router do
     Atom.to_string(module) <> ":" <> Atom.to_string(name)
   end
 
+  defp ref_to_string(%{"module" => module, "name" => name})
+       when is_binary(module) and is_binary(name) do
+    module <> ":" <> name
+  end
+
   defp ref_to_string(value), do: inspect(value)
 
   defp inspect_term(nil), do: nil

@@ -1,6 +1,43 @@
 defmodule FavnOrchestrator.Storage.RunEventCodec do
   @moduledoc false
 
+  alias FavnOrchestrator.Storage.JsonSafe
+
+  @format "favn.run_event.storage.v1"
+
+  @spec encode(map()) :: {:ok, String.t()} | {:error, term()}
+  def encode(event) when is_map(event) do
+    {:ok, Jason.encode!(event_to_dto(event))}
+  rescue
+    error -> {:error, {:run_event_encode_failed, error}}
+  end
+
+  @spec decode(String.t()) :: {:ok, map()} | {:error, term()}
+  def decode(payload) when is_binary(payload) do
+    with {:ok, %{"format" => @format, "schema_version" => 1} = dto} <- Jason.decode(payload),
+         {:ok, occurred_at} <- normalize_occurred_at(Map.get(dto, "occurred_at")) do
+      {:ok,
+       %{
+         schema_version: 1,
+         run_id: Map.get(dto, "run_id"),
+         sequence: Map.get(dto, "sequence"),
+         event_type: existing_atom_or_string(Map.get(dto, "event_type")),
+         entity: entity_from_dto(Map.get(dto, "entity")),
+         occurred_at: occurred_at,
+         status: existing_atom_or_string(Map.get(dto, "status")),
+         global_sequence: normalize_global_sequence(Map.get(dto, "global_sequence")),
+         manifest_version_id: normalize_optional_binary(Map.get(dto, "manifest_version_id")),
+         manifest_content_hash: normalize_optional_binary(Map.get(dto, "manifest_content_hash")),
+         asset_ref: ref_from_dto(Map.get(dto, "asset_ref")),
+         stage: normalize_stage(Map.get(dto, "stage"), %{}),
+         data: data_from_dto(Map.get(dto, "data"))
+       }}
+    else
+      {:ok, other} -> {:error, {:invalid_run_event_dto, other}}
+      {:error, reason} -> {:error, {:invalid_run_event_json, reason}}
+    end
+  end
+
   @spec normalize(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def normalize(run_id, event) when is_binary(run_id) and is_map(event) do
     with {:ok, sequence} <- validate_sequence(Map.get(event, :sequence)),
@@ -8,7 +45,8 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
          {:ok, event_type} <- validate_event_type(Map.get(event, :event_type)),
          {:ok, occurred_at} <- normalize_occurred_at(Map.get(event, :occurred_at)),
          {:ok, status} <- normalize_status(Map.get(event, :status)) do
-      data = normalize_data(Map.get(event, :data))
+      raw_data = Map.get(event, :data)
+      data = normalize_data(raw_data)
 
       {:ok,
        %{
@@ -22,8 +60,8 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
          global_sequence: normalize_global_sequence(Map.get(event, :global_sequence)),
          manifest_version_id: normalize_optional_binary(Map.get(event, :manifest_version_id)),
          manifest_content_hash: normalize_optional_binary(Map.get(event, :manifest_content_hash)),
-         asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), data),
-         stage: normalize_stage(Map.get(event, :stage), data),
+         asset_ref: normalize_asset_ref(Map.get(event, :asset_ref), raw_data),
+         stage: normalize_stage(Map.get(event, :stage), raw_data),
          data: data
        }}
     end
@@ -88,6 +126,8 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
     end
   end
 
+  defp normalize_asset_ref(_value, _data), do: nil
+
   defp normalize_stage(value, _data) when is_integer(value) and value >= 0, do: value
 
   defp normalize_stage(_value, data) when is_map(data) do
@@ -97,6 +137,65 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
     end
   end
 
-  defp normalize_data(data) when is_map(data), do: data
+  defp normalize_stage(_value, _data), do: nil
+
+  defp normalize_data(data) when is_map(data), do: JsonSafe.data(data)
   defp normalize_data(_value), do: %{}
+
+  defp event_to_dto(event) when is_map(event) do
+    data = JsonSafe.data(Map.get(event, :data, %{}))
+
+    %{
+      "format" => @format,
+      "schema_version" => 1,
+      "run_id" => Map.get(event, :run_id),
+      "sequence" => Map.get(event, :sequence),
+      "event_type" => stringify(Map.get(event, :event_type)),
+      "entity" => stringify(Map.get(event, :entity)),
+      "occurred_at" => datetime_to_dto(Map.get(event, :occurred_at)),
+      "status" => stringify(Map.get(event, :status)),
+      "global_sequence" => Map.get(event, :global_sequence),
+      "manifest_version_id" => Map.get(event, :manifest_version_id),
+      "manifest_content_hash" => Map.get(event, :manifest_content_hash),
+      "asset_ref" => JsonSafe.ref(Map.get(event, :asset_ref)),
+      "stage" => Map.get(event, :stage),
+      "data" => data
+    }
+  end
+
+  defp data_from_dto(%{} = value),
+    do: Map.new(value, fn {key, val} -> {key, data_from_dto(val)} end)
+
+  defp data_from_dto(values) when is_list(values), do: Enum.map(values, &data_from_dto/1)
+  defp data_from_dto(value), do: value
+
+  defp ref_from_dto(%{"module" => module, "name" => name})
+       when is_binary(module) and is_binary(name) do
+    %{"module" => module, "name" => name}
+  end
+
+  defp ref_from_dto(_value), do: nil
+
+  defp existing_atom_or_string(nil), do: nil
+
+  defp existing_atom_or_string(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> value
+  end
+
+  defp existing_atom_or_string(value), do: value
+
+  defp entity_from_dto("step"), do: :step
+  defp entity_from_dto(_value), do: :run
+
+  defp stringify(nil), do: nil
+  defp stringify(value) when is_atom(value), do: Atom.to_string(value)
+  defp stringify(value) when is_binary(value), do: value
+  defp stringify(value), do: inspect(value)
+
+  defp datetime_to_dto(nil), do: nil
+  defp datetime_to_dto(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp datetime_to_dto(value) when is_binary(value), do: value
+  defp datetime_to_dto(_value), do: DateTime.utc_now() |> DateTime.to_iso8601()
 end
