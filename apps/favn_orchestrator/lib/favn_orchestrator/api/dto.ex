@@ -97,7 +97,7 @@ defmodule FavnOrchestrator.API.DTO do
 
     %{
       target_id: target_id,
-      label: target_id,
+      label: field(target, :label) || target_id,
       window: normalize(field(target, :window))
     }
   end

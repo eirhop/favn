@@ -137,7 +137,7 @@ defmodule FavnOrchestrator.API.DTOTest do
                  window: %{"kind" => "calendar"}
                }
              ],
-             pipelines: [%{target_id: "pipe_1", label: "pipe_1", window: %{"kind" => "calendar"}}]
+             pipelines: [%{target_id: "pipe_1", label: "Pipe", window: %{"kind" => "calendar"}}]
            }
   end
 
