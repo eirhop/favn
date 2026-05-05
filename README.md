@@ -48,7 +48,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - run snapshot, run event, and operational-backfill read-model persistence store explicit JSON-safe storage records, not BEAM terms or reconstructed exception structs; runner/backfill failures are normalized, bounded, and redacted before durable storage
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
 - run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, heartbeats, and SvelteKit BFF relays that keep orchestrator service tokens server-side
-- production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus redacted normalized responses
+- production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus operation-versioned JSON-safe replay response DTOs
 - the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/public-origin config, and the orchestrator now exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
@@ -438,7 +438,9 @@ once, and applies an explicit absolute session TTL. Passwords must be nonblank,
 Clients must forward the session token to the private orchestrator API as
 `x-favn-session-token`. SQLite storage keeps only encoded Argon2 password hashes,
 deterministic session-token hashes, revocation timestamps, actor metadata, and
-redacted audit entries; password changes revoke active sessions for that actor.
+redacted audit entries, with auth roles, credential records, and audit entries
+stored as explicit JSON-safe DTO records rather than generic BEAM-term payloads;
+password changes revoke active sessions for that actor.
 
 Local numeric config values, including dev ports and Postgres port/pool size,
 are accepted only as positive integers or strings that contain exactly a
@@ -495,6 +497,10 @@ canonical format.
 Pre-closeout SQL payload compatibility is intentionally not supported. Existing
 SQLite/Postgres rows that were persisted as BEAM term blobs must be reset or
 recreated before running with the closeout adapters.
+
+Pre-DTO SQLite auth rows are also intentionally unsupported. If a private-dev
+database contains auth roles, credentials, or audit entries persisted before the
+explicit auth DTO boundary, reset or recreate that SQLite control-plane state.
 
 ### favn_local configuration
 
@@ -589,7 +595,8 @@ release, or inconsistent. Local/default SQLite startup still auto-runs
 migrations, while manual startup can reject non-ready existing databases and can
 initialize empty databases when explicitly enabled.
 SQLite is also the first durable backend for orchestrator auth/session/audit
-state; Postgres auth persistence remains deferred.
+state, storing auth roles, credential records, and audit entries as explicit
+JSON-safe DTO records; Postgres auth persistence remains deferred.
 
 Detailed operator diagnostics are available through the private orchestrator
 HTTP endpoint `GET /api/orchestrator/v1/diagnostics` with service auth and the

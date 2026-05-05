@@ -15,6 +15,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
+  alias FavnOrchestrator.Storage.AuthCodec
+  alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
@@ -321,21 +323,9 @@ defmodule Favn.Storage.Adapter.SQLite do
           {:ok, nil}
 
         {:ok, %{rows: [[version, payload]]}} ->
-          with {:ok, decoded} <- decode_payload(payload),
-               true <- is_map(decoded) do
-            {:ok,
-             struct(
-               Favn.Scheduler.State,
-               Map.merge(decoded, %{
-                 pipeline_module: pipeline_module,
-                 schedule_id: schedule_id,
-                 version: version
-               })
-             )}
-          else
-            false -> {:error, :invalid_scheduler_payload}
-            {:error, reason} -> {:error, reason}
-          end
+          with {:ok, decoded} <- SchedulerStateCodec.decode_state(payload),
+               do:
+                 SchedulerStateCodec.build_state({pipeline_module, schedule_id}, version, decoded)
 
         {:error, reason} ->
           {:error, reason}
@@ -646,7 +636,8 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def put_auth_actor(actor, opts) when is_map(actor) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, roles_payload} <- AuthCodec.encode_roles(Map.fetch!(actor, :roles)) do
       sql = """
       INSERT INTO favn_auth_actors (actor_id, username, display_name, roles_blob, status, inserted_at, updated_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -662,7 +653,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         actor.id,
         actor.username,
         actor.display_name,
-        encode_payload(actor.roles),
+        roles_payload,
         encode_atom(actor.status),
         encode_datetime(actor.inserted_at),
         encode_datetime(actor.updated_at)
@@ -716,7 +707,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def put_auth_credential(actor_id, credential, opts)
       when is_binary(actor_id) and is_map(credential) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, credential_payload} <- AuthCodec.encode_credential(credential) do
       sql = """
       INSERT INTO favn_auth_credentials (actor_id, credential_blob, updated_at)
       VALUES (?1, ?2, ?3)
@@ -727,7 +719,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       query_ok(repo, sql, [
         actor_id,
-        encode_payload(credential),
+        credential_payload,
         encode_datetime(DateTime.utc_now())
       ])
     end
@@ -760,7 +752,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       sql = "SELECT credential_blob FROM favn_auth_credentials WHERE actor_id = ?1 LIMIT 1"
 
       case SQL.query(repo, sql, [actor_id]) do
-        {:ok, %{rows: [[payload]]}} -> decode_payload(payload)
+        {:ok, %{rows: [[payload]]}} -> AuthCodec.decode_credential(payload)
         {:ok, %{rows: []}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
       end
@@ -835,7 +827,8 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def put_auth_audit(entry, opts) when is_map(entry) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, entry_payload} <- AuthCodec.encode_audit(entry) do
       sql = """
       INSERT INTO favn_auth_audits (audit_id, occurred_at, action, actor_id, session_id, outcome, entry_blob)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -848,7 +841,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         Map.get(entry, :actor_id),
         Map.get(entry, :session_id),
         Map.get(entry, :outcome),
-        encode_payload(entry)
+        entry_payload
       ]
 
       query_ok(repo, sql, params)
@@ -867,9 +860,8 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:ok, %{rows: rows}} ->
           rows
           |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
-            case decode_payload(payload) do
+            case AuthCodec.decode_audit(payload) do
               {:ok, entry} when is_map(entry) -> {:cont, {:ok, [entry | acc]}}
-              {:ok, other} -> {:halt, {:error, {:invalid_auth_audit_payload, other}}}
               {:error, reason} -> {:halt, {:error, reason}}
             end
           end)
@@ -939,7 +931,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def complete_idempotency_record(record_id, attrs, opts)
       when is_binary(record_id) and is_map(attrs) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, stored} <- fetch_idempotency_record(repo, record_id) do
       sql = """
       UPDATE favn_idempotency_records
       SET status = ?1,
@@ -955,7 +948,10 @@ defmodule Favn.Storage.Adapter.SQLite do
       params = [
         encode_atom(Map.fetch!(attrs, :status)),
         Map.get(attrs, :response_status),
-        encode_optional_payload(Map.get(attrs, :response_body)),
+        encode_optional_idempotency_response(
+          Map.get(attrs, :response_body),
+          stored.operation
+        ),
         Map.get(attrs, :resource_type),
         Map.get(attrs, :resource_id),
         encode_datetime(Map.fetch!(attrs, :updated_at)),
@@ -1092,7 +1088,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          inserted_at,
          updated_at
        ]) do
-    with {:ok, roles} <- decode_payload(roles_blob),
+    with {:ok, roles} <- AuthCodec.decode_roles(roles_blob),
          {:ok, status} <- existing_atom(status) do
       {:ok,
        %{
@@ -1147,7 +1143,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          completed_at
        ]) do
     with {:ok, status} <- existing_atom(status),
-         {:ok, response_body} <- decode_optional_payload(response_body_blob) do
+         {:ok, response_body} <- decode_optional_idempotency_response(response_body_blob) do
       {:ok,
        %{
          id: record_id,
@@ -1353,7 +1349,10 @@ defmodule Favn.Storage.Adapter.SQLite do
       Map.fetch!(record, :request_fingerprint),
       encode_atom(Map.fetch!(record, :status)),
       Map.get(record, :response_status),
-      encode_optional_payload(Map.get(record, :response_body)),
+      encode_optional_idempotency_response(
+        Map.get(record, :response_body),
+        Map.fetch!(record, :operation)
+      ),
       Map.get(record, :resource_type),
       Map.get(record, :resource_id),
       encode_datetime(Map.fetch!(record, :created_at)),
@@ -1524,7 +1523,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp guarded_put_scheduler_state(repo, {pipeline_module, schedule_id} = key, normalized_state) do
-    encoded_state = normalized_state |> Map.delete(:version) |> encode_payload()
+    encoded_state = encode_scheduler_state(normalized_state)
     encoded_schedule_id = encode_schedule_id(schedule_id)
     updated_at = DateTime.utc_now()
 
@@ -2054,13 +2053,35 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
+  defp encode_scheduler_state(state) do
+    case SchedulerStateCodec.encode_state(state) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid scheduler state payload: #{inspect(reason)}"
+    end
+  end
+
   defp decode_payload(payload) when is_binary(payload), do: PayloadCodec.decode(payload)
 
-  defp encode_optional_payload(nil), do: nil
-  defp encode_optional_payload(value), do: encode_payload(value)
+  defp encode_optional_idempotency_response(nil, _operation), do: nil
 
-  defp decode_optional_payload(nil), do: {:ok, nil}
-  defp decode_optional_payload(payload) when is_binary(payload), do: decode_payload(payload)
+  defp encode_optional_idempotency_response(value, operation) when is_binary(operation) do
+    case IdempotencyResponseCodec.encode(operation, value) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid idempotency response payload: #{inspect(reason)}"
+    end
+  end
+
+  defp decode_optional_idempotency_response(nil), do: {:ok, nil}
+
+  defp decode_optional_idempotency_response(payload) when is_binary(payload) do
+    IdempotencyResponseCodec.decode(payload)
+  end
 
   defp repo_name(opts) do
     with {:ok, normalized} <- normalize_opts(opts),
