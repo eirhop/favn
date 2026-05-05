@@ -209,7 +209,6 @@ defmodule Favn.SQLiteStorageTest do
 
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
-    restart_auth_store!()
 
     assert {:ok, ^actor} = OrchestratorStorage.get_auth_actor(actor.id)
     assert {:ok, ^actor} = OrchestratorStorage.get_auth_actor_by_username(actor.username)
@@ -419,7 +418,6 @@ defmodule Favn.SQLiteStorageTest do
 
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
-    restart_auth_store!()
 
     assert {:ok, {:replay, replay}} = OrchestratorStorage.reserve_idempotency_record(record)
     assert replay.response_status == 201
@@ -548,6 +546,10 @@ defmodule Favn.SQLiteStorageTest do
       |> put_idempotency_key("run-http-replay")
       |> Router.call(@router_opts)
 
+    assert first.status == 201
+    assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(first.resp_body)
+    assert_run_terminal!(run_id)
+
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
 
@@ -557,7 +559,6 @@ defmodule Favn.SQLiteStorageTest do
       |> put_idempotency_key("run-http-replay")
       |> Router.call(@router_opts)
 
-    assert first.status == 201
     assert replay.status == 201
     assert Jason.decode!(first.resp_body) == Jason.decode!(replay.resp_body)
   end
@@ -1369,15 +1370,6 @@ defmodule Favn.SQLiteStorageTest do
     end
   end
 
-  defp restart_auth_store! do
-    case Process.whereis(AuthStore) do
-      nil -> :ok
-      pid -> GenServer.stop(pid, :normal)
-    end
-
-    start_supervised!({AuthStore, []})
-  end
-
   defp ensure_run_supervisor_started do
     case Process.whereis(FavnOrchestrator.RunSupervisor) do
       nil ->
@@ -1423,6 +1415,23 @@ defmodule Favn.SQLiteStorageTest do
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp assert_run_terminal!(run_id, attempts \\ 50)
+
+  defp assert_run_terminal!(run_id, attempts) when attempts > 0 do
+    case OrchestratorStorage.get_run(run_id) do
+      {:ok, %{status: status}} when status in [:ok, :error, :cancelled, :timed_out] ->
+        :ok
+
+      _other ->
+        Process.sleep(20)
+        assert_run_terminal!(run_id, attempts - 1)
+    end
+  end
+
+  defp assert_run_terminal!(run_id, 0) do
+    flunk("run #{run_id} did not reach a terminal state before repo restart")
+  end
 
   defp replace_run_value(run_id, from, to) do
     assert {:ok, %{rows: [[payload]]}} =
