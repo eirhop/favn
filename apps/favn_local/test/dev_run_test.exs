@@ -6,7 +6,9 @@ defmodule Favn.Dev.RunTest do
   alias Favn.Dev.State
 
   setup do
-    root_dir = Path.join(System.tmp_dir!(), "favn_dev_run_test_#{System.unique_integer([:positive])}")
+    root_dir =
+      Path.join(System.tmp_dir!(), "favn_dev_run_test_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(root_dir)
 
     on_exit(fn -> File.rm_rf(root_dir) end)
@@ -45,32 +47,11 @@ defmodule Favn.Dev.RunTest do
              Run.resolve_pipeline_target(active_manifest, "Missing.Pipeline")
   end
 
-  test "run_pipeline/2 reports missing local credentials", %{root_dir: root_dir} do
-    pid = :os.getpid() |> List.to_string() |> String.to_integer()
-
-    assert :ok =
-             State.write_runtime(
-               %{
-                 "services" => %{
-                   "web" => %{"pid" => pid},
-                   "orchestrator" => %{"pid" => pid},
-                   "runner" => %{"pid" => pid}
-                 }
-               },
-               root_dir: root_dir
-             )
-
-    assert :ok = State.write_secrets(%{}, root_dir: root_dir)
-
-    assert {:error, :missing_local_operator_credentials} =
-             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
-  end
-
-  test "run_pipeline/2 submits and waits for a successful local pipeline run", %{root_dir: root_dir} do
+  test "run_pipeline/2 submits with local-dev context and no password login", %{
+    root_dir: root_dir
+  } do
     {:ok, base_url, _server} =
       start_server([
-        {201,
-         ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
         {200,
          ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
         {201,
@@ -89,16 +70,6 @@ defmodule Favn.Dev.RunTest do
                    "orchestrator" => %{"pid" => pid},
                    "runner" => %{"pid" => pid}
                  }
-               },
-               root_dir: root_dir
-             )
-
-    assert :ok =
-             State.write_secrets(
-               %{
-                 "service_token" => "token",
-                 "local_operator_username" => "operator",
-                 "local_operator_password" => "operator-password"
                },
                root_dir: root_dir
              )
@@ -124,14 +95,12 @@ defmodule Favn.Dev.RunTest do
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, timezone: "Europe/Oslo")
 
     assert {:error, {:invalid_window_request, {:invalid_window_value, :month, "2026-99"}}} =
-              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, window: "month:2026-99")
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, window: "month:2026-99")
   end
 
   test "run_pipeline/2 surfaces orchestrator validation messages", %{root_dir: root_dir} do
     {:ok, base_url, _server} =
       start_server([
-        {201,
-         ~s({"data":{"session":{"id":"sess_1"},"session_token":"raw_session_token_1","actor":{"id":"act_1"}}})},
         {200,
          ~s({"data":{"manifest":{"manifest_version_id":"mv_1"},"targets":{"pipelines":[{"target_id":"pipeline:Elixir.MyApp.Pipeline","label":"MyApp.Pipeline"}]}}})},
         {422,
@@ -153,17 +122,8 @@ defmodule Favn.Dev.RunTest do
                root_dir: root_dir
              )
 
-    assert :ok =
-             State.write_secrets(
-               %{
-                 "service_token" => "token",
-                 "local_operator_username" => "operator",
-                 "local_operator_password" => "operator-password"
-               },
-               root_dir: root_dir
-             )
-
-    assert {:error, {:orchestrator_validation_failed, "Pipeline requires an explicit month window"}} =
+    assert {:error,
+            {:orchestrator_validation_failed, "Pipeline requires an explicit month window"}} =
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
   end
 

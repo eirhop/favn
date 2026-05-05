@@ -407,23 +407,24 @@ hash of the copied runtime source tree, excluding generated dependency/build
 directories, so source-only Favn updates refresh the installed runtime. `mix
 favn.dev` validates that fingerprint and compiles the installed runtime
 workspace before startup so live runner/orchestrator processes do not boot stale
-internal runtime beams. `--root-dir` remains an install/runtime-source override
-for split-root workflows.
+internal runtime beams. During foreground startup it prints concise terminal
+progress lines before slow phases such as runtime compile, project compile,
+service startup, manifest publication, and HTTP readiness checks. `--root-dir`
+remains an install/runtime-source override for split-root workflows.
 
 Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
-developer loop.
+developer loop. The local stack enables an explicit trusted local-dev context
+while the web UI and orchestrator API are bound to loopback, so `mix favn.dev`,
+the bundled local web UI, `mix favn.run`, and local backfill commands do not
+require usernames or passwords and do not persist local service tokens,
+passwords, RPC cookies, or session secrets under `.favn/`.
 
-The local orchestrator bootstrap actor can be configured from the consumer
-project `.env` used to run `mix favn.dev`. Configure
+Production/server startup is separate from local dev. When production runtime
+configuration is enabled, the orchestrator requires explicit
 `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` and
-`FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD` before startup, and set
-`FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator` when you want that local
-actor to have admin privileges. Then use those orchestrator-owned credentials
-on the web login page. If bootstrap credentials are not configured, local
-tooling keeps using the generated local operator credentials stored under
-`.favn/secrets.json`. Missing local secrets are generated on demand, but corrupt
-or unreadable secrets files fail startup instead of being silently replaced.
+`FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD` values in the runtime environment and
+refuses startup if they are missing.
 Password login now uses Argon2id password hashes, returns an opaque session token
 once, and applies an explicit absolute session TTL. Passwords must be nonblank,
 15 to 1,024 characters, and are not subject to arbitrary composition rules.
@@ -438,10 +439,10 @@ positive integer after trimming whitespace. Malformed strings use the documented
 local defaults.
 
 `mix favn.run PipelineModule` submits a manifest-scoped pipeline run to the
-currently running local stack. It uses the project-local service token and local
-operator credentials generated under `.favn/secrets.json`, so tutorial and local
-smoke runs do not require hand-written private orchestrator API requests. This
-manual run path is the recommended default for one-time local ETL.
+currently running local stack through the loopback-only local-dev context, so
+tutorial and local smoke runs do not require hand-written private orchestrator
+API requests or local passwords. This manual run path is the recommended default
+for one-time local ETL.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
 local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges,

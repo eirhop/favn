@@ -400,12 +400,7 @@ defmodule Favn.Dev.Init do
   end
 
   defp env_example do
-    ~s'''
-    FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
-    FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=change-me-local-password
-    FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Local Favn Admin
-    FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
-    '''
+    ""
   end
 
   defp module_name(project, segments), do: Enum.join([project.base_module | segments], ".")

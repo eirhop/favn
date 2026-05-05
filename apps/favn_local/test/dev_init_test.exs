@@ -89,7 +89,7 @@ defmodule Favn.Dev.InitTest do
     assert config =~ "FavnDuckdb"
 
     env_example = File.read!(Path.join(root_dir, ".env.example"))
-    assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin"
+    refute env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP"
   end
 
   test "is idempotent and leaves changed files untouched", %{root_dir: root_dir} do

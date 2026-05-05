@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           sqlite: keyword(),
           api_server: keyword(),
           api_service_tokens: [ServiceTokens.token_config()],
+          auth_bootstrap: keyword(),
           auth_session_ttl_seconds: pos_integer(),
           scheduler: keyword(),
           runner: map(),
@@ -54,6 +55,32 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
 
       Application.put_env(
         :favn_orchestrator,
+        :auth_bootstrap_username,
+        Keyword.fetch!(config.auth_bootstrap, :username)
+      )
+
+      Application.put_env(
+        :favn_orchestrator,
+        :auth_bootstrap_password,
+        Keyword.fetch!(config.auth_bootstrap, :password)
+      )
+
+      Application.put_env(
+        :favn_orchestrator,
+        :auth_bootstrap_display_name,
+        Keyword.fetch!(config.auth_bootstrap, :display_name)
+      )
+
+      Application.put_env(
+        :favn_orchestrator,
+        :auth_bootstrap_roles,
+        Keyword.fetch!(config.auth_bootstrap, :roles)
+      )
+
+      Application.put_env(:favn_orchestrator, :local_dev_mode, false)
+
+      Application.put_env(
+        :favn_orchestrator,
         :auth_session_ttl_seconds,
         config.auth_session_ttl_seconds
       )
@@ -81,6 +108,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, sqlite} <- sqlite(env),
          {:ok, api_server} <- api_server(env),
          {:ok, tokens} <- api_service_tokens(env),
+         {:ok, auth_bootstrap} <- auth_bootstrap(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, scheduler} <- scheduler(env),
          {:ok, runner} <- runner(env) do
@@ -90,6 +118,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          sqlite: sqlite,
          api_server: api_server,
          api_service_tokens: tokens,
+         auth_bootstrap: auth_bootstrap,
          auth_session_ttl_seconds: auth_session_ttl_seconds,
          scheduler: scheduler,
          runner: runner,
@@ -120,6 +149,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
         port: Keyword.fetch!(config.api_server, :port)
       },
       api_service_tokens: %{count: length(config.api_service_tokens), redacted: true},
+      auth_bootstrap: %{username_configured?: true, password_configured?: true, redacted: true},
       auth_session: %{ttl_seconds: config.auth_session_ttl_seconds},
       scheduler: Map.new(config.scheduler),
       runner: config.runner
@@ -167,6 +197,19 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
   defp api_service_tokens(env) do
     with {:ok, raw} <- required(env, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS") do
       ServiceTokens.from_env_string(raw)
+    end
+  end
+
+  defp auth_bootstrap(env) do
+    with {:ok, username} <- required(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME"),
+         {:ok, password} <- required(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"),
+         {:ok, display_name} <-
+           required_or_default(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME", "Favn Admin"),
+         {:ok, roles_raw} <-
+           required_or_default(env, "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES", "admin") do
+      roles = roles_raw |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+
+      {:ok, [username: username, password: password, display_name: display_name, roles: roles]}
     end
   end
 

@@ -4,6 +4,7 @@ defmodule Favn.Dev.Backfill do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.Run
   alias Favn.Dev.State
@@ -216,17 +217,8 @@ defmodule Favn.Dev.Backfill do
 
   defp session(opts) do
     with :ok <- ensure_running(opts),
-         {:ok, runtime, secrets} <- read_runtime_snapshot(opts),
-         {:ok, credentials} <- local_credentials(secrets),
-         base_url = base_url(runtime, opts),
-         {:ok, session_context} <-
-           OrchestratorClient.password_login(
-             base_url,
-             credentials.service_token,
-             credentials.username,
-             credentials.password
-           ) do
-      {:ok, base_url, credentials, session_context}
+         {:ok, runtime} <- read_runtime_snapshot(opts) do
+      {:ok, base_url(runtime, opts), LocalContext.credentials(), LocalContext.session_context()}
     end
   end
 
@@ -239,22 +231,7 @@ defmodule Favn.Dev.Backfill do
   end
 
   defp read_runtime_snapshot(opts) do
-    with {:ok, runtime} <- State.read_runtime(opts),
-         {:ok, secrets} <- State.read_secrets(opts) do
-      {:ok, runtime, secrets}
-    end
-  end
-
-  defp local_credentials(secrets) do
-    with token when is_binary(token) and token != "" <- secrets["service_token"],
-         username when is_binary(username) and username != "" <-
-           secrets["local_operator_username"],
-         password when is_binary(password) and password != "" <-
-           secrets["local_operator_password"] do
-      {:ok, %{service_token: token, username: username, password: password}}
-    else
-      _other -> {:error, :missing_local_operator_credentials}
-    end
+    State.read_runtime(opts)
   end
 
   defp base_url(runtime, opts) do

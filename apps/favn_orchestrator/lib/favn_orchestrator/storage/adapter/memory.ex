@@ -101,6 +101,13 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def get_manifest_version_by_content_hash(content_hash, opts \\ [])
+      when is_binary(content_hash) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_manifest_version_by_content_hash, content_hash})
+  end
+
+  @impl true
   def list_manifest_versions(opts \\ []) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, :list_manifest_versions)
@@ -446,6 +453,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     }
   end
 
+  defp manifest_content_hash_exists?(manifests, content_hash) do
+    manifests
+    |> Map.values()
+    |> Enum.any?(&(&1.content_hash == content_hash))
+  end
+
   @impl true
   def handle_call(:reset, _from, _state) do
     {:reply, :ok, initial_state()}
@@ -453,14 +466,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   def handle_call({:put_manifest_version, %Version{} = version}, _from, state) do
     next_state =
-      case Map.fetch(state.manifests, version.manifest_version_id) do
-        {:ok, %Version{content_hash: hash}} when hash == version.content_hash ->
+      cond do
+        manifest_content_hash_exists?(state.manifests, version.content_hash) ->
           state
 
-        {:ok, %Version{}} ->
+        Map.has_key?(state.manifests, version.manifest_version_id) ->
           state
 
-        :error ->
+        true ->
           put_in(state, [:manifests, version.manifest_version_id], version)
       end
 
@@ -481,6 +494,19 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       case Map.fetch(state.manifests, manifest_version_id) do
         {:ok, %Version{} = version} -> {:ok, version}
         :error -> {:error, :manifest_version_not_found}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:get_manifest_version_by_content_hash, content_hash}, _from, state) do
+    reply =
+      state.manifests
+      |> Map.values()
+      |> Enum.find(&(&1.content_hash == content_hash))
+      |> case do
+        %Version{} = version -> {:ok, version}
+        nil -> {:error, :manifest_version_not_found}
       end
 
     {:reply, reply, state}

@@ -29,9 +29,10 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "web_session_secret" => "secret"
     }
 
-    runner = RuntimeLaunch.runner_spec(runtime, [], node_names, secrets)
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
-    web = RuntimeLaunch.web_spec(runtime, config, [], secrets)
+    opts = distribution_opts()
+    runner = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
+    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
+    web = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
 
     assert runner.cwd == runtime["runner_root"]
     assert orchestrator.cwd == runtime["orchestrator_root"]
@@ -43,6 +44,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert web.exec == (System.find_executable("node") || "node")
     assert hd(web.args) == Path.join(runtime["web_root"], "node_modules/vite/bin/vite.js")
     assert "preview" in web.args
+    assert web.env["FAVN_WEB_PUBLIC_ORIGIN"] == config.web_base_url
+    assert web.env["FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH"] == "1"
   end
 
   test "runtime specs bind local HTTP and distributed Erlang to loopback" do
@@ -68,7 +71,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "web_session_secret" => "secret"
     }
 
-    opts = [root_dir: root_dir]
+    opts = distribution_opts(root_dir: root_dir)
     runner = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
     orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
     web = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
@@ -78,99 +81,17 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     orchestrator_erl = erl_flag!(orchestrator)
     code = eval_code!(orchestrator)
 
-    assert runner_erl =~ "inet_dist_use_interface {127,0,0,1}"
+    assert runner_erl =~ "inet_dist_use_interface {127,0,1,1}"
     assert runner_erl =~ "inet_dist_listen_min #{runner_port}"
     assert runner_erl =~ "inet_dist_listen_max #{runner_port}"
-    assert orchestrator_erl =~ "inet_dist_use_interface {127,0,0,1}"
+    assert orchestrator_erl =~ "inet_dist_use_interface {127,0,1,1}"
     assert orchestrator_erl =~ "inet_dist_listen_min #{orchestrator_port}"
     assert orchestrator_erl =~ "inet_dist_listen_max #{orchestrator_port}"
-    assert runner.env["ERL_EPMD_ADDRESS"] == "127.0.0.1"
-    assert orchestrator.env["ERL_EPMD_ADDRESS"] == "127.0.0.1"
+    assert runner.env["ERL_EPMD_ADDRESS"] == "127.0.1.1"
+    assert orchestrator.env["ERL_EPMD_ADDRESS"] == "127.0.1.1"
     assert orchestrator.env["FAVN_ORCHESTRATOR_API_BIND_IP"] == "127.0.0.1"
     assert code =~ "bind_ip: api_bind_ip"
     assert web.args == [hd(web.args), "preview", "--host", "127.0.0.1", "--port", "4173"]
-  end
-
-  test "orchestrator spec carries bootstrap credentials from consumer dotenv and shell env" do
-    root_dir =
-      Path.join(System.tmp_dir!(), "favn_orchestrator_env_#{System.unique_integer([:positive])}")
-
-    previous_env = snapshot_system_env(bootstrap_env_keys())
-
-    Enum.each(bootstrap_env_keys(), &System.delete_env/1)
-    System.put_env("FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD", "shell-password")
-
-    on_exit(fn ->
-      restore_system_env(previous_env)
-      File.rm_rf(root_dir)
-    end)
-
-    assert :ok = File.mkdir_p(root_dir)
-
-    assert :ok =
-             File.write(Path.join(root_dir, ".env"), """
-             FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
-             FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD="dotenv-password"
-             FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Local Admin # inline comment
-             FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
-             IGNORED_ENV=ignored
-             """)
-
-    runtime = %{
-      "orchestrator_root" => Path.join(root_dir, "runtime"),
-      "web_root" => Path.join(root_dir, "web/favn_web")
-    }
-
-    config = Config.resolve([])
-    node_names = %{runner_full: "runner@host", orchestrator_short: "orchestrator"}
-
-    secrets = %{
-      "rpc_cookie" => "cookie",
-      "service_token" => "token",
-      "web_session_secret" => "secret",
-      "local_operator_username" => "generated-user",
-      "local_operator_password" => "generated-password"
-    }
-
-    orchestrator =
-      RuntimeLaunch.orchestrator_spec(runtime, config, [root_dir: root_dir], node_names, secrets)
-
-    web = RuntimeLaunch.web_spec(runtime, config, [root_dir: root_dir], secrets)
-
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME"] == "admin"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"] == "shell-password"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME"] == "Local Admin"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES"] == "admin,operator"
-    refute Map.has_key?(web.env, "IGNORED_ENV")
-    refute Map.has_key?(web.env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME")
-    refute Map.has_key?(web.env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD")
-  end
-
-  test "orchestrator spec uses generated local operator fallback without bootstrap env" do
-    previous_env = snapshot_system_env(bootstrap_env_keys())
-    Enum.each(bootstrap_env_keys(), &System.delete_env/1)
-
-    on_exit(fn ->
-      restore_system_env(previous_env)
-    end)
-
-    runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
-    config = Config.resolve([])
-    node_names = %{runner_full: "runner@host", orchestrator_short: "orchestrator"}
-
-    secrets = %{
-      "rpc_cookie" => "cookie",
-      "service_token" => "token",
-      "local_operator_username" => "generated-user",
-      "local_operator_password" => "generated-password"
-    }
-
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
-
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME"] == "generated-user"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD"] == "generated-password"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME"] == "Favn Local Operator"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES"] == "operator"
   end
 
   test "orchestrator spec handles memory storage explicitly" do
@@ -190,11 +111,14 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "service_token" => "token"
     }
 
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
+    orchestrator =
+      RuntimeLaunch.orchestrator_spec(runtime, config, distribution_opts(), node_names, secrets)
+
     code = eval_code!(orchestrator)
 
     assert orchestrator.env["FAVN_DEV_STORAGE"] == "memory"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES"] == "operator"
+    refute Map.has_key?(orchestrator.env, "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME")
+    refute Map.has_key?(orchestrator.env, "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD")
     assert code =~ ~s("memory" ->)
     assert code =~ "FavnOrchestrator.Storage.Adapter.Memory"
     assert code =~ "unsupported FAVN_DEV_STORAGE"
@@ -213,7 +137,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     code =
       runtime
-      |> RuntimeLaunch.orchestrator_spec(config, [], node_names, secrets)
+      |> RuntimeLaunch.orchestrator_spec(config, distribution_opts(), node_names, secrets)
       |> eval_code!()
 
     assert before?(
@@ -282,7 +206,14 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert :ok = File.mkdir_p(runtime_owned_path)
     assert :ok = File.mkdir_p(consumer_path)
 
-    runner = RuntimeLaunch.runner_spec(runtime, [build_path: build_path], node_names, secrets)
+    runner =
+      RuntimeLaunch.runner_spec(
+        runtime,
+        distribution_opts(build_path: build_path),
+        node_names,
+        secrets
+      )
+
     code = eval_code!(runner)
 
     refute "-pa" in runner.args
@@ -320,7 +251,14 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       restore_env(:runner_plugins, previous_runner_plugins)
     end)
 
-    runner = RuntimeLaunch.runner_spec(runtime, [root_dir: "/tmp/consumer"], node_names, secrets)
+    runner =
+      RuntimeLaunch.runner_spec(
+        runtime,
+        distribution_opts(root_dir: "/tmp/consumer"),
+        node_names,
+        secrets
+      )
+
     code = eval_code!(runner)
 
     decoded_config =
@@ -355,7 +293,9 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
     code =
-      runtime |> RuntimeLaunch.orchestrator_spec(config, [], node_names, secrets) |> eval_code!()
+      runtime
+      |> RuntimeLaunch.orchestrator_spec(config, distribution_opts(), node_names, secrets)
+      |> eval_code!()
 
     assert code =~ "validate_runner_node_name!"
     assert before?(code, "validate_runner_node_name!", "String.to_atom()")
@@ -372,7 +312,9 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
+    orchestrator =
+      RuntimeLaunch.orchestrator_spec(runtime, config, distribution_opts(), node_names, secrets)
+
     code = eval_code!(orchestrator)
 
     assert orchestrator.env["FAVN_DEV_SCHEDULER_ENABLED"] == "0"
@@ -391,7 +333,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, [], node_names, secrets)
+    orchestrator =
+      RuntimeLaunch.orchestrator_spec(runtime, config, distribution_opts(), node_names, secrets)
 
     assert orchestrator.env["FAVN_DEV_SCHEDULER_ENABLED"] == "1"
   end
@@ -403,6 +346,15 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       ["--eval", code] -> code
       _other -> nil
     end) || flunk("expected orchestrator args to include --eval code")
+  end
+
+  defp distribution_opts(opts \\ []) do
+    Keyword.put(opts, :local_distribution,
+      localhost: fn -> ~c"testhost.localdomain" end,
+      resolver: fn ~c"testhost" -> {:ok, [{127, 0, 1, 1}]} end,
+      epmd_executable: "/usr/bin/epmd",
+      epmd_names: fn _opts -> :ok end
+    )
   end
 
   defp erl_flag!(%{args: args}) do
@@ -426,21 +378,4 @@ defmodule Favn.Dev.RuntimeLaunchTest do
   defp restore_env(key, value) when is_binary(key), do: System.put_env(key, value)
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
   defp restore_env(key, value), do: Application.put_env(:favn, key, value)
-
-  defp bootstrap_env_keys do
-    ~w(
-      FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME
-      FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD
-      FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME
-      FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES
-    )
-  end
-
-  defp snapshot_system_env(keys) do
-    Map.new(keys, fn key -> {key, System.get_env(key)} end)
-  end
-
-  defp restore_system_env(snapshot) do
-    Enum.each(snapshot, fn {key, value} -> restore_env(key, value) end)
-  end
 end

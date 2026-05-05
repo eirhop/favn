@@ -520,7 +520,6 @@ Recommended layout:
 ```text
 .favn/
 ├── runtime.json
-├── secrets.json
 ├── lock
 ├── install/
 │   ├── install.json
@@ -564,7 +563,6 @@ Recommended layout:
 ### Directory roles
 
 - `runtime.json`: current live stack state only
-- `secrets.json`: generated local secrets and local control credentials
 - `lock`: short-lived lifecycle mutation lock
 - `install/`: resolved project-local runtime inputs reused by `dev` and build
   commands
@@ -592,13 +590,12 @@ Preserved by default:
 - `data/`
 - `manifests/`
 - `history/`
-- `secrets.json`
 
 ### What `mix favn.reset` deletes
 
 - all of `.favn/`
 - including install artifacts, dist outputs, logs, SQLite data, manifest cache,
-  secrets, and failure history
+  and failure history
 
 Alternative:
 

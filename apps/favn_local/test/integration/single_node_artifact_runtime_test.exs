@@ -7,6 +7,8 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
   @moduletag timeout: 600_000
 
   @service_token "favnweb-runtime-credential-alpha-1234567890"
+  @admin_username "admin"
+  @admin_password "admin-password-long"
 
   test "generated single-node artifact start stop runtime contract" do
     ensure_executable!("curl")
@@ -32,7 +34,7 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
     assert executable?(Path.join(dist_dir, "bin/stop"))
     assert_no_dev_env!(dist_dir)
 
-    env = runtime_env(runtime_home, sqlite_path, port, @service_token)
+    env = runtime_env(runtime_home, sqlite_path, port, @service_token, bootstrap_env())
 
     on_exit(fn -> stop_artifact(dist_dir, env) end)
 
@@ -110,7 +112,7 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
       port = free_port()
 
       env =
-        runtime_env(runtime_home, sqlite_path, port, @service_token)
+        runtime_env(runtime_home, sqlite_path, port, @service_token, bootstrap_env())
         |> Map.put("FAVN_STARTUP_TIMEOUT_SECONDS", "5")
         |> mutate.()
 
@@ -122,5 +124,14 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
 
       assert backend_log(runtime_home) =~ "invalid Favn backend production runtime config or startup"
     end)
+  end
+
+  defp bootstrap_env do
+    %{
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" => @admin_username,
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" => @admin_password,
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Admin",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" => "admin"
+    }
   end
 end

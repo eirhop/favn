@@ -7,108 +7,89 @@ defmodule Favn.Dev.NodeControl do
   """
 
   alias Favn.Dev.DistributedErlang
+  alias Favn.Dev.LocalDistribution
 
   @spec ensure_local_node_started(String.t(), keyword()) :: :ok | {:error, term()}
   def ensure_local_node_started(cookie, opts \\ []) when is_binary(cookie) and is_list(opts) do
     with {:ok, cookie_atom} <- DistributedErlang.cookie_to_atom(cookie) do
-      case Node.alive?() do
+      case node_alive?(opts) do
         true ->
-          Node.set_cookie(cookie_atom)
+          set_cookie(cookie_atom, opts)
           :ok
 
         false ->
-          :ok = configure_loopback_distribution(opts)
-
-          name = Keyword.get(opts, :name, "favn_local_ctl_#{:erlang.unique_integer([:positive])}")
-
-          with {:ok, name_atom} <- DistributedErlang.short_node_name_to_atom(name) do
-            case Node.start(name_atom, name_domain: :shortnames) do
-              {:ok, _pid} ->
-                Node.set_cookie(cookie_atom)
-                :ok
-
-              {:error, {:already_started, _pid}} ->
-                Node.set_cookie(cookie_atom)
-                :ok
-
-              {:error, reason} ->
-                {:error, {:shortname_host_unavailable, reason}}
-            end
-          end
+          start_local_node(cookie_atom, opts)
       end
     end
   end
 
-  defp configure_loopback_distribution(opts) do
-    System.put_env("ERL_EPMD_ADDRESS", "127.0.0.1")
-    Application.put_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+  defp start_local_node(cookie_atom, opts) do
+    name = Keyword.get(opts, :name, "favn_local_ctl_#{:erlang.unique_integer([:positive])}")
 
-    case Keyword.get(opts, :distribution_port) do
-      port when is_integer(port) and port > 0 ->
-        Application.put_env(:kernel, :inet_dist_listen_min, port)
-        Application.put_env(:kernel, :inet_dist_listen_max, port)
-
-      _missing ->
-        :ok
+    with {:ok, distribution} <- local_distribution(opts),
+         :ok <- configure_loopback_distribution(distribution, opts),
+         {:ok, name_atom} <- DistributedErlang.short_node_name_to_atom(name) do
+      start_node(name_atom, cookie_atom, opts)
     end
+  end
+
+  defp local_distribution(opts) do
+    case LocalDistribution.preflight(opts) do
+      {:ok, distribution} ->
+        {:ok, distribution}
+
+      {:error, reason} ->
+        {:error,
+         {:local_distribution_preflight_failed, reason, LocalDistribution.format_error(reason)}}
+    end
+  end
+
+  defp start_node(name_atom, cookie_atom, opts) do
+    case node_start(name_atom, [name_domain: :shortnames], opts) do
+      {:ok, _pid} ->
+        set_cookie(cookie_atom, opts)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        set_cookie(cookie_atom, opts)
+        :ok
+
+      {:error, reason} ->
+        {:error, {:shortname_host_unavailable, reason}}
+    end
+  end
+
+  defp configure_loopback_distribution(distribution, opts) do
+    put_system_env("ERL_EPMD_ADDRESS", distribution.bind_ip, opts)
+
+    distribution
+    |> LocalDistribution.application_env(Keyword.get(opts, :distribution_port))
+    |> Enum.each(fn {key, value} -> put_application_env(:kernel, key, value, opts) end)
+  end
+
+  defp node_alive?(opts), do: Keyword.get(opts, :node_alive?, &Node.alive?/0).()
+
+  defp node_start(name, node_opts, opts) do
+    Keyword.get(opts, :node_start, &Node.start/2).(name, node_opts)
+  end
+
+  defp set_cookie(cookie, opts), do: Keyword.get(opts, :set_cookie, &Node.set_cookie/1).(cookie)
+
+  defp put_system_env(key, value, opts) do
+    Keyword.get(opts, :put_system_env, &System.put_env/2).(key, value)
+  end
+
+  defp put_application_env(app, key, value, opts) do
+    Keyword.get(opts, :put_application_env, &Application.put_env/3).(app, key, value)
   end
 
   @spec shortname_to_full(String.t()) :: {:ok, String.t()} | {:error, term()}
   def shortname_to_full(shortname) when is_binary(shortname) and shortname != "" do
     with :ok <- DistributedErlang.validate_short_node_name(shortname),
-         {:ok, host} <- local_short_host() do
+         {:ok, host} <- LocalDistribution.local_short_host() do
       {:ok, shortname <> "@" <> host}
     end
   end
 
   def shortname_to_full(shortname), do: DistributedErlang.validate_short_node_name(shortname)
-
-  defp local_short_host do
-    case node() do
-      :nonode@nohost ->
-        short_host_from_localhost()
-
-      node_name when is_atom(node_name) ->
-        node_name
-        |> Atom.to_string()
-        |> String.split("@", parts: 2)
-        |> parse_short_host()
-    end
-  end
-
-  defp short_host_from_localhost do
-    case :net_adm.localhost() do
-      host when is_list(host) and host != [] ->
-        host
-        |> List.to_string()
-        |> String.trim()
-        |> String.downcase()
-        |> String.split(".", parts: 2)
-        |> hd()
-        |> normalize_short_host()
-
-      _other ->
-        {:error, :shortname_host_not_available}
-    end
-  end
-
-  defp normalize_short_host(host) when is_binary(host) and host != "" do
-    if DistributedErlang.valid_short_host?(host) do
-      {:ok, host}
-    else
-      {:error, {:invalid_shortname_host, host}}
-    end
-  end
-
-  defp normalize_short_host(_host), do: {:error, :shortname_host_not_available}
-
-  defp parse_short_host([_name, host]) when is_binary(host) and host != "" do
-    if DistributedErlang.valid_short_host?(host) do
-      {:ok, host}
-    else
-      {:error, {:invalid_shortname_host, host}}
-    end
-  end
-
-  defp parse_short_host(_parts), do: {:error, :shortname_host_not_available}
 end

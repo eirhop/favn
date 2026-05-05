@@ -5,6 +5,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.Run.AssetResult
+  alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -367,6 +369,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          _runner_client,
          _runner_opts
        ) do
+    result = sanitize_runner_result(result)
     cleared = clear_inflight_execution(run_state, execution_id)
     step_status = map_runner_status(result.status)
     {event_type, retryable?} = step_outcome(step_status)
@@ -761,6 +764,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ) do
     case runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts) do
       {:ok, %RunnerResult{} = result} ->
+        result = sanitize_runner_result(result)
+
         step_finished =
           RunState.transition(running_with_execution,
             status: map_runner_status(result.status),
@@ -946,8 +951,182 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp step_outcome(:error), do: {:step_failed, true}
   defp step_outcome(_other), do: {:step_failed, true}
 
-  defp normalize_results(results) when is_list(results), do: results
+  defp normalize_results(results) when is_list(results),
+    do: Enum.map(results, &sanitize_asset_result/1)
+
   defp normalize_results(_other), do: []
+
+  defp sanitize_runner_result(%RunnerResult{} = result) do
+    %{
+      result
+      | error: sanitize_error(result.error),
+        asset_results: normalize_results(result.asset_results)
+    }
+  end
+
+  defp sanitize_asset_result(%AssetResult{} = result) do
+    %{result | error: sanitize_error(result.error), attempts: sanitize_attempts(result.attempts)}
+  end
+
+  defp sanitize_asset_result(result), do: result
+
+  defp sanitize_attempts(attempts) when is_list(attempts) do
+    Enum.map(attempts, fn
+      %{error: error} = attempt -> %{attempt | error: sanitize_error(error)}
+      %{"error" => error} = attempt -> %{attempt | "error" => sanitize_error(error)}
+      attempt -> attempt
+    end)
+  end
+
+  defp sanitize_attempts(_attempts), do: []
+
+  defp sanitize_error(nil), do: nil
+
+  defp sanitize_error(
+         %{"kind" => _kind, "message" => _message, "reason" => _reason, "type" => _type} = error
+       ) do
+    %{
+      "kind" => string_value(Map.fetch!(error, "kind")),
+      "message" => safe_error_message(Map.fetch!(error, "message")),
+      "reason" => safe_error_reason(Map.fetch!(error, "reason")),
+      "type" => string_value(Map.fetch!(error, "type"))
+    }
+  end
+
+  defp sanitize_error(%{kind: kind} = error) do
+    reason = Map.get(error, :reason)
+    message = Map.get(error, :message) || error_message(reason) || reason || "Runner error"
+
+    %{
+      "kind" => string_value(kind),
+      "message" => safe_error_message(message),
+      "reason" => safe_error_reason(reason),
+      "type" => error_type(reason)
+    }
+  end
+
+  defp sanitize_error(%{type: _type} = error), do: sanitize_structured_error(error)
+  defp sanitize_error(%{"type" => _type} = error), do: sanitize_structured_error(error)
+
+  defp sanitize_error(error) do
+    %{
+      "kind" => "error",
+      "message" => safe_error_message(error_message(error) || error),
+      "reason" => safe_error_reason(error),
+      "type" => error_type(error)
+    }
+  end
+
+  defp safe_error_message(value) do
+    case redact_error_field(:message, value) do
+      nil -> "Runner error"
+      redacted -> string_value(redacted)
+    end
+  end
+
+  defp safe_error_reason(value), do: redact_error_field(:reason, value) |> inspect_value()
+
+  defp redact_error_field(key, value) when is_atom(key) do
+    case Redaction.redact_operational(%{key => value}) do
+      %{^key => redacted} -> redacted
+      _other -> "[REDACTED]"
+    end
+  rescue
+    _error -> "[REDACTED]"
+  end
+
+  defp sanitize_structured_error(error) when is_map(error) do
+    error
+    |> Map.drop([:stacktrace, "stacktrace"])
+    |> Map.new(fn {key, value} -> {key, sanitize_structured_error_value(key, value)} end)
+  end
+
+  defp sanitize_structured_error_value(key, value) do
+    cond do
+      operational_error_key?(key) ->
+        redact_error_field(normalize_error_key(key), value)
+
+      is_map(value) ->
+        sanitize_structured_error(value)
+
+      is_list(value) ->
+        Enum.map(value, &sanitize_structured_error_nested/1)
+
+      is_tuple(value) ->
+        value
+        |> Tuple.to_list()
+        |> Enum.map(&sanitize_structured_error_nested/1)
+        |> List.to_tuple()
+
+      true ->
+        value
+    end
+  end
+
+  defp sanitize_structured_error_nested(value) when is_map(value),
+    do: sanitize_structured_error(value)
+
+  defp sanitize_structured_error_nested(value) when is_list(value),
+    do: Enum.map(value, &sanitize_structured_error_nested/1)
+
+  defp sanitize_structured_error_nested(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&sanitize_structured_error_nested/1)
+    |> List.to_tuple()
+  end
+
+  defp sanitize_structured_error_nested(value), do: value
+
+  defp operational_error_key?(key) when key in [:message, :reason, :error, :exception], do: true
+
+  defp operational_error_key?(key) when key in ["message", "reason", "error", "exception"],
+    do: true
+
+  defp operational_error_key?(_key), do: false
+
+  defp normalize_error_key(key) when is_atom(key), do: key
+  defp normalize_error_key(key) when is_binary(key), do: String.to_existing_atom(key)
+
+  defp error_message(%{__exception__: true} = exception) do
+    Exception.message(exception)
+  rescue
+    _error -> nil
+  end
+
+  defp error_message(_error), do: nil
+
+  defp error_type(%{__exception__: true, __struct__: module}), do: Atom.to_string(module)
+  defp error_type(error) when is_atom(error), do: Atom.to_string(error)
+  defp error_type(error), do: error |> term_type() |> Atom.to_string()
+
+  defp term_type(term) when is_map(term), do: :map
+  defp term_type(term) when is_tuple(term), do: :tuple
+  defp term_type(term) when is_list(term), do: :list
+  defp term_type(term) when is_binary(term), do: :string
+  defp term_type(term) when is_number(term), do: :number
+  defp term_type(term) when is_boolean(term), do: :boolean
+  defp term_type(_term), do: :term
+
+  defp string_value(value) when is_binary(value), do: truncate_string(value)
+  defp string_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp string_value(value), do: inspect_value(value)
+
+  defp inspect_value(value) do
+    value
+    |> inspect(limit: 20, printable_limit: 4_096)
+    |> truncate_string()
+  rescue
+    _error -> "#Inspect.Error<>"
+  end
+
+  defp truncate_string(value) when is_binary(value) do
+    if byte_size(value) > 8_192 do
+      String.slice(value, 0, 8_192) <> "..."
+    else
+      value
+    end
+  end
 
   defp merge_runner_metadata(run_metadata, runner_metadata)
        when is_map(run_metadata) and is_map(runner_metadata) do

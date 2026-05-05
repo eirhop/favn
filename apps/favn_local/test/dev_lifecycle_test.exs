@@ -4,11 +4,13 @@ defmodule Favn.Dev.LifecycleTest do
   @moduletag :integration
 
   alias Favn.Dev
+  alias Favn.Dev.Config
   alias Favn.Dev.Lock
   alias Favn.Dev.NodeControl
   alias Favn.Dev.Paths
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.RuntimeLaunch
+  alias Favn.Dev.Secrets
   alias Favn.Dev.State
 
   @run_real_stack_lifecycle? System.get_env("FAVN_RUN_DEV_LIFECYCLE") == "1" and
@@ -314,7 +316,8 @@ defmodule Favn.Dev.LifecycleTest do
       )
 
     assert match?({:error, {:runtime_compile_failed, :runtime_root, _status, _output}}, result) or
-             match?({:error, {:shortname_host_unavailable, _reason}}, result)
+             match?({:error, {:shortname_host_unavailable, _reason}}, result) or
+             match?({:error, {:local_distribution_preflight_failed, _reason, _message}}, result)
 
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
     assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
@@ -404,14 +407,37 @@ defmodule Favn.Dev.LifecycleTest do
     end
   end
 
-  defp service_specs(root_dir) do
+  test "foreground reports service exit instead of normal wrapper down", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+    specs = service_specs(root_dir, runner_args: ["-lc", "exit 0"])
+
+    ExUnit.CaptureIO.capture_io(fn ->
+      assert {:error, {:service_exit, "runner", 0}} =
+               Dev.dev(
+                 root_dir: root_dir,
+                 orchestrator_port: free_port(),
+                 web_port: free_port(),
+                 skip_install_check: true,
+                 skip_bootstrap: true,
+                 skip_readiness: true,
+                 service_specs_override: specs
+               )
+    end)
+
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  after
+    _ = Dev.stop(root_dir: root_dir)
+  end
+
+  defp service_specs(root_dir, opts \\ []) do
     shell = System.find_executable("bash") || "/bin/bash"
+    runner_args = Keyword.get(opts, :runner_args, ["-lc", "sleep 60"])
 
     [
       %{
         name: "runner",
         exec: shell,
-        args: ["-lc", "sleep 60"],
+        args: runner_args,
         cwd: root_dir,
         log_path: Paths.runner_log_path(root_dir),
         env: %{}
@@ -452,7 +478,7 @@ defmodule Favn.Dev.LifecycleTest do
   end
 
   defp stop_remote_node(runner_full, root_dir) when is_binary(runner_full) do
-    with {:ok, secrets} <- State.read_secrets(root_dir: root_dir),
+    with {:ok, secrets} <- Secrets.resolve(Config.resolve(), root_dir: root_dir),
          cookie when is_binary(cookie) <- secrets["rpc_cookie"] do
       runner_node = String.to_atom(runner_full)
       true = Node.set_cookie(runner_node, String.to_atom(cookie))

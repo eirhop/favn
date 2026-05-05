@@ -169,24 +169,6 @@ defmodule Favn.Dev.State do
     end
   end
 
-  @spec read_secrets(root_opt()) :: {:ok, map()} | {:error, read_error()}
-  def read_secrets(opts \\ []) when is_list(opts) do
-    opts
-    |> Paths.root_dir()
-    |> Paths.secrets_path()
-    |> read_json()
-  end
-
-  @spec write_secrets(map(), root_opt()) :: :ok | {:error, term()}
-  def write_secrets(secrets, opts \\ []) when is_map(secrets) and is_list(opts) do
-    with :ok <- ensure_layout(opts) do
-      opts
-      |> Paths.root_dir()
-      |> Paths.secrets_path()
-      |> write_json(secrets)
-    end
-  end
-
   @spec read_json(Path.t()) :: {:ok, map()} | {:error, read_error()}
   defp read_json(path) do
     case File.read(path) do

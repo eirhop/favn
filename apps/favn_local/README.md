@@ -146,11 +146,9 @@ trimming whitespace. Malformed strings fall back to the documented defaults.
 - `manifests/` latest and cached manifest metadata
 - `history/` failure metadata
 - `runtime.json` live stack state
-- `secrets.json` local generated secrets
 
-If `secrets.json` is missing, local tooling creates it on demand. If it exists
-but cannot be read as a JSON object, startup returns the read error instead of
-silently replacing local credentials.
+`.favn/` is local runtime state, not a secret store. Local dev does not persist
+passwords, service tokens, RPC cookies, or session secrets there.
 
 ## How core flows work
 
@@ -183,26 +181,15 @@ surprise one-time local ETL work. Manual `mix favn.run PipelineModule` is the
 recommended safe default. Scheduled tutorial or smoke flows should opt in with
 `mix favn.dev --scheduler`.
 
-The orchestrator process receives bootstrap actor credentials from the consumer
-project `.env` file when these keys are present:
-
-```sh
-FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
-FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=admin-password-long
-FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Favn Admin
-FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
-```
-
-Shell environment values for those keys override `.env` values. If they are not
-provided, local tooling keeps using the generated local operator credentials
-from `.favn/secrets.json`. These credentials are never forwarded to the web
-process; the web login page always authenticates through orchestrator-owned
-password auth.
+The orchestrator process starts with local-dev mode enabled. Local CLI calls use
+an explicit trusted local-dev context that is accepted only while the API is
+bound to `127.*`; they do not perform password login and do not create local
+operator users. Production/server auth is a separate runtime configuration path.
 
 `mix favn.run PipelineModule` submits a pipeline to the running local stack over
-the private orchestrator HTTP boundary. It logs in with the generated local
-operator credentials from `.favn/secrets.json`, resolves the active manifest's
-pipeline target ID, submits the run, and waits for terminal status by default.
+the private orchestrator HTTP boundary using the loopback-only local-dev context.
+It resolves the active manifest's pipeline target ID, submits the run, and waits
+for terminal status by default.
 Windowed pipelines accept explicit local run windows with `--window
 hour:YYYY-MM-DDTHH`, `--window day:YYYY-MM-DD`, `--window month:YYYY-MM`, or
 `--window year:YYYY`, plus optional `--timezone`.

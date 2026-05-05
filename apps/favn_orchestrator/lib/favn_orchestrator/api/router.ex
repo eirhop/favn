@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.API.Router do
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
+  alias FavnOrchestrator.API.Config
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -264,23 +265,24 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, params} <- fetch_json_body(conn),
          {:ok, version} <- build_manifest_version(params),
-         {:ok, registration_status} <- manifest_registration_status(version),
-         :ok <- FavnOrchestrator.register_manifest(version),
-         {:ok, summary} <- FavnOrchestrator.get_manifest_summary(version.manifest_version_id),
+         {:ok, registration_status, canonical_version} <- publish_manifest_version(version),
+         {:ok, summary} <-
+           FavnOrchestrator.get_manifest_summary(canonical_version.manifest_version_id),
          :ok <-
            Auth.put_audit(%{
              action: "manifest.register",
              session_id: nil,
              resource_type: "manifest",
-             resource_id: version.manifest_version_id,
+             resource_id: canonical_version.manifest_version_id,
              outcome: "accepted",
              service_identity: service_identity(conn)
            }) do
-      data(conn, 201, %{
+      data(conn, manifest_publish_status_code(registration_status), %{
         manifest: summary,
         registration: %{
-          status: registration_status,
-          manifest_version_id: version.manifest_version_id
+          status: Atom.to_string(registration_status),
+          manifest_version_id: version.manifest_version_id,
+          canonical_manifest_version_id: canonical_version.manifest_version_id
         }
       })
     else
@@ -1257,11 +1259,15 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp ensure_service_auth(conn) do
-    provided = bearer_token(conn)
+    if local_dev_context_allowed_for_request?(conn) do
+      :ok
+    else
+      provided = bearer_token(conn)
 
-    case ServiceTokens.authenticate(provided, configured_service_tokens()) do
-      {:ok, _service_identity} -> :ok
-      {:error, :service_unauthorized} -> {:error, :service_unauthorized}
+      case ServiceTokens.authenticate(provided, configured_service_tokens()) do
+        {:ok, _service_identity} -> :ok
+        {:error, :service_unauthorized} -> {:error, :service_unauthorized}
+      end
     end
   end
 
@@ -1297,8 +1303,58 @@ defmodule FavnOrchestrator.API.Router do
         end
 
       _other ->
+        ensure_local_dev_context(conn, required_role)
+    end
+  end
+
+  defp ensure_local_dev_context(conn, required_role) do
+    cond do
+      local_dev_context_allowed_for_request?(conn) ->
+        local_dev_actor_context(required_role)
+
+      local_dev_context_requested?(conn) ->
+        {:error, :forbidden}
+
+      true ->
         {:error, :unauthenticated}
     end
+  end
+
+  defp local_dev_context_requested?(conn),
+    do: header(conn, "x-favn-local-dev-context") == "trusted"
+
+  defp local_dev_context_allowed_for_request?(conn) do
+    local_dev_context_requested?(conn) and Config.local_dev_trusted_context_allowed?() and
+      loopback_peer?(conn.remote_ip)
+  end
+
+  defp loopback_peer?({127, _b, _c, _d}), do: true
+  defp loopback_peer?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp loopback_peer?(_remote_ip), do: false
+
+  defp local_dev_actor_context(required_role) do
+    now = DateTime.utc_now()
+
+    session = %{
+      id: "local-dev-cli",
+      actor_id: "local-dev-cli",
+      provider: "local_dev_trusted",
+      issued_at: now,
+      expires_at: DateTime.add(now, 86_400, :second),
+      revoked_at: nil
+    }
+
+    actor = %{
+      id: "local-dev-cli",
+      username: "local-dev-cli",
+      display_name: "Local Dev CLI",
+      roles: [:admin],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    if Auth.has_role?(actor, required_role), do: {:ok, session, actor}, else: {:error, :forbidden}
   end
 
   defp ensure_activation_context(conn) do
@@ -1384,9 +1440,13 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp service_identity(conn) do
-    case ServiceTokens.authenticate(bearer_token(conn), configured_service_tokens()) do
-      {:ok, identity} -> identity
-      {:error, :service_unauthorized} -> nil
+    if local_dev_context_allowed_for_request?(conn) do
+      "local-dev-cli"
+    else
+      case ServiceTokens.authenticate(bearer_token(conn), configured_service_tokens()) do
+        {:ok, identity} -> identity
+        {:error, :service_unauthorized} -> nil
+      end
     end
   end
 
@@ -1546,8 +1606,14 @@ defmodule FavnOrchestrator.API.Router do
     }
   end
 
-  defp body_field(body, key) when is_map(body),
-    do: Map.get(body, key) || Map.get(body, String.to_atom(key))
+  defp body_field(body, "code") when is_map(body),
+    do: Map.get(body, "code") || Map.get(body, :code)
+
+  defp body_field(body, "message") when is_map(body),
+    do: Map.get(body, "message") || Map.get(body, :message)
+
+  defp body_field(body, "details") when is_map(body),
+    do: Map.get(body, "details") || Map.get(body, :details)
 
   defp maybe_put_audit(true, entry), do: Auth.put_audit(entry)
   defp maybe_put_audit(false, _entry), do: :ok
@@ -1564,21 +1630,16 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
-  defp manifest_registration_status(%Version{} = version) do
-    case FavnOrchestrator.get_manifest(version.manifest_version_id) do
-      {:ok, %Version{content_hash: content_hash}} when content_hash == version.content_hash ->
-        {:ok, "already_published"}
-
-      {:ok, %Version{}} ->
-        {:ok, "accepted"}
-
-      {:error, reason} when reason in [:manifest_version_not_found, :not_found] ->
-        {:ok, "accepted"}
-
-      {:error, reason} ->
-        {:error, reason}
+  defp publish_manifest_version(%Version{} = version) do
+    case FavnOrchestrator.publish_manifest(version) do
+      {:ok, :published, %Version{} = canonical} -> {:ok, :published, canonical}
+      {:ok, :already_published, %Version{} = canonical} -> {:ok, :already_published, canonical}
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  defp manifest_publish_status_code(:published), do: 201
+  defp manifest_publish_status_code(:already_published), do: 200
 
   defp manifest_version_opts(params) when is_map(params) do
     []

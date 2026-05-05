@@ -4,6 +4,7 @@ defmodule Favn.Dev.Run do
   """
 
   alias Favn.Dev.Config
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.OrchestratorClient
   alias Favn.Dev.State
   alias Favn.Dev.Status
@@ -15,7 +16,7 @@ defmodule Favn.Dev.Run do
 
   @type run_opts :: [
           root_dir: Path.t(),
-           wait: boolean(),
+          wait: boolean(),
           window: String.t(),
           timezone: String.t(),
           timeout_ms: non_neg_integer(),
@@ -25,35 +26,31 @@ defmodule Favn.Dev.Run do
   @spec pipeline(module() | String.t(), run_opts()) :: {:ok, map()} | {:error, term()}
   def pipeline(pipeline_module, opts \\ [])
 
-  def pipeline(pipeline_module, opts) when is_atom(pipeline_module) or is_binary(pipeline_module) do
+  def pipeline(pipeline_module, opts)
+      when is_atom(pipeline_module) or is_binary(pipeline_module) do
     with :ok <- validate_opts(opts),
          {:ok, window_request} <- parse_window_request(opts),
          :ok <- ensure_running(opts),
-         {:ok, runtime, secrets} <- read_runtime_snapshot(opts),
-         {:ok, credentials} <- local_credentials(secrets),
-         {:ok, session_context} <-
-           OrchestratorClient.password_login(
-             base_url(runtime, opts),
-             credentials.service_token,
-             credentials.username,
-             credentials.password
-           ),
+         {:ok, runtime} <- read_runtime_snapshot(opts),
+         credentials = LocalContext.credentials(),
+         session_context = LocalContext.session_context(),
          {:ok, active_manifest} <-
            OrchestratorClient.active_manifest(
              base_url(runtime, opts),
              credentials.service_token,
              session_context
            ),
-          {:ok, target} <- resolve_pipeline_target(active_manifest, pipeline_module),
-          {:ok, run} <-
-            submit_pipeline_run(
-              base_url(runtime, opts),
-              credentials.service_token,
-              session_context,
-              target,
-              window_request
-            ),
-         {:ok, final_run} <- maybe_wait(run, runtime, credentials.service_token, session_context, opts),
+         {:ok, target} <- resolve_pipeline_target(active_manifest, pipeline_module),
+         {:ok, run} <-
+           submit_pipeline_run(
+             base_url(runtime, opts),
+             credentials.service_token,
+             session_context,
+             target,
+             window_request
+           ),
+         {:ok, final_run} <-
+           maybe_wait(run, runtime, credentials.service_token, session_context, opts),
          :ok <- ensure_success(final_run, Keyword.get(opts, :wait, true)) do
       {:ok, final_run}
     end
@@ -69,7 +66,8 @@ defmodule Favn.Dev.Run do
           {:error, _reason} = error -> error
         end
 
-      {:error, _reason} = error -> error
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -111,20 +109,7 @@ defmodule Favn.Dev.Run do
   end
 
   defp read_runtime_snapshot(opts) do
-    with {:ok, runtime} <- State.read_runtime(opts),
-         {:ok, secrets} <- State.read_secrets(opts) do
-      {:ok, runtime, secrets}
-    end
-  end
-
-  defp local_credentials(secrets) do
-    with token when is_binary(token) and token != "" <- secrets["service_token"],
-         username when is_binary(username) and username != "" <- secrets["local_operator_username"],
-         password when is_binary(password) and password != "" <- secrets["local_operator_password"] do
-      {:ok, %{service_token: token, username: username, password: password}}
-    else
-      _other -> {:error, :missing_local_operator_credentials}
-    end
+    State.read_runtime(opts)
   end
 
   defp base_url(runtime, opts) do
@@ -153,11 +138,12 @@ defmodule Favn.Dev.Run do
   defp submit_pipeline_run(base_url, service_token, session_context, target, window_request) do
     case target do
       %{"target_id" => target_id} when is_binary(target_id) and target_id != "" ->
-        payload = %{
-          target: %{type: "pipeline", id: target_id},
-          manifest_selection: %{mode: "active"}
-        }
-        |> maybe_put_window(window_request)
+        payload =
+          %{
+            target: %{type: "pipeline", id: target_id},
+            manifest_selection: %{mode: "active"}
+          }
+          |> maybe_put_window(window_request)
 
         case OrchestratorClient.submit_run(base_url, service_token, session_context, payload) do
           {:ok, _run} = ok -> ok
@@ -182,8 +168,11 @@ defmodule Favn.Dev.Run do
 
   defp unwrap_submit_error(%{operation: :submit_run, reason: {:http_error, 422, payload}}) do
     case get_in(payload, ["error", "message"]) do
-      message when is_binary(message) and message != "" -> {:orchestrator_validation_failed, message}
-      _other -> {:orchestrator_validation_failed, inspect(payload)}
+      message when is_binary(message) and message != "" ->
+        {:orchestrator_validation_failed, message}
+
+      _other ->
+        {:orchestrator_validation_failed, inspect(payload)}
     end
   end
 
@@ -199,14 +188,32 @@ defmodule Favn.Dev.Run do
         poll_interval_ms = Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms)
         deadline = System.monotonic_time(:millisecond) + timeout_ms
 
-        wait_for_run(run, run_id, runtime, service_token, session_context, deadline, poll_interval_ms, opts)
+        wait_for_run(
+          run,
+          run_id,
+          runtime,
+          service_token,
+          session_context,
+          deadline,
+          poll_interval_ms,
+          opts
+        )
 
       _other ->
         {:error, :invalid_run_response}
     end
   end
 
-  defp wait_for_run(run, run_id, runtime, service_token, session_context, deadline, poll_interval_ms, opts) do
+  defp wait_for_run(
+         run,
+         run_id,
+         runtime,
+         service_token,
+         session_context,
+         deadline,
+         poll_interval_ms,
+         opts
+       ) do
     if terminal_status?(run) do
       {:ok, run}
     else
@@ -224,7 +231,16 @@ defmodule Favn.Dev.Run do
                  session_context,
                  run_id
                ) do
-          wait_for_run(next_run, run_id, runtime, service_token, session_context, deadline, poll_interval_ms, opts)
+          wait_for_run(
+            next_run,
+            run_id,
+            runtime,
+            service_token,
+            session_context,
+            deadline,
+            poll_interval_ms,
+            opts
+          )
         end
       end
     end
@@ -243,8 +259,12 @@ defmodule Favn.Dev.Run do
   defp terminal_status?(run), do: run_status(run) in @terminal_statuses
 
   defp run_status(run), do: Map.get(run, "status") || Map.get(run, :status)
-  defp normalize_pipeline_name(pipeline_module) when is_atom(pipeline_module), do: inspect(pipeline_module)
-  defp normalize_pipeline_name(pipeline_module) when is_binary(pipeline_module), do: String.trim(pipeline_module)
+
+  defp normalize_pipeline_name(pipeline_module) when is_atom(pipeline_module),
+    do: inspect(pipeline_module)
+
+  defp normalize_pipeline_name(pipeline_module) when is_binary(pipeline_module),
+    do: String.trim(pipeline_module)
 
   defp pipeline_target_match?(%{} = target, requested) do
     Map.get(target, "label") == requested or Map.get(target, "target_id") == requested

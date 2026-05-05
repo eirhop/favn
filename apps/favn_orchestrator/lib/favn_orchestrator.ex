@@ -67,11 +67,26 @@ defmodule FavnOrchestrator do
   def register_manifest(%Version{} = version), do: ManifestStore.register_manifest(version)
 
   @doc """
+  Publishes one manifest version, returning the canonical stored version for duplicate content.
+  """
+  @spec publish_manifest(Version.t()) ::
+          {:ok, :published | :already_published, Version.t()} | {:error, term()}
+  def publish_manifest(%Version{} = version), do: ManifestStore.publish_manifest(version)
+
+  @doc """
   Returns one persisted manifest version.
   """
   @spec get_manifest(String.t()) :: {:ok, Version.t()} | {:error, term()}
   def get_manifest(manifest_version_id) when is_binary(manifest_version_id) do
     ManifestStore.get_manifest(manifest_version_id)
+  end
+
+  @doc """
+  Returns one persisted manifest version by content hash.
+  """
+  @spec get_manifest_by_content_hash(String.t()) :: {:ok, Version.t()} | {:error, term()}
+  def get_manifest_by_content_hash(content_hash) when is_binary(content_hash) do
+    ManifestStore.get_manifest_by_content_hash(content_hash)
   end
 
   @doc """
@@ -737,6 +752,24 @@ defmodule FavnOrchestrator do
     }
   end
 
+  defp normalize_data(%Favn.Window.Spec{} = spec) do
+    %{
+      kind: atom_name(spec.kind),
+      lookback: spec.lookback,
+      refresh_from: normalize_data(spec.refresh_from),
+      required: spec.required,
+      timezone: spec.timezone
+    }
+  end
+
+  defp normalize_data(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp normalize_data(value) when is_struct(value) do
+    value
+    |> Map.from_struct()
+    |> normalize_data()
+  end
+
   defp normalize_data(value) when is_map(value) do
     value
     |> Enum.map(fn {key, val} -> {to_string(key), normalize_data(val)} end)
@@ -745,7 +778,6 @@ defmodule FavnOrchestrator do
 
   defp normalize_data(value) when is_list(value), do: Enum.map(value, &normalize_data/1)
   defp normalize_data({module, name}), do: ref_to_string({module, name})
-  defp normalize_data(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp normalize_data(value) when is_atom(value), do: atom_name(value)
   defp normalize_data(value), do: value
 

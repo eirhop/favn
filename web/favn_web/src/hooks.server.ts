@@ -9,6 +9,10 @@ import { checkSameOriginMutation, isUnsafeMethod } from '$lib/server/same_origin
 import { applyNoStoreHeaders, applySecurityHeaders } from '$lib/server/security_headers';
 import { checkMutationRateLimit } from '$lib/server/mutation_rate_limit';
 import { jsonError, rateLimitedResponse } from '$lib/server/web_api';
+import {
+	localDevTrustedAuthAllowedForRequest,
+	localDevTrustedWebSession
+} from '$lib/server/local_dev_trusted_auth';
 
 ensureCurrentWebProductionRuntimeConfig();
 
@@ -58,11 +62,15 @@ function finalizeResponse(event: RequestEvent, response: Response): Response {
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
-	const session = readWebSessionCookie(event.cookies);
+	const cookieSession = readWebSessionCookie(event.cookies);
 
-	if (!session && event.cookies.get(FAVN_WEB_SESSION_COOKIE)) {
+	if (!cookieSession && event.cookies.get(FAVN_WEB_SESSION_COOKIE)) {
 		clearWebSessionCookie(event.cookies);
 	}
+
+	const session =
+		cookieSession ??
+		(localDevTrustedAuthAllowedForRequest(event) ? localDevTrustedWebSession() : null);
 
 	event.locals.session = session;
 

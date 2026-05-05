@@ -53,6 +53,10 @@ defmodule FavnOrchestrator.DiagnosticsTest do
       do: {:error, :manifest_version_not_found}
 
     @impl true
+    def get_manifest_version_by_content_hash(_content_hash, _opts),
+      do: {:error, :manifest_version_not_found}
+
+    @impl true
     def list_manifest_versions(_opts), do: {:ok, []}
 
     @impl true

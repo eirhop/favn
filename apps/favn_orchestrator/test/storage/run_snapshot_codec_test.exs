@@ -115,6 +115,68 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert version_hash == version.content_hash
   end
 
+  test "decodes internal pipeline context atoms" do
+    existing_module = __MODULE__.ExistingAsset
+    version = manifest_version("mv_run_snapshot_pipeline_context", existing_module)
+
+    internal_pipeline_atoms = ~w(
+      all
+      anchor_ranges
+      anchor_window
+      backfill_range
+      config
+      deps
+      name
+      outputs
+      pipeline
+      pipeline_context
+      pipeline_dependencies
+      pipeline_module
+      pipeline_submit_ref
+      pipeline_target_refs
+      resolved_refs
+      run_kind
+      schedule
+      source
+      submit_ref
+    )
+
+    placeholders =
+      internal_pipeline_atoms
+      |> Enum.with_index()
+      |> Enum.map(fn {_target, index} -> String.to_atom("snapshot_pipeline_atom_#{index}") end)
+
+    pipeline_context = Map.new(placeholders, &{&1, &1})
+
+    run =
+      RunState.new(
+        id: "run_snapshot_pipeline_context",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {existing_module, :asset},
+        metadata: %{pipeline_context: pipeline_context}
+      )
+
+    assert {:ok, run_blob} = PayloadCodec.encode(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    run_blob =
+      placeholders
+      |> Enum.zip(internal_pipeline_atoms)
+      |> Enum.reduce(run_blob, fn {placeholder, target}, payload ->
+        replace_atom_value(payload, Atom.to_string(placeholder), target)
+      end)
+
+    run_record = %{run_blob: run_blob, manifest_version_id: version.manifest_version_id}
+
+    assert {:ok, decoded} = RunSnapshotCodec.decode_run(run_record, manifest_record)
+
+    assert decoded.metadata.pipeline_context
+           |> Map.keys()
+           |> Enum.map(&Atom.to_string/1)
+           |> Enum.sort() == internal_pipeline_atoms
+  end
+
   test "ignores unrelated manifest module and name fields" do
     existing_module = __MODULE__.ExistingAsset
     unknown_module = "Elixir.Favn.RunSnapshotCodecTest.MetadataModule"

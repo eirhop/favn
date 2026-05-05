@@ -259,15 +259,8 @@ Why this matters:
 
 ## Local stack configuration
 
-To choose the local web UI login credentials, add these orchestrator bootstrap
-keys to `examples/basic-workflow-tutorial/.env` before running `mix favn.dev`:
-
-```sh
-FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
-FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=admin-password-long
-FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME=Favn Admin
-FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin,operator
-```
+The local CLI path uses Favn's loopback-only local-dev context and does not need
+orchestrator usernames or passwords.
 
 The source-system raw landing example also needs deterministic local source
 credentials when it runs through the runner:

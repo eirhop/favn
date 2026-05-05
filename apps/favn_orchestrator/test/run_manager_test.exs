@@ -208,6 +208,107 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientKeyErrorStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      error = %{
+        kind: :error,
+        reason: %KeyError{key: :rest, term: %{"rest" => %{"path" => "orders"}}},
+        stacktrace: [{{__MODULE__, :await_result, 3}, [file: ~c"test.exs", line: 1]}],
+        message: "key :rest not found in: %{}"
+      }
+
+      {:ok,
+       %RunnerResult{
+         status: :error,
+         error: error,
+         asset_results: [asset_result(error)],
+         metadata: %{}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp asset_result(error) do
+      %Favn.Run.AssetResult{
+        ref: {MyApp.Assets.Gold, :asset},
+        stage: 0,
+        status: :error,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: error,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: [%{attempt: 1, status: :error, error: error}]
+      }
+    end
+  end
+
+  defmodule RunnerClientSecretErrorStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @secret_message "database failed password=super-secret token=secret-token postgres://user:pass@localhost/db"
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      error = %{
+        kind: :error,
+        reason: %RuntimeError{message: @secret_message},
+        message: @secret_message
+      }
+
+      {:ok,
+       %RunnerResult{
+         status: :error,
+         error: error,
+         asset_results: [asset_result(error)],
+         metadata: %{}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp asset_result(error) do
+      %Favn.Run.AssetResult{
+        ref: {MyApp.Assets.Gold, :asset},
+        stage: 0,
+        status: :error,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: error,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: [%{attempt: 1, status: :error, error: error}]
+      }
+    end
+  end
+
   defmodule RunnerClientFlakyPerAssetStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -604,6 +705,55 @@ defmodule FavnOrchestrator.RunManagerTest do
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
   end
 
+  test "runner exception errors are stored as JSON-safe run data" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientKeyErrorStub)
+
+    version = manifest_version("mv_runner_key_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_runner_key_error")
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, run} = await_terminal_run(run_id)
+
+    assert run.status == :error
+
+    assert %{"kind" => "error", "message" => "[REDACTED]", "type" => "Elixir.KeyError"} =
+             run.error
+
+    assert [%{error: asset_error, attempts: [%{error: attempt_error}]}] = run.result.asset_results
+    assert asset_error == run.error
+    assert attempt_error == run.error
+    refute inspect(run.error) =~ "__struct__"
+    refute inspect(run.error) =~ "stacktrace"
+  end
+
+  test "runner exception secrets are redacted before storing run data" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSecretErrorStub)
+
+    version = manifest_version("mv_runner_secret_error")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_runner_secret_error")
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, run} = await_terminal_run(run_id)
+
+    assert run.status == :error
+
+    assert %{"message" => "[REDACTED]", "reason" => reason, "type" => "Elixir.RuntimeError"} =
+             run.error
+
+    serialized_error = inspect(run.error)
+
+    assert reason =~ "[REDACTED]"
+    refute serialized_error =~ "super-secret"
+    refute serialized_error =~ "secret-token"
+    refute serialized_error =~ "postgres://user:pass"
+
+    assert [%{error: asset_error, attempts: [%{error: attempt_error}]}] = run.result.asset_results
+    assert asset_error == run.error
+    assert attempt_error == run.error
+  end
+
   test "submits multi-target pipeline run in one run plan" do
     version = manifest_version("mv_pipeline_multi")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -709,13 +859,8 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(submit_log) do
-        Agent.stop(submit_log)
-      end
-
-      if Process.alive?(attempt_counter) do
-        Agent.stop(attempt_counter)
-      end
+      stop_agent(submit_log)
+      stop_agent(attempt_counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRetryMetadataLeakStub)
@@ -753,9 +898,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -801,9 +944,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(per_asset_counter) do
-        Agent.stop(per_asset_counter)
-      end
+      stop_agent(per_asset_counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyPerAssetStub)
@@ -844,9 +985,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(counter) do
-        Agent.stop(counter)
-      end
+      stop_agent(counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
@@ -884,9 +1023,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(counter) do
-        Agent.stop(counter)
-      end
+      stop_agent(counter)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientFlakyStub)
@@ -929,9 +1066,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientTimeoutCancelableStub)
@@ -966,9 +1101,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientPartialSubmitStub)
@@ -1002,9 +1135,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -1055,9 +1186,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -1093,7 +1222,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
   test "rerun stays pinned to source manifest even when active manifest changes" do
     source_version = manifest_version("mv_source")
-    newer_version = manifest_version("mv_newer")
+    newer_version = manifest_version("mv_newer", pipeline_metadata: %{"revision" => "newer"})
 
     assert :ok = FavnOrchestrator.register_manifest(source_version)
     assert :ok = FavnOrchestrator.register_manifest(newer_version)
@@ -1202,9 +1331,7 @@ defmodule FavnOrchestrator.RunManagerTest do
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
 
-      if Process.alive?(cancel_log) do
-        Agent.stop(cancel_log)
-      end
+      stop_agent(cancel_log)
     end)
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
@@ -1330,7 +1457,13 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
-  defp manifest_version(manifest_version_id) do
+  defp stop_agent(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: Agent.stop(pid)
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp manifest_version(manifest_version_id, opts \\ []) do
     manifest =
       %Manifest{
         assets: [
@@ -1359,7 +1492,7 @@ defmodule FavnOrchestrator.RunManagerTest do
             selectors: [{:asset, {MyApp.Assets.Gold, :asset}}],
             deps: :all,
             schedule: nil,
-            metadata: %{}
+            metadata: Keyword.get(opts, :pipeline_metadata, %{})
           },
           %Favn.Manifest.Pipeline{
             module: MyApp.Pipelines.SingleAssetShorthand,

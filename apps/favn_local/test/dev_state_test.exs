@@ -1,9 +1,6 @@
 defmodule Favn.Dev.StateTest do
   use ExUnit.Case, async: true
 
-  alias Favn.Dev.Config
-  alias Favn.Dev.Paths
-  alias Favn.Dev.Secrets
   alias Favn.Dev.State
 
   setup do
@@ -71,23 +68,4 @@ defmodule Favn.Dev.StateTest do
     assert {:ok, ^toolchain} = State.read_toolchain(root_dir: root_dir)
   end
 
-  test "secrets resolve regenerates unsafe rpc cookies", %{root_dir: root_dir} do
-    assert :ok = State.write_secrets(%{"rpc_cookie" => "-bad-cookie"}, root_dir: root_dir)
-
-    assert {:ok, secrets} = Secrets.resolve(Config.resolve(), root_dir: root_dir)
-
-    assert String.match?(secrets["rpc_cookie"], ~r/^[A-Z0-9]+$/)
-    refute secrets["rpc_cookie"] == "-bad-cookie"
-  end
-
-  test "secrets resolve preserves corrupt secrets read errors", %{root_dir: root_dir} do
-    secrets_path = Paths.secrets_path(root_dir)
-    invalid_json = "{not-json"
-
-    assert :ok = File.mkdir_p(Path.dirname(secrets_path))
-    assert :ok = File.write(secrets_path, invalid_json)
-
-    assert {:error, {:invalid_json, _reason}} = Secrets.resolve(Config.resolve(), root_dir: root_dir)
-    assert {:ok, ^invalid_json} = File.read(secrets_path)
-  end
 end

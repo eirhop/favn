@@ -74,9 +74,32 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   end
 
   test "mix favn.dev raises when install is missing", %{root_dir: root_dir} do
-    assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
-      DevTask.run(["--root-dir", root_dir])
-    end
+    output =
+      capture_io(fn ->
+        assert_raise Mix.Error, ~r/install required; run mix favn.install/, fn ->
+          DevTask.run(["--root-dir", root_dir])
+        end
+      end)
+
+    assert output =~ "Favn dev: checking local state"
+  end
+
+  test "Dev.dev stays quiet unless progress callback is provided", %{root_dir: root_dir} do
+    output =
+      capture_io(fn ->
+        assert {:error, :install_required} = Favn.Dev.dev(root_dir: root_dir)
+      end)
+
+    assert output == ""
+  end
+
+  test "Dev.dev reports progress through explicit callback", %{root_dir: root_dir} do
+    caller = self()
+
+    assert {:error, :install_required} =
+             Favn.Dev.dev(root_dir: root_dir, progress_fun: &send(caller, {:progress, &1}))
+
+    assert_received {:progress, "Favn dev: checking local state"}
   end
 
   test "mix favn.dev parses scheduler flags" do
@@ -170,10 +193,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       }
     }
 
-    secrets = %{"service_token" => "diagnostics-service-token"}
-
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
-    assert :ok = State.write_secrets(secrets, root_dir: root_dir)
 
     output =
       capture_io(fn ->
@@ -202,7 +222,6 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     }
 
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
-    assert :ok = State.write_secrets(%{"service_token" => "token"}, root_dir: root_dir)
 
     output =
       capture_io(fn ->
@@ -658,7 +677,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       )
 
       assert_raise Mix.Error,
-                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|port conflict: .* cannot bind port)/,
+                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|local Erlang shortname host .* must resolve to a loopback 127\.\* address|port conflict: .* cannot bind port)/,
                    fn ->
                      DevTask.run(["--root-dir", root_dir])
                    end

@@ -9,6 +9,7 @@ defmodule Favn.Dev.Stack do
   alias Favn.Dev.Config
   alias Favn.Dev.DistributedErlang
   alias Favn.Dev.Install
+  alias Favn.Dev.LocalContext
   alias Favn.Dev.LocalHttpClient
   alias Favn.Dev.Lock
   alias Favn.Dev.NodeControl
@@ -26,10 +27,17 @@ defmodule Favn.Dev.Stack do
 
   @spec start_foreground(root_opt()) :: :ok | {:error, term()}
   def start_foreground(opts \\ []) when is_list(opts) do
-    with {:ok, startup} <- prepare_startup(opts),
-         :ok <- compile_runtime_apps(startup.runtime, opts),
-         :ok <- compile_project(opts),
-         {:ok, startup} <- initialize_stack(startup, opts) do
+    with {:ok, startup} <-
+           progress_step(opts, "checking local state", fn -> prepare_startup(opts) end),
+         :ok <-
+           progress_step(opts, "compiling Favn runtime", fn ->
+             compile_runtime_apps(startup.runtime, opts)
+           end),
+         :ok <- progress_step(opts, "compiling current project", fn -> compile_project(opts) end),
+         {:ok, startup} <-
+           progress_step(opts, "starting local services", fn ->
+             initialize_stack(startup, opts)
+           end) do
       case bootstrap_manifest(startup, opts) do
         :ok ->
           print_start_summary(startup)
@@ -78,10 +86,12 @@ defmodule Favn.Dev.Stack do
     case with_lock(opts, fn -> State.read_runtime(opts) end) do
       {:ok, runtime} ->
         stop_runtime(runtime, opts)
+        stop_known_local_nodes(opts)
         with_lock(opts, fn -> State.clear_runtime(opts) end)
         :ok
 
       {:error, :not_found} ->
+        stop_known_local_nodes(opts)
         :ok
 
       {:error, reason} ->
@@ -209,7 +219,7 @@ defmodule Favn.Dev.Stack do
     case :gen_tcp.listen(port, [
            :binary,
            {:active, false},
-           {:reuseaddr, false},
+           {:reuseaddr, true},
            {:ip, {127, 0, 0, 1}}
          ]) do
       {:ok, socket} ->
@@ -372,43 +382,58 @@ defmodule Favn.Dev.Stack do
   defp start_services(runtime, config, secrets, node_names, opts) do
     case Keyword.get(opts, :service_specs_override) do
       list when is_list(list) and list != [] ->
-        start_service_specs(list)
+        start_service_specs(list, %{}, opts)
 
       _ ->
-        with :ok <- ensure_web_assets(runtime, opts) do
-          runner_wait_timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 15_000)
-
-          runner_wait_node_name =
-            Keyword.get(opts, :runner_wait_node_name, node_names.runner_full)
-
-          runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
-
-          orchestrator_spec =
-            RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
-
-          web_spec = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
-
-          case start_service_specs([runner_spec]) do
-            {:ok, services} ->
-              with :ok <- wait_runner_node_ready(runner_wait_node_name, runner_wait_timeout_ms),
-                   {:ok, services} <- start_service_specs([orchestrator_spec], services),
-                   {:ok, services} <- start_service_specs([web_spec], services) do
-                {:ok, services}
-              else
-                {:error, _reason} = error ->
-                  stop_service_map(services)
-                  error
-              end
-
-            {:error, _reason} = error ->
-              error
-          end
-        end
+        start_default_services(runtime, config, secrets, node_names, opts)
     end
   end
 
-  defp start_service_specs(specs, initial \\ %{}) when is_list(specs) and is_map(initial) do
+  defp start_default_services(runtime, config, secrets, node_names, opts) do
+    with :ok <-
+           progress_step(opts, "ensuring web assets", fn ->
+             ensure_web_assets(runtime, opts)
+           end) do
+      runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
+
+      orchestrator_spec =
+        RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
+
+      web_spec = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+
+      start_ordered_services(runner_spec, orchestrator_spec, web_spec, node_names, opts)
+    end
+  end
+
+  defp start_ordered_services(runner_spec, orchestrator_spec, web_spec, node_names, opts) do
+    runner_wait_timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 15_000)
+    runner_wait_node_name = Keyword.get(opts, :runner_wait_node_name, node_names.runner_full)
+
+    case start_service_specs([runner_spec], %{}, opts) do
+      {:ok, services} ->
+        with :ok <-
+               progress_step(opts, "waiting for runner node", fn ->
+                 wait_runner_node_ready(runner_wait_node_name, runner_wait_timeout_ms)
+               end),
+             {:ok, services} <- start_service_specs([orchestrator_spec], services, opts),
+             {:ok, services} <- start_service_specs([web_spec], services, opts) do
+          {:ok, services}
+        else
+          {:error, _reason} = error ->
+            stop_service_map(services)
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp start_service_specs(specs, initial, opts)
+       when is_list(specs) and is_map(initial) and is_list(opts) do
     Enum.reduce_while(specs, {:ok, initial}, fn spec, {:ok, acc} ->
+      progress(opts, "starting #{spec.name}")
+
       case DevProcess.start_service(spec) do
         {:ok, info} ->
           {:cont, {:ok, Map.put(acc, info.name, info)}}
@@ -494,6 +519,7 @@ defmodule Favn.Dev.Stack do
                 service
                 |> Map.put("node_name", node_names.runner_full)
                 |> Map.put("distribution_port", distribution_ports(opts).runner)
+                |> Map.put("generation", 1)
 
               "orchestrator" ->
                 service
@@ -522,32 +548,21 @@ defmodule Favn.Dev.Stack do
   end
 
   defp do_bootstrap_manifest(startup, opts) do
-    %{config: config, secrets: secrets, node_names: node_names} = startup
+    %{config: config} = startup
+
+    progress(opts, "building manifest")
 
     with {:ok, build} <- FavnAuthoring.build_manifest(),
          {:ok, version} <- FavnAuthoring.pin_manifest_version(build.manifest),
          :ok <-
-           RunnerControl.register_manifest(version,
-             runner_node_name: node_names.runner_full,
-             rpc_cookie: secrets["rpc_cookie"]
-           ),
-         :ok <- wait_orchestrator_health(config.orchestrator_base_url, 15_000),
-         :ok <-
-           State.write_manifest_latest(
-             %{
-               "manifest_version_id" => version.manifest_version_id,
-               "content_hash" => version.content_hash,
-               "schema_version" => version.schema_version,
-               "runner_contract_version" => version.runner_contract_version,
-               "serialization_format" => version.serialization_format,
-               "inserted_at" => datetime(version.inserted_at)
-             },
-             opts
-           ),
-         {:ok, _published} <-
+           progress_step(opts, "waiting for orchestrator API", fn ->
+             wait_orchestrator_health(config.orchestrator_base_url, 15_000)
+           end),
+         _ <- progress(opts, "publishing manifest"),
+         {:ok, published} <-
            OrchestratorClient.publish_manifest(
              config.orchestrator_base_url,
-             secrets["service_token"],
+             "",
              %{
                manifest_version_id: version.manifest_version_id,
                content_hash: version.content_hash,
@@ -555,18 +570,31 @@ defmodule Favn.Dev.Stack do
                runner_contract_version: version.runner_contract_version,
                serialization_format: version.serialization_format,
                manifest: version.manifest
-             }
+             },
+             LocalContext.session_context()
            ),
-         {:ok, _activated} <-
+         canonical_manifest_version_id <- canonical_manifest_version_id(published, version),
+         :ok <- register_canonical_manifest(version, canonical_manifest_version_id, startup),
+         :ok <-
+           State.write_manifest_latest(
+             manifest_cache(version, canonical_manifest_version_id),
+             opts
+           ),
+         _ <- progress(opts, "activating manifest"),
+         {:ok, activated} <-
            OrchestratorClient.activate_manifest(
              config.orchestrator_base_url,
-             secrets["service_token"],
-             version.manifest_version_id
+             "",
+             canonical_manifest_version_id,
+             LocalContext.session_context()
            ) do
+      active_manifest_version_id =
+        canonical_manifest_version_id(activated, canonical_manifest_version_id)
+
       with_lock(opts, fn ->
         with {:ok, runtime} <- State.read_runtime(opts) do
           State.write_runtime(
-            Map.put(runtime, "active_manifest_version_id", version.manifest_version_id),
+            Map.put(runtime, "active_manifest_version_id", active_manifest_version_id),
             opts
           )
         end
@@ -576,13 +604,51 @@ defmodule Favn.Dev.Stack do
     end
   end
 
+  defp manifest_cache(version, manifest_version_id) do
+    %{
+      "manifest_version_id" => manifest_version_id,
+      "content_hash" => version.content_hash,
+      "schema_version" => version.schema_version,
+      "runner_contract_version" => version.runner_contract_version,
+      "serialization_format" => version.serialization_format,
+      "inserted_at" => datetime(version.inserted_at)
+    }
+  end
+
+  defp register_canonical_manifest(version, manifest_version_id, startup) do
+    %{secrets: secrets, node_names: node_names} = startup
+
+    RunnerControl.register_manifest(%{version | manifest_version_id: manifest_version_id},
+      runner_node_name: node_names.runner_full,
+      rpc_cookie: secrets["rpc_cookie"]
+    )
+  end
+
+  defp canonical_manifest_version_id(%{"data" => data}, fallback) when is_map(data) do
+    get_in(data, ["registration", "canonical_manifest_version_id"]) ||
+      get_in(data, ["manifest", "manifest_version_id"]) ||
+      Map.get(data, "manifest_version_id") || canonical_manifest_version_id(fallback)
+  end
+
+  defp canonical_manifest_version_id(%{"manifest_version_id" => manifest_version_id}, _fallback),
+    do: manifest_version_id
+
+  defp canonical_manifest_version_id(_response, fallback),
+    do: canonical_manifest_version_id(fallback)
+
+  defp canonical_manifest_version_id(%{manifest_version_id: manifest_version_id}),
+    do: manifest_version_id
+
+  defp canonical_manifest_version_id(manifest_version_id) when is_binary(manifest_version_id),
+    do: manifest_version_id
+
   defp wait_foreground(startup, opts) do
     %{config: config, services: services} = startup
 
     case wait_ready(config, opts) do
       :ok ->
-        monitor_services(services)
-        wait_for_service_exit(startup, opts)
+        monitor_refs = monitor_services(services)
+        wait_for_service_exit(startup, opts, monitor_refs)
 
       {:error, reason} ->
         cleanup_after_failure(reason, opts, startup)
@@ -594,10 +660,29 @@ defmodule Favn.Dev.Stack do
     if Keyword.get(opts, :skip_readiness, false) do
       :ok
     else
-      case wait_orchestrator_health(config.orchestrator_base_url, 15_000) do
-        :ok -> wait_web_http(config.web_base_url, 30_000)
-        {:error, _reason} = error -> error
+      case progress_step(opts, "checking orchestrator readiness", fn ->
+             wait_orchestrator_health(config.orchestrator_base_url, 15_000)
+           end) do
+        :ok ->
+          progress_step(opts, "checking web readiness", fn ->
+            wait_web_http(config.web_base_url, 30_000)
+          end)
+
+        {:error, _reason} = error ->
+          error
       end
+    end
+  end
+
+  defp progress_step(opts, message, fun) when is_list(opts) and is_function(fun, 0) do
+    progress(opts, message)
+    fun.()
+  end
+
+  defp progress(opts, message) when is_list(opts) and is_binary(message) do
+    case Keyword.get(opts, :progress_fun) do
+      fun when is_function(fun, 1) -> fun.("Favn dev: " <> message)
+      _other -> :ok
     end
   end
 
@@ -648,24 +733,175 @@ defmodule Favn.Dev.Stack do
   end
 
   defp monitor_services(services) do
-    Enum.each(services, fn {_name, info} ->
-      Process.monitor(info.wrapper_pid)
-    end)
+    Map.new(services, fn {name, info} -> {Process.monitor(info.wrapper_pid), name} end)
   end
 
-  defp wait_for_service_exit(startup, opts) do
+  defp wait_for_service_exit(startup, opts, monitor_refs) when is_map(monitor_refs) do
     receive do
       {:service_exit, service, status} ->
-        reason = {:service_exit, service, status}
-        cleanup_after_failure(reason, opts, startup)
-        {:error, reason}
+        handle_service_exit(service, status, startup, opts, monitor_refs)
 
-      {:DOWN, _ref, :process, _pid, reason} ->
-        failure = {:service_down, reason}
-        cleanup_after_failure(failure, opts, startup)
-        {:error, failure}
+      {:DOWN, ref, :process, _pid, reason} ->
+        case receive_pending_service_exit() do
+          {:service_exit, service, status} ->
+            handle_service_exit(service, status, startup, opts, Map.delete(monitor_refs, ref))
+
+          nil ->
+            service = Map.get(monitor_refs, ref, "unknown")
+
+            cond do
+              stack_stopped_externally?(opts) ->
+                :ok
+
+              intentional_runner_replacement_down?(service, reason, startup, opts) ->
+                wait_for_service_exit(startup, opts, Map.delete(monitor_refs, ref))
+
+              true ->
+                failure = {:service_down, service, reason}
+                cleanup_after_failure(failure, opts, startup)
+                {:error, failure}
+            end
+        end
+    after
+      1_000 ->
+        case poll_replacement_runner(opts) do
+          :ok ->
+            wait_for_service_exit(startup, opts, monitor_refs)
+
+          {:error, reason} ->
+            cleanup_after_failure(reason, opts, startup)
+            {:error, reason}
+        end
     end
   end
+
+  defp receive_pending_service_exit do
+    receive do
+      {:service_exit, service, status} -> {:service_exit, service, status}
+    after
+      50 -> nil
+    end
+  end
+
+  defp handle_service_exit(service, status, startup, opts, monitor_refs) do
+    reason = {:service_exit, service, status}
+
+    cond do
+      stack_stopped_externally?(opts) ->
+        :ok
+
+      intentional_runner_replacement_exit?(service, status, startup, opts) ->
+        wait_for_service_exit(startup, opts, monitor_refs)
+
+      true ->
+        cleanup_after_failure(reason, opts, startup)
+        {:error, reason}
+    end
+  end
+
+  defp stack_stopped_externally?(opts) do
+    case with_lock(opts, fn -> State.read_runtime(opts) end) do
+      {:error, :not_found} -> true
+      _other -> false
+    end
+  end
+
+  @doc false
+  @spec runner_replacement_exit?(map(), map(), term()) :: boolean()
+  def runner_replacement_exit?(startup_runner, marker, status)
+      when is_map(startup_runner) and is_map(marker) do
+    marker_status = Map.get(marker, "status")
+
+    status == 0 and marker_status in ["stopping_old", "started", "completed"] and
+      Map.get(marker, "old_pid") == Map.get(startup_runner, :pid) and
+      Map.get(marker, "old_generation") == runner_generation(startup_runner)
+  end
+
+  def runner_replacement_exit?(_startup_runner, _marker, _status), do: false
+
+  @doc false
+  @spec runner_replacement_down?(map(), map(), term()) :: boolean()
+  def runner_replacement_down?(startup_runner, marker, reason)
+      when is_map(startup_runner) and is_map(marker) do
+    reason == :normal and runner_replacement_exit?(startup_runner, marker, 0)
+  end
+
+  def runner_replacement_down?(_startup_runner, _marker, _reason), do: false
+
+  defp intentional_runner_replacement_exit?("runner", status, startup, opts) do
+    with {:ok, runtime} <- with_lock(opts, fn -> State.read_runtime(opts) end),
+         marker when is_map(marker) <- get_in(runtime, ["reload", "runner_replacement"]),
+         startup_runner when is_map(startup_runner) <- get_in(startup, [:services, "runner"]) do
+      runner_replacement_exit?(startup_runner, marker, status)
+    else
+      _ -> false
+    end
+  end
+
+  defp intentional_runner_replacement_exit?(_service, _status, _startup, _opts), do: false
+
+  defp intentional_runner_replacement_down?("runner", reason, startup, opts) do
+    with {:ok, runtime} <- with_lock(opts, fn -> State.read_runtime(opts) end),
+         marker when is_map(marker) <- get_in(runtime, ["reload", "runner_replacement"]),
+         startup_runner when is_map(startup_runner) <- get_in(startup, [:services, "runner"]) do
+      runner_replacement_down?(startup_runner, marker, reason)
+    else
+      _ -> false
+    end
+  end
+
+  defp intentional_runner_replacement_down?(_service, _reason, _startup, _opts), do: false
+
+  defp poll_replacement_runner(opts) do
+    case with_lock(opts, fn -> State.read_runtime(opts) end) do
+      {:ok, runtime} ->
+        runner_replacement_monitor_status(runtime)
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec runner_replacement_monitor_status(map(), (integer() -> boolean())) ::
+          :ok | {:error, term()}
+  def runner_replacement_monitor_status(runtime, alive? \\ &DevProcess.alive?/1)
+      when is_map(runtime) do
+    marker = get_in(runtime, ["reload", "runner_replacement"])
+
+    cond do
+      not is_map(marker) ->
+        :ok
+
+      Map.get(marker, "status") in ["stopping_old", "started"] ->
+        :ok
+
+      Map.get(marker, "status") == "completed" ->
+        runner_pid = get_in(runtime, ["services", "runner", "pid"])
+
+        if is_integer(runner_pid) and runner_pid > 0 and alive?.(runner_pid) do
+          :ok
+        else
+          {:error, {:service_exit, "runner", :replacement_not_running}}
+        end
+
+      Map.get(marker, "status") == "failed" ->
+        {:error, {:runner_replacement_failed, Map.get(marker, "error")}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp runner_generation(%{generation: generation}) when is_integer(generation), do: generation
+
+  defp runner_generation(%{"generation" => generation}) when is_integer(generation),
+    do: generation
+
+  defp runner_generation(_runner), do: 1
 
   defp cleanup_after_failure(reason, opts, startup \\ nil) do
     runtime =
@@ -772,6 +1008,8 @@ defmodule Favn.Dev.Stack do
         _ -> :ok
       end
     end)
+
+    wait_runtime_ports_released(runtime, opts)
   end
 
   defp stop_service_map(services) when is_map(services) do
@@ -784,13 +1022,129 @@ defmodule Favn.Dev.Stack do
     end)
   end
 
-  defp cancel_in_flight_runs(runtime, opts) do
-    with {:ok, secrets} <- State.read_secrets(opts),
-         token when is_binary(token) and token != "" <- secrets["service_token"],
-         base_url when is_binary(base_url) <- runtime["orchestrator_base_url"],
-         {:ok, run_ids} <- OrchestratorClient.in_flight_runs(base_url, token) do
+  defp stop_known_local_nodes(opts) do
+    config = Config.resolve(opts)
+
+    with {:ok, secrets} <- Secrets.resolve(config, opts),
+         %{"rpc_cookie" => rpc_cookie} when is_binary(rpc_cookie) and rpc_cookie != "" <- secrets,
+         {:ok, node_names} <- stop_node_names(opts),
+         :ok <-
+           NodeControl.ensure_local_node_started(rpc_cookie,
+             name: node_names.control_short,
+             distribution_port: RuntimeLaunch.distribution_port(:control, opts)
+           ) do
+      Enum.each([node_names.runner_full, node_names.orchestrator_full], &stop_local_node/1)
+      wait_ports_released(stop_node_distribution_ports(opts), opts)
+    else
+      _reason -> :ok
+    end
+
+    :ok
+  end
+
+  defp stop_node_names(opts) do
+    suffix = opts |> Paths.root_dir() |> :erlang.phash2(1_000_000) |> Integer.to_string()
+    runner_short = "favn_runner_#{suffix}"
+    orchestrator_short = "favn_orchestrator_#{suffix}"
+    control_short = "favn_local_ctl_#{suffix}"
+
+    with {:ok, runner_full} <- NodeControl.shortname_to_full(runner_short),
+         {:ok, orchestrator_full} <- NodeControl.shortname_to_full(orchestrator_short) do
+      {:ok,
+       %{
+         runner_full: runner_full,
+         orchestrator_full: orchestrator_full,
+         control_short: control_short
+       }}
+    end
+  end
+
+  defp stop_local_node(node_name) when is_binary(node_name) do
+    with {:ok, node} <- DistributedErlang.node_name_to_atom(node_name),
+         true <- Node.connect(node) do
+      _ = :erpc.call(node, :init, :stop, [], 2_000)
+      :ok
+    else
+      _reason -> :ok
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp wait_runtime_ports_released(runtime, opts) when is_map(runtime) do
+    runtime
+    |> runtime_ports(opts)
+    |> wait_ports_released(opts)
+  end
+
+  defp runtime_ports(runtime, opts) do
+    [
+      {:orchestrator, url_port(runtime["orchestrator_base_url"])},
+      {:web, url_port(runtime["web_base_url"])},
+      {:runner_distribution, get_in(runtime, ["distribution_ports", "runner"])},
+      {:orchestrator_distribution, get_in(runtime, ["distribution_ports", "orchestrator"])}
+    ]
+    |> Enum.map(&runtime_port(&1, opts))
+    |> Enum.filter(fn {_service, port} -> is_integer(port) and port > 0 end)
+  end
+
+  defp runtime_port({service, port}, _opts) when is_integer(port) and port > 0,
+    do: {service, port}
+
+  defp runtime_port({:runner_distribution, _port}, opts),
+    do: {:runner_distribution, RuntimeLaunch.distribution_port(:runner, opts)}
+
+  defp runtime_port({:orchestrator_distribution, _port}, opts),
+    do: {:orchestrator_distribution, RuntimeLaunch.distribution_port(:orchestrator, opts)}
+
+  defp runtime_port({service, _port}, _opts), do: {service, nil}
+
+  defp stop_node_distribution_ports(opts) do
+    [
+      {:runner_distribution, RuntimeLaunch.distribution_port(:runner, opts)},
+      {:orchestrator_distribution, RuntimeLaunch.distribution_port(:orchestrator, opts)}
+    ]
+  end
+
+  defp url_port(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{port: port} when is_integer(port) and port > 0 -> port
+      _other -> nil
+    end
+  end
+
+  defp url_port(_url), do: nil
+
+  defp wait_ports_released(ports, opts) when is_list(ports) do
+    timeout_ms = Keyword.get(opts, :stop_port_release_timeout_ms, 2_000)
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    Enum.each(ports, fn {service, port} -> wait_port_released(service, port, deadline) end)
+    :ok
+  end
+
+  defp wait_port_released(service, port, deadline_ms) do
+    case ensure_port_available(service, port) do
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        if System.monotonic_time(:millisecond) >= deadline_ms do
+          :ok
+        else
+          Process.sleep(100)
+          wait_port_released(service, port, deadline_ms)
+        end
+    end
+  end
+
+  defp cancel_in_flight_runs(runtime, _opts) do
+    context = LocalContext.session_context()
+
+    with base_url when is_binary(base_url) <- runtime["orchestrator_base_url"],
+         {:ok, run_ids} <- OrchestratorClient.in_flight_runs(base_url, "", context) do
       Enum.each(run_ids, fn run_id ->
-        _ = OrchestratorClient.cancel_run(base_url, token, run_id)
+        _ = OrchestratorClient.cancel_run(base_url, "", run_id, context)
       end)
 
       :ok

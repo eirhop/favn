@@ -252,6 +252,9 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def get_manifest_version(_version_id, _opts), do: {:error, :not_found}
 
   @impl true
+  def get_manifest_version_by_content_hash(_content_hash, _opts), do: {:error, :not_found}
+
+  @impl true
   def list_manifest_versions(_opts), do: {:ok, []}
 
   @impl true
@@ -326,8 +329,14 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_asset_window_states(filters, _opts), do: {:ok, empty_page(filters)}
 
   @impl true
-  def replace_backfill_read_models(_scope, _coverage_baselines, _backfill_windows, _states, _opts),
-    do: :ok
+  def replace_backfill_read_models(
+        _scope,
+        _coverage_baselines,
+        _backfill_windows,
+        _states,
+        _opts
+      ),
+      do: :ok
 
   def reset!, do: :persistent_term.put(@counter_key, 0)
 

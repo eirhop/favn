@@ -6,15 +6,16 @@ defmodule Favn.Dev.OrchestratorClient do
 
   @type session_context :: %{required(String.t()) => String.t()}
 
-  @spec publish_manifest(String.t(), String.t(), map()) ::
+  @spec publish_manifest(String.t(), String.t(), map(), session_context() | nil) ::
           {:ok, map()} | {:error, term()}
-  def publish_manifest(base_url, service_token, payload)
+  def publish_manifest(base_url, service_token, payload, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) and is_map(payload) do
     request_post(
       :publish_manifest,
       base_url <> "/api/orchestrator/v1/manifests",
       service_token,
-      normalize_publish_payload(payload)
+      normalize_publish_payload(payload),
+      session_context
     )
   end
 
@@ -41,16 +42,17 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec activate_manifest(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def activate_manifest(base_url, service_token, manifest_version_id)
+  @spec activate_manifest(String.t(), String.t(), String.t(), session_context() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def activate_manifest(base_url, service_token, manifest_version_id, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) and is_binary(manifest_version_id) do
     request_post(
       :activate_manifest,
       base_url <> "/api/orchestrator/v1/manifests/#{manifest_version_id}/activate",
       service_token,
       %{},
-      nil,
-      idempotency_key(:activate_manifest, nil, %{manifest_version_id: manifest_version_id})
+      session_context,
+      idempotency_key(:activate_manifest, session_context, %{manifest_version_id: manifest_version_id})
     )
   end
 
@@ -90,16 +92,17 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec cancel_run(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def cancel_run(base_url, service_token, run_id)
+  @spec cancel_run(String.t(), String.t(), String.t(), session_context() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def cancel_run(base_url, service_token, run_id, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) and is_binary(run_id) do
     request_post(
       :cancel_run,
       base_url <> "/api/orchestrator/v1/runs/#{run_id}/cancel",
       service_token,
       %{},
-      nil,
-      idempotency_key(:cancel_run, nil, %{run_id: run_id})
+      session_context,
+      idempotency_key(:cancel_run, session_context, %{run_id: run_id})
     )
   end
 
@@ -122,10 +125,11 @@ defmodule Favn.Dev.OrchestratorClient do
              username: username,
              password: password
            }),
-          true <- is_binary(session_id) and session_id != "",
-          true <- is_binary(actor_id) and actor_id != "",
-          true <- is_binary(session_token) and session_token != "" do
-      {:ok, %{"actor_id" => actor_id, "session_id" => session_id, "session_token" => session_token}}
+         true <- is_binary(session_id) and session_id != "",
+         true <- is_binary(actor_id) and actor_id != "",
+         true <- is_binary(session_token) and session_token != "" do
+      {:ok,
+       %{"actor_id" => actor_id, "session_id" => session_id, "session_token" => session_token}}
     else
       false -> {:error, operation_error(:password_login, :post, url, :invalid_response)}
       {:error, _reason} = error -> error
@@ -311,13 +315,14 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec in_flight_runs(String.t(), String.t()) :: {:ok, [String.t()]} | {:error, term()}
-  def in_flight_runs(base_url, service_token)
+  @spec in_flight_runs(String.t(), String.t(), session_context() | nil) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def in_flight_runs(base_url, service_token, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) do
     url = base_url <> "/api/orchestrator/v1/runs/in-flight"
 
     with {:ok, %{"data" => %{"run_ids" => run_ids}}} <-
-           request_get(:list_in_flight_runs, url, service_token),
+           request_get(:list_in_flight_runs, url, service_token, session_context),
          true <- is_list(run_ids) do
       {:ok, Enum.filter(run_ids, &is_binary/1)}
     else
@@ -327,12 +332,12 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
-  @spec diagnostics(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def diagnostics(base_url, service_token)
+  @spec diagnostics(String.t(), String.t(), session_context() | nil) :: {:ok, map()} | {:error, term()}
+  def diagnostics(base_url, service_token, session_context \\ nil)
       when is_binary(base_url) and is_binary(service_token) do
     url = base_url <> "/api/orchestrator/v1/diagnostics"
 
-    case request_get(:diagnostics, url, service_token) do
+    case request_get(:diagnostics, url, service_token, session_context) do
       {:ok, %{"data" => diagnostics}} when is_map(diagnostics) ->
         {:ok, diagnostics}
 
@@ -417,9 +422,9 @@ defmodule Favn.Dev.OrchestratorClient do
   defp request(operation, method, url, service_token, body, session_context, idempotency_key) do
     headers =
       [
-        {"accept", "application/json"},
-        {"authorization", "Bearer #{service_token}"}
+        {"accept", "application/json"}
       ]
+      |> add_authorization_header(service_token)
       |> add_session_headers(session_context)
       |> add_idempotency_header(idempotency_key)
 
@@ -429,10 +434,20 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
+  defp add_authorization_header(headers, token) when is_binary(token) and token != "" do
+    headers ++ [{"authorization", "Bearer #{token}"}]
+  end
+
+  defp add_authorization_header(headers, _token), do: headers
+
   defp add_session_headers(headers, %{"actor_id" => actor_id, "session_token" => session_token})
        when is_binary(actor_id) and actor_id != "" and is_binary(session_token) and
               session_token != "" do
     headers ++ [{"x-favn-actor-id", actor_id}, {"x-favn-session-token", session_token}]
+  end
+
+  defp add_session_headers(headers, %{"local_dev_context" => "trusted"}) do
+    headers ++ [{"x-favn-local-dev-context", "trusted"}]
   end
 
   defp add_session_headers(headers, _session_context), do: headers

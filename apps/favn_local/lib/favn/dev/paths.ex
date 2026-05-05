@@ -98,9 +98,6 @@ defmodule Favn.Dev.Paths do
   @spec runtime_path(Path.t()) :: Path.t()
   def runtime_path(root_dir), do: Path.join(favn_dir(root_dir), "runtime.json")
 
-  @spec secrets_path(Path.t()) :: Path.t()
-  def secrets_path(root_dir), do: Path.join(favn_dir(root_dir), "secrets.json")
-
   @spec lock_path(Path.t()) :: Path.t()
   def lock_path(root_dir), do: Path.join(favn_dir(root_dir), "lock")
 

@@ -326,8 +326,8 @@ defmodule Favn.Manifest.VersionTest do
     assert {:error, {:invalid_manifest_payload, %ArgumentError{}}} = Version.new(manifest)
   end
 
-  test "rejects unknown manifest module atoms without creating them" do
-    module = "Elixir.ExternalConsumer.UnknownAsset#{System.unique_integer([:positive])}"
+  test "rejects manifest module references longer than the atom limit" do
+    module = "Elixir." <> String.duplicate("A", 249)
 
     manifest = %{
       "schema_version" => 1,
@@ -347,9 +347,79 @@ defmodule Favn.Manifest.VersionTest do
       "metadata" => %{}
     }
 
+    assert byte_size(module) == 256
+
     assert {:error, {:invalid_manifest_payload, %ArgumentError{message: message}}} =
              Version.new(manifest)
 
-    assert message == "unknown atom #{inspect(module)}"
+    assert message == "invalid module reference #{inspect(module)}"
+  end
+
+  test "accepts valid unloaded manifest atom strings" do
+    unique = System.unique_integer([:positive])
+    module = "Elixir.ExternalConsumer.UnknownAsset#{unique}"
+    name = "generated_asset_#{unique}"
+
+    manifest = %{
+      "schema_version" => 1,
+      "runner_contract_version" => 1,
+      "assets" => [
+        %{
+          "ref" => %{"module" => module, "name" => name},
+          "module" => module,
+          "name" => name,
+          "type" => "elixir",
+          "execution" => %{"entrypoint" => name, "arity" => 1}
+        }
+      ],
+      "pipelines" => [],
+      "schedules" => [],
+      "graph" => %{},
+      "metadata" => %{}
+    }
+
+    assert :error = existing_atom(module)
+    assert :error = existing_atom(name)
+    assert {:ok, version} = Version.new(manifest)
+
+    assert Atom.to_string(hd(version.manifest.assets).module) == module
+    assert Atom.to_string(hd(version.manifest.assets).name) == name
+    assert {:ok, atom} = existing_atom(module)
+    assert Atom.to_string(atom) == module
+    assert {:ok, name_atom} = existing_atom(name)
+    assert Atom.to_string(name_atom) == name
+  end
+
+  test "rejects manifests with too many manifest atom references" do
+    assets =
+      Enum.map(1..100_001, fn index ->
+        %{
+          "module" => "Elixir.ExternalConsumer.GeneratedAsset#{index}",
+          "name" => "asset",
+          "type" => "elixir",
+          "execution" => %{"entrypoint" => "asset", "arity" => 1}
+        }
+      end)
+
+    manifest = %{
+      "schema_version" => 1,
+      "runner_contract_version" => 1,
+      "assets" => assets,
+      "pipelines" => [],
+      "schedules" => [],
+      "graph" => %{},
+      "metadata" => %{}
+    }
+
+    assert {:error, {:manifest_atom_limit_exceeded, atom_ref_count, 100_000}} =
+             Version.new(manifest)
+
+    assert atom_ref_count > 100_000
+  end
+
+  defp existing_atom(value) do
+    {:ok, String.to_existing_atom(value)}
+  rescue
+    ArgumentError -> :error
   end
 end

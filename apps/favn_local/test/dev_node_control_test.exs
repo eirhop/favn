@@ -43,4 +43,50 @@ defmodule Favn.Dev.NodeControlTest do
     assert {:error, {:invalid_node_name, "bad name"}} = NodeControl.shortname_to_full("bad name")
     assert {:error, {:invalid_node_name, "bad@name"}} = NodeControl.shortname_to_full("bad@name")
   end
+
+  test "ensure_local_node_started/2 configures control node from shared preflight" do
+    parent = self()
+
+    assert :ok =
+             NodeControl.ensure_local_node_started("COOKIE",
+               name: "favn_local_ctl_test",
+               distribution_port: 45_125,
+               node_alive?: fn -> false end,
+               node_start: fn name, opts ->
+                 send(parent, {:node_start, name, opts})
+                 {:ok, self()}
+               end,
+               set_cookie: fn cookie -> send(parent, {:cookie, cookie}) end,
+               put_system_env: fn key, value -> send(parent, {:system_env, key, value}) end,
+               put_application_env: fn app, key, value ->
+                 send(parent, {:application_env, app, key, value})
+               end,
+                local_distribution: [
+                  localhost: fn -> ~c"WSLHOST" end,
+                  resolver: fn ~c"WSLHOST" -> {:ok, [{127, 0, 1, 1}]} end,
+                  epmd_executable: false
+                ]
+              )
+
+    assert_received {:system_env, "ERL_EPMD_ADDRESS", "127.0.1.1"}
+    assert_received {:application_env, :kernel, :inet_dist_use_interface, {127, 0, 1, 1}}
+    assert_received {:application_env, :kernel, :inet_dist_listen_min, 45_125}
+    assert_received {:application_env, :kernel, :inet_dist_listen_max, 45_125}
+    assert_received {:node_start, :favn_local_ctl_test, [name_domain: :shortnames]}
+    assert_received {:cookie, :COOKIE}
+  end
+
+  test "ensure_local_node_started/2 returns actionable preflight errors" do
+    assert {:error,
+            {:local_distribution_preflight_failed, :epmd_executable_missing,
+             "local Erlang distribution requires epmd" <> _message}} =
+             NodeControl.ensure_local_node_started("COOKIE",
+               node_alive?: fn -> false end,
+               local_distribution: [
+                 localhost: fn -> ~c"devhost" end,
+                 resolver: fn ~c"devhost" -> {:ok, [{127, 0, 0, 1}]} end,
+                 epmd_executable: nil
+               ]
+             )
+  end
 end

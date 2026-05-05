@@ -60,6 +60,5 @@ defmodule Mix.Tasks.Favn.Diagnostics do
   defp error_message(:orchestrator_not_running),
     do: "local orchestrator is not running; run mix favn.status for details"
 
-  defp error_message(:missing_service_token), do: "local service token is missing"
   defp error_message(reason), do: inspect(reason)
 end
