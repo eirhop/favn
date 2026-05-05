@@ -206,9 +206,17 @@ defmodule FavnOrchestrator.Redaction do
   defp redact_operational_untrusted(value) when is_binary(value), do: sanitize_text(value)
 
   defp redact_operational_untrusted(value) when is_tuple(value) do
-    value
-    |> Tuple.to_list()
-    |> Enum.map(&redact_operational_untrusted/1)
+    case Tuple.to_list(value) do
+      [key | rest] when is_atom(key) or is_binary(key) ->
+        if sensitive_key?(key_to_string(key)) do
+          [key | Enum.map(rest, fn _child -> "[REDACTED]" end)]
+        else
+          [key | Enum.map(rest, &redact_operational_untrusted/1)]
+        end
+
+      values ->
+        Enum.map(values, &redact_operational_untrusted/1)
+    end
     |> List.to_tuple()
   end
 

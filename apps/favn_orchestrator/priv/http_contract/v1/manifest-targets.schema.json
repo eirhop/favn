@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://favn.dev/contracts/orchestrator/v1/manifest-targets.schema.json",
+  "title": "ManifestTargets",
+  "type": "object",
+  "required": ["manifest_version_id", "assets", "pipelines"],
+  "additionalProperties": false,
+  "$defs": {
+    "relationRef": {
+      "type": "object",
+      "required": ["connection", "catalog", "schema", "name"],
+      "additionalProperties": true,
+      "properties": {
+        "connection": { "type": ["string", "null"] },
+        "catalog": { "type": ["string", "null"] },
+        "schema": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] }
+      }
+    },
+    "assetTarget": {
+      "type": "object",
+      "required": [
+        "target_id",
+        "label",
+        "asset_ref",
+        "type",
+        "relation",
+        "metadata",
+        "runtime_config",
+        "depends_on",
+        "materialization",
+        "window"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "target_id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "asset_ref": { "type": "string", "minLength": 1 },
+        "type": { "type": ["string", "null"] },
+        "relation": { "anyOf": [{ "$ref": "#/$defs/relationRef" }, { "type": "null" }, { "type": "object", "additionalProperties": true }] },
+        "metadata": { "type": "object", "additionalProperties": true },
+        "runtime_config": {},
+        "depends_on": { "type": "array", "items": { "type": "string" } },
+        "materialization": {},
+        "window": {}
+      }
+    },
+    "pipelineTarget": {
+      "type": "object",
+      "required": ["target_id", "label", "window"],
+      "additionalProperties": false,
+      "properties": {
+        "target_id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "window": {}
+      }
+    }
+  },
+  "properties": {
+    "manifest_version_id": { "type": "string", "minLength": 1 },
+    "assets": { "type": "array", "items": { "$ref": "#/$defs/assetTarget" } },
+    "pipelines": { "type": "array", "items": { "$ref": "#/$defs/pipelineTarget" } }
+  }
+}

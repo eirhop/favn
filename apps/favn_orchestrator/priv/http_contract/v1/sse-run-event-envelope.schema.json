@@ -30,6 +30,17 @@
     "global_sequence": { "type": ["integer", "null"], "minimum": 1 },
     "cursor": { "type": "string", "minLength": 1 },
     "summary": { "type": "string" },
-    "details": { "type": "object" }
+    "details": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "entity": { "type": ["string", "null"] },
+        "manifest_version_id": { "type": ["string", "null"] },
+        "manifest_content_hash": { "type": ["string", "null"] },
+        "asset_ref": { "type": ["string", "null"] },
+        "stage": { "type": ["integer", "null"], "minimum": 0 },
+        "data": {}
+      }
+    }
   }
 }
