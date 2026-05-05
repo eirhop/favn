@@ -240,6 +240,7 @@ defmodule FavnRunner.WorkerTest do
           config: %{
             rest: %{
               path: "/orders",
+              params: %{:status => "ok", "format" => "json"},
               extra: %{refresh_type: :full_refresh}
             }
           },
@@ -256,12 +257,40 @@ defmodule FavnRunner.WorkerTest do
       assert [asset_result] = result.asset_results
       assert asset_result.meta.refresh_type == :full_refresh
       assert asset_result.meta.path == "/orders"
+      assert asset_result.meta.param_status == "ok"
+      assert asset_result.meta.param_status_atom == nil
       assert asset_result.meta.username == "merchant"
       assert asset_result.meta.password_seen? == true
     after
       restore_env("FAVN_TEST_MERCATUS_USERNAME", previous_username)
       restore_env("FAVN_TEST_MERCATUS_PASSWORD", previous_password)
     end
+  end
+
+  test "worker preserves arbitrary extra strings after manifest JSON roundtrip" do
+    _existing_atoms = {:format, :json, :ok, :status}
+
+    result =
+      run_single_asset(FavnRunner.WorkerTest.MultiAssetArbitraryConfigAsset,
+        roundtrip_asset?: true,
+        config: %{
+          rest: %{
+            params: %{:status => "ok", "format" => "json"},
+            extra: %{status: "ok", format: "json"}
+          }
+        }
+      )
+
+    assert result.status == :ok
+    assert [asset_result] = result.asset_results
+
+    assert asset_result.meta.extra_status == "ok"
+    assert asset_result.meta.extra_format == "json"
+    assert asset_result.meta.extra_status_atom == nil
+    assert asset_result.meta.extra_format_atom == nil
+    assert asset_result.meta.param_status == "ok"
+    assert asset_result.meta.param_format == "json"
+    assert asset_result.meta.param_status_atom == nil
   end
 
   defp assert_throw_exit_result(module, expected_kind) do
@@ -404,8 +433,26 @@ defmodule FavnRunner.WorkerTest.MultiAssetConfigAsset do
      %{
        refresh_type: ctx.asset.config.rest.extra.refresh_type,
        path: ctx.asset.config.rest.path,
+       param_status: ctx.asset.config.rest.params["status"],
+       param_status_atom: Map.get(ctx.asset.config.rest.params, :status),
        username: ctx.config.mercatus.username,
        password_seen?: ctx.config.mercatus.password == "merchant-secret"
+     }}
+  end
+end
+
+defmodule FavnRunner.WorkerTest.MultiAssetArbitraryConfigAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(ctx) do
+    {:ok,
+     %{
+       extra_status: ctx.asset.config.rest.extra["status"],
+       extra_format: ctx.asset.config.rest.extra["format"],
+       extra_status_atom: Map.get(ctx.asset.config.rest.extra, :status),
+       extra_format_atom: Map.get(ctx.asset.config.rest.extra, :format),
+       param_status: ctx.asset.config.rest.params["status"],
+       param_format: ctx.asset.config.rest.params["format"],
+       param_status_atom: Map.get(ctx.asset.config.rest.params, :status)
      }}
   end
 end

@@ -8,6 +8,12 @@ defmodule FavnRunner.ContextBuilder do
   alias Favn.Run.Context
   alias Favn.RuntimeConfig.Resolver, as: RuntimeConfigResolver
 
+  @rest_keys [:path, :data_path, :params, :primary_key, :paginator, :incremental, :method, :extra]
+  @rest_methods [:get, :post, :put, :patch, :delete]
+  @paginator_kinds [:cursor, :offset, :page]
+  @incremental_kinds [:cursor]
+  @extra_refresh_types [:full_refresh, :incremental]
+
   @spec build(RunnerWork.t(), Asset.t(), String.t()) :: {:ok, Context.t()} | {:error, term()}
   def build(%RunnerWork{} = work, %Asset{} = asset, execution_id) when is_binary(execution_id) do
     run_id = work.run_id || execution_id
@@ -39,45 +45,40 @@ defmodule FavnRunner.ContextBuilder do
   defp normalized_map(map) when is_map(map), do: map
   defp normalized_map(_other), do: %{}
 
-  defp ergonomic_asset_config(%Asset{module: module, config: config}) do
-    _ = if is_atom(module), do: Code.ensure_loaded(module), else: :ok
-
+  defp ergonomic_asset_config(%Asset{config: config}) do
     config
     |> normalized_map()
-    |> atomize_multi_asset_config()
+    |> rehydrate_multi_asset_config()
   end
 
-  defp atomize_multi_asset_config(config) when is_map(config) do
+  defp rehydrate_multi_asset_config(config) when is_map(config) do
     config
-    |> atomize_known_key(:rest)
-    |> atomize_rest_config()
+    |> rehydrate_known_key(:rest)
+    |> rehydrate_rest_config()
   end
 
-  defp atomize_rest_config(%{rest: rest} = config) when is_map(rest),
-    do: %{config | rest: atomize_rest_fields(rest)}
+  defp rehydrate_rest_config(%{rest: rest} = config) when is_map(rest),
+    do: %{config | rest: rehydrate_rest_fields(rest)}
 
-  defp atomize_rest_config(config), do: config
+  defp rehydrate_rest_config(config), do: config
 
-  defp atomize_rest_fields(rest) do
+  defp rehydrate_rest_fields(rest) do
     rest
-    |> atomize_known_key(:path)
-    |> atomize_known_key(:data_path)
-    |> atomize_known_key(:params)
-    |> atomize_known_key(:primary_key)
-    |> atomize_known_key(:paginator)
-    |> atomize_known_key(:incremental)
-    |> atomize_known_key(:method)
-    |> atomize_known_key(:extra)
-    |> atomize_nested_existing_keys(:params)
-    |> atomize_nested_existing_keys(:paginator)
-    |> atomize_nested_existing_keys(:incremental)
-    |> atomize_nested_existing_terms(:extra)
-    |> atomize_existing_value(:method)
-    |> atomize_existing_value([:paginator, :kind])
-    |> atomize_existing_value([:incremental, :kind])
+    |> rehydrate_known_keys(@rest_keys)
+    |> rehydrate_enum(:method, @rest_methods)
+    |> rehydrate_nested_known_keys(:paginator, [:kind])
+    |> rehydrate_nested_enum([:paginator, :kind], @paginator_kinds)
+    |> rehydrate_nested_known_keys(:incremental, [:kind])
+    |> rehydrate_nested_enum([:incremental, :kind], @incremental_kinds)
+    |> rehydrate_nested_known_keys(:extra, [:refresh_type])
+    |> rehydrate_nested_enum([:extra, :refresh_type], @extra_refresh_types)
   end
 
-  defp atomize_known_key(map, atom_key) when is_map(map) do
+  defp rehydrate_known_keys(map, keys) when is_map(map) and is_list(keys) do
+    Enum.reduce(keys, map, &rehydrate_known_key(&2, &1))
+  end
+
+  defp rehydrate_known_key(map, atom_key) when is_map(map) do
     string_key = Atom.to_string(atom_key)
 
     cond do
@@ -92,73 +93,40 @@ defmodule FavnRunner.ContextBuilder do
     end
   end
 
-  defp atomize_nested_existing_keys(map, key) when is_map(map) do
+  defp rehydrate_nested_known_keys(map, key, nested_keys) when is_map(map) do
     case Map.fetch(map, key) do
-      {:ok, value} when is_map(value) -> Map.put(map, key, atomize_existing_keys(value))
-      _other -> map
-    end
-  end
-
-  defp atomize_nested_existing_terms(map, key) when is_map(map) do
-    case Map.fetch(map, key) do
-      {:ok, value} when is_map(value) -> Map.put(map, key, atomize_existing_terms(value))
-      _other -> map
-    end
-  end
-
-  defp atomize_existing_keys(value) when is_map(value) do
-    Map.new(value, fn {key, child} -> {existing_atom_key(key), atomize_existing_keys(child)} end)
-  end
-
-  defp atomize_existing_keys(value) when is_list(value),
-    do: Enum.map(value, &atomize_existing_keys/1)
-
-  defp atomize_existing_keys(value), do: value
-
-  defp atomize_existing_terms(value) when is_map(value) do
-    Map.new(value, fn {key, child} -> {existing_atom_key(key), atomize_existing_terms(child)} end)
-  end
-
-  defp atomize_existing_terms(value) when is_list(value),
-    do: Enum.map(value, &atomize_existing_terms/1)
-
-  defp atomize_existing_terms(value) when is_binary(value), do: existing_atom_value(value)
-  defp atomize_existing_terms(value), do: value
-
-  defp atomize_existing_value(map, key) when is_map(map) and is_atom(key) do
-    case Map.fetch(map, key) do
-      {:ok, value} -> Map.put(map, key, existing_atom_value(value))
-      :error -> map
-    end
-  end
-
-  defp atomize_existing_value(map, [root, key]) when is_map(map) do
-    case Map.fetch(map, root) do
-      {:ok, nested} when is_map(nested) ->
-        Map.put(map, root, atomize_existing_value(nested, key))
+      {:ok, value} when is_map(value) ->
+        Map.put(map, key, rehydrate_known_keys(value, nested_keys))
 
       _other ->
         map
     end
   end
 
-  defp existing_atom_key(key) when is_atom(key), do: key
-
-  defp existing_atom_key(key) when is_binary(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
+  defp rehydrate_enum(map, key, allowed) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> Map.put(map, key, decode_known_enum(value, allowed))
+      :error -> map
+    end
   end
 
-  defp existing_atom_key(key), do: key
+  defp rehydrate_nested_enum(map, [root, key], allowed) when is_map(map) do
+    case Map.fetch(map, root) do
+      {:ok, nested} when is_map(nested) ->
+        Map.put(map, root, rehydrate_enum(nested, key, allowed))
 
-  defp existing_atom_value(value) when is_binary(value) do
-    String.to_existing_atom(value)
-  rescue
-    ArgumentError -> value
+      _other ->
+        map
+    end
   end
 
-  defp existing_atom_value(value), do: value
+  defp decode_known_enum(value, _allowed) when is_atom(value), do: value
+
+  defp decode_known_enum(value, allowed) when is_binary(value) do
+    Enum.find(allowed, value, &(Atom.to_string(&1) == value))
+  end
+
+  defp decode_known_enum(value, _allowed), do: value
 
   defp normalized_stage(metadata) when is_map(metadata) do
     case Map.get(metadata, :stage, 0) do
