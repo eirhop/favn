@@ -57,6 +57,10 @@ defmodule Favn.Connection do
   DuckDB connections that need DuckLake session setup can include the DuckDB-owned
   bootstrap schema field:
 
+  `Favn.SQL.Adapter.DuckDB` is provided by the public `:favn_duckdb`
+  adapter/plugin dependency. Consumers should add `:favn_duckdb` for DuckDB
+  execution rather than depending on internal SQL runtime or runner apps directly.
+
       %Favn.Connection.Definition{
         name: :warehouse,
         adapter: Favn.SQL.Adapter.DuckDB,
