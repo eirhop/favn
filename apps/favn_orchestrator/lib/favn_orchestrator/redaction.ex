@@ -46,6 +46,10 @@ defmodule FavnOrchestrator.Redaction do
   """
   @spec redact(term()) :: term()
   def redact(%DateTime{} = value), do: value
+
+  def redact(%{__exception__: true, __struct__: module}),
+    do: %{type: module, message: "[REDACTED]"}
+
   def redact(%_struct{} = value), do: redact_struct(value)
 
   def redact(value) when is_map(value) do

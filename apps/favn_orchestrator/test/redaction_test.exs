@@ -7,8 +7,8 @@ defmodule FavnOrchestrator.RedactionTest do
     assert "[REDACTED]" = Redaction.redact_untrusted(%RuntimeError{message: "password=secret"})
   end
 
-  test "redact handles structs without requiring Enumerable" do
-    assert %{message: "password=secret", type: RuntimeError} =
+  test "redact redacts exception structs without requiring Enumerable" do
+    assert %{message: "[REDACTED]", type: RuntimeError} =
              Redaction.redact(%RuntimeError{message: "password=secret"})
   end
 
