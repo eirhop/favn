@@ -498,6 +498,10 @@ Pre-closeout SQL payload compatibility is intentionally not supported. Existing
 SQLite/Postgres rows that were persisted as BEAM term blobs must be reset or
 recreated before running with the closeout adapters.
 
+Pre-DTO SQLite auth rows are also intentionally unsupported. If a private-dev
+database contains auth roles, credentials, or audit entries persisted before the
+explicit auth DTO boundary, reset or recreate that SQLite control-plane state.
+
 ### favn_local configuration
 
 `favn_local` reads local tooling config from `config :favn, :local` (with

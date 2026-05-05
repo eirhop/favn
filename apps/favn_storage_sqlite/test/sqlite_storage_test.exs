@@ -17,6 +17,7 @@ defmodule Favn.SQLiteStorageTest do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
+  alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
 
@@ -283,6 +284,65 @@ defmodule Favn.SQLiteStorageTest do
              ])
 
     assert {:error, {:invalid_auth_audit_field, :occurred_at, "not-a-date"}} =
+             OrchestratorStorage.list_auth_audit(limit: 10)
+  end
+
+  test "pre-DTO auth payload rows fail explicitly without legacy fallback" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    actor = %{
+      id: "act_legacy_payload",
+      username: "legacy-payload",
+      display_name: "Legacy Payload",
+      roles: [:admin],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    credential = %{password_hash: "$argon2id$v=19$m=256,t=1,p=1$encoded-salt$encoded-hash"}
+
+    audit = %{
+      id: "aud_legacy_payload",
+      occurred_at: now,
+      action: "auth.test",
+      outcome: "accepted"
+    }
+
+    assert :ok = OrchestratorStorage.put_auth_actor(actor)
+    assert :ok = OrchestratorStorage.put_auth_credential(actor.id, credential)
+    assert :ok = OrchestratorStorage.put_auth_audit(audit)
+
+    assert {:ok, legacy_roles_payload} = PayloadCodec.encode(actor.roles)
+    assert {:ok, legacy_credential_payload} = PayloadCodec.encode(credential)
+    assert {:ok, legacy_audit_payload} = PayloadCodec.encode(audit)
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_auth_actors SET roles_blob = ?1 WHERE actor_id = ?2", [
+               legacy_roles_payload,
+               actor.id
+             ])
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_auth_credentials SET credential_blob = ?1 WHERE actor_id = ?2",
+               [legacy_credential_payload, actor.id]
+             )
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_auth_audits SET entry_blob = ?1 WHERE audit_id = ?2", [
+               legacy_audit_payload,
+               audit.id
+             ])
+
+    assert {:error, {:invalid_auth_roles_dto, _dto}} =
+             OrchestratorStorage.get_auth_actor(actor.id)
+
+    assert {:error, {:invalid_auth_credential_dto, _dto}} =
+             OrchestratorStorage.get_auth_credential(actor.id)
+
+    assert {:error, {:invalid_auth_audit_dto, _dto}} =
              OrchestratorStorage.list_auth_audit(limit: 10)
   end
 

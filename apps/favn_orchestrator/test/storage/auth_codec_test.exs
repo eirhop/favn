@@ -72,12 +72,28 @@ defmodule FavnOrchestrator.Storage.AuthCodecTest do
 
     assert {:error, {:invalid_auth_credential_dto, _dto}} =
              AuthCodec.decode_credential(wrong_format)
+
+    mislabeled_argon2i =
+      Jason.encode!(%{
+        "format" => "favn.auth.credential.storage.v1",
+        "schema_version" => 1,
+        "credential" => %{
+          "kind" => "password_hash",
+          "algorithm" => "argon2id",
+          "password_hash" => "$argon2i$v=19$m=256,t=1,p=1$encoded-salt$encoded-hash"
+        }
+      })
+
+    assert {:error, {:invalid_auth_credential_field, :credential, _credential}} =
+             AuthCodec.decode_credential(mislabeled_argon2i)
   end
 
   test "encodes audit entries as bounded JSON-safe DTOs" do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     entry = %{
+      "id" => "detail-id",
+      "action" => "detail-action",
       id: "aud_codec",
       occurred_at: now,
       action: "auth.test",
@@ -96,6 +112,8 @@ defmodule FavnOrchestrator.Storage.AuthCodecTest do
     assert dto["schema_version"] == 1
     assert dto["details"]["password"] == "[REDACTED]"
     assert dto["details"]["metadata"]["token"] == "[REDACTED]"
+    refute Map.has_key?(dto["details"], "id")
+    refute Map.has_key?(dto["details"], "action")
     refute encoded =~ "secret"
     refute encoded =~ "raw-token"
     refute encoded =~ "__type__"
@@ -106,10 +124,12 @@ defmodule FavnOrchestrator.Storage.AuthCodecTest do
     assert decoded.occurred_at == now
     assert decoded.action == "auth.test"
     assert decoded["password"] == "[REDACTED]"
+    refute Map.has_key?(decoded, "id")
+    refute Map.has_key?(decoded, "action")
   end
 
   test "rejects malformed audit DTOs" do
-    malformed =
+    malformed_timestamp =
       Jason.encode!(%{
         "format" => "favn.auth.audit.storage.v1",
         "schema_version" => 1,
@@ -119,6 +139,53 @@ defmodule FavnOrchestrator.Storage.AuthCodecTest do
       })
 
     assert {:error, {:invalid_auth_audit_field, :occurred_at, "not-a-date"}} =
-             AuthCodec.decode_audit(malformed)
+             AuthCodec.decode_audit(malformed_timestamp)
+
+    missing_id =
+      Jason.encode!(%{
+        "format" => "favn.auth.audit.storage.v1",
+        "schema_version" => 1,
+        "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "details" => %{}
+      })
+
+    assert {:error, {:invalid_auth_audit_field, "id", nil}} =
+             AuthCodec.decode_audit(missing_id)
+
+    empty_id =
+      Jason.encode!(%{
+        "format" => "favn.auth.audit.storage.v1",
+        "schema_version" => 1,
+        "id" => "",
+        "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "details" => %{}
+      })
+
+    assert {:error, {:invalid_auth_audit_field, "id", ""}} = AuthCodec.decode_audit(empty_id)
+
+    non_binary_id =
+      Jason.encode!(%{
+        "format" => "favn.auth.audit.storage.v1",
+        "schema_version" => 1,
+        "id" => 123,
+        "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "details" => %{}
+      })
+
+    assert {:error, {:invalid_auth_audit_field, "id", 123}} =
+             AuthCodec.decode_audit(non_binary_id)
+
+    non_binary_action =
+      Jason.encode!(%{
+        "format" => "favn.auth.audit.storage.v1",
+        "schema_version" => 1,
+        "id" => "aud_bad_action",
+        "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "action" => 123,
+        "details" => %{}
+      })
+
+    assert {:error, {:invalid_auth_audit_field, :action, 123}} =
+             AuthCodec.decode_audit(non_binary_action)
   end
 end
