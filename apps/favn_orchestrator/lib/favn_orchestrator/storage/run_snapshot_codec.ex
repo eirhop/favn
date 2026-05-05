@@ -2,10 +2,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @moduledoc false
 
   alias Favn.Manifest.Identity
+  alias Favn.Plan
+  alias Favn.Run.AssetResult
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage.PayloadCodec
+  alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunStateCodec
 
+  @format "favn.run_snapshot.storage.v1"
   @max_manifest_atom_length 128
   @max_manifest_module_length 512
 
@@ -27,6 +30,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "cancelled",
     "config",
     "dependencies",
+    "deps",
     "downstream",
     "duration_ms",
     "error",
@@ -109,15 +113,23 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
           required(:manifest_json) => String.t()
         }
 
+  @spec encode_run(RunState.t()) :: {:ok, String.t()} | {:error, term()}
+  def encode_run(%RunState{} = run_state) do
+    with {:ok, normalized} <- RunStateCodec.normalize(run_state) do
+      {:ok, Jason.encode!(run_to_dto(normalized))}
+    end
+  rescue
+    error -> {:error, {:run_snapshot_encode_failed, error}}
+  end
+
   @spec decode_run(run_record(), manifest_record() | nil) ::
           {:ok, RunState.t()} | {:error, term()}
   def decode_run(%{run_blob: payload, manifest_version_id: manifest_version_id}, manifest_record)
       when is_binary(payload) and is_binary(manifest_version_id) do
     with {:ok, manifest_record} <- validate_manifest_record(manifest_record, manifest_version_id),
          {:ok, allowed_atom_strings} <- allowed_atom_strings(manifest_record),
-         {:ok, decoded} <-
-           PayloadCodec.decode(payload, allowed_atom_strings: allowed_atom_strings),
-         %RunState{} = run_state <- decoded,
+         {:ok, dto} <- decode_dto(payload),
+         {:ok, run_state} <- dto_to_run(dto, allowed_atom_strings),
          :ok <- validate_run_manifest(run_state, manifest_version_id),
          :ok <- validate_run_content_hash(run_state, manifest_record),
          {:ok, normalized} <- RunStateCodec.normalize(run_state) do
@@ -129,6 +141,409 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   def decode_run(run_record, _manifest_record), do: {:error, {:invalid_run_record, run_record}}
+
+  defp run_to_dto(%RunState{} = run) do
+    %{
+      "format" => @format,
+      "schema_version" => 1,
+      "id" => run.id,
+      "manifest_version_id" => run.manifest_version_id,
+      "manifest_content_hash" => run.manifest_content_hash,
+      "asset_ref" => JsonSafe.ref(run.asset_ref),
+      "target_refs" => Enum.map(run.target_refs, &JsonSafe.ref/1),
+      "plan" => plan_to_dto(run.plan),
+      "status" => Atom.to_string(run.status),
+      "event_seq" => run.event_seq,
+      "snapshot_hash" => run.snapshot_hash,
+      "params" => JsonSafe.data(run.params),
+      "trigger" => JsonSafe.data(run.trigger),
+      "metadata" => JsonSafe.data(run.metadata),
+      "submit_kind" => Atom.to_string(run.submit_kind),
+      "rerun_of_run_id" => run.rerun_of_run_id,
+      "parent_run_id" => run.parent_run_id,
+      "root_run_id" => run.root_run_id,
+      "lineage_depth" => run.lineage_depth,
+      "max_attempts" => run.max_attempts,
+      "retry_backoff_ms" => run.retry_backoff_ms,
+      "timeout_ms" => run.timeout_ms,
+      "runner_execution_id" => run.runner_execution_id,
+      "result" => result_to_dto(run.result),
+      "error" => JsonSafe.error(run.error),
+      "inserted_at" => datetime_to_dto(run.inserted_at),
+      "updated_at" => datetime_to_dto(run.updated_at)
+    }
+  end
+
+  defp decode_dto(payload) do
+    case Jason.decode(payload) do
+      {:ok, %{"format" => @format} = dto} ->
+        {:ok, dto}
+
+      {:ok, other} ->
+        {:error, {:invalid_run_snapshot_dto, other}}
+
+      {:error, reason} ->
+        {:error, {:invalid_run_snapshot_json, reason}}
+    end
+  end
+
+  defp dto_to_run(%{"schema_version" => 1} = dto, allowed_atom_strings) do
+    with {:ok, asset_ref} <- ref_from_dto(Map.get(dto, "asset_ref"), allowed_atom_strings),
+         {:ok, target_refs} <- refs_from_dto(Map.get(dto, "target_refs"), allowed_atom_strings),
+         {:ok, plan} <- plan_from_dto(Map.get(dto, "plan"), allowed_atom_strings),
+         {:ok, status} <- status_from_dto(Map.get(dto, "status")),
+         {:ok, submit_kind} <- submit_kind_from_dto(Map.get(dto, "submit_kind")),
+         {:ok, inserted_at} <- datetime_from_dto(Map.get(dto, "inserted_at")),
+         {:ok, updated_at} <- datetime_from_dto(Map.get(dto, "updated_at")) do
+      {:ok,
+       %RunState{
+         id: Map.get(dto, "id"),
+         manifest_version_id: Map.get(dto, "manifest_version_id"),
+         manifest_content_hash: Map.get(dto, "manifest_content_hash"),
+         asset_ref: asset_ref,
+         target_refs: target_refs,
+         plan: plan,
+         status: status,
+         event_seq: Map.get(dto, "event_seq"),
+         snapshot_hash: Map.get(dto, "snapshot_hash"),
+         params: data_from_dto(Map.get(dto, "params"), allowed_atom_strings),
+         trigger: data_from_dto(Map.get(dto, "trigger"), allowed_atom_strings),
+         metadata: data_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
+         submit_kind: submit_kind,
+         rerun_of_run_id: empty_to_nil(Map.get(dto, "rerun_of_run_id")),
+         parent_run_id: empty_to_nil(Map.get(dto, "parent_run_id")),
+         root_run_id: empty_to_nil(Map.get(dto, "root_run_id")),
+         lineage_depth: Map.get(dto, "lineage_depth", 0),
+         max_attempts: Map.get(dto, "max_attempts", 1),
+         retry_backoff_ms: Map.get(dto, "retry_backoff_ms", 0),
+         timeout_ms: Map.get(dto, "timeout_ms", 5000),
+         runner_execution_id: empty_to_nil(Map.get(dto, "runner_execution_id")),
+         result: result_from_dto(Map.get(dto, "result"), allowed_atom_strings),
+         error: Map.get(dto, "error"),
+         inserted_at: inserted_at,
+         updated_at: updated_at
+       }}
+    end
+  end
+
+  defp dto_to_run(dto, _allowed_atom_strings), do: {:error, {:unsupported_run_snapshot_dto, dto}}
+
+  defp plan_to_dto(nil), do: nil
+
+  defp plan_to_dto(%Plan{} = plan) do
+    %{
+      "target_refs" => Enum.map(plan.target_refs, &JsonSafe.ref/1),
+      "target_node_keys" => Enum.map(plan.target_node_keys, &node_key_to_dto/1),
+      "dependencies" => Atom.to_string(plan.dependencies),
+      "nodes" => Enum.map(plan.nodes, fn {_key, node} -> plan_node_to_dto(node) end),
+      "topo_order" => Enum.map(plan.topo_order, &JsonSafe.ref/1),
+      "stages" => Enum.map(plan.stages, fn stage -> Enum.map(stage, &JsonSafe.ref/1) end),
+      "node_stages" =>
+        Enum.map(plan.node_stages, fn stage -> Enum.map(stage, &node_key_to_dto/1) end)
+    }
+  end
+
+  defp plan_node_to_dto(node) when is_map(node) do
+    %{
+      "ref" => JsonSafe.ref(Map.get(node, :ref)),
+      "node_key" => node_key_to_dto(Map.get(node, :node_key)),
+      "window" => JsonSafe.data(Map.get(node, :window)),
+      "upstream" => Enum.map(List.wrap(Map.get(node, :upstream)), &node_key_to_dto/1),
+      "downstream" => Enum.map(List.wrap(Map.get(node, :downstream)), &node_key_to_dto/1),
+      "stage" => Map.get(node, :stage),
+      "action" => Map.get(node, :action) |> atom_to_string()
+    }
+  end
+
+  defp node_key_to_dto({ref, identity}) do
+    %{"ref" => JsonSafe.ref(ref), "identity" => JsonSafe.data(identity)}
+  end
+
+  defp node_key_to_dto(_value), do: nil
+
+  defp result_to_dto(nil), do: nil
+
+  defp result_to_dto(%{asset_results: results} = result) when is_list(results) do
+    result
+    |> Map.put(:asset_results, Enum.map(results, &JsonSafe.data/1))
+    |> JsonSafe.data()
+  end
+
+  defp result_to_dto(result), do: JsonSafe.data(result)
+
+  defp plan_from_dto(nil, _allowed_atom_strings), do: {:ok, nil}
+
+  defp plan_from_dto(%{} = dto, allowed_atom_strings) do
+    with {:ok, target_refs} <- refs_from_dto(Map.get(dto, "target_refs"), allowed_atom_strings),
+         {:ok, target_node_keys} <-
+           node_keys_from_dto(Map.get(dto, "target_node_keys"), allowed_atom_strings),
+         {:ok, dependencies} <- dependencies_from_dto(Map.get(dto, "dependencies")),
+         {:ok, nodes} <- nodes_from_dto(Map.get(dto, "nodes"), allowed_atom_strings),
+         {:ok, topo_order} <- refs_from_dto(Map.get(dto, "topo_order"), allowed_atom_strings),
+         {:ok, stages} <- stages_from_dto(Map.get(dto, "stages"), allowed_atom_strings),
+         {:ok, node_stages} <-
+           node_stages_from_dto(Map.get(dto, "node_stages"), allowed_atom_strings) do
+      {:ok,
+       %Plan{
+         target_refs: target_refs,
+         target_node_keys: target_node_keys,
+         dependencies: dependencies,
+         nodes: nodes,
+         topo_order: topo_order,
+         stages: stages,
+         node_stages: node_stages
+       }}
+    end
+  end
+
+  defp plan_from_dto(_value, _allowed_atom_strings), do: {:ok, nil}
+
+  defp nodes_from_dto(nodes, allowed_atom_strings) when is_list(nodes) do
+    Enum.reduce_while(nodes, {:ok, %{}}, fn node, {:ok, acc} ->
+      with {:ok, decoded} <- node_from_dto(node, allowed_atom_strings),
+           node_key when is_tuple(node_key) <- Map.get(decoded, :node_key) do
+        {:cont, {:ok, Map.put(acc, node_key, decoded)}}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+        _other -> {:halt, {:error, {:invalid_plan_node, node}}}
+      end
+    end)
+  end
+
+  defp nodes_from_dto(_nodes, _allowed_atom_strings), do: {:ok, %{}}
+
+  defp node_from_dto(%{} = node, allowed_atom_strings) do
+    with {:ok, ref} <- ref_from_dto(Map.get(node, "ref"), allowed_atom_strings),
+         {:ok, node_key} <- node_key_from_dto(Map.get(node, "node_key"), allowed_atom_strings),
+         {:ok, upstream} <- node_keys_from_dto(Map.get(node, "upstream"), allowed_atom_strings),
+         {:ok, downstream} <-
+           node_keys_from_dto(Map.get(node, "downstream"), allowed_atom_strings),
+         {:ok, action} <- action_from_dto(Map.get(node, "action")) do
+      {:ok,
+       %{
+         ref: ref,
+         node_key: node_key,
+         window: data_from_dto(Map.get(node, "window"), allowed_atom_strings),
+         upstream: upstream,
+         downstream: downstream,
+         stage: Map.get(node, "stage", 0),
+         action: action
+       }}
+    end
+  end
+
+  defp node_from_dto(node, _allowed_atom_strings), do: {:error, {:invalid_plan_node, node}}
+
+  defp node_keys_from_dto(values, allowed_atom_strings) when is_list(values) do
+    collect_values(values, &node_key_from_dto(&1, allowed_atom_strings))
+  end
+
+  defp node_keys_from_dto(_values, _allowed_atom_strings), do: {:ok, []}
+
+  defp node_key_from_dto(nil, _allowed_atom_strings), do: {:ok, nil}
+
+  defp node_key_from_dto(%{"ref" => ref, "identity" => identity}, allowed_atom_strings) do
+    with {:ok, decoded_ref} <- ref_from_dto(ref, allowed_atom_strings) do
+      {:ok, {decoded_ref, data_from_dto(identity, allowed_atom_strings)}}
+    end
+  end
+
+  defp node_key_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_node_key, value}}
+
+  defp stages_from_dto(stages, allowed_atom_strings) when is_list(stages) do
+    collect_atoms(stages, &refs_from_dto(&1, allowed_atom_strings))
+  end
+
+  defp stages_from_dto(_stages, _allowed_atom_strings), do: {:ok, []}
+
+  defp node_stages_from_dto(stages, allowed_atom_strings) when is_list(stages) do
+    collect_values(stages, &node_keys_from_dto(&1, allowed_atom_strings))
+  end
+
+  defp node_stages_from_dto(_stages, _allowed_atom_strings), do: {:ok, []}
+
+  defp refs_from_dto(values, allowed_atom_strings) when is_list(values) do
+    collect_atoms(values, &ref_from_dto(&1, allowed_atom_strings))
+  end
+
+  defp refs_from_dto(_values, _allowed_atom_strings), do: {:ok, []}
+
+  defp ref_from_dto(%{"module" => module, "name" => name}, allowed_atom_strings) do
+    with {:ok, module_atom} <- atom_from_dto(module, allowed_atom_strings),
+         {:ok, name_atom} <- atom_from_dto(name, allowed_atom_strings) do
+      {:ok, {module_atom, name_atom}}
+    end
+  end
+
+  defp ref_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_ref_dto, value}}
+
+  defp atom_from_dto(value, allowed_atom_strings) when is_binary(value) do
+    if value in allowed_atom_strings do
+      {:ok, String.to_atom(value)}
+    else
+      {:error, {:unknown_atom, value}}
+    end
+  end
+
+  defp atom_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_atom_dto, value}}
+
+  defp status_from_dto("pending"), do: {:ok, :pending}
+  defp status_from_dto("running"), do: {:ok, :running}
+  defp status_from_dto("ok"), do: {:ok, :ok}
+  defp status_from_dto("partial"), do: {:ok, :partial}
+  defp status_from_dto("error"), do: {:ok, :error}
+  defp status_from_dto("cancelled"), do: {:ok, :cancelled}
+  defp status_from_dto("timed_out"), do: {:ok, :timed_out}
+  defp status_from_dto(value), do: {:error, {:invalid_run_status, value}}
+
+  defp submit_kind_from_dto("manual"), do: {:ok, :manual}
+  defp submit_kind_from_dto("rerun"), do: {:ok, :rerun}
+  defp submit_kind_from_dto("pipeline"), do: {:ok, :pipeline}
+  defp submit_kind_from_dto("backfill_asset"), do: {:ok, :backfill_asset}
+  defp submit_kind_from_dto("backfill_pipeline"), do: {:ok, :backfill_pipeline}
+  defp submit_kind_from_dto(value), do: {:error, {:invalid_submit_kind, value}}
+
+  defp dependencies_from_dto("all"), do: {:ok, :all}
+  defp dependencies_from_dto("none"), do: {:ok, :none}
+  defp dependencies_from_dto(nil), do: {:ok, :all}
+  defp dependencies_from_dto(value), do: {:error, {:invalid_dependencies, value}}
+
+  defp action_from_dto("run"), do: {:ok, :run}
+  defp action_from_dto("observe"), do: {:ok, :observe}
+  defp action_from_dto(nil), do: {:ok, :run}
+  defp action_from_dto(value), do: {:error, {:invalid_plan_action, value}}
+
+  defp result_from_dto(nil, _allowed_atom_strings), do: nil
+
+  defp result_from_dto(%{} = result, allowed_atom_strings) do
+    result
+    |> data_from_dto(allowed_atom_strings)
+    |> atomize_known_result()
+  end
+
+  defp result_from_dto(value, allowed_atom_strings),
+    do: data_from_dto(value, allowed_atom_strings)
+
+  defp atomize_known_result(%{} = result) do
+    result
+    |> atomize_key("status", :status, &status_value_from_dto/1)
+    |> atomize_key("asset_results", :asset_results, &asset_results_from_dto/1)
+    |> atomize_key("metadata", :metadata, & &1)
+    |> Map.update(:status, Map.get(result, :status), &status_value_from_dto/1)
+    |> Map.update(:asset_results, Map.get(result, :asset_results, []), &asset_results_from_dto/1)
+    |> Map.update(:metadata, Map.get(result, :metadata, %{}), & &1)
+  end
+
+  defp atomize_known_result(value), do: value
+
+  defp asset_results_from_dto(results) when is_list(results),
+    do: Enum.map(results, &asset_result_from_dto/1)
+
+  defp asset_results_from_dto(_results), do: []
+
+  defp asset_result_from_dto(%{"ref" => ref} = result),
+    do: asset_result_from_dto(data_from_dto(result, []), ref)
+
+  defp asset_result_from_dto(%{ref: ref} = result), do: asset_result_from_dto(result, ref)
+  defp asset_result_from_dto(result), do: result
+
+  defp asset_result_from_dto(result, ref) do
+    %AssetResult{
+      ref: ref,
+      stage: Map.get(result, :stage, 0),
+      status: status_value_from_dto(Map.get(result, :status)),
+      started_at: datetime_value_from_dto(Map.get(result, :started_at)),
+      finished_at: datetime_value_from_dto(Map.get(result, :finished_at)),
+      duration_ms: Map.get(result, :duration_ms, 0),
+      meta: Map.get(result, :meta, %{}),
+      error: Map.get(result, :error),
+      attempt_count: Map.get(result, :attempt_count, 0),
+      max_attempts: Map.get(result, :max_attempts, 1),
+      attempts: Map.get(result, :attempts, []),
+      next_retry_at: datetime_value_from_dto(Map.get(result, :next_retry_at))
+    }
+  end
+
+  defp data_from_dto(%{"module" => _module, "name" => _name} = value, allowed_atom_strings) do
+    case ref_from_dto(value, allowed_atom_strings) do
+      {:ok, ref} -> ref
+      {:error, _reason} -> value
+    end
+  end
+
+  defp data_from_dto(%{} = value, allowed_atom_strings) do
+    Map.new(value, fn {key, val} ->
+      {known_key(key), data_from_dto(val, allowed_atom_strings)}
+    end)
+  end
+
+  defp data_from_dto(values, allowed_atom_strings) when is_list(values) do
+    Enum.map(values, &data_from_dto(&1, allowed_atom_strings))
+  end
+
+  defp data_from_dto(value, _allowed_atom_strings), do: value
+
+  defp known_key(key) when key in @internal_atom_strings do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> key
+  end
+
+  defp known_key(key), do: key
+
+  defp collect_values(values, fun) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      case fun.(value) do
+        {:ok, item} -> {:cont, {:ok, acc ++ [item]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp atomize_key(map, string_key, atom_key, mapper) when is_map(map) do
+    case Map.fetch(map, string_key) do
+      {:ok, value} -> map |> Map.delete(string_key) |> Map.put(atom_key, mapper.(value))
+      :error -> map
+    end
+  end
+
+  defp status_value_from_dto(value) when is_atom(value), do: value
+
+  defp status_value_from_dto(value) when is_binary(value),
+    do: status_from_dto(value) |> elem_or(value)
+
+  defp status_value_from_dto(value), do: value
+
+  defp elem_or({:ok, value}, _fallback), do: value
+  defp elem_or({:error, _reason}, fallback), do: fallback
+
+  defp datetime_to_dto(nil), do: nil
+  defp datetime_to_dto(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp datetime_from_dto(nil), do: {:ok, nil}
+
+  defp datetime_from_dto(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      _other -> {:error, {:invalid_datetime, value}}
+    end
+  end
+
+  defp datetime_from_dto(value), do: {:error, {:invalid_datetime, value}}
+
+  defp datetime_value_from_dto(nil), do: nil
+
+  defp datetime_value_from_dto(value) when is_binary(value),
+    do: datetime_from_dto(value) |> elem_or(value)
+
+  defp datetime_value_from_dto(value), do: value
+
+  defp atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp atom_to_string(value) when is_binary(value), do: value
+  defp atom_to_string(_value), do: nil
+
+  defp empty_to_nil(value) when value in [nil, ""], do: nil
+  defp empty_to_nil(value), do: value
 
   defp validate_manifest_record(nil, manifest_version_id),
     do: {:error, {:missing_manifest_version, manifest_version_id}}

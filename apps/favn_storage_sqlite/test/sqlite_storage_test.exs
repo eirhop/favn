@@ -86,7 +86,7 @@ defmodule Favn.SQLiteStorageTest do
       "Elixir.Favn.SQLiteStorageTest.RestartAsset#{System.unique_integer([:positive])}"
 
     assert :ok = Storage.put_run(run)
-    replace_run_atom(run.id, existing_module, unknown_module)
+    replace_run_value(run.id, existing_module, unknown_module)
 
     content_hash =
       replace_manifest_value(run.manifest_version_id, existing_module, unknown_module)
@@ -106,9 +106,9 @@ defmodule Favn.SQLiteStorageTest do
       "Elixir.Favn.SQLiteStorageTest.UnknownAsset#{System.unique_integer([:positive])}"
 
     assert :ok = Storage.put_run(run)
-    replace_run_atom(run.id, existing_module, unknown_module)
+    replace_run_value(run.id, existing_module, unknown_module)
 
-    assert {:error, {:store_error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}}} =
+    assert {:error, {:store_error, {:unknown_atom, ^unknown_module}}} =
              Storage.get_run(run.id)
   end
 
@@ -490,7 +490,7 @@ defmodule Favn.SQLiteStorageTest do
     assert :ok = Storage.put_run(second)
     assert {:ok, fetched} = Storage.get_run("sqlite-higher")
     assert fetched.event_seq == 2
-    assert fetched.params == %{payload: 2}
+    assert fetched.params == %{"payload" => 2}
   end
 
   test "persists run result payloads" do
@@ -510,11 +510,11 @@ defmodule Favn.SQLiteStorageTest do
     assert :ok = Storage.put_run(run_error)
 
     assert {:ok, fetched_ok} = Storage.get_run("sqlite-latest-1")
-    assert fetched_ok.params == %{result_payload: 1}
+    assert fetched_ok.params == %{"result_payload" => 1}
     assert fetched_ok.status == :ok
 
     assert {:ok, fetched_error} = Storage.get_run("sqlite-latest-2")
-    assert fetched_error.params == %{result_payload: 2}
+    assert fetched_error.params == %{"result_payload" => 2}
     assert fetched_error.status == :error
   end
 
@@ -950,11 +950,11 @@ defmodule Favn.SQLiteStorageTest do
 
   defp manifest_content_hash, do: manifest_version("manifest_v1").content_hash
 
-  defp replace_run_atom(run_id, from, to) do
+  defp replace_run_value(run_id, from, to) do
     assert {:ok, %{rows: [[payload]]}} =
              SQL.query(Repo, "SELECT run_blob FROM favn_runs WHERE run_id = ?1", [run_id])
 
-    payload = replace_atom_value(payload, from, to)
+    payload = replace_string_value(payload, from, to)
 
     assert {:ok, _} =
              SQL.query(Repo, "UPDATE favn_runs SET run_blob = ?1 WHERE run_id = ?2", [
@@ -996,27 +996,6 @@ defmodule Favn.SQLiteStorageTest do
                run_id
              ])
   end
-
-  defp replace_atom_value(encoded, from, to) do
-    encoded
-    |> JSON.decode!()
-    |> replace_atom_value_in_term(from, to)
-    |> JSON.encode!()
-  end
-
-  defp replace_atom_value_in_term(%{"__type__" => "atom", "value" => value} = term, value, to) do
-    %{term | "value" => to}
-  end
-
-  defp replace_atom_value_in_term(%{} = term, from, to) do
-    Map.new(term, fn {key, value} -> {key, replace_atom_value_in_term(value, from, to)} end)
-  end
-
-  defp replace_atom_value_in_term(values, from, to) when is_list(values) do
-    Enum.map(values, &replace_atom_value_in_term(&1, from, to))
-  end
-
-  defp replace_atom_value_in_term(value, _from, _to), do: value
 
   defp replace_string_value(encoded, from, to) do
     encoded

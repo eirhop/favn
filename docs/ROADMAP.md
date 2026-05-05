@@ -42,6 +42,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 - Extend the new orchestrator production readiness surface into operator-facing migration commands/runbooks and coordinate clearly with separate DuckDB data-plane backups for the single-node production contract.
 - Add documented backup/restore procedures and verification for the SQLite control plane and the separate DuckDB/plugin data plane.
+- Audit remaining generic `PayloadCodec` persistence outside run snapshots/events and replace each durable storage area with explicit JSON-safe DTO records where the database boundary still stores reconstructed BEAM terms.
 - Move Postgres live verification into the next production mode after SQLite single-node readiness, not the first `v1` gate.
 
 ### 6. Harden The Production-Grade Runtime

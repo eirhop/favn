@@ -3,6 +3,10 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
 
   alias FavnOrchestrator.Storage.RunEventCodec
 
+  defmodule UnexpectedEventError do
+    defexception [:message, :password]
+  end
+
   test "normalizes valid run events" do
     occurred_at = DateTime.utc_now()
 
@@ -28,7 +32,7 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
     assert normalized.entity == :step
     assert normalized.stage == 3
     assert normalized.occurred_at == occurred_at
-    assert normalized.data == %{attempt: 1}
+    assert normalized.data == %{"attempt" => 1}
   end
 
   test "accepts ISO8601 timestamps" do
@@ -77,5 +81,41 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
                event_type: :run_started,
                occurred_at: 1
              })
+  end
+
+  test "encodes run events as explicit JSON-safe DTOs" do
+    event = %{
+      run_id: "run_event_dto",
+      sequence: 1,
+      event_type: :step_failed,
+      entity: :step,
+      occurred_at: DateTime.utc_now(),
+      status: :error,
+      asset_ref: {MyApp.Asset, :asset},
+      stage: 0,
+      data: %{
+        asset_ref: {MyApp.Asset, :asset},
+        error: %UnexpectedEventError{message: "password=secret", password: "secret"},
+        stacktrace: [{__MODULE__, :test, 1}]
+      }
+    }
+
+    assert {:ok, normalized} = RunEventCodec.normalize("run_event_dto", event)
+    assert {:ok, payload} = RunEventCodec.encode(normalized)
+
+    decoded = Jason.decode!(payload)
+    assert decoded["format"] == "favn.run_event.storage.v1"
+    refute payload =~ "__type__"
+    refute payload =~ "__struct__"
+    refute payload =~ "password=secret"
+    refute payload =~ ~s("tuple")
+    refute payload =~ ~s("atom")
+
+    assert {:ok, restored} = RunEventCodec.decode(payload)
+    assert restored.event_type == :step_failed
+    assert restored.entity == :step
+    assert restored.asset_ref == {MyApp.Asset, :asset}
+    assert restored.data["error"]["message"] == "[REDACTED]"
+    assert restored.data["stacktrace"] == [[Atom.to_string(__MODULE__), "test", 1]]
   end
 end

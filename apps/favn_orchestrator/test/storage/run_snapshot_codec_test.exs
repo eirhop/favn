@@ -3,208 +3,122 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
-  alias Favn.Manifest.Identity
   alias Favn.Manifest.Version
+  alias Favn.Run.AssetResult
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
-  alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
 
-  test "decodes run atoms allowed by the associated manifest" do
-    existing_module = __MODULE__.ExistingAsset
-    unknown_module = "Elixir.Favn.RunSnapshotCodecTest.RestartAsset"
-    version = manifest_version("mv_run_snapshot_allowed", existing_module)
-    run = run_state("run_snapshot_allowed", version, existing_module)
-
-    assert {:ok, run_blob} = PayloadCodec.encode(run)
-    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
-
-    run_record = %{
-      run_blob: replace_atom_value(run_blob, Atom.to_string(existing_module), unknown_module),
-      manifest_version_id: version.manifest_version_id
-    }
-
-    manifest_json =
-      replace_string_value(
-        manifest_record.manifest_json,
-        Atom.to_string(existing_module),
-        unknown_module
-      )
-
-    content_hash = manifest_content_hash!(manifest_json)
-
-    run_record = %{
-      run_record
-      | run_blob: replace_string_value(run_record.run_blob, version.content_hash, content_hash)
-    }
-
-    manifest_record = %{
-      manifest_record
-      | manifest_json: manifest_json,
-        content_hash: content_hash
-    }
-
-    assert {:ok, decoded} = RunSnapshotCodec.decode_run(run_record, manifest_record)
-    assert {module, :asset} = decoded.asset_ref
-    assert Atom.to_string(module) == unknown_module
+  defmodule UnexpectedRunnerError do
+    defexception [:message, :token]
   end
 
-  test "rejects run atoms absent from the associated manifest" do
-    existing_module = __MODULE__.ExistingAsset
-    unknown_module = "Elixir.Favn.RunSnapshotCodecTest.UnknownAsset"
-    version = manifest_version("mv_run_snapshot_rejected", existing_module)
-    run = run_state("run_snapshot_rejected", version, existing_module)
+  test "encodes run snapshots as explicit JSON-safe DTOs" do
+    version = manifest_version("mv_run_snapshot_dto", __MODULE__.Asset)
+    run = run_state("run_snapshot_dto", version, __MODULE__.Asset)
 
-    assert {:ok, run_blob} = PayloadCodec.encode(run)
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    decoded = Jason.decode!(payload)
+
+    assert decoded["format"] == "favn.run_snapshot.storage.v1"
+
+    assert decoded["asset_ref"] == %{
+             "module" => Atom.to_string(__MODULE__.Asset),
+             "name" => "asset"
+           }
+
+    refute payload =~ "__type__"
+    refute payload =~ "__struct__"
+    refute payload =~ ~s("tuple")
+    refute payload =~ ~s("atom")
+
     assert {:ok, manifest_record} = ManifestCodec.to_record(version)
 
-    run_record = %{
-      run_blob: replace_atom_value(run_blob, Atom.to_string(existing_module), unknown_module),
-      manifest_version_id: version.manifest_version_id
-    }
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
 
-    assert {:error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}} =
-             RunSnapshotCodec.decode_run(run_record, manifest_record)
+    assert restored.id == run.id
+    assert restored.asset_ref == {__MODULE__.Asset, :asset}
+    assert restored.status == :pending
   end
 
-  test "rejects stale manifest content hash before trusting manifest atoms" do
-    existing_module = __MODULE__.ExistingAsset
-    unknown_module = "Elixir.Favn.RunSnapshotCodecTest.RestartAsset"
-    version = manifest_version("mv_run_snapshot_stale_manifest", existing_module)
-    run = run_state("run_snapshot_stale_manifest", version, existing_module)
+  test "normalizes unexpected exception structs before persistence" do
+    version = manifest_version("mv_run_snapshot_exception", __MODULE__.Asset)
 
-    assert {:ok, run_blob} = PayloadCodec.encode(run)
-    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
-
-    manifest_json =
-      replace_string_value(
-        manifest_record.manifest_json,
-        Atom.to_string(existing_module),
-        unknown_module
-      )
-
-    run_record = %{
-      run_blob: replace_atom_value(run_blob, Atom.to_string(existing_module), unknown_module),
-      manifest_version_id: version.manifest_version_id
+    error = %UnexpectedRunnerError{
+      message: "database password=super-secret token=secret-token failed",
+      token: "secret-token"
     }
 
-    stale_record = %{manifest_record | manifest_json: manifest_json}
+    now = DateTime.utc_now()
 
-    assert {:error, {:manifest_content_hash_mismatch, _, _}} =
-             RunSnapshotCodec.decode_run(run_record, stale_record)
-  end
-
-  test "rejects run manifest content hash mismatch" do
-    existing_module = __MODULE__.ExistingAsset
-    version = manifest_version("mv_run_snapshot_hash_mismatch", existing_module)
-    run = run_state("run_snapshot_hash_mismatch", version, existing_module)
-
-    assert {:ok, run_blob} = PayloadCodec.encode(run)
-    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
-
-    other_hash = String.duplicate("f", 64)
-
-    run_record = %{
-      run_blob: replace_string_value(run_blob, version.content_hash, other_hash),
-      manifest_version_id: version.manifest_version_id
+    asset_result = %AssetResult{
+      ref: {__MODULE__.Asset, :asset},
+      stage: 0,
+      status: :error,
+      started_at: now,
+      finished_at: now,
+      duration_ms: 1,
+      error: error,
+      attempt_count: 1,
+      max_attempts: 1,
+      attempts: [%{attempt: 1, status: :error, error: error}]
     }
-
-    assert {:error, {:run_manifest_content_hash_mismatch, version_hash, ^other_hash}} =
-             RunSnapshotCodec.decode_run(run_record, manifest_record)
-
-    assert version_hash == version.content_hash
-  end
-
-  test "decodes internal pipeline context atoms" do
-    existing_module = __MODULE__.ExistingAsset
-    version = manifest_version("mv_run_snapshot_pipeline_context", existing_module)
-
-    internal_pipeline_atoms = ~w(
-      all
-      anchor_ranges
-      anchor_window
-      backfill_range
-      config
-      deps
-      name
-      outputs
-      pipeline
-      pipeline_context
-      pipeline_dependencies
-      pipeline_module
-      pipeline_submit_ref
-      pipeline_target_refs
-      resolved_refs
-      run_kind
-      schedule
-      source
-      submit_ref
-    )
-
-    placeholders =
-      internal_pipeline_atoms
-      |> Enum.with_index()
-      |> Enum.map(fn {_target, index} -> String.to_atom("snapshot_pipeline_atom_#{index}") end)
-
-    pipeline_context = Map.new(placeholders, &{&1, &1})
 
     run =
-      RunState.new(
-        id: "run_snapshot_pipeline_context",
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        asset_ref: {existing_module, :asset},
-        metadata: %{pipeline_context: pipeline_context}
+      "run_snapshot_exception"
+      |> run_state(version, __MODULE__.Asset)
+      |> RunState.transition(
+        status: :error,
+        error: error,
+        result: %{status: :error, asset_results: [asset_result], metadata: %{password: "secret"}}
       )
 
-    assert {:ok, run_blob} = PayloadCodec.encode(run)
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    refute payload =~ "super-secret"
+    refute payload =~ "secret-token"
+    refute payload =~ "__struct__"
+
     assert {:ok, manifest_record} = ManifestCodec.to_record(version)
 
-    run_blob =
-      placeholders
-      |> Enum.zip(internal_pipeline_atoms)
-      |> Enum.reduce(run_blob, fn {placeholder, target}, payload ->
-        replace_atom_value(payload, Atom.to_string(placeholder), target)
-      end)
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
 
-    run_record = %{run_blob: run_blob, manifest_version_id: version.manifest_version_id}
+    assert restored.status == :error
+    assert restored.error["type"] == Atom.to_string(UnexpectedRunnerError)
+    assert restored.error["message"] == "[REDACTED]"
 
-    assert {:ok, decoded} = RunSnapshotCodec.decode_run(run_record, manifest_record)
+    assert [%AssetResult{error: asset_error, attempts: [attempt]}] = restored.result.asset_results
 
-    assert decoded.metadata.pipeline_context
-           |> Map.keys()
-           |> Enum.map(&Atom.to_string/1)
-           |> Enum.sort() == internal_pipeline_atoms
+    assert asset_error["message"] == "[REDACTED]"
+    attempt_error = Map.get(attempt, "error") || Map.fetch!(attempt, :error)
+    assert attempt_error["message"] == "[REDACTED]"
   end
 
-  test "ignores unrelated manifest module and name fields" do
-    existing_module = __MODULE__.ExistingAsset
-    unknown_module = "Elixir.Favn.RunSnapshotCodecTest.MetadataModule"
-    version = manifest_version("mv_run_snapshot_metadata_ignored", existing_module)
-    run = run_state("run_snapshot_metadata_ignored", version, existing_module)
+  test "rejects refs that are not present in the associated manifest" do
+    version = manifest_version("mv_run_snapshot_bad_ref", __MODULE__.Asset)
+    run = run_state("run_snapshot_bad_ref", version, __MODULE__.Asset)
 
-    assert {:ok, run_blob} = PayloadCodec.encode(run)
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
     assert {:ok, manifest_record} = ManifestCodec.to_record(version)
 
-    manifest_json = put_manifest_metadata_module(manifest_record.manifest_json, unknown_module)
-    content_hash = manifest_content_hash!(manifest_json)
+    tampered =
+      payload
+      |> Jason.decode!()
+      |> put_in(["asset_ref", "module"], "Elixir.Unknown.Asset")
+      |> Jason.encode!()
 
-    run_record = %{
-      run_blob:
-        run_blob
-        |> replace_atom_value(Atom.to_string(existing_module), unknown_module)
-        |> replace_string_value(version.content_hash, content_hash),
-      manifest_version_id: version.manifest_version_id
-    }
-
-    manifest_record = %{
-      manifest_record
-      | manifest_json: manifest_json,
-        content_hash: content_hash
-    }
-
-    assert {:error, {:payload_decode_failed, {:unknown_atom, ^unknown_module}}} =
-             RunSnapshotCodec.decode_run(run_record, manifest_record)
+    assert {:error, {:unknown_atom, "Elixir.Unknown.Asset"}} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: tampered, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
   end
 
   defp manifest_version(manifest_version_id, module) do
@@ -221,64 +135,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       id: run_id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
-      asset_ref: {module, :asset}
+      asset_ref: {module, :asset},
+      target_refs: [{module, :asset}]
     )
-  end
-
-  defp replace_atom_value(encoded, from, to) do
-    encoded
-    |> JSON.decode!()
-    |> replace_atom_value_in_term(from, to)
-    |> JSON.encode!()
-  end
-
-  defp replace_atom_value_in_term(%{"__type__" => "atom", "value" => value} = term, value, to) do
-    %{term | "value" => to}
-  end
-
-  defp replace_atom_value_in_term(%{} = term, from, to) do
-    Map.new(term, fn {key, value} -> {key, replace_atom_value_in_term(value, from, to)} end)
-  end
-
-  defp replace_atom_value_in_term(values, from, to) when is_list(values) do
-    Enum.map(values, &replace_atom_value_in_term(&1, from, to))
-  end
-
-  defp replace_atom_value_in_term(value, _from, _to), do: value
-
-  defp replace_string_value(encoded, from, to) do
-    encoded
-    |> JSON.decode!()
-    |> replace_string_value_in_term(from, to)
-    |> JSON.encode!()
-  end
-
-  defp replace_string_value_in_term(value, value, to) when is_binary(value), do: to
-
-  defp replace_string_value_in_term(%{} = term, from, to) do
-    Map.new(term, fn {key, value} -> {key, replace_string_value_in_term(value, from, to)} end)
-  end
-
-  defp replace_string_value_in_term(values, from, to) when is_list(values) do
-    Enum.map(values, &replace_string_value_in_term(&1, from, to))
-  end
-
-  defp replace_string_value_in_term(value, _from, _to), do: value
-
-  defp manifest_content_hash!(manifest_json) do
-    manifest_json
-    |> JSON.decode!()
-    |> Identity.hash_manifest()
-    |> case do
-      {:ok, hash} -> hash
-    end
-  end
-
-  defp put_manifest_metadata_module(manifest_json, module) do
-    manifest_json
-    |> JSON.decode!()
-    |> put_in(["metadata", "module"], module)
-    |> put_in(["metadata", "name"], "metadata_name")
-    |> JSON.encode!()
   end
 end

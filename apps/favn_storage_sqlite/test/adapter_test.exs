@@ -9,6 +9,9 @@ defmodule FavnStorageSqlite.AdapterTest do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunState
+  alias FavnStorageSqlite.Repo
+
+  alias Ecto.Adapters.SQL
 
   setup context do
     unique = System.unique_integer([:positive])
@@ -93,6 +96,30 @@ defmodule FavnStorageSqlite.AdapterTest do
     assert stored.status == :pending
   end
 
+  test "persists run snapshots as JSON-safe DTO records", %{opts: opts} do
+    version = manifest_version("mv_sqlite_dto")
+
+    run =
+      RunState.new(
+        id: "run_sqlite_dto",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        metadata: %{password: "secret"}
+      )
+
+    assert :ok = Adapter.put_manifest_version(version, opts)
+    assert :ok = Adapter.put_run(run, opts)
+
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT run_blob FROM favn_runs WHERE run_id = ?1", [run.id])
+
+    assert Jason.decode!(payload)["format"] == "favn.run_snapshot.storage.v1"
+    refute payload =~ "__type__"
+    refute payload =~ "__struct__"
+    refute payload =~ "secret"
+  end
+
   test "stores run events and scheduler cursor state", %{opts: opts} do
     event = %{
       sequence: 1,
@@ -120,6 +147,15 @@ defmodule FavnStorageSqlite.AdapterTest do
              Adapter.list_global_run_events([after_global_sequence: nil, limit: 10], opts)
 
     assert global_event.run_id == "run_sqlite_events"
+
+    assert {:ok, %{rows: [[event_payload]]}} =
+             SQL.query(Repo, "SELECT event_blob FROM favn_run_events WHERE run_id = ?1", [
+               "run_sqlite_events"
+             ])
+
+    assert Jason.decode!(event_payload)["format"] == "favn.run_event.storage.v1"
+    refute event_payload =~ "__type__"
+    refute event_payload =~ "__struct__"
 
     assert {:ok, []} =
              Adapter.list_global_run_events(
