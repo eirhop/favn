@@ -438,7 +438,9 @@ once, and applies an explicit absolute session TTL. Passwords must be nonblank,
 Clients must forward the session token to the private orchestrator API as
 `x-favn-session-token`. SQLite storage keeps only encoded Argon2 password hashes,
 deterministic session-token hashes, revocation timestamps, actor metadata, and
-redacted audit entries; password changes revoke active sessions for that actor.
+redacted audit entries, with auth roles, credential records, and audit entries
+stored as explicit JSON-safe DTO records rather than generic BEAM-term payloads;
+password changes revoke active sessions for that actor.
 
 Local numeric config values, including dev ports and Postgres port/pool size,
 are accepted only as positive integers or strings that contain exactly a
@@ -495,6 +497,10 @@ canonical format.
 Pre-closeout SQL payload compatibility is intentionally not supported. Existing
 SQLite/Postgres rows that were persisted as BEAM term blobs must be reset or
 recreated before running with the closeout adapters.
+
+Pre-DTO SQLite auth rows are also intentionally unsupported. If a private-dev
+database contains auth roles, credentials, or audit entries persisted before the
+explicit auth DTO boundary, reset or recreate that SQLite control-plane state.
 
 ### favn_local configuration
 
@@ -589,7 +595,8 @@ release, or inconsistent. Local/default SQLite startup still auto-runs
 migrations, while manual startup can reject non-ready existing databases and can
 initialize empty databases when explicitly enabled.
 SQLite is also the first durable backend for orchestrator auth/session/audit
-state; Postgres auth persistence remains deferred.
+state, storing auth roles, credential records, and audit entries as explicit
+JSON-safe DTO records; Postgres auth persistence remains deferred.
 
 Detailed operator diagnostics are available through the private orchestrator
 HTTP endpoint `GET /api/orchestrator/v1/diagnostics` with service auth and the

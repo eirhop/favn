@@ -12,6 +12,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.AuthCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
@@ -653,7 +654,8 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def put_auth_actor(actor, opts) when is_map(actor) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, roles_payload} <- AuthCodec.encode_roles(Map.fetch!(actor, :roles)) do
       sql = """
       INSERT INTO favn_auth_actors (actor_id, username, display_name, roles_blob, status, inserted_at, updated_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -669,7 +671,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         actor.id,
         actor.username,
         actor.display_name,
-        encode_payload(actor.roles),
+        roles_payload,
         encode_atom(actor.status),
         encode_datetime(actor.inserted_at),
         encode_datetime(actor.updated_at)
@@ -723,7 +725,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def put_auth_credential(actor_id, credential, opts)
       when is_binary(actor_id) and is_map(credential) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, credential_payload} <- AuthCodec.encode_credential(credential) do
       sql = """
       INSERT INTO favn_auth_credentials (actor_id, credential_blob, updated_at)
       VALUES (?1, ?2, ?3)
@@ -734,7 +737,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       query_ok(repo, sql, [
         actor_id,
-        encode_payload(credential),
+        credential_payload,
         encode_datetime(DateTime.utc_now())
       ])
     end
@@ -767,7 +770,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       sql = "SELECT credential_blob FROM favn_auth_credentials WHERE actor_id = ?1 LIMIT 1"
 
       case SQL.query(repo, sql, [actor_id]) do
-        {:ok, %{rows: [[payload]]}} -> decode_payload(payload)
+        {:ok, %{rows: [[payload]]}} -> AuthCodec.decode_credential(payload)
         {:ok, %{rows: []}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
       end
@@ -842,7 +845,8 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   @impl true
   def put_auth_audit(entry, opts) when is_map(entry) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, entry_payload} <- AuthCodec.encode_audit(entry) do
       sql = """
       INSERT INTO favn_auth_audits (audit_id, occurred_at, action, actor_id, session_id, outcome, entry_blob)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -855,7 +859,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         Map.get(entry, :actor_id),
         Map.get(entry, :session_id),
         Map.get(entry, :outcome),
-        encode_payload(entry)
+        entry_payload
       ]
 
       query_ok(repo, sql, params)
@@ -874,9 +878,8 @@ defmodule Favn.Storage.Adapter.SQLite do
         {:ok, %{rows: rows}} ->
           rows
           |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
-            case decode_payload(payload) do
+            case AuthCodec.decode_audit(payload) do
               {:ok, entry} when is_map(entry) -> {:cont, {:ok, [entry | acc]}}
-              {:ok, other} -> {:halt, {:error, {:invalid_auth_audit_payload, other}}}
               {:error, reason} -> {:halt, {:error, reason}}
             end
           end)
@@ -1099,7 +1102,7 @@ defmodule Favn.Storage.Adapter.SQLite do
          inserted_at,
          updated_at
        ]) do
-    with {:ok, roles} <- decode_payload(roles_blob),
+    with {:ok, roles} <- AuthCodec.decode_roles(roles_blob),
          {:ok, status} <- existing_atom(status) do
       {:ok,
        %{
