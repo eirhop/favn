@@ -629,7 +629,10 @@ multi-asset modules. Prefer `Favn.Asset` for new single assets and
 `Favn.MultiAsset` for generated or repetitive multi-asset modules. Multi-assets
 support module-level `source_config/2`; each generated asset carries the same
 runtime config declarations and shared runtime code reads resolved values from
-`ctx.config`.
+`ctx.config`. At runtime, Favn rehydrates `ctx.asset.config.rest` structural keys
+and known Favn enum fields for idiomatic access. Arbitrary adapter-specific
+`rest.extra` payload keys and static `rest.params` entries remain
+manifest/JSON-shaped unless Favn explicitly supports that key.
 
 ## Documentation
 

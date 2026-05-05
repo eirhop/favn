@@ -118,6 +118,12 @@ defmodule Favn.MultiAsset do
   asset and resolved into `ctx.config` by the runner. Relation ownership,
   metadata, and window specs remain per generated asset.
 
+  At runtime, Favn rehydrates `ctx.asset.config.rest` structural keys and known
+  Favn enum fields so code can use idiomatic access such as
+  `ctx.asset.config.rest.path` and `ctx.asset.config.rest.extra.refresh_type`.
+  Arbitrary adapter-specific `rest.extra` payload keys and static `rest.params`
+  entries remain manifest/JSON-shaped unless Favn explicitly supports that key.
+
   ## Common mistakes
 
   - forgetting the shared `asset/1` runtime function
