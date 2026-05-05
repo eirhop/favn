@@ -6,7 +6,6 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   alias Favn.SQL.Error
 
   @config_key :duckdb_bootstrap
-  @extension_names [:ducklake, :postgres, :azure]
 
   @type step :: %{id: String.t(), kind: atom(), statement: iodata(), safe_statement: iodata()}
 
@@ -102,15 +101,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   defp normalize_extension_list(_values), do: {:error, :invalid_extension_list}
 
-  defp normalize_extension_name(name) when name in @extension_names, do: {:ok, name}
-
-  defp normalize_extension_name(name) when is_binary(name) do
-    Enum.find_value(@extension_names, {:error, {:unsupported_extension, name}}, fn extension ->
-      if Atom.to_string(extension) == name, do: {:ok, extension}
-    end)
-  end
-
-  defp normalize_extension_name(name), do: {:error, {:unsupported_extension, name}}
+  defp normalize_extension_name(name), do: normalize_identifier(name)
 
   defp normalize_secrets(config) do
     with {:ok, secrets} <- normalize_keyword_config(config, :secrets) do
@@ -220,7 +211,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   defp extension_steps(kind, names) do
     Enum.map(names, fn name ->
-      sql = [String.upcase(Atom.to_string(kind)), " ", Atom.to_string(name)]
+      sql = [String.upcase(Atom.to_string(kind)), " ", name]
 
       %{
         id: step_id(kind, name),

@@ -181,9 +181,8 @@ Production DuckDB behavior covers or must preserve:
 - Separate-process DuckDB execution as the recommended production placement when
   using the implemented DuckDB plugin modes, so DuckDB handles live in a
   supervised worker process instead of the asset worker process.
-- Bootstrap extension install/load constrained by the adapter allow-list
-  (`ducklake`, `postgres`, and `azure` today), with unsupported extensions
-  rejected during bootstrap config validation.
+- Bootstrap extension install/load accepts any valid DuckDB extension identifier;
+  malformed identifiers are rejected during bootstrap config validation.
 - Clear diagnostics for connection, bootstrap, extension, materialization,
   appender, cancellation, timeout, and crash failures, with secret values
   redacted from logs, API/UI payloads, and structured error details. Separate

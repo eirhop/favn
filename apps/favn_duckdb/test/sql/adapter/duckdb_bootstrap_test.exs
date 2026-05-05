@@ -46,13 +46,14 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     assert {:error, :expected_duckdb_bootstrap_keyword_or_map} = validator.(:invalid)
   end
 
-  test "schema field accepts supported extension names as binaries" do
+  test "schema field accepts arbitrary extension identifiers as atoms or binaries" do
     assert %{type: {:custom, validator}} = DuckDB.bootstrap_schema_field()
 
-    assert :ok = validator.(extensions: [install: ["ducklake"], load: ["postgres", "azure"]])
+    assert :ok =
+             validator.(extensions: [install: ["ducklake", :json], load: ["postgres", "azure"]])
 
-    assert {:error, {:unsupported_extension, "unknown"}} =
-             validator.(extensions: [load: ["unknown"]])
+    assert {:error, {:invalid_identifier, "invalid extension"}} =
+             validator.(extensions: [load: ["invalid extension"]])
   end
 
   test "runs DuckLake bootstrap statements in configured order" do
@@ -110,7 +111,10 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
 
     resolved = %Resolved{
       resolved()
-      | config: %{database: ":memory:", duckdb_bootstrap: [extensions: [load: [:unknown]]]}
+      | config: %{
+          database: ":memory:",
+          duckdb_bootstrap: [extensions: [load: ["invalid extension"]]]
+        }
     }
 
     assert {:error,
@@ -121,7 +125,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
               details: %{reason: reason}
             }} = DuckDB.bootstrap(conn, resolved, [])
 
-    assert reason =~ "unsupported_extension"
+    assert reason =~ "invalid_identifier"
   end
 
   test "malformed bootstrap config returns structured invalid config errors" do
