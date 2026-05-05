@@ -185,6 +185,26 @@ defmodule FavnStorageSqlite.AdapterTest do
                opts
              )
 
+    assert {:ok, %{rows: [[state_payload]]}} =
+             SQL.query(
+               Repo,
+               "SELECT state_blob FROM favn_scheduler_cursors WHERE schedule_id = ?1",
+               [
+                 "daily"
+               ]
+             )
+
+    state_dto = Jason.decode!(state_payload)
+    assert state_dto["format"] == "favn.scheduler_state.storage"
+    assert state_dto["schema_version"] == 1
+    assert is_map(state_dto["state"])
+    assert is_binary(state_dto["state"]["last_due_at"])
+    refute Map.has_key?(state_dto["state"], "pipeline_module")
+    refute Map.has_key?(state_dto["state"], "schedule_id")
+    refute Map.has_key?(state_dto["state"], "version")
+    refute state_payload =~ "__type__"
+    refute state_payload =~ "__struct__"
+
     assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} =
              Adapter.get_scheduler_state(key, opts)
   end

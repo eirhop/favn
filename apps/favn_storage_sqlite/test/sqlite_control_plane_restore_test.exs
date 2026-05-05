@@ -95,6 +95,8 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
     assert stored_scheduler_state.pipeline_module == MyApp.RestorePipeline
     assert stored_scheduler_state.schedule_id == :daily
     assert stored_scheduler_state.version == scheduler_state.version
+    assert %DateTime{} = stored_scheduler_state.last_due_at
+    assert stored_scheduler_state.last_due_at == scheduler_state.last_due_at
 
     assert {:ok, ^baseline} = Adapter.get_coverage_baseline(baseline.baseline_id, restored_opts)
 
