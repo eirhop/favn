@@ -11,13 +11,15 @@ Code:
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
-- HTTP contract schemas under `apps/favn_orchestrator/priv/http_contract/v1/`
+- Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`
+- HTTP contract schemas for private API JSON-safe DTOs under `apps/favn_orchestrator/priv/http_contract/v1/`
 - Production runtime config, readiness, diagnostics, redaction, and operational event modules under `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Command idempotency helpers under `apps/favn_orchestrator/lib/favn_orchestrator/idempotency.ex`
 
 Tests:
 - `apps/favn_orchestrator/test/`
 - API contract tests under `apps/favn_orchestrator/test/api/`
+- HTTP schema shape tests under `apps/favn_orchestrator/test/http_contract/`
 - Auth storage/facade tests under `apps/favn_orchestrator/test/auth/`
 - Production runtime config/readiness/diagnostics tests under `apps/favn_orchestrator/test/production_runtime_config_test.exs`, `apps/favn_orchestrator/test/readiness_test.exs`, and `apps/favn_orchestrator/test/diagnostics_test.exs`
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`

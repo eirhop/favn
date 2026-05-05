@@ -93,7 +93,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
       normalized_value =
         if sensitive_key?(key_string) do
-          "[REDACTED]"
+          redact_sensitive_value(child_value)
         else
           data(child_value, key_string, depth - 1)
         end
@@ -205,6 +205,10 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     key = String.downcase(key)
     Enum.any?(@sensitive_key_fragments, &String.contains?(key, &1))
   end
+
+  defp redact_sensitive_value(value) when is_boolean(value), do: value
+  defp redact_sensitive_value(nil), do: nil
+  defp redact_sensitive_value(_value), do: "[REDACTED]"
 
   defp truncate(value) when is_binary(value) do
     if byte_size(value) > @max_string_bytes do

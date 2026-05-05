@@ -41,6 +41,65 @@ defmodule FavnOrchestrator.HTTPContract.SchemaTest do
     })
   end
 
+  test "run detail schema locks expected keys" do
+    schema = load_schema!("run-detail.schema.json")
+
+    assert_required_keys(schema, %{
+      "id" => "run_123",
+      "status" => "running",
+      "submit_kind" => "pipeline",
+      "manifest_version_id" => "mv_123",
+      "manifest_content_hash" => "hash_123",
+      "event_seq" => 1,
+      "started_at" => "2026-01-01T00:00:00Z",
+      "finished_at" => nil,
+      "timeout_ms" => nil,
+      "retry_backoff_ms" => nil,
+      "rerun_of_run_id" => nil,
+      "parent_run_id" => nil,
+      "root_run_id" => "run_123",
+      "target_refs" => [],
+      "params" => %{},
+      "trigger" => %{},
+      "metadata" => %{},
+      "result" => nil,
+      "pipeline" => nil,
+      "pipeline_context" => %{},
+      "asset_results" => [],
+      "node_results" => [],
+      "error" => nil
+    })
+  end
+
+  test "manifest targets schema locks expected keys" do
+    schema = load_schema!("manifest-targets.schema.json")
+
+    assert_required_keys(schema, %{
+      "manifest_version_id" => "mv_123",
+      "assets" => [],
+      "pipelines" => []
+    })
+  end
+
+  test "manifest detail schema locks expected keys" do
+    schema = load_schema!("manifest-detail.schema.json")
+
+    assert_required_keys(schema, %{
+      "manifest" => %{
+        "manifest_version_id" => "mv_123",
+        "content_hash" => "hash_123",
+        "asset_count" => 1,
+        "pipeline_count" => 1,
+        "schedule_count" => 0
+      },
+      "targets" => %{
+        "manifest_version_id" => "mv_123",
+        "assets" => [],
+        "pipelines" => []
+      }
+    })
+  end
+
   test "sse run event envelope schema locks expected keys" do
     schema = load_schema!("sse-run-event-envelope.schema.json")
 
