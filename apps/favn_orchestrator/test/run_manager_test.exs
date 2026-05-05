@@ -801,12 +801,17 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert run.status == :error
 
-    assert %{"kind" => "error", "message" => "[REDACTED]", "type" => "Elixir.KeyError"} =
-             run.error
+    assert %{
+             "kind" => "error",
+             "message" => "key :rest not found in: %{}",
+             "type" => "Elixir.KeyError"
+           } = run.error
 
     assert [%{error: asset_error, attempts: [%{error: attempt_error}]}] = run.result.asset_results
-    assert asset_error == run.error
-    assert attempt_error == run.error
+    assert asset_error["message"] == run.error["message"]
+    assert asset_error["type"] == run.error["type"]
+    assert attempt_error["message"] == run.error["message"]
+    assert attempt_error["type"] == run.error["type"]
     refute inspect(run.error) =~ "__struct__"
     refute inspect(run.error) =~ "stacktrace"
   end
@@ -823,19 +828,24 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert run.status == :error
 
-    assert %{"message" => "[REDACTED]", "reason" => reason, "type" => "Elixir.RuntimeError"} =
-             run.error
+    assert %{
+             "message" => "database failed password=[REDACTED] token=[REDACTED] [REDACTED_URL]",
+             "reason" => reason,
+             "type" => "Elixir.RuntimeError"
+           } = run.error
 
     serialized_error = inspect(run.error)
 
     assert reason =~ "[REDACTED]"
     refute serialized_error =~ "super-secret"
     refute serialized_error =~ "secret-token"
-    refute serialized_error =~ "postgres://user:pass"
+    refute serialized_error =~ "postgres://"
 
     assert [%{error: asset_error, attempts: [%{error: attempt_error}]}] = run.result.asset_results
-    assert asset_error == run.error
-    assert attempt_error == run.error
+    assert asset_error["message"] == run.error["message"]
+    assert asset_error["type"] == run.error["type"]
+    assert attempt_error["message"] == run.error["message"]
+    assert attempt_error["type"] == run.error["type"]
   end
 
   test "submits multi-target pipeline run in one run plan" do

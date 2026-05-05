@@ -24,4 +24,48 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     assert String.valid?(normalized)
     assert String.ends_with?(normalized, "...")
   end
+
+  test "preserves safe runtime config diagnostics" do
+    diagnostic = %{
+      type: :missing_runtime_config,
+      phase: :asset_runtime_config,
+      message: "missing required asset runtime config",
+      details: %{
+        asset_ref: {MyApp.Assets.Raw, :asset},
+        errors: [
+          %{
+            type: :missing_env,
+            provider: :env,
+            env: "MERCATUS_TOKEN",
+            key: "MERCATUS_TOKEN",
+            scope: :mercatus,
+            field: :token,
+            secret?: true,
+            message: "missing_env MERCATUS_TOKEN"
+          }
+        ]
+      }
+    }
+
+    assert JsonSafe.error(diagnostic) == %{
+             "type" => "missing_runtime_config",
+             "phase" => "asset_runtime_config",
+             "message" => "missing required asset runtime config",
+             "details" => %{
+               "asset_ref" => %{"module" => "Elixir.MyApp.Assets.Raw", "name" => "asset"},
+               "errors" => [
+                 %{
+                   "type" => "missing_env",
+                   "provider" => "env",
+                   "env" => "MERCATUS_TOKEN",
+                   "key" => "MERCATUS_TOKEN",
+                   "scope" => "mercatus",
+                   "field" => "token",
+                   "secret?" => true,
+                   "message" => "missing_env MERCATUS_TOKEN"
+                 }
+               ]
+             }
+           }
+  end
 end

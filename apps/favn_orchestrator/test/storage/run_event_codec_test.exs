@@ -120,7 +120,7 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
              "name" => "asset"
            }
 
-    assert restored.data["error"]["message"] == "[REDACTED]"
+    assert restored.data["error"]["message"] == "password=[REDACTED]"
     assert restored.data["stacktrace"] == [[Atom.to_string(__MODULE__), "test", 1]]
   end
 

@@ -300,6 +300,8 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     refute inspect(metadata) =~ "/var/lib/favn/secret.sqlite3"
     refute inspect(metadata) =~ "api-secret"
     refute inspect(metadata) =~ "password=secret"
+    assert inspect(metadata) =~ "[REDACTED_URL]"
+    assert inspect(metadata) =~ "password=[REDACTED]"
     refute log =~ "postgres://"
     refute log =~ "/var/lib/favn/secret.sqlite3"
     refute log =~ "api-secret"
