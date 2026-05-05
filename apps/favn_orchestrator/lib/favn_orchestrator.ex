@@ -439,6 +439,17 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Lists persisted runs that have not reached a terminal status.
+  """
+  @spec list_in_flight_runs() :: {:ok, [Favn.Run.t()]} | {:error, term()}
+  def list_in_flight_runs do
+    with {:ok, pending} <- list_runs(status: :pending),
+         {:ok, running} <- list_runs(status: :running) do
+      {:ok, Enum.sort_by(pending ++ running, &run_updated_at_sort_key/1, :desc)}
+    end
+  end
+
+  @doc """
   Lists persisted run events for one run.
   """
   @spec list_run_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
@@ -478,6 +489,11 @@ defmodule FavnOrchestrator do
       {:error, _reason} = error -> error
     end
   end
+
+  defp run_updated_at_sort_key(%{updated_at: %DateTime{} = updated_at}),
+    do: DateTime.to_unix(updated_at, :microsecond)
+
+  defp run_updated_at_sort_key(_run), do: 0
 
   @doc """
   Lists replayable events for the global runs stream after an optional persisted cursor.

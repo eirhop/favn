@@ -180,6 +180,42 @@ defmodule Favn.Dev.RunTest do
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
   end
 
+  test "run_pipeline/2 distinguishes local wait timeout from run execution timeout", %{
+    root_dir: root_dir
+  } do
+    {:ok, base_url, _server} =
+      start_server(
+        [active_manifest_response(), run_response("run_waiting")] ++
+          List.duplicate(
+            {200, ~s({"data":{"run":{"id":"run_waiting","status":"running"}}})},
+            20
+          )
+      )
+
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:error, {:run_wait_timeout, "run_waiting", 10}} =
+             Dev.run_pipeline(MyApp.Pipeline,
+               root_dir: root_dir,
+               timeout_ms: 10,
+               poll_interval_ms: 1
+             )
+  end
+
+  test "run_pipeline/2 returns terminal timed out runs as run failures", %{root_dir: root_dir} do
+    {:ok, base_url, _server} =
+      start_server([
+        active_manifest_response(),
+        {201,
+         ~s({"data":{"run":{"id":"run_timed_out","status":"timed_out","error":"asset timed out"}}})}
+      ])
+
+    write_running_runtime!(root_dir, base_url)
+
+    assert {:error, {:run_failed, %{"id" => "run_timed_out", "status" => "timed_out"}}} =
+             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir)
+  end
+
   defp start_server(responses, opts \\ []) when is_list(responses) do
     parent = Keyword.get(opts, :parent)
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])

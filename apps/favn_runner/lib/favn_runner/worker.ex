@@ -14,6 +14,7 @@ defmodule FavnRunner.Worker do
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
   alias FavnRunner.EventSink
+  alias FavnRunner.RuntimeConfigDiagnostic
 
   @type init_arg :: %{
           required(:server) => pid(),
@@ -55,10 +56,14 @@ defmodule FavnRunner.Worker do
           execute_source_asset(asset)
 
         :elixir ->
-          with {:ok, context} <- ContextBuilder.build(work, asset, execution_id) do
-            asset
-            |> execute_elixir_asset(context)
-            |> redact_execution_result(asset, context)
+          case ContextBuilder.build(work, asset, execution_id) do
+            {:ok, context} ->
+              asset
+              |> execute_elixir_asset(context)
+              |> redact_execution_result(asset, context)
+
+            {:error, error} ->
+              {:error, RuntimeConfigDiagnostic.asset_resolution_failed(error, asset)}
           end
 
         :sql ->

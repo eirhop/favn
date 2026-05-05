@@ -41,6 +41,10 @@ defmodule FavnOrchestrator.Redaction do
 
   @operational_untrusted_keys [:reason, :message, :detail, :details, :error, :exception]
 
+  @sensitive_assignment ~r/(token|password|secret|authorization|cookie|credential|database|dsn|url|uri|api_key|apikey|access_key|accesskey|private_key|privatekey)\s*[:=]\s*((?:Bearer\s+)?[^\s,;]+)/i
+  @bearer_token ~r/(bearer)\s+([^\s,;]+)/i
+  @url_userinfo ~r/([a-z][a-z0-9+.-]*:\/\/)([^\s\/@:]+):([^\s\/@]+)@([^\s,;]+)/i
+
   @doc """
   Redacts sensitive fields while preserving safe scalar values.
   """
@@ -131,7 +135,7 @@ defmodule FavnOrchestrator.Redaction do
   defp redact(_key, value), do: redact(value)
 
   defp redact_operational(key, value) when key in @operational_untrusted_keys,
-    do: redact_untrusted(value)
+    do: redact_operational_untrusted(value)
 
   defp redact_operational(key, _value) when key in @sensitive_atom_keys, do: "[REDACTED]"
 
@@ -177,6 +181,67 @@ defmodule FavnOrchestrator.Redaction do
 
   defp redact_operational(_key, value), do: redact(value)
 
+  defp redact_operational_untrusted(%DateTime{} = value), do: value
+
+  defp redact_operational_untrusted(%{__exception__: true, __struct__: module} = exception) do
+    %{type: module, message: sanitize_text(Exception.message(exception))}
+  rescue
+    _error -> %{type: module, message: "[REDACTED]"}
+  end
+
+  defp redact_operational_untrusted(%_struct{} = value) do
+    value
+    |> Map.from_struct()
+    |> redact_operational_untrusted()
+    |> Map.put(:type, value.__struct__)
+  rescue
+    _error -> %{type: value.__struct__, message: "[REDACTED]"}
+  end
+
+  defp redact_operational_untrusted(value) when is_atom(value), do: value
+  defp redact_operational_untrusted(value) when is_integer(value), do: value
+  defp redact_operational_untrusted(value) when is_float(value), do: value
+  defp redact_operational_untrusted(value) when is_boolean(value), do: value
+  defp redact_operational_untrusted(nil), do: nil
+  defp redact_operational_untrusted(value) when is_binary(value), do: sanitize_text(value)
+
+  defp redact_operational_untrusted(value) when is_tuple(value) do
+    case Tuple.to_list(value) do
+      [key | rest] when is_atom(key) or is_binary(key) ->
+        if sensitive_key?(key_to_string(key)) do
+          [key | Enum.map(rest, fn _child -> "[REDACTED]" end)]
+        else
+          [key | Enum.map(rest, &redact_operational_untrusted/1)]
+        end
+
+      values ->
+        Enum.map(values, &redact_operational_untrusted/1)
+    end
+    |> List.to_tuple()
+  end
+
+  defp redact_operational_untrusted(value) when is_list(value),
+    do: Enum.map(value, &redact_operational_untrusted/1)
+
+  defp redact_operational_untrusted(value) when is_map(value) do
+    Map.new(value, fn {key, val} ->
+      if sensitive_key?(key_to_string(key)) do
+        {key, "[REDACTED]"}
+      else
+        {key, redact_operational_untrusted(val)}
+      end
+    end)
+  end
+
+  defp redact_operational_untrusted(value), do: value |> inspect() |> sanitize_text()
+
+  defp sanitize_text(value) when is_binary(value) do
+    value
+    |> String.replace(@url_userinfo, "[REDACTED_URL]")
+    |> String.replace(@bearer_token, "\\1 [REDACTED]")
+    |> String.replace(@sensitive_assignment, "\\1=[REDACTED]")
+  end
+
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
     Enum.any?(@sensitive_fragments, &String.contains?(key, &1))
@@ -186,6 +251,10 @@ defmodule FavnOrchestrator.Redaction do
     key = String.downcase(key)
     Enum.any?(@operational_untrusted_keys, &(key == Atom.to_string(&1)))
   end
+
+  defp key_to_string(key) when is_atom(key), do: Atom.to_string(key)
+  defp key_to_string(key) when is_binary(key), do: key
+  defp key_to_string(key), do: inspect(key)
 
   defp redact_struct(value) do
     value

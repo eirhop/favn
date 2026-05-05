@@ -192,13 +192,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
     assert restored.status == :error
     assert restored.error["type"] == Atom.to_string(UnexpectedRunnerError)
-    assert restored.error["message"] == "[REDACTED]"
+    assert restored.error["message"] == "database password=[REDACTED] token=[REDACTED] failed"
 
     assert [%AssetResult{error: asset_error, attempts: [attempt]}] = restored.result.asset_results
 
-    assert asset_error["message"] == "[REDACTED]"
+    assert asset_error["message"] == "database password=[REDACTED] token=[REDACTED] failed"
     attempt_error = Map.get(attempt, "error") || Map.fetch!(attempt, :error)
-    assert attempt_error["message"] == "[REDACTED]"
+    assert attempt_error["message"] == "database password=[REDACTED] token=[REDACTED] failed"
   end
 
   test "restores nil asset result datetimes as nil" do

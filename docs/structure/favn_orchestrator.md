@@ -8,6 +8,7 @@ Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator.ex`
 - `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
+- Run admission and recovery in `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex` and `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`

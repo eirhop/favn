@@ -19,12 +19,15 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   @spec error(term()) :: map() | nil
   def error(nil), do: nil
 
+  def error(%{type: :missing_runtime_config} = value), do: runtime_config_diagnostic(value)
+  def error(%{"type" => "missing_runtime_config"} = value), do: runtime_config_diagnostic(value)
+
   def error(%{"kind" => kind, "message" => message, "reason" => reason, "type" => type}) do
     %{
       "kind" => scalar_string(kind, "error"),
       "type" => scalar_string(type, "term"),
       "message" => safe_error_message(message),
-      "reason" => safe_error_reason(reason),
+      "reason" => safe_existing_error_reason(reason),
       "redacted" => true,
       "truncated" => false
     }
@@ -150,6 +153,66 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp attempt(value, depth), do: data(value, nil, depth)
 
+  defp runtime_config_diagnostic(value) when is_map(value) do
+    value
+    |> Map.drop([:stacktrace, "stacktrace"])
+    |> Map.new(fn {key, child_value} ->
+      {key_to_string(key), runtime_config_diagnostic_value(key, child_value)}
+    end)
+  end
+
+  defp runtime_config_diagnostic_value(key, value) do
+    key_string = key_to_string(key)
+
+    cond do
+      key_string in ["message", "type", "phase", "provider", "env", "scope", "field"] ->
+        data(value, key_string, @max_depth - 1)
+
+      key_string in [
+        "key",
+        "connection",
+        "module",
+        "asset_ref",
+        "asset_type",
+        "connections",
+        "sql_asset_refs",
+        "connection_asset_refs"
+      ] ->
+        data(value, key_string, @max_depth - 1)
+
+      key_string in ["secret?"] ->
+        data(value, key_string, @max_depth - 1)
+
+      is_map(value) ->
+        runtime_config_diagnostic(value)
+
+      is_list(value) ->
+        Enum.map(value, &runtime_config_diagnostic_nested/1)
+
+      is_tuple(value) ->
+        value
+        |> Tuple.to_list()
+        |> Enum.map(&runtime_config_diagnostic_nested/1)
+
+      true ->
+        data(value, key_string, @max_depth - 1)
+    end
+  end
+
+  defp runtime_config_diagnostic_nested(value) when is_map(value),
+    do: runtime_config_diagnostic(value)
+
+  defp runtime_config_diagnostic_nested(value) when is_list(value),
+    do: Enum.map(value, &runtime_config_diagnostic_nested/1)
+
+  defp runtime_config_diagnostic_nested(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&runtime_config_diagnostic_nested/1)
+  end
+
+  defp runtime_config_diagnostic_nested(value), do: data(value, nil, @max_depth - 1)
+
   defp safe_error_message(value) do
     case Redaction.redact_operational(%{message: value}) do
       %{message: redacted} -> scalar_string(redacted, "Runner error")
@@ -168,6 +231,9 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     _error -> "[REDACTED]"
   end
 
+  defp safe_existing_error_reason(value) when is_binary(value), do: safe_error_message(value)
+  defp safe_existing_error_reason(value), do: safe_error_reason(value)
+
   defp exception_message(%{__exception__: true} = exception) do
     Exception.message(exception)
   rescue
@@ -177,6 +243,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp exception_message(_value), do: nil
 
   defp error_type(%{__exception__: true, __struct__: module}), do: Atom.to_string(module)
+  defp error_type(%{__struct__: module}), do: Atom.to_string(module)
   defp error_type(value) when is_atom(value), do: Atom.to_string(value)
   defp error_type(value) when is_map(value), do: "map"
   defp error_type(value) when is_tuple(value), do: "tuple"

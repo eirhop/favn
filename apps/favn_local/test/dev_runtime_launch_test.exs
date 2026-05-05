@@ -322,6 +322,51 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     refute code =~ "enabled: true"
   end
 
+  test "runtime specs propagate loaded env under Favn-owned explicit values" do
+    runtime = %{
+      "runner_root" => "/tmp/favn_runtime",
+      "orchestrator_root" => "/tmp/favn_runtime",
+      "web_root" => "/tmp/favn_runtime/web/favn_web"
+    }
+
+    config = Config.resolve(storage: :sqlite)
+
+    node_names = %{
+      runner_short: "favn_runner_test",
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token",
+      "web_session_secret" => "secret"
+    }
+
+    opts =
+      distribution_opts(
+        env_file_loaded: %{
+          "CUSTOM_ENV" => "from-file",
+          "MIX_ENV" => "prod",
+          "FAVN_DEV_STORAGE" => "postgres",
+          "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN" => "from-file"
+        }
+      )
+
+    runner = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
+    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
+    web = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+
+    assert runner.env["CUSTOM_ENV"] == "from-file"
+    assert orchestrator.env["CUSTOM_ENV"] == "from-file"
+    assert web.env["CUSTOM_ENV"] == "from-file"
+
+    assert runner.env["MIX_ENV"] == "dev"
+    assert orchestrator.env["MIX_ENV"] == "dev"
+    assert orchestrator.env["FAVN_DEV_STORAGE"] == "sqlite"
+    assert web.env["FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN"] == "token"
+  end
+
   test "orchestrator spec enables scheduler when resolved config enables it" do
     runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
     config = Config.resolve(scheduler: true)

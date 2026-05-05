@@ -144,6 +144,17 @@ Numeric local config values, including local ports and Postgres port/pool size,
 must be positive integers or strings containing only a positive integer after
 trimming whitespace. Malformed strings fall back to the documented defaults.
 
+Local env files:
+
+- `mix favn.dev` and `mix favn.reload` load `<project-root>/.env` before
+  compiling the project, building manifests, or launching/restarting services
+- `FAVN_ENV_FILE` can point at an alternate env file; relative paths are resolved
+  from the project root
+- existing shell environment variables win over values in the env file
+- Favn-owned service values such as local ports, runner node names, and service
+  tokens override env-file values when launching managed services
+- raw env values are not written into `.favn/` runtime metadata
+
 ## `.favn/` layout
 
 `favn_local` keeps all managed project-local side effects under `.favn/`:

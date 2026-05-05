@@ -1035,11 +1035,56 @@ defmodule FavnOrchestrator.RunServer.Execution do
     _error -> "[REDACTED]"
   end
 
+  defp sanitize_structured_error(%{type: :missing_runtime_config} = error),
+    do: sanitize_runtime_config_diagnostic(error)
+
+  defp sanitize_structured_error(%{"type" => "missing_runtime_config"} = error),
+    do: sanitize_runtime_config_diagnostic(error)
+
   defp sanitize_structured_error(error) when is_map(error) do
     error
     |> Map.drop([:stacktrace, "stacktrace"])
     |> Map.new(fn {key, value} -> {key, sanitize_structured_error_value(key, value)} end)
   end
+
+  defp sanitize_runtime_config_diagnostic(error) when is_map(error) do
+    error
+    |> Map.drop([:stacktrace, "stacktrace"])
+    |> Map.new(fn {key, value} -> {key, sanitize_runtime_config_diagnostic_value(key, value)} end)
+  end
+
+  defp sanitize_runtime_config_diagnostic_value(key, value) when key in [:message, "message"],
+    do: string_value(value)
+
+  defp sanitize_runtime_config_diagnostic_value(_key, value) when is_map(value),
+    do: sanitize_runtime_config_diagnostic(value)
+
+  defp sanitize_runtime_config_diagnostic_value(_key, value) when is_list(value),
+    do: Enum.map(value, &sanitize_runtime_config_diagnostic_nested/1)
+
+  defp sanitize_runtime_config_diagnostic_value(_key, value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&sanitize_runtime_config_diagnostic_nested/1)
+    |> List.to_tuple()
+  end
+
+  defp sanitize_runtime_config_diagnostic_value(_key, value), do: value
+
+  defp sanitize_runtime_config_diagnostic_nested(value) when is_map(value),
+    do: sanitize_runtime_config_diagnostic(value)
+
+  defp sanitize_runtime_config_diagnostic_nested(value) when is_list(value),
+    do: Enum.map(value, &sanitize_runtime_config_diagnostic_nested/1)
+
+  defp sanitize_runtime_config_diagnostic_nested(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&sanitize_runtime_config_diagnostic_nested/1)
+    |> List.to_tuple()
+  end
+
+  defp sanitize_runtime_config_diagnostic_nested(value), do: value
 
   defp sanitize_structured_error_value(key, value) do
     cond do

@@ -211,6 +211,115 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientStaleCancelStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, execution_id(work)}
+
+    @impl true
+    def await_result(execution_id, _timeout, opts) do
+      block_ms = Keyword.get(opts, :block_ms, 200)
+      Process.sleep(block_ms)
+
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(execution_id, :ok)],
+         metadata: %{stub: :stale_cancel}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: {:error, :stale_execution_id}
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp asset_result(execution_id, status) do
+      ref = execution_ref(execution_id)
+
+      %Favn.Run.AssetResult{
+        ref: ref,
+        stage: 0,
+        status: status,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: nil,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      case work.asset_ref do
+        {module, name} when is_atom(module) and is_atom(name) ->
+          "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+
+        _other ->
+          "exec_#{work.run_id}"
+      end
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
+  end
+
+  defmodule RunnerClientCancelFailureStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :nodedown}
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: {:error, :nodedown}
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
+
+  defmodule RunnerClientMixedCancelStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :nodedown}
+
+    @impl true
+    def cancel_work(execution_id, _reason, opts) do
+      cancel_log = Keyword.fetch!(opts, :cancel_log)
+      Agent.update(cancel_log, &[execution_id | &1])
+
+      case execution_id do
+        "exec_stale" -> {:error, :stale_execution_id}
+        "exec_down" -> {:error, :nodedown}
+        _other -> :ok
+      end
+    end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
+
   defmodule RunnerClientKeyErrorStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -720,12 +829,17 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert run.status == :error
 
-    assert %{"kind" => "error", "message" => "[REDACTED]", "type" => "Elixir.KeyError"} =
-             run.error
+    assert %{
+             "kind" => "error",
+             "message" => "key :rest not found in: %{}",
+             "type" => "Elixir.KeyError"
+           } = run.error
 
     assert [%{error: asset_error, attempts: [%{error: attempt_error}]}] = run.result.asset_results
-    assert asset_error == run.error
-    assert attempt_error == run.error
+    assert asset_error["message"] == run.error["message"]
+    assert asset_error["type"] == run.error["type"]
+    assert attempt_error["message"] == run.error["message"]
+    assert attempt_error["type"] == run.error["type"]
     refute inspect(run.error) =~ "__struct__"
     refute inspect(run.error) =~ "stacktrace"
   end
@@ -742,19 +856,24 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert run.status == :error
 
-    assert %{"message" => "[REDACTED]", "reason" => reason, "type" => "Elixir.RuntimeError"} =
-             run.error
+    assert %{
+             "message" => "database failed password=[REDACTED] token=[REDACTED] [REDACTED_URL]",
+             "reason" => reason,
+             "type" => "Elixir.RuntimeError"
+           } = run.error
 
     serialized_error = inspect(run.error)
 
     assert reason =~ "[REDACTED]"
     refute serialized_error =~ "super-secret"
     refute serialized_error =~ "secret-token"
-    refute serialized_error =~ "postgres://user:pass"
+    refute serialized_error =~ "postgres://"
 
     assert [%{error: asset_error, attempts: [%{error: attempt_error}]}] = run.result.asset_results
-    assert asset_error == run.error
-    assert attempt_error == run.error
+    assert asset_error["message"] == run.error["message"]
+    assert asset_error["type"] == run.error["type"]
+    assert attempt_error["message"] == run.error["message"]
+    assert attempt_error["type"] == run.error["type"]
   end
 
   test "submits multi-target pipeline run in one run plan" do
@@ -1231,6 +1350,41 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert reason.reason[:reason] == :manual_cancel
   end
 
+  test "persists cancellation when runner rejects stale execution id" do
+    version = manifest_version("mv_cancel_stale_execution")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_cancel_stale_execution")
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStaleCancelStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, block_ms: 250)
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, _in_flight_run} = await_inflight_run(run_id)
+
+    assert :ok =
+             FavnOrchestrator.cancel_run(run_id, %{
+               requested_by: :operator,
+               reason: :manual_cancel
+             })
+
+    assert {:ok, cancelled} = await_cancelled_run(run_id)
+    assert cancelled.status == :cancelled
+    assert cancelled.metadata[:cancel_forward_error].type == :runner_cancel_recovered
+    assert [%{reason: ":stale_execution_id"}] = cancelled.metadata[:cancel_forward_error].reasons
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.member?(Enum.map(events, & &1.event_type), :run_cancel_requested)
+    assert Enum.member?(Enum.map(events, & &1.event_type), :run_cancelled)
+  end
+
   test "cancel transitions broadcast on both run and global topics" do
     version = manifest_version("mv_cancel_pubsub")
     run_id = "run_cancel_pubsub_#{System.unique_integer([:positive])}"
@@ -1419,6 +1573,200 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert cancelled.status == :cancelled
   end
 
+  test "abnormal run server down terminalizes active run as error" do
+    version = manifest_version("mv_run_server_down")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_run_server_down")
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, block_ms: 1_000)
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, _in_flight_run} = await_inflight_run(run_id)
+
+    run_pid = :sys.get_state(FavnOrchestrator.RunManager).run_pids[run_id]
+    ref = Process.monitor(run_pid)
+    Process.exit(run_pid, :kill)
+
+    assert_receive {:DOWN, ^ref, :process, ^run_pid, :killed}, 1_000
+    assert {:ok, failed} = await_terminal_run(run_id)
+    assert failed.status == :error
+    assert failed.error.type == :run_server_down
+    assert failed.error.exit_reason == ":killed"
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.member?(Enum.map(events, & &1.event_type), :run_failed)
+  end
+
+  test "run recovery reconciles orphaned pending and running runs before run supervisor starts" do
+    version = manifest_version("mv_startup_reconcile")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    pending = run_state("run_orphaned_pending", version, :pending)
+    running = run_state("run_orphaned_running", version, :running)
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(pending, :run_created, %{
+               status: :pending
+             })
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(
+               %{running | status: :pending, event_seq: 1},
+               :run_created,
+               %{status: :pending}
+             )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(running, :run_started, %{
+               status: :running
+             })
+
+    assert :ok = FavnOrchestrator.RunRecovery.reconcile_orphaned_runs()
+
+    assert {:ok, reconciled_pending} = Storage.get_run(pending.id)
+    assert {:ok, reconciled_running} = Storage.get_run(running.id)
+
+    assert reconciled_pending.status == :error
+    assert reconciled_pending.error.type == :orphaned_run_reconciled
+    assert reconciled_pending.error.previous_status == :pending
+    assert reconciled_pending.error.scope == :local_single_node
+
+    assert reconciled_running.status == :error
+    assert reconciled_running.error.type == :orphaned_run_reconciled
+    assert reconciled_running.error.previous_status == :running
+    assert reconciled_running.error.scope == :local_single_node
+  end
+
+  test "run manager startup does not reconcile persisted in-flight runs" do
+    version = manifest_version("mv_manager_restart_no_reconcile")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    running = run_state("run_manager_restart_still_running", version, :running)
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(
+               %{running | status: :pending, event_seq: 1},
+               :run_created,
+               %{status: :pending}
+             )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(running, :run_started, %{
+               status: :running
+             })
+
+    name = :"run_manager_no_reconcile_#{System.unique_integer([:positive])}"
+    assert {:ok, pid} = FavnOrchestrator.RunManager.start_link(name: name)
+    GenServer.stop(pid)
+
+    assert {:ok, persisted} = Storage.get_run(running.id)
+    assert persisted.status == :running
+    assert persisted.error == nil
+  end
+
+  test "cancel keeps run in-flight when runner cancellation failure is unconfirmed" do
+    version = manifest_version("mv_cancel_unconfirmed")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    running =
+      "run_cancel_unconfirmed"
+      |> run_state(version, :running)
+      |> RunState.transition(
+        runner_execution_id: "exec_unconfirmed",
+        metadata: %{in_flight_execution_ids: ["exec_unconfirmed"]}
+      )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(
+               %{running | status: :pending, event_seq: 1},
+               :run_created,
+               %{status: :pending}
+             )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(running, :run_started, %{
+               status: :running
+             })
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientCancelFailureStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    assert {:error, {:runner_cancel_failed, %{reasons: [%{reason: ":nodedown"}]}}} =
+             FavnOrchestrator.cancel_run(running.id, %{reason: :manual_cancel})
+
+    assert {:ok, persisted} = Storage.get_run(running.id)
+    assert persisted.status == :running
+    assert persisted.runner_execution_id == "exec_unconfirmed"
+    assert persisted.metadata.cancel_requested == true
+    assert persisted.metadata.in_flight_execution_ids == ["exec_unconfirmed"]
+  end
+
+  test "cancel attempts all execution ids before refusing mixed stale and unconfirmed failures" do
+    version = manifest_version("mv_cancel_mixed_failures")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    running =
+      "run_cancel_mixed_failures"
+      |> run_state(version, :running)
+      |> RunState.transition(
+        runner_execution_id: "exec_stale",
+        metadata: %{in_flight_execution_ids: ["exec_stale", "exec_down"]}
+      )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(
+               %{running | status: :pending, event_seq: 1},
+               :run_created,
+               %{status: :pending}
+             )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(running, :run_started, %{
+               status: :running
+             })
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientMixedCancelStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
+
+    assert {:error, {:runner_cancel_failed, %{reasons: reasons}}} =
+             FavnOrchestrator.cancel_run(running.id, %{reason: :manual_cancel})
+
+    assert Enum.map(reasons, & &1.execution_id) == ["exec_down"]
+    assert Agent.get(cancel_log, &Enum.sort/1) == ["exec_down", "exec_stale"]
+
+    assert {:ok, persisted} = Storage.get_run(running.id)
+    assert persisted.status == :running
+    assert persisted.runner_execution_id == "exec_stale"
+    assert persisted.metadata.in_flight_execution_ids == ["exec_stale", "exec_down"]
+  end
+
   test "rerun rejects manifest override mismatch" do
     source_version = manifest_version("mv_source_mismatch")
     other_version = manifest_version("mv_other_mismatch")
@@ -1521,6 +1869,23 @@ defmodule FavnOrchestrator.RunManagerTest do
     if Process.alive?(pid), do: Agent.stop(pid)
   catch
     :exit, _reason -> :ok
+  end
+
+  defp run_state(run_id, version, status) when status in [:pending, :running] do
+    base =
+      RunState.new(
+        id: run_id,
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        target_refs: [{MyApp.Assets.Gold, :asset}],
+        trigger: %{kind: :manual}
+      )
+
+    case status do
+      :pending -> base
+      :running -> RunState.transition(base, status: :running)
+    end
   end
 
   defp manifest_version(manifest_version_id, opts \\ []) do

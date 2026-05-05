@@ -26,10 +26,18 @@ defmodule Mix.Tasks.Favn.Reload do
         Mix.raise("stack not healthy; use mix favn.stop then mix favn.dev")
 
       {:error, {:in_flight_runs, run_ids}} ->
-        Mix.raise("reload blocked: in-flight runs exist #{inspect(run_ids)}")
+        Mix.raise(in_flight_runs_message(run_ids))
 
       {:error, reason} ->
         Mix.raise("reload failed: #{inspect(reason)}")
     end
+  end
+
+  @doc false
+  def in_flight_runs_message(run_ids) do
+    "reload blocked: in-flight runs exist #{inspect(run_ids)}\n" <>
+      "wait for the runs to finish, or cancel them from the Favn UI/API before retrying.\n" <>
+      "if these runs are stale after a crashed local stack, run mix favn.stop then mix favn.dev; " <>
+      "if they still remain stale, reset local state with mix favn.reset and restart with mix favn.dev."
   end
 end

@@ -28,7 +28,7 @@ defmodule FavnOrchestrator.RunManager do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, %{}, name: name)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @spec submit_asset_run(Favn.Ref.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -236,13 +236,26 @@ defmodule FavnOrchestrator.RunManager do
         {:ok, run} ->
           with :ok <- validate_cancel_reason(reason),
                :ok <- reject_backfill_parent_cancel(run),
-               :ok <- forward_cancel_if_inflight(run, reason),
                {:ok, cancel_requested, cancelled} <- build_cancel_snapshots(run, reason),
                :ok <-
                  TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
                    reason: reason
                  }) do
-            TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
+            case forward_cancel_result(run, reason) do
+              :ok ->
+                TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
+
+              {:recoverable, cancel_error} ->
+                cancelled = maybe_put_cancel_forward_error(cancelled, cancel_error)
+
+                TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
+                  reason: reason,
+                  cancel_forward_error: cancel_error
+                })
+
+              {:error, cancel_error} ->
+                {:error, {:runner_cancel_failed, cancel_error}}
+            end
           end
 
         {:error, _reason} = error ->
@@ -253,12 +266,16 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     case Map.pop(state.monitors, ref) do
       {nil, monitors} ->
         {:noreply, %{state | monitors: monitors}}
 
       {run_id, monitors} ->
+        if reason != :normal do
+          terminalize_active_run(run_id, run_server_down_error(reason))
+        end
+
         {:noreply, %{state | monitors: monitors, run_pids: Map.delete(state.run_pids, run_id)}}
     end
   end
@@ -634,6 +651,47 @@ defmodule FavnOrchestrator.RunManager do
     DynamicSupervisor.start_child(FavnOrchestrator.RunSupervisor, child_spec)
   end
 
+  defp terminalize_active_run(run_id, error) when is_binary(run_id) and is_map(error) do
+    case Storage.get_run(run_id) do
+      {:ok, %RunState{status: status} = run} when status in [:pending, :running] ->
+        terminalize_run(run, error)
+
+      {:ok, %RunState{}} ->
+        :ok
+
+      {:error, reason} ->
+        OperationalEvents.emit(
+          :run_crash_terminalization_failed,
+          %{},
+          %{run_id: run_id, reason: reason},
+          level: :error
+        )
+    end
+  end
+
+  defp terminalize_run(%RunState{} = run, error) when is_map(error) do
+    failed =
+      RunState.transition(run,
+        status: :error,
+        error: error,
+        runner_execution_id: nil,
+        metadata: Map.put(run.metadata, :terminal_event_type, :run_failed)
+      )
+
+    TransitionWriter.persist_transition(failed, :run_failed, %{
+      status: failed.status,
+      error: failed.error
+    })
+  end
+
+  defp run_server_down_error(reason) do
+    %{
+      type: :run_server_down,
+      exit_reason: inspect(reason),
+      crashed_at: DateTime.utc_now()
+    }
+  end
+
   defp validate_params(value) when is_map(value), do: :ok
   defp validate_params(_value), do: {:error, :invalid_run_params}
 
@@ -687,8 +745,7 @@ defmodule FavnOrchestrator.RunManager do
           Map.merge(run.metadata, %{
             cancel_requested: true,
             cancel_reason: reason,
-            cancel_requested_at: DateTime.utc_now(),
-            in_flight_execution_ids: []
+            cancel_requested_at: DateTime.utc_now()
           })
       )
 
@@ -697,13 +754,17 @@ defmodule FavnOrchestrator.RunManager do
         status: :cancelled,
         error: {:cancelled, reason},
         runner_execution_id: nil,
-        metadata: Map.put(cancel_requested.metadata, :cancelled, true)
+        metadata:
+          Map.merge(cancel_requested.metadata, %{
+            cancelled: true,
+            in_flight_execution_ids: []
+          })
       )
 
     {:ok, cancel_requested, cancelled}
   end
 
-  defp forward_cancel_if_inflight(%RunState{} = run, reason) do
+  defp forward_cancel_result(%RunState{} = run, reason) do
     runner_client = Application.get_env(:favn_orchestrator, :runner_client, nil)
     runner_opts = Application.get_env(:favn_orchestrator, :runner_client_opts, [])
     execution_ids = inflight_execution_ids(run)
@@ -712,18 +773,66 @@ defmodule FavnOrchestrator.RunManager do
       :ok
     else
       with :ok <- validate_runner_client(runner_client) do
-        Enum.reduce_while(execution_ids, :ok, fn execution_id, :ok ->
-          case runner_client.cancel_work(
-                 execution_id,
-                 %{run_id: run.id, reason: reason, requested_at: DateTime.utc_now()},
-                 runner_opts
-               ) do
-            :ok -> {:cont, :ok}
-            {:error, _cancel_reason} = error -> {:halt, error}
-          end
-        end)
+        execution_ids
+        |> Enum.map(&cancel_execution_id(run.id, &1, reason, runner_client, runner_opts))
+        |> classify_cancel_results()
       end
     end
+  end
+
+  defp cancel_execution_id(run_id, execution_id, reason, runner_client, runner_opts) do
+    case runner_client.cancel_work(
+           execution_id,
+           %{run_id: run_id, reason: reason, requested_at: DateTime.utc_now()},
+           runner_opts
+         ) do
+      :ok -> {:ok, execution_id}
+      {:error, reason} -> {:error, execution_id, reason}
+    end
+  end
+
+  defp classify_cancel_results(results) do
+    unconfirmed_failures = Enum.reject(results, &cancel_recoverable?/1)
+    recoverable_failures = Enum.filter(results, &cancel_recovered?/1)
+
+    cond do
+      unconfirmed_failures != [] ->
+        {:error,
+         %{
+           type: :runner_cancel_failed,
+           reasons: Enum.map(unconfirmed_failures, &cancel_failure_reason/1)
+         }}
+
+      recoverable_failures != [] ->
+        {:recoverable,
+         %{
+           type: :runner_cancel_recovered,
+           reasons: Enum.map(recoverable_failures, &cancel_failure_reason/1)
+         }}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp cancel_recoverable?({:ok, _execution_id}), do: true
+
+  defp cancel_recoverable?({:error, _execution_id, reason}),
+    do: reason in [:stale_execution_id, :not_found]
+
+  defp cancel_recovered?({:error, _execution_id, reason}),
+    do: reason in [:stale_execution_id, :not_found]
+
+  defp cancel_recovered?(_result), do: false
+
+  defp cancel_failure_reason({:error, execution_id, reason}) do
+    %{execution_id: execution_id, reason: inspect(reason)}
+  end
+
+  defp maybe_put_cancel_forward_error(%RunState{} = run, error) when is_map(error) do
+    run
+    |> Map.put(:metadata, Map.put(run.metadata, :cancel_forward_error, error))
+    |> RunState.with_snapshot_hash()
   end
 
   defp inflight_execution_ids(%RunState{} = run) do

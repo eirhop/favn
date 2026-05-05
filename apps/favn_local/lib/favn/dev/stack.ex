@@ -8,6 +8,7 @@ defmodule Favn.Dev.Stack do
 
   alias Favn.Dev.Config
   alias Favn.Dev.DistributedErlang
+  alias Favn.Dev.EnvFile
   alias Favn.Dev.Install
   alias Favn.Dev.LocalContext
   alias Favn.Dev.LocalHttpClient
@@ -27,7 +28,9 @@ defmodule Favn.Dev.Stack do
 
   @spec start_foreground(root_opt()) :: :ok | {:error, term()}
   def start_foreground(opts \\ []) when is_list(opts) do
-    with {:ok, startup} <-
+    with {:ok, env_file} <- EnvFile.load(opts),
+         opts <- Keyword.put(opts, :env_file_loaded, env_file.loaded),
+         {:ok, startup} <-
            progress_step(opts, "checking local state", fn -> prepare_startup(opts) end),
          :ok <-
            progress_step(opts, "compiling Favn runtime", fn ->
@@ -315,7 +318,7 @@ defmodule Favn.Dev.Stack do
 
         case System.cmd(mix, ["compile", "--force"],
                cd: runtime_root,
-               env: %{"MIX_ENV" => "dev"},
+               env: Map.merge(EnvFile.loaded_env(opts), %{"MIX_ENV" => "dev"}),
                stderr_to_stdout: true
              ) do
           {_output, 0} ->

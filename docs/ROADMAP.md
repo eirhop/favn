@@ -48,7 +48,6 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 6. Harden The Production-Grade Runtime
 
 - Harden the manifest-pinned SQL execution path enough for the `v1` support promise, especially around runtime payload handling and backend failure behavior.
-- Add run-level runtime config preflight for planned SQL assets so SQL connection env refs fail before any asset starts, not only when an adapter connection is opened.
 - Add broader production stress, failure-injection, and restore verification for DuckDB/plugin execution under the single-node contract.
 - Extend the initial runtime config contract beyond required env refs if production needs optional values, non-env providers, or provider-specific secret managers.
 - Add broader production stress/failure-injection coverage for the service-authenticated diagnostics surface and keep end-to-end diagnostics coverage aligned with the PR #262 test plan.

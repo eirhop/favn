@@ -11,6 +11,8 @@ Code:
   runner-side production env validation for the first local single-node setup
 - `apps/favn_runner/lib/favn_runner/sql_runtime_preflight.ex` validates planned SQL
   connection runtime config before worker execution begins
+- `apps/favn_runner/lib/favn_runner/runtime_config_diagnostic.ex` normalizes
+  runner runtime-config failures into stable redacted run diagnostics
 - `apps/favn_runner/lib/favn_runner/sql/materialization_planner.ex` owns runner SQL
   asset materialization planning and emits shared `%Favn.SQL.WritePlan{}` values
 - runner-owned execution modules under `apps/favn_runner/lib/favn/`
