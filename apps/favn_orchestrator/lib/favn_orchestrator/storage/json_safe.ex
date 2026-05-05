@@ -208,9 +208,23 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp truncate(value) when is_binary(value) do
     if byte_size(value) > @max_string_bytes do
-      String.slice(value, 0, @max_string_bytes) <> "..."
+      suffix = "..."
+      content_bytes = @max_string_bytes - byte_size(suffix)
+      valid_prefix(value, content_bytes) <> suffix
     else
       value
+    end
+  end
+
+  defp valid_prefix(_value, size) when size <= 0, do: ""
+
+  defp valid_prefix(value, size) do
+    prefix = binary_part(value, 0, size)
+
+    if String.valid?(prefix) do
+      prefix
+    else
+      valid_prefix(value, size - 1)
     end
   end
 

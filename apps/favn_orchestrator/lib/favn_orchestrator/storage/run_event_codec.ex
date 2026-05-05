@@ -163,11 +163,6 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
     }
   end
 
-  defp data_from_dto(%{"module" => module, "name" => name} = value)
-       when is_binary(module) and is_binary(name) do
-    ref_from_dto(value) || value
-  end
-
   defp data_from_dto(%{} = value),
     do: Map.new(value, fn {key, val} -> {key, data_from_dto(val)} end)
 
@@ -176,21 +171,10 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
 
   defp ref_from_dto(%{"module" => module, "name" => name})
        when is_binary(module) and is_binary(name) do
-    with {:ok, module_atom} <- existing_or_safe_atom(module),
-         {:ok, name_atom} <- existing_or_safe_atom(name) do
-      {module_atom, name_atom}
-    else
-      {:error, _reason} -> nil
-    end
+    %{"module" => module, "name" => name}
   end
 
   defp ref_from_dto(_value), do: nil
-
-  defp existing_or_safe_atom(value) when is_binary(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> {:error, {:unknown_atom, value}}
-  end
 
   defp existing_atom_or_string(nil), do: nil
 

@@ -14,7 +14,7 @@ defmodule FavnOrchestrator.RunEvent do
           global_sequence: pos_integer() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,
-          asset_ref: Favn.Ref.t() | nil,
+          asset_ref: Favn.Ref.t() | map() | nil,
           stage: non_neg_integer() | nil,
           data: map()
         }
@@ -99,10 +99,20 @@ defmodule FavnOrchestrator.RunEvent do
        when is_atom(module) and is_atom(name),
        do: ref
 
+  defp normalize_asset_ref(%{"module" => module, "name" => name} = ref, _data, :step)
+       when is_binary(module) and is_binary(name),
+       do: ref
+
   defp normalize_asset_ref(_value, data, :step) when is_map(data) do
     case Map.get(data, :asset_ref) do
-      {module, name} = ref when is_atom(module) and is_atom(name) -> ref
-      _ -> nil
+      {module, name} = ref when is_atom(module) and is_atom(name) ->
+        ref
+
+      %{"module" => module, "name" => name} = ref when is_binary(module) and is_binary(name) ->
+        ref
+
+      _ ->
+        nil
     end
   end
 

@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
+  alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
@@ -43,6 +44,80 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.id == run.id
     assert restored.asset_ref == {__MODULE__.Asset, :asset}
     assert restored.status == :pending
+  end
+
+  test "free-form params and trigger ref-shaped maps remain JSON data" do
+    version = manifest_version("mv_run_snapshot_free_form", __MODULE__.Asset)
+
+    free_form_ref = %{"module" => Atom.to_string(__MODULE__.Asset), "name" => "asset"}
+
+    run =
+      RunState.new(
+        id: "run_snapshot_free_form",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {__MODULE__.Asset, :asset},
+        params: %{"payload" => free_form_ref},
+        trigger: %{"payload" => free_form_ref}
+      )
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.params == %{"payload" => free_form_ref}
+    assert restored.trigger == %{"payload" => free_form_ref}
+  end
+
+  test "pipeline replay metadata remains usable after DTO roundtrip" do
+    version = manifest_version("mv_run_snapshot_pipeline_metadata", __MODULE__.Asset)
+
+    run =
+      RunState.new(
+        id: "run_snapshot_pipeline_metadata",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {__MODULE__.Asset, :asset},
+        metadata: %{
+          replay_submit_kind: :pipeline,
+          replay_mode: :exact_replay,
+          pipeline_submit_ref: __MODULE__.Asset,
+          pipeline_target_refs: [{__MODULE__.Asset, :asset}],
+          pipeline_context: %{
+            id: "pipeline_1",
+            name: "daily",
+            run_kind: :pipeline,
+            resolved_refs: [{__MODULE__.Asset, :asset}],
+            deps: :all
+          }
+        },
+        submit_kind: :rerun
+      )
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.metadata.replay_submit_kind == :pipeline
+    assert restored.metadata.replay_mode == :exact_replay
+    assert restored.metadata.pipeline_submit_ref == __MODULE__.Asset
+    assert restored.metadata.pipeline_target_refs == [{__MODULE__.Asset, :asset}]
+    assert restored.metadata.pipeline_context.resolved_refs == [{__MODULE__.Asset, :asset}]
+
+    projected = Projector.project_run(restored)
+    assert projected.replay_mode == :exact_replay
+    assert projected.pipeline.resolved_refs == [{__MODULE__.Asset, :asset}]
+    assert projected.submit_ref == __MODULE__.Asset
   end
 
   test "normalizes unexpected exception structs before persistence" do
@@ -119,6 +194,51 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
                %{run_blob: tampered, manifest_version_id: version.manifest_version_id},
                manifest_record
              )
+  end
+
+  test "rejects stale manifest content hash before trusting manifest refs" do
+    version = manifest_version("mv_run_snapshot_stale_manifest", __MODULE__.Asset)
+    run = run_state("run_snapshot_stale_manifest", version, __MODULE__.Asset)
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    stale_manifest_json =
+      manifest_record.manifest_json
+      |> Jason.decode!()
+      |> put_in(["metadata", "changed"], true)
+      |> Jason.encode!()
+
+    stale_manifest_record = %{manifest_record | manifest_json: stale_manifest_json}
+
+    assert {:error, {:manifest_content_hash_mismatch, _, _}} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               stale_manifest_record
+             )
+  end
+
+  test "rejects run manifest content hash mismatch" do
+    version = manifest_version("mv_run_snapshot_content_hash_mismatch", __MODULE__.Asset)
+    run = run_state("run_snapshot_content_hash_mismatch", version, __MODULE__.Asset)
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    tampered =
+      payload
+      |> Jason.decode!()
+      |> Map.put("manifest_content_hash", String.duplicate("f", 64))
+      |> Jason.encode!()
+
+    assert {:error, {:run_manifest_content_hash_mismatch, version_hash, other_hash}} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: tampered, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert version_hash == version.content_hash
+    assert other_hash == String.duplicate("f", 64)
   end
 
   defp manifest_version(manifest_version_id, module) do

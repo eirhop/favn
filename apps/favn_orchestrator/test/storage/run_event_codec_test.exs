@@ -114,8 +114,37 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
     assert {:ok, restored} = RunEventCodec.decode(payload)
     assert restored.event_type == :step_failed
     assert restored.entity == :step
-    assert restored.asset_ref == {MyApp.Asset, :asset}
+
+    assert restored.asset_ref == %{
+             "module" => "Elixir.MyApp.Asset",
+             "name" => "asset"
+           }
+
     assert restored.data["error"]["message"] == "[REDACTED]"
     assert restored.data["stacktrace"] == [[Atom.to_string(__MODULE__), "test", 1]]
+  end
+
+  test "decodes persisted event refs as data when module atoms are not loaded" do
+    payload =
+      Jason.encode!(%{
+        "format" => "favn.run_event.storage.v1",
+        "schema_version" => 1,
+        "run_id" => "run_unloaded_ref",
+        "sequence" => 1,
+        "event_type" => "step_started",
+        "entity" => "step",
+        "occurred_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "status" => "running",
+        "asset_ref" => %{"module" => "Elixir.Unloaded.ConsumerAsset", "name" => "asset"},
+        "stage" => 0,
+        "data" => %{}
+      })
+
+    assert {:ok, event} = RunEventCodec.decode(payload)
+
+    assert event.asset_ref == %{
+             "module" => "Elixir.Unloaded.ConsumerAsset",
+             "name" => "asset"
+           }
   end
 end

@@ -74,6 +74,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "result",
     "retry_backoff_ms",
     "retrying",
+    "replay_mode",
+    "replay_submit_kind",
+    "exact_replay",
+    "resume_from_failure",
     "root_run_id",
     "run",
     "run_finished",
@@ -206,9 +210,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          status: status,
          event_seq: Map.get(dto, "event_seq"),
          snapshot_hash: Map.get(dto, "snapshot_hash"),
-         params: data_from_dto(Map.get(dto, "params"), allowed_atom_strings),
-         trigger: data_from_dto(Map.get(dto, "trigger"), allowed_atom_strings),
-         metadata: data_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
+         params: json_from_dto(Map.get(dto, "params")),
+         trigger: json_from_dto(Map.get(dto, "trigger")),
+         metadata: metadata_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
          submit_kind: submit_kind,
          rerun_of_run_id: empty_to_nil(Map.get(dto, "rerun_of_run_id")),
          parent_run_id: empty_to_nil(Map.get(dto, "parent_run_id")),
@@ -416,59 +420,66 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp result_from_dto(nil, _allowed_atom_strings), do: nil
 
   defp result_from_dto(%{} = result, allowed_atom_strings) do
+    result = json_from_dto(result)
+
     result
-    |> data_from_dto(allowed_atom_strings)
-    |> atomize_known_result()
+    |> atomize_known_result(allowed_atom_strings)
   end
 
-  defp result_from_dto(value, allowed_atom_strings),
-    do: data_from_dto(value, allowed_atom_strings)
+  defp result_from_dto(value, _allowed_atom_strings), do: json_from_dto(value)
 
-  defp atomize_known_result(%{} = result) do
+  defp atomize_known_result(%{} = result, allowed_atom_strings) do
     result
     |> atomize_key("status", :status, &status_value_from_dto/1)
-    |> atomize_key("asset_results", :asset_results, &asset_results_from_dto/1)
+    |> atomize_key(
+      "asset_results",
+      :asset_results,
+      &asset_results_from_dto(&1, allowed_atom_strings)
+    )
     |> atomize_key("metadata", :metadata, & &1)
     |> Map.update(:status, Map.get(result, :status), &status_value_from_dto/1)
-    |> Map.update(:asset_results, Map.get(result, :asset_results, []), &asset_results_from_dto/1)
+    |> Map.update(
+      :asset_results,
+      Map.get(result, :asset_results, []),
+      &asset_results_from_dto(&1, allowed_atom_strings)
+    )
     |> Map.update(:metadata, Map.get(result, :metadata, %{}), & &1)
   end
 
-  defp atomize_known_result(value), do: value
+  defp atomize_known_result(value, _allowed_atom_strings), do: value
 
-  defp asset_results_from_dto(results) when is_list(results),
-    do: Enum.map(results, &asset_result_from_dto/1)
+  defp asset_results_from_dto(results, allowed_atom_strings) when is_list(results),
+    do: Enum.map(results, &asset_result_from_dto(&1, allowed_atom_strings))
 
-  defp asset_results_from_dto(_results), do: []
+  defp asset_results_from_dto(_results, _allowed_atom_strings), do: []
 
-  defp asset_result_from_dto(%{"ref" => ref} = result),
-    do: asset_result_from_dto(data_from_dto(result, []), ref)
+  defp asset_result_from_dto(%{} = result, allowed_atom_strings) do
+    ref = result |> field(:ref) |> ref_from_dto_value(allowed_atom_strings)
 
-  defp asset_result_from_dto(%{ref: ref} = result), do: asset_result_from_dto(result, ref)
-  defp asset_result_from_dto(result), do: result
-
-  defp asset_result_from_dto(result, ref) do
-    %AssetResult{
-      ref: ref,
-      stage: Map.get(result, :stage, 0),
-      status: status_value_from_dto(Map.get(result, :status)),
-      started_at: datetime_value_from_dto(Map.get(result, :started_at)),
-      finished_at: datetime_value_from_dto(Map.get(result, :finished_at)),
-      duration_ms: Map.get(result, :duration_ms, 0),
-      meta: Map.get(result, :meta, %{}),
-      error: Map.get(result, :error),
-      attempt_count: Map.get(result, :attempt_count, 0),
-      max_attempts: Map.get(result, :max_attempts, 1),
-      attempts: Map.get(result, :attempts, []),
-      next_retry_at: datetime_value_from_dto(Map.get(result, :next_retry_at))
-    }
+    if is_tuple(ref) do
+      build_asset_result(result, ref)
+    else
+      result
+    end
   end
 
-  defp data_from_dto(%{"module" => _module, "name" => _name} = value, allowed_atom_strings) do
-    case ref_from_dto(value, allowed_atom_strings) do
-      {:ok, ref} -> ref
-      {:error, _reason} -> value
-    end
+  defp asset_result_from_dto(result, _allowed_atom_strings), do: result
+
+  defp build_asset_result(result, ref) do
+    %AssetResult{
+      ref: ref,
+      stage: field(result, :stage, 0),
+      status: status_value_from_dto(field(result, :status)),
+      started_at: datetime_value_from_dto(field(result, :started_at)),
+      finished_at: datetime_value_from_dto(field(result, :finished_at)),
+      duration_ms: field(result, :duration_ms, 0),
+      meta: field(result, :meta, %{}),
+      error: field(result, :error),
+      attempt_count: field(result, :attempt_count, 0),
+      max_attempts: field(result, :max_attempts, 1),
+      attempts: field(result, :attempts, []),
+      next_retry_at: datetime_value_from_dto(field(result, :next_retry_at))
+    }
   end
 
   defp data_from_dto(%{} = value, allowed_atom_strings) do
@@ -482,6 +493,134 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   end
 
   defp data_from_dto(value, _allowed_atom_strings), do: value
+
+  defp metadata_from_dto(value, allowed_atom_strings) do
+    value
+    |> json_from_dto()
+    |> normalize_metadata(allowed_atom_strings)
+  end
+
+  defp normalize_metadata(%{} = metadata, allowed_atom_strings) do
+    metadata
+    |> promote_key("pipeline_context", :pipeline_context)
+    |> promote_key("pipeline_submit_ref", :pipeline_submit_ref)
+    |> promote_key("pipeline_target_refs", :pipeline_target_refs)
+    |> promote_key("pipeline_dependencies", :pipeline_dependencies)
+    |> promote_key("asset_dependencies", :asset_dependencies)
+    |> promote_key("replay_submit_kind", :replay_submit_kind)
+    |> promote_key("replay_mode", :replay_mode)
+    |> normalize_metadata_module(:pipeline_submit_ref, allowed_atom_strings)
+    |> normalize_metadata_refs(:pipeline_target_refs, allowed_atom_strings)
+    |> normalize_metadata_refs(:asset_dependencies, allowed_atom_strings)
+    |> normalize_metadata_refs(:pipeline_dependencies, allowed_atom_strings)
+    |> normalize_pipeline_context(allowed_atom_strings)
+    |> normalize_metadata_atom(:replay_submit_kind, &submit_kind_value_from_dto/1)
+    |> normalize_metadata_atom(:replay_mode, &replay_mode_from_dto/1)
+  end
+
+  defp normalize_metadata(value, _allowed_atom_strings), do: value
+
+  defp normalize_metadata_module(metadata, key, allowed_atom_strings) when is_map(metadata) do
+    case Map.fetch(metadata, key) do
+      {:ok, value} ->
+        Map.put(metadata, key, atom_from_dto_value(value, allowed_atom_strings))
+
+      :error ->
+        metadata
+    end
+  end
+
+  defp normalize_metadata_refs(metadata, key, allowed_atom_strings) when is_map(metadata) do
+    case Map.fetch(metadata, key) do
+      {:ok, values} when is_list(values) ->
+        Map.put(metadata, key, Enum.map(values, &ref_from_dto_value(&1, allowed_atom_strings)))
+
+      {:ok, value} ->
+        Map.put(metadata, key, value)
+
+      :error ->
+        metadata
+    end
+  end
+
+  defp normalize_metadata_atom(metadata, key, fun) when is_map(metadata) do
+    case Map.fetch(metadata, key) do
+      {:ok, value} -> Map.put(metadata, key, fun.(value))
+      :error -> metadata
+    end
+  end
+
+  defp normalize_pipeline_context(%{pipeline_context: context} = metadata, allowed_atom_strings)
+       when is_map(context) do
+    context =
+      context
+      |> atomize_known_context_keys()
+      |> normalize_context_module(:module, allowed_atom_strings)
+      |> normalize_context_module(:pipeline_module, allowed_atom_strings)
+      |> normalize_context_refs(:resolved_refs, allowed_atom_strings)
+
+    Map.put(metadata, :pipeline_context, context)
+  end
+
+  defp normalize_pipeline_context(metadata, _allowed_atom_strings), do: metadata
+
+  defp atomize_known_context_keys(context) do
+    known_context_keys = %{
+      "id" => :id,
+      "name" => :name,
+      "run_kind" => :run_kind,
+      "resolved_refs" => :resolved_refs,
+      "deps" => :deps,
+      "trigger" => :trigger,
+      "schedule" => :schedule,
+      "window" => :window,
+      "anchor_window" => :anchor_window,
+      "backfill_range" => :backfill_range,
+      "anchor_ranges" => :anchor_ranges,
+      "source" => :source,
+      "outputs" => :outputs,
+      "module" => :module,
+      "pipeline_module" => :pipeline_module
+    }
+
+    Enum.reduce(known_context_keys, context, fn {string_key, atom_key}, acc ->
+      promote_key(acc, string_key, atom_key)
+    end)
+  end
+
+  defp normalize_context_module(context, key, allowed_atom_strings) when is_map(context) do
+    case Map.fetch(context, key) do
+      {:ok, value} -> Map.put(context, key, atom_from_dto_value(value, allowed_atom_strings))
+      :error -> context
+    end
+  end
+
+  defp normalize_context_refs(context, key, allowed_atom_strings) when is_map(context) do
+    case Map.fetch(context, key) do
+      {:ok, values} when is_list(values) ->
+        Map.put(context, key, Enum.map(values, &ref_from_dto_value(&1, allowed_atom_strings)))
+
+      {:ok, value} ->
+        Map.put(context, key, value)
+
+      :error ->
+        context
+    end
+  end
+
+  defp promote_key(map, string_key, atom_key) when is_map(map) do
+    case Map.fetch(map, string_key) do
+      {:ok, value} -> map |> Map.delete(string_key) |> Map.put_new(atom_key, value)
+      :error -> map
+    end
+  end
+
+  defp json_from_dto(%{} = value) do
+    Map.new(value, fn {key, val} -> {key, json_from_dto(val)} end)
+  end
+
+  defp json_from_dto(values) when is_list(values), do: Enum.map(values, &json_from_dto/1)
+  defp json_from_dto(value), do: value
 
   defp known_key(key) when key in @internal_atom_strings do
     String.to_existing_atom(key)
@@ -507,12 +646,41 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     end
   end
 
+  defp field(map, key, default \\ nil) when is_map(map) and is_atom(key) do
+    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  end
+
   defp status_value_from_dto(value) when is_atom(value), do: value
 
   defp status_value_from_dto(value) when is_binary(value),
     do: status_from_dto(value) |> elem_or(value)
 
   defp status_value_from_dto(value), do: value
+
+  defp submit_kind_value_from_dto(value) when is_atom(value), do: value
+
+  defp submit_kind_value_from_dto(value) when is_binary(value),
+    do: submit_kind_from_dto(value) |> elem_or(value)
+
+  defp submit_kind_value_from_dto(value), do: value
+
+  defp replay_mode_from_dto("exact_replay"), do: :exact_replay
+  defp replay_mode_from_dto("resume_from_failure"), do: :resume_from_failure
+  defp replay_mode_from_dto(value), do: value
+
+  defp ref_from_dto_value(value, allowed_atom_strings) do
+    case ref_from_dto(value, allowed_atom_strings) do
+      {:ok, ref} -> ref
+      {:error, _reason} -> value
+    end
+  end
+
+  defp atom_from_dto_value(value, allowed_atom_strings) do
+    case atom_from_dto(value, allowed_atom_strings) do
+      {:ok, atom} -> atom
+      {:error, _reason} -> value
+    end
+  end
 
   defp elem_or({:ok, value}, _fallback), do: value
   defp elem_or({:error, _reason}, fallback), do: fallback
