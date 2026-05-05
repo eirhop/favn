@@ -507,6 +507,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     |> promote_key("pipeline_target_refs", :pipeline_target_refs)
     |> promote_key("pipeline_dependencies", :pipeline_dependencies)
     |> promote_key("asset_dependencies", :asset_dependencies)
+    |> promote_key("in_flight_execution_ids", :in_flight_execution_ids)
     |> promote_key("replay_submit_kind", :replay_submit_kind)
     |> promote_key("replay_mode", :replay_mode)
     |> normalize_metadata_module(:pipeline_submit_ref, allowed_atom_strings)

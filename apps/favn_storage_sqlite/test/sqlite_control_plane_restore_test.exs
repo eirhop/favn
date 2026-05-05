@@ -77,6 +77,7 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
     assert stored_run.manifest_version_id == version.manifest_version_id
     assert stored_run.metadata.replay_submit_kind == :pipeline
     assert stored_run.metadata.replay_mode == :exact_replay
+    assert stored_run.metadata.in_flight_execution_ids == ["exec_1", "exec_2"]
 
     projected = Projector.project_run(stored_run)
     assert projected.submit_ref == MyApp.RestorePipeline
@@ -160,6 +161,7 @@ defmodule FavnStorageSqlite.ControlPlaneRestoreTest do
       manifest_content_hash: version.content_hash,
       asset_ref: {MyApp.RestoreAsset, :restore_asset},
       metadata: %{
+        in_flight_execution_ids: ["exec_1", "exec_2"],
         replay_submit_kind: :pipeline,
         replay_mode: :exact_replay,
         pipeline_submit_ref: MyApp.RestorePipeline,

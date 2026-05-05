@@ -120,6 +120,31 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert projected.submit_ref == __MODULE__.Asset
   end
 
+  test "operational in-flight execution ids remain atom-keyed after DTO roundtrip" do
+    version = manifest_version("mv_run_snapshot_in_flight", __MODULE__.Asset)
+
+    run =
+      RunState.new(
+        id: "run_snapshot_in_flight",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {__MODULE__.Asset, :asset},
+        metadata: %{in_flight_execution_ids: ["exec_1", "exec_2"]}
+      )
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.metadata.in_flight_execution_ids == ["exec_1", "exec_2"]
+    refute Map.has_key?(restored.metadata, "in_flight_execution_ids")
+  end
+
   test "normalizes unexpected exception structs before persistence" do
     version = manifest_version("mv_run_snapshot_exception", __MODULE__.Asset)
 
