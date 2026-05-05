@@ -273,6 +273,25 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientCancelFailureStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :nodedown}
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: {:error, :nodedown}
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
+
   defmodule RunnerClientKeyErrorStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -1320,7 +1339,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert {:ok, cancelled} = await_cancelled_run(run_id)
     assert cancelled.status == :cancelled
-    assert cancelled.metadata[:cancel_forward_error].type == :runner_cancel_failed
+    assert cancelled.metadata[:cancel_forward_error].type == :runner_cancel_recovered
     assert cancelled.metadata[:cancel_forward_error].reason =~ "stale_execution_id"
 
     assert {:ok, events} = Storage.list_run_events(run_id)
@@ -1549,7 +1568,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_failed)
   end
 
-  test "run manager startup reconciles orphaned pending and running runs" do
+  test "run recovery reconciles orphaned pending and running runs before run supervisor starts" do
     version = manifest_version("mv_startup_reconcile")
     assert :ok = FavnOrchestrator.register_manifest(version)
 
@@ -1573,9 +1592,7 @@ defmodule FavnOrchestrator.RunManagerTest do
                status: :running
              })
 
-    name = :"run_manager_reconcile_#{System.unique_integer([:positive])}"
-    assert {:ok, pid} = FavnOrchestrator.RunManager.start_link(name: name)
-    GenServer.stop(pid)
+    assert :ok = FavnOrchestrator.RunRecovery.reconcile_orphaned_runs()
 
     assert {:ok, reconciled_pending} = Storage.get_run(pending.id)
     assert {:ok, reconciled_running} = Storage.get_run(running.id)
@@ -1589,6 +1606,78 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert reconciled_running.error.type == :orphaned_run_reconciled
     assert reconciled_running.error.previous_status == :running
     assert reconciled_running.error.scope == :local_single_node
+  end
+
+  test "run manager startup does not reconcile persisted in-flight runs" do
+    version = manifest_version("mv_manager_restart_no_reconcile")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    running = run_state("run_manager_restart_still_running", version, :running)
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(
+               %{running | status: :pending, event_seq: 1},
+               :run_created,
+               %{status: :pending}
+             )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(running, :run_started, %{
+               status: :running
+             })
+
+    name = :"run_manager_no_reconcile_#{System.unique_integer([:positive])}"
+    assert {:ok, pid} = FavnOrchestrator.RunManager.start_link(name: name)
+    GenServer.stop(pid)
+
+    assert {:ok, persisted} = Storage.get_run(running.id)
+    assert persisted.status == :running
+    assert persisted.error == nil
+  end
+
+  test "cancel keeps run in-flight when runner cancellation failure is unconfirmed" do
+    version = manifest_version("mv_cancel_unconfirmed")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    running =
+      "run_cancel_unconfirmed"
+      |> run_state(version, :running)
+      |> RunState.transition(
+        runner_execution_id: "exec_unconfirmed",
+        metadata: %{in_flight_execution_ids: ["exec_unconfirmed"]}
+      )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(
+               %{running | status: :pending, event_seq: 1},
+               :run_created,
+               %{status: :pending}
+             )
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.persist_transition(running, :run_started, %{
+               status: :running
+             })
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientCancelFailureStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    assert {:error, {:runner_cancel_failed, %{reason: ":nodedown"}}} =
+             FavnOrchestrator.cancel_run(running.id, %{reason: :manual_cancel})
+
+    assert {:ok, persisted} = Storage.get_run(running.id)
+    assert persisted.status == :running
+    assert persisted.runner_execution_id == "exec_unconfirmed"
+    assert persisted.metadata.cancel_requested == true
+    assert persisted.metadata.in_flight_execution_ids == ["exec_unconfirmed"]
   end
 
   test "rerun rejects manifest override mismatch" do

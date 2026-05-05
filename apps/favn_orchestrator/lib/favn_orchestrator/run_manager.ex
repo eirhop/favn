@@ -59,10 +59,7 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   @impl true
-  def init(_args) do
-    reconcile_orphaned_runs()
-    {:ok, %{run_pids: %{}, monitors: %{}}}
-  end
+  def init(_args), do: {:ok, %{run_pids: %{}, monitors: %{}}}
 
   @impl true
   def handle_call({:submit_asset_run, asset_ref, opts}, _from, state) do
@@ -244,13 +241,21 @@ defmodule FavnOrchestrator.RunManager do
                  TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
                    reason: reason
                  }) do
-            cancel_error = forward_cancel_error(run, reason)
-            cancelled = maybe_put_cancel_forward_error(cancelled, cancel_error)
+            case forward_cancel_result(run, reason) do
+              :ok ->
+                TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
 
-            TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
-              reason: reason,
-              cancel_forward_error: cancel_error
-            })
+              {:recoverable, cancel_error} ->
+                cancelled = maybe_put_cancel_forward_error(cancelled, cancel_error)
+
+                TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
+                  reason: reason,
+                  cancel_forward_error: cancel_error
+                })
+
+              {:error, cancel_error} ->
+                {:error, {:runner_cancel_failed, cancel_error}}
+            end
           end
 
         {:error, _reason} = error ->
@@ -646,26 +651,6 @@ defmodule FavnOrchestrator.RunManager do
     DynamicSupervisor.start_child(FavnOrchestrator.RunSupervisor, child_spec)
   end
 
-  defp reconcile_orphaned_runs do
-    [:pending, :running]
-    |> Enum.each(fn status ->
-      case Storage.list_runs(status: status) do
-        {:ok, runs} ->
-          Enum.each(runs, fn run ->
-            terminalize_run(run, orphaned_run_error(run))
-          end)
-
-        {:error, reason} ->
-          OperationalEvents.emit(
-            :run_reconciliation_failed,
-            %{},
-            %{status: status, reason: reason},
-            level: :error
-          )
-      end
-    end)
-  end
-
   defp terminalize_active_run(run_id, error) when is_binary(run_id) and is_map(error) do
     case Storage.get_run(run_id) do
       {:ok, %RunState{status: status} = run} when status in [:pending, :running] ->
@@ -697,15 +682,6 @@ defmodule FavnOrchestrator.RunManager do
       status: failed.status,
       error: failed.error
     })
-  end
-
-  defp orphaned_run_error(%RunState{} = run) do
-    %{
-      type: :orphaned_run_reconciled,
-      scope: :local_single_node,
-      previous_status: run.status,
-      reconciled_at: DateTime.utc_now()
-    }
   end
 
   defp run_server_down_error(reason) do
@@ -769,8 +745,7 @@ defmodule FavnOrchestrator.RunManager do
           Map.merge(run.metadata, %{
             cancel_requested: true,
             cancel_reason: reason,
-            cancel_requested_at: DateTime.utc_now(),
-            in_flight_execution_ids: []
+            cancel_requested_at: DateTime.utc_now()
           })
       )
 
@@ -779,19 +754,23 @@ defmodule FavnOrchestrator.RunManager do
         status: :cancelled,
         error: {:cancelled, reason},
         runner_execution_id: nil,
-        metadata: Map.put(cancel_requested.metadata, :cancelled, true)
+        metadata:
+          Map.merge(cancel_requested.metadata, %{
+            cancelled: true,
+            in_flight_execution_ids: []
+          })
       )
 
     {:ok, cancel_requested, cancelled}
   end
 
-  defp forward_cancel_error(%RunState{} = run, reason) do
+  defp forward_cancel_result(%RunState{} = run, reason) do
     runner_client = Application.get_env(:favn_orchestrator, :runner_client, nil)
     runner_opts = Application.get_env(:favn_orchestrator, :runner_client_opts, [])
     execution_ids = inflight_execution_ids(run)
 
     if execution_ids == [] do
-      nil
+      :ok
     else
       with :ok <- validate_runner_client(runner_client) do
         Enum.reduce_while(execution_ids, :ok, fn execution_id, :ok ->
@@ -806,13 +785,17 @@ defmodule FavnOrchestrator.RunManager do
         end)
       end
       |> case do
-        :ok -> nil
-        {:error, reason} -> %{type: :runner_cancel_failed, reason: inspect(reason)}
+        :ok ->
+          :ok
+
+        {:error, reason} when reason in [:stale_execution_id, :not_found] ->
+          {:recoverable, %{type: :runner_cancel_recovered, reason: inspect(reason)}}
+
+        {:error, reason} ->
+          {:error, %{type: :runner_cancel_failed, reason: inspect(reason)}}
       end
     end
   end
-
-  defp maybe_put_cancel_forward_error(%RunState{} = run, nil), do: run
 
   defp maybe_put_cancel_forward_error(%RunState{} = run, error) when is_map(error) do
     run
