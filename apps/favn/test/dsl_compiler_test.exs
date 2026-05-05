@@ -1,5 +1,5 @@
 defmodule Favn.DSLCompilerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   defmodule RawCustomers do
     use Favn.Namespace, relation: [connection: :warehouse, catalog: "raw", schema: "sales"]

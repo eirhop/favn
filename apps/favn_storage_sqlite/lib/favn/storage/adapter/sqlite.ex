@@ -12,10 +12,10 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.AuthCodec
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
-  alias FavnOrchestrator.Storage.AuthCodec
   alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunEventCodec
