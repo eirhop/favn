@@ -12,6 +12,9 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
+  alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
+  alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnOrchestrator.Storage.RunEventCodec
@@ -348,8 +351,8 @@ defmodule Favn.Storage.Adapter.SQLite do
         INSERT INTO favn_pipeline_coverage_baselines (
           baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted,
           window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id,
-          manifest_version_id, status, errors_blob, metadata_blob, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+          manifest_version_id, status, record_payload, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
         ON CONFLICT(baseline_id) DO UPDATE SET
           pipeline_module = excluded.pipeline_module,
           source_key = excluded.source_key,
@@ -362,8 +365,7 @@ defmodule Favn.Storage.Adapter.SQLite do
           created_by_run_id = excluded.created_by_run_id,
           manifest_version_id = excluded.manifest_version_id,
           status = excluded.status,
-          errors_blob = excluded.errors_blob,
-          metadata_blob = excluded.metadata_blob,
+          record_payload = excluded.record_payload,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
         """
@@ -381,8 +383,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         baseline.created_by_run_id,
         baseline.manifest_version_id,
         encode_atom(baseline.status),
-        encode_payload(baseline.errors),
-        encode_payload(baseline.metadata),
+        encode_coverage_baseline(baseline),
         encode_datetime(baseline.created_at),
         encode_datetime(baseline.updated_at)
       ]
@@ -430,8 +431,8 @@ defmodule Favn.Storage.Adapter.SQLite do
           backfill_run_id, child_run_id, pipeline_module, manifest_version_id,
           coverage_baseline_id, window_kind, window_start_at, window_end_at, timezone,
           window_key, status, attempt_count, latest_attempt_run_id, last_success_run_id,
-          last_error_blob, errors_blob, metadata_blob, started_at, finished_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+          record_payload, started_at, finished_at, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
         ON CONFLICT(backfill_run_id, pipeline_module, window_key) DO UPDATE SET
           child_run_id = excluded.child_run_id,
           manifest_version_id = excluded.manifest_version_id,
@@ -444,9 +445,7 @@ defmodule Favn.Storage.Adapter.SQLite do
           attempt_count = excluded.attempt_count,
           latest_attempt_run_id = excluded.latest_attempt_run_id,
           last_success_run_id = excluded.last_success_run_id,
-          last_error_blob = excluded.last_error_blob,
-          errors_blob = excluded.errors_blob,
-          metadata_blob = excluded.metadata_blob,
+          record_payload = excluded.record_payload,
           started_at = excluded.started_at,
           finished_at = excluded.finished_at,
           created_at = excluded.created_at,
@@ -468,9 +467,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         window.attempt_count,
         window.latest_attempt_run_id,
         window.last_success_run_id,
-        encode_payload(window.last_error),
-        encode_payload(window.errors),
-        encode_payload(window.metadata),
+        encode_backfill_window(window),
         encode_datetime(window.started_at),
         encode_datetime(window.finished_at),
         encode_datetime(window.created_at),
@@ -523,9 +520,9 @@ defmodule Favn.Storage.Adapter.SQLite do
         INSERT INTO favn_asset_window_states (
           asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id,
           window_kind, window_start_at, window_end_at, timezone, window_key, status,
-          latest_run_id, latest_parent_run_id, latest_success_run_id, latest_error_blob,
-          rows_written, errors_blob, metadata_blob, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+          latest_run_id, latest_parent_run_id, latest_success_run_id, rows_written,
+          record_payload, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         ON CONFLICT(asset_ref_module, asset_ref_name, window_key) DO UPDATE SET
           pipeline_module = excluded.pipeline_module,
           manifest_version_id = excluded.manifest_version_id,
@@ -537,10 +534,8 @@ defmodule Favn.Storage.Adapter.SQLite do
           latest_run_id = excluded.latest_run_id,
           latest_parent_run_id = excluded.latest_parent_run_id,
           latest_success_run_id = excluded.latest_success_run_id,
-          latest_error_blob = excluded.latest_error_blob,
           rows_written = excluded.rows_written,
-          errors_blob = excluded.errors_blob,
-          metadata_blob = excluded.metadata_blob,
+          record_payload = excluded.record_payload,
           updated_at = excluded.updated_at
         """
 
@@ -558,10 +553,8 @@ defmodule Favn.Storage.Adapter.SQLite do
         state.latest_run_id,
         state.latest_parent_run_id,
         state.latest_success_run_id,
-        encode_payload(state.latest_error),
         state.rows_written,
-        encode_payload(state.errors),
-        encode_payload(state.metadata),
+        encode_asset_window_state(state),
         encode_datetime(state.updated_at)
       ]
 
@@ -980,7 +973,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp coverage_baseline_columns do
-    "baseline_id, pipeline_module, source_key, segment_key_hash, segment_key_redacted, window_kind, timezone, coverage_start_at, coverage_until, created_by_run_id, manifest_version_id, status, errors_blob, metadata_blob, created_at, updated_at"
+    "record_payload"
   end
 
   defp auth_actor_columns do
@@ -1178,11 +1171,11 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp backfill_window_columns do
-    "backfill_run_id, child_run_id, pipeline_module, manifest_version_id, coverage_baseline_id, window_kind, window_start_at, window_end_at, timezone, window_key, status, attempt_count, latest_attempt_run_id, last_success_run_id, last_error_blob, errors_blob, metadata_blob, started_at, finished_at, created_at, updated_at"
+    "record_payload"
   end
 
   defp asset_window_state_columns do
-    "asset_ref_module, asset_ref_name, pipeline_module, manifest_version_id, window_kind, window_start_at, window_end_at, timezone, window_key, status, latest_run_id, latest_parent_run_id, latest_success_run_id, latest_error_blob, rows_written, errors_blob, metadata_blob, updated_at"
+    "record_payload"
   end
 
   defp coverage_baseline_filter_columns do
@@ -1231,149 +1224,14 @@ defmodule Favn.Storage.Adapter.SQLite do
     }
   end
 
-  defp decode_coverage_baseline_row([
-         baseline_id,
-         pipeline_module,
-         source_key,
-         segment_key_hash,
-         segment_key_redacted,
-         window_kind,
-         timezone,
-         coverage_start_at,
-         coverage_until,
-         created_by_run_id,
-         manifest_version_id,
-         status,
-         errors_blob,
-         metadata_blob,
-         created_at,
-         updated_at
-       ]) do
-    with {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, errors} <- decode_payload(errors_blob),
-         {:ok, metadata} <- decode_payload(metadata_blob) do
-      CoverageBaseline.new(%{
-        baseline_id: baseline_id,
-        pipeline_module: pipeline_module,
-        source_key: source_key,
-        segment_key_hash: segment_key_hash,
-        segment_key_redacted: segment_key_redacted,
-        window_kind: window_kind,
-        timezone: timezone,
-        coverage_start_at: decode_datetime(coverage_start_at),
-        coverage_until: decode_datetime(coverage_until),
-        created_by_run_id: created_by_run_id,
-        manifest_version_id: manifest_version_id,
-        status: status,
-        errors: errors,
-        metadata: metadata,
-        created_at: decode_datetime(created_at),
-        updated_at: decode_datetime(updated_at)
-      })
-    end
-  end
+  defp decode_coverage_baseline_row([record_payload]),
+    do: CoverageBaselineCodec.decode(record_payload)
 
-  defp decode_backfill_window_row([
-         backfill_run_id,
-         child_run_id,
-         pipeline_module,
-         manifest_version_id,
-         coverage_baseline_id,
-         window_kind,
-         window_start_at,
-         window_end_at,
-         timezone,
-         window_key,
-         status,
-         attempt_count,
-         latest_attempt_run_id,
-         last_success_run_id,
-         last_error_blob,
-         errors_blob,
-         metadata_blob,
-         started_at,
-         finished_at,
-         created_at,
-         updated_at
-       ]) do
-    with {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, last_error} <- decode_payload(last_error_blob),
-         {:ok, errors} <- decode_payload(errors_blob),
-         {:ok, metadata} <- decode_payload(metadata_blob) do
-      BackfillWindow.new(%{
-        backfill_run_id: backfill_run_id,
-        child_run_id: child_run_id,
-        pipeline_module: pipeline_module,
-        manifest_version_id: manifest_version_id,
-        coverage_baseline_id: coverage_baseline_id,
-        window_kind: window_kind,
-        window_start_at: decode_datetime(window_start_at),
-        window_end_at: decode_datetime(window_end_at),
-        timezone: timezone,
-        window_key: window_key,
-        status: status,
-        attempt_count: attempt_count,
-        latest_attempt_run_id: latest_attempt_run_id,
-        last_success_run_id: last_success_run_id,
-        last_error: last_error,
-        errors: errors,
-        metadata: metadata,
-        started_at: decode_datetime(started_at),
-        finished_at: decode_datetime(finished_at),
-        created_at: decode_datetime(created_at),
-        updated_at: decode_datetime(updated_at)
-      })
-    end
-  end
+  defp decode_backfill_window_row([record_payload]),
+    do: BackfillWindowCodec.decode(record_payload)
 
-  defp decode_asset_window_state_row([
-         asset_ref_module,
-         asset_ref_name,
-         pipeline_module,
-         manifest_version_id,
-         window_kind,
-         window_start_at,
-         window_end_at,
-         timezone,
-         window_key,
-         status,
-         latest_run_id,
-         latest_parent_run_id,
-         latest_success_run_id,
-         latest_error_blob,
-         rows_written,
-         errors_blob,
-         metadata_blob,
-         updated_at
-       ]) do
-    with {:ok, asset_ref_module} <- existing_atom(asset_ref_module),
-         {:ok, asset_ref_name} <- existing_atom(asset_ref_name),
-         {:ok, pipeline_module} <- existing_atom(pipeline_module),
-         {:ok, latest_error} <- decode_payload(latest_error_blob),
-         {:ok, errors} <- decode_payload(errors_blob),
-         {:ok, metadata} <- decode_payload(metadata_blob) do
-      AssetWindowState.new(%{
-        asset_ref_module: asset_ref_module,
-        asset_ref_name: asset_ref_name,
-        pipeline_module: pipeline_module,
-        manifest_version_id: manifest_version_id,
-        window_kind: window_kind,
-        window_start_at: decode_datetime(window_start_at),
-        window_end_at: decode_datetime(window_end_at),
-        timezone: timezone,
-        window_key: window_key,
-        status: status,
-        latest_run_id: latest_run_id,
-        latest_parent_run_id: latest_parent_run_id,
-        latest_success_run_id: latest_success_run_id,
-        latest_error: latest_error,
-        rows_written: rows_written,
-        errors: errors,
-        metadata: metadata,
-        updated_at: decode_datetime(updated_at)
-      })
-    end
-  end
+  defp decode_asset_window_state_row([record_payload]),
+    do: AssetWindowStateCodec.decode(record_payload)
 
   defp decode_rows(repo, sql, params, decoder) when is_function(decoder, 1) do
     case SQL.query(repo, sql, params) do
@@ -2149,6 +2007,36 @@ defmodule Favn.Storage.Adapter.SQLite do
     case PayloadCodec.encode(value) do
       {:ok, payload} -> payload
       {:error, reason} -> raise ArgumentError, "invalid storage payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_coverage_baseline(%CoverageBaseline{} = baseline) do
+    case CoverageBaselineCodec.encode(baseline) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid coverage baseline payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_backfill_window(%BackfillWindow{} = window) do
+    case BackfillWindowCodec.encode(window) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid backfill window payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_asset_window_state(%AssetWindowState{} = state) do
+    case AssetWindowStateCodec.encode(state) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid asset window state payload: #{inspect(reason)}"
     end
   end
 

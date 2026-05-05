@@ -69,8 +69,7 @@ defmodule FavnStorageSqlite.Migrations.CreateFoundation do
       add(:created_by_run_id, :string, null: false)
       add(:manifest_version_id, :string, null: false)
       add(:status, :string, null: false)
-      add(:errors_blob, :binary, null: false)
-      add(:metadata_blob, :binary, null: false)
+      add(:record_payload, :text, null: false)
       add(:created_at, :text, null: false)
       add(:updated_at, :text, null: false)
     end
@@ -93,9 +92,7 @@ defmodule FavnStorageSqlite.Migrations.CreateFoundation do
       add(:attempt_count, :integer, null: false)
       add(:latest_attempt_run_id, :string)
       add(:last_success_run_id, :string)
-      add(:last_error_blob, :binary, null: false)
-      add(:errors_blob, :binary, null: false)
-      add(:metadata_blob, :binary, null: false)
+      add(:record_payload, :text, null: false)
       add(:started_at, :text)
       add(:finished_at, :text)
       add(:created_at, :text)
@@ -123,10 +120,8 @@ defmodule FavnStorageSqlite.Migrations.CreateFoundation do
       add(:latest_run_id, :string, null: false)
       add(:latest_parent_run_id, :string)
       add(:latest_success_run_id, :string)
-      add(:latest_error_blob, :binary, null: false)
       add(:rows_written, :integer)
-      add(:errors_blob, :binary, null: false)
-      add(:metadata_blob, :binary, null: false)
+      add(:record_payload, :text, null: false)
       add(:updated_at, :text, null: false)
     end
 

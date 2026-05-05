@@ -17,8 +17,7 @@ defmodule FavnStoragePostgres.Migrations.AddBackfillState do
       add(:created_by_run_id, :string, null: false)
       add(:manifest_version_id, :string, null: false)
       add(:status, :string, null: false)
-      add(:errors_payload, :text, null: false)
-      add(:metadata_payload, :text, null: false)
+      add(:record_payload, :text, null: false)
       add(:created_at, :utc_datetime_usec, null: false)
       add(:updated_at, :utc_datetime_usec, null: false)
     end
@@ -41,9 +40,7 @@ defmodule FavnStoragePostgres.Migrations.AddBackfillState do
       add(:attempt_count, :integer, null: false)
       add(:latest_attempt_run_id, :string)
       add(:last_success_run_id, :string)
-      add(:last_error_payload, :text, null: false)
-      add(:errors_payload, :text, null: false)
-      add(:metadata_payload, :text, null: false)
+      add(:record_payload, :text, null: false)
       add(:started_at, :utc_datetime_usec)
       add(:finished_at, :utc_datetime_usec)
       add(:created_at, :utc_datetime_usec)
@@ -71,10 +68,8 @@ defmodule FavnStoragePostgres.Migrations.AddBackfillState do
       add(:latest_run_id, :string, null: false)
       add(:latest_parent_run_id, :string)
       add(:latest_success_run_id, :string)
-      add(:latest_error_payload, :text, null: false)
       add(:rows_written, :bigint)
-      add(:errors_payload, :text, null: false)
-      add(:metadata_payload, :text, null: false)
+      add(:record_payload, :text, null: false)
       add(:updated_at, :utc_datetime_usec, null: false)
     end
 

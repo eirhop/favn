@@ -778,32 +778,29 @@ defmodule Favn.SQLiteStorageTest do
     assert :ok = OrchestratorStorage.put_backfill_window(window)
     assert :ok = OrchestratorStorage.put_asset_window_state(state)
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_pipeline_coverage_baselines SET status = ?1 WHERE baseline_id = ?2",
-               ["bogus", baseline.baseline_id]
-             )
+    corrupt_record_payload(
+      "favn_pipeline_coverage_baselines",
+      "baseline_id",
+      baseline.baseline_id,
+      "status",
+      "bogus"
+    )
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_backfill_windows SET status = ?1 WHERE window_key = ?2",
-               [
-                 "bogus",
-                 window.window_key
-               ]
-             )
+    corrupt_record_payload(
+      "favn_backfill_windows",
+      "window_key",
+      window.window_key,
+      "status",
+      "bogus"
+    )
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_asset_window_states SET status = ?1 WHERE window_key = ?2",
-               [
-                 "bogus",
-                 state.window_key
-               ]
-             )
+    corrupt_record_payload(
+      "favn_asset_window_states",
+      "window_key",
+      state.window_key,
+      "status",
+      "bogus"
+    )
 
     assert {:error, {:invalid_status, "bogus"}} =
              OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
@@ -833,32 +830,29 @@ defmodule Favn.SQLiteStorageTest do
     assert :ok = OrchestratorStorage.put_backfill_window(window)
     assert :ok = OrchestratorStorage.put_asset_window_state(state)
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_pipeline_coverage_baselines SET window_kind = ?1 WHERE baseline_id = ?2",
-               ["fortnight", baseline.baseline_id]
-             )
+    corrupt_record_payload(
+      "favn_pipeline_coverage_baselines",
+      "baseline_id",
+      baseline.baseline_id,
+      "window_kind",
+      "fortnight"
+    )
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_backfill_windows SET window_kind = ?1 WHERE window_key = ?2",
-               [
-                 "fortnight",
-                 window.window_key
-               ]
-             )
+    corrupt_record_payload(
+      "favn_backfill_windows",
+      "window_key",
+      window.window_key,
+      "window_kind",
+      "fortnight"
+    )
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_asset_window_states SET window_kind = ?1 WHERE window_key = ?2",
-               [
-                 "fortnight",
-                 state.window_key
-               ]
-             )
+    corrupt_record_payload(
+      "favn_asset_window_states",
+      "window_key",
+      state.window_key,
+      "window_kind",
+      "fortnight"
+    )
 
     assert {:error, {:invalid_window_kind, "fortnight"}} =
              OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
@@ -888,22 +882,24 @@ defmodule Favn.SQLiteStorageTest do
     assert :ok = OrchestratorStorage.put_coverage_baseline(baseline)
     assert :ok = OrchestratorStorage.put_asset_window_state(state)
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_pipeline_coverage_baselines SET pipeline_module = ?1 WHERE baseline_id = ?2",
-               [unknown_pipeline, baseline.baseline_id]
-             )
+    corrupt_record_payload(
+      "favn_pipeline_coverage_baselines",
+      "baseline_id",
+      baseline.baseline_id,
+      "pipeline_module",
+      unknown_pipeline
+    )
 
     assert {:error, {:unknown_atom, ^unknown_pipeline}} =
              OrchestratorStorage.get_coverage_baseline(baseline.baseline_id)
 
-    assert {:ok, _} =
-             SQL.query(
-               Repo,
-               "UPDATE favn_asset_window_states SET asset_ref_name = ?1 WHERE window_key = ?2",
-               [unknown_asset_name, state.window_key]
-             )
+    corrupt_record_payload(
+      "favn_asset_window_states",
+      "window_key",
+      state.window_key,
+      "asset_ref_name",
+      unknown_asset_name
+    )
 
     assert {:error, {:unknown_atom, ^unknown_asset_name}} =
              OrchestratorStorage.list_asset_window_states()
@@ -1040,8 +1036,8 @@ defmodule Favn.SQLiteStorageTest do
         created_by_run_id: "baseline-run-1",
         manifest_version_id: "manifest_v1",
         status: status,
-        errors: [%{reason: :sample_error}],
-        metadata: %{row_count: 12},
+        errors: [sample_error()],
+        metadata: %{"row_count" => 12},
         created_at: now,
         updated_at: now
       })
@@ -1068,13 +1064,13 @@ defmodule Favn.SQLiteStorageTest do
         attempt_count: 2,
         latest_attempt_run_id: "attempt-#{window_key}",
         last_success_run_id: if(status == :ok, do: "success-#{window_key}", else: nil),
-        last_error: %{reason: :sample_error},
+        last_error: sample_error(),
         started_at: window_start_at,
         finished_at: if(status == :running, do: nil, else: window_end_at),
         created_at: window_start_at,
         updated_at: window_end_at,
-        errors: [%{attempt: 1, reason: :sample_error}],
-        metadata: %{source: "sqlite-test"}
+        errors: [sample_error("%{reason: :sample_error, attempt: 1}")],
+        metadata: %{"source" => "sqlite-test"}
       })
 
     window
@@ -1098,10 +1094,10 @@ defmodule Favn.SQLiteStorageTest do
         latest_run_id: "asset-run-#{window_key}",
         latest_parent_run_id: "backfill-run-1",
         latest_success_run_id: if(status == :ok, do: "asset-success-#{window_key}", else: nil),
-        latest_error: %{reason: :sample_error},
+        latest_error: sample_error(),
         rows_written: 42,
-        errors: [%{reason: :sample_error}],
-        metadata: %{partition: window_key},
+        errors: [sample_error()],
+        metadata: %{"partition" => window_key},
         updated_at: window_end_at
       })
 
@@ -1117,6 +1113,36 @@ defmodule Favn.SQLiteStorageTest do
       _pid ->
         :existing
     end
+  end
+
+  defp sample_error(_message \\ "%{reason: :sample_error}") do
+    %{
+      "kind" => "error",
+      "type" => "map",
+      "message" => "[REDACTED]",
+      "reason" => "\"[REDACTED]\"",
+      "redacted" => true,
+      "truncated" => false
+    }
+  end
+
+  defp corrupt_record_payload(table, key_column, key_value, field, value) do
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT record_payload FROM #{table} WHERE #{key_column} = ?1", [
+               key_value
+             ])
+
+    corrupted =
+      payload
+      |> Jason.decode!()
+      |> Map.put(field, value)
+      |> Jason.encode!()
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE #{table} SET record_payload = ?1 WHERE #{key_column} = ?2", [
+               corrupted,
+               key_value
+             ])
   end
 
   defp maybe_stop_auth_store(:existing), do: :ok

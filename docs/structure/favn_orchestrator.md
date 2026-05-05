@@ -9,7 +9,7 @@ Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
-- Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`
+- Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - HTTP contract schemas under `apps/favn_orchestrator/priv/http_contract/v1/`
 - Production runtime config, readiness, diagnostics, redaction, and operational event modules under `apps/favn_orchestrator/lib/favn_orchestrator/`

@@ -1,8 +1,8 @@
 # favn_storage_postgres
 
 Purpose: Postgres implementation of the orchestrator storage adapter, including
-managed/external repo modes, schema readiness, migrations, and canonical payload
-persistence.
+managed/external repo modes, schema readiness, migrations, JSON-safe
+run/event/backfill DTO persistence, and canonical payload persistence.
 
 Code:
 - `apps/favn_storage_postgres/lib/favn/storage/adapter/postgres.ex`

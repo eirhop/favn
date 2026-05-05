@@ -300,12 +300,20 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
                    manifest_version_id: "mv_backfill_#{unique}",
                    status: :ok,
                    errors: [],
-                   metadata: %{row_count: 10},
+                   metadata: %{"row_count" => 10},
                    created_at: now,
                    updated_at: now
                  })
 
         assert :ok = Adapter.put_coverage_baseline(baseline, opts)
+
+        assert_raw_backfill_payload(
+          "favn_pipeline_coverage_baselines",
+          "baseline_id",
+          baseline.baseline_id,
+          "favn.backfill.coverage_baseline.storage.v1"
+        )
+
         assert {:ok, ^baseline} = Adapter.get_coverage_baseline(baseline.baseline_id, opts)
 
         assert {:ok, baseline_page} =
@@ -331,15 +339,22 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
                    status: :running,
                    attempt_count: 1,
                    latest_attempt_run_id: "child_pg_#{unique}",
-                   last_error: %{reason: :retryable},
-                   errors: [%{message: "retry"}],
-                   metadata: %{partition: "2026-04-27"},
+                   last_error: sample_error(),
+                   errors: [sample_error()],
+                   metadata: %{"partition" => "2026-04-27"},
                    started_at: start_at,
                    created_at: start_at,
                    updated_at: now
                  })
 
         assert :ok = Adapter.put_backfill_window(window, opts)
+
+        assert_raw_backfill_payload(
+          "favn_backfill_windows",
+          "window_key",
+          window.window_key,
+          "favn.backfill.window.storage.v1"
+        )
 
         assert {:ok, ^window} =
                  Adapter.get_backfill_window(
@@ -374,11 +389,18 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
                    latest_success_run_id: "asset_pg_#{unique}",
                    rows_written: 10,
                    errors: [],
-                   metadata: %{relation: "gold.sales"},
+                   metadata: %{"relation" => "gold.sales"},
                    updated_at: now
                  })
 
         assert :ok = Adapter.put_asset_window_state(asset_state, opts)
+
+        assert_raw_backfill_payload(
+          "favn_asset_window_states",
+          "window_key",
+          asset_state.window_key,
+          "favn.backfill.asset_window_state.storage.v1"
+        )
 
         assert {:ok, ^asset_state} =
                  Adapter.get_asset_window_state(
@@ -545,35 +567,29 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert :ok = Adapter.put_backfill_window(window, opts)
         assert :ok = Adapter.put_asset_window_state(state, opts)
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_pipeline_coverage_baselines SET window_kind = $1 WHERE baseline_id = $2",
-                   [
-                     "daily",
-                     baseline.baseline_id
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_pipeline_coverage_baselines",
+          "baseline_id",
+          baseline.baseline_id,
+          "window_kind",
+          "daily"
+        )
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_backfill_windows SET window_kind = $1 WHERE window_key = $2",
-                   [
-                     "daily",
-                     window.window_key
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_backfill_windows",
+          "window_key",
+          window.window_key,
+          "window_kind",
+          "daily"
+        )
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_asset_window_states SET window_kind = $1 WHERE window_key = $2",
-                   [
-                     "daily",
-                     state.window_key
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_asset_window_states",
+          "window_key",
+          state.window_key,
+          "window_kind",
+          "daily"
+        )
 
         assert {:ok, ^baseline} = Adapter.get_coverage_baseline(baseline.baseline_id, opts)
 
@@ -630,35 +646,29 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert :ok = Adapter.put_backfill_window(window, opts)
         assert :ok = Adapter.put_asset_window_state(state, opts)
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_pipeline_coverage_baselines SET status = $1 WHERE baseline_id = $2",
-                   [
-                     "bogus",
-                     baseline.baseline_id
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_pipeline_coverage_baselines",
+          "baseline_id",
+          baseline.baseline_id,
+          "status",
+          "bogus"
+        )
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_backfill_windows SET status = $1 WHERE window_key = $2",
-                   [
-                     "bogus",
-                     window.window_key
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_backfill_windows",
+          "window_key",
+          window.window_key,
+          "status",
+          "bogus"
+        )
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_asset_window_states SET status = $1 WHERE window_key = $2",
-                   [
-                     "bogus",
-                     state.window_key
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_asset_window_states",
+          "window_key",
+          state.window_key,
+          "status",
+          "bogus"
+        )
 
         assert {:error, {:invalid_status, "bogus"}} =
                  Adapter.get_coverage_baseline(baseline.baseline_id, opts)
@@ -714,35 +724,29 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert :ok = Adapter.put_backfill_window(window, opts)
         assert :ok = Adapter.put_asset_window_state(state, opts)
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_pipeline_coverage_baselines SET window_kind = $1 WHERE baseline_id = $2",
-                   [
-                     "fortnight",
-                     baseline.baseline_id
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_pipeline_coverage_baselines",
+          "baseline_id",
+          baseline.baseline_id,
+          "window_kind",
+          "fortnight"
+        )
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_backfill_windows SET window_kind = $1 WHERE window_key = $2",
-                   [
-                     "fortnight",
-                     window.window_key
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_backfill_windows",
+          "window_key",
+          window.window_key,
+          "window_kind",
+          "fortnight"
+        )
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_asset_window_states SET window_kind = $1 WHERE window_key = $2",
-                   [
-                     "fortnight",
-                     state.window_key
-                   ]
-                 )
+        corrupt_record_payload(
+          "favn_asset_window_states",
+          "window_key",
+          state.window_key,
+          "window_kind",
+          "fortnight"
+        )
 
         assert {:error, {:invalid_window_kind, "fortnight"}} =
                  Adapter.get_coverage_baseline(baseline.baseline_id, opts)
@@ -793,22 +797,24 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert :ok = Adapter.put_coverage_baseline(baseline, opts)
         assert :ok = Adapter.put_asset_window_state(state, opts)
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_pipeline_coverage_baselines SET pipeline_module = $1 WHERE baseline_id = $2",
-                   [unknown_pipeline, baseline.baseline_id]
-                 )
+        corrupt_record_payload(
+          "favn_pipeline_coverage_baselines",
+          "baseline_id",
+          baseline.baseline_id,
+          "pipeline_module",
+          unknown_pipeline
+        )
 
         assert {:error, {:unknown_atom, ^unknown_pipeline}} =
                  Adapter.get_coverage_baseline(baseline.baseline_id, opts)
 
-        assert {:ok, _} =
-                 SQL.query(
-                   Repo,
-                   "UPDATE favn_asset_window_states SET asset_ref_name = $1 WHERE window_key = $2",
-                   [unknown_asset_name, state.window_key]
-                 )
+        corrupt_record_payload(
+          "favn_asset_window_states",
+          "window_key",
+          state.window_key,
+          "asset_ref_name",
+          unknown_asset_name
+        )
 
         assert {:error, {:unknown_atom, ^unknown_asset_name}} =
                  Adapter.list_asset_window_states([], opts)
@@ -847,7 +853,7 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         manifest_version_id: "mv_#{baseline_id}",
         status: status,
         errors: [],
-        metadata: %{row_count: 10},
+        metadata: %{"row_count" => 10},
         created_at: now,
         updated_at: now
       })
@@ -871,9 +877,9 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         status: status,
         attempt_count: 1,
         latest_attempt_run_id: "child_#{window_key}",
-        last_error: %{reason: :retryable},
-        errors: [%{message: "retry"}],
-        metadata: %{partition: "2026-04-27"},
+        last_error: sample_error(),
+        errors: [sample_error()],
+        metadata: %{"partition" => "2026-04-27"},
         started_at: start_at,
         created_at: start_at,
         updated_at: now
@@ -900,11 +906,52 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         latest_success_run_id: if(status == :ok, do: "asset_#{window_key}", else: nil),
         rows_written: 10,
         errors: [],
-        metadata: %{relation: "gold.sales"},
+        metadata: %{"relation" => "gold.sales"},
         updated_at: now
       })
 
     state
+  end
+
+  defp sample_error do
+    %{
+      "kind" => "error",
+      "type" => "map",
+      "message" => "[REDACTED]",
+      "reason" => "\"[REDACTED]\"",
+      "redacted" => true,
+      "truncated" => false
+    }
+  end
+
+  defp corrupt_record_payload(table, key_column, key_value, field, value) do
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT record_payload FROM #{table} WHERE #{key_column} = $1", [
+               key_value
+             ])
+
+    corrupted =
+      payload
+      |> Jason.decode!()
+      |> Map.put(field, value)
+      |> Jason.encode!()
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE #{table} SET record_payload = $1 WHERE #{key_column} = $2", [
+               corrupted,
+               key_value
+             ])
+  end
+
+  defp assert_raw_backfill_payload(table, key_column, key_value, format) do
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(Repo, "SELECT record_payload FROM #{table} WHERE #{key_column} = $1", [
+               key_value
+             ])
+
+    assert Jason.decode!(payload)["format"] == format
+    refute payload =~ "__type__"
+    refute payload =~ "__struct__"
   end
 
   defp repo_config_from_url(url) do
