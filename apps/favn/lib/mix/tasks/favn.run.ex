@@ -50,7 +50,7 @@ defmodule Mix.Tasks.Favn.Run do
 
       {:error, {:run_failed, run}} ->
         print_run(run, pipeline_module)
-        Mix.raise("run finished with status #{run["status"] || inspect(run[:status])}")
+        Mix.raise(terminal_run_error_message(run))
 
       {:error, reason} ->
         Mix.raise(error_message(reason))
@@ -65,7 +65,11 @@ defmodule Mix.Tasks.Favn.Run do
   defp error_message(:stack_not_healthy),
     do: "stack not healthy; use mix favn.stop then mix favn.dev"
 
-  defp error_message({:run_wait_timeout, run_id}), do: "timed out waiting for run #{run_id}"
+  defp error_message({:run_wait_timeout, run_id, timeout_ms}) do
+    "local wait timed out after #{timeout_ms}ms while run #{run_id} is still in flight; " <>
+      "check status with mix favn.status or rerun with a larger --timeout-ms"
+  end
+
   defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
 
   defp error_message({:invalid_option, :poll_interval_ms}),
@@ -82,7 +86,46 @@ defmodule Mix.Tasks.Favn.Run do
 
   defp error_message({:orchestrator_validation_failed, message}), do: message
 
+  defp error_message(%{operation: operation, reason: reason}) do
+    "orchestrator #{operation_label(operation)} failed: #{format_orchestrator_reason(reason)}"
+  end
+
   defp error_message(reason), do: "run failed: #{inspect(reason)}"
+
+  @doc false
+  def terminal_run_error_message(run) do
+    status = run["status"] || run[:status] || "unknown"
+    base = "run finished with status #{status}"
+
+    base =
+      if status == "timed_out" do
+        base <> " (run execution timeout)"
+      else
+        base
+      end
+
+    case run_error(run) do
+      nil -> base
+      "nil" -> base
+      error -> base <> ": #{error}"
+    end
+  end
+
+  defp run_error(run), do: run["error"] || run[:error]
+
+  defp operation_label(operation) when is_atom(operation),
+    do: operation |> Atom.to_string() |> String.replace("_", " ")
+
+  defp format_orchestrator_reason({:http_error, status, payload}) do
+    message = get_in(payload, ["error", "message"])
+
+    case message do
+      message when is_binary(message) and message != "" -> "HTTP #{status}: #{message}"
+      _other -> "HTTP #{status}: #{inspect(payload)}"
+    end
+  end
+
+  defp format_orchestrator_reason(reason), do: inspect(reason)
 
   defp print_run(run, pipeline_module) do
     IO.puts("Submitted pipeline run")
@@ -91,7 +134,7 @@ defmodule Mix.Tasks.Favn.Run do
     IO.puts("run: #{run["id"] || "unknown"}")
     IO.puts("status: #{run["status"] || "unknown"}")
 
-    case run["error"] do
+    case run_error(run) do
       nil -> :ok
       "nil" -> :ok
       error -> IO.puts("error: #{error}")

@@ -179,8 +179,9 @@ Assets and generated multi-assets can declare required runtime configuration wit
 `source_config/2`, `env!/1`, and `secret_env!/1`. Manifests record the required
 environment keys and secret flags, but never embed resolved runtime values. The
 runner resolves the values before asset execution and exposes them through
-`ctx.config`, failing the run early with diagnostics such as
-`missing_env SOURCE_SYSTEM_TOKEN` when a required value is absent.
+`ctx.config`, failing the run early with stable `:missing_runtime_config`
+diagnostics such as `missing_env SOURCE_SYSTEM_TOKEN` when a required value is
+absent.
 
 For source-system raw landing assets, keep the source client outside the asset,
 read source IDs/tokens through `ctx.config`, write raw rows through
@@ -454,7 +455,10 @@ tutorial and local smoke runs do not require hand-written private orchestrator
 API requests or local passwords. This manual run path is the recommended default
 for one-time local ETL. Each invocation uses a fresh idempotency key by default;
 pass `--idempotency-key KEY` only when you intentionally want deterministic
-orchestrator replay behavior for a local submission.
+orchestrator replay behavior for a local submission. When waiting, the command
+reports terminal run errors from the orchestrator separately from a local CLI wait
+timeout; increase `--timeout-ms` only when the run should keep executing longer
+than the local wait budget.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
 local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges,

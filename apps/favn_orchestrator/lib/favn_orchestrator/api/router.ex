@@ -497,13 +497,10 @@ defmodule FavnOrchestrator.API.Router do
 
   get "/api/orchestrator/v1/runs/in-flight" do
     with :ok <- ensure_service_auth(conn),
-         {:ok, runs} <- FavnOrchestrator.list_runs(limit: 500) do
-      running_ids =
-        runs
-        |> Enum.filter(&(&1.status == :running))
-        |> Enum.map(& &1.id)
+         {:ok, runs} <- FavnOrchestrator.list_in_flight_runs() do
+      run_ids = Enum.map(runs, & &1.id)
 
-      data(conn, 200, %{count: length(running_ids), run_ids: running_ids})
+      data(conn, 200, %{count: length(run_ids), run_ids: run_ids})
     else
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")

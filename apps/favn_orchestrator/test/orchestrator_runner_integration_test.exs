@@ -14,6 +14,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
   alias FavnOrchestrator.Storage.Adapter.Memory
 
   @missing_secret_env "FAVN_ORCH_PREFLIGHT_MISSING_SECRET"
+  @missing_elixir_env "FAVN_ORCH_ELIXIR_MISSING_SECRET"
 
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
@@ -26,6 +27,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
     Application.put_env(:favn_orchestrator, :preflight_test_pid, self())
     System.delete_env(@missing_secret_env)
+    System.delete_env(@missing_elixir_env)
     Memory.reset()
     {:ok, _} = Application.ensure_all_started(:favn_runner)
     Favn.Connection.Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
@@ -37,6 +39,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
       restore_app_env(:favn, :connections, previous_connections)
       restore_app_env(:favn_orchestrator, :preflight_test_pid, previous_pid)
       System.delete_env(@missing_secret_env)
+      System.delete_env(@missing_elixir_env)
       Favn.Connection.Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
       Memory.reset()
     end)
@@ -106,6 +109,33 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
 
     assert run.status == :ok
     assert_receive :orchestrator_preflight_elixir_executed, 500
+  end
+
+  test "Elixir asset runtime config failure is persisted as stable redacted diagnostics" do
+    elixir_ref = {__MODULE__.MissingRuntimeConfigAsset, :asset}
+
+    version =
+      missing_runtime_config_manifest_version("mv_runner_elixir_runtime_config", elixir_ref)
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run(elixir_ref)
+    assert {:ok, run} = await_terminal_run(run_id)
+
+    assert run.status == :error
+    assert run.error.type == :missing_runtime_config
+    assert run.error.phase == :asset_runtime_config
+    assert run.error.message == "missing required asset runtime config"
+    assert run.error.details.asset_ref == elixir_ref
+
+    assert [%{type: :missing_env, env: @missing_elixir_env, secret?: true}] =
+             run.error.details.errors
+
+    assert [%{message: message}] = run.error.details.errors
+    assert message == "missing_env #{@missing_elixir_env}"
+
+    refute inspect(run.error) =~ "raw-secret"
   end
 
   defp await_terminal_run(run_id, attempts \\ 60)
@@ -198,6 +228,30 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     version
   end
 
+  defp missing_runtime_config_manifest_version(manifest_version_id, ref) do
+    asset = %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: :asset,
+      type: :elixir,
+      execution: %{entrypoint: :asset, arity: 1},
+      runtime_config: %{source_system: %{token: Ref.secret_env!(@missing_elixir_env)}}
+    }
+
+    manifest = %Manifest{
+      schema_version: 1,
+      runner_contract_version: 1,
+      assets: [asset],
+      pipelines: [],
+      schedules: [],
+      graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
+      metadata: %{}
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
   defp sql_asset(ref, opts) do
     relation = RelationRef.new!(%{connection: :preflight_sql, name: "preflight_sql_asset"})
 
@@ -258,6 +312,10 @@ defmodule FavnOrchestrator.RunnerIntegrationTest.PreflightElixirAsset do
 end
 
 defmodule FavnOrchestrator.RunnerIntegrationTest.PreflightSQLAsset do
+end
+
+defmodule FavnOrchestrator.RunnerIntegrationTest.MissingRuntimeConfigAsset do
+  def asset(_ctx), do: :ok
 end
 
 defmodule FavnOrchestrator.RunnerIntegrationTest.MissingSecretConnection do

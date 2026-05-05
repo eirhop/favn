@@ -4,6 +4,7 @@ defmodule Favn.Dev.RuntimeLaunch do
   alias Favn.Dev.Config
   alias Favn.Dev.ConsumerCodePath
   alias Favn.Dev.ConsumerConfigTransport
+  alias Favn.Dev.EnvFile
   alias Favn.Dev.LocalDistribution
   alias Favn.Dev.Paths
 
@@ -66,8 +67,9 @@ defmodule Favn.Dev.RuntimeLaunch do
       cwd: runtime["runner_root"],
       log_path: Paths.runner_log_path(Paths.root_dir(opts)),
       env:
-        Map.put(
-          runtime_env(distribution),
+        distribution
+        |> runtime_env(opts)
+        |> Map.put(
           "FAVN_DEV_CONSUMER_EBIN_PATHS",
           Enum.join(consumer_ebin_paths, path_separator())
         )
@@ -204,7 +206,7 @@ defmodule Favn.Dev.RuntimeLaunch do
       cwd: runtime["orchestrator_root"],
       log_path: Paths.orchestrator_log_path(Paths.root_dir(opts)),
       env:
-        runtime_env(distribution)
+        runtime_env(distribution, opts)
         |> Map.merge(%{
           "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
           "FAVN_DEV_SQLITE_PATH" => sqlite_path,
@@ -245,18 +247,22 @@ defmodule Favn.Dev.RuntimeLaunch do
       ],
       cwd: runtime["web_root"],
       log_path: Paths.web_log_path(Paths.root_dir(opts)),
-      env: %{
-        "FAVN_WEB_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
-        "FAVN_WEB_PUBLIC_ORIGIN" => config.web_base_url,
-        "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
-        "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"],
-        "FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH" => "1"
-      }
+      env:
+        EnvFile.loaded_env(opts)
+        |> Map.merge(%{
+          "FAVN_WEB_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
+          "FAVN_WEB_PUBLIC_ORIGIN" => config.web_base_url,
+          "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
+          "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"],
+          "FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH" => "1"
+        })
     }
   end
 
-  defp runtime_env(distribution) do
-    %{"MIX_ENV" => "dev", "ERL_EPMD_ADDRESS" => distribution.bind_ip}
+  defp runtime_env(distribution, opts) do
+    opts
+    |> EnvFile.loaded_env()
+    |> Map.merge(%{"MIX_ENV" => "dev", "ERL_EPMD_ADDRESS" => distribution.bind_ip})
   end
 
   defp distributed_erlang_args(service, opts, distribution) do

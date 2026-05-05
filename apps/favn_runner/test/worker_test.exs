@@ -127,8 +127,22 @@ defmodule FavnRunner.WorkerTest do
 
       assert result.status == :error
       assert [%{error: error}] = result.asset_results
-      assert error.type == :missing_env
-      assert error.message == "missing_env FAVN_TEST_MISSING_REQUIRED"
+      assert error.type == :missing_runtime_config
+      assert error.phase == :asset_runtime_config
+      assert error.message == "missing required asset runtime config"
+      assert error.details.asset_ref == {FavnRunner.WorkerTest.ConfigAsset, :asset}
+      assert error.details.asset_type == :elixir
+
+      assert [missing] = error.details.errors
+      assert missing.type == :missing_env
+      assert missing.provider == :env
+      assert missing.env == "FAVN_TEST_MISSING_REQUIRED"
+      assert missing.scope == :source_system
+      assert missing.field == :segment_id
+      assert missing.secret? == false
+      assert missing.message == "missing_env FAVN_TEST_MISSING_REQUIRED"
+
+      assert result.error == error
     after
       restore_env("FAVN_TEST_MISSING_REQUIRED", previous)
     end

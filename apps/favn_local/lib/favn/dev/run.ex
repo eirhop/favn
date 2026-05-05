@@ -263,7 +263,7 @@ defmodule Favn.Dev.Run do
       now = System.monotonic_time(:millisecond)
 
       if now >= deadline do
-        {:error, {:run_wait_timeout, run_id}}
+        {:error, {:run_wait_timeout, run_id, Keyword.get(opts, :timeout_ms, @default_timeout_ms)}}
       else
         Process.sleep(min(poll_interval_ms, max(deadline - now, 0)))
 

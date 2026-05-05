@@ -431,6 +431,27 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     end
   end
 
+  test "mix favn.run reports terminal execution timeout with run error" do
+    message =
+      RunTask.terminal_run_error_message(%{
+        "id" => "run_1",
+        "status" => "timed_out",
+        "error" => "asset timed out after 5000ms"
+      })
+
+    assert message =~ "run finished with status timed_out (run execution timeout)"
+    assert message =~ "asset timed out after 5000ms"
+  end
+
+  test "mix favn.reload gives stale-run recovery instructions for in-flight runs" do
+    message = ReloadTask.in_flight_runs_message(["run_pending", "run_running"])
+
+    assert message =~ "reload blocked: in-flight runs exist"
+    assert message =~ "cancel them from the Favn UI/API"
+    assert message =~ "if these runs are stale"
+    assert message =~ "mix favn.reset"
+  end
+
   test "mix favn.backfill parses submit command" do
     assert {:ok, {:submit, "Example.Pipeline", opts}} =
              BackfillTask.parse_args([

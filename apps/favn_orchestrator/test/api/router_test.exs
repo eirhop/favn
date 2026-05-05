@@ -208,6 +208,33 @@ defmodule FavnOrchestrator.API.RouterTest do
     refute response.resp_body =~ "test-service-token"
   end
 
+  test "in-flight runs endpoint returns pending and running runs without list limit truncation" do
+    assert :ok = Storage.put_run(run_state("old_pending"))
+
+    for index <- 1..501 do
+      assert :ok =
+               Storage.put_run(
+                 run_state("completed_#{index}")
+                 |> RunState.transition(status: :ok)
+               )
+    end
+
+    assert :ok =
+             Storage.put_run(run_state("active_running") |> RunState.transition(status: :running))
+
+    assert :ok =
+             Storage.put_run(run_state("failed_terminal") |> RunState.transition(status: :error))
+
+    response =
+      conn(:get, "/api/orchestrator/v1/runs/in-flight")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"count" => 2, "run_ids" => run_ids}} = Jason.decode!(response.resp_body)
+    assert MapSet.new(run_ids) == MapSet.new(["old_pending", "active_running"])
+  end
+
   test "valid service token verification returns redacted diagnostics" do
     response =
       conn(:get, "/api/orchestrator/v1/bootstrap/service-token")
@@ -2284,6 +2311,16 @@ defmodule FavnOrchestrator.API.RouterTest do
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+
+  defp run_state(id) do
+    RunState.new(
+      id: id,
+      manifest_version_id: "mv_in_flight",
+      manifest_content_hash: "hash_in_flight",
+      asset_ref: {MyApp.Assets.Gold, :asset},
+      target_refs: [{MyApp.Assets.Gold, :asset}]
+    )
+  end
 
   defp schedule_manifest_version(manifest_version_id) do
     manifest = %Manifest{
