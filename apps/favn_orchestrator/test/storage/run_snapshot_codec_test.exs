@@ -201,6 +201,43 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert attempt_error["message"] == "[REDACTED]"
   end
 
+  test "restores nil asset result datetimes as nil" do
+    version = manifest_version("mv_run_snapshot_nil_asset_result_datetimes", __MODULE__.Asset)
+    now = DateTime.utc_now()
+
+    asset_result = %AssetResult{
+      ref: {__MODULE__.Asset, :asset},
+      stage: 0,
+      status: :running,
+      started_at: now,
+      finished_at: nil,
+      duration_ms: 0,
+      error: nil,
+      attempt_count: 1,
+      max_attempts: 1,
+      attempts: [],
+      next_retry_at: nil
+    }
+
+    run =
+      "run_snapshot_nil_asset_result_datetimes"
+      |> run_state(version, __MODULE__.Asset)
+      |> RunState.transition(status: :running, result: %{asset_results: [asset_result]})
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert [%AssetResult{} = restored_result] = restored.result.asset_results
+    assert restored_result.finished_at == nil
+    assert restored_result.next_retry_at == nil
+  end
+
   test "rejects refs that are not present in the associated manifest" do
     version = manifest_version("mv_run_snapshot_bad_ref", __MODULE__.Asset)
     run = run_state("run_snapshot_bad_ref", version, __MODULE__.Asset)

@@ -119,10 +119,10 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   end
 
   defp data(value, _key, _depth) when is_binary(value), do: truncate(value)
-  defp data(value, _key, _depth) when is_atom(value), do: Atom.to_string(value)
   defp data(value, _key, _depth) when is_integer(value) or is_float(value), do: value
   defp data(value, _key, _depth) when is_boolean(value), do: value
   defp data(nil, _key, _depth), do: nil
+  defp data(value, _key, _depth) when is_atom(value), do: Atom.to_string(value)
   defp data(value, _key, _depth), do: inspect_value(value)
 
   defp asset_result(%AssetResult{} = result, depth) do
