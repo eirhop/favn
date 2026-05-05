@@ -243,6 +243,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp exception_message(_value), do: nil
 
   defp error_type(%{__exception__: true, __struct__: module}), do: Atom.to_string(module)
+  defp error_type(%{__struct__: module}), do: Atom.to_string(module)
   defp error_type(value) when is_atom(value), do: Atom.to_string(value)
   defp error_type(value) when is_map(value), do: "map"
   defp error_type(value) when is_tuple(value), do: "tuple"

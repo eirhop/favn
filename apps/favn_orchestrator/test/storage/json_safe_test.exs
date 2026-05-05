@@ -3,6 +3,10 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
 
   alias FavnOrchestrator.Storage.JsonSafe
 
+  defmodule HTTPError do
+    defstruct [:message, :status, :url, :token]
+  end
+
   test "preserves JSON scalar nil and booleans" do
     assert JsonSafe.data(nil) == nil
     assert JsonSafe.data(true) == true
@@ -67,5 +71,33 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
                ]
              }
            }
+  end
+
+  test "preserves sanitized generic struct errors" do
+    error = %HTTPError{
+      message: "request failed token=abc123",
+      status: 401,
+      url: "https://user:pass@example.test/path",
+      token: "abc123"
+    }
+
+    assert %{
+             "kind" => "error",
+             "type" => type,
+             "message" => message,
+             "reason" => reason,
+             "redacted" => true,
+             "truncated" => false
+           } = JsonSafe.error(error)
+
+    assert type == Atom.to_string(HTTPError)
+    assert message =~ "request failed token=[REDACTED]"
+    assert message =~ "status: 401"
+    assert message =~ "type: FavnOrchestrator.Storage.JsonSafeTest.HTTPError"
+    assert message =~ ~s(token: "[REDACTED]")
+    assert message =~ ~s(url: "[REDACTED]")
+    assert reason == message
+    refute message =~ "abc123"
+    refute message =~ "user:pass"
   end
 end

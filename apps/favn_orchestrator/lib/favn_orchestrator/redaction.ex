@@ -189,7 +189,15 @@ defmodule FavnOrchestrator.Redaction do
     _error -> %{type: module, message: "[REDACTED]"}
   end
 
-  defp redact_operational_untrusted(%_struct{}), do: "[REDACTED]"
+  defp redact_operational_untrusted(%_struct{} = value) do
+    value
+    |> Map.from_struct()
+    |> redact_operational_untrusted()
+    |> Map.put(:type, value.__struct__)
+  rescue
+    _error -> %{type: value.__struct__, message: "[REDACTED]"}
+  end
+
   defp redact_operational_untrusted(value) when is_atom(value), do: value
   defp redact_operational_untrusted(value) when is_integer(value), do: value
   defp redact_operational_untrusted(value) when is_float(value), do: value

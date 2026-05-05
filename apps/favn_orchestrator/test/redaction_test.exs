@@ -3,6 +3,10 @@ defmodule FavnOrchestrator.RedactionTest do
 
   alias FavnOrchestrator.Redaction
 
+  defmodule HTTPError do
+    defstruct [:message, :status, :url, :token]
+  end
+
   test "redact_untrusted redacts exception structs without requiring Enumerable" do
     assert "[REDACTED]" = Redaction.redact_untrusted(%RuntimeError{message: "password=secret"})
   end
@@ -34,6 +38,26 @@ defmodule FavnOrchestrator.RedactionTest do
     assert %{reason: %{status: 401, body: "unauthorized", token: "[REDACTED]"}} =
              Redaction.redact_operational(%{
                reason: %{status: 401, body: "unauthorized", token: "abc123"}
+             })
+  end
+
+  test "redact_operational preserves sanitized non-exception structs" do
+    assert %{
+             reason: %{
+               type: HTTPError,
+               message: "request failed token=[REDACTED]",
+               status: 401,
+               url: "[REDACTED]",
+               token: "[REDACTED]"
+             }
+           } =
+             Redaction.redact_operational(%{
+               reason: %HTTPError{
+                 message: "request failed token=abc123",
+                 status: 401,
+                 url: "https://user:pass@example.test/path",
+                 token: "abc123"
+               }
              })
   end
 end
