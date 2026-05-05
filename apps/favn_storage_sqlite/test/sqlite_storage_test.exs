@@ -17,6 +17,7 @@ defmodule Favn.SQLiteStorageTest do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
+  alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
 
@@ -145,14 +146,38 @@ defmodule Favn.SQLiteStorageTest do
       action: "auth.test",
       actor_id: actor.id,
       session_id: session.id,
-      outcome: "accepted"
+      outcome: "accepted",
+      password: "secret"
     }
+
+    expected_audit = Map.put(Map.delete(audit, :password), "password", "[REDACTED]")
 
     assert :ok = OrchestratorStorage.put_auth_actor(actor)
     assert :ok = OrchestratorStorage.put_auth_credential(actor.id, credential)
     assert :ok = OrchestratorStorage.put_auth_session(session)
     assert :ok = OrchestratorStorage.revoke_auth_session(session.id, now)
     assert :ok = OrchestratorStorage.put_auth_audit(audit)
+
+    assert_auth_blob_dto(
+      "SELECT roles_blob FROM favn_auth_actors WHERE actor_id = ?1",
+      [actor.id],
+      "favn.auth.roles.storage.v1"
+    )
+
+    assert_auth_blob_dto(
+      "SELECT credential_blob FROM favn_auth_credentials WHERE actor_id = ?1",
+      [actor.id],
+      "favn.auth.credential.storage.v1"
+    )
+
+    audit_payload =
+      assert_auth_blob_dto(
+        "SELECT entry_blob FROM favn_auth_audits WHERE audit_id = ?1",
+        [audit.id],
+        "favn.auth.audit.storage.v1"
+      )
+
+    refute audit_payload =~ "secret"
 
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
@@ -166,7 +191,159 @@ defmodule Favn.SQLiteStorageTest do
 
     assert restored_session.id == session.id
     assert restored_session.revoked_at == now
-    assert {:ok, [^audit]} = OrchestratorStorage.list_auth_audit(limit: 10)
+    assert {:ok, [^expected_audit]} = OrchestratorStorage.list_auth_audit(limit: 10)
+  end
+
+  test "auth role DTO rejects unknown persisted roles" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    actor = %{
+      id: "act_unknown_role",
+      username: "unknown-role",
+      display_name: "Unknown Role",
+      roles: [:admin],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    assert :ok = OrchestratorStorage.put_auth_actor(actor)
+
+    malformed_roles =
+      Jason.encode!(%{
+        "format" => "favn.auth.roles.storage.v1",
+        "schema_version" => 1,
+        "roles" => ["superadmin"]
+      })
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_auth_actors SET roles_blob = ?1 WHERE actor_id = ?2", [
+               malformed_roles,
+               actor.id
+             ])
+
+    assert {:error, {:unknown_auth_role, "superadmin"}} =
+             OrchestratorStorage.get_auth_actor(actor.id)
+  end
+
+  test "auth credential DTO rejects unsupported persisted credentials" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    actor_id = "act_bad_credential"
+
+    credential = %{password_hash: "$argon2id$v=19$m=256,t=1,p=1$encoded-salt$encoded-hash"}
+
+    assert :ok = OrchestratorStorage.put_auth_credential(actor_id, credential)
+
+    unsupported =
+      Jason.encode!(%{
+        "format" => "favn.auth.credential.storage.v1",
+        "schema_version" => 1,
+        "credential" => %{
+          "kind" => "password_hash",
+          "algorithm" => "pbkdf2_sha256",
+          "password_hash" => "encoded"
+        }
+      })
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_auth_credentials SET credential_blob = ?1, updated_at = ?2 WHERE actor_id = ?3",
+               [unsupported, DateTime.to_iso8601(now), actor_id]
+             )
+
+    assert {:error, {:unsupported_auth_credential_algorithm, "pbkdf2_sha256"}} =
+             OrchestratorStorage.get_auth_credential(actor_id)
+  end
+
+  test "auth audit DTO rejects malformed persisted entries" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    audit = %{
+      id: "aud_bad_dto",
+      occurred_at: now,
+      action: "auth.test",
+      outcome: "accepted"
+    }
+
+    assert :ok = OrchestratorStorage.put_auth_audit(audit)
+
+    malformed =
+      Jason.encode!(%{
+        "format" => "favn.auth.audit.storage.v1",
+        "schema_version" => 1,
+        "id" => audit.id,
+        "occurred_at" => "not-a-date",
+        "details" => %{}
+      })
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_auth_audits SET entry_blob = ?1 WHERE audit_id = ?2", [
+               malformed,
+               audit.id
+             ])
+
+    assert {:error, {:invalid_auth_audit_field, :occurred_at, "not-a-date"}} =
+             OrchestratorStorage.list_auth_audit(limit: 10)
+  end
+
+  test "pre-DTO auth payload rows fail explicitly without legacy fallback" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    actor = %{
+      id: "act_legacy_payload",
+      username: "legacy-payload",
+      display_name: "Legacy Payload",
+      roles: [:admin],
+      status: :active,
+      inserted_at: now,
+      updated_at: now
+    }
+
+    credential = %{password_hash: "$argon2id$v=19$m=256,t=1,p=1$encoded-salt$encoded-hash"}
+
+    audit = %{
+      id: "aud_legacy_payload",
+      occurred_at: now,
+      action: "auth.test",
+      outcome: "accepted"
+    }
+
+    assert :ok = OrchestratorStorage.put_auth_actor(actor)
+    assert :ok = OrchestratorStorage.put_auth_credential(actor.id, credential)
+    assert :ok = OrchestratorStorage.put_auth_audit(audit)
+
+    assert {:ok, legacy_roles_payload} = PayloadCodec.encode(actor.roles)
+    assert {:ok, legacy_credential_payload} = PayloadCodec.encode(credential)
+    assert {:ok, legacy_audit_payload} = PayloadCodec.encode(audit)
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_auth_actors SET roles_blob = ?1 WHERE actor_id = ?2", [
+               legacy_roles_payload,
+               actor.id
+             ])
+
+    assert {:ok, _} =
+             SQL.query(
+               Repo,
+               "UPDATE favn_auth_credentials SET credential_blob = ?1 WHERE actor_id = ?2",
+               [legacy_credential_payload, actor.id]
+             )
+
+    assert {:ok, _} =
+             SQL.query(Repo, "UPDATE favn_auth_audits SET entry_blob = ?1 WHERE audit_id = ?2", [
+               legacy_audit_payload,
+               audit.id
+             ])
+
+    assert {:error, {:invalid_auth_roles_dto, _dto}} =
+             OrchestratorStorage.get_auth_actor(actor.id)
+
+    assert {:error, {:invalid_auth_credential_dto, _dto}} =
+             OrchestratorStorage.get_auth_credential(actor.id)
+
+    assert {:error, {:invalid_auth_audit_dto, _dto}} =
+             OrchestratorStorage.list_auth_audit(limit: 10)
   end
 
   test "idempotency records survive repo restart and replay without raw payload", %{
@@ -1000,6 +1177,18 @@ defmodule Favn.SQLiteStorageTest do
                payload,
                run_id
              ])
+  end
+
+  defp assert_auth_blob_dto(sql, params, format) do
+    assert {:ok, %{rows: [[payload]]}} = SQL.query(Repo, sql, params)
+
+    dto = Jason.decode!(payload)
+    assert dto["format"] == format
+    assert dto["schema_version"] == 1
+    refute payload =~ "__type__"
+    refute payload =~ "__struct__"
+
+    payload
   end
 
   defp replace_string_value(encoded, from, to) do
