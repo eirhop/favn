@@ -80,10 +80,39 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert stored_event.sequence == 1
 
         key = {MyApp.Pipeline, :daily}
-        assert :ok = Adapter.put_scheduler_state(key, %{version: 1}, opts)
+        last_due_at = DateTime.utc_now() |> DateTime.truncate(:second)
 
-        assert {:ok, %Favn.Scheduler.State{schedule_id: :daily}} =
+        assert :ok =
+                 Adapter.put_scheduler_state(key, %{version: 1, last_due_at: last_due_at}, opts)
+
+        assert {:ok, %{rows: [[state_payload]]}} =
+                 SQL.query(
+                   Repo,
+                   """
+                   SELECT state_blob
+                   FROM favn_scheduler_cursors
+                   WHERE pipeline_module = $1 AND schedule_id = $2
+                   LIMIT 1
+                   """,
+                   [Atom.to_string(MyApp.Pipeline), "daily"]
+                 )
+
+        state_dto = Jason.decode!(state_payload)
+        assert state_dto["format"] == "favn.scheduler_state.storage"
+        assert state_dto["schema_version"] == 1
+        assert state_dto["state"]["last_due_at"] == DateTime.to_iso8601(last_due_at)
+        refute Map.has_key?(state_dto["state"], "pipeline_module")
+        refute Map.has_key?(state_dto["state"], "schedule_id")
+        refute Map.has_key?(state_dto["state"], "version")
+        refute state_payload =~ "__type__"
+        refute state_payload =~ "__struct__"
+
+        assert {:ok, %Favn.Scheduler.State{schedule_id: :daily} = stored_scheduler} =
                  Adapter.get_scheduler_state(key, opts)
+
+        assert stored_scheduler.pipeline_module == MyApp.Pipeline
+        assert stored_scheduler.version == 1
+        assert stored_scheduler.last_due_at == last_due_at
     end
   end
 
@@ -269,6 +298,25 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
         assert {:ok, nil} = Adapter.get_scheduler_state({MyApp.Pipeline, nil}, opts)
 
         assert :ok = Adapter.put_scheduler_state({MyApp.Pipeline, nil}, %{version: 1}, opts)
+
+        assert {:ok, %{rows: [[nil_state_payload]]}} =
+                 SQL.query(
+                   Repo,
+                   """
+                   SELECT state_blob
+                   FROM favn_scheduler_cursors
+                   WHERE pipeline_module = $1 AND schedule_id = $2
+                   LIMIT 1
+                   """,
+                   [Atom.to_string(MyApp.Pipeline), "__nil__"]
+                 )
+
+        nil_state_dto = Jason.decode!(nil_state_payload)
+        assert nil_state_dto["format"] == "favn.scheduler_state.storage"
+        assert nil_state_dto["schema_version"] == 1
+        refute Map.has_key?(nil_state_dto["state"], "schedule_id")
+        refute nil_state_payload =~ "__type__"
+        refute nil_state_payload =~ "__struct__"
 
         assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} =
                  Adapter.get_scheduler_state({MyApp.Pipeline, nil}, opts)

@@ -319,21 +319,9 @@ defmodule Favn.Storage.Adapter.SQLite do
           {:ok, nil}
 
         {:ok, %{rows: [[version, payload]]}} ->
-          with {:ok, decoded} <- decode_payload(payload),
-               true <- is_map(decoded) do
-            {:ok,
-             struct(
-               Favn.Scheduler.State,
-               Map.merge(decoded, %{
-                 pipeline_module: pipeline_module,
-                 schedule_id: schedule_id,
-                 version: version
-               })
-             )}
-          else
-            false -> {:error, :invalid_scheduler_payload}
-            {:error, reason} -> {:error, reason}
-          end
+          with {:ok, decoded} <- SchedulerStateCodec.decode_state(payload),
+               do:
+                 SchedulerStateCodec.build_state({pipeline_module, schedule_id}, version, decoded)
 
         {:error, reason} ->
           {:error, reason}
@@ -1669,7 +1657,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   defp guarded_put_scheduler_state(repo, {pipeline_module, schedule_id} = key, normalized_state) do
-    encoded_state = normalized_state |> Map.delete(:version) |> encode_payload()
+    encoded_state = encode_scheduler_state(normalized_state)
     encoded_schedule_id = encode_schedule_id(schedule_id)
     updated_at = DateTime.utc_now()
 
@@ -2166,6 +2154,16 @@ defmodule Favn.Storage.Adapter.SQLite do
     case RunEventCodec.encode(event) do
       {:ok, payload} -> payload
       {:error, reason} -> raise ArgumentError, "invalid run event payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_scheduler_state(state) do
+    case SchedulerStateCodec.encode_state(state) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid scheduler state payload: #{inspect(reason)}"
     end
   end
 

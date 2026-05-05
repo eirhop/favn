@@ -720,7 +720,12 @@ defmodule Favn.SQLiteStorageTest do
     assert fetched.pipeline_module == state.pipeline_module
     assert fetched.schedule_id == state.schedule_id
     assert fetched.schedule_fingerprint == state.schedule_fingerprint
+    assert fetched.last_evaluated_at == state.last_evaluated_at
+    assert fetched.last_due_at == state.last_due_at
+    assert fetched.last_submitted_due_at == state.last_submitted_due_at
     assert fetched.in_flight_run_id == state.in_flight_run_id
+    assert fetched.queued_due_at == state.queued_due_at
+    assert fetched.version == 1
   end
 
   test "persists scheduler states for multiple schedule ids in same pipeline" do
@@ -792,7 +797,7 @@ defmodule Favn.SQLiteStorageTest do
                ]
              )
 
-    assert {:error, {:payload_decode_failed, _reason}} =
+    assert {:error, {:invalid_scheduler_state_json, _reason}} =
              OrchestratorStorage.get_scheduler_state(
                {Favn.SQLiteStorageTest.Pipeline, :scheduler_daily}
              )
