@@ -1544,7 +1544,6 @@ defmodule FavnOrchestrator.API.Router do
       {:ok, status, payload, resource_type, resource_id} ->
         :ok =
           Idempotency.complete(record.id, %{
-            operation: record.operation,
             status: :completed,
             response_status: status,
             response_body: payload,
@@ -1557,7 +1556,6 @@ defmodule FavnOrchestrator.API.Router do
       {:error, status, code, message, details} ->
         :ok =
           Idempotency.complete(record.id, %{
-            operation: record.operation,
             status: :failed,
             response_status: status,
             response_body: %{code: code, message: message, details: details},

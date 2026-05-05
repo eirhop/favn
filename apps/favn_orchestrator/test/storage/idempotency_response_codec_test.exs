@@ -116,6 +116,71 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodecTest do
              IdempotencyResponseCodec.decode(payload)
   end
 
+  test "rejects malformed success bodies on encode" do
+    assert {:error,
+            {:invalid_idempotency_response_body, "manifest.activate",
+             {:invalid_field, "manifest_version_id", nil}}} =
+             IdempotencyResponseCodec.encode("manifest.activate", %{activated: true})
+
+    assert {:error,
+            {:invalid_idempotency_response_body, "manifest.activate",
+             {:invalid_field, "activated", "true"}}} =
+             IdempotencyResponseCodec.encode("manifest.activate", %{
+               activated: "true",
+               manifest_version_id: "mv_1"
+             })
+
+    assert {:error,
+            {:invalid_idempotency_response_body, "run.submit", {:invalid_field, "run", nil}}} =
+             IdempotencyResponseCodec.encode("run.submit", %{})
+
+    assert {:error,
+            {:invalid_idempotency_response_body, "run.submit", {:invalid_field, "run", "run_1"}}} =
+             IdempotencyResponseCodec.encode("run.submit", %{run: "run_1"})
+  end
+
+  test "rejects malformed bodies on decode" do
+    payload =
+      Jason.encode!(%{
+        "format" => "favn.idempotency_response.storage.v1",
+        "schema_version" => 1,
+        "operation" => "run.submit",
+        "response_schema" => "favn.command.run_submit.response.v1",
+        "body" => %{}
+      })
+
+    assert {:error,
+            {:invalid_idempotency_response_body, "run.submit", {:invalid_field, "run", nil}}} =
+             IdempotencyResponseCodec.decode(payload)
+
+    payload =
+      Jason.encode!(%{
+        "format" => "favn.idempotency_response.storage.v1",
+        "schema_version" => 1,
+        "operation" => "manifest.activate",
+        "response_schema" => "favn.command.manifest_activate.response.v1",
+        "body" => %{"activated" => true}
+      })
+
+    assert {:error,
+            {:invalid_idempotency_response_body, "manifest.activate",
+             {:invalid_field, "manifest_version_id", nil}}} =
+             IdempotencyResponseCodec.decode(payload)
+
+    payload =
+      Jason.encode!(%{
+        "format" => "favn.idempotency_response.storage.v1",
+        "schema_version" => 1,
+        "operation" => "run.submit",
+        "response_schema" => "favn.command.error.response.v1",
+        "body" => %{"code" => "validation_failed", "message" => "Invalid request"}
+      })
+
+    assert {:error,
+            {:invalid_idempotency_response_body, "run.submit", {:invalid_field, "details", nil}}} =
+             IdempotencyResponseCodec.decode(payload)
+  end
+
   test "rejects invalid envelope format and version" do
     invalid_format = Jason.encode!(%{"format" => "payload_codec", "schema_version" => 1})
 

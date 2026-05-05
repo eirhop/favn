@@ -938,7 +938,8 @@ defmodule Favn.Storage.Adapter.SQLite do
   @impl true
   def complete_idempotency_record(record_id, attrs, opts)
       when is_binary(record_id) and is_map(attrs) and is_list(opts) do
-    with {:ok, repo} <- repo_name(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, stored} <- fetch_idempotency_record(repo, record_id) do
       sql = """
       UPDATE favn_idempotency_records
       SET status = ?1,
@@ -956,7 +957,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         Map.get(attrs, :response_status),
         encode_optional_idempotency_response(
           Map.get(attrs, :response_body),
-          Map.fetch!(attrs, :operation)
+          stored.operation
         ),
         Map.get(attrs, :resource_type),
         Map.get(attrs, :resource_id),

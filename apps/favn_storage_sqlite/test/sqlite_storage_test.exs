@@ -1,6 +1,9 @@
 defmodule Favn.SQLiteStorageTest do
   use ExUnit.Case, async: false
 
+  import Plug.Conn
+  import Plug.Test
+
   alias Ecto.Adapters.SQL
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -10,7 +13,9 @@ defmodule Favn.SQLiteStorageTest do
   alias Favn.Scheduler.State, as: SchedulerState
   alias Favn.Storage
   alias Favn.Storage.Adapter.SQLite, as: Adapter
+  alias FavnOrchestrator.API.Router
   alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -20,6 +25,29 @@ defmodule Favn.SQLiteStorageTest do
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnStorageSqlite.Migrations
   alias FavnStorageSqlite.Repo
+
+  @router_opts Router.init([])
+
+  defmodule RunnerClientStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, "exec_#{work.run_id}"}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      {:ok, %Favn.Contracts.RunnerResult{status: :ok, asset_results: [], metadata: %{}}}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+  end
 
   setup do
     state = Favn.TestSetup.capture_state()
@@ -181,6 +209,7 @@ defmodule Favn.SQLiteStorageTest do
 
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+    restart_auth_store!()
 
     assert {:ok, ^actor} = OrchestratorStorage.get_auth_actor(actor.id)
     assert {:ok, ^actor} = OrchestratorStorage.get_auth_actor_by_username(actor.username)
@@ -372,7 +401,6 @@ defmodule Favn.SQLiteStorageTest do
 
     assert :ok =
              OrchestratorStorage.complete_idempotency_record(reserved.id, %{
-               operation: "run.submit",
                status: :completed,
                response_status: 201,
                response_body: %{
@@ -391,6 +419,7 @@ defmodule Favn.SQLiteStorageTest do
 
     :ok = stop_supervised(Repo)
     start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+    restart_auth_store!()
 
     assert {:ok, {:replay, replay}} = OrchestratorStorage.reserve_idempotency_record(record)
     assert replay.response_status == 201
@@ -435,6 +464,102 @@ defmodule Favn.SQLiteStorageTest do
     assert stored_response["schema_version"] == 1
     assert stored_response["operation"] == "run.submit"
     assert stored_response["response_schema"] == "favn.command.run_submit.response.v1"
+  end
+
+  test "idempotency completion derives operation from stored record" do
+    record =
+      Idempotency.new_record(
+        %{
+          operation: "manifest.activate",
+          actor_id: "act_sqlite",
+          session_id: "ses_sqlite",
+          service_identity: "favn_web",
+          idempotency_key_hash: Idempotency.key_hash("derive-operation-key")
+        },
+        Idempotency.request_fingerprint(%{manifest_version_id: "mv_1"})
+      )
+
+    assert {:ok, {:reserved, reserved}} = OrchestratorStorage.reserve_idempotency_record(record)
+
+    assert :ok =
+             OrchestratorStorage.complete_idempotency_record(reserved.id, %{
+               status: :completed,
+               response_status: 200,
+               response_body: %{activated: true, manifest_version_id: "mv_1"},
+               resource_type: "manifest",
+               resource_id: "mv_1",
+               updated_at: DateTime.utc_now() |> DateTime.truncate(:second),
+               completed_at: DateTime.utc_now() |> DateTime.truncate(:second)
+             })
+
+    assert {:ok, %{rows: [[response_body_blob]]}} =
+             SQL.query(
+               Repo,
+               "SELECT response_body_blob FROM favn_idempotency_records WHERE idempotency_record_id = ?1",
+               [reserved.id]
+             )
+
+    assert {:ok, stored_response} = Jason.decode(response_body_blob)
+    assert stored_response["operation"] == "manifest.activate"
+    assert stored_response["response_schema"] == "favn.command.manifest_activate.response.v1"
+  end
+
+  test "HTTP manifest activation replays same response after SQLite restart", %{db_path: db_path} do
+    configure_router_boundary!()
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    version = manifest_version("manifest_v1")
+
+    first =
+      conn(:post, "/api/orchestrator/v1/manifests/#{version.manifest_version_id}/activate")
+      |> put_service_headers(session, actor)
+      |> put_idempotency_key("manifest-http-replay")
+      |> Router.call(@router_opts)
+
+    :ok = stop_supervised(Repo)
+    start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+
+    replay =
+      conn(:post, "/api/orchestrator/v1/manifests/#{version.manifest_version_id}/activate")
+      |> put_service_headers(session, actor)
+      |> put_idempotency_key("manifest-http-replay")
+      |> Router.call(@router_opts)
+
+    assert first.status == 200
+    assert replay.status == 200
+    assert Jason.decode!(first.resp_body) == Jason.decode!(replay.resp_body)
+  end
+
+  test "HTTP run submission replays same response after SQLite restart", %{db_path: db_path} do
+    configure_router_boundary!()
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    version = manifest_version("manifest_v1")
+
+    payload = %{
+      target: %{type: "asset", id: "asset:Elixir.Favn.SQLiteStorageTest:sample_asset"},
+      manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
+      dependencies: "none"
+    }
+
+    first =
+      conn(:post, "/api/orchestrator/v1/runs", payload)
+      |> put_service_headers(session, actor)
+      |> put_idempotency_key("run-http-replay")
+      |> Router.call(@router_opts)
+
+    :ok = stop_supervised(Repo)
+    start_supervised!({Repo, database: db_path, pool_size: 1, busy_timeout: 5_000})
+
+    replay =
+      conn(:post, "/api/orchestrator/v1/runs", payload)
+      |> put_service_headers(session, actor)
+      |> put_idempotency_key("run-http-replay")
+      |> Router.call(@router_opts)
+
+    assert first.status == 201
+    assert replay.status == 201
+    assert Jason.decode!(first.resp_body) == Jason.decode!(replay.resp_body)
   end
 
   test "idempotency records reject fingerprint conflicts and report in-progress duplicates" do
@@ -1169,6 +1294,136 @@ defmodule Favn.SQLiteStorageTest do
 
   defp manifest_content_hash, do: manifest_version("manifest_v1").content_hash
 
+  defp configure_router_boundary! do
+    previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_client_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+    previous_username = Application.get_env(:favn_orchestrator, :auth_bootstrap_username)
+    previous_password = Application.get_env(:favn_orchestrator, :auth_bootstrap_password)
+    previous_display = Application.get_env(:favn_orchestrator, :auth_bootstrap_display_name)
+    previous_roles = Application.get_env(:favn_orchestrator, :auth_bootstrap_roles)
+
+    Application.put_env(:favn_orchestrator, :api_service_tokens, [
+      [
+        service_identity: "favn_web",
+        token_hash: ServiceTokens.hash_token("test-service-token"),
+        enabled: true
+      ]
+    ])
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_username, "admin")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_password, "admin-password-long")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_display_name, "Admin User")
+    Application.put_env(:favn_orchestrator, :auth_bootstrap_roles, [:admin])
+
+    auth_start = ensure_auth_store_started()
+    run_supervisor_start = ensure_run_supervisor_started()
+    run_manager_start = ensure_run_manager_started()
+    :ok = AuthStore.reset()
+    :ok = Auth.bootstrap_configured_actor()
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :api_service_tokens, previous_tokens)
+      restore_env(:favn_orchestrator, :runner_client, previous_client)
+      restore_env(:favn_orchestrator, :runner_client_opts, previous_client_opts)
+      restore_env(:favn_orchestrator, :auth_bootstrap_username, previous_username)
+      restore_env(:favn_orchestrator, :auth_bootstrap_password, previous_password)
+      restore_env(:favn_orchestrator, :auth_bootstrap_display_name, previous_display)
+      restore_env(:favn_orchestrator, :auth_bootstrap_roles, previous_roles)
+      maybe_stop_run_manager(run_manager_start)
+      maybe_stop_run_supervisor(run_supervisor_start)
+      maybe_stop_auth_store(auth_start)
+    end)
+  end
+
+  defp put_service_headers(conn, session, actor) do
+    conn
+    |> put_req_header("authorization", "Bearer test-service-token")
+    |> put_req_header("x-favn-actor-id", actor.id)
+    |> put_req_header("x-favn-session-token", session.token)
+  end
+
+  defp put_idempotency_key(conn, key) when is_binary(key) do
+    put_req_header(conn, "idempotency-key", key)
+  end
+
+  defp ensure_auth_store_started do
+    case Process.whereis(AuthStore) do
+      nil ->
+        start_supervised!({AuthStore, []})
+        :started
+
+      _pid ->
+        :existing
+    end
+  end
+
+  defp maybe_stop_auth_store(:existing), do: :ok
+
+  defp maybe_stop_auth_store(:started) do
+    case Process.whereis(AuthStore) do
+      nil -> :ok
+      pid -> GenServer.stop(pid, :normal)
+    end
+  end
+
+  defp restart_auth_store! do
+    case Process.whereis(AuthStore) do
+      nil -> :ok
+      pid -> GenServer.stop(pid, :normal)
+    end
+
+    start_supervised!({AuthStore, []})
+  end
+
+  defp ensure_run_supervisor_started do
+    case Process.whereis(FavnOrchestrator.RunSupervisor) do
+      nil ->
+        start_supervised!(
+          {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor}
+        )
+
+        :started
+
+      _pid ->
+        :existing
+    end
+  end
+
+  defp maybe_stop_run_supervisor(:existing), do: :ok
+
+  defp maybe_stop_run_supervisor(:started) do
+    case Process.whereis(FavnOrchestrator.RunSupervisor) do
+      nil -> :ok
+      pid -> DynamicSupervisor.stop(pid, :normal)
+    end
+  end
+
+  defp ensure_run_manager_started do
+    case Process.whereis(FavnOrchestrator.RunManager) do
+      nil ->
+        start_supervised!({FavnOrchestrator.RunManager, []})
+        :started
+
+      _pid ->
+        :existing
+    end
+  end
+
+  defp maybe_stop_run_manager(:existing), do: :ok
+
+  defp maybe_stop_run_manager(:started) do
+    case Process.whereis(FavnOrchestrator.RunManager) do
+      nil -> :ok
+      pid -> GenServer.stop(pid, :normal)
+    end
+  end
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
+
   defp replace_run_value(run_id, from, to) do
     assert {:ok, %{rows: [[payload]]}} =
              SQL.query(Repo, "SELECT run_blob FROM favn_runs WHERE run_id = ?1", [run_id])
@@ -1337,26 +1592,6 @@ defmodule Favn.SQLiteStorageTest do
       })
 
     state
-  end
-
-  defp ensure_auth_store_started do
-    case Process.whereis(AuthStore) do
-      nil ->
-        start_supervised!({AuthStore, []})
-        :started
-
-      _pid ->
-        :existing
-    end
-  end
-
-  defp maybe_stop_auth_store(:existing), do: :ok
-
-  defp maybe_stop_auth_store(:started) do
-    case Process.whereis(AuthStore) do
-      nil -> :ok
-      pid -> GenServer.stop(pid, :normal)
-    end
   end
 
   defp token_hash(token) do

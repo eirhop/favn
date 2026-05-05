@@ -41,8 +41,10 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
   def decode(payload) when is_binary(payload) do
     with {:ok, decoded} <- Jason.decode(payload),
          {:ok, dto} <- validate_root(decoded),
-         {:ok, _schema} <- validate_schema(dto) do
-      {:ok, Map.fetch!(dto, "body")}
+         {:ok, response_schema} <- validate_schema(dto),
+         {:ok, body} <-
+           validate_body(Map.fetch!(dto, "operation"), response_schema, Map.fetch!(dto, "body")) do
+      {:ok, body}
     else
       {:error, %Jason.DecodeError{} = reason} ->
         {:error, {:invalid_idempotency_response_json, reason}}
@@ -57,7 +59,7 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
   defp body_to_dto(operation, body) do
     with {:ok, _success_schema} <- success_schema(operation) do
       if error_body?(body) do
-        {:ok, @error_schema, error_to_dto(body)}
+        with {:ok, dto} <- error_to_dto(body), do: {:ok, @error_schema, dto}
       else
         success_to_dto(operation, body)
       end
@@ -65,41 +67,48 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
   end
 
   defp success_to_dto("manifest.activate", body) when is_map(body) do
-    {:ok, schema!("manifest.activate"),
-     %{
-       "activated" => boolean_field(body, "activated"),
-       "manifest_version_id" => string_field(body, "manifest_version_id")
-     }}
+    with {:ok, activated} <- required_boolean(body, "activated"),
+         {:ok, manifest_version_id} <- required_string(body, "manifest_version_id") do
+      {:ok, schema!("manifest.activate"),
+       %{"activated" => activated, "manifest_version_id" => manifest_version_id}}
+    else
+      {:error, reason} ->
+        {:error, {:invalid_idempotency_response_body, "manifest.activate", reason}}
+    end
   end
 
   defp success_to_dto("run.cancel", body) when is_map(body) do
-    {:ok, schema!("run.cancel"),
-     %{
-       "cancelled" => boolean_field(body, "cancelled"),
-       "run_id" => string_field(body, "run_id")
-     }}
+    with {:ok, cancelled} <- required_boolean(body, "cancelled"),
+         {:ok, run_id} <- required_string(body, "run_id") do
+      {:ok, schema!("run.cancel"), %{"cancelled" => cancelled, "run_id" => run_id}}
+    else
+      {:error, reason} -> {:error, {:invalid_idempotency_response_body, "run.cancel", reason}}
+    end
   end
 
   defp success_to_dto(operation, body)
        when operation in ["run.submit", "run.rerun", "backfill.submit", "backfill.window.rerun"] and
               is_map(body) do
-    {:ok, schema!(operation), %{"run" => JsonSafe.data(field(body, "run") || %{})}}
+    case required_map(body, "run") do
+      {:ok, run} -> {:ok, schema!(operation), %{"run" => JsonSafe.data(run)}}
+      {:error, reason} -> {:error, {:invalid_idempotency_response_body, operation, reason}}
+    end
   end
 
   defp success_to_dto(operation, body),
     do: {:error, {:invalid_idempotency_response_body, operation, body}}
 
   defp error_to_dto(body) when is_map(body) do
-    %{
-      "code" => string_field(body, "code") || "bad_request",
-      "message" => string_field(body, "message") || "Request failed",
-      "details" => JsonSafe.data(field(body, "details") || %{})
-    }
+    with {:ok, code} <- required_string(body, "code"),
+         {:ok, message} <- required_string(body, "message"),
+         {:ok, details} <- optional_map(body, "details", %{}) do
+      {:ok, %{"code" => code, "message" => message, "details" => JsonSafe.data(details)}}
+    else
+      {:error, reason} -> {:error, {:invalid_idempotency_response_body, :error, reason}}
+    end
   end
 
-  defp error_to_dto(_body) do
-    %{"code" => "bad_request", "message" => "Request failed", "details" => %{}}
-  end
+  defp error_to_dto(body), do: {:error, {:invalid_idempotency_response_body, :error, body}}
 
   defp error_body?(body) when is_map(body) do
     not is_nil(field(body, "code")) and not is_nil(field(body, "message"))
@@ -128,19 +137,73 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
 
   defp validate_root(dto), do: {:error, {:invalid_idempotency_response_dto, dto}}
 
-  defp validate_schema(%{"operation" => operation, "response_schema" => @error_schema}) do
-    with {:ok, _schema} <- success_schema(operation), do: {:ok, @error_schema}
-  end
-
   defp validate_schema(%{"operation" => operation, "response_schema" => response_schema}) do
     with {:ok, expected} <- success_schema(operation) do
-      if response_schema == expected do
-        {:ok, response_schema}
-      else
-        {:error, {:idempotency_response_schema_mismatch, operation, response_schema, expected}}
+      cond do
+        response_schema == "favn.command.error.response.v1" ->
+          {:ok, "favn.command.error.response.v1"}
+
+        response_schema == expected ->
+          {:ok, response_schema}
+
+        true ->
+          {:error, {:idempotency_response_schema_mismatch, operation, response_schema, expected}}
       end
     end
   end
+
+  defp validate_body(
+         "manifest.activate",
+         "favn.command.manifest_activate.response.v1",
+         body
+       )
+       when is_map(body) do
+    with {:ok, _activated} <- required_boolean(body, "activated"),
+         {:ok, _manifest_version_id} <- required_string(body, "manifest_version_id") do
+      {:ok, body}
+    else
+      {:error, reason} ->
+        {:error, {:invalid_idempotency_response_body, "manifest.activate", reason}}
+    end
+  end
+
+  defp validate_body("run.cancel", "favn.command.run_cancel.response.v1", body)
+       when is_map(body) do
+    with {:ok, _cancelled} <- required_boolean(body, "cancelled"),
+         {:ok, _run_id} <- required_string(body, "run_id") do
+      {:ok, body}
+    else
+      {:error, reason} -> {:error, {:invalid_idempotency_response_body, "run.cancel", reason}}
+    end
+  end
+
+  defp validate_body(operation, @error_schema, body) when is_map(body) do
+    with {:ok, _code} <- required_string(body, "code"),
+         {:ok, _message} <- required_string(body, "message"),
+         {:ok, _details} <- required_map(body, "details") do
+      {:ok, body}
+    else
+      {:error, reason} -> {:error, {:invalid_idempotency_response_body, operation, reason}}
+    end
+  end
+
+  defp validate_body(operation, schema, body)
+       when operation in ["run.submit", "run.rerun", "backfill.submit", "backfill.window.rerun"] and
+              is_map(body) do
+    with {:ok, ^schema} <- success_schema(operation),
+         {:ok, _run} <- required_map(body, "run") do
+      {:ok, body}
+    else
+      {:ok, expected} ->
+        {:error, {:idempotency_response_schema_mismatch, operation, schema, expected}}
+
+      {:error, reason} ->
+        {:error, {:invalid_idempotency_response_body, operation, reason}}
+    end
+  end
+
+  defp validate_body(operation, _schema, body),
+    do: {:error, {:invalid_idempotency_response_body, operation, body}}
 
   defp success_schema(operation) do
     case Map.fetch(@success_schemas, operation) do
@@ -152,24 +215,42 @@ defmodule FavnOrchestrator.Storage.IdempotencyResponseCodec do
   defp schema!(operation), do: Map.fetch!(@success_schemas, operation)
 
   defp field(body, key) when is_map(body) and is_binary(key) do
-    Map.get(body, key) || Map.get(body, String.to_existing_atom(key))
+    if Map.has_key?(body, key) do
+      Map.get(body, key)
+    else
+      Map.get(body, String.to_existing_atom(key))
+    end
   rescue
     ArgumentError -> Map.get(body, key)
   end
 
-  defp string_field(body, key) do
+  defp required_string(body, key) do
     case field(body, key) do
-      value when is_binary(value) -> value
-      value when is_atom(value) -> Atom.to_string(value)
-      value when is_integer(value) or is_float(value) or is_boolean(value) -> to_string(value)
-      _value -> nil
+      value when is_binary(value) and value != "" -> {:ok, value}
+      value when is_atom(value) and not is_nil(value) -> {:ok, Atom.to_string(value)}
+      value -> {:error, {:invalid_field, key, value}}
     end
   end
 
-  defp boolean_field(body, key) do
+  defp required_boolean(body, key) do
     case field(body, key) do
-      value when is_boolean(value) -> value
-      _value -> false
+      value when is_boolean(value) -> {:ok, value}
+      value -> {:error, {:invalid_field, key, value}}
+    end
+  end
+
+  defp required_map(body, key) do
+    case field(body, key) do
+      value when is_map(value) -> {:ok, value}
+      value -> {:error, {:invalid_field, key, value}}
+    end
+  end
+
+  defp optional_map(body, key, default) do
+    case field(body, key) do
+      nil -> {:ok, default}
+      value when is_map(value) -> {:ok, value}
+      value -> {:error, {:invalid_field, key, value}}
     end
   end
 end
