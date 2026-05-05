@@ -940,6 +940,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     gold = Enum.find(assets, &(&1["target_id"] == "asset:Elixir.MyApp.Assets.Gold:asset"))
     assert gold["asset_ref"] == "Elixir.MyApp.Assets.Gold:asset"
+    assert gold["label"] == gold["asset_ref"]
     assert gold["type"] == "sql"
 
     assert gold["relation"] == %{
@@ -954,6 +955,10 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert segment_id["provider"] == "env"
     assert segment_id["secret"] == false
     refute inspect(gold) =~ "__struct__"
+    refute response.resp_body =~ "manifest-target-secret"
+    refute response.resp_body =~ "__struct__"
+    refute response.resp_body =~ "%Favn.Manifest.SQLExecution"
+    refute gold["label"] =~ "{"
     assert gold["materialization"]["sql"] == "select 1"
   end
 
@@ -968,7 +973,12 @@ defmodule FavnOrchestrator.API.RouterTest do
         asset_ref: {MyApp.Assets.Gold, :asset},
         target_refs: [{MyApp.Assets.Gold, :asset}],
         metadata: %{source: :test},
-        params: %{limit: 1},
+        params: %{
+          limit: 1,
+          credentials: %{api_token: "run-detail-secret"},
+          relation: %Favn.SQL.Relation{schema: "gold", name: "orders", type: :table},
+          asset_ref: {MyApp.Assets.Gold, :asset}
+        },
         trigger: %{type: :manual}
       )
       |> RunState.transition(
@@ -1014,8 +1024,20 @@ defmodule FavnOrchestrator.API.RouterTest do
              run["asset_results"]
 
     assert meta == %{"rows_written" => 2, "relation" => "gold.orders"}
-    assert run["params"] == %{"limit" => 1}
+    assert run["params"]["limit"] == 1
+    assert run["params"]["credentials"] == "[REDACTED]"
+    assert run["params"]["relation"]["schema"] == "gold"
+    assert run["params"]["relation"]["type"] == "table"
+
+    assert run["params"]["asset_ref"] == %{
+             "module" => "Elixir.MyApp.Assets.Gold",
+             "name" => "asset"
+           }
+
     assert run["trigger"] == %{"type" => "manual"}
+    refute response.resp_body =~ "run-detail-secret"
+    refute response.resp_body =~ "__struct__"
+    refute response.resp_body =~ "%Favn.SQL.Relation"
   end
 
   test "run list exposes per-asset metadata for asset catalog summaries" do
@@ -1228,10 +1250,20 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert first.status == 201
     assert duplicate.status == 201
     assert conflict.status == 409
+    assert duplicate.resp_body == first.resp_body
 
     assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(first.resp_body)
     assert %{"data" => %{"run" => %{"id" => ^run_id}}} = Jason.decode!(duplicate.resp_body)
     assert %{"error" => %{"code" => "idempotency_conflict"}} = Jason.decode!(conflict.resp_body)
+
+    record = command_record("run.submit", "run-submit-retry", actor, session, payload)
+    assert {:ok, stored} = Storage.get_idempotency_record(record.id)
+
+    assert stored.response_body |> Jason.encode!() |> Jason.decode!() ==
+             Jason.decode!(first.resp_body)["data"]
+
+    refute first.resp_body =~ "__struct__"
+    refute first.resp_body =~ "%Favn."
 
     assert {:ok, runs} = Storage.list_runs()
     assert Enum.count(runs, &(&1.id == run_id)) == 1
@@ -2362,7 +2394,7 @@ defmodule FavnOrchestrator.API.RouterTest do
           relation: %{connection: :warehouse, schema: "gold", name: "orders"},
           runtime_config: %{source_system: %{segment_id: Ref.env!("SOURCE_SYSTEM_SEGMENT_ID")}},
           materialization: %Favn.Manifest.SQLExecution{sql: "select 1", template: nil},
-          metadata: %{owner: "analytics"}
+          metadata: %{owner: "analytics", api_token: "manifest-target-secret"}
         }
       ]
     }

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://favn.dev/contracts/orchestrator/v1/manifest-detail.schema.json",
+  "title": "ManifestDetail",
+  "type": "object",
+  "required": ["manifest", "targets"],
+  "additionalProperties": false,
+  "$defs": {
+    "manifestSummary": {
+      "type": "object",
+      "required": [
+        "manifest_version_id",
+        "content_hash",
+        "asset_count",
+        "pipeline_count",
+        "schedule_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "manifest_version_id": { "type": "string", "minLength": 1 },
+        "content_hash": { "type": "string", "minLength": 1 },
+        "asset_count": { "type": "integer", "minimum": 0 },
+        "pipeline_count": { "type": "integer", "minimum": 0 },
+        "schedule_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "manifestTargets": {
+      "$ref": "manifest-targets.schema.json"
+    }
+  },
+  "properties": {
+    "manifest": { "$ref": "#/$defs/manifestSummary" },
+    "targets": { "$ref": "#/$defs/manifestTargets" }
+  }
+}

@@ -7,18 +7,13 @@ defmodule FavnOrchestrator.API.Router do
 
   require Logger
 
-  alias Favn.Contracts.RelationInspectionResult
   alias Favn.Manifest.Version
-  alias Favn.Run.AssetResult
-  alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator
   alias FavnOrchestrator.API.Config
+  alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.ServiceTokens
-  alias FavnOrchestrator.Backfill.AssetWindowState
-  alias FavnOrchestrator.Backfill.BackfillWindow
-  alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.Readiness
   alias FavnOrchestrator.RunEvent
@@ -49,20 +44,20 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   get "/api/orchestrator/v1/health/live" do
-    data(conn, 200, normalize_data(Readiness.liveness()))
+    data(conn, 200, DTO.normalize(Readiness.liveness()))
   end
 
   get "/api/orchestrator/v1/health/ready" do
     readiness = Readiness.readiness()
     status = if readiness.status == :ready, do: 200, else: 503
 
-    data(conn, status, normalize_data(readiness))
+    data(conn, status, DTO.normalize(readiness))
   end
 
   get "/api/orchestrator/v1/diagnostics" do
     case ensure_service_auth(conn) do
       :ok ->
-        data(conn, 200, normalize_data(FavnOrchestrator.diagnostics()))
+        data(conn, 200, DTO.normalize(FavnOrchestrator.diagnostics()))
 
       {:error, :service_unauthorized} ->
         error(conn, 401, "service_unauthorized", "Invalid service credentials")
@@ -115,9 +110,9 @@ defmodule FavnOrchestrator.API.Router do
              service_identity: service_identity(conn)
            }) do
       data(conn, 201, %{
-        session: session_dto(session),
+        session: DTO.session(session),
         session_token: session.token,
-        actor: actor_dto(actor)
+        actor: DTO.actor(actor)
       })
     else
       {:error, :invalid_credentials} ->
@@ -139,7 +134,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, params} <- fetch_json_body(conn),
          {:ok, session_token} <- fetch_required_string(params, "session_token"),
          {:ok, session, actor} <- Auth.introspect_session(session_token) do
-      data(conn, 200, %{session: session_dto(session), actor: actor_dto(actor)})
+      data(conn, 200, %{session: DTO.session(session), actor: DTO.actor(actor)})
     else
       {:error, :invalid_session} ->
         error(conn, 401, "unauthenticated", "Session is invalid")
@@ -174,8 +169,8 @@ defmodule FavnOrchestrator.API.Router do
 
       data(conn, 200, %{
         revoked: true,
-        session: session_dto(revoked_session),
-        actor: actor_dto(actor)
+        session: DTO.session(revoked_session),
+        actor: DTO.actor(actor)
       })
     else
       {:error, :invalid_session} ->
@@ -224,7 +219,7 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/me" do
     with :ok <- ensure_service_auth(conn),
          {:ok, session, actor} <- ensure_actor_context(conn, :viewer) do
-      data(conn, 200, %{session: session_dto(session), actor: actor_dto(actor)})
+      data(conn, 200, %{session: DTO.session(session), actor: DTO.actor(actor)})
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -332,7 +327,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, manifest_version_id} <- FavnOrchestrator.active_manifest(),
          {:ok, summary} <- FavnOrchestrator.get_manifest_summary(manifest_version_id),
          {:ok, targets} <- FavnOrchestrator.manifest_targets(manifest_version_id) do
-      data(conn, 200, %{manifest: summary, targets: targets})
+      data(conn, 200, %{manifest: summary, targets: DTO.manifest_targets(targets)})
     else
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
@@ -353,7 +348,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, summary} <- FavnOrchestrator.get_manifest_summary(manifest_version_id),
          {:ok, targets} <- FavnOrchestrator.manifest_targets(manifest_version_id) do
-      data(conn, 200, %{manifest: summary, targets: targets})
+      data(conn, 200, %{manifest: summary, targets: DTO.manifest_targets(targets)})
     else
       {:error, :manifest_version_not_found} ->
         error(conn, 404, "not_found", "Manifest version was not found")
@@ -380,7 +375,7 @@ defmodule FavnOrchestrator.API.Router do
            FavnOrchestrator.inspect_manifest_asset(manifest_version_id, target_id,
              sample_limit: sample_limit
            ) do
-      data(conn, 200, %{inspection: inspection_result_dto(result)})
+      data(conn, 200, %{inspection: DTO.inspection_result(result)})
     else
       {:error, :manifest_version_not_found} ->
         error(conn, 404, "not_found", "Manifest version was not found")
@@ -517,7 +512,7 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, runs} <- FavnOrchestrator.list_runs(limit: 100) do
-      data(conn, 200, %{items: Enum.map(runs, &run_summary_dto/1)})
+      data(conn, 200, %{items: Enum.map(runs, &DTO.run_summary/1)})
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -537,7 +532,7 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, run} <- FavnOrchestrator.get_run(run_id) do
-      data(conn, 200, %{run: run_detail_dto(run)})
+      data(conn, 200, %{run: DTO.run_detail(run)})
     else
       {:error, :not_found} ->
         error(conn, 404, "not_found", "Run was not found")
@@ -560,7 +555,7 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, events} <- FavnOrchestrator.list_run_events(run_id, run_event_opts(conn.params)) do
-      data(conn, 200, %{items: Enum.map(events, &run_event_dto/1)})
+      data(conn, 200, %{items: Enum.map(events, &DTO.run_event/1)})
     else
       {:error, :invalid_opts} ->
         error(conn, 422, "validation_failed", "Invalid event query options")
@@ -583,7 +578,7 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, schedules} <- FavnOrchestrator.list_schedule_entries() do
-      data(conn, 200, %{items: Enum.map(schedules, &schedule_dto/1)})
+      data(conn, 200, %{items: Enum.map(schedules, &DTO.schedule/1)})
     else
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
@@ -606,7 +601,7 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, schedule} <- FavnOrchestrator.get_schedule_entry(schedule_id) do
-      data(conn, 200, %{schedule: schedule_dto(schedule)})
+      data(conn, 200, %{schedule: DTO.schedule(schedule)})
     else
       {:error, :active_manifest_not_set} ->
         error(conn, 404, "not_found", "Active manifest is not set")
@@ -648,7 +643,7 @@ defmodule FavnOrchestrator.API.Router do
                  }
                  |> Map.merge(audit_idempotency(idempotency, "accepted"))
                ) do
-          {:ok, 201, %{run: run_summary_dto(run)}, "run", run_id}
+          {:ok, 201, %{run: DTO.run_summary(run)}, "run", run_id}
         else
           {:error, :invalid_target} ->
             {:error, 422, "validation_failed", "Invalid run target request", %{}}
@@ -748,7 +743,7 @@ defmodule FavnOrchestrator.API.Router do
                    }
                    |> Map.merge(audit_idempotency(idempotency, "accepted"))
                  ) do
-            {:ok, 201, %{run: run_summary_dto(rerun_run)}, "run", rerun_id}
+            {:ok, 201, %{run: DTO.run_summary(rerun_run)}, "run", rerun_id}
           else
             {:error, :not_found} ->
               {:error, 404, "not_found", "Run was not found", %{}}
@@ -794,7 +789,7 @@ defmodule FavnOrchestrator.API.Router do
                    }
                    |> Map.merge(audit_idempotency(idempotency, "accepted"))
                  ) do
-            {:ok, 201, %{run: run_summary_dto(run)}, "run", run_id}
+            {:ok, 201, %{run: DTO.run_summary(run)}, "run", run_id}
           else
             {:error, :invalid_target} ->
               {:error, 422, "validation_failed", "Invalid backfill target request", %{}}
@@ -832,7 +827,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, filters} <- backfill_window_filters(conn.params, backfill_run_id),
          {:ok, page} <- FavnOrchestrator.list_backfill_windows(filters) do
-      data(conn, 200, page_response(page, &backfill_window_dto/1))
+      data(conn, 200, page_response(page, &DTO.backfill_window/1))
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -891,7 +886,7 @@ defmodule FavnOrchestrator.API.Router do
                    }
                    |> Map.merge(audit_idempotency(idempotency, "accepted"))
                  ) do
-            {:ok, 201, %{run: run_summary_dto(run)}, "run", rerun_id}
+            {:ok, 201, %{run: DTO.run_summary(run)}, "run", rerun_id}
           else
             {:error, :backfill_window_not_rerunnable} ->
               {:error, 409, "conflict", "Backfill window is not rerunnable", %{}}
@@ -941,7 +936,7 @@ defmodule FavnOrchestrator.API.Router do
              outcome: "accepted",
              service_identity: service_identity(conn)
            }) do
-      data(conn, 200, %{repair: normalize_data(report)})
+      data(conn, 200, %{repair: DTO.normalize(report)})
     else
       {:error, :invalid_repair_scope} ->
         error(conn, 422, "validation_failed", "Invalid backfill projection repair scope")
@@ -968,7 +963,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, filters} <- coverage_baseline_filters(conn.params),
          {:ok, page} <- FavnOrchestrator.list_coverage_baselines(filters) do
-      data(conn, 200, page_response(page, &coverage_baseline_dto/1))
+      data(conn, 200, page_response(page, &DTO.coverage_baseline/1))
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -999,7 +994,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
          {:ok, filters} <- asset_window_state_filters(conn.params),
          {:ok, page} <- FavnOrchestrator.list_asset_window_states(filters) do
-      data(conn, 200, page_response(page, &asset_window_state_dto/1))
+      data(conn, 200, page_response(page, &DTO.asset_window_state/1))
     else
       {:error, :invalid_asset_ref} ->
         error(conn, 422, "validation_failed", "Invalid asset ref filter")
@@ -1083,7 +1078,7 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/audit" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :admin) do
-      data(conn, 200, %{items: Auth.list_audit(limit: 200) |> Enum.map(&audit_dto/1)})
+      data(conn, 200, %{items: Auth.list_audit(limit: 200) |> Enum.map(&DTO.audit/1)})
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -1099,7 +1094,7 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/actors" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :admin) do
-      data(conn, 200, %{items: Auth.list_actors() |> Enum.map(&actor_dto/1)})
+      data(conn, 200, %{items: Auth.list_actors() |> Enum.map(&DTO.actor/1)})
     else
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
@@ -1131,7 +1126,7 @@ defmodule FavnOrchestrator.API.Router do
              outcome: "accepted",
              service_identity: service_identity(conn)
            }) do
-      data(conn, 201, %{actor: actor_dto(created_actor)})
+      data(conn, 201, %{actor: DTO.actor(created_actor)})
     else
       {:error, {:missing_field, field}} ->
         error(conn, 422, "validation_failed", "Missing required field", %{field: field})
@@ -1161,7 +1156,7 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :admin),
          {:ok, actor} <- Auth.get_actor(actor_id) do
-      data(conn, 200, %{actor: actor_dto(actor)})
+      data(conn, 200, %{actor: DTO.actor(actor)})
     else
       {:error, :actor_not_found} ->
         error(conn, 404, "not_found", "Actor was not found")
@@ -1193,7 +1188,7 @@ defmodule FavnOrchestrator.API.Router do
              outcome: "accepted",
              service_identity: service_identity(conn)
            }) do
-      data(conn, 200, %{actor: actor_dto(updated_actor)})
+      data(conn, 200, %{actor: DTO.actor(updated_actor)})
     else
       {:error, :actor_not_found} ->
         error(conn, 404, "not_found", "Actor was not found")
@@ -1542,23 +1537,27 @@ defmodule FavnOrchestrator.API.Router do
   defp execute_idempotent_command(conn, record, idempotency, execute_fun) do
     case execute_fun.(idempotency) do
       {:ok, status, payload, resource_type, resource_id} ->
+        response_body = DTO.normalize(payload)
+
         :ok =
           Idempotency.complete(record.id, %{
             status: :completed,
             response_status: status,
-            response_body: payload,
+            response_body: response_body,
             resource_type: resource_type,
             resource_id: resource_id
           })
 
-        data(conn, status, payload)
+        data(conn, status, response_body)
 
       {:error, status, code, message, details} ->
+        response_body = DTO.normalize(%{code: code, message: message, details: details})
+
         :ok =
           Idempotency.complete(record.id, %{
             status: :failed,
             response_status: status,
-            response_body: %{code: code, message: message, details: details},
+            response_body: response_body,
             resource_type: nil,
             resource_id: nil
           })
@@ -2135,18 +2134,12 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp page_response(page, mapper) when is_function(mapper, 1) do
-    %{
-      items: Enum.map(page.items, mapper),
-      pagination: %{
-        limit: page.limit,
-        offset: page.offset,
-        has_more: page.has_more?,
-        next_offset: page.next_offset
-      }
-    }
+    DTO.page(page, mapper)
   end
 
   defp error(conn, status, code, message, details \\ %{}) do
+    details = DTO.normalize(details)
+
     body =
       Jason.encode!(%{
         error: %{
@@ -2551,309 +2544,12 @@ defmodule FavnOrchestrator.API.Router do
 
   defp run_cursor(event), do: "run:" <> event.run_id <> ":" <> Integer.to_string(event.sequence)
 
-  defp actor_dto(actor) do
-    %{
-      id: actor.id,
-      username: actor.username,
-      display_name: actor.display_name,
-      roles: Enum.map(actor.roles, &Atom.to_string/1),
-      status: Atom.to_string(actor.status),
-      inserted_at: datetime(Map.get(actor, :inserted_at)),
-      updated_at: datetime(Map.get(actor, :updated_at))
-    }
-  end
-
-  defp schedule_dto(entry) do
-    %{
-      id: FavnOrchestrator.schedule_entry_id(entry),
-      pipeline_module: module_name(entry.pipeline_module),
-      schedule_id: atom_name(entry.schedule_id),
-      cron: entry.cron,
-      timezone: entry.timezone,
-      overlap: atom_name(entry.overlap),
-      missed: atom_name(entry.missed),
-      active: entry.active,
-      window: window_policy_dto(entry.window),
-      schedule_fingerprint: entry.schedule_fingerprint,
-      manifest_version_id: entry.manifest_version_id,
-      manifest_content_hash: entry.manifest_content_hash,
-      last_evaluated_at: datetime(entry.last_evaluated_at),
-      last_due_at: datetime(entry.last_due_at),
-      last_submitted_due_at: datetime(entry.last_submitted_due_at),
-      in_flight_run_id: entry.in_flight_run_id,
-      queued_due_at: datetime(entry.queued_due_at),
-      updated_at: datetime(entry.updated_at)
-    }
-  end
-
-  defp session_dto(session) do
-    %{
-      id: session.id,
-      actor_id: session.actor_id,
-      provider: session.provider,
-      issued_at: datetime(session.issued_at),
-      expires_at: datetime(session.expires_at),
-      revoked_at: datetime(session.revoked_at)
-    }
-  end
-
-  defp run_summary_dto(run) do
-    %{
-      id: run.id,
-      status: Atom.to_string(run.status),
-      submit_kind: Atom.to_string(run.submit_kind),
-      manifest_version_id: run.manifest_version_id,
-      event_seq: run.event_seq,
-      started_at: datetime(run.started_at),
-      finished_at: datetime(run.finished_at),
-      target_refs: Enum.map(List.wrap(run.target_refs), &ref_to_string/1),
-      asset_results: asset_results_dto(run.asset_results),
-      error: inspect_term(run.error)
-    }
-  end
-
-  defp run_detail_dto(run) do
-    %{
-      id: run.id,
-      status: Atom.to_string(run.status),
-      submit_kind: Atom.to_string(run.submit_kind),
-      manifest_version_id: run.manifest_version_id,
-      manifest_content_hash: run.manifest_content_hash,
-      event_seq: run.event_seq,
-      started_at: datetime(run.started_at),
-      finished_at: datetime(run.finished_at),
-      timeout_ms: run.timeout_ms,
-      retry_backoff_ms: run.retry_backoff_ms,
-      rerun_of_run_id: run.rerun_of_run_id,
-      parent_run_id: run.parent_run_id,
-      root_run_id: run.root_run_id,
-      target_refs: Enum.map(List.wrap(run.target_refs), &ref_to_string/1),
-      params: normalize_data(run.params),
-      trigger: normalize_data(run.trigger),
-      metadata: normalize_data(run.metadata),
-      result: normalize_data(run.result),
-      pipeline: normalize_data(run.pipeline),
-      pipeline_context: normalize_data(run.pipeline_context),
-      asset_results: asset_results_dto(run.asset_results),
-      node_results: node_results_dto(run.node_results),
-      error: inspect_term(run.error)
-    }
-  end
-
-  defp asset_results_dto(results) when is_map(results) do
-    results
-    |> Map.values()
-    |> Enum.map(&asset_result_dto/1)
-    |> Enum.sort_by(&{&1.stage || 0, &1.asset_ref || ""})
-  end
-
-  defp asset_result_dto(%AssetResult{} = result) do
-    %{
-      asset_ref: ref_to_string(result.ref),
-      stage: result.stage,
-      status: atom_name(result.status),
-      started_at: datetime(result.started_at),
-      finished_at: datetime(result.finished_at),
-      duration_ms: result.duration_ms,
-      meta: normalize_data(result.meta),
-      error: normalize_data(result.error),
-      attempt_count: result.attempt_count,
-      max_attempts: result.max_attempts,
-      attempts: normalize_data(result.attempts),
-      next_retry_at: datetime(result.next_retry_at)
-    }
-  end
-
-  defp asset_result_dto(result) when is_map(result) do
-    result
-    |> normalize_data()
-    |> Map.put_new("asset_ref", ref_to_string(Map.get(result, :ref) || Map.get(result, "ref")))
-  end
-
-  defp asset_result_dto(result), do: %{asset_ref: nil, error: inspect_term(result)}
-
-  defp node_results_dto(results) when is_map(results) do
-    results
-    |> Enum.map(fn {node_key, result} ->
-      %{
-        node_key: normalize_data(node_key),
-        result: asset_result_dto(result)
-      }
-    end)
-  end
-
-  defp run_event_dto(event) do
-    %{
-      schema_version: event.schema_version,
-      run_id: event.run_id,
-      sequence: event.sequence,
-      event_type: event_name(event.event_type),
-      entity: Atom.to_string(event.entity),
-      occurred_at: datetime(event.occurred_at),
-      status: event_status(event.status),
-      manifest_version_id: event.manifest_version_id,
-      manifest_content_hash: event.manifest_content_hash,
-      asset_ref: ref_to_string(event.asset_ref),
-      stage: event.stage,
-      data: normalize_data(event.data)
-    }
-  end
-
-  defp inspection_result_dto(%RelationInspectionResult{} = result) do
-    %{
-      asset_ref: ref_to_string(result.asset_ref),
-      relation_ref: relation_ref_dto(result.relation_ref),
-      relation: sql_relation_dto(result.relation),
-      columns: Enum.map(List.wrap(result.columns), &sql_column_dto/1),
-      row_count: result.row_count,
-      sample: normalize_data(result.sample),
-      table_metadata: normalize_data(result.table_metadata),
-      adapter: module_name(result.adapter),
-      inspected_at: datetime(result.inspected_at),
-      warnings: normalize_data(result.warnings),
-      error: normalize_data(result.error)
-    }
-  end
-
-  defp inspection_result_dto(result), do: normalize_data(result)
-
-  defp relation_ref_dto(nil), do: nil
-
-  defp relation_ref_dto(%Favn.RelationRef{} = ref) do
-    %{
-      connection: atom_name(ref.connection),
-      catalog: ref.catalog,
-      schema: ref.schema,
-      name: ref.name
-    }
-  end
-
-  defp sql_relation_dto(nil), do: nil
-
-  defp sql_relation_dto(%{__struct__: _struct} = relation) do
-    %{
-      catalog: Map.get(relation, :catalog),
-      schema: Map.get(relation, :schema),
-      name: Map.get(relation, :name),
-      type: atom_name(Map.get(relation, :type)),
-      metadata: normalize_data(Map.get(relation, :metadata, %{}))
-    }
-  end
-
-  defp sql_relation_dto(relation), do: normalize_data(relation)
-
-  defp sql_column_dto(%{__struct__: _struct} = column) do
-    %{
-      name: Map.get(column, :name),
-      position: Map.get(column, :position),
-      data_type: Map.get(column, :data_type),
-      nullable: Map.get(column, :nullable?),
-      default: normalize_data(Map.get(column, :default)),
-      comment: Map.get(column, :comment),
-      metadata: normalize_data(Map.get(column, :metadata, %{}))
-    }
-  end
-
-  defp sql_column_dto(column), do: normalize_data(column)
-
-  defp backfill_window_dto(%BackfillWindow{} = window) do
-    %{
-      backfill_run_id: window.backfill_run_id,
-      child_run_id: window.child_run_id,
-      pipeline_module: module_name(window.pipeline_module),
-      manifest_version_id: window.manifest_version_id,
-      coverage_baseline_id: window.coverage_baseline_id,
-      window_kind: atom_name(window.window_kind),
-      window_start_at: datetime(window.window_start_at),
-      window_end_at: datetime(window.window_end_at),
-      timezone: window.timezone,
-      window_key: window.window_key,
-      status: atom_name(window.status),
-      attempt_count: window.attempt_count,
-      latest_attempt_run_id: window.latest_attempt_run_id,
-      last_success_run_id: window.last_success_run_id,
-      last_error: inspect_term(window.last_error),
-      errors: Enum.map(window.errors, &inspect_term/1),
-      metadata: normalize_data(window.metadata),
-      started_at: datetime(window.started_at),
-      finished_at: datetime(window.finished_at),
-      created_at: datetime(window.created_at),
-      updated_at: datetime(window.updated_at)
-    }
-  end
-
-  defp coverage_baseline_dto(%CoverageBaseline{} = baseline) do
-    %{
-      baseline_id: baseline.baseline_id,
-      pipeline_module: module_name(baseline.pipeline_module),
-      source_key: baseline.source_key,
-      segment_key_hash: baseline.segment_key_hash,
-      segment_key_redacted: baseline.segment_key_redacted,
-      window_kind: atom_name(baseline.window_kind),
-      timezone: baseline.timezone,
-      coverage_start_at: datetime(baseline.coverage_start_at),
-      coverage_until: datetime(baseline.coverage_until),
-      created_by_run_id: baseline.created_by_run_id,
-      manifest_version_id: baseline.manifest_version_id,
-      status: atom_name(baseline.status),
-      errors: Enum.map(baseline.errors, &inspect_term/1),
-      metadata: normalize_data(baseline.metadata),
-      created_at: datetime(baseline.created_at),
-      updated_at: datetime(baseline.updated_at)
-    }
-  end
-
-  defp asset_window_state_dto(%AssetWindowState{} = state) do
-    %{
-      asset_ref_module: module_name(state.asset_ref_module),
-      asset_ref_name: atom_name(state.asset_ref_name),
-      pipeline_module: module_name(state.pipeline_module),
-      manifest_version_id: state.manifest_version_id,
-      window_kind: atom_name(state.window_kind),
-      window_start_at: datetime(state.window_start_at),
-      window_end_at: datetime(state.window_end_at),
-      timezone: state.timezone,
-      window_key: state.window_key,
-      status: atom_name(state.status),
-      latest_run_id: state.latest_run_id,
-      latest_parent_run_id: state.latest_parent_run_id,
-      latest_success_run_id: state.latest_success_run_id,
-      latest_error: inspect_term(state.latest_error),
-      errors: Enum.map(state.errors, &inspect_term/1),
-      rows_written: state.rows_written,
-      metadata: normalize_data(state.metadata),
-      updated_at: datetime(state.updated_at)
-    }
-  end
-
-  defp audit_dto(entry) do
-    entry
-    |> normalize_data()
-    |> Map.update(:occurred_at, nil, &datetime/1)
-  end
-
-  defp normalize_data(%AssetResult{} = value), do: asset_result_dto(value)
-  defp normalize_data(%DateTime{} = value), do: datetime(value)
-
-  defp normalize_data(value) when is_map(value) do
-    value
-    |> Enum.map(fn {key, val} -> {to_string(key), normalize_data(val)} end)
-    |> Map.new()
-  end
-
-  defp normalize_data(value) when is_list(value), do: Enum.map(value, &normalize_data/1)
-  defp normalize_data({module, name}), do: ref_to_string({module, name})
-  defp normalize_data(nil), do: nil
-  defp normalize_data(value) when is_boolean(value), do: value
-  defp normalize_data(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_data(value), do: value
-
   defp event_name(value) when is_atom(value), do: Atom.to_string(value)
-  defp event_name(value), do: to_string(value)
+  defp event_name(value), do: DTO.normalize(value)
 
   defp event_status(nil), do: nil
   defp event_status(value) when is_atom(value), do: Atom.to_string(value)
-  defp event_status(value), do: to_string(value)
+  defp event_status(value), do: DTO.normalize(value)
 
   defp ref_to_string(nil), do: nil
 
@@ -2861,33 +2557,17 @@ defmodule FavnOrchestrator.API.Router do
     Atom.to_string(module) <> ":" <> Atom.to_string(name)
   end
 
-  defp ref_to_string(%{"module" => module, "name" => name})
-       when is_binary(module) and is_binary(name) do
-    module <> ":" <> name
-  end
-
-  defp ref_to_string(value), do: inspect(value)
-
-  defp inspect_term(nil), do: nil
-  defp inspect_term(value), do: inspect(value)
+  defp ref_to_string(value), do: DTO.normalize(value)
 
   defp datetime(nil), do: nil
   defp datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp datetime(value), do: DTO.normalize(value)
 
   defp atom_name(nil), do: nil
   defp atom_name(value) when is_atom(value), do: Atom.to_string(value)
-
-  defp window_policy_dto(nil), do: nil
-
-  defp window_policy_dto(%Policy{} = policy) do
-    %{
-      kind: atom_name(policy.kind),
-      anchor: atom_name(policy.anchor),
-      timezone: policy.timezone,
-      allow_full_load: policy.allow_full_load
-    }
-  end
+  defp atom_name(value), do: DTO.normalize(value)
 
   defp module_name(nil), do: nil
   defp module_name(value) when is_atom(value), do: Atom.to_string(value)
+  defp module_name(value), do: DTO.normalize(value)
 end

@@ -1,18 +1,31 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://favn.dev/contracts/orchestrator/v1/run-summary.schema.json",
-  "title": "RunSummary",
+  "$id": "https://favn.dev/contracts/orchestrator/v1/run-detail.schema.json",
+  "title": "RunDetail",
   "type": "object",
   "required": [
     "id",
     "status",
     "submit_kind",
     "manifest_version_id",
+    "manifest_content_hash",
     "event_seq",
     "started_at",
     "finished_at",
+    "timeout_ms",
+    "retry_backoff_ms",
+    "rerun_of_run_id",
+    "parent_run_id",
+    "root_run_id",
     "target_refs",
+    "params",
+    "trigger",
+    "metadata",
+    "result",
+    "pipeline",
+    "pipeline_context",
     "asset_results",
+    "node_results",
     "error"
   ],
   "additionalProperties": false,
@@ -34,6 +47,15 @@
         "attempts": {},
         "next_retry_at": { "type": ["string", "null"] }
       }
+    },
+    "nodeResult": {
+      "type": "object",
+      "required": ["node_key", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "node_key": {},
+        "result": { "$ref": "#/$defs/assetResult" }
+      }
     }
   },
   "properties": {
@@ -41,11 +63,24 @@
     "status": { "type": "string", "minLength": 1 },
     "submit_kind": { "type": "string", "minLength": 1 },
     "manifest_version_id": { "type": "string", "minLength": 1 },
+    "manifest_content_hash": { "type": ["string", "null"] },
     "event_seq": { "type": "integer", "minimum": 1 },
     "started_at": { "type": ["string", "null"] },
     "finished_at": { "type": ["string", "null"] },
+    "timeout_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "retry_backoff_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "rerun_of_run_id": { "type": ["string", "null"] },
+    "parent_run_id": { "type": ["string", "null"] },
+    "root_run_id": { "type": ["string", "null"] },
     "target_refs": { "type": "array", "items": { "type": "string" } },
+    "params": {},
+    "trigger": {},
+    "metadata": {},
+    "result": {},
+    "pipeline": {},
+    "pipeline_context": {},
     "asset_results": { "type": "array", "items": { "$ref": "#/$defs/assetResult" } },
+    "node_results": { "type": "array", "items": { "$ref": "#/$defs/nodeResult" } },
     "error": {}
   }
 }
