@@ -20,7 +20,9 @@ defmodule FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec do
          {:ok, coverage_start_at} <- optional_datetime(Map.get(dto, "coverage_start_at")),
          {:ok, coverage_until} <- datetime(Map.get(dto, "coverage_until")),
          {:ok, created_at} <- datetime(Map.get(dto, "created_at")),
-         {:ok, updated_at} <- datetime(Map.get(dto, "updated_at")) do
+         {:ok, updated_at} <- datetime(Map.get(dto, "updated_at")),
+         {:ok, errors} <- list_field(dto, "errors"),
+         {:ok, metadata} <- map_field(dto, "metadata") do
       CoverageBaseline.new(%{
         baseline_id: Map.get(dto, "baseline_id"),
         pipeline_module: pipeline_module,
@@ -34,8 +36,8 @@ defmodule FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec do
         created_by_run_id: Map.get(dto, "created_by_run_id"),
         manifest_version_id: Map.get(dto, "manifest_version_id"),
         status: Map.get(dto, "status"),
-        errors: list(Map.get(dto, "errors")),
-        metadata: map(Map.get(dto, "metadata")),
+        errors: errors,
+        metadata: metadata,
         created_at: created_at,
         updated_at: updated_at
       })
@@ -91,9 +93,19 @@ defmodule FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec do
 
   defp existing_atom(value), do: {:error, {:invalid_atom, value}}
 
-  defp list(value) when is_list(value), do: value
-  defp list(_value), do: []
+  defp list_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_list(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
 
-  defp map(value) when is_map(value), do: value
-  defp map(_value), do: %{}
+  defp map_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
 end

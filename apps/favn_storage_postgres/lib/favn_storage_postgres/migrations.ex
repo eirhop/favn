@@ -5,11 +5,13 @@ defmodule FavnStoragePostgres.Migrations do
   alias FavnStoragePostgres.Migrations.AddBackfillState
   alias FavnStoragePostgres.Migrations.AddRunEventGlobalSequence
   alias FavnStoragePostgres.Migrations.CreateFoundation
+  alias FavnStoragePostgres.Migrations.RebuildBackfillReadModelsForDtos
 
   @migrations [
     {20_260_415_100_000, CreateFoundation},
     {20_260_428_100_000, AddBackfillState},
-    {20_260_503_120_000, AddRunEventGlobalSequence}
+    {20_260_503_120_000, AddRunEventGlobalSequence},
+    {20_260_505_100_000, RebuildBackfillReadModelsForDtos}
   ]
   @required_tables [
     "public.favn_manifest_versions",

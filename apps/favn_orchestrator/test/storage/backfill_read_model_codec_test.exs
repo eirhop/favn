@@ -116,4 +116,114 @@ defmodule FavnOrchestrator.Storage.BackfillReadModelCodecTest do
     assert restored.latest_error["type"] == "tuple"
     assert restored.metadata == %{"credentials" => "[REDACTED]", "partition" => "daily"}
   end
+
+  test "coverage baseline codec rejects malformed metadata and errors fields" do
+    payload = encoded_coverage_baseline_payload()
+
+    assert {:error, {:invalid_dto_field, "metadata", []}} =
+             payload
+             |> put_payload_field("metadata", [])
+             |> CoverageBaselineCodec.decode()
+
+    assert {:error, {:invalid_dto_field, "errors", %{}}} =
+             payload
+             |> put_payload_field("errors", %{})
+             |> CoverageBaselineCodec.decode()
+  end
+
+  test "backfill window codec rejects malformed error payload fields" do
+    payload = encoded_backfill_window_payload()
+
+    assert {:error, {:invalid_dto_field, "last_error", "boom"}} =
+             payload
+             |> put_payload_field("last_error", "boom")
+             |> BackfillWindowCodec.decode()
+
+    assert {:error, {:invalid_dto_field, "metadata", []}} =
+             payload
+             |> put_payload_field("metadata", [])
+             |> BackfillWindowCodec.decode()
+  end
+
+  test "asset window state codec rejects malformed error payload fields" do
+    payload = encoded_asset_window_state_payload()
+
+    assert {:error, {:invalid_dto_field, "latest_error", "boom"}} =
+             payload
+             |> put_payload_field("latest_error", "boom")
+             |> AssetWindowStateCodec.decode()
+
+    assert {:error, {:invalid_dto_field, "errors", %{}}} =
+             payload
+             |> put_payload_field("errors", %{})
+             |> AssetWindowStateCodec.decode()
+  end
+
+  defp encoded_coverage_baseline_payload do
+    {:ok, baseline} =
+      CoverageBaseline.new(%{
+        baseline_id: "baseline_malformed",
+        pipeline_module: __MODULE__.Pipeline,
+        source_key: "orders",
+        segment_key_hash: "sha256:abc",
+        window_kind: :day,
+        timezone: "Etc/UTC",
+        coverage_until: @end_at,
+        created_by_run_id: "run_baseline",
+        manifest_version_id: "mv_1",
+        status: :ok,
+        created_at: @now,
+        updated_at: @now
+      })
+
+    {:ok, payload} = CoverageBaselineCodec.encode(baseline)
+    payload
+  end
+
+  defp encoded_backfill_window_payload do
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: "backfill_malformed",
+        pipeline_module: __MODULE__.Pipeline,
+        manifest_version_id: "mv_1",
+        window_kind: :day,
+        window_start_at: @start_at,
+        window_end_at: @end_at,
+        timezone: "Etc/UTC",
+        window_key: "day:2026-04-01",
+        status: :error,
+        updated_at: @now
+      })
+
+    {:ok, payload} = BackfillWindowCodec.encode(window)
+    payload
+  end
+
+  defp encoded_asset_window_state_payload do
+    {:ok, state} =
+      AssetWindowState.new(%{
+        asset_ref_module: __MODULE__.Asset,
+        asset_ref_name: :orders,
+        pipeline_module: __MODULE__.Pipeline,
+        manifest_version_id: "mv_1",
+        window_kind: :day,
+        window_start_at: @start_at,
+        window_end_at: @end_at,
+        timezone: "Etc/UTC",
+        window_key: "day:2026-04-01",
+        status: :error,
+        latest_run_id: "run_asset_malformed",
+        updated_at: @now
+      })
+
+    {:ok, payload} = AssetWindowStateCodec.encode(state)
+    payload
+  end
+
+  defp put_payload_field(payload, field, value) do
+    payload
+    |> Jason.decode!()
+    |> Map.put(field, value)
+    |> Jason.encode!()
+  end
 end

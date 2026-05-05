@@ -22,7 +22,10 @@ defmodule FavnOrchestrator.Storage.Backfill.BackfillWindowCodec do
          {:ok, started_at} <- optional_datetime(Map.get(dto, "started_at")),
          {:ok, finished_at} <- optional_datetime(Map.get(dto, "finished_at")),
          {:ok, created_at} <- optional_datetime(Map.get(dto, "created_at")),
-         {:ok, updated_at} <- datetime(Map.get(dto, "updated_at")) do
+         {:ok, updated_at} <- datetime(Map.get(dto, "updated_at")),
+         {:ok, last_error} <- error_field(dto, "last_error"),
+         {:ok, errors} <- list_field(dto, "errors"),
+         {:ok, metadata} <- map_field(dto, "metadata") do
       BackfillWindow.new(%{
         backfill_run_id: Map.get(dto, "backfill_run_id"),
         child_run_id: Map.get(dto, "child_run_id"),
@@ -38,9 +41,9 @@ defmodule FavnOrchestrator.Storage.Backfill.BackfillWindowCodec do
         attempt_count: Map.get(dto, "attempt_count", 0),
         latest_attempt_run_id: Map.get(dto, "latest_attempt_run_id"),
         last_success_run_id: Map.get(dto, "last_success_run_id"),
-        last_error: Map.get(dto, "last_error"),
-        errors: list(Map.get(dto, "errors")),
-        metadata: map(Map.get(dto, "metadata")),
+        last_error: last_error,
+        errors: errors,
+        metadata: metadata,
         started_at: started_at,
         finished_at: finished_at,
         created_at: created_at,
@@ -103,9 +106,27 @@ defmodule FavnOrchestrator.Storage.Backfill.BackfillWindowCodec do
 
   defp existing_atom(value), do: {:error, {:invalid_atom, value}}
 
-  defp list(value) when is_list(value), do: value
-  defp list(_value), do: []
+  defp error_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_map(value) or is_nil(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
 
-  defp map(value) when is_map(value), do: value
-  defp map(_value), do: %{}
+  defp list_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_list(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
+
+  defp map_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
 end

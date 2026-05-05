@@ -7,13 +7,15 @@ defmodule FavnStorageSqlite.Migrations do
   alias FavnStorageSqlite.Migrations.AddIdempotencyRecords
   alias FavnStorageSqlite.Migrations.AddRunEventGlobalSequence
   alias FavnStorageSqlite.Migrations.CreateFoundation
+  alias FavnStorageSqlite.Migrations.RebuildBackfillReadModelsForDtos
 
   @migrations [
     {20_260_415_000_000, CreateFoundation},
     {20_260_428_100_000, AddBackfillState},
     {20_260_502_100_000, AddAuthState},
     {20_260_503_100_000, AddIdempotencyRecords},
-    {20_260_503_120_000, AddRunEventGlobalSequence}
+    {20_260_503_120_000, AddRunEventGlobalSequence},
+    {20_260_505_100_000, RebuildBackfillReadModelsForDtos}
   ]
   @required_tables [
     "favn_manifest_versions",

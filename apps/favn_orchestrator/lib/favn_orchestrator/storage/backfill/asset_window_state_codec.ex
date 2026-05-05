@@ -21,7 +21,10 @@ defmodule FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec do
          {:ok, pipeline_module} <- existing_atom(Map.get(dto, "pipeline_module")),
          {:ok, window_start_at} <- datetime(Map.get(dto, "window_start_at")),
          {:ok, window_end_at} <- datetime(Map.get(dto, "window_end_at")),
-         {:ok, updated_at} <- datetime(Map.get(dto, "updated_at")) do
+         {:ok, updated_at} <- datetime(Map.get(dto, "updated_at")),
+         {:ok, latest_error} <- error_field(dto, "latest_error"),
+         {:ok, errors} <- list_field(dto, "errors"),
+         {:ok, metadata} <- map_field(dto, "metadata") do
       AssetWindowState.new(%{
         asset_ref_module: asset_ref_module,
         asset_ref_name: asset_ref_name,
@@ -36,10 +39,10 @@ defmodule FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec do
         latest_run_id: Map.get(dto, "latest_run_id"),
         latest_parent_run_id: Map.get(dto, "latest_parent_run_id"),
         latest_success_run_id: Map.get(dto, "latest_success_run_id"),
-        latest_error: Map.get(dto, "latest_error"),
-        errors: list(Map.get(dto, "errors")),
+        latest_error: latest_error,
+        errors: errors,
         rows_written: Map.get(dto, "rows_written"),
-        metadata: map(Map.get(dto, "metadata")),
+        metadata: metadata,
         updated_at: updated_at
       })
     else
@@ -93,9 +96,27 @@ defmodule FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec do
 
   defp existing_atom(value), do: {:error, {:invalid_atom, value}}
 
-  defp list(value) when is_list(value), do: value
-  defp list(_value), do: []
+  defp error_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_map(value) or is_nil(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
 
-  defp map(value) when is_map(value), do: value
-  defp map(_value), do: %{}
+  defp list_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_list(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
+
+  defp map_field(dto, field) do
+    case Map.fetch(dto, field) do
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, value} -> {:error, {:invalid_dto_field, field, value}}
+      :error -> {:error, {:missing_dto_field, field}}
+    end
+  end
 end
