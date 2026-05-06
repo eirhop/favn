@@ -183,7 +183,8 @@ Production DuckDB behavior covers or must preserve:
 - Bounded normal query results returned to Elixir by row count and converted
   result byte size. Large outputs must be written by explicit DuckDB SQL such as
   `COPY (...) TO '/path/file.parquet' (FORMAT parquet)` rather than hidden
-  adapter-created result files.
+  adapter-created result files; command statements such as `COPY` use
+  `Favn.SQLClient.execute/3`, not the bounded `query/3` row-return path.
 - Production diagnostics for the preferred ADBC path must load the configured
   driver, connect, run bootstrap, ping DuckDB, and report the actual DuckDB
   version with driver paths and secrets redacted.

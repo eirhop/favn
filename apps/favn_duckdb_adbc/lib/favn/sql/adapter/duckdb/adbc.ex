@@ -26,7 +26,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   ## Result bounds
 
-  Normal `query/3` calls are wrapped with a `LIMIT` based on the configured row
+  Normal `query/3` calls are for bounded read-style SQL such as `SELECT`, `WITH`,
+  and `VALUES`. They are wrapped with a `LIMIT` based on the configured row
   limit, and converted results are checked against a byte limit before returning
   to Elixir. Configure plugin defaults with:
 
@@ -35,8 +36,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
           default_row_limit: 10_000,
           default_result_byte_limit: 20_000_000}]
 
-  Large data movement should stay in DuckDB via explicit SQL such as `COPY TO`,
-  `COPY FROM`, `read_json`, or `read_ndjson` against caller-owned paths.
+  Large data movement should stay in DuckDB via `execute/3` and explicit SQL such
+  as `COPY TO`, `COPY FROM`, `read_json`, or `read_ndjson` against caller-owned
+  paths.
   """
 
   @behaviour Favn.SQL.Adapter

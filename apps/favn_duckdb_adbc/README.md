@@ -56,10 +56,11 @@ In shell-based smoke tests, the same path can be provided with
 
 ## Result Bounds
 
-Normal `Favn.SQLClient.query` results are for small control-flow data. The
-adapter wraps query SQL with `LIMIT default_row_limit + 1`, rejects overflow, and
-checks the converted result against `default_result_byte_limit` before returning
-rows to Elixir:
+Normal `Favn.SQLClient.query` results are for bounded read-style result sets such
+as `SELECT`, `WITH`, and `VALUES` queries that return small control-flow data.
+The adapter wraps query SQL with `LIMIT default_row_limit + 1`, rejects overflow,
+and checks the converted result against `default_result_byte_limit` before
+returning rows to Elixir:
 
 ```elixir
 config :favn, :runner_plugins,
@@ -68,9 +69,21 @@ config :favn, :runner_plugins,
     default_result_byte_limit: 20_000_000}]
 ```
 
-Large result sets should be written by DuckDB itself with explicit SQL such as
-`COPY (...) TO '/explicit/path/data.parquet' (FORMAT parquet)`. Normal query
-results returned to Elixir are bounded.
+Use `Favn.SQLClient.execute` for command statements such as `COPY`, DDL, DML,
+`PRAGMA`, `DESCRIBE`, and `SHOW`. Large result sets should be written by DuckDB
+itself with explicit SQL:
+
+```elixir
+Favn.SQLClient.execute(session, """
+COPY (
+  SELECT *
+  FROM large_table
+) TO '/explicit/path/data.parquet' (FORMAT parquet)
+""")
+```
+
+Normal query results returned to Elixir are bounded; large data belongs in
+explicit DuckDB files or materializations.
 
 For JSON/API landing paths, prefer DuckDB-native file ingestion over large row
 batches in Elixir:
