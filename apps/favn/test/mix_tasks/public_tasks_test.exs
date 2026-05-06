@@ -465,6 +465,21 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
              "run finished with status error: IO Error: Cannot open file \".data/ducklake/session/favn.duckdb\""
   end
 
+  test "mix favn.run includes structured HTTP error details" do
+    message =
+      RunTask.format_orchestrator_reason(
+        {:http_error, 400,
+         %{
+           "error" => %{
+             "message" => "Request failed",
+             "details" => %{"reason" => ":audit_write_failed"}
+           }
+         }}
+      )
+
+    assert message == "HTTP 400: Request failed (reason: :audit_write_failed)"
+  end
+
   test "mix favn.reload gives stale-run recovery instructions for in-flight runs" do
     message = ReloadTask.in_flight_runs_message(["run_pending", "run_running"])
 

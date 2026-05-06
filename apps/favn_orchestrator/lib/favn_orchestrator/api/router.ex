@@ -626,20 +626,20 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, params} <- fetch_json_body(conn) do
       run_idempotent_command(conn, "run.submit", actor.id, session.id, params, fn idempotency ->
         with {:ok, run_id} <- submit_run_from_request(params),
-             {:ok, run} <- FavnOrchestrator.get_run(run_id),
-             :ok <-
-               Auth.put_audit(
-                 %{
-                   action: "run.submit",
-                   actor_id: actor.id,
-                   session_id: session.id,
-                   resource_type: "run",
-                   resource_id: run_id,
-                   outcome: "accepted",
-                   service_identity: service_identity(conn)
-                 }
-                 |> Map.merge(audit_idempotency(idempotency, "accepted"))
-               ) do
+             {:ok, run} <- FavnOrchestrator.get_run(run_id) do
+          put_audit_best_effort(
+            %{
+              action: "run.submit",
+              actor_id: actor.id,
+              session_id: session.id,
+              resource_type: "run",
+              resource_id: run_id,
+              outcome: "accepted",
+              service_identity: service_identity(conn)
+            }
+            |> Map.merge(audit_idempotency(idempotency, "accepted"))
+          )
+
           {:ok, 201, %{run: DTO.run_summary(run)}, "run", run_id}
         else
           {:error, :invalid_target} ->
@@ -663,8 +663,9 @@ defmodule FavnOrchestrator.API.Router do
           {:error, :active_manifest_not_set} ->
             {:error, 404, "not_found", "Active manifest is not set", %{}}
 
-          {:error, _reason} ->
-            {:error, 400, "bad_request", "Request failed", %{}}
+          {:error, reason} ->
+            Logger.error("run.submit failed after request validation: #{inspect(reason)}")
+            {:error, 400, "bad_request", "Request failed", %{reason: inspect(reason)}}
         end
       end)
     else
@@ -1613,6 +1614,17 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_audit(true, entry), do: Auth.put_audit(entry)
   defp maybe_put_audit(false, _entry), do: :ok
+
+  defp put_audit_best_effort(entry) when is_map(entry) do
+    case Auth.put_audit(entry) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("auth audit write failed: #{inspect(reason)}")
+        :ok
+    end
+  end
 
   defp build_manifest_version(params) when is_map(params) do
     with %{} = manifest <- Map.get(params, "manifest"),

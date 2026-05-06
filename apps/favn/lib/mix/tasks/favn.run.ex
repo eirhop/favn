@@ -134,16 +134,32 @@ defmodule Mix.Tasks.Favn.Run do
   defp operation_label(operation) when is_atom(operation),
     do: operation |> Atom.to_string() |> String.replace("_", " ")
 
-  defp format_orchestrator_reason({:http_error, status, payload}) do
+  @doc false
+  def format_orchestrator_reason({:http_error, status, payload}) do
     message = get_in(payload, ["error", "message"])
+    details = get_in(payload, ["error", "details"])
 
     case message do
-      message when is_binary(message) and message != "" -> "HTTP #{status}: #{message}"
-      _other -> "HTTP #{status}: #{inspect(payload)}"
+      message when is_binary(message) and message != "" ->
+        "HTTP #{status}: #{message}" <> format_orchestrator_details(details)
+
+      _other ->
+        "HTTP #{status}: #{inspect(payload)}"
     end
   end
 
-  defp format_orchestrator_reason(reason), do: inspect(reason)
+  def format_orchestrator_reason(reason), do: inspect(reason)
+
+  defp format_orchestrator_details(%{"reason" => reason}) when is_binary(reason) and reason != "",
+    do: " (reason: " <> reason <> ")"
+
+  defp format_orchestrator_details(%{reason: reason}) when is_binary(reason) and reason != "",
+    do: " (reason: " <> reason <> ")"
+
+  defp format_orchestrator_details(details) when is_map(details) and map_size(details) > 0,
+    do: " (details: " <> inspect(details) <> ")"
+
+  defp format_orchestrator_details(_details), do: ""
 
   defp print_run(run, pipeline_module) do
     IO.puts("Submitted pipeline run")
