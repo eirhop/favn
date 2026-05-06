@@ -202,15 +202,21 @@ defmodule Favn.Dev.InitTest do
           gold_ref = {#{base}.Warehouse.Gold.OrderSummary, :asset}
 
           for ref <- [raw_ref, gold_ref] do
+            run_id =
+              ref
+              |> elem(0)
+              |> Atom.to_string()
+              |> String.replace(".", "_")
+
             work = %Favn.Contracts.RunnerWork{
-              run_id: "generated-" <> Atom.to_string(elem(ref, 1)),
+              run_id: "generated-" <> run_id,
               manifest_version_id: version.manifest_version_id,
               manifest_content_hash: version.content_hash,
               asset_ref: ref
             }
 
             assert {:ok, result} = FavnRunner.run(work, timeout: 30_000)
-            assert result.status == :ok
+            assert result.status == :ok, inspect(result)
           end
 
           assert {:ok, result} =
