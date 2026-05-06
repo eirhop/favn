@@ -104,12 +104,30 @@ defmodule Mix.Tasks.Favn.Run do
         base
       end
 
-    case run_error(run) do
+    case format_run_error(run_error(run)) do
       nil -> base
-      "nil" -> base
-      error -> base <> ": #{error}"
+      error -> base <> ": " <> error
     end
   end
+
+  @doc false
+  def format_run_error(nil), do: nil
+  def format_run_error("nil"), do: nil
+  def format_run_error(error) when is_binary(error), do: error
+
+  def format_run_error(%{"message" => message}) when is_binary(message) and message != "",
+    do: message
+
+  def format_run_error(%{message: message}) when is_binary(message) and message != "",
+    do: message
+
+  def format_run_error(%{"reason" => reason}) when is_binary(reason) and reason != "",
+    do: reason
+
+  def format_run_error(%{reason: reason}) when is_binary(reason) and reason != "",
+    do: reason
+
+  def format_run_error(error), do: inspect(error)
 
   defp run_error(run), do: run["error"] || run[:error]
 
@@ -134,10 +152,9 @@ defmodule Mix.Tasks.Favn.Run do
     IO.puts("run: #{run["id"] || "unknown"}")
     IO.puts("status: #{run["status"] || "unknown"}")
 
-    case run_error(run) do
+    case format_run_error(run_error(run)) do
       nil -> :ok
-      "nil" -> :ok
-      error -> IO.puts("error: #{error}")
+      error -> IO.puts("error: " <> error)
     end
   end
 

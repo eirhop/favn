@@ -443,6 +443,28 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert message =~ "asset timed out after 5000ms"
   end
 
+  test "mix favn.run formats structured run errors from the API" do
+    error = %{
+      "kind" => "error",
+      "message" => "IO Error: Cannot open file \".data/ducklake/session/favn.duckdb\"",
+      "reason" => "fallback reason",
+      "redacted" => true
+    }
+
+    assert RunTask.format_run_error(error) ==
+             "IO Error: Cannot open file \".data/ducklake/session/favn.duckdb\""
+
+    message =
+      RunTask.terminal_run_error_message(%{
+        "id" => "run_1",
+        "status" => "error",
+        "error" => error
+      })
+
+    assert message ==
+             "run finished with status error: IO Error: Cannot open file \".data/ducklake/session/favn.duckdb\""
+  end
+
   test "mix favn.reload gives stale-run recovery instructions for in-flight runs" do
     message = ReloadTask.in_flight_runs_message(["run_pending", "run_running"])
 
