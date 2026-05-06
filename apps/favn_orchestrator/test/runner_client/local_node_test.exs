@@ -14,6 +14,17 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
   end
 
+  defmodule SlowRunner do
+    def await_result(_execution_id, _timeout, opts) do
+      opts
+      |> Keyword.fetch!(:test_pid)
+      |> send({:await_result_called, self()})
+
+      Process.sleep(Keyword.fetch!(opts, :block_ms))
+      {:ok, %RunnerResult{status: :ok}}
+    end
+  end
+
   defmodule RaisingRunner do
     def cancel_work(_execution_id, _reason, _opts), do: raise("runner failed")
   end
@@ -115,6 +126,28 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
       {:error, reason} ->
         IO.puts(
           "Skipping remote LocalNode dispatch test: distributed Erlang unavailable: #{inspect(reason)}"
+        )
+    end
+  end
+
+  test "remote await_result uses requested await timeout instead of dispatch default" do
+    case ensure_distributed_node() do
+      :ok ->
+        assert {:ok, %RunnerResult{status: :ok}} =
+                 LocalNode.await_result("exec_2", 50,
+                   runner_module: SlowRunner,
+                   runner_node: Node.self(),
+                   runner_dispatch_timeout_ms: 10,
+                   runner_await_timeout_buffer_ms: 20,
+                   block_ms: 25,
+                   test_pid: self()
+                 )
+
+        assert_received {:await_result_called, _pid}
+
+      {:error, reason} ->
+        IO.puts(
+          "Skipping remote LocalNode await timeout test: distributed Erlang unavailable: #{inspect(reason)}"
         )
     end
   end

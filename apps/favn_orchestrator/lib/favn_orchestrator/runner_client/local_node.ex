@@ -14,7 +14,14 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
 
-  @type opt :: {:runner_node, node()} | {:runner_module, module()}
+  @default_erpc_timeout_ms 15_000
+  @await_result_erpc_buffer_ms 2_000
+
+  @type opt ::
+          {:runner_node, node()}
+          | {:runner_module, module()}
+          | {:runner_dispatch_timeout_ms, pos_integer()}
+          | {:runner_await_timeout_buffer_ms, non_neg_integer()}
 
   @impl true
   @spec register_manifest(Version.t(), [opt()]) :: :ok | {:error, term()}
@@ -110,8 +117,44 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   defp dispatch_remote(runner_node, runner_module, function, args) when is_atom(runner_node) do
     with :ok <- ensure_connected(runner_node) do
       dispatch_safely(runner_module, function, args, fn ->
-        :erpc.call(runner_node, runner_module, function, args, 15_000)
+        :erpc.call(runner_node, runner_module, function, args, erpc_timeout(function, args))
       end)
+    end
+  end
+
+  defp erpc_timeout(:await_result, [_execution_id, timeout, opts])
+       when is_integer(timeout) and timeout > 0 and is_list(opts) do
+    buffer_ms =
+      non_neg_int_opt(opts, :runner_await_timeout_buffer_ms, @await_result_erpc_buffer_ms)
+
+    dispatch_timeout_ms = pos_int_opt(opts, :runner_dispatch_timeout_ms, @default_erpc_timeout_ms)
+
+    max(dispatch_timeout_ms, timeout + buffer_ms)
+  end
+
+  defp erpc_timeout(_function, [_ | _] = args) do
+    opts = List.last(args)
+
+    if is_list(opts) do
+      pos_int_opt(opts, :runner_dispatch_timeout_ms, @default_erpc_timeout_ms)
+    else
+      @default_erpc_timeout_ms
+    end
+  end
+
+  defp erpc_timeout(_function, _args), do: @default_erpc_timeout_ms
+
+  defp pos_int_opt(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> default
+    end
+  end
+
+  defp non_neg_int_opt(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value >= 0 -> value
+      _other -> default
     end
   end
 
