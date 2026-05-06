@@ -125,7 +125,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
         account_name = Keyword.get(secret, :account_name)
 
         if present_string?(account_name) do
-          {:ok, %{name: name, type: :azure, provider: :credential_chain, account_name: account_name}}
+          {:ok,
+           %{name: name, type: :azure, provider: :credential_chain, account_name: account_name}}
         else
           {:error, {:missing_secret_field, name, :account_name}}
         end
@@ -143,8 +144,11 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
          {:ok, metadata} <- fetch_present_value(attach, :metadata),
          {:ok, data_path} <- fetch_present_value(attach, :data_path) do
       case Keyword.get(attach, :type) do
-        :ducklake -> {:ok, %{name: name, type: :ducklake, metadata: metadata, data_path: data_path}}
-        other -> {:error, {:unsupported_attach_type, other}}
+        :ducklake ->
+          {:ok, %{name: name, type: :ducklake, metadata: metadata, data_path: data_path}}
+
+        other ->
+          {:error, {:unsupported_attach_type, other}}
       end
     end
   end
@@ -185,11 +189,23 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   defp extension_steps(kind, names) do
     Enum.map(names, fn name ->
       sql = [String.upcase(Atom.to_string(kind)), " ", name]
-      %{id: step_id(kind, name), kind: kind, statement: sql, safe_statement: sql, sensitive_values: []}
+
+      %{
+        id: step_id(kind, name),
+        kind: kind,
+        statement: sql,
+        safe_statement: sql,
+        sensitive_values: []
+      }
     end)
   end
 
-  defp secret_step(%{name: name, type: :azure, provider: :credential_chain, account_name: account_name}) do
+  defp secret_step(%{
+         name: name,
+         type: :azure,
+         provider: :credential_chain,
+         account_name: account_name
+       }) do
     statement = [
       "CREATE SECRET ",
       quote_ident(name),
@@ -250,10 +266,22 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   end
 
   defp use_steps(nil), do: []
-  defp use_steps(name), do: [%{id: step_id(:use, name), kind: :use_catalog, statement: ["USE ", quote_ident(name)], safe_statement: ["USE ", quote_ident(name)], sensitive_values: []}]
+
+  defp use_steps(name),
+    do: [
+      %{
+        id: step_id(:use, name),
+        kind: :use_catalog,
+        statement: ["USE ", quote_ident(name)],
+        safe_statement: ["USE ", quote_ident(name)],
+        sensitive_values: []
+      }
+    ]
 
   defp step_id(kind, name), do: "#{kind}_#{name}"
-  defp normalize_identifier(value) when is_atom(value), do: normalize_identifier(Atom.to_string(value))
+
+  defp normalize_identifier(value) when is_atom(value),
+    do: normalize_identifier(Atom.to_string(value))
 
   defp normalize_identifier(value) when is_binary(value) do
     if Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*$/, value),
@@ -263,7 +291,10 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp normalize_identifier(value), do: {:error, {:invalid_identifier, value}}
   defp present_string?(value), do: is_binary(value) and value != ""
-  defp quote_ident(identifier), do: [~s("), String.replace(to_string(identifier), ~s("), ~s("")), ~s(")]
+
+  defp quote_ident(identifier),
+    do: [~s("), String.replace(to_string(identifier), ~s("), ~s("")), ~s(")]
+
   defp quote_literal(value), do: ["'", String.replace(to_string(value), "'", "''"), "'"]
 
   defp config_error(%Resolved{} = resolved, reason) do
@@ -299,15 +330,19 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp redact(value, sensitive_values) when is_binary(value) do
     Enum.reduce(sensitive_values, value, fn
-      secret, acc when is_binary(secret) and secret != "" -> String.replace(acc, secret, "redacted")
-      _secret, acc -> acc
+      secret, acc when is_binary(secret) and secret != "" ->
+        String.replace(acc, secret, "redacted")
+
+      _secret, acc ->
+        acc
     end)
   end
 
   defp redact(value, sensitive_values) when is_map(value),
     do: Map.new(value, fn {key, child} -> {key, redact(child, sensitive_values)} end)
 
-  defp redact(value, sensitive_values) when is_list(value), do: Enum.map(value, &redact(&1, sensitive_values))
+  defp redact(value, sensitive_values) when is_list(value),
+    do: Enum.map(value, &redact(&1, sensitive_values))
 
   defp redact(value, sensitive_values) when is_tuple(value) do
     value |> Tuple.to_list() |> Enum.map(&redact(&1, sensitive_values)) |> List.to_tuple()

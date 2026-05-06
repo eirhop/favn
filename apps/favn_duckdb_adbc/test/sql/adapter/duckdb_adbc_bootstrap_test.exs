@@ -73,7 +73,11 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
               operation: :bootstrap,
               connection: :warehouse,
               message: "DuckDB ADBC connection bootstrap failed at attach_lake",
-              details: %{statement: safe_statement, reason: reason, adapter_details: adapter_details}
+              details: %{
+                statement: safe_statement,
+                reason: reason,
+                adapter_details: adapter_details
+              }
             }} = ADBC.bootstrap(conn, resolved(), [])
 
     refute safe_statement =~ secret_metadata
@@ -92,8 +96,17 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
       config: %{
         database: ":memory:",
         duckdb_bootstrap: [
-          extensions: [install: [:ducklake, :postgres, :azure], load: [:ducklake, :postgres, :azure]],
-          secrets: [azure_adls: [type: :azure, provider: :credential_chain, account_name: "storageaccount"]],
+          extensions: [
+            install: [:ducklake, :postgres, :azure],
+            load: [:ducklake, :postgres, :azure]
+          ],
+          secrets: [
+            azure_adls: [
+              type: :azure,
+              provider: :credential_chain,
+              account_name: "storageaccount"
+            ]
+          ],
           attach: [
             name: :lake,
             type: :ducklake,

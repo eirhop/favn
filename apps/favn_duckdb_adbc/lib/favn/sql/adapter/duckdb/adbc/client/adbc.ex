@@ -21,14 +21,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Client.ADBC do
   def execute(conn, sql, params), do: Connection.execute(conn, sql, params)
 
   @impl true
-  def fetch_all(%Result{} = result, max_rows) do
-    case bounded_result?(result, max_rows) do
-      :ok -> result_to_rows(result)
+  def fetch_all(%Result{} = result, max_rows, max_result_bytes, opts) do
+    case bounded_result?(result, max_rows, opts) do
+      :ok -> result_to_bounded_rows(result, max_rows, max_result_bytes)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  def fetch_all(_result, _max_rows), do: {:error, :invalid_result}
+  def fetch_all(_result, _max_rows, _max_result_bytes, _opts), do: {:error, :invalid_result}
 
   @impl true
   def columns(%Result{} = result) do
@@ -68,7 +68,10 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Client.ADBC do
 
   defp database_opts(nil, opts), do: database_opts(":memory:", opts)
   defp database_opts(":memory:", opts), do: driver_opts(opts)
-  defp database_opts(path, opts) when is_binary(path), do: Keyword.put(driver_opts(opts), :path, path)
+
+  defp database_opts(path, opts) when is_binary(path),
+    do: Keyword.put(driver_opts(opts), :path, path)
+
   defp database_opts(_database, _opts), do: [driver: :duckdb]
 
   defp driver_opts(opts) do
@@ -83,11 +86,30 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Client.ADBC do
   defp maybe_put(opts, _key, nil), do: opts
   defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
-  defp bounded_result?(%Result{num_rows: num_rows}, max_rows)
+  defp bounded_result?(%Result{num_rows: num_rows}, max_rows, _opts)
        when is_integer(num_rows) and num_rows > max_rows,
        do: {:error, {:result_row_limit_exceeded, num_rows, max_rows}}
 
-  defp bounded_result?(_result, _max_rows), do: :ok
+  defp bounded_result?(%Result{num_rows: nil}, _max_rows, opts) do
+    if Keyword.get(opts, :bounded?, false), do: :ok, else: {:error, :result_row_count_unknown}
+  end
+
+  defp bounded_result?(_result, _max_rows, _opts), do: :ok
+
+  defp result_to_bounded_rows(%Result{} = result, max_rows, max_result_bytes) do
+    rows = result_to_rows(result)
+
+    cond do
+      length(rows) > max_rows ->
+        {:error, {:result_row_limit_exceeded, length(rows), max_rows}}
+
+      (bytes = :erlang.external_size(rows)) > max_result_bytes ->
+        {:error, {:result_byte_limit_exceeded, bytes, max_result_bytes}}
+
+      true ->
+        rows
+    end
+  end
 
   defp result_to_rows(%Result{} = result) do
     columns = Result.to_map(result)

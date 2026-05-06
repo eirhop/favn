@@ -63,7 +63,7 @@ defmodule FavnDuckdbADBC.TestSupport.FakeClient do
       def execute(_conn_ref, _sql, _params), do: {:ok, nil}
 
       @impl true
-      def fetch_all(_result_ref, _max_rows), do: []
+      def fetch_all(_result_ref, _max_rows, _max_result_bytes, _opts), do: []
 
       @impl true
       def columns(_result_ref), do: []
@@ -87,7 +87,7 @@ defmodule FavnDuckdbADBC.TestSupport.FakeClient do
                      connection: 1,
                      query: 3,
                      execute: 3,
-                     fetch_all: 2,
+                     fetch_all: 4,
                      columns: 1,
                      bulk_insert: 3,
                      begin_transaction: 1,

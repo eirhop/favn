@@ -50,7 +50,15 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.ErrorMapper do
   defp classification(:connect, :invalid_database), do: :invalid_config
   defp classification(:connect, _reason), do: :connection
   defp classification(:ping, _reason), do: :connection
-  defp classification(_operation, {:result_row_limit_exceeded, _rows, _limit}), do: :bounded_result
+
+  defp classification(_operation, {:result_row_limit_exceeded, _rows, _limit}),
+    do: :bounded_result
+
+  defp classification(_operation, :result_row_count_unknown), do: :bounded_result
+
+  defp classification(_operation, {:result_byte_limit_exceeded, _bytes, _limit}),
+    do: :bounded_result
+
   defp classification(_operation, reason) when reason in [:busy, :locked], do: :conflict
 
   defp classification(_operation, reason) when is_binary(reason) do
@@ -67,6 +75,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.ErrorMapper do
 
   defp error_message({:result_row_limit_exceeded, rows, limit}) do
     "DuckDB ADBC result has #{rows} rows, exceeding the configured limit of #{limit}; write large results to an explicit external path with DuckDB SQL"
+  end
+
+  defp error_message(:result_row_count_unknown) do
+    "DuckDB ADBC result row count is unknown; add an explicit LIMIT or materialize large outputs with COPY TO"
+  end
+
+  defp error_message({:result_byte_limit_exceeded, bytes, limit}) do
+    "DuckDB ADBC result is #{bytes} bytes after conversion, exceeding the configured limit of #{limit}; write large results to an explicit external path with DuckDB SQL"
   end
 
   defp error_message(reason) when is_binary(reason), do: reason

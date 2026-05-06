@@ -180,9 +180,13 @@ Production DuckDB behavior covers or must preserve:
   local files default to single-admitted SQL sessions against the same database
   path unless the connection explicitly configures another safe policy. Admission
   timeouts are retryable structured SQL errors with the blocked scope and timeout.
-- Bounded normal query results returned to Elixir. Large outputs must be written
-  by explicit DuckDB SQL such as `COPY (...) TO '/path/file.parquet' (FORMAT
-  parquet)` rather than hidden adapter-created result files.
+- Bounded normal query results returned to Elixir by row count and converted
+  result byte size. Large outputs must be written by explicit DuckDB SQL such as
+  `COPY (...) TO '/path/file.parquet' (FORMAT parquet)` rather than hidden
+  adapter-created result files.
+- Production diagnostics for the preferred ADBC path must load the configured
+  driver, connect, run bootstrap, ping DuckDB, and report the actual DuckDB
+  version with driver paths and secrets redacted.
 - Separate-process DuckDB execution as the recommended production placement when
   using the implemented DuckDB plugin modes, so DuckDB handles live in a
   supervised worker process instead of the asset worker process.

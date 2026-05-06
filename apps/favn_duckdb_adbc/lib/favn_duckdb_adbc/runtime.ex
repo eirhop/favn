@@ -25,6 +25,14 @@ defmodule FavnDuckdbADBC.Runtime do
     end
   end
 
+  @spec default_result_byte_limit() :: pos_integer()
+  def default_result_byte_limit do
+    case Keyword.get(plugin_opts(), :default_result_byte_limit, 20_000_000) do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _other -> 20_000_000
+    end
+  end
+
   @spec driver_opts() :: keyword()
   def driver_opts do
     Application.get_env(:favn, :duckdb_adbc, [])

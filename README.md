@@ -118,6 +118,18 @@ end
 Use `{:favn_duckdb, path: "../favn/apps/favn_duckdb"}` only when you explicitly
 need the legacy `duckdbex` plugin path.
 
+`favn_duckdb_adbc` requires a DuckDB ADBC driver on the runtime machine. For
+pinned production installs, configure the `libduckdb` path and entrypoint:
+
+```elixir
+config :favn, :duckdb_adbc,
+  driver: "/opt/duckdb/1.5.2/libduckdb.so",
+  entrypoint: "duckdb_adbc_init"
+```
+
+See DuckDB's ADBC client documentation for driver installation details:
+https://duckdb.org/docs/stable/clients/adbc.html
+
 Do not add internal runtime apps as ordinary consumer dependencies. Storage
 adapters such as `favn_storage_sqlite` and `favn_storage_postgres`, runtime apps
 such as `favn_orchestrator`, `favn_runner`, and `favn_local`, and the web app are

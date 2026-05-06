@@ -18,6 +18,8 @@ Allowed umbrella dependency direction:
 External dependency:
 
 - `adbc` for Arrow Database Connectivity
+- a DuckDB ADBC-capable `libduckdb` installed on the machine or downloaded by
+  the `:adbc` package driver mechanism
 
 Must not depend on:
 
@@ -34,18 +36,67 @@ the same DuckDB bootstrap schema helpers as the legacy `duckdbex` adapter.
 config :favn, :runner_plugins, [FavnDuckdbADBC]
 ```
 
-By default the adapter uses the bundled DuckDB ADBC driver. Configure an explicit
-driver path when production deployments need a pinned DuckDB build:
+## DuckDB ADBC Installation
+
+This plugin requires a DuckDB ADBC driver to be available on the machine. See
+the DuckDB ADBC client documentation for installation and driver setup details:
+https://duckdb.org/docs/stable/clients/adbc.html
+
+By default the adapter asks `:adbc` for its configured DuckDB driver. Configure
+an explicit driver path when production deployments need a pinned DuckDB build:
 
 ```elixir
 config :favn, :duckdb_adbc,
-  driver: "/opt/duckdb/lib/libduckdb.so",
+  driver: "/opt/duckdb/1.5.2/libduckdb.so",
   entrypoint: "duckdb_adbc_init"
+```
+
+In shell-based smoke tests, the same path can be provided with
+`DUCKDB_ADBC_DRIVER=/opt/duckdb/1.5.2/libduckdb.so`.
+
+## Result Bounds
+
+Normal `Favn.SQLClient.query` results are for small control-flow data. The
+adapter wraps query SQL with `LIMIT default_row_limit + 1`, rejects overflow, and
+checks the converted result against `default_result_byte_limit` before returning
+rows to Elixir:
+
+```elixir
+config :favn, :runner_plugins,
+  [{FavnDuckdbADBC,
+    default_row_limit: 10_000,
+    default_result_byte_limit: 20_000_000}]
 ```
 
 Large result sets should be written by DuckDB itself with explicit SQL such as
 `COPY (...) TO '/explicit/path/data.parquet' (FORMAT parquet)`. Normal query
 results returned to Elixir are bounded.
+
+For JSON/API landing paths, prefer DuckDB-native file ingestion over large row
+batches in Elixir:
+
+```sql
+CREATE TABLE raw_orders AS
+SELECT *
+FROM read_ndjson('/explicit/staging/orders/*.ndjson');
+```
+
+or:
+
+```sql
+COPY raw_orders
+FROM '/explicit/staging/orders.ndjson'
+(FORMAT json);
+```
+
+Use adapter-owned ADBC `bulk_insert` materialization only for small, already
+bounded internal row batches.
+
+## Diagnostics
+
+`Favn.SQL.Adapter.DuckDB.ADBC.diagnostics/2` performs a real preflight: it opens
+the configured driver, connects, runs bootstrap, pings with `SELECT 1`, and
+reports `SELECT version()` as `duckdb_version` with driver paths redacted.
 
 ## Tests
 

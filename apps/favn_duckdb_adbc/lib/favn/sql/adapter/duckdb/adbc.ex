@@ -7,6 +7,36 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   API and uses bounded row materialization when returning query results to
   Elixir. Large result sets should be written by DuckDB itself to explicit
   external paths with SQL such as `COPY (...) TO ...`.
+
+  ## DuckDB ADBC driver installation
+
+  Production hosts must have a DuckDB ADBC-capable `libduckdb` installed or use
+  the driver installation mechanism supported by the `:adbc` package. See the
+  DuckDB ADBC client documentation for supported driver setup:
+  https://duckdb.org/docs/stable/clients/adbc.html
+
+  To pin a specific DuckDB build, configure the driver path and entrypoint:
+
+      config :favn, :duckdb_adbc,
+        driver: "/opt/duckdb/1.5.2/libduckdb.so",
+        entrypoint: "duckdb_adbc_init"
+
+  The gated integration test also honors `DUCKDB_ADBC_DRIVER` with the
+  `duckdb_adbc_init` entrypoint.
+
+  ## Result bounds
+
+  Normal `query/3` calls are wrapped with a `LIMIT` based on the configured row
+  limit, and converted results are checked against a byte limit before returning
+  to Elixir. Configure plugin defaults with:
+
+      config :favn, :runner_plugins,
+        [{FavnDuckdbADBC,
+          default_row_limit: 10_000,
+          default_result_byte_limit: 20_000_000}]
+
+  Large data movement should stay in DuckDB via explicit SQL such as `COPY TO`,
+  `COPY FROM`, `read_json`, or `read_ndjson` against caller-owned paths.
   """
 
   @behaviour Favn.SQL.Adapter
@@ -19,15 +49,16 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   defmodule Conn do
     @moduledoc false
 
-    @enforce_keys [:db_ref, :conn_ref, :connection, :client, :max_rows]
-    defstruct [:db_ref, :conn_ref, :connection, :client, :max_rows]
+    @enforce_keys [:db_ref, :conn_ref, :connection, :client, :max_rows, :max_result_bytes]
+    defstruct [:db_ref, :conn_ref, :connection, :client, :max_rows, :max_result_bytes]
 
     @type t :: %__MODULE__{
             db_ref: term(),
             conn_ref: term(),
             connection: atom() | nil,
             client: module(),
-            max_rows: pos_integer()
+            max_rows: pos_integer(),
+            max_result_bytes: pos_integer()
           }
   end
 
@@ -44,6 +75,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     client = resolve_client(opts)
     client_opts = Keyword.get(opts, :duckdb_adbc, [])
     max_rows = max_rows(opts)
+    max_result_bytes = max_result_bytes(opts)
 
     with :ok <- validate_production_storage(resolved),
          {:ok, db_ref} <- client.open(Map.get(config || %{}, :database), client_opts),
@@ -54,7 +86,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
          conn_ref: conn_ref,
          connection: resolved.name,
          client: client,
-         max_rows: max_rows
+         max_rows: max_rows,
+         max_result_bytes: max_result_bytes
        }}
     else
       {:error, %Error{} = error} -> {:error, error}
@@ -128,39 +161,104 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   @impl true
   @spec diagnostics(Resolved.t(), opts()) :: {:ok, map()} | {:error, map()}
-  def diagnostics(%Resolved{config: config} = resolved, _opts) do
+  def diagnostics(%Resolved{config: config} = resolved, opts) do
     config = config || %{}
+    storage = diagnostics_storage(config)
 
-    case validate_production_storage(resolved) do
-      :ok ->
-        {:ok,
-         %{
-           status: :ok,
-           adapter: __MODULE__,
-           storage: %{
-             production?: Map.get(config, @production_key, false),
-             mode: Map.get(config, @storage_key, @local_file_storage),
-             database_path: :redacted
-           }
-         }}
+    with :ok <- validate_production_storage(resolved),
+         {:ok, preflight} <- diagnostics_preflight(resolved, opts) do
+      {:ok, %{status: :ok, adapter: __MODULE__, storage: storage, preflight: preflight}}
+    else
+      {:error, %Error{} = error} ->
+        {:error, diagnostics_error(error, storage)}
+
+      {:error, map} when is_map(map) ->
+        {:error, Map.put_new(map, :storage, storage)}
+    end
+  end
+
+  defp diagnostics_storage(config) do
+    %{
+      production?: Map.get(config, @production_key, false),
+      mode: Map.get(config, @storage_key, @local_file_storage),
+      database_path: :redacted
+    }
+  end
+
+  defp diagnostics_preflight(%Resolved{} = resolved, opts) do
+    case connect(resolved, opts) do
+      {:ok, %Conn{} = conn} ->
+        try do
+          run_diagnostics_preflight(conn, resolved, opts)
+        after
+          _ = disconnect(conn, [])
+        end
 
       {:error, %Error{} = error} ->
-        {:error,
-         %{
-           status: :invalid_config,
-           adapter: __MODULE__,
-           message: error.message,
-           details: Map.drop(error.details, [:database, :parent])
-         }}
+        {:error, diagnostics_error(error, diagnostics_storage(resolved.config), :connect)}
     end
+  end
+
+  defp run_diagnostics_preflight(%Conn{} = conn, %Resolved{} = resolved, opts) do
+    with :ok <- bootstrap(conn, resolved, opts),
+         :ok <- ping(conn, []),
+         {:ok, version} <- duckdb_version(conn) do
+      {:ok,
+       %{
+         driver: diagnostics_driver(opts),
+         connect?: true,
+         ping?: true,
+         bootstrap?: true,
+         duckdb_version: version
+       }}
+    else
+      {:error, %Error{} = error} ->
+        {:error, diagnostics_error(error, diagnostics_storage(resolved.config))}
+    end
+  end
+
+  defp duckdb_version(%Conn{} = conn) do
+    with {:ok, result} <- query(conn, "SELECT version() AS duckdb_version", []) do
+      version =
+        result.rows
+        |> List.first(%{})
+        |> Map.get("duckdb_version")
+
+      {:ok, version}
+    end
+  end
+
+  defp diagnostics_driver(opts) do
+    configured = FavnDuckdbADBC.Runtime.driver_opts()
+    connect_opts = Keyword.get(opts, :duckdb_adbc, [])
+    driver = Keyword.get(connect_opts, :driver, Keyword.get(configured, :driver, :duckdb))
+    entrypoint = Keyword.get(connect_opts, :entrypoint, Keyword.get(configured, :entrypoint))
+
+    %{
+      driver: if(is_binary(driver), do: :redacted_path, else: driver),
+      entrypoint: entrypoint
+    }
+  end
+
+  defp diagnostics_error(%Error{} = error, storage, stage \\ nil) do
+    redacted = Error.redact(error)
+
+    %{
+      status: :unavailable,
+      adapter: __MODULE__,
+      message: redacted.message,
+      storage: storage,
+      preflight: %{
+        stage: stage || redacted.operation,
+        error_type: redacted.type,
+        retryable?: redacted.retryable?,
+        details: redacted.details
+      }
+    }
   end
 
   @impl true
   @spec default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
-  def default_concurrency_policy(%Resolved{config: %{mode: :ducklake}} = resolved) do
-    ConcurrencyPolicy.unlimited(resolved)
-  end
-
   def default_concurrency_policy(%Resolved{config: %{database: database}})
       when is_binary(database) and database not in [":memory:", ""] do
     %ConcurrencyPolicy{
@@ -203,7 +301,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     params = Keyword.get(opts, :params, [])
     sql = IO.iodata_to_binary(statement)
 
-    case conn.client.query(conn.conn_ref, sql, params) do
+    case conn.client.query(conn.conn_ref, bounded_query_sql(sql, conn.max_rows), params) do
       {:ok, result_ref} ->
         build_query_result(conn, result_ref, sql)
 
@@ -222,7 +320,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
          rows_affected: nil,
          rows: rows,
          columns: columns,
-         metadata: %{row_limit: conn.max_rows}
+         metadata: %{row_limit: conn.max_rows, result_byte_limit: conn.max_result_bytes}
        }}
     else
       {:error, reason} -> {:error, normalize_error(:query, conn.connection, reason)}
@@ -571,7 +669,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   defp fetch_all_rows(%Conn{} = conn, result_ref) do
-    case conn.client.fetch_all(result_ref, conn.max_rows) do
+    case conn.client.fetch_all(result_ref, conn.max_rows, conn.max_result_bytes, bounded?: true) do
       {:error, reason} -> {:error, reason}
       rows when is_list(rows) -> {:ok, Enum.map(rows, &normalize_row/1)}
       other -> {:error, other}
@@ -983,6 +1081,21 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       limit when is_integer(limit) and limit > 0 -> limit
       _other -> FavnDuckdbADBC.Runtime.default_row_limit()
     end
+  end
+
+  defp max_result_bytes(opts) do
+    case Keyword.get(opts, :max_result_bytes, FavnDuckdbADBC.Runtime.default_result_byte_limit()) do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _other -> FavnDuckdbADBC.Runtime.default_result_byte_limit()
+    end
+  end
+
+  defp bounded_query_sql(sql, max_rows) do
+    sanitized_sql = sql |> String.trim() |> String.trim_trailing(";")
+    limit = Integer.to_string(max_rows + 1)
+
+    ["SELECT * FROM (", sanitized_sql, ") AS favn_adbc_bounded_result LIMIT ", limit]
+    |> IO.iodata_to_binary()
   end
 
   defp materialize_error(%Error{} = error, %Conn{} = conn),
