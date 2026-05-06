@@ -625,8 +625,7 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, session, actor} <- ensure_actor_context(conn, :operator),
          {:ok, params} <- fetch_json_body(conn) do
       run_idempotent_command(conn, "run.submit", actor.id, session.id, params, fn idempotency ->
-        with {:ok, run_id} <- submit_run_from_request(params),
-             {:ok, run} <- FavnOrchestrator.get_run(run_id) do
+        with {:ok, run_id} <- submit_run_from_request(params) do
           put_audit_best_effort(
             %{
               action: "run.submit",
@@ -640,7 +639,7 @@ defmodule FavnOrchestrator.API.Router do
             |> Map.merge(audit_idempotency(idempotency, "accepted"))
           )
 
-          {:ok, 201, %{run: DTO.run_summary(run)}, "run", run_id}
+          {:ok, 201, %{run: run_submit_response(run_id)}, "run", run_id}
         else
           {:error, :invalid_target} ->
             {:error, 422, "validation_failed", "Invalid run target request", %{}}
@@ -1614,6 +1613,29 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_audit(true, entry), do: Auth.put_audit(entry)
   defp maybe_put_audit(false, _entry), do: :ok
+
+  defp run_submit_response(run_id) when is_binary(run_id) do
+    case FavnOrchestrator.get_run(run_id) do
+      {:ok, run} ->
+        DTO.run_summary(run)
+
+      {:error, reason} ->
+        Logger.warning("run.submit accepted but summary lookup failed: #{inspect(reason)}")
+
+        %{
+          id: run_id,
+          status: "accepted",
+          submit_kind: "unknown",
+          manifest_version_id: nil,
+          event_seq: nil,
+          started_at: nil,
+          finished_at: nil,
+          target_refs: [],
+          asset_results: [],
+          error: nil
+        }
+    end
+  end
 
   defp put_audit_best_effort(entry) when is_map(entry) do
     case Auth.put_audit(entry) do
