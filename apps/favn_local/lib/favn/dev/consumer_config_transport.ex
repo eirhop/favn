@@ -7,10 +7,16 @@ defmodule Favn.Dev.ConsumerConfigTransport do
     :connection_modules,
     :connections,
     :runner_plugins,
-    :duckdb_in_process_client
+    :duckdb_in_process_client,
+    :duckdb_adbc
   ]
 
-  @sensitive_top_level_keys [:connections, :runner_plugins, :duckdb_in_process_client]
+  @sensitive_top_level_keys [
+    :connections,
+    :runner_plugins,
+    :duckdb_in_process_client,
+    :duckdb_adbc
+  ]
   @schema_version 1
   @max_payload_bytes 1_048_576
   @max_collection_items 2_000
@@ -23,7 +29,8 @@ defmodule Favn.Dev.ConsumerConfigTransport do
     "connection_modules" => :connection_modules,
     "connections" => :connections,
     "runner_plugins" => :runner_plugins,
-    "duckdb_in_process_client" => :duckdb_in_process_client
+    "duckdb_in_process_client" => :duckdb_in_process_client,
+    "duckdb_adbc" => :duckdb_adbc
   }
 
   @type transport_error :: :invalid_base64 | :invalid_payload | {:unsupported_key, term()}
@@ -105,7 +112,8 @@ defmodule Favn.Dev.ConsumerConfigTransport do
         "connection_modules" => :connection_modules,
         "connections" => :connections,
         "runner_plugins" => :runner_plugins,
-        "duckdb_in_process_client" => :duckdb_in_process_client
+        "duckdb_in_process_client" => :duckdb_in_process_client,
+        "duckdb_adbc" => :duckdb_adbc
       }
 
       def apply_from_env do

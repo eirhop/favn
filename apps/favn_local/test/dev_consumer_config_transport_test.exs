@@ -33,7 +33,8 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
         warehouse: [adapter: Favn.SQL.Adapter.DuckDB, database: "/tmp/warehouse.duckdb"]
       ],
       runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
-      duckdb_in_process_client: [pool: MyApp.DuckPool, enabled: true, note: nil]
+      duckdb_in_process_client: [pool: MyApp.DuckPool, enabled: true, note: nil],
+      duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
     ]
 
     encoded = ConsumerConfigTransport.encode(config)
@@ -141,7 +142,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
              ConsumerConfigTransport.decode(
                encode_payload(%{
                  "schema_version" => 1,
-                 "entries" => duplicate_entries(5)
+                 "entries" => duplicate_entries(6)
                })
              )
 
@@ -233,6 +234,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
       connections: [warehouse: [database_url: "duckdb://secret", password: "p@ssw0rd"]],
       runner_plugins: [{FavnDuckdb, token: "plugin-token"}],
       duckdb_in_process_client: [secret: "client-secret"],
+      duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", token: "driver-token"],
       connection_modules: [MyApp.Connections.Warehouse]
     ]
 
@@ -242,6 +244,8 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     refute redacted =~ "p@ssw0rd"
     refute redacted =~ "plugin-token"
     refute redacted =~ "client-secret"
+    refute redacted =~ "/opt/duckdb/1.5.2/libduckdb.so"
+    refute redacted =~ "driver-token"
     assert redacted =~ "[REDACTED]"
     assert redacted =~ "MyApp.Connections.Warehouse"
   end
@@ -261,7 +265,8 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     encoded =
       ConsumerConfigTransport.encode(
         connection_modules: [MyApp.Connections.Warehouse],
-        runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}]
+        runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
+        duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
       )
 
     System.put_env("FAVN_DEV_CONSUMER_FAVN_CONFIG", encoded)
@@ -272,6 +277,11 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
     assert Application.get_env(:favn, :runner_plugins) == [
              {FavnDuckdb, [execution_mode: :in_process]}
+           ]
+
+    assert Application.get_env(:favn, :duckdb_adbc) == [
+             driver: "/opt/duckdb/1.5.2/libduckdb.so",
+             entrypoint: "duckdb_adbc_init"
            ]
   end
 
