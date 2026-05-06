@@ -162,8 +162,10 @@ of storage that can be detected safely, or not schema-ready.
 ## DuckDB Production Contract
 
 DuckDB is part of the v1 production promise. It is runner/plugin-owned
-data-plane infrastructure, not control-plane persistence, and is not
-experimental for the first single-node production target.
+data-plane infrastructure, not control-plane persistence. The preferred
+production-oriented adapter path is `favn_duckdb_adbc`, backed by DuckDB ADBC;
+`favn_duckdb` remains the legacy `duckdbex` plugin path while Favn is still in
+private development.
 
 Production DuckDB behavior covers or must preserve:
 
@@ -178,6 +180,9 @@ Production DuckDB behavior covers or must preserve:
   local files default to single-admitted SQL sessions against the same database
   path unless the connection explicitly configures another safe policy. Admission
   timeouts are retryable structured SQL errors with the blocked scope and timeout.
+- Bounded normal query results returned to Elixir. Large outputs must be written
+  by explicit DuckDB SQL such as `COPY (...) TO '/path/file.parquet' (FORMAT
+  parquet)` rather than hidden adapter-created result files.
 - Separate-process DuckDB execution as the recommended production placement when
   using the implemented DuckDB plugin modes, so DuckDB handles live in a
   supervised worker process instead of the asset worker process.

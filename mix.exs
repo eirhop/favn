@@ -9,6 +9,7 @@ defmodule FavnUmbrella.MixProject do
         :favn_authoring,
         :favn_core,
         :favn_duckdb,
+        :favn_duckdb_adbc,
         :favn_local,
         :favn_orchestrator,
         :favn_runner,
@@ -47,6 +48,7 @@ defmodule FavnUmbrella.MixProject do
         "do --app favn_storage_postgres test",
         "do --app favn_storage_sqlite test",
         "do --app favn_duckdb test",
+        "do --app favn_duckdb_adbc test",
         "do --app favn_local test"
       ]
     ]

@@ -37,8 +37,9 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` is the primary public dependency for consumer projects
-- `{:favn_duckdb, ...}` is optional and only needed when the project executes
-  DuckDB-backed SQL assets or uses DuckDB through `Favn.SQLClient`
+- `{:favn_duckdb_adbc, ...}` is the preferred optional DuckDB plugin for
+  production-oriented DuckDB-backed SQL assets or DuckDB `Favn.SQLClient` usage;
+  `{:favn_duckdb, ...}` remains available as the legacy `duckdbex` plugin
 - storage, orchestrator, runner, local tooling, and web apps are internal runtime
   or product components, not ordinary user dependencies
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
@@ -69,6 +70,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
 - DuckDB connection bootstrap for DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckLake attach, and catalog selection
+- a preferred ADBC-backed DuckDB SQL adapter with bounded query results and explicit external-output expectations for large data
 
 ## Core Concepts
 
@@ -101,17 +103,20 @@ def deps do
 end
 ```
 
-If your project executes DuckDB-backed SQL assets directly, add the DuckDB
-plugin from the same local checkout:
+If your project executes DuckDB-backed SQL assets directly, add the preferred
+ADBC-backed DuckDB plugin from the same local checkout:
 
 ```elixir
 def deps do
   [
     {:favn, path: "../favn/apps/favn"},
-    {:favn_duckdb, path: "../favn/apps/favn_duckdb"}
+    {:favn_duckdb_adbc, path: "../favn/apps/favn_duckdb_adbc"}
   ]
 end
 ```
+
+Use `{:favn_duckdb, path: "../favn/apps/favn_duckdb"}` only when you explicitly
+need the legacy `duckdbex` plugin path.
 
 Do not add internal runtime apps as ordinary consumer dependencies. Storage
 adapters such as `favn_storage_sqlite` and `favn_storage_postgres`, runtime apps
