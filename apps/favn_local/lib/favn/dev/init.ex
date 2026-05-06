@@ -226,7 +226,13 @@ defmodule Favn.Dev.Init do
         #{module_name(project, ["Connections", "Warehouse"])}
       ],
       connections: [
-        warehouse: [database: ".favn/data/local_smoke.duckdb", write_concurrency: 1]
+        warehouse: [
+          database: ".favn/data/local_smoke.duckdb",
+          write_concurrency: 1,
+          duckdb_bootstrap: [
+            extensions: [load: [:core_functions]]
+          ]
+        ]
       ],
       runner_plugins: [
         {FavnDuckdb, execution_mode: :in_process}
@@ -254,9 +260,20 @@ defmodule Favn.Dev.Init do
           doc: "Local DuckDB warehouse for Favn smoke runs",
           metadata: %{scope: :local_smoke},
           config_schema: [
-            %{key: :database, required: true, type: :path}
+            %{key: :database, required: true, type: :path},
+            duckdb_bootstrap_schema_field()
           ]
         }
+      end
+
+      defp duckdb_bootstrap_schema_field do
+        adapter = Module.concat([Favn.SQL.Adapter, DuckDB])
+
+        if Code.ensure_loaded?(adapter) and function_exported?(adapter, :bootstrap_schema_field, 0) do
+          apply(adapter, :bootstrap_schema_field, [])
+        else
+          %{key: :duckdb_bootstrap, type: {:custom, fn _value -> :ok end}}
+        end
       end
     end
     '''

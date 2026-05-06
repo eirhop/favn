@@ -1,10 +1,13 @@
 # `apps/favn_duckdb_adbc`
 
 DuckDB SQL adapter and runner plugin backed by Arrow Database Connectivity.
+This is a supported DuckDB plugin alongside `favn_duckdb`, which remains the
+supported `duckdbex`-backed plugin for bundled local/in-memory DuckDB execution.
 
 ## Purpose
 
-- own the recommended production DuckDB SQL adapter for Favn
+- own the ADBC-backed DuckDB SQL adapter for Favn deployments that need explicit
+  DuckDB shared-library/driver control
 - keep ADBC/DuckDB driver concerns outside `favn`, `favn_core`, and `favn_sql_runtime`
 - preserve the existing `Favn.SQLClient` and SQL asset adapter contracts
 
@@ -30,7 +33,7 @@ Must not depend on:
 ## Usage
 
 Use `Favn.SQL.Adapter.DuckDB.ADBC` in connection definitions. The adapter exposes
-the same DuckDB bootstrap schema helpers as the legacy `duckdbex` adapter.
+the same DuckDB bootstrap schema helpers as the `favn_duckdb` adapter.
 
 ```elixir
 config :favn, :runner_plugins, [FavnDuckdbADBC]

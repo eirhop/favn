@@ -162,10 +162,10 @@ of storage that can be detected safely, or not schema-ready.
 ## DuckDB Production Contract
 
 DuckDB is part of the v1 production promise. It is runner/plugin-owned
-data-plane infrastructure, not control-plane persistence. The preferred
-production-oriented adapter path is `favn_duckdb_adbc`, backed by DuckDB ADBC;
-`favn_duckdb` remains the legacy `duckdbex` plugin path while Favn is still in
-private development.
+data-plane infrastructure, not control-plane persistence. `favn_duckdb` is the
+supported `duckdbex`-backed plugin for bundled local/in-memory DuckDB execution.
+`favn_duckdb_adbc` is the supported ADBC-backed plugin for deployments that need
+explicit DuckDB shared-library/driver control.
 
 Production DuckDB behavior covers or must preserve:
 
@@ -185,7 +185,7 @@ Production DuckDB behavior covers or must preserve:
   `COPY (...) TO '/path/file.parquet' (FORMAT parquet)` rather than hidden
   adapter-created result files; command statements such as `COPY` use
   `Favn.SQLClient.execute/3`, not the bounded `query/3` row-return path.
-- Production diagnostics for the preferred ADBC path must load the configured
+- Production diagnostics for the ADBC path must load the configured
   driver, connect, run bootstrap, ping DuckDB, and report the actual DuckDB
   version with driver paths and secrets redacted.
 - Separate-process DuckDB execution as the recommended production placement when

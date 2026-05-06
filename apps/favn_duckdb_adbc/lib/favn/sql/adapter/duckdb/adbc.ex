@@ -2,11 +2,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @moduledoc """
   DuckDB implementation of `Favn.SQL.Adapter` backed by ADBC.
 
-  This adapter is exposed through the public `:favn_duckdb_adbc` plugin and is
-  the preferred DuckDB production path. It keeps the existing `Favn.SQLClient`
-  API and uses bounded row materialization when returning query results to
-  Elixir. Large result sets should be written by DuckDB itself to explicit
-  external paths with SQL such as `COPY (...) TO ...`.
+  This adapter is exposed through the public `:favn_duckdb_adbc` plugin and is a
+  supported DuckDB path for deployments that need explicit DuckDB
+  shared-library/driver control. It keeps the existing `Favn.SQLClient` API and
+  uses bounded row materialization when returning query results to Elixir. Large
+  result sets should be written by DuckDB itself to explicit external paths with
+  SQL such as `COPY (...) TO ...`.
 
   ## DuckDB ADBC driver installation
 

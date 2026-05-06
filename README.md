@@ -37,9 +37,10 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 
 - breaking changes are still allowed before `v1.0`
 - `{:favn, ...}` is the primary public dependency for consumer projects
-- `{:favn_duckdb_adbc, ...}` is the preferred optional DuckDB plugin for
-  production-oriented DuckDB-backed SQL assets or DuckDB `Favn.SQLClient` usage;
-  `{:favn_duckdb, ...}` remains available as the legacy `duckdbex` plugin
+- `{:favn_duckdb, ...}` is the supported DuckDB plugin backed by `duckdbex` for
+  bundled local/in-memory DuckDB execution
+- `{:favn_duckdb_adbc, ...}` is the supported ADBC-backed DuckDB plugin for
+  deployments that need explicit DuckDB shared-library/driver control
 - storage, orchestrator, runner, local tooling, and web apps are internal runtime
   or product components, not ordinary user dependencies
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
@@ -70,7 +71,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
 - DuckDB connection bootstrap for DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckLake attach, and catalog selection
-- a preferred ADBC-backed DuckDB SQL adapter with bounded query results and explicit external-output expectations for large data
+- an ADBC-backed DuckDB SQL adapter with bounded query results and explicit external-output expectations for large data
 
 ## Core Concepts
 
@@ -103,8 +104,21 @@ def deps do
 end
 ```
 
-If your project executes DuckDB-backed SQL assets directly, add the preferred
-ADBC-backed DuckDB plugin from the same local checkout:
+If your project executes DuckDB-backed SQL assets directly, add a DuckDB plugin
+from the same local checkout. For bundled local/in-memory DuckDB execution, use
+`favn_duckdb`:
+
+```elixir
+def deps do
+  [
+    {:favn, path: "../favn/apps/favn"},
+    {:favn_duckdb, path: "../favn/apps/favn_duckdb"}
+  ]
+end
+```
+
+For ADBC-backed execution with explicit DuckDB shared-library control, use
+`favn_duckdb_adbc`:
 
 ```elixir
 def deps do
@@ -114,9 +128,6 @@ def deps do
   ]
 end
 ```
-
-Use `{:favn_duckdb, path: "../favn/apps/favn_duckdb"}` only when you explicitly
-need the legacy `duckdbex` plugin path.
 
 `favn_duckdb_adbc` requires a DuckDB ADBC driver on the runtime machine. For
 pinned production installs, configure the `libduckdb` path and entrypoint:

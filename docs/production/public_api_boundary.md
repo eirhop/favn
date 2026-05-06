@@ -17,16 +17,17 @@ Use `favn` for:
 - `Favn.SQLClient` access to named Favn connections from authored Elixir code
 - supported `mix favn.*` local commands
 
-Add `favn_duckdb_adbc` when the project needs the preferred DuckDB execution
-path:
+Add `favn_duckdb` when the project needs bundled local/in-memory DuckDB
+execution, or `favn_duckdb_adbc` when the project needs ADBC-backed DuckDB
+execution with explicit shared-library/driver control:
 
 - DuckDB-backed SQL asset materialization
 - DuckDB named connections used through `Favn.SQLClient`
 - DuckDB bootstrap features such as extension install/load, DuckLake attach, and
   catalog selection
 
-`favn_duckdb` remains available as the legacy `duckdbex` plugin path while Favn
-is still in private development.
+Both DuckDB plugins are supported optional dependencies. Do not add internal
+runtime apps directly for either path.
 
 The other umbrella apps are not ordinary user dependencies:
 

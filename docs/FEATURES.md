@@ -21,10 +21,10 @@ boundaries:
 - `favn` as the primary public dependency, public authoring surface, manifest
   entrypoint owner, `Favn.SQLClient` owner, and public `mix favn.*` entrypoint
   owner
-- `favn_duckdb_adbc` as the preferred optional DuckDB execution plugin and SQL
-  adapter dependency for production-oriented DuckDB-backed work
-- `favn_duckdb` as the legacy optional DuckDB execution plugin and SQL adapter
-  dependency backed by `duckdbex`
+- `favn_duckdb` as the optional DuckDB execution plugin and SQL adapter backed by
+  `duckdbex` for bundled local/in-memory DuckDB execution
+- `favn_duckdb_adbc` as the optional ADBC-backed DuckDB execution plugin and SQL
+  adapter for deployments that need explicit DuckDB shared-library/driver control
 - `favn_authoring` as the internal authoring and manifest implementation owner
 - `favn_local` as the internal local lifecycle, tooling, and packaging implementation owner
 - `favn_core` as the shared compiler, manifest, planning, and contracts layer
@@ -89,7 +89,7 @@ Implemented boundary outcomes:
 - Source assets are treated as observe/no-op nodes in execution. State: `solid but still private-dev`. Refs: `apps/favn_runner/test/favn_runner_test.exs`, `Favn.Assets.Planner`.
 - SQL assets execute from manifest-carried SQL payloads through a runner-owned materialization planner and the shared SQL runtime client, and the runner does not fall back to compiled modules when manifest data is missing. State: `needs hardening`. Refs: `FavnRunner.SQL.MaterializationPlanner`, `apps/favn_runner/test/execution/sql_asset_test.exs`, `apps/favn_runner/test/sql/materialization_planner_test.exs`, `apps/favn_core/lib/favn/manifest/sql_execution.ex`, `apps/favn_sql_runtime/lib/favn/sql/client.ex`.
 - Runner-side cancellation, timeout handling, and crash reporting are implemented. State: `solid but still private-dev`. Refs: `apps/favn_runner/test/server_test.exs`, `apps/favn_runner/lib/favn_runner/server.ex`.
-- DuckDB is implemented as runner/plugin-owned data-plane infrastructure. `favn_duckdb_adbc` provides the preferred ADBC-backed adapter with bounded row and byte materialization for normal `Favn.SQLClient.query` calls, explicit production local-file validation, real ADBC preflight diagnostics that report DuckDB version, DuckDB/DuckLake bootstrap support, ADBC bulk-insert table materialization for small adapter-owned row writes, and conservative single-admitted access for local database files. `favn_duckdb` remains available as the legacy `duckdbex` plugin with in-process and separate-process execution modes. State: `prototype`. Refs: `FavnDuckdbADBC`, `Favn.SQL.Adapter.DuckDB.ADBC`, `FavnDuckdb`, `Favn.SQL.Adapter.DuckDB`, `apps/favn_duckdb_adbc/lib/favn_duckdb_adbc.ex`, `apps/favn_duckdb_adbc/test/sql/adapter/duckdb_adbc_test.exs`, `apps/favn_duckdb/lib/favn_duckdb.ex`, `apps/favn_duckdb/test/sql/adapter/duckdb_hardening_test.exs`, `docs/production/single_node_contract.md`.
+- DuckDB is implemented as runner/plugin-owned data-plane infrastructure. `favn_duckdb` provides the supported `duckdbex`-backed adapter with in-process and separate-process execution modes for bundled local/in-memory DuckDB execution. `favn_duckdb_adbc` provides the supported ADBC-backed adapter with bounded row and byte materialization for normal `Favn.SQLClient.query` calls, explicit production local-file validation, real ADBC preflight diagnostics that report DuckDB version, DuckDB/DuckLake bootstrap support, ADBC bulk-insert table materialization for small adapter-owned row writes, and conservative single-admitted access for local database files. State: `prototype`. Refs: `FavnDuckdbADBC`, `Favn.SQL.Adapter.DuckDB.ADBC`, `FavnDuckdb`, `Favn.SQL.Adapter.DuckDB`, `apps/favn_duckdb_adbc/lib/favn_duckdb_adbc.ex`, `apps/favn_duckdb_adbc/test/sql/adapter/duckdb_adbc_test.exs`, `apps/favn_duckdb/lib/favn_duckdb.ex`, `apps/favn_duckdb/test/sql/adapter/duckdb_hardening_test.exs`, `docs/production/single_node_contract.md`.
 
 ### Orchestrate and operate runs
 
