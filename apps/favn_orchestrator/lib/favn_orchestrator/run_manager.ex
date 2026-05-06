@@ -287,7 +287,7 @@ defmodule FavnOrchestrator.RunManager do
     metadata = Keyword.get(opts, :metadata, %{})
     max_attempts = Keyword.get(opts, :max_attempts, 1)
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, 0)
-    timeout_ms = Keyword.get(opts, :timeout_ms, 5_000)
+    timeout_ms = Keyword.get(opts, :timeout_ms, RunState.default_timeout_ms())
     dependencies = Keyword.get(opts, :dependencies, :all)
 
     with :ok <- validate_params(params),
@@ -332,7 +332,7 @@ defmodule FavnOrchestrator.RunManager do
     metadata = Keyword.get(opts, :metadata, %{})
     max_attempts = Keyword.get(opts, :max_attempts, 1)
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, 0)
-    timeout_ms = Keyword.get(opts, :timeout_ms, 5_000)
+    timeout_ms = Keyword.get(opts, :timeout_ms, RunState.default_timeout_ms())
     dependencies = Keyword.get(opts, :dependencies, :all)
     anchor_window = Keyword.get(opts, :anchor_window)
 

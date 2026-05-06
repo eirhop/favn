@@ -485,8 +485,10 @@ for one-time local ETL. Each invocation uses a fresh idempotency key by default;
 pass `--idempotency-key KEY` only when you intentionally want deterministic
 orchestrator replay behavior for a local submission. When waiting, the command
 reports terminal run errors from the orchestrator separately from a local CLI wait
-timeout; increase `--timeout-ms` only when the run should keep executing longer
-than the local wait budget.
+timeout. Use `--wait-timeout-ms` to change only the local polling budget and
+`--run-timeout-ms` to change the per-asset execution timeout sent to the
+orchestrator. The older `--timeout-ms` flag remains an alias for both when the
+more specific flags are not provided.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
 local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges,

@@ -3,6 +3,8 @@ defmodule FavnOrchestrator.RunState do
   Persisted run snapshot owned by the orchestrator control plane.
   """
 
+  @default_timeout_ms 30 * 60 * 1000
+
   @type status :: :pending | :running | :ok | :partial | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
@@ -55,7 +57,7 @@ defmodule FavnOrchestrator.RunState do
     lineage_depth: 0,
     max_attempts: 1,
     retry_backoff_ms: 0,
-    timeout_ms: 5000,
+    timeout_ms: @default_timeout_ms,
     runner_execution_id: nil,
     result: nil,
     error: nil
@@ -82,12 +84,20 @@ defmodule FavnOrchestrator.RunState do
       lineage_depth: normalize_non_neg_int(Keyword.get(opts, :lineage_depth, 0), 0),
       max_attempts: normalize_positive_int(Keyword.get(opts, :max_attempts, 1), 1),
       retry_backoff_ms: normalize_non_neg_int(Keyword.get(opts, :retry_backoff_ms, 0), 0),
-      timeout_ms: normalize_positive_int(Keyword.get(opts, :timeout_ms, 5000), 5000),
+      timeout_ms:
+        normalize_positive_int(
+          Keyword.get(opts, :timeout_ms, @default_timeout_ms),
+          @default_timeout_ms
+        ),
       inserted_at: now,
       updated_at: now
     }
     |> with_snapshot_hash()
   end
+
+  @doc false
+  @spec default_timeout_ms() :: pos_integer()
+  def default_timeout_ms, do: @default_timeout_ms
 
   @spec transition(t(), keyword()) :: t()
   def transition(%__MODULE__{} = run, attrs) when is_list(attrs) do

@@ -111,7 +111,12 @@ defmodule FavnOrchestrator.BackfillManager do
          {:ok, retry_backoff_ms} <-
            non_neg_integer_option(opts, :retry_backoff_ms, 0, :invalid_retry_backoff_ms),
          {:ok, timeout_ms} <-
-           positive_integer_option(opts, :timeout_ms, 5_000, :invalid_timeout_ms) do
+           positive_integer_option(
+             opts,
+             :timeout_ms,
+             RunState.default_timeout_ms(),
+             :invalid_timeout_ms
+           ) do
       parent =
         RunState.new(
           id: run_id,

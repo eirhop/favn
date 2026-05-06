@@ -9,7 +9,9 @@ defmodule Mix.Tasks.Favn.Run do
       mix favn.run MyApp.Pipelines.Daily
 
   By default the task waits for the run to finish. Use `--no-wait` to return
-  after submission.
+  after submission. Use `--wait-timeout-ms` for local polling and
+  `--run-timeout-ms` for per-asset execution timeout. `--timeout-ms` remains an
+  alias for both when the more specific options are not provided.
   """
 
   alias Favn.Dev
@@ -21,6 +23,8 @@ defmodule Mix.Tasks.Favn.Run do
     timezone: :string,
     idempotency_key: :string,
     timeout_ms: :integer,
+    wait_timeout_ms: :integer,
+    run_timeout_ms: :integer,
     poll_interval_ms: :integer
   ]
 
@@ -67,10 +71,16 @@ defmodule Mix.Tasks.Favn.Run do
 
   defp error_message({:run_wait_timeout, run_id, timeout_ms}) do
     "local wait timed out after #{timeout_ms}ms while run #{run_id} is still in flight; " <>
-      "check status with mix favn.status or rerun with a larger --timeout-ms"
+      "check status with mix favn.status or rerun with a larger --wait-timeout-ms"
   end
 
   defp error_message({:invalid_option, :timeout_ms}), do: "--timeout-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :wait_timeout_ms}),
+    do: "--wait-timeout-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :run_timeout_ms}),
+    do: "--run-timeout-ms must be greater than 0"
 
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"

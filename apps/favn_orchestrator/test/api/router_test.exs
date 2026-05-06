@@ -1190,7 +1190,8 @@ defmodule FavnOrchestrator.API.RouterTest do
       conn(:post, "/api/orchestrator/v1/runs", %{
         target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
         manifest_selection: %{mode: "active"},
-        dependencies: "none"
+        dependencies: "none",
+        timeout_ms: 30_000
       })
       |> put_req_header("x-favn-local-dev-context", "trusted")
       |> put_idempotency_key("run-local-dev")
@@ -1204,6 +1205,7 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert {:ok, run} = FavnOrchestrator.get_run(run_id)
     assert run.manifest_version_id == "mv_run_local_dev"
+    assert run.timeout_ms == 30_000
   end
 
   test "read endpoints return unauthenticated for invalid forwarded actor sessions" do

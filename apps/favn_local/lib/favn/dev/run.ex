@@ -11,7 +11,7 @@ defmodule Favn.Dev.Run do
   alias Favn.Window.Request, as: WindowRequest
 
   @terminal_statuses ["ok", "error", "cancelled", "timed_out"]
-  @default_timeout_ms 60_000
+  @default_wait_timeout_ms 60_000
   @default_poll_interval_ms 1_000
 
   @type run_opts :: [
@@ -21,6 +21,8 @@ defmodule Favn.Dev.Run do
           timezone: String.t(),
           idempotency_key: String.t(),
           timeout_ms: non_neg_integer(),
+          wait_timeout_ms: pos_integer(),
+          run_timeout_ms: pos_integer(),
           poll_interval_ms: pos_integer()
         ]
 
@@ -49,7 +51,8 @@ defmodule Favn.Dev.Run do
              session_context,
              target,
              window_request,
-             run_idempotency_key(opts)
+             run_idempotency_key(opts),
+             run_timeout_ms(opts)
            ),
          {:ok, final_run} <-
            maybe_wait(run, runtime, credentials.service_token, session_context, opts),
@@ -64,6 +67,8 @@ defmodule Favn.Dev.Run do
     case validate_timezone_without_window(opts) do
       :ok ->
         with :ok <- validate_positive_integer(opts, :timeout_ms),
+             :ok <- validate_positive_integer(opts, :wait_timeout_ms),
+             :ok <- validate_positive_integer(opts, :run_timeout_ms),
              :ok <- validate_positive_integer(opts, :poll_interval_ms) do
           validate_idempotency_key(opts)
         else
@@ -164,7 +169,8 @@ defmodule Favn.Dev.Run do
          session_context,
          target,
          window_request,
-         idempotency_key
+         idempotency_key,
+         timeout_ms
        ) do
     case target do
       %{"target_id" => target_id} when is_binary(target_id) and target_id != "" ->
@@ -174,6 +180,7 @@ defmodule Favn.Dev.Run do
             manifest_selection: %{mode: "active"}
           }
           |> maybe_put_window(window_request)
+          |> maybe_put(:timeout_ms, timeout_ms)
 
         case OrchestratorClient.submit_run(base_url, service_token, session_context, payload,
                idempotency_key: idempotency_key
@@ -198,6 +205,9 @@ defmodule Favn.Dev.Run do
     })
   end
 
+  defp maybe_put(payload, _key, nil), do: payload
+  defp maybe_put(payload, key, value), do: Map.put(payload, key, value)
+
   defp unwrap_submit_error(%{operation: :submit_run, reason: {:http_error, 422, payload}}) do
     case get_in(payload, ["error", "message"]) do
       message when is_binary(message) and message != "" ->
@@ -221,13 +231,24 @@ defmodule Favn.Dev.Run do
     "favn-local-run-" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
   end
 
+  defp run_timeout_ms(opts),
+    do: Keyword.get(opts, :run_timeout_ms, Keyword.get(opts, :timeout_ms))
+
+  defp wait_timeout_ms(opts),
+    do:
+      Keyword.get(
+        opts,
+        :wait_timeout_ms,
+        Keyword.get(opts, :timeout_ms, @default_wait_timeout_ms)
+      )
+
   defp maybe_wait(run, runtime, service_token, session_context, opts) do
     case {Keyword.get(opts, :wait, true), run} do
       {false, _run} ->
         {:ok, run}
 
       {true, %{"id" => run_id}} when is_binary(run_id) and run_id != "" ->
-        timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+        timeout_ms = wait_timeout_ms(opts)
         poll_interval_ms = Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms)
         deadline = System.monotonic_time(:millisecond) + timeout_ms
 
@@ -263,7 +284,7 @@ defmodule Favn.Dev.Run do
       now = System.monotonic_time(:millisecond)
 
       if now >= deadline do
-        {:error, {:run_wait_timeout, run_id, Keyword.get(opts, :timeout_ms, @default_timeout_ms)}}
+        {:error, {:run_wait_timeout, run_id, wait_timeout_ms(opts)}}
       else
         Process.sleep(min(poll_interval_ms, max(deadline - now, 0)))
 

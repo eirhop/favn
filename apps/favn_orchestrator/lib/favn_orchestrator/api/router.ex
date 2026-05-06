@@ -1740,19 +1740,32 @@ defmodule FavnOrchestrator.API.Router do
          {:ok, window_request} <- fetch_window_request(params, target) do
       case target do
         %{type: "asset", id: target_id} ->
-          FavnOrchestrator.submit_asset_run_for_manifest(manifest_version_id, target_id,
-            dependencies: dependencies
+          FavnOrchestrator.submit_asset_run_for_manifest(
+            manifest_version_id,
+            target_id,
+            params
+            |> run_submit_opts()
+            |> Keyword.put(:dependencies, dependencies)
           )
 
         %{type: "pipeline", id: target_id} ->
-          FavnOrchestrator.submit_pipeline_run_for_manifest(manifest_version_id, target_id,
-            window_request: window_request
+          FavnOrchestrator.submit_pipeline_run_for_manifest(
+            manifest_version_id,
+            target_id,
+            params
+            |> run_submit_opts()
+            |> Keyword.put(:window_request, window_request)
           )
 
         _ ->
           {:error, :invalid_target}
       end
     end
+  end
+
+  defp run_submit_opts(params) when is_map(params) do
+    []
+    |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
   end
 
   defp submit_backfill_from_request(params) do

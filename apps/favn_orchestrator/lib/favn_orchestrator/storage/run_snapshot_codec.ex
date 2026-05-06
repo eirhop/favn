@@ -220,7 +220,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          lineage_depth: Map.get(dto, "lineage_depth", 0),
          max_attempts: Map.get(dto, "max_attempts", 1),
          retry_backoff_ms: Map.get(dto, "retry_backoff_ms", 0),
-         timeout_ms: Map.get(dto, "timeout_ms", 5000),
+         timeout_ms: Map.get(dto, "timeout_ms", RunState.default_timeout_ms()),
          runner_execution_id: empty_to_nil(Map.get(dto, "runner_execution_id")),
          result: result_from_dto(Map.get(dto, "result"), allowed_atom_strings),
          error: Map.get(dto, "error"),

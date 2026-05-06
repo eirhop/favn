@@ -426,6 +426,14 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       RunTask.run(["Example.Pipeline", "--timeout-ms", "0"])
     end
 
+    assert_raise Mix.Error, ~r/--wait-timeout-ms must be greater than 0/, fn ->
+      RunTask.run(["Example.Pipeline", "--wait-timeout-ms", "0"])
+    end
+
+    assert_raise Mix.Error, ~r/--run-timeout-ms must be greater than 0/, fn ->
+      RunTask.run(["Example.Pipeline", "--run-timeout-ms", "0"])
+    end
+
     assert_raise Mix.Error, ~r/--poll-interval-ms must be greater than 0/, fn ->
       RunTask.run(["Example.Pipeline", "--poll-interval-ms", "0"])
     end
