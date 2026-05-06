@@ -230,7 +230,7 @@ defmodule Favn.Dev.Init do
           database: ".favn/data/local_smoke.duckdb",
           write_concurrency: 1,
           duckdb_bootstrap: [
-            extensions: [load: [:core_functions]]
+            extensions: [install: [:core_functions], load: [:core_functions]]
           ]
         ]
       ],
