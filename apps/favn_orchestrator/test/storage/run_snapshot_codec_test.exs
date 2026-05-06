@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
+  alias Favn.Plan
   alias Favn.Run.AssetResult
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
@@ -143,6 +144,49 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
     assert restored.metadata.in_flight_execution_ids == ["exec_1", "exec_2"]
     refute Map.has_key?(restored.metadata, "in_flight_execution_ids")
+  end
+
+  test "restores multi-ref plans from DTO snapshots" do
+    version = multi_asset_manifest_version("mv_run_snapshot_multi_ref_plan")
+    refs = [{__MODULE__.AssetA, :asset}, {__MODULE__.AssetB, :asset}]
+
+    plan = %Plan{
+      target_refs: refs,
+      target_node_keys: Enum.map(refs, &{&1, nil}),
+      dependencies: :all,
+      nodes:
+        Map.new(refs, fn ref ->
+          {{ref, nil}, %{ref: ref, node_key: {ref, nil}, upstream: [], downstream: [], stage: 0}}
+        end),
+      topo_order: refs,
+      stages: [refs],
+      node_stages: [Enum.map(refs, &{&1, nil})]
+    }
+
+    run =
+      RunState.new(
+        id: "run_snapshot_multi_ref_plan",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {__MODULE__.AssetA, :asset},
+        target_refs: refs,
+        plan: plan
+      )
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.target_refs == refs
+    assert restored.plan.target_refs == refs
+    assert restored.plan.topo_order == refs
+    assert restored.plan.stages == [refs]
+    assert restored.plan.node_stages == [Enum.map(refs, &{&1, nil})]
   end
 
   test "normalizes unexpected exception structs before persistence" do
@@ -306,6 +350,18 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   defp manifest_version(manifest_version_id, module) do
     manifest = %Manifest{
       assets: [%Asset{ref: {module, :asset}, module: module, name: :asset}]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp multi_asset_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Asset{ref: {__MODULE__.AssetA, :asset}, module: __MODULE__.AssetA, name: :asset},
+        %Asset{ref: {__MODULE__.AssetB, :asset}, module: __MODULE__.AssetB, name: :asset}
+      ]
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)

@@ -355,7 +355,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp node_key_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_node_key, value}}
 
   defp stages_from_dto(stages, allowed_atom_strings) when is_list(stages) do
-    collect_atoms(stages, &refs_from_dto(&1, allowed_atom_strings))
+    collect_values(stages, &refs_from_dto(&1, allowed_atom_strings))
   end
 
   defp stages_from_dto(_stages, _allowed_atom_strings), do: {:ok, []}
@@ -367,7 +367,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp node_stages_from_dto(_stages, _allowed_atom_strings), do: {:ok, []}
 
   defp refs_from_dto(values, allowed_atom_strings) when is_list(values) do
-    collect_atoms(values, &ref_from_dto(&1, allowed_atom_strings))
+    collect_values(values, &ref_from_dto(&1, allowed_atom_strings))
   end
 
   defp refs_from_dto(_values, _allowed_atom_strings), do: {:ok, []}
@@ -707,6 +707,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp datetime_value_from_dto(value), do: value
 
+  defp atom_to_string(nil), do: nil
   defp atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
   defp atom_to_string(value) when is_binary(value), do: value
   defp atom_to_string(_value), do: nil
