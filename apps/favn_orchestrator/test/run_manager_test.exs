@@ -513,23 +513,14 @@ defmodule FavnOrchestrator.RunManagerTest do
     def await_result(execution_id, _timeout, opts) do
       case execution_ref(execution_id) do
         {MyApp.Assets.Raw, :asset} = ref ->
-          {:ok,
-           %RunnerResult{
-             status: :error,
-             error: :raw_failed,
-             asset_results: [asset_result(ref, :error, :raw_failed)],
-             metadata: %{stub: :stage_sibling_failure}
-           }}
+          Process.sleep(Keyword.get(opts, :raw_block_ms, 0))
+          status = Keyword.get(opts, :raw_status, :error)
+          result(ref, status, :raw_failed)
 
         {MyApp.Assets.Silver, :asset} = ref ->
           Process.sleep(Keyword.get(opts, :silver_block_ms, 100))
-
-          {:ok,
-           %RunnerResult{
-             status: :ok,
-             asset_results: [asset_result(ref, :ok, nil)],
-             metadata: %{stub: :stage_sibling_failure}
-           }}
+          status = Keyword.get(opts, :silver_status, :ok)
+          result(ref, status, :silver_failed)
       end
     end
 
@@ -542,6 +533,25 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp result(ref, :ok, _error) do
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(ref, :ok, nil)],
+         metadata: %{stub: :stage_sibling_failure}
+       }}
+    end
+
+    defp result(ref, :error, error) do
+      {:ok,
+       %RunnerResult{
+         status: :error,
+         error: error,
+         asset_results: [asset_result(ref, :error, error)],
+         metadata: %{stub: :stage_sibling_failure}
+       }}
+    end
 
     defp asset_result(ref, status, error) do
       %Favn.Run.AssetResult{
@@ -1241,7 +1251,10 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     Application.put_env(:favn_orchestrator, :runner_client_opts,
       cancel_log: cancel_log,
-      silver_block_ms: 120
+      raw_status: :ok,
+      raw_block_ms: 120,
+      silver_status: :error,
+      silver_block_ms: 0
     )
 
     assert {:ok, run_id} =
@@ -1255,10 +1268,15 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.metadata.in_flight_execution_ids == []
     assert Agent.get(cancel_log, & &1) == []
 
+    assert Enum.map(run.result.asset_results, & &1.ref) == [
+             {MyApp.Assets.Raw, :asset},
+             {MyApp.Assets.Silver, :asset}
+           ]
+
     results_by_ref = Map.new(run.result.asset_results, fn result -> {result.ref, result} end)
 
-    assert results_by_ref[{MyApp.Assets.Raw, :asset}].status == :error
-    assert results_by_ref[{MyApp.Assets.Silver, :asset}].status == :ok
+    assert results_by_ref[{MyApp.Assets.Raw, :asset}].status == :ok
+    assert results_by_ref[{MyApp.Assets.Silver, :asset}].status == :error
     assert map_size(run.asset_results) == 2
 
     assert {:ok, events} = Storage.list_run_events(run_id)
@@ -1274,6 +1292,104 @@ defmodule FavnOrchestrator.RunManagerTest do
       events |> Enum.find(&(&1.event_type == :step_finished)) |> Map.fetch!(:sequence)
 
     assert failed_sequence < finished_sequence
+  end
+
+  test "pipeline stage await timeout keeps original sibling execution context" do
+    version = manifest_version("mv_pipeline_stage_await_timeout")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_stage_await_timeout")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStageSiblingFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      raw_status: :error,
+      raw_block_ms: 0,
+      silver_status: :ok,
+      silver_block_ms: 2_200
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               timeout_ms: 20
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id, 200)
+    assert run.status == :error
+    assert run.metadata.in_flight_execution_ids == []
+
+    cancelled_ids =
+      cancel_log
+      |> Agent.get(& &1)
+      |> Enum.map(fn {execution_id, _reason} -> execution_id end)
+
+    assert length(cancelled_ids) == 1
+    assert [cancelled_id] = cancelled_ids
+    assert String.contains?(cancelled_id, "Silver")
+
+    assert Enum.all?(run.result.asset_results, &(&1.ref != nil))
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :step_timed_out)) == 1
+
+    assert Enum.all?(events, fn event ->
+             event.entity != :step or event.asset_ref != nil
+           end)
+  end
+
+  test "terminal stage failure does not schedule retry for failed siblings" do
+    version = manifest_version("mv_pipeline_stage_terminal_no_retry")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_stage_terminal_no_retry")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStageSiblingFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      raw_status: :error,
+      raw_block_ms: 0,
+      silver_status: :error,
+      silver_block_ms: 80
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run([
+               {MyApp.Assets.Raw, :asset},
+               {MyApp.Assets.Silver, :asset}
+             ])
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :error
+    assert run.metadata.in_flight_execution_ids == []
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :step_failed)) == 2
+    refute Enum.any?(events, &(&1.event_type == :step_retry_scheduled))
   end
 
   test "retries transient failures when max_attempts allows retries" do

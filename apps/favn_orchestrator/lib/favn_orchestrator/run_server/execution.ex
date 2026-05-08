@@ -23,6 +23,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
 
+  @await_task_timeout_buffer_ms 2_000
+
   def execute_plan(%RunState{submit_kind: :pipeline} = run_state, %Version{} = version),
     do: execute_pipeline_parallel_once(run_state, version)
 
@@ -113,12 +115,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
               {:cont, {next_run, acc_results ++ stage_results}}
 
             {:error, failed_run, stage_results} ->
-              {:halt, Snapshots.terminalize_failed_run(failed_run, acc_results ++ stage_results)}
+              all_results = sort_asset_results(failed_run, acc_results ++ stage_results)
+
+              {:halt, Snapshots.terminalize_failed_run(failed_run, all_results)}
           end
         end
       end)
       |> case do
         {final_run, all_results} ->
+          all_results = sort_asset_results(final_run, all_results)
+
           Snapshots.snapshot_update(final_run,
             status: :ok,
             error: nil,
@@ -295,22 +301,61 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp await_stage_entries(entries, timeout_ms, runner_client, runner_opts) do
     entries
-    |> Task.async_stream(
-      fn entry ->
-        {entry, runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)}
-      end,
-      ordered: false,
-      timeout: timeout_ms + 2_000,
-      max_concurrency: max(length(entries), 1),
-      on_timeout: :kill_task
-    )
-    |> Stream.map(fn
-      {:ok, {entry, result}} ->
-        {entry, result}
+    |> start_await_tasks(timeout_ms, runner_client, runner_opts)
+    |> collect_await_tasks(await_deadline(timeout_ms), [])
+  end
 
-      {:exit, _reason} = exit ->
-        {%{asset_ref: nil, execution_id: nil, stage: 0}, exit_to_timeout(exit)}
+  defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
+    Map.new(entries, fn entry ->
+      task =
+        Task.async(fn ->
+          runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+        end)
+
+      {task.ref, %{task: task, entry: entry}}
     end)
+  end
+
+  defp await_deadline(timeout_ms),
+    do: System.monotonic_time(:millisecond) + timeout_ms + @await_task_timeout_buffer_ms
+
+  defp collect_await_tasks(pending_tasks, _deadline, acc) when map_size(pending_tasks) == 0,
+    do: Enum.reverse(acc)
+
+  defp collect_await_tasks(pending_tasks, deadline, acc) do
+    receive_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {ref, result} ->
+        case Map.pop(pending_tasks, ref) do
+          {nil, next_pending_tasks} ->
+            collect_await_tasks(next_pending_tasks, deadline, acc)
+
+          {%{task: task, entry: entry}, next_pending_tasks} ->
+            Process.demonitor(task.ref, [:flush])
+            collect_await_tasks(next_pending_tasks, deadline, [{entry, result} | acc])
+        end
+
+      {:DOWN, ref, :process, _pid, reason} ->
+        case Map.pop(pending_tasks, ref) do
+          {nil, next_pending_tasks} ->
+            collect_await_tasks(next_pending_tasks, deadline, acc)
+
+          {%{entry: entry}, next_pending_tasks} ->
+            collect_await_tasks(next_pending_tasks, deadline, [
+              {entry, exit_to_timeout({:exit, reason})} | acc
+            ])
+        end
+    after
+      receive_timeout_ms ->
+        timed_out =
+          Enum.map(pending_tasks, fn {_ref, %{task: task, entry: entry}} ->
+            _ = Task.shutdown(task, :brutal_kill)
+            {entry, {:error, :timeout}}
+          end)
+
+        Enum.reverse(acc) ++ timed_out
+    end
   end
 
   defp process_stage_attempt_results(
@@ -786,6 +831,26 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> Enum.with_index()
     |> Enum.map(fn {node_keys, stage} -> {stage, node_keys} end)
   end
+
+  defp sort_asset_results(%RunState{} = run_state, results) when is_list(results) do
+    ref_order =
+      run_state
+      |> planned_asset_refs()
+      |> Enum.with_index()
+      |> Map.new()
+
+    results
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {result, index} ->
+      {Map.get(ref_order, asset_result_ref(result), map_size(ref_order)), index}
+    end)
+    |> Enum.map(fn {result, _index} -> result end)
+  end
+
+  defp asset_result_ref(%AssetResult{ref: ref}), do: ref
+  defp asset_result_ref(%{ref: ref}), do: ref
+  defp asset_result_ref(%{"ref" => ref}), do: ref
+  defp asset_result_ref(_result), do: nil
 
   defp planned_asset_refs(%RunState{plan: %Favn.Plan{topo_order: refs}})
        when is_list(refs) and refs != [],
