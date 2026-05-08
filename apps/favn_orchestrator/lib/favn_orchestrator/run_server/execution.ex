@@ -306,56 +306,101 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
-    Map.new(entries, fn entry ->
-      task =
-        Task.async(fn ->
-          runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+    parent = self()
+
+    entries
+    |> Enum.reduce(%{replies: %{}, monitors: %{}}, fn entry, acc ->
+      reply_ref = make_ref()
+
+      pid =
+        spawn(fn ->
+          send(
+            parent,
+            {reply_ref, await_runner_result(entry, timeout_ms, runner_client, runner_opts)}
+          )
         end)
 
-      {task.ref, %{task: task, entry: entry}}
+      monitor_ref = Process.monitor(pid)
+      await = %{pid: pid, monitor_ref: monitor_ref, entry: entry}
+
+      %{
+        replies: Map.put(acc.replies, reply_ref, await),
+        monitors: Map.put(acc.monitors, monitor_ref, reply_ref)
+      }
     end)
+  end
+
+  defp await_runner_result(entry, timeout_ms, runner_client, runner_opts) do
+    runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+  rescue
+    exception ->
+      {:error,
+       %{
+         type: :await_task_failed,
+         kind: :error,
+         exception: inspect(exception.__struct__),
+         reason: Exception.message(exception)
+       }}
+  catch
+    kind, reason ->
+      {:error, %{type: :await_task_failed, kind: kind, reason: inspect(reason)}}
   end
 
   defp await_deadline(timeout_ms),
     do: System.monotonic_time(:millisecond) + timeout_ms + @await_task_timeout_buffer_ms
 
-  defp collect_await_tasks(pending_tasks, _deadline, acc) when map_size(pending_tasks) == 0,
+  defp collect_await_tasks(%{replies: replies}, _deadline, acc) when map_size(replies) == 0,
     do: Enum.reverse(acc)
 
-  defp collect_await_tasks(pending_tasks, deadline, acc) do
+  defp collect_await_tasks(%{replies: replies, monitors: monitors}, deadline, acc) do
     receive_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {ref, result} ->
-        case Map.pop(pending_tasks, ref) do
-          {nil, next_pending_tasks} ->
-            collect_await_tasks(next_pending_tasks, deadline, acc)
+      {reply_ref, result} when is_map_key(replies, reply_ref) ->
+        {%{monitor_ref: monitor_ref, entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
+        Process.demonitor(monitor_ref, [:flush])
 
-          {%{task: task, entry: entry}, next_pending_tasks} ->
-            Process.demonitor(task.ref, [:flush])
-            collect_await_tasks(next_pending_tasks, deadline, [{entry, result} | acc])
-        end
+        next_pending_tasks = %{
+          replies: next_replies,
+          monitors: Map.delete(monitors, monitor_ref)
+        }
 
-      {:DOWN, ref, :process, _pid, reason} ->
-        case Map.pop(pending_tasks, ref) do
-          {nil, next_pending_tasks} ->
-            collect_await_tasks(next_pending_tasks, deadline, acc)
+        collect_await_tasks(next_pending_tasks, deadline, [{entry, result} | acc])
 
-          {%{entry: entry}, next_pending_tasks} ->
-            collect_await_tasks(next_pending_tasks, deadline, [
-              {entry, exit_to_timeout({:exit, reason})} | acc
-            ])
-        end
+      {:DOWN, monitor_ref, :process, _pid, reason} when is_map_key(monitors, monitor_ref) ->
+        {reply_ref, next_monitors} = Map.pop!(monitors, monitor_ref)
+        {%{entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
+
+        next_pending_tasks = %{replies: next_replies, monitors: next_monitors}
+
+        collect_await_tasks(next_pending_tasks, deadline, [
+          {entry, await_exit_to_error(reason)} | acc
+        ])
     after
       receive_timeout_ms ->
         timed_out =
-          Enum.map(pending_tasks, fn {_ref, %{task: task, entry: entry}} ->
-            _ = Task.shutdown(task, :brutal_kill)
+          Enum.map(replies, fn {reply_ref, %{pid: pid, monitor_ref: monitor_ref, entry: entry}} ->
+            Process.exit(pid, :kill)
+            Process.demonitor(monitor_ref, [:flush])
+            flush_await_reply(reply_ref)
+
             {entry, {:error, :timeout}}
           end)
 
         Enum.reverse(acc) ++ timed_out
     end
+  end
+
+  defp flush_await_reply(reply_ref) do
+    receive do
+      {^reply_ref, _result} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp await_exit_to_error(reason) do
+    {:error, %{type: :await_task_failed, kind: :exit, reason: inspect(reason)}}
   end
 
   defp process_stage_attempt_results(
@@ -861,8 +906,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
   defp planned_asset_refs(_run_state), do: []
-
-  defp exit_to_timeout(_exit), do: {:error, :timeout}
 
   defp execute_ref_with_retry(
          %RunState{} = run_state,
