@@ -1,5 +1,17 @@
 defmodule FavnOrchestrator.RunServer.Execution do
-  @moduledoc false
+  @moduledoc """
+  Executes manifest-pinned runs against the configured runner client.
+
+  Pipeline runs execute one topological stage at a time. Entries in the same
+  stage are independent siblings, so a failed sibling must not cancel the rest
+  of that stage. The current stage is drained and all submitted sibling outcomes
+  are persisted before the run decides whether later stages may continue.
+
+  Future freshness policy integration should hook in between drained stages:
+  after this module knows which upstream refs finished, failed, or timed out,
+  the next-stage planner can treat already-fresh upstream refs as satisfied and
+  mark only downstream refs with unsatisfied failed dependencies as blocked.
+  """
 
   alias Favn.Contracts.RunnerClient
   alias Favn.Contracts.RunnerResult
@@ -10,6 +22,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
+
+  @await_task_timeout_buffer_ms 2_000
 
   def execute_plan(%RunState{submit_kind: :pipeline} = run_state, %Version{} = version),
     do: execute_pipeline_parallel_once(run_state, version)
@@ -101,12 +115,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
               {:cont, {next_run, acc_results ++ stage_results}}
 
             {:error, failed_run, stage_results} ->
-              {:halt, Snapshots.terminalize_failed_run(failed_run, acc_results ++ stage_results)}
+              all_results = sort_asset_results(failed_run, acc_results ++ stage_results)
+
+              {:halt, Snapshots.terminalize_failed_run(failed_run, all_results)}
           end
         end
       end)
       |> case do
         {final_run, all_results} ->
+          all_results = sort_asset_results(final_run, all_results)
+
           Snapshots.snapshot_update(final_run,
             status: :ok,
             error: nil,
@@ -162,12 +180,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
                runner_client,
                runner_opts
              ),
-           awaited <-
-             await_stage_entries(entries, run_state.timeout_ms, runner_client, runner_opts),
            {:ok, next_run, next_acc_results, retry_refs} <-
              process_stage_attempt_results(
                run_after_submit,
-               awaited,
+               entries,
                stage,
                attempt,
                acc_results,
@@ -285,37 +301,128 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp await_stage_entries(entries, timeout_ms, runner_client, runner_opts) do
     entries
-    |> Task.async_stream(
-      fn entry ->
-        {entry, runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)}
-      end,
-      ordered: true,
-      timeout: timeout_ms + 2_000,
-      max_concurrency: max(length(entries), 1),
-      on_timeout: :kill_task
-    )
-    |> Enum.map(fn
-      {:ok, {entry, result}} ->
-        {entry, result}
+    |> start_await_tasks(timeout_ms, runner_client, runner_opts)
+    |> collect_await_tasks(await_deadline(timeout_ms), [])
+  end
 
-      {:exit, _reason} = exit ->
-        {%{asset_ref: nil, execution_id: nil, stage: 0}, exit_to_timeout(exit)}
+  defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
+    parent = self()
+
+    entries
+    |> Enum.reduce(%{replies: %{}, monitors: %{}}, fn entry, acc ->
+      reply_ref = make_ref()
+
+      {pid, monitor_ref} =
+        spawn_monitor(fn ->
+          send(
+            parent,
+            {reply_ref, await_runner_result(entry, timeout_ms, runner_client, runner_opts)}
+          )
+        end)
+
+      await = %{pid: pid, monitor_ref: monitor_ref, entry: entry}
+
+      %{
+        replies: Map.put(acc.replies, reply_ref, await),
+        monitors: Map.put(acc.monitors, monitor_ref, reply_ref)
+      }
     end)
+  end
+
+  defp await_runner_result(entry, timeout_ms, runner_client, runner_opts) do
+    runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+  rescue
+    exception ->
+      {:error,
+       %{
+         type: :await_task_failed,
+         kind: :error,
+         exception: inspect(exception.__struct__),
+         reason: Exception.message(exception)
+       }}
+  catch
+    kind, reason ->
+      {:error, %{type: :await_task_failed, kind: kind, reason: inspect(reason)}}
+  end
+
+  defp await_deadline(timeout_ms),
+    do: System.monotonic_time(:millisecond) + timeout_ms + @await_task_timeout_buffer_ms
+
+  defp collect_await_tasks(%{replies: replies}, _deadline, acc) when map_size(replies) == 0,
+    do: Enum.reverse(acc)
+
+  defp collect_await_tasks(%{replies: replies, monitors: monitors}, deadline, acc) do
+    receive_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {reply_ref, result} when is_map_key(replies, reply_ref) ->
+        {%{monitor_ref: monitor_ref, entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
+        Process.demonitor(monitor_ref, [:flush])
+
+        next_pending_tasks = %{
+          replies: next_replies,
+          monitors: Map.delete(monitors, monitor_ref)
+        }
+
+        collect_await_tasks(next_pending_tasks, deadline, [{entry, result} | acc])
+
+      {:DOWN, monitor_ref, :process, _pid, reason} when is_map_key(monitors, monitor_ref) ->
+        {reply_ref, next_monitors} = Map.pop!(monitors, monitor_ref)
+        {%{entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
+
+        next_pending_tasks = %{replies: next_replies, monitors: next_monitors}
+
+        collect_await_tasks(next_pending_tasks, deadline, [
+          {entry, await_exit_to_error(reason)} | acc
+        ])
+    after
+      receive_timeout_ms ->
+        timed_out =
+          Enum.map(replies, fn {reply_ref, %{pid: pid, monitor_ref: monitor_ref, entry: entry}} ->
+            Process.exit(pid, :kill)
+            Process.demonitor(monitor_ref, [:flush])
+            flush_await_reply(reply_ref)
+
+            {entry, {:error, :timeout}}
+          end)
+
+        Enum.reverse(acc) ++ timed_out
+    end
+  end
+
+  defp flush_await_reply(reply_ref) do
+    receive do
+      {^reply_ref, _result} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp await_exit_to_error(reason) do
+    {:error, %{type: :await_task_failed, kind: :exit, reason: inspect(reason)}}
   end
 
   defp process_stage_attempt_results(
          %RunState{} = run_state,
-         awaited,
+         entries,
          stage,
          attempt,
          acc_results,
          runner_client,
          runner_opts
        ) do
-    awaited
-    |> Enum.reduce_while({:ok, run_state, acc_results, []}, fn {entry, await_result},
-                                                               {:ok, current_run, current_results,
-                                                                retry_refs} ->
+    pending_ids = pending_execution_ids(entries)
+
+    entries
+    |> await_stage_entries(run_state.timeout_ms, runner_client, runner_opts)
+    |> Enum.reduce_while({:ok, run_state, acc_results, [], nil, pending_ids}, fn {entry,
+                                                                                  await_result},
+                                                                                 {:ok,
+                                                                                  current_run,
+                                                                                  current_results,
+                                                                                  retry_refs,
+                                                                                  terminal_failure,
+                                                                                  pending_ids} ->
       if Persistence.externally_cancelled?(current_run.id) do
         cancelled =
           cancel_execution_ids(
@@ -341,23 +448,153 @@ defmodule FavnOrchestrator.RunServer.Execution do
           )
 
         next_results = current_results ++ step_results
+        next_pending_ids = MapSet.delete(pending_ids, entry.execution_id)
 
-        case outcome do
-          :ok ->
-            {:cont, {:ok, next_run, next_results, retry_refs}}
-
-          :retry ->
-            {:cont, {:ok, next_run, next_results, retry_refs ++ [entry.node_key]}}
-
-          :error ->
-            {:halt, {:error, next_run, next_results}}
-        end
+        reduce_stage_attempt_outcome(
+          outcome,
+          %{
+            run: next_run,
+            results: next_results,
+            retry_refs: retry_refs,
+            terminal_failure: terminal_failure,
+            pending_ids: next_pending_ids
+          },
+          %{entry: entry, stage: stage, attempt: attempt}
+        )
       end
     end)
     |> case do
-      {:ok, next_run, next_results, retry_refs} -> {:ok, next_run, next_results, retry_refs}
-      {:error, failed_run, next_results} -> {:error, failed_run, next_results}
+      {:ok, next_run, next_results, retry_refs, nil, _pending_ids} ->
+        {:ok, next_run, next_results, retry_refs}
+
+      {:ok, next_run, next_results, _retry_refs, terminal_failure, _pending_ids} ->
+        failed_run = failed_stage_terminal_state(next_run, terminal_failure)
+        {:error, failed_run, next_results}
+
+      {:error, failed_run, next_results} ->
+        {:error, failed_run, next_results}
     end
+  end
+
+  defp reduce_stage_attempt_outcome(
+         :ok,
+         %{
+           run: %RunState{} = next_run,
+           results: next_results,
+           retry_refs: retry_refs,
+           terminal_failure: terminal_failure,
+           pending_ids: pending_ids
+         },
+         _context
+       ) do
+    {:cont, {:ok, next_run, next_results, retry_refs, terminal_failure, pending_ids}}
+  end
+
+  defp reduce_stage_attempt_outcome(
+         :retry,
+         %{
+           run: %RunState{} = next_run,
+           results: next_results,
+           retry_refs: retry_refs,
+           terminal_failure: terminal_failure,
+           pending_ids: pending_ids
+         },
+         %{entry: entry}
+       ) do
+    next_retry_refs =
+      if terminal_failure == nil, do: retry_refs ++ [entry.node_key], else: retry_refs
+
+    {:cont, {:ok, next_run, next_results, next_retry_refs, terminal_failure, pending_ids}}
+  end
+
+  defp reduce_stage_attempt_outcome(
+         :error,
+         %{run: %RunState{status: :cancelled} = next_run, results: next_results},
+         _context
+       ) do
+    {:halt, {:error, Snapshots.cancelled_terminal(next_run, next_results), next_results}}
+  end
+
+  defp reduce_stage_attempt_outcome(
+         :error,
+         %{
+           run: %RunState{} = next_run,
+           results: next_results,
+           retry_refs: retry_refs,
+           terminal_failure: terminal_failure,
+           pending_ids: pending_ids
+         },
+         %{entry: entry, stage: stage, attempt: attempt}
+       ) do
+    case remember_stage_failure(next_run, terminal_failure, entry, stage, attempt, pending_ids) do
+      {:ok, failure_run, next_terminal_failure} ->
+        {:cont, {:ok, failure_run, next_results, retry_refs, next_terminal_failure, pending_ids}}
+
+      {:error, cancelled} ->
+        {:halt, {:error, Snapshots.cancelled_terminal(cancelled, next_results), next_results}}
+    end
+  end
+
+  defp pending_execution_ids(entries) when is_list(entries) do
+    entries
+    |> Enum.map(& &1.execution_id)
+    |> Enum.filter(&is_binary/1)
+    |> MapSet.new()
+  end
+
+  defp remember_stage_failure(run_state, terminal_failure, entry, stage, attempt, pending_ids)
+
+  defp remember_stage_failure(
+         %RunState{} = run_state,
+         nil,
+         entry,
+         stage,
+         attempt,
+         pending_ids
+       ) do
+    terminal_failure = %{status: run_state.status, error: run_state.error}
+
+    if MapSet.size(pending_ids) == 0 do
+      {:ok, run_state, terminal_failure}
+    else
+      metadata =
+        Map.put(run_state.metadata, :stage_draining_after_failure, %{
+          stage: stage,
+          attempt: attempt,
+          failed_asset_ref: entry.asset_ref,
+          pending_execution_ids: MapSet.to_list(pending_ids)
+        })
+
+      draining = RunState.transition(run_state, metadata: metadata)
+
+      case Persistence.persist_run_step(draining, :stage_draining_after_failure, %{
+             stage: stage,
+             attempt: attempt,
+             failed_asset_ref: entry.asset_ref,
+             pending_execution_ids: MapSet.to_list(pending_ids)
+           }) do
+        :ok -> {:ok, draining, terminal_failure}
+        {:error, :external_cancel} -> {:error, Snapshots.cancelled_snapshot(draining)}
+      end
+    end
+  end
+
+  defp remember_stage_failure(
+         %RunState{} = run_state,
+         terminal_failure,
+         _entry,
+         _stage,
+         _attempt,
+         _pending_ids
+       ),
+       do: {:ok, run_state, terminal_failure}
+
+  defp failed_stage_terminal_state(%RunState{} = run_state, %{status: status, error: error}) do
+    Snapshots.snapshot_update(run_state,
+      status: status,
+      error: error,
+      runner_execution_id: nil
+    )
   end
 
   defp process_one_stage_attempt_result(
@@ -639,6 +876,26 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> Enum.map(fn {node_keys, stage} -> {stage, node_keys} end)
   end
 
+  defp sort_asset_results(%RunState{} = run_state, results) when is_list(results) do
+    ref_order =
+      run_state
+      |> planned_asset_refs()
+      |> Enum.with_index()
+      |> Map.new()
+
+    results
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {result, index} ->
+      {Map.get(ref_order, asset_result_ref(result), map_size(ref_order)), index}
+    end)
+    |> Enum.map(fn {result, _index} -> result end)
+  end
+
+  defp asset_result_ref(%AssetResult{ref: ref}), do: ref
+  defp asset_result_ref(%{ref: ref}), do: ref
+  defp asset_result_ref(%{"ref" => ref}), do: ref
+  defp asset_result_ref(_result), do: nil
+
   defp planned_asset_refs(%RunState{plan: %Favn.Plan{topo_order: refs}})
        when is_list(refs) and refs != [],
        do: refs
@@ -648,8 +905,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
   defp planned_asset_refs(_run_state), do: []
-
-  defp exit_to_timeout(_exit), do: {:error, :timeout}
 
   defp execute_ref_with_retry(
          %RunState{} = run_state,
