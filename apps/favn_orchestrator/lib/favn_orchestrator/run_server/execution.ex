@@ -312,15 +312,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> Enum.reduce(%{replies: %{}, monitors: %{}}, fn entry, acc ->
       reply_ref = make_ref()
 
-      pid =
-        spawn(fn ->
+      {pid, monitor_ref} =
+        spawn_monitor(fn ->
           send(
             parent,
             {reply_ref, await_runner_result(entry, timeout_ms, runner_client, runner_opts)}
           )
         end)
 
-      monitor_ref = Process.monitor(pid)
       await = %{pid: pid, monitor_ref: monitor_ref, entry: entry}
 
       %{
