@@ -119,6 +119,17 @@ defmodule FavnOrchestrator.Freshness.DeciderTest do
              )
   end
 
+  test "prior freshness success remains usable after a later failed attempt" do
+    state = freshness_state(@raw_ref, @raw_key, Key.latest(), status: :error)
+
+    assert %{decision: :skipped_fresh, reason: :max_age} =
+             Decider.decide(plan(), @raw_key,
+               assets_by_ref: %{@raw_ref => %{freshness: Policy.from_value!(max_age: {:days, 1})}},
+               prior_states: %{@raw_key => state},
+               now: @now
+             )
+  end
+
   test "own state lookup prefers ref and freshness key" do
     raw_state = freshness_state(@raw_ref, @raw_key, Key.latest(), status: :ok)
 

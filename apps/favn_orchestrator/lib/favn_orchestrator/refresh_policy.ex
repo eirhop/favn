@@ -14,11 +14,12 @@ defmodule FavnOrchestrator.RefreshPolicy do
   - `{:force_assets, refs}`: force planned nodes whose refs are listed.
   - `{:force_assets, refs, include_upstream: true}`: force selected refs and their
     planned transitive upstream dependencies.
-  - `%{mode: :force_assets, refs: refs, include_upstream?: true}` and string-keyed
-    map equivalents for JSON/API-shaped callers.
+  - `%{mode: :force_assets, refs: refs, include_upstream: true}` and string-keyed
+    map equivalents for internal callers.
 
   `refs` must be canonical asset refs such as `{MyApp.Warehouse.Raw.Orders,
-  :asset}`. Module shorthand is resolved before this boundary.
+  :asset}`. Module shorthand is resolved before this boundary. Public JSON/API
+  ref encoding is intentionally left to the future `favn_view` boundary.
 
   Backfill child pipeline runs default to `:missing` unless callers pass an
   explicit `refresh` or `refresh_policy` option.
@@ -51,7 +52,10 @@ defmodule FavnOrchestrator.RefreshPolicy do
 
   def from_opts(%{} = opts) do
     opts
-    |> Map.get(:refresh_policy, Map.get(opts, :refresh))
+    |> Map.get(
+      :refresh_policy,
+      Map.get(opts, "refresh_policy", Map.get(opts, :refresh, Map.get(opts, "refresh")))
+    )
     |> from_value()
   end
 
@@ -81,7 +85,15 @@ defmodule FavnOrchestrator.RefreshPolicy do
     refs = Map.get(value, :refs, Map.get(value, "refs", []))
 
     include_upstream? =
-      Map.get(value, :include_upstream?, Map.get(value, "include_upstream?", false))
+      Map.get(
+        value,
+        :include_upstream,
+        Map.get(
+          value,
+          "include_upstream",
+          Map.get(value, :include_upstream?, Map.get(value, "include_upstream?", false))
+        )
+      )
 
     case normalize_mode(mode) do
       {:ok, mode} when mode in [:auto, :force, :missing] ->

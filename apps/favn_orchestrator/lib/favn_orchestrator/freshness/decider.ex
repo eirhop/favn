@@ -265,10 +265,13 @@ defmodule FavnOrchestrator.Freshness.Decider do
     }
   end
 
-  defp successful_state?(%AssetFreshnessState{status: :ok}), do: true
+  defp successful_state?(%AssetFreshnessState{} = state),
+    do: not is_nil(state.freshness_version) and not is_nil(state.latest_success_at)
 
   defp successful_state?(%{} = state),
-    do: field(state, :status) == :ok or field(state, :status) == "ok"
+    do:
+      not is_nil(field(state, :freshness_version)) and
+        not is_nil(field(state, :latest_success_at))
 
   defp successful_state?(_state), do: false
 

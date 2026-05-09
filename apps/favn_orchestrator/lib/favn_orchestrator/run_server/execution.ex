@@ -115,6 +115,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         else
           case classify_pipeline_stage(
                  current_run,
+                 version,
                  stage,
                  node_keys,
                  freshness_context,
@@ -122,7 +123,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                ) do
             {:ok, classified_run, runnable_node_keys, decisions, classified_context,
              next_terminal_failure} ->
-              if runnable_node_keys == [] or not is_nil(next_terminal_failure) do
+              if runnable_node_keys == [] do
                 {:cont, {classified_run, acc_results, classified_context, next_terminal_failure}}
               else
                 case run_stage_parallel_once(
@@ -145,7 +146,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
                         classified_context
                       )
 
-                    {:cont, {persisted_run, acc_results ++ stage_results, next_context, nil}}
+                    {:cont,
+                     {persisted_run, acc_results ++ stage_results, next_context,
+                      next_terminal_failure}}
 
                   {:error, failed_run, stage_results} ->
                     {next_context, persisted_run} =
@@ -158,7 +161,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
                         classified_context
                       )
 
-                    terminal_failure = %{status: persisted_run.status, error: persisted_run.error}
+                    terminal_failure =
+                      next_terminal_failure ||
+                        %{status: persisted_run.status, error: persisted_run.error}
 
                     {:cont,
                      {persisted_run, acc_results ++ stage_results, next_context, terminal_failure}}
@@ -224,6 +229,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp classify_pipeline_stage(
          %RunState{} = run_state,
+         %Version{} = version,
          stage,
          node_keys,
          freshness_context,
@@ -247,13 +253,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       fn node_key, {:ok, current_run, runnable, decisions, current_context, current_failure} ->
         decision = Map.fetch!(decisions, node_key)
 
-        decision =
-          if current_failure != nil and decision.decision == :run do
-            %{decision | decision: :blocked, reason: :run_halted_after_failure}
-          else
-            decision
-          end
-
         case decision.decision do
           :run ->
             {:cont,
@@ -261,7 +260,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
               current_failure}}
 
           status when status in [:skipped_fresh, :blocked] ->
-            case persist_decision_result(current_run, node_key, stage, status, decision) do
+            case persist_decision_result(current_run, version, node_key, stage, status, decision) do
               {:ok, next_run} ->
                 next_context = record_decision_status(current_context, node_key, status)
 
@@ -282,9 +281,17 @@ defmodule FavnOrchestrator.RunServer.Execution do
     )
   end
 
-  defp persist_decision_result(%RunState{} = run_state, node_key, stage, status, decision) do
+  defp persist_decision_result(
+         %RunState{} = run_state,
+         %Version{} = version,
+         node_key,
+         stage,
+         status,
+         decision
+       ) do
     node = Map.fetch!(run_state.plan.nodes, node_key)
     now = DateTime.utc_now()
+    freshness_key = Map.get(decision, :freshness_key, Favn.Freshness.Key.latest())
 
     result =
       NodeResult.new(%{
@@ -297,7 +304,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         finished_at: now,
         duration_ms: 0,
         reason: decision.reason,
-        freshness_key: Map.get(decision, :freshness_key),
+        freshness_key: freshness_key,
         input_versions: [],
         attempt_count: 0,
         max_attempts: run_state.max_attempts,
@@ -306,6 +313,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
       })
 
     next_run = put_node_result(run_state, result)
+
+    :ok =
+      record_attempt_freshness_state(next_run, version, node_key, status, freshness_key, decision)
+
     event_type = if status == :skipped_fresh, do: :step_skipped_fresh, else: :step_blocked
 
     case Persistence.persist_run_step(next_run, event_type, %{
@@ -313,7 +324,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            node_key: node_key,
            stage: stage,
            reason: decision.reason,
-           freshness_key: Map.get(decision, :freshness_key)
+           freshness_key: freshness_key
          }) do
       :ok -> {:ok, next_run}
       {:error, :external_cancel} -> {:error, :external_cancel}
@@ -1296,10 +1307,24 @@ defmodule FavnOrchestrator.RunServer.Execution do
         if MapSet.member?(successful, node_key) do
           acc
         else
+          status = latest_node_result_status(next_run, node_key) || failed_status
+          decision = Map.get(decisions, node_key, %{})
+          freshness_key = decision_freshness_key(decisions, node_key)
+
+          :ok =
+            record_attempt_freshness_state(
+              next_run,
+              version,
+              node_key,
+              status,
+              freshness_key,
+              decision
+            )
+
           %{
             acc
             | completed_node_keys: MapSet.put(acc.completed_node_keys, node_key),
-              upstream_statuses: Map.put(acc.upstream_statuses, node_key, failed_status)
+              upstream_statuses: Map.put(acc.upstream_statuses, node_key, status)
           }
         end
       end)
@@ -1332,6 +1357,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
     do: String.to_existing_atom(status)
 
   defp node_result_status(_result), do: nil
+
+  defp latest_node_result_status(%RunState{} = run_state, node_key) do
+    run_state
+    |> existing_node_results()
+    |> Enum.reverse()
+    |> Enum.find(&(node_result_node_key(&1) == node_key))
+    |> node_result_status()
+  end
 
   defp build_success_freshness_state(
          %RunState{} = run_state,
@@ -1367,6 +1400,74 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     state
   end
+
+  defp record_attempt_freshness_state(
+         %RunState{} = run_state,
+         %Version{} = version,
+         node_key,
+         status,
+         freshness_key,
+         decision
+       ) do
+    node = Map.fetch!(run_state.plan.nodes, node_key)
+    {module, name} = node.ref
+    now = DateTime.utc_now()
+
+    previous =
+      case Storage.get_asset_freshness_state(module, name, freshness_key) do
+        {:ok, %AssetFreshnessState{} = state} -> state
+        _other -> nil
+      end
+
+    {:ok, state} =
+      AssetFreshnessState.new(%{
+        asset_ref_module: module,
+        asset_ref_name: name,
+        freshness_key: freshness_key,
+        status: status,
+        freshness_version: previous_freshness_version(previous),
+        latest_success_run_id: previous_latest_success_run_id(previous),
+        latest_success_node_key: previous_latest_success_node_key(previous),
+        latest_success_at: previous_latest_success_at(previous),
+        latest_attempt_run_id: run_state.id,
+        latest_attempt_status: status,
+        latest_attempt_at: now,
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        input_versions: previous_input_versions(previous),
+        metadata: attempt_freshness_metadata(previous, decision),
+        updated_at: now
+      })
+
+    Storage.put_asset_freshness_state(state)
+  end
+
+  defp previous_freshness_version(%AssetFreshnessState{} = state), do: state.freshness_version
+  defp previous_freshness_version(_state), do: nil
+
+  defp previous_latest_success_run_id(%AssetFreshnessState{} = state),
+    do: state.latest_success_run_id
+
+  defp previous_latest_success_run_id(_state), do: nil
+
+  defp previous_latest_success_node_key(%AssetFreshnessState{} = state),
+    do: state.latest_success_node_key
+
+  defp previous_latest_success_node_key(_state), do: nil
+
+  defp previous_latest_success_at(%AssetFreshnessState{} = state), do: state.latest_success_at
+  defp previous_latest_success_at(_state), do: nil
+
+  defp previous_input_versions(%AssetFreshnessState{} = state), do: state.input_versions
+  defp previous_input_versions(_state), do: %{}
+
+  defp attempt_freshness_metadata(%AssetFreshnessState{metadata: metadata}, decision)
+       when is_map(metadata) do
+    Map.merge(metadata, %{latest_attempt_reason: Map.get(decision, :reason)})
+  end
+
+  defp attempt_freshness_metadata(_state, decision),
+    do: %{latest_attempt_reason: Map.get(decision, :reason)}
 
   defp current_upstream_states(%{upstream: upstream}, freshness_context) do
     Map.new(upstream, fn upstream_node_key ->

@@ -289,8 +289,59 @@ defmodule FavnOrchestrator.RunServerTest do
     assert [%Favn.Run.NodeResult{status: :skipped_fresh, freshness_key: ^freshness_key}] =
              stored.result.node_results
 
+    assert {:ok, state} =
+             Storage.get_asset_freshness_state(MyApp.Assets.Gold, :asset, freshness_key)
+
+    assert state.status == :skipped_fresh
+    assert state.freshness_version == "existing"
+    assert state.latest_success_run_id == "previous_run"
+    assert state.latest_attempt_run_id == run_state.id
+    assert state.latest_attempt_status == :skipped_fresh
+
     assert {:ok, events} = Storage.list_run_events(run_state.id)
     assert Enum.map(events, & &1.event_type) == [:run_started, :step_skipped_fresh, :run_finished]
+  end
+
+  test "failed attempt updates latest attempt without replacing prior freshness success" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_log: submit_log,
+      result_by_ref: %{{MyApp.Assets.Gold, :asset} => :error}
+    )
+
+    version = manifest_version("mv_pipeline_failed_attempt_preserves_success")
+    plan = single_node_plan({MyApp.Assets.Gold, :asset}, window: nil)
+
+    assert :ok =
+             freshness_state(
+               {MyApp.Assets.Gold, :asset},
+               {{MyApp.Assets.Gold, :asset}, nil},
+               Key.latest(),
+               freshness_version: "gold:v1"
+             )
+             |> Storage.put_asset_freshness_state()
+
+    run_state =
+      pipeline_run_state("run_pipeline_failed_attempt_preserves_success", version, plan, [
+        {MyApp.Assets.Gold, :asset}
+      ])
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, state} =
+             Storage.get_asset_freshness_state(MyApp.Assets.Gold, :asset, Key.latest())
+
+    assert state.status == :error
+    assert state.freshness_version == "gold:v1"
+    assert state.latest_success_run_id == "previous_run"
+    assert state.latest_attempt_run_id == run_state.id
+    assert state.latest_attempt_status == :error
   end
 
   test "pipeline blocks downstream after upstream failure" do
@@ -328,6 +379,47 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert {:ok, events} = Storage.list_run_events(run_state.id)
     assert :step_blocked in Enum.map(events, & &1.event_type)
+  end
+
+  test "unrelated downstream branch still runs after another branch fails" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+
+    raw_a = {MyApp.Assets.RawA, :asset}
+    silver_a = {MyApp.Assets.SilverA, :asset}
+    raw_b = {MyApp.Assets.RawB, :asset}
+    silver_b = {MyApp.Assets.SilverB, :asset}
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_log: submit_log,
+      result_by_ref: %{raw_a => :error}
+    )
+
+    refs = [raw_a, silver_a, raw_b, silver_b]
+    version = manifest_version_for_refs("mv_pipeline_independent_branch_failure", refs)
+    plan = independent_branch_plan(raw_a, silver_a, raw_b, silver_b)
+    run_state = pipeline_run_state("run_pipeline_independent_branch_failure", version, plan, refs)
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    submitted_refs = submit_log |> Agent.get(& &1) |> Enum.map(& &1.asset_ref) |> MapSet.new()
+    assert MapSet.member?(submitted_refs, raw_a)
+    assert MapSet.member?(submitted_refs, raw_b)
+    assert MapSet.member?(submitted_refs, silver_b)
+    refute MapSet.member?(submitted_refs, silver_a)
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :error
+
+    statuses = Map.new(stored.result.node_results, &{&1.node_key, &1.status})
+    assert statuses[{raw_a, nil}] == :error
+    assert statuses[{raw_b, nil}] == :ok
+    assert statuses[{silver_a, nil}] == :blocked
+    assert statuses[{silver_b, nil}] == :ok
   end
 
   test "actual upstream success refreshes downstream in same pipeline" do
@@ -431,12 +523,16 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert state_one.latest_success_node_key == node_one
 
-    assert {:error, :not_found} =
+    assert {:ok, state_two} =
              Storage.get_asset_freshness_state(
                MyApp.Assets.Raw,
                :asset,
                Key.window!(window_two.key)
              )
+
+    assert state_two.status == :error
+    assert state_two.freshness_version == nil
+    assert state_two.latest_success_node_key == nil
 
     statuses = Map.new(stored.result.node_results, &{&1.node_key, &1.status})
     assert statuses[node_one] == :ok
@@ -463,6 +559,18 @@ defmodule FavnOrchestrator.RunServerTest do
       }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp manifest_version_for_refs(manifest_version_id, refs) do
+    assets =
+      Enum.map(refs, fn {module, name} = ref ->
+        %Favn.Manifest.Asset{ref: ref, module: module, name: name}
+      end)
+
+    {:ok, version} =
+      Version.new(%Manifest{assets: assets}, manifest_version_id: manifest_version_id)
+
     version
   end
 
@@ -495,6 +603,27 @@ defmodule FavnOrchestrator.RunServerTest do
       topo_order: [raw_ref, gold_ref],
       stages: [[raw_ref], [gold_ref]],
       node_stages: [[raw_key], [gold_key]]
+    }
+  end
+
+  defp independent_branch_plan(raw_a, silver_a, raw_b, silver_b) do
+    raw_a_key = {raw_a, nil}
+    silver_a_key = {silver_a, nil}
+    raw_b_key = {raw_b, nil}
+    silver_b_key = {silver_b, nil}
+
+    %Plan{
+      target_refs: [silver_a, silver_b],
+      target_node_keys: [silver_a_key, silver_b_key],
+      nodes: %{
+        raw_a_key => plan_node(raw_a, raw_a_key, downstream: [silver_a_key], stage: 0),
+        raw_b_key => plan_node(raw_b, raw_b_key, downstream: [silver_b_key], stage: 0),
+        silver_a_key => plan_node(silver_a, silver_a_key, upstream: [raw_a_key], stage: 1),
+        silver_b_key => plan_node(silver_b, silver_b_key, upstream: [raw_b_key], stage: 1)
+      },
+      topo_order: [raw_a, raw_b, silver_a, silver_b],
+      stages: [[raw_a, raw_b], [silver_a, silver_b]],
+      node_stages: [[raw_a_key, raw_b_key], [silver_a_key, silver_b_key]]
     }
   end
 

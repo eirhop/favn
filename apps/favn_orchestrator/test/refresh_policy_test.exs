@@ -32,6 +32,22 @@ defmodule FavnOrchestrator.RefreshPolicyTest do
                refs: [@gold],
                include_upstream?: true
              })
+
+    assert {:ok, %RefreshPolicy{mode: :force_assets, refs: [@gold], include_upstream?: true}} =
+             RefreshPolicy.from_value(%{
+               "mode" => "force_assets",
+               "refs" => [@gold],
+               "include_upstream" => true
+             })
+
+    assert {:ok, %RefreshPolicy{mode: :force_assets, refs: [@gold], include_upstream?: true}} =
+             RefreshPolicy.from_opts(%{
+               "refresh_policy" => %{
+                 "mode" => "force_assets",
+                 "refs" => [@gold],
+                 "include_upstream?" => true
+               }
+             })
   end
 
   test "rejects invalid refs and options" do
