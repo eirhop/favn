@@ -11,7 +11,7 @@ defmodule Favn.Dev.RuntimeTreePolicy do
     "cover",
     "deps"
   ]
-  @ignored_relative_entries ["apps/favn_view/priv/static/assets"]
+  @ignored_relative_entries [["apps", "favn_view", "priv", "static", "assets"]]
 
   @spec entries() :: [Path.t()]
   def entries, do: @entries
@@ -75,10 +75,18 @@ defmodule Favn.Dev.RuntimeTreePolicy do
   end
 
   defp path_has_ignored_suffix?(path) do
-    normalized = path |> Path.expand() |> Path.split() |> Path.join()
+    path_segments = path |> Path.expand() |> Path.split()
 
-    Enum.any?(@ignored_relative_entries, fn relative ->
-      String.ends_with?(normalized, relative)
+    Enum.any?(@ignored_relative_entries, fn relative_segments ->
+      path_segments_end_with?(path_segments, relative_segments)
     end)
+  end
+
+  defp path_segments_end_with?(path_segments, relative_segments) do
+    path_length = length(path_segments)
+    relative_length = length(relative_segments)
+
+    path_length >= relative_length and
+      Enum.slice(path_segments, path_length - relative_length, relative_length) == relative_segments
   end
 end
