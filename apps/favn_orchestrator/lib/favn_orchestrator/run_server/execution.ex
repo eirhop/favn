@@ -313,10 +313,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       })
 
     next_run = put_node_result(run_state, result)
-
-    :ok =
-      record_attempt_freshness_state(next_run, version, node_key, status, freshness_key, decision)
-
     event_type = if status == :skipped_fresh, do: :step_skipped_fresh, else: :step_blocked
 
     case Persistence.persist_run_step(next_run, event_type, %{
@@ -326,8 +322,21 @@ defmodule FavnOrchestrator.RunServer.Execution do
            reason: decision.reason,
            freshness_key: freshness_key
          }) do
-      :ok -> {:ok, next_run}
-      {:error, :external_cancel} -> {:error, :external_cancel}
+      :ok ->
+        :ok =
+          record_attempt_freshness_state(
+            next_run,
+            version,
+            node_key,
+            status,
+            freshness_key,
+            decision
+          )
+
+        {:ok, next_run}
+
+      {:error, :external_cancel} ->
+        {:error, :external_cancel}
     end
   end
 
