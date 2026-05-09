@@ -15,6 +15,7 @@ defmodule Favn.Assets.Planner do
   alias Favn.Assets.GraphIndex
   alias Favn.Plan
   alias Favn.Ref
+  alias Favn.TimePeriod
   alias Favn.Window.{Anchor, Key, Runtime, Spec, Validate}
 
   @typedoc """
@@ -266,80 +267,20 @@ defmodule Favn.Assets.Planner do
       window_units_between(spec.kind, anchor_window.start_at, anchor_window.end_at, spec.timezone)
 
     runtime_window_count = max(window_count + spec.lookback, 1)
-    anchor_start = floor_to_kind(anchor_window.start_at, spec.kind, spec.timezone)
-    first_start = shift_kind(anchor_start, spec.kind, -spec.lookback)
+    anchor_start = TimePeriod.floor!(anchor_window.start_at, spec.kind, spec.timezone)
+    first_start = TimePeriod.shift!(anchor_start, spec.kind, -spec.lookback)
 
     for offset <- 0..(runtime_window_count - 1) do
-      start_at = shift_kind(first_start, spec.kind, offset)
-      end_at = shift_kind(start_at, spec.kind, 1)
+      start_at = TimePeriod.shift!(first_start, spec.kind, offset)
+      end_at = TimePeriod.shift!(start_at, spec.kind, 1)
       Runtime.new!(spec.kind, start_at, end_at, anchor_window.key, timezone: spec.timezone)
     end
     |> Enum.sort_by(&window_sort_key/1)
   end
 
   defp window_units_between(kind, %DateTime{} = start_at, %DateTime{} = end_at, timezone) do
-    start_floor = floor_to_kind(start_at, kind, timezone)
-    end_floor = floor_to_kind(end_at, kind, timezone)
-
-    case kind do
-      :hour -> max(div(DateTime.diff(end_floor, start_floor, :second), 3600), 1)
-      :day -> max(Date.diff(DateTime.to_date(end_floor), DateTime.to_date(start_floor)), 1)
-      :month -> max(month_diff(start_floor, end_floor), 1)
-      :year -> max(DateTime.to_date(end_floor).year - DateTime.to_date(start_floor).year, 1)
-    end
-  end
-
-  defp month_diff(start_at, end_at) do
-    start_date = DateTime.to_date(start_at)
-    end_date = DateTime.to_date(end_at)
-    (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
-  end
-
-  defp floor_to_kind(datetime, :hour, timezone),
-    do: datetime |> DateTime.shift_zone!(timezone) |> floor_hour()
-
-  defp floor_to_kind(datetime, :day, timezone),
-    do: datetime |> DateTime.shift_zone!(timezone) |> floor_day()
-
-  defp floor_to_kind(datetime, :month, timezone),
-    do: datetime |> DateTime.shift_zone!(timezone) |> floor_month()
-
-  defp floor_to_kind(datetime, :year, timezone),
-    do: datetime |> DateTime.shift_zone!(timezone) |> floor_year()
-
-  defp floor_hour(%DateTime{} = dt), do: %{dt | minute: 0, second: 0, microsecond: {0, 0}}
-  defp floor_day(%DateTime{} = dt), do: %{dt | hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp floor_month(%DateTime{} = dt),
-    do: %{dt | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp floor_year(%DateTime{} = dt),
-    do: %{dt | month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp shift_kind(datetime, :hour, count), do: DateTime.add(datetime, count * 3600, :second)
-  defp shift_kind(datetime, :day, count), do: shift_day(datetime, count)
-
-  defp shift_kind(%DateTime{} = datetime, :month, count) do
-    date = DateTime.to_date(datetime)
-    total = date.year * 12 + (date.month - 1) + count
-    year = div(total, 12)
-    month = rem(total, 12) + 1
-    {:ok, new_date} = Date.new(year, month, 1)
-    {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
-  end
-
-  defp shift_kind(%DateTime{} = datetime, :year, count) do
-    date = DateTime.to_date(datetime)
-    {:ok, new_date} = Date.new(date.year + count, 1, 1)
-    {:ok, naive} = NaiveDateTime.new(new_date, ~T[00:00:00.000000])
-    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
-  end
-
-  defp shift_day(%DateTime{} = datetime, count) do
-    date = datetime |> DateTime.to_date() |> Date.add(count)
-    {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00])
-    DateTime.from_naive!(naive, datetime.time_zone, Favn.Timezone.database!())
+    {:ok, periods} = TimePeriod.expand_range(kind, start_at, end_at, timezone)
+    max(length(periods), 1)
   end
 
   defp window_sort_key(%Runtime{key: key}), do: {key.start_at_us, Key.encode(key)}

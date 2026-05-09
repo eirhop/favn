@@ -3,6 +3,7 @@ defmodule FavnStorageSqlite.Migrations do
 
   alias Ecto.Adapters.SQL
   alias FavnStorageSqlite.Migrations.AddAuthState
+  alias FavnStorageSqlite.Migrations.AddAssetFreshnessState
   alias FavnStorageSqlite.Migrations.AddBackfillState
   alias FavnStorageSqlite.Migrations.AddIdempotencyRecords
   alias FavnStorageSqlite.Migrations.AddRunEventGlobalSequence
@@ -15,7 +16,8 @@ defmodule FavnStorageSqlite.Migrations do
     {20_260_502_100_000, AddAuthState},
     {20_260_503_100_000, AddIdempotencyRecords},
     {20_260_503_120_000, AddRunEventGlobalSequence},
-    {20_260_505_100_000, RebuildBackfillReadModelsForDtos}
+    {20_260_505_100_000, RebuildBackfillReadModelsForDtos},
+    {20_260_509_100_000, AddAssetFreshnessState}
   ]
   @required_tables [
     "favn_manifest_versions",
@@ -26,6 +28,7 @@ defmodule FavnStorageSqlite.Migrations do
     "favn_pipeline_coverage_baselines",
     "favn_backfill_windows",
     "favn_asset_window_states",
+    "favn_asset_freshness_states",
     "favn_auth_actors",
     "favn_auth_credentials",
     "favn_auth_sessions",

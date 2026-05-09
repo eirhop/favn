@@ -1,8 +1,8 @@
 # favn_storage_sqlite
 
 Purpose: SQLite implementation of the orchestrator storage adapter, including
-schema migrations, command idempotency records, JSON-safe run/event/backfill DTO
-persistence, and canonical payload persistence.
+schema migrations, command idempotency records, JSON-safe run/event/backfill and
+freshness DTO persistence, and canonical payload persistence.
 
 Code:
 - `apps/favn_storage_sqlite/lib/favn/storage/adapter/sqlite.ex`
@@ -10,6 +10,7 @@ Code:
 - Auth/session/audit schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_auth_state.ex`
 - Command idempotency schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_idempotency_records.ex`
 - Run-event global sequence migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_run_event_global_sequence.ex`
+- Asset freshness state migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_asset_freshness_state.ex`
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/diagnostics.ex`
 
 Tests:

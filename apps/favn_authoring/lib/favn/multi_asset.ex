@@ -44,6 +44,7 @@ defmodule Favn.MultiAsset do
 
         @doc "Extract orders"
         @relation true
+        @freshness :daily
         asset :orders do
           rest do
             path "/orders.json"
@@ -61,7 +62,7 @@ defmodule Favn.MultiAsset do
   - define exactly one public `asset/1` runtime function
   - define at least one `asset :name do ... end` declaration
   - use at most one `defaults do ... end` block
-  - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` directly above each declared asset
+  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, and `@relation` directly above each declared asset
 
   ## Supported attributes and blocks
 
@@ -71,6 +72,7 @@ defmodule Favn.MultiAsset do
   - `@meta`
   - `@depends`
   - `@window`
+  - `@freshness`
   - `@relation`
   - `asset :name do ... end`
 
@@ -82,6 +84,20 @@ defmodule Favn.MultiAsset do
   - `meta ...`
   - `window Favn.Window.*(...)`
   - `rest do ... end`
+
+  ## Freshness
+
+  Generated assets use the same `@freshness` input contract as `Favn.Asset`.
+  Attach at most one `@freshness` directly above the `asset :name do` declaration
+  it belongs to.
+
+  Supported V1 values are `:daily`, `{:daily, timezone: "Europe/Oslo"}`,
+  `[max_age: {:hours, 6}]`, `[window_success: true]`, and `:always`. Windowed
+  generated assets default to exact window-success freshness; non-windowed assets
+  have no implicit freshness.
+
+  Read `Favn.Freshness.Policy` for policy input details and
+  `Favn.Freshness.Key` for stored freshness keys.
 
   `asset :name do ... end` currently supports:
 
@@ -134,6 +150,7 @@ defmodule Favn.MultiAsset do
   ## See also
 
   - `Favn.Asset`
+  - `Favn.Freshness.Policy`
   - `Favn.Namespace`
   """
 
@@ -149,6 +166,7 @@ defmodule Favn.MultiAsset do
   defmacro __using__(_opts) do
     quote do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
+      Module.register_attribute(__MODULE__, :freshness, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :runtime_config, accumulate: true)
@@ -428,6 +446,7 @@ defmodule Favn.MultiAsset do
     decl = fetch_decl!(env.module, decl_fun, env)
 
     depends = env.module |> DSLCompiler.fetch_accum_attribute(:depends) |> Enum.reverse()
+    freshness = env.module |> DSLCompiler.fetch_accum_attribute(:freshness) |> Enum.reverse()
     meta = Module.get_attribute(env.module, :meta)
     window = env.module |> DSLCompiler.fetch_accum_attribute(:window) |> Enum.reverse()
     relation = env.module |> DSLCompiler.fetch_accum_attribute(:relation) |> Enum.reverse()
@@ -436,6 +455,7 @@ defmodule Favn.MultiAsset do
     validate_relation_attr!(relation, env)
 
     Module.delete_attribute(env.module, :depends)
+    Module.delete_attribute(env.module, :freshness)
     Module.delete_attribute(env.module, :meta)
     Module.delete_attribute(env.module, :window)
     Module.delete_attribute(env.module, :relation)
@@ -450,6 +470,7 @@ defmodule Favn.MultiAsset do
       |> Map.merge(normalize_meta!(meta, env))
 
     merged_window = normalize_window!(window, env) || defaults.window_spec
+    merged_freshness = normalize_freshness!(freshness, merged_window, env)
     merged_rest = merge_rest(defaults.rest, decl.rest)
     merged_config = if is_nil(merged_rest), do: %{}, else: %{rest: merged_rest}
 
@@ -462,6 +483,7 @@ defmodule Favn.MultiAsset do
       file: decl.file,
       line: decl.line,
       depends: depends,
+      freshness: merged_freshness,
       meta: merged_meta,
       window_spec: merged_window,
       relation: relation,
@@ -526,7 +548,8 @@ defmodule Favn.MultiAsset do
       depends_on: depends_on,
       config: raw_asset.config,
       runtime_config: runtime_config,
-      window_spec: raw_asset.window_spec
+      window_spec: raw_asset.window_spec,
+      freshness: raw_asset.freshness
     }
 
     try do
@@ -825,6 +848,13 @@ defmodule Favn.MultiAsset do
     )
   end
 
+  defp normalize_freshness!(freshness, window_spec, env) do
+    Asset.normalize_freshness!(freshness, window_spec, "per asset declaration")
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(env.file, env.line, error.message)
+  end
+
   defp validate_relation_attr!([], _env), do: :ok
 
   defp validate_relation_attr!([relation], env) do
@@ -851,13 +881,16 @@ defmodule Favn.MultiAsset do
 
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
     depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
+    freshness = DSLCompiler.fetch_accum_attribute(env.module, :freshness)
     meta = Module.get_attribute(env.module, :meta)
     window = DSLCompiler.fetch_accum_attribute(env.module, :window)
     relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
     doc = DSLCompiler.normalize_doc(Module.get_attribute(env.module, :doc))
 
-    if depends != [] or not is_nil(meta) or window != [] or relation != [] or not is_nil(doc) do
+    if depends != [] or freshness != [] or not is_nil(meta) or window != [] or relation != [] or
+         not is_nil(doc) do
       Module.delete_attribute(env.module, :depends)
+      Module.delete_attribute(env.module, :freshness)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
       Module.delete_attribute(env.module, :relation)
@@ -866,7 +899,7 @@ defmodule Favn.MultiAsset do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@doc/@depends/@meta/@window/@relation on #{kind} #{name}/#{arity} requires asset :name do immediately below those attributes"
+        "@doc/@depends/@freshness/@meta/@window/@relation on #{kind} #{name}/#{arity} requires asset :name do immediately below those attributes"
       )
     else
       :ok
@@ -875,13 +908,16 @@ defmodule Favn.MultiAsset do
 
   defp ensure_no_pending_attributes!(env) do
     depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
+    freshness = DSLCompiler.fetch_accum_attribute(env.module, :freshness)
     meta = Module.get_attribute(env.module, :meta)
     window = DSLCompiler.fetch_accum_attribute(env.module, :window)
     relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
     pending_doc? = pending_doc?(env.module)
 
-    if depends != [] or not is_nil(meta) or window != [] or relation != [] or pending_doc? do
+    if depends != [] or freshness != [] or not is_nil(meta) or window != [] or relation != [] or
+         pending_doc? do
       Module.delete_attribute(env.module, :depends)
+      Module.delete_attribute(env.module, :freshness)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
       Module.delete_attribute(env.module, :relation)
@@ -890,7 +926,7 @@ defmodule Favn.MultiAsset do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@doc/@meta/@depends/@window/@relation must be attached to an immediately following asset :name do"
+        "@doc/@meta/@depends/@freshness/@window/@relation must be attached to an immediately following asset :name do"
       )
     else
       :ok

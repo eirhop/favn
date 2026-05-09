@@ -23,13 +23,14 @@ defmodule Favn.Assets do
         @asset true
         @doc "Build daily sales"
         @depends :extract_orders
+        @freshness :daily
         def daily_sales(_ctx), do: :ok
       end
 
   ## Authoring contract
 
   - each `@asset` must be followed immediately by one public function with arity 1
-  - attach `@doc`, `@meta`, `@depends`, `@window`, and `@relation` to that same function
+  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, and `@relation` to that same function
   - use `:asset_name` for same-module dependencies and `{Module, :asset_name}` across modules
 
   ## Supported attributes
@@ -39,7 +40,18 @@ defmodule Favn.Assets do
   - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
   - `@depends`: repeatable dependency declaration
   - `@window`: one `Favn.Window.*` spec
+  - `@freshness`: optional asset freshness policy
   - `@relation`: `true` or a keyword/map relation override
+
+  ## Freshness
+
+  `Favn.Assets` supports the same per-asset `@freshness` values as `Favn.Asset`:
+  `:daily`, `{:daily, timezone: "Europe/Oslo"}`, `[max_age: {:hours, 6}]`,
+  `[window_success: true]`, and `:always`. Attach at most one `@freshness`
+  between `@asset true` and the immediately following public asset function.
+
+  Windowed function assets default to exact window-success freshness. Non-windowed
+  function assets have no implicit freshness.
 
   `@depends` supports:
 
@@ -54,6 +66,7 @@ defmodule Favn.Assets do
   ## See also
 
   - `Favn.Asset`
+  - `Favn.Freshness.Policy`
   - `Favn.MultiAsset`
   """
 
@@ -65,6 +78,7 @@ defmodule Favn.Assets do
     quote do
       Module.register_attribute(__MODULE__, :asset, persist: false)
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
+      Module.register_attribute(__MODULE__, :freshness, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
@@ -94,6 +108,11 @@ defmodule Favn.Assets do
                 |> Module.get_attribute(:depends)
                 |> Enum.reverse()
 
+              freshness =
+                env.module
+                |> Module.get_attribute(:freshness)
+                |> Enum.reverse()
+
               meta = Module.get_attribute(env.module, :meta)
 
               window =
@@ -104,6 +123,7 @@ defmodule Favn.Assets do
               relation = env.module |> Module.get_attribute(:relation) |> Enum.reverse()
               validate_relation_attr!(relation, env)
               Module.delete_attribute(env.module, :depends)
+              Module.delete_attribute(env.module, :freshness)
               Module.delete_attribute(env.module, :meta)
               Module.delete_attribute(env.module, :window)
               Module.delete_attribute(env.module, :relation)
@@ -117,6 +137,7 @@ defmodule Favn.Assets do
                 line: env.line,
                 asset_decl: asset_opts,
                 depends: depends,
+                freshness: freshness,
                 meta: meta,
                 window: window,
                 relation: relation
@@ -150,19 +171,20 @@ defmodule Favn.Assets do
     end
 
     case {
-      Module.get_attribute(env.module, :depends),
+      Module.get_attribute(env.module, :depends) || [],
+      Module.get_attribute(env.module, :freshness) || [],
       Module.get_attribute(env.module, :meta),
-      Module.get_attribute(env.module, :window),
-      Module.get_attribute(env.module, :relation)
+      Module.get_attribute(env.module, :window) || [],
+      Module.get_attribute(env.module, :relation) || []
     } do
-      {[], nil, [], []} ->
+      {[], [], nil, [], []} ->
         :ok
 
       _ ->
         compile_error!(
           env.file,
           env.line,
-          "@depends/@meta/@window/@relation must be attached to an immediately following @asset function"
+          "@depends/@freshness/@meta/@window/@relation must be attached to an immediately following @asset function"
         )
     end
 
@@ -211,6 +233,7 @@ defmodule Favn.Assets do
     meta = normalize_meta!(raw_asset.meta, raw_asset)
     depends_on = normalize_depends!(raw_asset.depends, raw_asset)
     window_spec = normalize_window!(raw_asset.window, raw_asset)
+    freshness = normalize_freshness!(raw_asset.freshness, window_spec, raw_asset)
 
     asset = %Asset{
       module: raw_asset.module,
@@ -225,7 +248,8 @@ defmodule Favn.Assets do
       meta: meta,
       depends_on: depends_on,
       config: %{},
-      window_spec: window_spec
+      window_spec: window_spec,
+      freshness: freshness
     }
 
     try do
@@ -278,6 +302,13 @@ defmodule Favn.Assets do
       raw_asset.line,
       "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
     )
+  end
+
+  defp normalize_freshness!(freshness, window_spec, raw_asset) do
+    Asset.normalize_freshness!(freshness, window_spec, "per @asset function")
+  rescue
+    error in ArgumentError ->
+      compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
   defp validate_relation_attr!([], _env), do: :ok
@@ -335,12 +366,14 @@ defmodule Favn.Assets do
   defp validate_no_stray_asset_attributes!(env, kind, name, args)
        when kind in [:def, :defp] do
     depends = Module.get_attribute(env.module, :depends)
+    freshness = Module.get_attribute(env.module, :freshness) || []
     meta = Module.get_attribute(env.module, :meta)
     window = Module.get_attribute(env.module, :window)
     relation = Module.get_attribute(env.module, :relation)
 
-    if depends != [] or not is_nil(meta) or window != [] or relation != [] do
+    if depends != [] or freshness != [] or not is_nil(meta) or window != [] or relation != [] do
       Module.delete_attribute(env.module, :depends)
+      Module.delete_attribute(env.module, :freshness)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
       Module.delete_attribute(env.module, :relation)
@@ -350,7 +383,7 @@ defmodule Favn.Assets do
       compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window/@relation on #{kind} #{name}/#{arity} requires @asset immediately above that function"
+        "@depends/@freshness/@meta/@window/@relation on #{kind} #{name}/#{arity} requires @asset immediately above that function"
       )
     else
       :ok

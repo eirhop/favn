@@ -4,6 +4,7 @@ defmodule Favn.Manifest.Rehydrate do
   """
 
   alias Favn.Asset.RelationInput
+  alias Favn.Freshness.Policy, as: FreshnessPolicy
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Build
@@ -82,6 +83,7 @@ defmodule Favn.Manifest.Rehydrate do
       config: value |> field_value(:config, %{}) |> plain_map(),
       relation: value |> field_value(:relation) |> build_relation(),
       window: value |> field_value(:window) |> build_window_spec(),
+      freshness: value |> field_value(:freshness) |> build_freshness(),
       materialization: value |> field_value(:materialization) |> decode_materialization(),
       relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
       runtime_config: value |> field_value(:runtime_config, %{}) |> build_runtime_config(),
@@ -150,6 +152,52 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_window_spec(other), do: other
+
+  defp build_freshness(nil), do: nil
+  defp build_freshness(%FreshnessPolicy{} = value), do: FreshnessPolicy.from_value!(value)
+
+  defp build_freshness(value) when is_map(value) do
+    value
+    |> normalize_freshness_map()
+    |> FreshnessPolicy.from_value!()
+  end
+
+  defp build_freshness(value) when is_binary(value) do
+    value
+    |> decode_known_atom([:daily, :day, :always])
+    |> FreshnessPolicy.from_value!()
+  end
+
+  defp build_freshness(value), do: FreshnessPolicy.from_value!(value)
+
+  defp normalize_freshness_map(value) do
+    mode =
+      value
+      |> field_value(:mode)
+      |> decode_known_atom([:calendar_period, :max_age, :window_success, :always])
+
+    case mode do
+      :calendar_period ->
+        %{
+          mode: mode,
+          kind: value |> field_value(:kind) |> decode_known_atom([:day]),
+          timezone: field_value(value, :timezone)
+        }
+
+      :max_age ->
+        %{
+          mode: mode,
+          amount: field_value(value, :amount),
+          unit: value |> field_value(:unit) |> decode_known_atom([:second, :minute, :hour, :day])
+        }
+
+      :window_success ->
+        %{mode: mode}
+
+      :always ->
+        %{mode: mode}
+    end
+  end
 
   defp decode_materialization(nil), do: nil
   defp decode_materialization(:view), do: :view

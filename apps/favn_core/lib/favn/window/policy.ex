@@ -18,6 +18,7 @@ defmodule Favn.Window.Policy do
   a no-window run.
   """
 
+  alias Favn.TimePeriod
   alias Favn.Window.{Anchor, Request, Validate}
 
   @type kind :: Validate.kind()
@@ -172,21 +173,19 @@ defmodule Favn.Window.Policy do
       ) do
     timezone = policy.timezone || schedule_timezone || "Etc/UTC"
 
-    with :ok <- Validate.timezone(timezone) do
-      local_due = DateTime.shift_zone!(due_at, timezone, Favn.Timezone.database!())
-      end_at = floor_to_kind(local_due, policy.kind)
-      start_at = shift_kind(end_at, policy.kind, -1)
-
-      Anchor.new(policy.kind, start_at, end_at, timezone: timezone)
+    with :ok <- Validate.timezone(timezone),
+         {:ok, period} <- TimePeriod.previous_complete(policy.kind, due_at, timezone) do
+      Anchor.new(period.kind, period.start_at, period.end_at, timezone: period.timezone)
     end
   end
 
   @spec normalize_kind(term()) :: {:ok, kind()} | {:error, term()}
-  def normalize_kind(kind) when kind in [:hour, :hourly], do: {:ok, :hour}
-  def normalize_kind(kind) when kind in [:day, :daily], do: {:ok, :day}
-  def normalize_kind(kind) when kind in [:month, :monthly], do: {:ok, :month}
-  def normalize_kind(kind) when kind in [:year, :yearly], do: {:ok, :year}
-  def normalize_kind(other), do: {:error, {:invalid_window_policy_kind, other}}
+  def normalize_kind(kind) do
+    case TimePeriod.normalize_kind(kind) do
+      {:ok, normalized_kind} -> {:ok, normalized_kind}
+      {:error, {:invalid_period_kind, other}} -> {:error, {:invalid_window_policy_kind, other}}
+    end
+  end
 
   defp ensure_matching_kind(%__MODULE__{kind: kind}, %Request{kind: kind}), do: :ok
 
@@ -233,45 +232,5 @@ defmodule Favn.Window.Policy do
 
   defp field_value(value, field) when is_map(value) do
     Map.get(value, field, Map.get(value, Atom.to_string(field)))
-  end
-
-  defp floor_to_kind(datetime, :hour), do: %{datetime | minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp floor_to_kind(datetime, :day),
-    do: %{datetime | hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp floor_to_kind(datetime, :month),
-    do: %{datetime | day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp floor_to_kind(datetime, :year),
-    do: %{datetime | month: 1, day: 1, hour: 0, minute: 0, second: 0, microsecond: {0, 0}}
-
-  defp shift_kind(datetime, :hour, count), do: DateTime.add(datetime, count * 3600, :second)
-  defp shift_kind(datetime, :day, count), do: shift_day(datetime, count)
-  defp shift_kind(datetime, :month, count), do: shift_month(datetime, count)
-  defp shift_kind(datetime, :year, count), do: shift_year(datetime, count)
-
-  defp shift_day(%DateTime{} = datetime, count) do
-    date = datetime |> DateTime.to_date() |> Date.add(count)
-    datetime_from_date!(date.year, date.month, date.day, datetime.time_zone)
-  end
-
-  defp shift_month(%DateTime{} = datetime, count) do
-    date = DateTime.to_date(datetime)
-    total = date.year * 12 + (date.month - 1) + count
-    year = div(total, 12)
-    month = rem(total, 12) + 1
-    datetime_from_date!(year, month, 1, datetime.time_zone)
-  end
-
-  defp shift_year(%DateTime{} = datetime, count) do
-    date = DateTime.to_date(datetime)
-    datetime_from_date!(date.year + count, 1, 1, datetime.time_zone)
-  end
-
-  defp datetime_from_date!(year, month, day, timezone) do
-    {:ok, date} = Date.new(year, month, day)
-    {:ok, naive} = NaiveDateTime.new(date, ~T[00:00:00])
-    DateTime.from_naive!(naive, timezone, Favn.Timezone.database!())
   end
 end

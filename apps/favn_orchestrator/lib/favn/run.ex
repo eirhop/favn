@@ -8,6 +8,7 @@ defmodule Favn.Run do
 
   alias Favn.Ref
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
 
   @type status :: :running | :ok | :partial | :error | :cancelled | :timed_out
 
@@ -43,7 +44,7 @@ defmodule Favn.Run do
           lineage_depth: non_neg_integer(),
           operator_reason: term() | nil,
           asset_results: %{Ref.t() => AssetResult.t()},
-          node_results: %{Favn.Plan.node_key() => AssetResult.t()},
+          node_results: %{Favn.Plan.node_key() => NodeResult.t() | AssetResult.t()},
           error: term() | nil,
           terminal_reason: map() | nil
         }

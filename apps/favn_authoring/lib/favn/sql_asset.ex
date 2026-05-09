@@ -39,6 +39,7 @@ defmodule Favn.SQLAsset do
         @doc "Build the order fact mart."
         @meta owner: "analytics", category: :sales, tags: [:mart]
         @window Favn.Window.daily(lookback: 1)
+        @freshness [window_success: true]
         @depends MyApp.Warehouse.Raw.Orders
         @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
@@ -56,7 +57,7 @@ defmodule Favn.SQLAsset do
 
   - define exactly one `query/1` declaration
   - declare exactly one `@materialized`
-  - attach `@doc`, `@meta`, `@depends`, `@window`, `@materialized`, and optional `@relation` before `query`
+  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@materialized`, and optional `@relation` before `query`
   - use `~SQL` for inline SQL bodies
   - use `query file: "..."` for asset-local file-backed SQL loaded at compile
     time
@@ -67,8 +68,22 @@ defmodule Favn.SQLAsset do
   - `@meta`: keyword or map metadata such as `owner`, `category`, and `tags`
   - `@depends`: repeatable dependency declaration
   - `@window`: one `Favn.Window.*` spec
+  - `@freshness`: optional asset freshness policy
   - `@relation`: optional owned relation declaration
   - `@materialized`: required SQL materialization strategy
+
+  ## Freshness
+
+  SQL assets use the same `@freshness` contract as `Favn.Asset`. Attach at most
+  one `@freshness` before `query`.
+
+  Supported V1 values are `:daily`, `{:daily, timezone: "Europe/Oslo"}`,
+  `[max_age: {:hours, 6}]`, `[window_success: true]`, and `:always`. Windowed SQL
+  assets default to exact window-success freshness; non-windowed SQL assets have
+  no implicit freshness.
+
+  Read `Favn.Freshness.Policy` for policy input details and
+  `Favn.Freshness.Key` for stored freshness keys.
 
   `@depends` supports:
 
@@ -118,13 +133,14 @@ defmodule Favn.SQLAsset do
   - defining more than one query
   - forgetting `@materialized`
   - using interpolation inside `~SQL`
-  - using invalid `@depends`, `@window`, or `@relation` values
+  - using invalid `@depends`, `@window`, `@freshness`, or `@relation` values
   - expecting `asset/1` to be user-defined in a `Favn.SQLAsset` module
 
   ## See also
 
   - `Favn.SQL`
   - `Favn.Window`
+  - `Favn.Freshness.Policy`
   - `Favn.Connection`
   """
 
@@ -147,6 +163,7 @@ defmodule Favn.SQLAsset do
   defmacro __using__(_opts) do
     quote do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
+      Module.register_attribute(__MODULE__, :freshness, accumulate: true)
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :window, accumulate: true)
@@ -300,6 +317,10 @@ defmodule Favn.SQLAsset do
         :depends,
         env.module |> DSLCompiler.fetch_accum_attribute(:depends) |> Enum.reverse()
       )
+      |> Map.put(
+        :freshness,
+        env.module |> DSLCompiler.fetch_accum_attribute(:freshness) |> Enum.reverse()
+      )
       |> Map.put(:meta, Module.get_attribute(env.module, :meta))
       |> Map.put(
         :window,
@@ -369,6 +390,7 @@ defmodule Favn.SQLAsset do
     depends_on = normalize_depends!(raw_definition.depends, raw_definition)
     meta = normalize_meta!(raw_definition.meta, raw_definition)
     window_spec = normalize_window!(raw_definition.window, raw_definition)
+    freshness = normalize_freshness!(raw_definition.freshness, window_spec, raw_definition)
 
     materialization =
       normalize_materialized!(raw_definition.materialized, window_spec, raw_definition)
@@ -411,6 +433,7 @@ defmodule Favn.SQLAsset do
       config: %{},
       relation_inputs: relation_inputs,
       window_spec: window_spec,
+      freshness: freshness,
       relation: relation,
       materialization: materialization
     }
@@ -484,6 +507,13 @@ defmodule Favn.SQLAsset do
       raw_definition.line,
       "invalid @window value #{inspect(value)}; expected Favn.Window spec like Favn.Window.daily()"
     )
+  end
+
+  defp normalize_freshness!(freshness, window_spec, raw_definition) do
+    Asset.normalize_freshness!(freshness, window_spec, "before query")
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
   defp normalize_materialized!([value], window_spec, raw_definition) do
@@ -640,13 +670,16 @@ defmodule Favn.SQLAsset do
 
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
     depends = DSLCompiler.fetch_accum_attribute(env.module, :depends)
+    freshness = DSLCompiler.fetch_accum_attribute(env.module, :freshness)
     meta = Module.get_attribute(env.module, :meta)
     window = DSLCompiler.fetch_accum_attribute(env.module, :window)
     relation = DSLCompiler.fetch_accum_attribute(env.module, :relation)
     materialized = DSLCompiler.fetch_accum_attribute(env.module, :materialized)
 
-    if depends != [] or not is_nil(meta) or window != [] or relation != [] or materialized != [] do
+    if depends != [] or freshness != [] or not is_nil(meta) or window != [] or relation != [] or
+         materialized != [] do
       Module.delete_attribute(env.module, :depends)
+      Module.delete_attribute(env.module, :freshness)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
       Module.delete_attribute(env.module, :relation)
@@ -655,7 +688,7 @@ defmodule Favn.SQLAsset do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@depends/@meta/@window/@relation/@materialized on #{kind} #{name}/#{arity} requires query immediately below those attributes"
+        "@depends/@freshness/@meta/@window/@relation/@materialized on #{kind} #{name}/#{arity} requires query immediately below those attributes"
       )
     else
       :ok

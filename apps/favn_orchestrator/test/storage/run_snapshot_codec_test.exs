@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   alias Favn.Manifest.Version
   alias Favn.Plan
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.ManifestCodec
@@ -280,6 +281,72 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert [%AssetResult{} = restored_result] = restored.result.asset_results
     assert restored_result.finished_at == nil
     assert restored_result.next_retry_at == nil
+  end
+
+  test "round-trips node results with freshness statuses" do
+    version = manifest_version("mv_run_snapshot_node_results", __MODULE__.Asset)
+    now = DateTime.utc_now()
+    node_key = {{__MODULE__.Asset, :asset}, nil}
+
+    skipped = %NodeResult{
+      node_key: node_key,
+      ref: {__MODULE__.Asset, :asset},
+      window: %{date: ~D[2026-05-08]},
+      stage: 0,
+      status: :skipped_fresh,
+      started_at: now,
+      finished_at: now,
+      duration_ms: 0,
+      reason: %{fresh: true},
+      freshness_key: "asset:2026-05-08",
+      input_versions: %{upstream: "v1"},
+      attempt_count: 0,
+      max_attempts: 1,
+      runner_execution_id: "runner-1",
+      meta: %{cache: "hit"},
+      attempts: []
+    }
+
+    blocked = %NodeResult{
+      node_key: node_key,
+      ref: {__MODULE__.Asset, :asset},
+      stage: 1,
+      status: :blocked,
+      reason: :upstream_error,
+      attempt_count: 0,
+      max_attempts: 2,
+      attempts: [%{attempt: 0, status: :blocked, reason: :upstream_error}]
+    }
+
+    run =
+      "run_snapshot_node_results"
+      |> run_state(version, __MODULE__.Asset)
+      |> RunState.transition(status: :partial, result: %{node_results: [skipped, blocked]})
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert [restored_skipped, restored_blocked] = restored.result.node_results
+    assert %NodeResult{status: :skipped_fresh} = restored_skipped
+    assert restored_skipped.node_key == node_key
+    assert restored_skipped.ref == {__MODULE__.Asset, :asset}
+    assert restored_skipped.freshness_key == "asset:2026-05-08"
+    assert restored_skipped.input_versions == %{upstream: "v1"}
+    assert restored_skipped.reason == %{"fresh" => true}
+    assert restored_skipped.started_at == now
+
+    assert %NodeResult{status: :blocked} = restored_blocked
+    assert restored_blocked.reason == "upstream_error"
+
+    assert restored_blocked.attempts == [
+             %{attempt: 0, status: "blocked", reason: "upstream_error"}
+           ]
   end
 
   test "rejects refs that are not present in the associated manifest" do

@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Storage do
 
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter, as: StorageAdapter
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -200,6 +201,38 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec put_asset_freshness_state(AssetFreshnessState.t()) :: :ok | {:error, term()}
+  def put_asset_freshness_state(%AssetFreshnessState{} = state) do
+    optional_adapter_call(
+      :put_asset_freshness_state,
+      [state],
+      :asset_freshness_state_not_supported
+    )
+  end
+
+  @spec get_asset_freshness_state(module(), atom(), String.t()) ::
+          {:ok, AssetFreshnessState.t()} | {:error, term()}
+  def get_asset_freshness_state(asset_ref_module, asset_ref_name, freshness_key)
+      when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(freshness_key) do
+    optional_adapter_call(
+      :get_asset_freshness_state,
+      [asset_ref_module, asset_ref_name, freshness_key],
+      :asset_freshness_state_not_supported
+    )
+  end
+
+  @spec list_asset_freshness_states(keyword()) ::
+          {:ok, Page.t(AssetFreshnessState.t())} | {:error, term()}
+  def list_asset_freshness_states(filters \\ []) when is_list(filters) do
+    with {:ok, page_opts} <- Page.normalize_opts(filters) do
+      optional_adapter_call(
+        :list_asset_freshness_states,
+        [Keyword.merge(filters, page_opts)],
+        :asset_freshness_state_not_supported
+      )
+    end
+  end
+
   @spec replace_backfill_read_models(
           keyword(),
           [CoverageBaseline.t()],
@@ -366,11 +399,16 @@ defmodule FavnOrchestrator.Storage do
   end
 
   defp optional_adapter_call(function, args) when is_atom(function) and is_list(args) do
+    optional_adapter_call(function, args, :idempotency_not_supported)
+  end
+
+  defp optional_adapter_call(function, args, unsupported_reason)
+       when is_atom(function) and is_list(args) do
     adapter_call(fn adapter, opts ->
       if function_exported?(adapter, function, length(args) + 1) do
         apply(adapter, function, args ++ [opts])
       else
-        {:error, :idempotency_not_supported}
+        {:error, unsupported_reason}
       end
     end)
   end

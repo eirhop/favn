@@ -7,6 +7,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -15,6 +16,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
+  alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
@@ -529,6 +531,69 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
+  def put_asset_freshness_state(%AssetFreshnessState{} = state, opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      sql =
+        """
+        INSERT INTO favn_asset_freshness_states (
+          asset_ref_module, asset_ref_name, freshness_key, status, freshness_version,
+          latest_success_run_id, latest_attempt_run_id, latest_attempt_status,
+          manifest_version_id, manifest_content_hash, record_payload, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT(asset_ref_module, asset_ref_name, freshness_key) DO UPDATE SET
+          status = EXCLUDED.status,
+          freshness_version = EXCLUDED.freshness_version,
+          latest_success_run_id = EXCLUDED.latest_success_run_id,
+          latest_attempt_run_id = EXCLUDED.latest_attempt_run_id,
+          latest_attempt_status = EXCLUDED.latest_attempt_status,
+          manifest_version_id = EXCLUDED.manifest_version_id,
+          manifest_content_hash = EXCLUDED.manifest_content_hash,
+          record_payload = EXCLUDED.record_payload,
+          updated_at = EXCLUDED.updated_at
+        """
+
+      case SQL.query(repo, sql, asset_freshness_state_params(state)) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_asset_freshness_state(asset_ref_module, asset_ref_name, freshness_key, opts)
+      when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(freshness_key) and
+             is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      sql =
+        asset_freshness_state_select() <>
+          "\nWHERE asset_ref_module = $1 AND asset_ref_name = $2 AND freshness_key = $3\nLIMIT 1"
+
+      params = [Atom.to_string(asset_ref_module), Atom.to_string(asset_ref_name), freshness_key]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: [row]}} -> decode_asset_freshness_state_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_asset_freshness_states(filters, opts) when is_list(filters) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, page_opts} <- page_opts(filters),
+         {:ok, sql, params} <-
+           build_select_query(
+             asset_freshness_state_select(),
+             read_filters(filters),
+             asset_freshness_state_filter_specs(),
+             "ORDER BY updated_at DESC, asset_ref_module ASC, asset_ref_name ASC, freshness_key ASC"
+           ) do
+      query_and_decode_page(repo, sql, params, page_opts, &decode_asset_freshness_state_row/1)
+    end
+  end
+
+  @impl true
   def replace_backfill_read_models(
         scope,
         coverage_baselines,
@@ -684,6 +749,23 @@ defmodule Favn.Storage.Adapter.Postgres do
     ]
   end
 
+  defp asset_freshness_state_params(%AssetFreshnessState{} = state) do
+    [
+      Atom.to_string(state.asset_ref_module),
+      Atom.to_string(state.asset_ref_name),
+      state.freshness_key,
+      Atom.to_string(state.status),
+      state.freshness_version,
+      state.latest_success_run_id,
+      state.latest_attempt_run_id,
+      optional_atom_to_string(state.latest_attempt_status),
+      state.manifest_version_id,
+      state.manifest_content_hash,
+      encode_asset_freshness_state(state),
+      state.updated_at
+    ]
+  end
+
   defp coverage_baseline_select do
     """
     SELECT record_payload
@@ -704,6 +786,14 @@ defmodule Favn.Storage.Adapter.Postgres do
     """
     SELECT record_payload
     FROM favn_asset_window_states
+    """
+    |> String.trim_trailing()
+  end
+
+  defp asset_freshness_state_select do
+    """
+    SELECT record_payload
+    FROM favn_asset_freshness_states
     """
     |> String.trim_trailing()
   end
@@ -741,6 +831,21 @@ defmodule Favn.Storage.Adapter.Postgres do
       window_kind: {"window_kind", &Atom.to_string/1},
       status: {"status", &Atom.to_string/1},
       manifest_version_id: {"manifest_version_id", & &1}
+    }
+  end
+
+  defp asset_freshness_state_filter_specs do
+    %{
+      asset_ref_module: {"asset_ref_module", &Atom.to_string/1},
+      asset_ref_name: {"asset_ref_name", &Atom.to_string/1},
+      freshness_key: {"freshness_key", & &1},
+      status: {"status", &Atom.to_string/1},
+      freshness_version: {"freshness_version", & &1},
+      latest_success_run_id: {"latest_success_run_id", & &1},
+      latest_attempt_run_id: {"latest_attempt_run_id", & &1},
+      latest_attempt_status: {"latest_attempt_status", &Atom.to_string/1},
+      manifest_version_id: {"manifest_version_id", & &1},
+      manifest_content_hash: {"manifest_content_hash", & &1}
     }
   end
 
@@ -866,6 +971,9 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp decode_asset_window_state_row([record_payload]),
     do: AssetWindowStateCodec.decode(record_payload)
+
+  defp decode_asset_freshness_state_row([record_payload]),
+    do: AssetFreshnessStateCodec.decode(record_payload)
 
   defp persist_run(repo, run) do
     repo.transact(fn ->
@@ -1493,6 +1601,19 @@ defmodule Favn.Storage.Adapter.Postgres do
         raise ArgumentError, "invalid asset window state payload: #{inspect(reason)}"
     end
   end
+
+  defp encode_asset_freshness_state(%AssetFreshnessState{} = state) do
+    case AssetFreshnessStateCodec.encode(state) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid asset freshness state payload: #{inspect(reason)}"
+    end
+  end
+
+  defp optional_atom_to_string(nil), do: nil
+  defp optional_atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
 
   defp encode_run_snapshot(run) do
     case RunSnapshotCodec.encode_run(run) do

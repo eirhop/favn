@@ -194,6 +194,7 @@ defmodule FavnOrchestrator.BackfillManager do
       child_opts =
         opts
         |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id])
+        |> default_child_refresh()
         |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
         |> Keyword.put(:anchor_window, anchor)
         |> Keyword.put(:parent_run_id, parent.id)
@@ -210,6 +211,14 @@ defmodule FavnOrchestrator.BackfillManager do
         {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp default_child_refresh(opts) do
+    if Keyword.has_key?(opts, :refresh) or Keyword.has_key?(opts, :refresh_policy) do
+      opts
+    else
+      Keyword.put(opts, :refresh, :missing)
+    end
   end
 
   defp submit_child_run(pipeline_module, child_opts, opts) do

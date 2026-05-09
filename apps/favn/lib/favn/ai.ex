@@ -37,6 +37,11 @@ defmodule Favn.AI do
     `Favn.Window` if needed.
   - To declare required runtime configuration or secrets for assets, read
     `Favn.Asset` and `Favn.RuntimeConfig.Ref`.
+  - To declare asset freshness or understand skip/force behavior, read
+    `Favn.Freshness`, then `Favn.Freshness.Policy` for `@freshness` input values
+    and `Favn.Freshness.Key` for stored freshness keys. Asset DSL docs for
+    `Favn.Asset`, `Favn.SQLAsset`, `Favn.MultiAsset`, and `Favn.Assets` show
+    where `@freshness` must be attached.
   - To author a source-system raw landing asset, read `Favn.Asset`, then
     `Favn.SQLClient`, `Favn.Namespace`, and the standalone tutorial at
     `examples/basic-workflow-tutorial`. The canonical pattern is: declare
@@ -104,6 +109,15 @@ defmodule Favn.AI do
     resolution, or the exact `%Favn.Pipeline.Resolution{}` shape
   - `Favn.Assets.Planner`: when you need topological stages, dependency
     expansion, anchor windows, or backfill planning
+  - `Favn.Freshness.Policy`: when you need accepted `@freshness` values such as
+    `:daily`, `{:daily, timezone: "Europe/Oslo"}`, `[max_age: {:hours, 6}]`,
+    `[window_success: true]`, and `:always`
+  - `Favn.Freshness.Key`: when you need exact freshness-state keys for latest,
+    calendar, or window-scoped successes
+  - `FavnOrchestrator.RefreshPolicy`: when orchestrator run submission needs
+    `:auto`, `:force`, `:missing`, or selected forced assets
+  - `FavnOrchestrator.Freshness.Query`: when internal control-plane code needs
+    to explain stale assets from current upstream freshness versions
   - `Favn.Backfill.RangeResolver`: when operator backfill input must become
     concrete hourly/daily/monthly/yearly anchors before submission
   - `FavnOrchestrator.BackfillManager`: when working inside the orchestrator on
@@ -139,6 +153,10 @@ defmodule Favn.AI do
     incremental SQL materialization. Read `Favn.Window.Policy` and
     `Favn.Window.Request` when the task mentions pipeline windows, scheduler
     anchor resolution, `mix favn.run --window`, or operator/API run input.
+  - Read `Favn.Freshness`, `Favn.Freshness.Policy`, and the relevant asset DSL
+    docs whenever a task mentions `@freshness`, skipping fresh work, forcing
+    refresh, stale downstream assets, or backfill children running only missing
+    windows.
   - Read `Favn.Backfill.RangeRequest` and `Favn.Backfill.RangeResolver` when a
     task mentions operational backfill ranges, relative `last` ranges, baseline
     cutover, or expanding operator intent into concrete anchors. Read

@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Manifest.Identity
   alias Favn.Plan
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -28,6 +29,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "anchor_window",
     "backfill_range",
     "cancelled",
+    "blocked",
     "config",
     "dependencies",
     "deps",
@@ -37,8 +39,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "event_seq",
     "execution_id",
     "finished_at",
+    "freshness_key",
     "id",
     "in_flight_execution_ids",
+    "input_versions",
     "inserted_at",
     "kind",
     "lineage_depth",
@@ -53,6 +57,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "next_retry_at",
     "nil",
     "node_key",
+    "node_results",
     "node_stages",
     "nodes",
     "none",
@@ -74,6 +79,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "result",
     "retry_backoff_ms",
     "retrying",
+    "reason",
     "replay_mode",
     "replay_submit_kind",
     "exact_replay",
@@ -91,6 +97,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     "source_run_id",
     "stage",
     "stages",
+    "skipped_fresh",
     "started_at",
     "status",
     "submit_ref",
@@ -267,13 +274,58 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp result_to_dto(nil), do: nil
 
-  defp result_to_dto(%{asset_results: results} = result) when is_list(results) do
+  defp result_to_dto(%{} = result) do
     result
-    |> Map.put(:asset_results, Enum.map(results, &JsonSafe.data/1))
     |> JsonSafe.data()
+    |> put_encoded_result_list(result, :asset_results, &JsonSafe.data/1)
+    |> put_encoded_result_list(result, :node_results, &node_result_to_dto/1)
   end
 
   defp result_to_dto(result), do: JsonSafe.data(result)
+
+  defp put_encoded_result_list(dto, result, key, mapper) when is_map(dto) do
+    case Map.get(result, key) || Map.get(result, Atom.to_string(key)) do
+      results when is_list(results) ->
+        Map.put(dto, Atom.to_string(key), Enum.map(results, mapper))
+
+      _other ->
+        dto
+    end
+  end
+
+  defp node_result_to_dto(%NodeResult{} = result) do
+    %{
+      "node_key" => node_key_to_dto(result.node_key),
+      "ref" => JsonSafe.ref(result.ref),
+      "window" => JsonSafe.data(result.window),
+      "stage" => result.stage,
+      "status" => atom_to_string(result.status),
+      "started_at" => datetime_to_dto(result.started_at),
+      "finished_at" => datetime_to_dto(result.finished_at),
+      "duration_ms" => result.duration_ms,
+      "reason" => JsonSafe.data(result.reason),
+      "freshness_key" => result.freshness_key,
+      "input_versions" => JsonSafe.data(result.input_versions),
+      "attempt_count" => result.attempt_count,
+      "max_attempts" => result.max_attempts,
+      "runner_execution_id" => JsonSafe.data(result.runner_execution_id),
+      "meta" => JsonSafe.data(result.meta),
+      "error" => JsonSafe.error(result.error),
+      "attempts" => JsonSafe.data(result.attempts)
+    }
+  end
+
+  defp node_result_to_dto(%{} = result) do
+    result
+    |> Map.put(
+      :node_key,
+      node_key_to_dto(Map.get(result, :node_key) || Map.get(result, "node_key"))
+    )
+    |> Map.put(:ref, JsonSafe.ref(Map.get(result, :ref) || Map.get(result, "ref")))
+    |> JsonSafe.data()
+  end
+
+  defp node_result_to_dto(result), do: JsonSafe.data(result)
 
   defp plan_from_dto(nil, _allowed_atom_strings), do: {:ok, nil}
 
@@ -436,6 +488,11 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       :asset_results,
       &asset_results_from_dto(&1, allowed_atom_strings)
     )
+    |> atomize_key(
+      "node_results",
+      :node_results,
+      &node_results_from_dto(&1, allowed_atom_strings)
+    )
     |> atomize_key("metadata", :metadata, & &1)
     |> Map.update(:status, Map.get(result, :status), &status_value_from_dto/1)
     |> Map.update(
@@ -465,6 +522,24 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp asset_result_from_dto(result, _allowed_atom_strings), do: result
 
+  defp node_results_from_dto(results, allowed_atom_strings) when is_list(results),
+    do: Enum.map(results, &node_result_from_dto(&1, allowed_atom_strings))
+
+  defp node_results_from_dto(_results, _allowed_atom_strings), do: []
+
+  defp node_result_from_dto(%{} = result, allowed_atom_strings) do
+    node_key = result |> field(:node_key) |> node_key_from_dto_value(allowed_atom_strings)
+    ref = result |> field(:ref) |> ref_from_dto_value(allowed_atom_strings)
+
+    if is_tuple(node_key) and is_tuple(ref) do
+      build_node_result(result, node_key, ref, allowed_atom_strings)
+    else
+      result
+    end
+  end
+
+  defp node_result_from_dto(result, _allowed_atom_strings), do: result
+
   defp build_asset_result(result, ref) do
     %AssetResult{
       ref: ref,
@@ -479,6 +554,29 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       max_attempts: field(result, :max_attempts, 1),
       attempts: field(result, :attempts, []),
       next_retry_at: datetime_value_from_dto(field(result, :next_retry_at))
+    }
+  end
+
+  defp build_node_result(result, node_key, ref, allowed_atom_strings) do
+    %NodeResult{
+      node_key: node_key,
+      ref: ref,
+      window: data_from_dto(field(result, :window), allowed_atom_strings),
+      stage: field(result, :stage, 0),
+      status: node_status_value_from_dto(field(result, :status)),
+      started_at: datetime_value_from_dto(field(result, :started_at)),
+      finished_at: datetime_value_from_dto(field(result, :finished_at)),
+      duration_ms: field(result, :duration_ms),
+      reason: data_from_dto(field(result, :reason), allowed_atom_strings),
+      freshness_key: field(result, :freshness_key),
+      input_versions: data_from_dto(field(result, :input_versions, %{}), allowed_atom_strings),
+      attempt_count: field(result, :attempt_count, 0),
+      max_attempts: field(result, :max_attempts, 1),
+      runner_execution_id:
+        data_from_dto(field(result, :runner_execution_id), allowed_atom_strings),
+      meta: data_from_dto(field(result, :meta, %{}), allowed_atom_strings),
+      error: field(result, :error),
+      attempts: data_from_dto(field(result, :attempts, []), allowed_atom_strings)
     }
   end
 
@@ -658,6 +756,11 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp status_value_from_dto(value), do: value
 
+  defp node_status_value_from_dto(value) when is_atom(value), do: value
+  defp node_status_value_from_dto("skipped_fresh"), do: :skipped_fresh
+  defp node_status_value_from_dto("blocked"), do: :blocked
+  defp node_status_value_from_dto(value), do: status_value_from_dto(value)
+
   defp submit_kind_value_from_dto(value) when is_atom(value), do: value
 
   defp submit_kind_value_from_dto(value) when is_binary(value),
@@ -672,6 +775,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp ref_from_dto_value(value, allowed_atom_strings) do
     case ref_from_dto(value, allowed_atom_strings) do
       {:ok, ref} -> ref
+      {:error, _reason} -> value
+    end
+  end
+
+  defp node_key_from_dto_value(value, allowed_atom_strings) do
+    case node_key_from_dto(value, allowed_atom_strings) do
+      {:ok, node_key} -> node_key
       {:error, _reason} -> value
     end
   end

@@ -122,6 +122,16 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     def list_asset_window_states(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def put_asset_freshness_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_asset_freshness_state(_asset_ref_module, _asset_ref_name, _freshness_key, _opts),
+      do: {:error, :not_found}
+
+    @impl true
+    def list_asset_freshness_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
     def replace_backfill_read_models(_scope, _baselines, _windows, _states, _opts), do: :ok
   end
 

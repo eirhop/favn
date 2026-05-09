@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunManager do
   alias Favn.Window.Request, as: WindowRequest
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.OperationalEvents
+  alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -294,7 +295,11 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- validate_trigger(trigger),
          :ok <- validate_metadata(metadata),
          :ok <- validate_dependencies(dependencies),
-         metadata_with_selection = Map.put(metadata, :asset_dependencies, dependencies),
+         {:ok, refresh_policy} <- refresh_policy_metadata(opts, dependencies),
+         metadata_with_selection =
+           metadata
+           |> Map.put(:asset_dependencies, dependencies)
+           |> Map.put(:refresh_policy, refresh_policy),
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
          :ok <- validate_timeout_ms(timeout_ms),
@@ -340,6 +345,8 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- validate_trigger(trigger),
          :ok <- validate_metadata(metadata),
          :ok <- validate_dependencies(dependencies),
+         {:ok, refresh_policy} <- refresh_policy_metadata(opts, dependencies),
+         metadata <- Map.put(metadata, :refresh_policy, refresh_policy),
          :ok <- validate_anchor_window(anchor_window),
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
@@ -505,6 +512,7 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
          :ok <- validate_timeout_ms(timeout_ms),
          :ok <- validate_dependencies(rerun_dependencies),
+         {:ok, refresh_policy} <- refresh_policy_metadata(opts, rerun_dependencies),
          :ok <- validate_rerun_manifest_pin(opts, source_run),
          {:ok, version} <- ManifestStore.get_manifest(source_run.manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
@@ -521,7 +529,11 @@ defmodule FavnOrchestrator.RunManager do
       rerun_of_run_id = source_run.rerun_of_run_id || source_run.id
       parent_run_id = Keyword.get(opts, :parent_run_id, source_run.id)
       root_run_id = Keyword.get(opts, :root_run_id, source_run.root_run_id || source_run.id)
-      metadata_with_source = Map.put(metadata, :source_run_id, source_run.id)
+
+      metadata_with_source =
+        metadata
+        |> Map.put(:source_run_id, source_run.id)
+        |> Map.put(:refresh_policy, refresh_policy)
 
       metadata_with_replay =
         if pipeline_origin?(source_run) do
@@ -614,6 +626,23 @@ defmodule FavnOrchestrator.RunManager do
   defp normalize_dependencies(:none), do: :none
   defp normalize_dependencies("none"), do: :none
   defp normalize_dependencies(_value), do: :all
+
+  defp refresh_policy_metadata(opts, dependencies) when is_list(opts) do
+    with {:ok, policy} <- RefreshPolicy.from_opts(opts),
+         :ok <- validate_refresh_policy_dependencies(policy, dependencies) do
+      {:ok,
+       %{
+         mode: policy.mode,
+         refs: policy.refs,
+         include_upstream?: policy.include_upstream?
+       }}
+    end
+  end
+
+  defp validate_refresh_policy_dependencies(%RefreshPolicy{include_upstream?: true}, :none),
+    do: {:error, {:refresh_include_upstream_requires_dependencies, :all}}
+
+  defp validate_refresh_policy_dependencies(%RefreshPolicy{}, _dependencies), do: :ok
 
   defp resolve_manifest_version_id(opts) when is_list(opts) do
     case Keyword.get(opts, :manifest_version_id) do

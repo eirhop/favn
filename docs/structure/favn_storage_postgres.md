@@ -2,12 +2,14 @@
 
 Purpose: Postgres implementation of the orchestrator storage adapter, including
 managed/external repo modes, schema readiness, migrations, JSON-safe
-run/event/backfill DTO persistence, and canonical payload persistence.
+run/event/backfill and freshness DTO persistence, and canonical payload
+persistence.
 
 Code:
 - `apps/favn_storage_postgres/lib/favn/storage/adapter/postgres.ex`
 - `apps/favn_storage_postgres/lib/favn_storage_postgres/`
 - Run-event global sequence migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_run_event_global_sequence.ex`
+- Asset freshness state migration: `apps/favn_storage_postgres/lib/favn_storage_postgres/migrations/add_asset_freshness_state.ex`
 
 Tests:
 - `apps/favn_storage_postgres/test/`

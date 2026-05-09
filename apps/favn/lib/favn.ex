@@ -21,6 +21,10 @@ defmodule Favn do
   - `resolve_pipeline/2`: resolve one pipeline to concrete targets and context
   - `plan_asset_run/2`: build a deterministic execution plan
 
+  Compiled assets include normalized freshness policies when authored with
+  `@freshness`; read `Favn.Freshness` and `Favn.Freshness.Policy` for the
+  authoring contract.
+
   ## Runtime-dependent helpers
 
   This module also keeps callable helper functions for SQL runtime operations,
@@ -48,6 +52,7 @@ defmodule Favn do
 
   - `Favn.AI`
   - `Favn.SQLClient`
+  - `Favn.Freshness`
   - task-specific DSL modules such as `Favn.Asset`, `Favn.SQLAsset`,
     `Favn.Pipeline`, and `Favn.Dev`
   """
@@ -117,7 +122,8 @@ defmodule Favn do
   Fetches one compiled asset by module shorthand or canonical ref.
 
   Use this when you want the normalized `%Favn.Asset{}` for one asset, including
-  metadata, dependencies, relation ownership, window spec, and compiled config.
+  metadata, dependencies, relation ownership, window spec, freshness policy, and
+  compiled config.
 
   ## Examples
 

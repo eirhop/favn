@@ -18,6 +18,7 @@ defmodule Favn.Window.Request do
   policy timezone or `"Etc/UTC"`.
   """
 
+  alias Favn.TimePeriod
   alias Favn.Window.{Anchor, Policy, Validate}
 
   @type mode :: :full_load | :single
@@ -109,8 +110,8 @@ defmodule Favn.Window.Request do
     timezone = timezone || default_timezone || "Etc/UTC"
 
     with :ok <- Validate.timezone(timezone),
-         {:ok, start_at, end_at} <- bounds(kind, value, timezone) do
-      Anchor.new(kind, start_at, end_at, timezone: timezone)
+         {:ok, period} <- TimePeriod.bounds(kind, value, timezone) do
+      Anchor.new(period.kind, period.start_at, period.end_at, timezone: period.timezone)
     end
   end
 
@@ -157,73 +158,6 @@ defmodule Favn.Window.Request do
   end
 
   defp validate_value(kind, value), do: {:error, {:invalid_window_value, kind, value}}
-
-  defp bounds(:hour, value, timezone) do
-    [date_raw, hour_raw] = String.split(value, "T", parts: 2)
-
-    with {:ok, date} <- Date.from_iso8601(date_raw),
-         {hour, ""} <- Integer.parse(hour_raw),
-         true <- hour in 0..23,
-         {:ok, start_at} <- datetime(date.year, date.month, date.day, hour, timezone) do
-      {:ok, start_at, DateTime.add(start_at, 3600, :second)}
-    else
-      _ -> {:error, {:invalid_window_value, :hour, value}}
-    end
-  end
-
-  defp bounds(:day, value, timezone) do
-    with {:ok, date} <- Date.from_iso8601(value),
-         {:ok, start_at} <- datetime(date.year, date.month, date.day, 0, timezone),
-         {:ok, end_at} <- local_midnight(Date.add(date, 1), timezone) do
-      {:ok, start_at, end_at}
-    end
-  end
-
-  defp bounds(:month, value, timezone) do
-    [year_raw, month_raw] = String.split(value, "-", parts: 2)
-
-    with {year, ""} <- Integer.parse(year_raw),
-         {month, ""} <- Integer.parse(month_raw),
-         true <- month in 1..12,
-         {:ok, start_at} <- datetime(year, month, 1, 0, timezone),
-         end_at <- shift_month(start_at, 1) do
-      {:ok, start_at, end_at}
-    else
-      _ -> {:error, {:invalid_window_value, :month, value}}
-    end
-  end
-
-  defp bounds(:year, value, timezone) do
-    with {year, ""} <- Integer.parse(value),
-         {:ok, start_at} <- datetime(year, 1, 1, 0, timezone),
-         {:ok, end_at} <- datetime(year + 1, 1, 1, 0, timezone) do
-      {:ok, start_at, end_at}
-    else
-      _ -> {:error, {:invalid_window_value, :year, value}}
-    end
-  end
-
-  defp datetime(year, month, day, hour, timezone) do
-    with {:ok, date} <- Date.new(year, month, day),
-         {:ok, naive} <- NaiveDateTime.new(date, Time.new!(hour, 0, 0)) do
-      {:ok, DateTime.from_naive!(naive, timezone, Favn.Timezone.database!())}
-    end
-  rescue
-    ArgumentError -> {:error, {:invalid_timezone, timezone}}
-  end
-
-  defp shift_month(%DateTime{} = datetime, count) do
-    date = DateTime.to_date(datetime)
-    total = date.year * 12 + (date.month - 1) + count
-    year = div(total, 12)
-    month = rem(total, 12) + 1
-    {:ok, shifted} = datetime(year, month, 1, 0, datetime.time_zone)
-    shifted
-  end
-
-  defp local_midnight(%Date{} = date, timezone) do
-    datetime(date.year, date.month, date.day, 0, timezone)
-  end
 
   defp field_value(value, field, default \\ nil) when is_map(value) do
     Map.get(value, field, Map.get(value, Atom.to_string(field), default))
