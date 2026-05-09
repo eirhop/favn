@@ -12,15 +12,9 @@ Private orchestrator endpoints:
 - `GET /api/orchestrator/v1/streams/runs`
 - `GET /api/orchestrator/v1/streams/runs/:run_id`
 
-Browser-facing endpoints:
-
-- `GET /api/web/v1/streams/runs`
-- `GET /api/web/v1/streams/runs/:run_id`
-
-Browsers should connect to the SvelteKit web endpoints. `favn_web` validates the
-browser session cookie server-side and calls the private orchestrator endpoint
-with its service identity plus the actor session token. The orchestrator service
-token is never sent to the browser.
+Browser-facing LiveView/SSE relay behavior will be rebuilt in `favn_view`. The
+orchestrator SSE endpoints remain private backend endpoints for now; no
+browser-facing stream route is part of the new Phoenix shell yet.
 
 ## Cursors and replay
 

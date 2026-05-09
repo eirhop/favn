@@ -18,9 +18,6 @@ defmodule Favn.Dev.Paths do
   @spec install_cache_dir(Path.t()) :: Path.t()
   def install_cache_dir(root_dir), do: Path.join(install_dir(root_dir), "cache")
 
-  @spec install_cache_npm_dir(Path.t()) :: Path.t()
-  def install_cache_npm_dir(root_dir), do: Path.join(install_cache_dir(root_dir), "npm")
-
   @spec install_runtimes_dir(Path.t()) :: Path.t()
   def install_runtimes_dir(root_dir), do: Path.join(install_dir(root_dir), "runtimes")
 

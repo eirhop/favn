@@ -223,7 +223,7 @@ defmodule Favn.Dev.RuntimeLaunch do
             if(config.orchestrator_api_enabled, do: "1", else: "0"),
           "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(config.orchestrator_port),
           "FAVN_ORCHESTRATOR_API_BIND_IP" => @loopback_host,
-          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_web:" <> secrets["service_token"]
+          "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_view:" <> secrets["service_token"]
         })
     }
   end
@@ -231,30 +231,43 @@ defmodule Favn.Dev.RuntimeLaunch do
   @spec web_spec(map(), Config.t(), keyword(), map()) :: map()
   def web_spec(runtime, %Config{} = config, opts, secrets)
       when is_map(runtime) and is_list(opts) and is_map(secrets) do
-    node = System.find_executable("node") || "node"
-    vite = Path.join(runtime["web_root"], "node_modules/vite/bin/vite.js")
+    elixir = System.find_executable("elixir") || "elixir"
+
+    code =
+      """
+      Application.put_env(:favn_view, FavnView.Endpoint,
+        server: true,
+        http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.fetch_env!("FAVN_VIEW_PORT"))]
+      )
+
+      {:ok, _} = Application.ensure_all_started(:favn_view)
+      Process.sleep(:infinity)
+      """
+      |> String.trim()
 
     %{
       name: "web",
-      exec: node,
+      exec: elixir,
       args: [
-        vite,
-        "preview",
-        "--host",
-        @loopback_host,
-        "--port",
-        Integer.to_string(config.web_port)
+        "-S",
+        "mix",
+        "run",
+        "--no-compile",
+        "--no-start",
+        "--eval",
+        code
       ],
       cwd: runtime["web_root"],
       log_path: Paths.web_log_path(Paths.root_dir(opts)),
       env:
         EnvFile.loaded_env(opts)
         |> Map.merge(%{
-          "FAVN_WEB_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
-          "FAVN_WEB_PUBLIC_ORIGIN" => config.web_base_url,
-          "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
-          "FAVN_WEB_SESSION_SECRET" => secrets["web_session_secret"],
-          "FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH" => "1"
+          "FAVN_VIEW_PORT" => Integer.to_string(config.web_port),
+          "FAVN_VIEW_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
+          "FAVN_VIEW_PUBLIC_ORIGIN" => config.web_base_url,
+          "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
+          "FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH" => "1",
+          "MIX_ENV" => "dev"
         })
     }
   end

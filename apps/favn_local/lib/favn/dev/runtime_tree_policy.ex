@@ -1,19 +1,16 @@
 defmodule Favn.Dev.RuntimeTreePolicy do
   @moduledoc false
 
-  @entries ["mix.exs", "mix.lock", "config", "apps", "web/favn_web"]
+  @entries ["mix.exs", "mix.lock", "config", "apps"]
   @optional_entries ["mix.exs", "mix.lock", "config"]
   @ignored_entries [
     ".elixir_ls",
     ".favn",
     ".git",
-    ".svelte-kit",
     "_build",
     "cover",
     "deps",
-    "dist",
-    "node_modules",
-    "test-results"
+    "static"
   ]
 
   @spec entries() :: [Path.t()]

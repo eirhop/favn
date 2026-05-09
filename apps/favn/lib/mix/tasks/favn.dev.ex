@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Favn.Dev do
   @shortdoc "Starts local Favn dev stack"
 
   @moduledoc """
-  Starts local `favn_web + favn_orchestrator + favn_runner` in foreground mode.
+  Starts local `favn_view + favn_orchestrator + favn_runner` in foreground mode.
   """
 
   alias Favn.Dev

@@ -23,7 +23,6 @@ defmodule Favn.Dev.State do
       Paths.logs_dir(root_dir),
       Paths.install_dir(root_dir),
       Paths.install_cache_dir(root_dir),
-      Paths.install_cache_npm_dir(root_dir),
       Paths.install_runtimes_dir(root_dir),
       Paths.install_runtime_root_dir(root_dir),
       Paths.install_runtime_web_dir(root_dir),

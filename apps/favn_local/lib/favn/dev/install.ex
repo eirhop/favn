@@ -94,29 +94,23 @@ defmodule Favn.Dev.Install do
 
   defp maybe_install(:install, current_fingerprint, source, opts) do
     with {:ok, toolchain} <- build_toolchain(opts),
-         {:ok, runtime} <- RuntimeWorkspace.materialize(source, opts),
-         :ok <- install_runtime_dependencies(runtime, opts),
-         :ok <- install_web_dependencies(runtime, opts) do
+          {:ok, runtime} <- RuntimeWorkspace.materialize(source, opts),
+          :ok <- install_runtime_dependencies(runtime, opts) do
       with :ok <- write_install_state(current_fingerprint, toolchain, source, runtime, opts),
-           do: {:ok, :installed}
+            do: {:ok, :installed}
     end
   end
 
   defp maybe_install({:error, _reason} = error, _current_fingerprint, _source, _opts), do: error
 
-  defp build_toolchain(opts) do
-    with {:ok, node_version} <- command_version(opts, :node, "node", ["--version"]),
-         {:ok, npm_version} <- command_version(opts, :npm, "npm", ["--version"]) do
-      {:ok,
-       %{
-         "schema_version" => @schema_version,
-         "captured_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-         "elixir_version" => System.version(),
-         "otp_release" => otp_release(),
-         "node_version" => node_version,
-         "npm_version" => npm_version
-       }}
-    end
+  defp build_toolchain(_opts) do
+    {:ok,
+     %{
+       "schema_version" => @schema_version,
+       "captured_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+       "elixir_version" => System.version(),
+       "otp_release" => otp_release()
+     }}
   end
 
   defp install_runtime_dependencies(runtime, opts) do
@@ -139,51 +133,6 @@ defmodule Favn.Dev.Install do
       else
         :ok
       end
-    end
-  end
-
-  defp install_web_dependencies(runtime, opts) do
-    if Keyword.get(opts, :skip_web_install, false) do
-      :ok
-    else
-      web_dir = runtime["web_root"]
-      npm_exec = System.find_executable("npm") || "npm"
-      npm_cache = Paths.install_cache_npm_dir(Paths.root_dir(opts))
-      package_lock = Path.join(web_dir, "package-lock.json")
-
-      env = %{"npm_config_cache" => npm_cache}
-
-      install_with_fallback(npm_exec, package_lock, npm_cache, web_dir, env)
-    end
-  end
-
-  defp install_with_fallback(npm_exec, package_lock, npm_cache, web_dir, env) do
-    if File.exists?(package_lock) do
-      case run_npm_install(npm_exec, ["ci", "--cache", npm_cache], web_dir, env) do
-        :ok ->
-          :ok
-
-        {:error, _status, _output} ->
-          case run_npm_install(npm_exec, ["install", "--cache", npm_cache], web_dir, env) do
-            :ok ->
-              :ok
-
-            {:error, status, retry_output} ->
-              {:error, {:web_install_failed, status, String.trim(retry_output)}}
-          end
-      end
-    else
-      case run_npm_install(npm_exec, ["install", "--cache", npm_cache], web_dir, env) do
-        :ok -> :ok
-        {:error, status, output} -> {:error, {:web_install_failed, status, String.trim(output)}}
-      end
-    end
-  end
-
-  defp run_npm_install(npm_exec, args, web_dir, env) do
-    case System.cmd(npm_exec, args, cd: web_dir, stderr_to_stdout: true, env: env) do
-      {_output, 0} -> :ok
-      {output, status} -> {:error, status, output}
     end
   end
 
@@ -210,42 +159,17 @@ defmodule Favn.Dev.Install do
   @spec fingerprint(root_opt()) :: {:ok, map()} | {:error, term()}
   defp fingerprint(opts) do
     with {:ok, source} <- RuntimeSource.resolve(opts),
-         {:ok, runtime_fingerprint} <- RuntimeSource.fingerprint(source),
-         {:ok, node_version} <- command_version(opts, :node, "node", ["--version"]),
-         {:ok, npm_version} <- command_version(opts, :npm, "npm", ["--version"]) do
+         {:ok, runtime_fingerprint} <- RuntimeSource.fingerprint(source) do
       root_dir = Paths.root_dir(opts)
 
       {:ok,
        %{
-         "schema_version" => @schema_version,
-         "elixir_version" => System.version(),
-         "otp_release" => otp_release(),
-         "node_version" => node_version,
-         "npm_version" => npm_version,
-         "consumer_mix_lock_sha256" => file_sha256(Path.join(root_dir, "mix.lock")),
-         "runtime_source" => runtime_fingerprint
-       }}
-    end
-  end
-
-  defp command_version(opts, tool, exec, args) do
-    if Keyword.get(opts, :skip_tool_checks, false) do
-      {:ok, "skipped"}
-    else
-      command_version_checked(tool, exec, args)
-    end
-  end
-
-  defp command_version_checked(tool, exec, args) do
-    case System.find_executable(exec) do
-      nil ->
-        {:error, {:missing_tool, tool}}
-
-      executable ->
-        case System.cmd(executable, args, stderr_to_stdout: true) do
-          {value, 0} -> {:ok, String.trim(value)}
-          {output, status} -> {:error, {:tool_check_failed, tool, status, String.trim(output)}}
-        end
+          "schema_version" => @schema_version,
+          "elixir_version" => System.version(),
+          "otp_release" => otp_release(),
+          "consumer_mix_lock_sha256" => file_sha256(Path.join(root_dir, "mix.lock")),
+          "runtime_source" => runtime_fingerprint
+        }}
     end
   end
 

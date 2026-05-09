@@ -62,7 +62,7 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
       "FAVN_SQLITE_POOL_SIZE" => "1",
       "FAVN_ORCHESTRATOR_API_BIND_HOST" => "127.0.0.1",
       "FAVN_ORCHESTRATOR_API_PORT" => Integer.to_string(port),
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_web:#{service_token}",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" => "favn_view:#{service_token}",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" => service_token,
       "FAVN_SCHEDULER_ENABLED" => "true",
       "FAVN_SCHEDULER_TICK_MS" => "1000",

@@ -15,4 +15,4 @@ you need ownership or test-location guidance for a specific app.
 - `favn_storage_sqlite.md`: SQLite storage adapter
 - `favn_storage_postgres.md`: Postgres storage adapter
 - `favn_test_support.md`: shared test fixtures and helpers
-- `favn_web.md`: separate SvelteKit web/BFF workspace
+- `favn_view.md`: Phoenix/LiveView UI boundary app

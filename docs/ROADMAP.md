@@ -29,8 +29,12 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 3. Harden Auth, Sessions, Audit, And Service Trust
 
-- Replace the current single-node in-memory web-session store and browser-edge abuse controls with shared durable stores if Favn gains a multi-node web deployment mode.
+- Rebuild browser auth/session handling and browser-edge abuse controls in `apps/favn_view` when real operator screens return.
 - Decide whether to add session idle timeout and sudo/re-auth modes once concrete operator flows need them.
+
+### 3a. Rebuild The Phoenix/LiveView UI
+
+- Recreate the operator UI behind the public orchestrator facade only. Start with auth/session boundaries, runs, assets, backfills, and live updates in separate focused PRs.
 
 ### 4. Finish The Live Event And Command Safety Model
 

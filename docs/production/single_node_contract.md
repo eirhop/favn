@@ -18,16 +18,13 @@ This is an architecture and documentation contract. The current
 `mix favn.build.single` output includes a verified project-local backend-only
 SQLite launcher with generated `bin/start` and `bin/stop` scripts. It depends on
 the recorded installed runtime source root rather than a self-contained or
-relocatable runtime closure. Full release packaging and backup automation remain
-follow-up implementation work. `favn_web` now has an explicit Node production
-service path documented in
-`docs/production/web_service.md`, but it is not yet bundled into
-`mix favn.build.single`.
+relocatable runtime closure. Full release packaging, backup automation, and
+production Phoenix web deployment remain follow-up implementation work.
 
 Phase 1 runtime config validation, backend control-plane bootstrap, live
-single-node first-run verification, explicit web service startup/readiness, and
-SQLite-backed auth/session/audit persistence have landed, while full operator
-runbooks and production web hardening remain follow-up implementation work.
+single-node first-run verification, and SQLite-backed auth/session/audit
+persistence have landed, while full operator runbooks and production web
+hardening remain follow-up implementation work.
 
 Follow-up issues must treat this document as the product contract they are
 making real.
@@ -94,7 +91,7 @@ active instances against the same SQLite database.
 
 ## Web Deployment Model
 
-`favn_web` may be deployed in either supported placement:
+`favn_view` is intended to be deployable in either supported placement:
 
 - Co-located with the backend on the same host.
 - Deployed as a separate web service that reaches the backend over the private
@@ -109,7 +106,7 @@ In both placements, web must use the documented API boundary:
 - Web must not connect to the SQLite database, mutate control-plane files, call
   runner internals directly, or rely on local-dev Distributed Erlang plumbing.
 
-Public browser exposure belongs to `favn_web`. The orchestrator API is private
+Public browser exposure belongs to `favn_view`. The orchestrator API is private
 backend infrastructure and should be reachable only from trusted web/backend
 network paths in production.
 
@@ -273,14 +270,8 @@ At minimum, the production single-node runtime needs:
   positive integer.
 - `FAVN_RUNNER_MODE`, defaulting to `local`; Phase 1 accepts only the local
   single-node runner mode.
-- `FAVN_WEB_ORCHESTRATOR_BASE_URL`, required by `favn_web`, as an absolute
-  `http://` or `https://` URL without embedded credentials.
-- `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, required by `favn_web`, at least 32
-  characters, for web-to-orchestrator service auth.
-- `FAVN_WEB_PUBLIC_ORIGIN`, required by `favn_web`, as the exact browser-facing
-  origin for unsafe request `Origin`/`Referer` validation. Production web origins
-  must use `https://` except for local-only `localhost`, `127.0.0.1`, or `::1`
-  smoke-test origins.
+- Production `favn_view` web-to-orchestrator URL, service-token, and public-origin
+  validation are follow-up work for the Phoenix web hardening PR.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
   tooling unless `--service-token` is passed, at least 32 characters, and present
   as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.
@@ -317,10 +308,9 @@ The production path contract is intentionally explicit:
 Ownership is split by app boundary. `favn_orchestrator` validates and applies
 orchestrator API, service-token, SQLite storage, scheduler, and local-runner
 client config before supervised runtime traffic starts. `favn_runner` validates
-runner mode before runner supervision starts. `favn_web` validates web-to-
-orchestrator URL/token and public web origin before handling production web
-requests. Local-dev-only `FAVN_DEV_*` names are not accepted by this production
-contract.
+runner mode before runner supervision starts. `favn_view` production runtime
+validation is follow-up work. Local-dev-only `FAVN_DEV_*` names are not accepted
+by this production contract.
 
 Postgres production config validation is explicitly deferred to the later
 Postgres production-mode issue. `FAVN_STORAGE=postgres` is not a valid first

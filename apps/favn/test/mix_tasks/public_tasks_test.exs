@@ -30,13 +30,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     File.mkdir_p!(root_dir)
 
-    File.mkdir_p!(Path.join(root_dir, "web/favn_web"))
     File.mkdir_p!(Path.join(root_dir, "apps/favn_runner"))
     File.mkdir_p!(Path.join(root_dir, "apps/favn_orchestrator"))
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_view"))
 
     File.write!(Path.join(root_dir, "mix.lock"), "lock")
-    File.write!(Path.join(root_dir, "web/favn_web/package.json"), "{}")
-    File.write!(Path.join(root_dir, "web/favn_web/package-lock.json"), "{}")
 
     File.write!(
       Path.join(root_dir, "apps/favn_runner/mix.exs"),
@@ -47,6 +45,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       Path.join(root_dir, "apps/favn_orchestrator/mix.exs"),
       "defmodule Orchestrator.MixProject do end"
     )
+
+    File.write!(Path.join(root_dir, "apps/favn_view/mix.exs"), "defmodule View.MixProject do end")
 
     on_exit(fn ->
       File.rm_rf(root_dir)
@@ -151,8 +151,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     clear_bootstrap_env()
 
     System.put_env("FAVN_BOOTSTRAP_MANIFEST_PATH", "/env/manifest.json")
-    System.put_env("FAVN_WEB_ORCHESTRATOR_BASE_URL", "http://127.0.0.1:4000")
-    System.put_env("FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN", "env-token")
+    System.put_env("FAVN_VIEW_ORCHESTRATOR_BASE_URL", "http://127.0.0.1:4000")
+    System.put_env("FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN", "env-token")
 
     on_exit(fn -> restore_bootstrap_env(previous_env) end)
 
@@ -755,15 +755,18 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     end
   end
 
-  test "mix favn.install reports missing prerequisite tools", %{root_dir: root_dir} do
+  test "mix favn.install no longer requires Node tooling", %{root_dir: root_dir} do
     previous_path = System.get_env("PATH")
 
     try do
       System.put_env("PATH", "")
 
-      assert_raise Mix.Error, ~r/install failed: missing required tool node/, fn ->
-        InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
-      end
+      output =
+        capture_io(fn ->
+          InstallTask.run(["--root-dir", root_dir, "--skip-web-install"])
+        end)
+
+      assert output =~ "Favn install complete"
     after
       if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
     end
@@ -839,7 +842,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "/.favn/dist/web/"
   end
 
-  test "mix favn.build.web reports missing prerequisite tools", %{root_dir: root_dir} do
+  test "mix favn.build.web no longer requires Node tooling", %{root_dir: root_dir} do
     _ =
       capture_io(fn ->
         InstallTask.run([
@@ -855,9 +858,12 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     try do
       System.put_env("PATH", "")
 
-      assert_raise Mix.Error, ~r/build blocked: missing required tool node/, fn ->
-        BuildWebTask.run(["--root-dir", root_dir])
-      end
+      output =
+        capture_io(fn ->
+          BuildWebTask.run(["--root-dir", root_dir])
+        end)
+
+      assert output =~ "Favn web build complete"
     after
       if previous_path, do: System.put_env("PATH", previous_path), else: System.delete_env("PATH")
     end
@@ -1137,9 +1143,9 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   defp bootstrap_env_names do
     [
       "FAVN_BOOTSTRAP_MANIFEST_PATH",
-      "FAVN_WEB_ORCHESTRATOR_BASE_URL",
+      "FAVN_VIEW_ORCHESTRATOR_BASE_URL",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN",
-      "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN",
       "FAVN_ORCHESTRATOR_SERVICE_TOKEN"
     ]
   end

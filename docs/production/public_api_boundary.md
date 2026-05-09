@@ -40,7 +40,7 @@ The other umbrella apps are not ordinary user dependencies:
   adapters selected by runtime/package tooling.
 - `favn_local` owns local lifecycle and packaging implementation behind public
   `mix favn.*` tasks.
-- `favn_web` is the web product edge, not a dependency for authored business code.
+- `favn_view` is the Phoenix/LiveView UI boundary app, not a dependency for authored business code.
 
 Before Hex publishing, local private consumer projects may use path dependencies
 from one checkout. The supported shape is `favn` plus optional plugins such as

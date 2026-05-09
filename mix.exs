@@ -16,7 +16,8 @@ defmodule FavnUmbrella.MixProject do
         :favn_sql_runtime,
         :favn_storage_postgres,
         :favn_storage_sqlite,
-        :favn_test_support
+        :favn_test_support,
+        :favn_view
       ],
       version: "0.5.0-dev",
       start_permanent: Mix.env() == :prod,
@@ -49,7 +50,8 @@ defmodule FavnUmbrella.MixProject do
         "do --app favn_storage_sqlite test",
         "do --app favn_duckdb test",
         "do --app favn_duckdb_adbc test",
-        "do --app favn_local test"
+        "do --app favn_local test",
+        "do --app favn_view test"
       ]
     ]
   end
