@@ -2,7 +2,7 @@
 
 Purpose: control plane and system of record for manifests, runs, schedules,
 events, auth/authz/audit, command idempotency, private HTTP API, backfill state,
-and storage contracts.
+asset freshness state, and storage contracts.
 
 Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator.ex`
@@ -10,6 +10,7 @@ Code:
 - Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
 - Run admission and recovery in `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex` and `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
+- Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`
@@ -24,9 +25,11 @@ Tests:
 - Auth storage/facade tests under `apps/favn_orchestrator/test/auth/`
 - Production runtime config/readiness/diagnostics tests under `apps/favn_orchestrator/test/production_runtime_config_test.exs`, `apps/favn_orchestrator/test/readiness_test.exs`, and `apps/favn_orchestrator/test/diagnostics_test.exs`
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`
+- Freshness decision/query tests under `apps/favn_orchestrator/test/freshness/`
 - cross-app runner integration coverage under `apps/favn_orchestrator/test/orchestrator_runner_integration_test.exs`
 - optional adapter contract smoke coverage under `apps/favn_orchestrator/test/integration/`; adapter-specific suites own full adapter coverage
 
-Use when changing run lifecycle, scheduling, private API behavior, SSE/events,
-auth, command idempotency, bootstrap service-token/runner-registration endpoints, backfill
-orchestration, or storage contract semantics.
+Use when changing run lifecycle, freshness decisions/queries, scheduling, private
+API behavior, SSE/events, auth, command idempotency, bootstrap
+service-token/runner-registration endpoints, backfill orchestration, or storage
+contract semantics.

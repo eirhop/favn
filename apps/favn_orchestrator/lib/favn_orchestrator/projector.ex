@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Projector do
 
   alias Favn.Run
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -35,6 +36,7 @@ defmodule FavnOrchestrator.Projector do
   def project_run(%RunState{} = run_state) do
     terminal? = run_state.status in [:ok, :partial, :error, :cancelled, :timed_out]
     asset_results = project_asset_results(run_state)
+    node_results = project_node_results(run_state, asset_results)
 
     %Run{
       id: run_state.id,
@@ -71,7 +73,7 @@ defmodule FavnOrchestrator.Projector do
       lineage_depth: run_state.lineage_depth,
       operator_reason: project_operator_reason(run_state),
       asset_results: asset_results,
-      node_results: project_node_results(asset_results),
+      node_results: node_results,
       error: run_state.error,
       terminal_reason: project_terminal_reason(run_state)
     }
@@ -127,9 +129,28 @@ defmodule FavnOrchestrator.Projector do
 
   defp project_asset_results(_run_state), do: %{}
 
-  defp project_node_results(asset_results) when is_map(asset_results) do
+  defp project_node_results(%RunState{result: %{node_results: results}}, _asset_results)
+       when is_list(results) do
+    results
+    |> Enum.reduce(%{}, fn result, acc ->
+      case node_result_key(result) do
+        {:ok, node_key} -> Map.put(acc, node_key, normalize_node_result(result))
+        :error -> acc
+      end
+    end)
+  end
+
+  defp project_node_results(_run_state, asset_results) when is_map(asset_results) do
     Enum.into(asset_results, %{}, fn {ref, %AssetResult{} = result} -> {{ref, nil}, result} end)
   end
+
+  defp node_result_key(%NodeResult{node_key: node_key}) when is_tuple(node_key),
+    do: {:ok, node_key}
+
+  defp node_result_key(%{node_key: node_key, ref: ref}) when is_tuple(node_key) and is_tuple(ref),
+    do: {:ok, node_key}
+
+  defp node_result_key(_result), do: :error
 
   defp project_pipeline(%RunState{} = run_state) do
     metadata = run_state.metadata
@@ -242,6 +263,31 @@ defmodule FavnOrchestrator.Projector do
       attempt_count: 1,
       max_attempts: 1,
       attempts: []
+    }
+  end
+
+  defp normalize_node_result(%NodeResult{} = result), do: result
+
+  defp normalize_node_result(%{node_key: node_key, ref: ref} = result)
+       when is_tuple(node_key) and is_tuple(ref) do
+    %NodeResult{
+      node_key: node_key,
+      ref: ref,
+      window: Map.get(result, :window),
+      stage: Map.get(result, :stage, 0),
+      status: Map.get(result, :status, :running),
+      started_at: Map.get(result, :started_at),
+      finished_at: Map.get(result, :finished_at),
+      duration_ms: Map.get(result, :duration_ms),
+      reason: Map.get(result, :reason),
+      freshness_key: Map.get(result, :freshness_key),
+      input_versions: Map.get(result, :input_versions, %{}),
+      attempt_count: Map.get(result, :attempt_count, 0),
+      max_attempts: Map.get(result, :max_attempts, 1),
+      runner_execution_id: Map.get(result, :runner_execution_id),
+      meta: Map.get(result, :meta, %{}),
+      error: Map.get(result, :error),
+      attempts: Map.get(result, :attempts, [])
     }
   end
 

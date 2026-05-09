@@ -7,6 +7,7 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   alias Ecto.Adapters.SQL
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -16,6 +17,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
+  alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunEventCodec
@@ -582,6 +584,81 @@ defmodule Favn.Storage.Adapter.SQLite do
         "SELECT #{asset_window_state_columns()} FROM favn_asset_window_states#{where_sql} ORDER BY updated_at DESC, asset_ref_module ASC, asset_ref_name ASC, window_key ASC LIMIT ?#{length(params) + 1} OFFSET ?#{length(params) + 2}"
 
       decode_page(repo, sql, params, page_opts, &decode_asset_window_state_row/1)
+    end
+  end
+
+  @impl true
+  def put_asset_freshness_state(%AssetFreshnessState{} = state, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        """
+        INSERT INTO favn_asset_freshness_states (
+          asset_ref_module, asset_ref_name, freshness_key, status, freshness_version,
+          latest_success_run_id, latest_attempt_run_id, latest_attempt_status,
+          manifest_version_id, manifest_content_hash, record_payload, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        ON CONFLICT(asset_ref_module, asset_ref_name, freshness_key) DO UPDATE SET
+          status = excluded.status,
+          freshness_version = excluded.freshness_version,
+          latest_success_run_id = excluded.latest_success_run_id,
+          latest_attempt_run_id = excluded.latest_attempt_run_id,
+          latest_attempt_status = excluded.latest_attempt_status,
+          manifest_version_id = excluded.manifest_version_id,
+          manifest_content_hash = excluded.manifest_content_hash,
+          record_payload = excluded.record_payload,
+          updated_at = excluded.updated_at
+        """
+
+      params = [
+        encode_atom(state.asset_ref_module),
+        encode_atom(state.asset_ref_name),
+        state.freshness_key,
+        encode_atom(state.status),
+        state.freshness_version,
+        state.latest_success_run_id,
+        state.latest_attempt_run_id,
+        encode_optional_atom(state.latest_attempt_status),
+        state.manifest_version_id,
+        state.manifest_content_hash,
+        encode_asset_freshness_state(state),
+        encode_datetime(state.updated_at)
+      ]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_asset_freshness_state(asset_ref_module, asset_ref_name, freshness_key, opts)
+      when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(freshness_key) and
+             is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql =
+        "SELECT #{asset_freshness_state_columns()} FROM favn_asset_freshness_states WHERE asset_ref_module = ?1 AND asset_ref_name = ?2 AND freshness_key = ?3 LIMIT 1"
+
+      params = [encode_atom(asset_ref_module), encode_atom(asset_ref_name), freshness_key]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, %{rows: [row]}} -> decode_asset_freshness_state_row(row)
+        {:ok, %{rows: []}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_asset_freshness_states(filters, opts) when is_list(filters) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, page_opts} <- page_opts(filters),
+         {:ok, {where_sql, params}} <-
+           build_filter_sql(read_filters(filters), asset_freshness_state_filter_columns()) do
+      sql =
+        "SELECT #{asset_freshness_state_columns()} FROM favn_asset_freshness_states#{where_sql} ORDER BY updated_at DESC, asset_ref_module ASC, asset_ref_name ASC, freshness_key ASC LIMIT ?#{length(params) + 1} OFFSET ?#{length(params) + 2}"
+
+      decode_page(repo, sql, params, page_opts, &decode_asset_freshness_state_row/1)
     end
   end
 
@@ -1173,6 +1250,10 @@ defmodule Favn.Storage.Adapter.SQLite do
     "record_payload"
   end
 
+  defp asset_freshness_state_columns do
+    "record_payload"
+  end
+
   defp coverage_baseline_filter_columns do
     %{
       baseline_id: {:text, "baseline_id"},
@@ -1219,6 +1300,21 @@ defmodule Favn.Storage.Adapter.SQLite do
     }
   end
 
+  defp asset_freshness_state_filter_columns do
+    %{
+      asset_ref_module: {:atom, "asset_ref_module"},
+      asset_ref_name: {:atom, "asset_ref_name"},
+      freshness_key: {:text, "freshness_key"},
+      status: {:atom, "status"},
+      freshness_version: {:text, "freshness_version"},
+      latest_success_run_id: {:text, "latest_success_run_id"},
+      latest_attempt_run_id: {:text, "latest_attempt_run_id"},
+      latest_attempt_status: {:atom, "latest_attempt_status"},
+      manifest_version_id: {:text, "manifest_version_id"},
+      manifest_content_hash: {:text, "manifest_content_hash"}
+    }
+  end
+
   defp decode_coverage_baseline_row([record_payload]),
     do: CoverageBaselineCodec.decode(record_payload)
 
@@ -1227,6 +1323,9 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp decode_asset_window_state_row([record_payload]),
     do: AssetWindowStateCodec.decode(record_payload)
+
+  defp decode_asset_freshness_state_row([record_payload]),
+    do: AssetFreshnessStateCodec.decode(record_payload)
 
   defp decode_rows(repo, sql, params, decoder) when is_function(decoder, 1) do
     case SQL.query(repo, sql, params) do
@@ -1327,6 +1426,9 @@ defmodule Favn.Storage.Adapter.SQLite do
   defp encode_filter_value(:text, value), do: value
 
   defp encode_atom(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp encode_optional_atom(nil), do: nil
+  defp encode_optional_atom(value) when is_atom(value), do: encode_atom(value)
 
   defp existing_atom(value) when is_binary(value) do
     {:ok, String.to_existing_atom(value)}
@@ -2028,6 +2130,16 @@ defmodule Favn.Storage.Adapter.SQLite do
 
       {:error, reason} ->
         raise ArgumentError, "invalid asset window state payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_asset_freshness_state(%AssetFreshnessState{} = state) do
+    case AssetFreshnessStateCodec.encode(state) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid asset freshness state payload: #{inspect(reason)}"
     end
   end
 

@@ -16,7 +16,8 @@ defmodule Favn.Backfill.RangeRequest do
   orchestrator state.
   """
 
-  alias Favn.Window.{Policy, Validate}
+  alias Favn.TimePeriod
+  alias Favn.Window.Validate
 
   @type kind :: Validate.kind()
   @type baseline ::
@@ -185,21 +186,25 @@ defmodule Favn.Backfill.RangeRequest do
 
   defp normalize_last(value), do: {:error, {:invalid_last_request, value}}
 
-  defp normalize_kind(kind) when is_atom(kind), do: Policy.normalize_kind(kind)
+  defp normalize_kind(kind) do
+    kind
+    |> decode_string_kind()
+    |> TimePeriod.normalize_kind()
+    |> case do
+      {:ok, kind} -> {:ok, kind}
+      {:error, {:invalid_period_kind, kind}} -> {:error, {:invalid_window_policy_kind, kind}}
+    end
+  end
 
-  defp normalize_kind("hour"), do: {:ok, :hour}
-  defp normalize_kind("hourly"), do: {:ok, :hour}
-  defp normalize_kind("day"), do: {:ok, :day}
-  defp normalize_kind("daily"), do: {:ok, :day}
-  defp normalize_kind("month"), do: {:ok, :month}
-  defp normalize_kind("monthly"), do: {:ok, :month}
-  defp normalize_kind("year"), do: {:ok, :year}
-  defp normalize_kind("yearly"), do: {:ok, :year}
-
-  defp normalize_kind(kind) when is_binary(kind),
-    do: {:error, {:invalid_window_policy_kind, kind}}
-
-  defp normalize_kind(kind), do: {:error, {:invalid_window_policy_kind, kind}}
+  defp decode_string_kind("hour"), do: :hour
+  defp decode_string_kind("hourly"), do: :hourly
+  defp decode_string_kind("day"), do: :day
+  defp decode_string_kind("daily"), do: :daily
+  defp decode_string_kind("month"), do: :month
+  defp decode_string_kind("monthly"), do: :monthly
+  defp decode_string_kind("year"), do: :year
+  defp decode_string_kind("yearly"), do: :yearly
+  defp decode_string_kind(kind), do: kind
 
   defp normalize_reference(opts) do
     relative_to = Keyword.get(opts, :relative_to)

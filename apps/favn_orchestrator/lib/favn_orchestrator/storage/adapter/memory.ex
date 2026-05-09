@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   alias Favn.Manifest.Version
   alias Favn.Scheduler.State, as: SchedulerState
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -27,6 +28,9 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           coverage_baselines: %{required(String.t()) => CoverageBaseline.t()},
           backfill_windows: %{required({String.t(), module(), String.t()}) => BackfillWindow.t()},
           asset_window_states: %{required({module(), atom(), String.t()}) => AssetWindowState.t()},
+          asset_freshness_states: %{
+            required({module(), atom(), String.t()}) => AssetFreshnessState.t()
+          },
           auth_actors: %{required(String.t()) => map()},
           auth_usernames: %{required(String.t()) => String.t()},
           auth_credentials: %{required(String.t()) => map()},
@@ -35,6 +39,19 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           auth_audits: [map()],
           idempotency_records: %{required(String.t()) => map()}
         }
+
+  @asset_freshness_state_filters [
+    :asset_ref_module,
+    :asset_ref_name,
+    :freshness_key,
+    :status,
+    :freshness_version,
+    :latest_success_run_id,
+    :latest_attempt_run_id,
+    :latest_attempt_status,
+    :manifest_version_id,
+    :manifest_content_hash
+  ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -293,6 +310,30 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def put_asset_freshness_state(%AssetFreshnessState{} = state, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:put_asset_freshness_state, state})
+  end
+
+  @impl true
+  def get_asset_freshness_state(asset_ref_module, asset_ref_name, freshness_key, opts)
+      when is_atom(asset_ref_module) and is_atom(asset_ref_name) and is_binary(freshness_key) and
+             is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+
+    GenServer.call(
+      server,
+      {:get_asset_freshness_state, {asset_ref_module, asset_ref_name, freshness_key}}
+    )
+  end
+
+  @impl true
+  def list_asset_freshness_states(filters, opts) when is_list(filters) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_asset_freshness_states, filters})
+  end
+
+  @impl true
   def replace_backfill_read_models(
         scope,
         coverage_baselines,
@@ -443,6 +484,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       coverage_baselines: %{},
       backfill_windows: %{},
       asset_window_states: %{},
+      asset_freshness_states: %{},
       auth_actors: %{},
       auth_usernames: %{},
       auth_credentials: %{},
@@ -782,6 +824,43 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call(
+        {:put_asset_freshness_state, %AssetFreshnessState{} = freshness_state},
+        _from,
+        state
+      ) do
+    key =
+      {freshness_state.asset_ref_module, freshness_state.asset_ref_name,
+       freshness_state.freshness_key}
+
+    {:reply, :ok, put_in(state, [:asset_freshness_states, key], freshness_state)}
+  end
+
+  def handle_call({:get_asset_freshness_state, key}, _from, state) do
+    {:reply, fetch_or_not_found(state.asset_freshness_states, key), state}
+  end
+
+  def handle_call({:list_asset_freshness_states, filters}, _from, state) do
+    case validate_filters(filters, @asset_freshness_state_filters) do
+      :ok ->
+        rows =
+          state.asset_freshness_states
+          |> Map.values()
+          |> filter_by(filters)
+          |> Enum.sort_by(
+            &{DateTime.to_unix(&1.updated_at, :microsecond) * -1,
+             Atom.to_string(&1.asset_ref_module), Atom.to_string(&1.asset_ref_name),
+             inspect(&1.freshness_key)}
+          )
+          |> offset_and_fetch(filters)
+
+        {:reply, {:ok, Page.from_fetched(rows, page_opts(filters))}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(
         {:replace_backfill_read_models, scope, coverage_baselines, backfill_windows,
          asset_window_states},
         _from,
@@ -1071,6 +1150,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
     Enum.filter(values, fn value ->
       Enum.all?(filters, fn {key, expected} -> Map.get(value, key) == expected end)
+    end)
+  end
+
+  defp validate_filters(filters, allowed_keys) do
+    filters
+    |> Keyword.drop([:limit, :offset])
+    |> Enum.find_value(:ok, fn {key, _value} ->
+      if key in allowed_keys, do: false, else: {:error, {:unsupported_filter, key}}
     end)
   end
 

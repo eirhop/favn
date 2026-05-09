@@ -3,6 +3,7 @@ defmodule Favn.StorageFacadeTest do
 
   alias Favn.Run
   alias Favn.Storage
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -88,6 +89,16 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_asset_window_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_asset_freshness_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_asset_freshness_state(_asset_ref_module, _asset_ref_name, _freshness_key, _opts),
+      do: {:error, :not_found}
+
+    @impl true
+    def list_asset_freshness_states(_filters, _opts), do: {:ok, []}
 
     @impl true
     def replace_backfill_read_models(
@@ -200,6 +211,16 @@ defmodule Favn.StorageFacadeTest do
 
     @impl true
     def list_asset_window_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def put_asset_freshness_state(_state, _opts), do: :ok
+
+    @impl true
+    def get_asset_freshness_state(_asset_ref_module, _asset_ref_name, _freshness_key, _opts),
+      do: {:error, :not_found}
+
+    @impl true
+    def list_asset_freshness_states(_filters, _opts), do: {:ok, []}
 
     @impl true
     def replace_backfill_read_models(
@@ -386,6 +407,60 @@ defmodule Favn.StorageFacadeTest do
              })
   end
 
+  test "builds normalized asset freshness state" do
+    now = ~U[2026-03-01 12:00:00Z]
+
+    assert {:ok, %AssetFreshnessState{} = state} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Assets.Orders,
+               asset_ref_name: :asset,
+               freshness_key: "calendar:day:Etc/UTC:2026-03-01",
+               status: "ok",
+               freshness_version: "freshness:v1",
+               latest_success_run_id: "run_success",
+               latest_success_node_key: {:node, :orders},
+               latest_success_at: DateTime.to_iso8601(now),
+               latest_attempt_run_id: "run_success",
+               latest_attempt_status: "ok",
+               latest_attempt_at: now,
+               manifest_version_id: "mv_1",
+               manifest_content_hash: "hash_1",
+               input_versions: %{upstream: "v1"},
+               metadata: %{relation: "gold.orders"},
+               updated_at: DateTime.to_iso8601(now)
+             })
+
+    assert state.status == :ok
+    assert state.latest_attempt_status == :ok
+    assert state.latest_success_at == now
+
+    assert {:error, {:missing_required_keys, [:freshness_key]}} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Assets.Orders,
+               asset_ref_name: :asset,
+               status: :ok,
+               updated_at: now
+             })
+
+    assert {:error, {:invalid_status, "stale"}} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Assets.Orders,
+               asset_ref_name: :asset,
+               freshness_key: "calendar:day:Etc/UTC:2026-03-01",
+               status: "stale",
+               updated_at: now
+             })
+
+    assert {:error, {:invalid_freshness_key, :daily}} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Assets.Orders,
+               asset_ref_name: :asset,
+               freshness_key: :daily,
+               status: :ok,
+               updated_at: now
+             })
+  end
+
   test "stores normalized backfill state through orchestrator memory facade" do
     now = DateTime.utc_now()
     start_at = ~U[2026-03-01 00:00:00Z]
@@ -465,6 +540,66 @@ defmodule Favn.StorageFacadeTest do
 
     assert {:ok, page} = OrchestratorStorage.list_backfill_windows(status: :running)
     assert [^window] = page.items
+  end
+
+  test "stores and filters asset freshness state through orchestrator memory facade" do
+    now = ~U[2026-03-01 12:00:00Z]
+    later = ~U[2026-03-01 13:00:00Z]
+
+    {:ok, orders_state} =
+      AssetFreshnessState.new(%{
+        asset_ref_module: MyApp.Assets.Orders,
+        asset_ref_name: :asset,
+        freshness_key: "calendar:day:Etc/UTC:2026-03-01",
+        status: :ok,
+        freshness_version: "orders:daily:v1",
+        latest_success_run_id: "run_orders",
+        latest_success_node_key: {:node, :orders},
+        latest_success_at: now,
+        latest_attempt_run_id: "run_orders",
+        latest_attempt_status: :ok,
+        latest_attempt_at: now,
+        manifest_version_id: "mv_1",
+        manifest_content_hash: "hash_1",
+        input_versions: %{raw_orders: "v1"},
+        metadata: %{relation: "gold.orders"},
+        updated_at: now
+      })
+
+    {:ok, customers_state} =
+      AssetFreshnessState.new(%{
+        asset_ref_module: MyApp.Assets.Customers,
+        asset_ref_name: :asset,
+        freshness_key: "calendar:day:Etc/UTC:2026-03-01",
+        status: :running,
+        latest_attempt_run_id: "run_customers",
+        latest_attempt_status: :running,
+        latest_attempt_at: later,
+        updated_at: later
+      })
+
+    assert :ok = OrchestratorStorage.put_asset_freshness_state(orders_state)
+    assert :ok = OrchestratorStorage.put_asset_freshness_state(customers_state)
+
+    assert {:ok, ^orders_state} =
+             OrchestratorStorage.get_asset_freshness_state(
+               MyApp.Assets.Orders,
+               :asset,
+               "calendar:day:Etc/UTC:2026-03-01"
+             )
+
+    assert {:ok, page} = OrchestratorStorage.list_asset_freshness_states(status: :running)
+    assert [^customers_state] = page.items
+
+    assert {:ok, page} =
+             OrchestratorStorage.list_asset_freshness_states(
+               asset_ref_module: MyApp.Assets.Orders
+             )
+
+    assert [^orders_state] = page.items
+
+    assert {:error, {:unsupported_filter, :unknown}} =
+             OrchestratorStorage.list_asset_freshness_states(unknown: :value)
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)

@@ -10,7 +10,8 @@ defmodule Favn.Backfill.RangeResolver do
   """
 
   alias Favn.Backfill.RangeRequest
-  alias Favn.Window.{Anchor, Key, Request, Validate}
+  alias Favn.TimePeriod
+  alias Favn.Window.{Anchor, Key, Validate}
 
   @type resolved :: %{
           kind: Validate.kind(),
@@ -52,15 +53,16 @@ defmodule Favn.Backfill.RangeResolver do
     reference = request.relative_to || coverage_until(request.baseline)
 
     with {:ok, end_at} <- exclusive_end_boundary(reference, kind, request.timezone),
-         {:ok, start_at} <- shift_kind(end_at, kind, -count),
+         {:ok, start_at} <- TimePeriod.shift(end_at, kind, -count),
          {:ok, anchors} <- Anchor.expand_range(kind, start_at, end_at, timezone: request.timezone) do
       build_resolved_range(kind, request.timezone, anchors, count, reference)
     end
   end
 
   defp request_anchor(kind, value, timezone) do
-    %Request{kind: kind, value: value, timezone: timezone}
-    |> Request.to_anchor(timezone)
+    with {:ok, period} <- TimePeriod.bounds(kind, value, timezone) do
+      Anchor.new(kind, period.start_at, period.end_at, timezone: timezone)
+    end
   end
 
   defp build_resolved_range(kind, timezone, anchors, requested_count, reference) do
@@ -85,60 +87,13 @@ defmodule Favn.Backfill.RangeResolver do
   end
 
   defp exclusive_end_boundary(%DateTime{} = reference, kind, timezone) do
-    local = DateTime.shift_zone!(reference, timezone, Favn.Timezone.database!())
-
-    with {:ok, floor} <- floor_boundary(local, kind, timezone) do
-      if DateTime.compare(local, floor) == :eq do
+    with {:ok, floor} <- TimePeriod.floor(reference, kind, timezone) do
+      if DateTime.compare(reference, floor) == :eq do
         {:ok, floor}
       else
-        shift_kind(floor, kind, 1)
+        TimePeriod.shift(floor, kind, 1)
       end
     end
-  rescue
-    ArgumentError -> {:error, {:invalid_timezone, timezone}}
-  end
-
-  defp floor_boundary(local, :hour, _timezone),
-    do: {:ok, %{local | minute: 0, second: 0, microsecond: {0, 0}}}
-
-  defp floor_boundary(local, :day, timezone),
-    do: local_midnight(local.year, local.month, local.day, timezone)
-
-  defp floor_boundary(local, :month, timezone),
-    do: local_midnight(local.year, local.month, 1, timezone)
-
-  defp floor_boundary(local, :year, timezone), do: local_midnight(local.year, 1, 1, timezone)
-
-  defp shift_kind(datetime, :hour, count),
-    do: {:ok, DateTime.add(datetime, count * 3600, :second)}
-
-  defp shift_kind(datetime, :day, count), do: shift_date(datetime, count, :day)
-  defp shift_kind(datetime, :month, count), do: shift_date(datetime, count, :month)
-  defp shift_kind(datetime, :year, count), do: shift_date(datetime, count, :year)
-
-  defp shift_date(%DateTime{} = datetime, count, :day) do
-    date = datetime |> DateTime.to_date() |> Date.add(count)
-    local_midnight(date.year, date.month, date.day, datetime.time_zone)
-  end
-
-  defp shift_date(%DateTime{} = datetime, count, :month) do
-    date = DateTime.to_date(datetime)
-    total = date.year * 12 + (date.month - 1) + count
-    local_midnight(div(total, 12), rem(total, 12) + 1, 1, datetime.time_zone)
-  end
-
-  defp shift_date(%DateTime{} = datetime, count, :year) do
-    date = DateTime.to_date(datetime)
-    local_midnight(date.year + count, 1, 1, datetime.time_zone)
-  end
-
-  defp local_midnight(year, month, day, timezone) do
-    with {:ok, date} <- Date.new(year, month, day),
-         {:ok, naive} <- NaiveDateTime.new(date, ~T[00:00:00]) do
-      {:ok, DateTime.from_naive!(naive, timezone, Favn.Timezone.database!())}
-    end
-  rescue
-    ArgumentError -> {:error, {:invalid_timezone, timezone}}
   end
 
   defp coverage_until(nil), do: nil

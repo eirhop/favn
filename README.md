@@ -49,7 +49,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - run snapshot, run event, and operational-backfill read-model persistence store explicit JSON-safe storage records, not BEAM terms or reconstructed exception structs; runner/backfill failures are normalized, bounded, and redacted before durable storage
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
-- stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; future freshness policy work is expected to decide whether downstream assets can proceed from already-fresh upstream outputs
+- stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; manifest-persisted freshness policies can skip already-fresh nodes, force selected nodes, block failed dependencies, and dirty downstream nodes only when an upstream actually refreshes
 - run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, heartbeats, and SvelteKit BFF relays that keep orchestrator service tokens server-side
 - production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus operation-versioned JSON-safe replay response DTOs
 - the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/public-origin config, and the orchestrator now exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
@@ -58,12 +58,12 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
 - single-node packaging now includes `mix favn.build.single` with a verified project-local backend-only SQLite launcher under `.favn/dist/single/<build_id>/`; it still depends on the installed runtime source root and is not a self-contained or relocatable release artifact (see `OPERATOR_NOTES.md` in each artifact)
 - backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
-- operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; operational backfill does not accept lookback-policy input until concrete runtime semantics exist
+- operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; child pipeline backfills default to `refresh: :missing`, and operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 - operational backfill read-model storage is derived projection state; the closeout migration to JSON-safe DTO storage rebuilds the durable backfill read-model tables, and operators can repopulate them with `mix favn.backfill repair --apply` from authoritative run snapshots/events when needed
 
 ## What Favn Gives You
 
-- Elixir DSLs for single assets, multi-assets, SQL assets, namespaces, schedules, pipeline window policies, and pipelines
+- Elixir DSLs for single assets, multi-assets, SQL assets, namespaces, schedules, asset freshness policies, pipeline window policies, and pipelines
 - explicit dependency modeling between assets
 - compile-time manifest generation for authored business code
 - deterministic planning from selected targets and dependency rules
@@ -212,6 +212,24 @@ runner resolves the values before asset execution and exposes them through
 diagnostics such as `missing_env SOURCE_SYSTEM_TOKEN` when a required value is
 absent.
 
+Assets can also declare freshness with `@freshness`, for example `@freshness :daily`,
+`@freshness {:daily, timezone: "Europe/Oslo"}`, `@freshness [max_age: {:hours, 6}]`,
+or `@freshness :always`. Windowed assets default to exact window-success freshness.
+During pipeline execution, the orchestrator records latest freshness state, skips
+fresh nodes under the selected refresh policy, and keeps stale explanations as an
+internal control-plane query surface.
+
+Freshness policy input variants are documented in `Favn.Freshness.Policy`:
+
+- `:daily` / `:day` for daily calendar freshness in `"Etc/UTC"`
+- `{:daily, timezone: "Europe/Oslo"}` for daily calendar freshness in a timezone
+- `[max_age: {:hours, 6}]` for rolling freshness, using `{unit, amount}`
+- `[window_success: true]` for exact runtime-window success
+- `:always` to always run when planned
+
+Read `Favn.Freshness` as the breadcrumb module for freshness concepts and
+`Favn.Freshness.Key` when you need the stable keys used by orchestrator state.
+
 For source-system raw landing assets, keep the source client outside the asset,
 read source IDs/tokens through `ctx.config`, write raw rows through
 `Favn.SQLClient`, and return structured metadata such as row counts, mode,
@@ -292,7 +310,9 @@ Operational backfill foundations can resolve explicit or relative ranges into
 the same concrete window anchors and submit one child pipeline run per resolved
 window through the orchestrator. Local development can submit explicit
 operational backfills and inspect their control-plane state with
-`mix favn.backfill` or the web operator flow at `/backfills`.
+`mix favn.backfill` or the web operator flow at `/backfills`. Child pipeline
+backfills default to `refresh: :missing` so already-successful windows can be
+skipped while missing windows are filled.
 
 ### 5. Configure authored modules
 
@@ -500,9 +520,9 @@ with `--apply`, rebuild derived coverage-baseline, backfill-window, and latest
 asset/window projections from authoritative run snapshots after projection drift
 or read-model deletion. `repair --backfill-run-id RUN_ID` rebuilds that parent
 window ledger only; use `--pipeline-module` or no scope when latest
-asset/window state must also be recomputed. Operational backfill submit does not accept
-lookback-policy input; asset window lookback remains part of normal windowed
-execution only.
+asset/window state must also be recomputed. Child pipeline backfills default to
+`refresh: :missing`. Operational backfill submit does not accept lookback-policy
+input; asset window lookback remains part of normal windowed execution only.
 
 The local web UI exposes the same operator workflow through `/backfills`,
 including active-manifest pipeline selection, explicit range submission,

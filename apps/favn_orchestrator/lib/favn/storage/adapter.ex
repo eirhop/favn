@@ -30,6 +30,7 @@ defmodule Favn.Storage.Adapter do
   """
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -97,6 +98,13 @@ defmodule Favn.Storage.Adapter do
   @callback list_asset_window_states(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(AssetWindowState.t())} | {:error, error()}
 
+  @callback put_asset_freshness_state(AssetFreshnessState.t(), adapter_opts()) ::
+              :ok | {:error, error()}
+  @callback get_asset_freshness_state(module(), atom(), String.t(), adapter_opts()) ::
+              {:ok, AssetFreshnessState.t()} | {:error, error()}
+  @callback list_asset_freshness_states(filter_opts(), adapter_opts()) ::
+              {:ok, Page.t(AssetFreshnessState.t())} | {:error, error()}
+
   @callback replace_backfill_read_models(
               filter_opts(),
               [CoverageBaseline.t()],
@@ -154,5 +162,8 @@ defmodule Favn.Storage.Adapter do
                       list_auth_audit: 2,
                       reserve_idempotency_record: 2,
                       complete_idempotency_record: 3,
-                      get_idempotency_record: 2
+                      get_idempotency_record: 2,
+                      put_asset_freshness_state: 2,
+                      get_asset_freshness_state: 4,
+                      list_asset_freshness_states: 2
 end

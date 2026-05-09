@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.ProjectorTest do
 
   alias Favn.Run
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
 
@@ -77,6 +78,7 @@ defmodule FavnOrchestrator.ProjectorTest do
     assert run.submit_kind == :pipeline
     assert map_size(run.asset_results) == 2
     assert run.asset_results[{MyApp.Assets.Raw, :asset}].status == :ok
+    assert run.node_results[{{MyApp.Assets.Raw, :asset}, nil}].status == :ok
     assert run.pipeline[:submit_ref] == MyApp.Pipelines.Daily
     assert run.pipeline_context == %{id: :daily}
   end
@@ -111,5 +113,48 @@ defmodule FavnOrchestrator.ProjectorTest do
       )
 
     assert Projector.project_run(asset_run_state).submit_kind == :backfill_asset
+  end
+
+  test "projects explicit node results before asset result fallback" do
+    asset_result = %AssetResult{
+      ref: {MyApp.Assets.Raw, :asset},
+      stage: 0,
+      status: :ok,
+      started_at: DateTime.utc_now(),
+      finished_at: DateTime.utc_now(),
+      duration_ms: 1,
+      meta: %{},
+      error: nil,
+      attempt_count: 1,
+      max_attempts: 1,
+      attempts: []
+    }
+
+    node_key = {{MyApp.Assets.Raw, :asset}, %{window: "2026-05-08"}}
+
+    node_result = %NodeResult{
+      node_key: node_key,
+      ref: {MyApp.Assets.Raw, :asset},
+      stage: 0,
+      status: :skipped_fresh,
+      freshness_key: "raw:2026-05-08"
+    }
+
+    run_state =
+      RunState.new(
+        id: "run_explicit_node_results",
+        manifest_version_id: "mv_explicit_node_results",
+        manifest_content_hash: "hash_explicit_node_results",
+        asset_ref: {MyApp.Assets.Raw, :asset}
+      )
+      |> RunState.transition(
+        status: :ok,
+        result: %{asset_results: [asset_result], node_results: [node_result]}
+      )
+
+    assert %Run{} = run = Projector.project_run(run_state)
+    assert run.asset_results == %{{MyApp.Assets.Raw, :asset} => asset_result}
+    assert run.node_results == %{node_key => node_result}
+    refute Map.has_key?(run.node_results, {{MyApp.Assets.Raw, :asset}, nil})
   end
 end

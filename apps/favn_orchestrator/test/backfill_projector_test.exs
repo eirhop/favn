@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.Backfill.ProjectorTest do
   use ExUnit.Case, async: false
 
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -166,6 +167,60 @@ defmodule FavnOrchestrator.Backfill.ProjectorTest do
 
     assert {:ok, parent_events} = Storage.list_run_events(parent.id)
     assert Enum.map(parent_events, & &1.event_type) == [:backfill_partial]
+  end
+
+  test "projects skipped-fresh only ok child as successful backfill window" do
+    now = DateTime.utc_now()
+    parent = parent_run("run_backfill_skipped_fresh")
+    child = child_run(parent.id, "run_child_skipped_fresh", "day:2026-04-27")
+
+    assert :ok = Storage.put_run(parent)
+
+    assert :ok =
+             Storage.put_backfill_window(
+               backfill_window(parent.id, child.trigger.window_key, now)
+             )
+
+    terminal =
+      RunState.transition(child,
+        status: :ok,
+        result: %{
+          status: :ok,
+          node_results: [
+            %NodeResult{
+              node_key: {{MyApp.Assets.Gold, :asset}, nil},
+              ref: {MyApp.Assets.Gold, :asset},
+              stage: 0,
+              status: :skipped_fresh,
+              freshness_key: "gold:2026-04-27"
+            }
+          ],
+          asset_results: [],
+          metadata: %{}
+        }
+      )
+
+    assert :ok = TransitionWriter.persist_transition(terminal, :run_finished, %{status: :ok})
+
+    assert {:ok, completed_window} =
+             Storage.get_backfill_window(
+               parent.id,
+               MyApp.Pipelines.Daily,
+               child.trigger.window_key
+             )
+
+    assert completed_window.status == :ok
+    assert completed_window.last_success_run_id == child.id
+
+    assert {:ok, completed_parent} = Storage.get_run(parent.id)
+    assert completed_parent.status == :ok
+
+    assert {:error, :not_found} =
+             Storage.get_asset_window_state(
+               MyApp.Assets.Gold,
+               :asset,
+               child.trigger.window_key
+             )
   end
 
   defp parent_run(run_id) do

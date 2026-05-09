@@ -2,6 +2,7 @@ defmodule FavnStoragePostgres.Migrations do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias FavnStoragePostgres.Migrations.AddAssetFreshnessState
   alias FavnStoragePostgres.Migrations.AddBackfillState
   alias FavnStoragePostgres.Migrations.AddRunEventGlobalSequence
   alias FavnStoragePostgres.Migrations.CreateFoundation
@@ -11,7 +12,8 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_415_100_000, CreateFoundation},
     {20_260_428_100_000, AddBackfillState},
     {20_260_503_120_000, AddRunEventGlobalSequence},
-    {20_260_505_100_000, RebuildBackfillReadModelsForDtos}
+    {20_260_505_100_000, RebuildBackfillReadModelsForDtos},
+    {20_260_509_100_000, AddAssetFreshnessState}
   ]
   @required_tables [
     "public.favn_manifest_versions",
@@ -22,6 +24,7 @@ defmodule FavnStoragePostgres.Migrations do
     "public.favn_pipeline_coverage_baselines",
     "public.favn_backfill_windows",
     "public.favn_asset_window_states",
+    "public.favn_asset_freshness_states",
     "public.favn_run_write_seq",
     "public.favn_run_event_global_seq"
   ]

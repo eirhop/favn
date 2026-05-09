@@ -8,6 +8,11 @@ defmodule Favn.Window do
   The helpers return canonical window structs used across Elixir assets, SQL
   assets, pipelines, backfills, and freshness checks.
 
+  Windowed assets default to exact window-success freshness unless they declare
+  an explicit `@freshness` policy. Read `Favn.Freshness.Policy` for the authoring
+  values and `Favn.Freshness.Key` for the keys used by orchestrator freshness
+  state.
+
   ## Window types
 
   - `hourly/1`, `daily/1`, `monthly/1`, and `yearly/1` build asset-level `%Favn.Window.Spec{}` values

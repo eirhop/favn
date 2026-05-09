@@ -17,6 +17,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
+  alias FavnOrchestrator.Freshness.Query, as: FreshnessQuery
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
@@ -218,6 +219,12 @@ defmodule FavnOrchestrator do
   Submits one asset run pinned to a manifest version.
 
   When `:manifest_version_id` is not provided, the active manifest version is used.
+
+  Freshness-related options:
+
+  - `:refresh` or `:refresh_policy` accepts `:auto`, `:force`, `:missing`,
+    `{:force_assets, refs}`, `{:force_assets, refs, include_upstream: true}`, or
+    equivalent maps. See `FavnOrchestrator.RefreshPolicy`.
   """
   @spec submit_asset_run(Favn.Ref.t(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def submit_asset_run(asset_ref, opts \\ [])
@@ -231,6 +238,16 @@ defmodule FavnOrchestrator do
 
   @doc """
   Submits one pipeline run from explicit target refs or a persisted manifest pipeline module.
+
+  Freshness-related options:
+
+  - `:refresh` or `:refresh_policy` accepts `:auto`, `:force`, `:missing`,
+    `{:force_assets, refs}`, `{:force_assets, refs, include_upstream: true}`, or
+    equivalent maps. See `FavnOrchestrator.RefreshPolicy`.
+
+  Under `:auto`, manifest freshness policies decide which planned nodes run or
+  skip. `:missing` skips nodes with prior successful freshness state. `:force`
+  runs every planned node.
   """
   @spec submit_pipeline_run([Favn.Ref.t()], keyword()) :: {:ok, run_id()} | {:error, term()}
   @spec submit_pipeline_run(module(), keyword()) :: {:ok, run_id()} | {:error, term()}
@@ -284,6 +301,8 @@ defmodule FavnOrchestrator do
   - `:manifest_version_id` - defaults to the active manifest.
   - `:coverage_baseline_id` - associates requested windows with a projected
     coverage baseline.
+  - `:refresh` or `:refresh_policy` - forwarded to child pipeline runs. Defaults
+    to `:missing` when neither option is provided.
   - `:metadata` - user metadata merged into the parent run metadata.
   - `:max_attempts`, `:retry_backoff_ms`, and `:timeout_ms` - forwarded to child
     runs.
@@ -343,6 +362,46 @@ defmodule FavnOrchestrator do
   def list_asset_window_states(filters \\ []) when is_list(filters) do
     Storage.list_asset_window_states(filters)
   end
+
+  @doc """
+  Returns one internal freshness state for an asset/freshness key.
+
+  `freshness_key` must come from `Favn.Freshness.Key`, for example `"latest"`, a
+  calendar key, or a window key. This is an orchestrator control-plane API, not a
+  `favn_view` public endpoint.
+  """
+  @spec get_asset_freshness(Favn.Ref.t(), String.t()) ::
+          {:ok, FavnOrchestrator.AssetFreshnessState.t()} | {:error, term()}
+  def get_asset_freshness(asset_ref, freshness_key),
+    do: FreshnessQuery.get_asset_freshness(asset_ref, freshness_key)
+
+  @doc """
+  Lists internal asset freshness states.
+
+  Common filters are `:asset_ref_module`, `:asset_ref_name`, `:freshness_key`,
+  `:status`, `:manifest_version_id`, `:limit`, and `:offset`.
+  """
+  @spec list_asset_freshness(keyword()) ::
+          {:ok, FavnOrchestrator.Page.t(FavnOrchestrator.AssetFreshnessState.t())}
+          | {:error, term()}
+  def list_asset_freshness(filters \\ []) when is_list(filters),
+    do: FreshnessQuery.list_asset_freshness(filters)
+
+  @doc """
+  Explains whether a stored freshness state is stale against current upstream versions.
+
+  Options:
+
+  - `:freshness_key` - downstream freshness key, defaults to `"latest"`.
+  - `:upstream_node_keys` - concrete planned upstream node keys to compare.
+
+  Returns `status: :fresh` with no reasons when stored input versions still match
+  the current upstream freshness versions. Returns `status: :stale` with explicit
+  stale reasons when an upstream version is missing or changed.
+  """
+  @spec explain_asset_staleness(Favn.Ref.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def explain_asset_staleness(asset_ref, opts \\ []) when is_list(opts),
+    do: FreshnessQuery.explain_asset_staleness(asset_ref, opts)
 
   @doc """
   Repairs derived operational-backfill read models from persisted run snapshots.

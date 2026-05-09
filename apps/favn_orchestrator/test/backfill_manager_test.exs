@@ -24,8 +24,14 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     @impl true
     def submit_work(work, opts) do
       submit_log = Keyword.fetch!(opts, :submit_log)
-      Agent.update(submit_log, fn submissions -> [work | submissions] end)
+      update_submit_log(submit_log, work)
       {:ok, "exec_#{work.run_id}"}
+    end
+
+    defp update_submit_log(submit_log, work) do
+      Agent.update(submit_log, fn submissions -> [work | submissions] end)
+    catch
+      :exit, _reason -> :ok
     end
 
     @impl true
@@ -82,7 +88,8 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                timeout_ms: 1_000,
                max_attempts: 2,
                retry_backoff_ms: 10,
-               coverage_baseline_id: "baseline_1"
+               coverage_baseline_id: "baseline_1",
+               refresh: :force
              )
 
     assert parent_run_id == "run_backfill_parent"
@@ -154,6 +161,81 @@ defmodule FavnOrchestrator.BackfillManagerTest do
       refute Enum.any?(submissions, &(&1.run_id == parent_run_id))
       assert submissions |> Enum.map(& &1.run_id) |> Enum.uniq() |> Enum.sort() == child_run_ids
     end)
+  end
+
+  test "defaults child pipeline submissions to refresh missing" do
+    version = manifest_version("mv_backfill_child_refresh_missing")
+    test_pid = self()
+
+    submitter = fn pipeline_module, child_opts ->
+      send(test_pid, {:child_submit, pipeline_module, child_opts})
+      {:ok, "child_run_refresh_missing"}
+    end
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_child_refresh_missing"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_child_refresh_missing",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+               _child_submitter: submitter
+             )
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, child_opts}
+    assert Keyword.fetch!(child_opts, :refresh) == :missing
+    refute Keyword.has_key?(child_opts, :refresh_policy)
+  end
+
+  test "preserves explicit child refresh option" do
+    version = manifest_version("mv_backfill_child_refresh_explicit")
+    test_pid = self()
+
+    submitter = fn pipeline_module, child_opts ->
+      send(test_pid, {:child_submit, pipeline_module, child_opts})
+      {:ok, "child_run_refresh_explicit"}
+    end
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_child_refresh_explicit"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_child_refresh_explicit",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+               refresh: :force,
+               _child_submitter: submitter
+             )
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, child_opts}
+    assert Keyword.fetch!(child_opts, :refresh) == :force
+  end
+
+  test "preserves explicit child refresh policy without adding refresh" do
+    version = manifest_version("mv_backfill_child_refresh_policy")
+    test_pid = self()
+
+    refresh_policy = %{mode: :missing, stale_after_ms: 60_000}
+
+    submitter = fn pipeline_module, child_opts ->
+      send(test_pid, {:child_submit, pipeline_module, child_opts})
+      {:ok, "child_run_refresh_policy"}
+    end
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_child_refresh_policy"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_child_refresh_policy",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+               refresh_policy: refresh_policy,
+               _child_submitter: submitter
+             )
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, child_opts}
+    assert Keyword.fetch!(child_opts, :refresh_policy) == refresh_policy
+    refute Keyword.has_key?(child_opts, :refresh)
   end
 
   for option <- [:lookback, :lookback_policy] do
@@ -609,13 +691,17 @@ defmodule FavnOrchestrator.BackfillManagerTest do
         %Asset{
           ref: {MyApp.Assets.Raw, :asset},
           module: MyApp.Assets.Raw,
-          name: :asset
+          name: :asset,
+          window: Policy.new!(:day),
+          freshness: Favn.Freshness.Policy.from_value!(window_success: true)
         },
         %Asset{
           ref: {MyApp.Assets.Gold, :asset},
           module: MyApp.Assets.Gold,
           name: :asset,
-          depends_on: [{MyApp.Assets.Raw, :asset}]
+          depends_on: [{MyApp.Assets.Raw, :asset}],
+          window: Policy.new!(:day),
+          freshness: Favn.Freshness.Policy.from_value!(window_success: true)
         }
       ],
       pipelines: [

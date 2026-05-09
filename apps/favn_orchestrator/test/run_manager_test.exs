@@ -907,6 +907,97 @@ defmodule FavnOrchestrator.RunManagerTest do
              FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, metadata: [])
   end
 
+  test "run submissions persist normalized refresh policy metadata" do
+    version = manifest_version("mv_refresh_policy_metadata")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_refresh_policy_metadata")
+
+    assert {:ok, asset_run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               metadata: %{owner: :user, refresh_policy: %{mode: :stale}},
+               refresh: {:force_assets, [{MyApp.Assets.Raw, :asset}], include_upstream: true}
+             )
+
+    assert {:ok, asset_run} = await_terminal_run(asset_run_id)
+    assert asset_run.metadata[:owner] == :user
+
+    assert asset_run.metadata[:refresh_policy] == %{
+             mode: :force_assets,
+             refs: [{MyApp.Assets.Raw, :asset}],
+             include_upstream?: true
+           }
+
+    assert {:ok, pipeline_run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               refresh_policy: :force
+             )
+
+    assert {:ok, pipeline_run} = await_terminal_run(pipeline_run_id)
+
+    assert pipeline_run.metadata[:refresh_policy] == %{
+             mode: :force,
+             refs: [],
+             include_upstream?: false
+           }
+
+    assert {:ok, pipeline_module_run_id} =
+             FavnOrchestrator.submit_pipeline_run(MyApp.Pipelines.Daily, refresh_policy: :missing)
+
+    assert {:ok, pipeline_module_run} = await_terminal_run(pipeline_module_run_id)
+
+    assert pipeline_module_run.metadata[:refresh_policy] == %{
+             mode: :missing,
+             refs: [],
+             include_upstream?: false
+           }
+
+    assert {:ok, source_run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, source_run} = await_terminal_run(source_run_id)
+
+    assert source_run.metadata[:refresh_policy] == %{
+             mode: :auto,
+             refs: [],
+             include_upstream?: false
+           }
+
+    assert {:ok, rerun_id} = FavnOrchestrator.rerun(source_run_id, refresh_policy: "force")
+    assert {:ok, rerun} = await_terminal_run(rerun_id)
+
+    assert rerun.metadata[:refresh_policy] == %{
+             mode: :force,
+             refs: [],
+             include_upstream?: false
+           }
+  end
+
+  test "run submissions reject invalid refresh policy options before creating runs" do
+    version = manifest_version("mv_invalid_refresh_policy")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_invalid_refresh_policy")
+
+    assert {:error, {:invalid_refresh_policy, :invalid}} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, refresh: :invalid)
+
+    assert {:error, {:refresh_include_upstream_requires_dependencies, :all}} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               dependencies: :none,
+               refresh_policy:
+                 {:force_assets, [{MyApp.Assets.Raw, :asset}], include_upstream: true}
+             )
+
+    assert {:ok, source_run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, dependencies: :none)
+
+    assert {:ok, _source_run} = await_terminal_run(source_run_id)
+
+    assert {:error, {:refresh_include_upstream_requires_dependencies, :all}} =
+             FavnOrchestrator.rerun(source_run_id,
+               refresh_policy:
+                 {:force_assets, [{MyApp.Assets.Raw, :asset}], include_upstream: true}
+             )
+  end
+
   test "runner exception errors are stored as JSON-safe run data" do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientKeyErrorStub)
 

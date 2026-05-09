@@ -5,6 +5,7 @@ defmodule FavnStorageSqlite.AdapterTest do
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.Storage.Adapter.SQLite, as: Adapter
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
@@ -199,6 +200,47 @@ defmodule FavnStorageSqlite.AdapterTest do
       "window_key",
       state.window_key,
       "favn.backfill.asset_window_state.storage.v1"
+    )
+  end
+
+  test "persists asset freshness states as full JSON-safe DTO records", %{opts: opts} do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {:ok, state} =
+      AssetFreshnessState.new(%{
+        asset_ref_module: MyApp.Asset,
+        asset_ref_name: :asset,
+        freshness_key: "latest",
+        status: :ok,
+        freshness_version: "asset:v1",
+        latest_success_run_id: "run_fresh",
+        latest_success_node_key: {{MyApp.Asset, :asset}, nil},
+        latest_success_at: now,
+        latest_attempt_run_id: "run_fresh",
+        latest_attempt_status: :ok,
+        latest_attempt_at: now,
+        manifest_version_id: "mv_fresh",
+        manifest_content_hash: "hash_fresh",
+        input_versions: [],
+        metadata: %{credentials: "secret-password"},
+        updated_at: now
+      })
+
+    assert :ok = Adapter.put_asset_freshness_state(state, opts)
+    assert {:ok, stored} = Adapter.get_asset_freshness_state(MyApp.Asset, :asset, "latest", opts)
+    assert stored.asset_ref_module == state.asset_ref_module
+    assert stored.asset_ref_name == state.asset_ref_name
+    assert stored.freshness_key == state.freshness_key
+    assert stored.latest_success_node_key == state.latest_success_node_key
+
+    assert {:ok, page} = Adapter.list_asset_freshness_states([status: :ok], opts)
+    assert Enum.map(page.items, & &1.freshness_key) == ["latest"]
+
+    assert_raw_backfill_payload(
+      "favn_asset_freshness_states",
+      "freshness_key",
+      state.freshness_key,
+      "favn.freshness.asset_freshness_state.storage.v1"
     )
   end
 
