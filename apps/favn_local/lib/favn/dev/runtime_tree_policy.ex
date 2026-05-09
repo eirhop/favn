@@ -9,9 +9,9 @@ defmodule Favn.Dev.RuntimeTreePolicy do
     ".git",
     "_build",
     "cover",
-    "deps",
-    "static"
+    "deps"
   ]
+  @ignored_relative_entries ["apps/favn_view/priv/static/assets"]
 
   @spec entries() :: [Path.t()]
   def entries, do: @entries
@@ -53,10 +53,12 @@ defmodule Favn.Dev.RuntimeTreePolicy do
     case File.ls(path) do
       {:ok, entries} ->
         Enum.reduce_while(entries, {:ok, acc}, fn entry, {:ok, current_acc} ->
-          if entry in ignored_entries() do
+          child_path = Path.join(path, entry)
+
+          if ignored_entry?(child_path, entry) do
             {:cont, {:ok, current_acc}}
           else
-            case fun.(Path.join(path, entry), entry, current_acc) do
+            case fun.(child_path, entry, current_acc) do
               {:ok, next_acc} -> {:cont, {:ok, next_acc}}
               {:error, _reason} = error -> {:halt, error}
             end
@@ -66,5 +68,17 @@ defmodule Favn.Dev.RuntimeTreePolicy do
       {:error, reason} ->
         {:error, list_error.(reason)}
     end
+  end
+
+  defp ignored_entry?(path, entry) do
+    entry in ignored_entries() or path_has_ignored_suffix?(path)
+  end
+
+  defp path_has_ignored_suffix?(path) do
+    normalized = path |> Path.expand() |> Path.split() |> Path.join()
+
+    Enum.any?(@ignored_relative_entries, fn relative ->
+      String.ends_with?(normalized, relative)
+    end)
   end
 end

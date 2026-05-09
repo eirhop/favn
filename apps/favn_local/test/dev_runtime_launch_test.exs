@@ -92,7 +92,11 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert orchestrator.env["FAVN_ORCHESTRATOR_API_BIND_IP"] == "127.0.0.1"
     assert code =~ "bind_ip: api_bind_ip"
     assert web.env["FAVN_VIEW_PORT"] == "4173"
-    assert eval_code!(web) =~ "Application.ensure_all_started(:favn_view)"
+
+    web_code = eval_code!(web)
+    assert web_code =~ "endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])"
+    assert web_code =~ "Keyword.merge(endpoint_config"
+    assert web_code =~ "Application.ensure_all_started(:favn_view)"
   end
 
   test "orchestrator spec handles memory storage explicitly" do

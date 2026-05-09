@@ -35,6 +35,11 @@ jobs:
           MIX_ENV: test
         run: mix compile --warnings-as-errors
 
+      - name: Build Phoenix assets
+        env:
+          MIX_ENV: test
+        run: mix cmd --app favn_view mix assets.build
+
       - name: Test
         env:
           MIX_ENV: test

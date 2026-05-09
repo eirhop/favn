@@ -93,6 +93,7 @@ defmodule Favn.Dev.RuntimeSourceTest do
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_orchestrator"))
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_view"))
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_view/priv"))
+    File.mkdir_p!(Path.join(runtime_root, "apps/favn_view/priv/static"))
 
     File.write!(Path.join(runtime_root, "mix.lock"), "lock")
 

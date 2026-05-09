@@ -235,9 +235,15 @@ defmodule Favn.Dev.RuntimeLaunch do
 
     code =
       """
-      Application.put_env(:favn_view, FavnView.Endpoint,
-        server: true,
-        http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.fetch_env!("FAVN_VIEW_PORT"))]
+      endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])
+
+      Application.put_env(
+        :favn_view,
+        FavnView.Endpoint,
+        Keyword.merge(endpoint_config,
+          server: true,
+          http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.fetch_env!("FAVN_VIEW_PORT"))]
+        )
       )
 
       {:ok, _} = Application.ensure_all_started(:favn_view)

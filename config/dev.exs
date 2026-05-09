@@ -9,7 +9,10 @@ import Config
 config :favn_view, FavnView.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  http: [
+    ip: {127, 0, 0, 1},
+    port: System.get_env("FAVN_VIEW_PORT", System.get_env("PORT", "4173")) |> String.to_integer()
+  ],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
@@ -17,6 +20,18 @@ config :favn_view, FavnView.Endpoint,
   watchers: [
     esbuild: {Esbuild, :install_and_run, [:favn_view, ~w(--sourcemap=inline --watch)]},
     tailwind: {Tailwind, :install_and_run, [:favn_view, ~w(--watch)]}
+  ],
+  live_reload: [
+    web_console_logger: true,
+    patterns: [
+      # Static assets, except user uploads
+      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
+      # Gettext translations
+      ~r"priv/gettext/.*\.po$"E,
+      # Router, Controllers, LiveViews and LiveComponents
+      ~r"lib/favn_view/router\.ex$"E,
+      ~r"lib/favn_view/(controllers|live|components)/.*\.(ex|heex)$"E
+    ]
   ]
 
 # ## SSL Support
@@ -42,20 +57,5 @@ config :favn_view, FavnView.Endpoint,
 # configured to run both http and https servers on
 # different ports.
 
-# Reload browser tabs when matching files change.
-config :favn_view, FavnView.Endpoint,
-  live_reload: [
-    web_console_logger: true,
-    patterns: [
-      # Static assets, except user uploads
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
-      # Gettext translations
-      ~r"priv/gettext/.*\.po$"E,
-      # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/favn_view/router\.ex$"E,
-      ~r"lib/favn_view/(controllers|live|components)/.*\.(ex|heex)$"E
-    ]
-  ]
-
-# Enable dev routes for dashboard and mailbox
+# Enable dev routes for dashboard.
 config :favn_view, dev_routes: true
