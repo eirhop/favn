@@ -1,95 +1,102 @@
 # AGENTS.md
 
-## Project overview
+Favn is a manifest-first Elixir orchestration system for defining, compiling,
+and running business-oriented data assets.
 
-Favn is an Elixir library for defining and orchestrating business-oriented data assets.
-The v0.5 umbrella refactor is complete; current work should build on the established app boundaries.
-The public package boundary lives in `apps/favn/lib/favn.ex`.
-Authoring implementation lives in `apps/favn_authoring/lib/favn.ex`.
-The most important user-facing docs are `docs/FEATURES.md` and `docs/ROADMAP.md`.
+## App Boundaries
 
-**Important rules**
-- Favn is currently in private development and has no users. Breaking changes is allowed and no need for handling legacy scenarios.
-- Do not read large docs end-to-end by default. Start from the user request, linked issue/PR, and relevant source files. Use `Glob`, `Grep`, and narrow `Read` ranges before reading whole files.
-- Read docs only when relevant: `README.md` for public usage or command behavior, `docs/FEATURES.md` for implemented user-visible behavior, `docs/ROADMAP.md` for planned work, and `docs/structure/<app>.md` for ownership, layout, and app-specific tests.
-- Keep `docs/FEATURES.md` focused on implemented, user-visible behavior only.
-- Keep `docs/ROADMAP.md` focused on planned work only. Do not leave already-implemented items there.
-- When a feature lands, update `docs/FEATURES.md` and remove or downgrade the corresponding roadmap item in `docs/ROADMAP.md`.
-- If you need a detailed task list, create a separate file and link to it from `docs/ROADMAP.md` or the relevant doc.
-- When you start coding, make sure task exist, and when you have created the code always mark task as done.
-- Always keep user documentation up to date in the current source-of-truth location and `README.md`.
-- When creating new files, update the relevant `docs/structure/<app>.md` file if ownership or test layout changes.
-- Before starting a new coding session - always:
-    - Identify new coding session through that chat history is empty
-    - Make sure main branch is up to date
-    - Branch main with name based on feature to be implemented as feature/*.
-    - If user asks explicitly to work on a specific branch then go to that branch, make sure it is up to date and start working. 
-- During development, run the narrowest useful check first: changed test file, then owning app test suite. Before finishing Elixir code changes, run the relevant tests for affected projects: `mix format`, `mix compile --warnings-as-errors`, `mix test`, `mix credo --strict`, `mix dialyzer`, and `mix xref graph --format stats --label compile-connected`. Do not ru full umbrella test suite. CI will run full umbrella test it takes >5min.
-- For dependency changes, auth/session/token changes, runtime config changes, web-edge changes, or production hardening work, also run security checks before finishing: `mix deps.audit` for known Elixir dependency vulnerabilities, `mix hex.audit` when Hex package metadata or dependency freshness is relevant, and Sobelow for Elixir HTTP/Phoenix/Plug-facing changes where it gives useful signal. Do not treat security audit output as a checkbox. Investigate findings, document false positives, and fix high/critical issues before opening or merging a production/security PR.
-- In Elixir - always use shared fixtures and test helpers from apps/favn_test_support when available, and keep app-local test support limited to behavior or setup that is genuinely specific to that app.
+- `favn`: public DSL surface only.
+- `favn_core`: shared compiler, domain, and manifest logic.
+- `favn_runner`: execution runtime.
+- `favn_orchestrator`: control plane, state, scheduling, persistence, Phoenix API endpoints, and Plug pipelines.
+- `favn_view`: thin Phoenix/LiveView UI/API boundary.
+- Plugins and adapters own external integrations.
 
-### Low-context tooling
+`favn_view` must call backend functionality only through the public orchestrator
+facade. It must not call storage adapters, scheduler internals, runner modules,
+persistence modules, repos, compiler internals, or plugin internals directly.
 
-- Prefer explicit JSON fields for `gh` commands to avoid broad or deprecated output.
-- Prefer `git diff --name-only` or `git diff --stat` before targeted `git diff -- <path>`.
-- Avoid full logs, full diffs, and whole large-file reads unless broad output is the purpose of the task.
+## OpenCode Skills
 
-### Breaking changes and legacy code
-- Breaking changes are allowed until we have a real production release and external users depending on the API >v1.0.
-- Do not keep compatibility layers, aliases, or transitional code unless explicitly requested.
-- Prefer a clean and consistent design over preserving outdated behavior.
-- Remove legacy code instead of carrying it forward.
-- When changing contracts, update docs, tests, and types to match the new source of truth immediately.
+Load the relevant repo-local OpenCode skill before framework-specific work:
 
-## What the agent should optimize for
+- `favn-architecture`: app boundaries, public facades, manifests, orchestration contracts, cross-app dependencies, and deployment assumptions.
+- `phoenix-web-api`: Phoenix Endpoint, Router, Controller, Plug, and API work, especially in `apps/favn_orchestrator`.
+- `phoenix-liveview`: LiveView, HEEx, components, layouts, Storybook, Tidewave, and UI work in `apps/favn_view`.
+- `ecto-storage`: repos, migrations, Ecto queries, transactions, storage adapters, SQL sandbox, and persistence tests.
 
-When making changes in this repo, optimize for:
+## Repo Rules
 
-1. Clear public API design
-2. Small, composable modules
-3. Documentation-first developer experience
-4. Predictable runtime behavior
-5. Elixir-native design over framework-heavy abstractions
+- Favn is private pre-v1 software; breaking changes are allowed when they make the design cleaner.
+- Keep root guidance concise and repo-wide. Put framework-specific details in OpenCode skills.
+- Keep user documentation current in `README.md`, `docs/FEATURES.md`, `docs/ROADMAP.md`, and relevant `docs/structure/*.md` files.
+- Prefer small, explicit modules and public boundary functions with moduledocs, docs, and typespecs.
+- Use shared fixtures and test helpers from `apps/favn_test_support` when available.
 
-## Elixir coding instructions
+## Tidewave MCP Usage
 
-Follow Elixir best practices and idiomatic Elixir style:
+This repo has Tidewave MCP servers configured for OpenCode:
 
-- Prefer small, focused modules and functions
-- Always alias nested modules
-- Prefer pure functions and explicit data flow where possible
-- Use pattern matching and multiple function heads to express intent clearly
-- Use structs for domain data and behaviours for boundaries
-- Keep return shapes consistent; avoid APIs whose options radically change return types
-- Use pipelines only when they improve readability
-- Avoid unnecessary comments; prefer clear names and good docs
-- Write `@moduledoc`, `@doc`, types, and examples for all public API
-- Add doctests or executable examples when practical
-- Keep macros minimal and justified; prefer functions unless compile-time behavior is required
-- Use OTP abstractions only when state, supervision, concurrency, or process boundaries are actually needed
-- Raise only for truly exceptional situations; otherwise return explicit values
-- Keep side effects at the edges of the system
-- Make code easy to test with ExUnit through deterministic, isolated units
+- `tidewave_view`: use for `apps/favn_view`, including Phoenix LiveView, UI flows, routes, templates, components, browser-facing behavior, logs, source lookup, and runtime inspection.
+- `tidewave_orchestrator`: use for `apps/favn_orchestrator`, including Phoenix/Plug API endpoints, storage behavior, database inspection, orchestration runtime state, logs, and source lookup.
 
-## Preferred change style
+Tidewave only works when the corresponding local runtime is running. Do not use
+Tidewave to bypass Favn boundaries; runtime inspection is allowed, but
+implementation must respect app ownership. `favn_view` must call orchestrator
+through public APIs/functions only and must not depend on orchestrator internals.
 
-For new code:
+To use Tidewave MCP with OpenCode, start the relevant Phoenix runtime first:
 
-- update or add typespecs for public functions
-- write or improve moduledocs and docs
-- add focused tests close to the changed behavior
-- keep naming precise and boring
-- avoid premature abstraction
-- avoid introducing dependencies unless they clearly reduce complexity
+```bash
+# terminal 1: start favn_view on 4173
+# terminal 2: start favn_orchestrator on 4101
+# terminal 3
+opencode mcp list
+opencode
+```
 
-## Priority order for decisions
+If only UI work is needed, `favn_view` is enough. If only orchestrator/API/storage
+work is needed, `favn_orchestrator` is enough. For end-to-end UI to orchestrator
+debugging, run both.
 
-When tradeoffs appear, prefer:
+## Playwright MCP Setup
 
-1. Correctness
-2. Readability
-3. Explicitness
-4. Composability
-5. Convenience
+Playwright MCP is configured as `playwright` for rendered browser interaction
+with `apps/favn_view` and `/storybook`. It is for AI-assisted UI inspection,
+visual verification, and Storybook review; it is not a committed E2E test suite.
 
-Choose the simpler design unless the more advanced design clearly solves a real problem already present in Favn.
+Requirements:
+
+- Node.js 18+
+- A working browser environment
+
+OpenCode launches Playwright MCP with:
+
+```bash
+npx -y @playwright/mcp@latest
+```
+
+No project-local Playwright dependency is required for MCP-only usage. If browser
+launch fails, install Playwright browsers/system dependencies locally:
+
+```bash
+npx playwright install --with-deps chromium
+```
+
+On WSL/Linux, this may be required before Playwright MCP can open a browser.
+Start the relevant Phoenix app, start OpenCode from the repo root, then ask the
+agent to use `playwright` to inspect the rendered UI. Example:
+
+```text
+Use playwright to open http://127.0.0.1:4173/storybook and inspect the asset card component story. Use tidewave_view if you need runtime/source/log context.
+```
+
+## Verification
+
+Run the narrowest useful check first. Before finishing changes, run:
+
+- `mix format`
+- `mix compile --warnings-as-errors`
+- `mix test`
+
+If dependencies change, update lockfiles and run the relevant verification.

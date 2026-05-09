@@ -314,7 +314,9 @@ The runner should not mutate data and should not execute arbitrary SQL text supp
 
 ## Web/BFF Design
 
-The web implementation should be handled through the `web-dev` workflow.
+Future web implementation should load the relevant repo-local OpenCode skills,
+especially `phoenix-liveview` for `apps/favn_view` UI work and
+`phoenix-web-api` for Phoenix API work.
 
 Browser-facing BFF route candidates:
 
@@ -452,7 +454,8 @@ mix dialyzer
 mix xref graph --format stats --label compile-connected
 ```
 
-For `favn_web` changes, use the web-dev workflow and run the workspace's relevant format, lint, test, Storybook, build, and E2E checks.
+For future `favn_view` changes, load `phoenix-liveview` and run the relevant
+format, compile, test, Storybook, and asset checks.
 
 ## Acceptance Mapping
 

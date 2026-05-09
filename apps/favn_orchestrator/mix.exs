@@ -32,6 +32,7 @@ defmodule FavnOrchestrator.MixProject do
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:phoenix_pubsub, "~> 2.2"},
       {:plug_cowboy, "~> 2.7"},
+      {:tidewave, "~> 0.5", only: :dev},
       {:argon2_elixir, "~> 4.0"},
       {:jason, "~> 1.4"}
     ]

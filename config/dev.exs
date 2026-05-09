@@ -59,3 +59,7 @@ config :favn_view, FavnView.Endpoint,
 
 # Enable dev routes for dashboard.
 config :favn_view, dev_routes: true
+
+config :phoenix_live_view,
+  debug_heex_annotations: true,
+  debug_attributes: true
