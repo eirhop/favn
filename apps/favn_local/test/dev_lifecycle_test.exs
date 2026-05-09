@@ -116,7 +116,7 @@ defmodule Favn.Dev.LifecycleTest do
                      "materialized_root" => runtime_root,
                      "runner_root" => runtime_root,
                      "orchestrator_root" => runtime_root,
-                     "web_root" => Path.join(runtime_root, "web/favn_web")
+                      "web_root" => Path.join(runtime_root, "apps/favn_view")
                    },
                    root_dir: root_dir
                  )
@@ -321,42 +321,6 @@ defmodule Favn.Dev.LifecycleTest do
 
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
     assert :ok = Lock.with_lock([root_dir: root_dir], fn -> :ok end)
-  end
-
-  test "dev/1 returns web build failures instead of raising", %{root_dir: root_dir} do
-    root_dir = root_with_free_distribution_ports(root_dir)
-
-    case NodeControl.ensure_local_node_started("favn_web_failure_cookie") do
-      :ok ->
-        web_dir = Path.join(root_dir, "web/favn_web")
-        bin_dir = Path.join(root_dir, "bin")
-        npm = Path.join(bin_dir, "npm")
-
-        File.mkdir_p!(web_dir)
-        File.mkdir_p!(bin_dir)
-        File.write!(npm, "#!/usr/bin/env sh\nprintf 'asset build failed'\nexit 7\n")
-        File.chmod!(npm, 0o755)
-
-        System.put_env("PATH", bin_dir <> ":" <> System.get_env("PATH", ""))
-
-        assert {:error, {:web_build_failed, 7, "asset build failed"}} =
-                 Dev.dev(
-                   root_dir: root_dir,
-                   orchestrator_port: free_port(),
-                   web_port: free_port(),
-                   skip_install_check: true,
-                   skip_runtime_compile: true,
-                   skip_bootstrap: true,
-                   skip_readiness: true
-                 )
-
-        assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
-
-      {:error, reason} ->
-        IO.puts(
-          "Skipping web build failure test: distributed Erlang unavailable: #{inspect(reason)}"
-        )
-    end
   end
 
   test "dev/1 writes shortname-compatible node names in runtime", %{root_dir: root_dir} do

@@ -13,7 +13,7 @@ This task list drives the feature audit for `docs/FEATURES.md`.
 4. Local developer workflow and packaging
    Projects: `apps/favn_local`, public `mix favn.*` tasks in `apps/favn`
 5. Web prototype and BFF behavior
-   Projects: `web/favn_web`
+   Projects: `apps/favn_view`
 
 ## Audit Questions Per Category
 

@@ -12,14 +12,12 @@ defmodule Favn.Dev.Build.SingleTest do
         "favn_dev_build_single_test_#{System.unique_integer([:positive])}"
       )
 
-    File.mkdir_p!(Path.join(root_dir, "web/favn_web"))
     File.mkdir_p!(Path.join(root_dir, "apps/favn_runner"))
     File.mkdir_p!(Path.join(root_dir, "apps/favn_orchestrator"))
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_view"))
     File.mkdir_p!(Path.join(root_dir, "apps/favn_duckdb"))
 
     File.write!(Path.join(root_dir, "mix.lock"), "lock")
-    File.write!(Path.join(root_dir, "web/favn_web/package.json"), "{}")
-    File.write!(Path.join(root_dir, "web/favn_web/package-lock.json"), "{}")
 
     File.write!(
       Path.join(root_dir, "apps/favn_runner/mix.exs"),
@@ -30,6 +28,8 @@ defmodule Favn.Dev.Build.SingleTest do
       Path.join(root_dir, "apps/favn_orchestrator/mix.exs"),
       "defmodule Orchestrator.MixProject do end"
     )
+
+    File.write!(Path.join(root_dir, "apps/favn_view/mix.exs"), "defmodule View.MixProject do end")
 
     on_exit(fn ->
       File.rm_rf(root_dir)
@@ -123,7 +123,7 @@ defmodule Favn.Dev.Build.SingleTest do
     refute stop_script =~ "No managed processes were started"
     refute env_example =~ "FAVN_DEV_"
     assert env_example =~
-             "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_web:replace-with-32-plus-char-service-token"
+             "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view:replace-with-32-plus-char-service-token"
     refute start_script =~ "FAVN_DEV_"
     refute stop_script =~ "FAVN_DEV_"
     refute metadata_json =~ "FAVN_DEV_"

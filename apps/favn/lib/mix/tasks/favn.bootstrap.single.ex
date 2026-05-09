@@ -11,9 +11,9 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
   Required options can be passed as flags or environment variables:
 
   - `--manifest` or `FAVN_BOOTSTRAP_MANIFEST_PATH`
-  - `--orchestrator-url` or `FAVN_WEB_ORCHESTRATOR_BASE_URL`
+  - `--orchestrator-url` or `FAVN_VIEW_ORCHESTRATOR_BASE_URL`
   - `--service-token` or `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` /
-    `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`
+    `FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN`
   """
 
   alias Favn.Dev
@@ -91,12 +91,12 @@ defmodule Mix.Tasks.Favn.Bootstrap.Single do
     |> Keyword.delete(:manifest)
     |> put_default(
       :orchestrator_url,
-      Keyword.get(opts, :orchestrator_url) || env("FAVN_WEB_ORCHESTRATOR_BASE_URL")
+      Keyword.get(opts, :orchestrator_url) || env("FAVN_VIEW_ORCHESTRATOR_BASE_URL")
     )
     |> put_default(
       :service_token,
       Keyword.get(opts, :service_token) || env("FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN") ||
-        env("FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN") || env("FAVN_ORCHESTRATOR_SERVICE_TOKEN")
+        env("FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN") || env("FAVN_ORCHESTRATOR_SERVICE_TOKEN")
     )
   end
 

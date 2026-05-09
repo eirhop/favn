@@ -105,7 +105,7 @@ defmodule Favn.Dev.RuntimeWorkspace do
       "materialized_root" => runtime_root,
       "orchestrator_root" => runtime_root,
       "runner_root" => runtime_root,
-      "web_root" => Path.join(runtime_root, "web/favn_web")
+      "web_root" => Path.join(runtime_root, "apps/favn_view")
     }
 
     State.write_install_runtime(runtime, opts)

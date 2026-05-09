@@ -183,7 +183,7 @@ defmodule Favn.Dev.Stack do
              "materialized_root" => root_dir,
              "orchestrator_root" => root_dir,
              "runner_root" => root_dir,
-             "web_root" => Path.join(root_dir, "web/favn_web")
+              "web_root" => Path.join(root_dir, "apps/favn_view")
            }}
         else
           {:error, :install_required}
@@ -394,9 +394,9 @@ defmodule Favn.Dev.Stack do
 
   defp start_default_services(runtime, config, secrets, node_names, opts) do
     with :ok <-
-           progress_step(opts, "ensuring web assets", fn ->
-             ensure_web_assets(runtime, opts)
-           end) do
+            progress_step(opts, "preparing Phoenix assets", fn ->
+              ensure_web_assets(runtime, opts)
+            end) do
       runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
 
       orchestrator_spec =
@@ -472,23 +472,11 @@ defmodule Favn.Dev.Stack do
     end
   end
 
-  defp ensure_web_assets(runtime, opts) do
+  defp ensure_web_assets(_runtime, opts) do
     if Keyword.get(opts, :skip_web_build, false) do
       :ok
     else
-      web_cwd = runtime["web_root"]
-      built_index = Path.join(web_cwd, "dist/index.html")
-
-      if File.exists?(built_index) do
-        :ok
-      else
-        npm = System.find_executable("npm") || "npm"
-
-        case System.cmd(npm, ["run", "build", "--silent"], cd: web_cwd, stderr_to_stdout: true) do
-          {_output, 0} -> :ok
-          {output, status} -> {:error, {:web_build_failed, status, String.trim(output)}}
-        end
-      end
+      :ok
     end
   end
 

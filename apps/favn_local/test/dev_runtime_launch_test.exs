@@ -11,7 +11,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "materialized_root" => "/tmp/favn_runtime",
       "runner_root" => "/tmp/favn_runtime",
       "orchestrator_root" => "/tmp/favn_runtime",
-      "web_root" => "/tmp/favn_runtime/web/favn_web"
+      "web_root" => "/tmp/favn_runtime/apps/favn_view"
     }
 
     config = Config.resolve(storage: :sqlite)
@@ -41,11 +41,11 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert "mix" in runner.args
     assert "--no-compile" in orchestrator.args
     assert "mix" in orchestrator.args
-    assert web.exec == (System.find_executable("node") || "node")
-    assert hd(web.args) == Path.join(runtime["web_root"], "node_modules/vite/bin/vite.js")
-    assert "preview" in web.args
-    assert web.env["FAVN_WEB_PUBLIC_ORIGIN"] == config.web_base_url
-    assert web.env["FAVN_WEB_LOCAL_DEV_TRUSTED_AUTH"] == "1"
+    assert web.exec == (System.find_executable("elixir") || "elixir")
+    assert "mix" in web.args
+    assert "--no-compile" in web.args
+    assert web.env["FAVN_VIEW_PUBLIC_ORIGIN"] == config.web_base_url
+    assert web.env["FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH"] == "1"
   end
 
   test "runtime specs bind local HTTP and distributed Erlang to loopback" do
@@ -54,7 +54,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     runtime = %{
       "runner_root" => "/tmp/favn_runtime",
       "orchestrator_root" => "/tmp/favn_runtime",
-      "web_root" => "/tmp/favn_runtime/web/favn_web"
+      "web_root" => "/tmp/favn_runtime/apps/favn_view"
     }
 
     config = Config.resolve(orchestrator_port: 4101, web_port: 4173)
@@ -91,7 +91,12 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert orchestrator.env["ERL_EPMD_ADDRESS"] == "127.0.1.1"
     assert orchestrator.env["FAVN_ORCHESTRATOR_API_BIND_IP"] == "127.0.0.1"
     assert code =~ "bind_ip: api_bind_ip"
-    assert web.args == [hd(web.args), "preview", "--host", "127.0.0.1", "--port", "4173"]
+    assert web.env["FAVN_VIEW_PORT"] == "4173"
+
+    web_code = eval_code!(web)
+    assert web_code =~ "endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])"
+    assert web_code =~ "Keyword.merge(endpoint_config"
+    assert web_code =~ "Application.ensure_all_started(:favn_view)"
   end
 
   test "orchestrator spec handles memory storage explicitly" do
@@ -326,7 +331,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     runtime = %{
       "runner_root" => "/tmp/favn_runtime",
       "orchestrator_root" => "/tmp/favn_runtime",
-      "web_root" => "/tmp/favn_runtime/web/favn_web"
+      "web_root" => "/tmp/favn_runtime/apps/favn_view"
     }
 
     config = Config.resolve(storage: :sqlite)
@@ -349,7 +354,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
           "CUSTOM_ENV" => "from-file",
           "MIX_ENV" => "prod",
           "FAVN_DEV_STORAGE" => "postgres",
-          "FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN" => "from-file"
+          "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN" => "from-file"
         }
       )
 
@@ -364,7 +369,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert runner.env["MIX_ENV"] == "dev"
     assert orchestrator.env["MIX_ENV"] == "dev"
     assert orchestrator.env["FAVN_DEV_STORAGE"] == "sqlite"
-    assert web.env["FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN"] == "token"
+    assert web.env["FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN"] == "token"
   end
 
   test "orchestrator spec enables scheduler when resolved config enables it" do

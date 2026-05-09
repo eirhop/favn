@@ -56,12 +56,9 @@ defmodule Favn.Dev.RuntimeSource do
              "runner_mix_exs_sha256" => file_sha256(Path.join(root, "apps/favn_runner/mix.exs")),
              "orchestrator_mix_exs_sha256" =>
                file_sha256(Path.join(root, "apps/favn_orchestrator/mix.exs")),
-             "web_package_json_sha256" =>
-               file_sha256(Path.join(root, "web/favn_web/package.json")),
-             "web_package_lock_sha256" =>
-               file_sha256(Path.join(root, "web/favn_web/package-lock.json")),
-             "runtime_source_tree" => source_tree
-           }}
+              "view_mix_exs_sha256" => file_sha256(Path.join(root, "apps/favn_view/mix.exs")),
+              "runtime_source_tree" => source_tree
+            }}
         end
 
       false ->
@@ -74,7 +71,7 @@ defmodule Favn.Dev.RuntimeSource do
     required = [
       "apps/favn_runner/mix.exs",
       "apps/favn_orchestrator/mix.exs",
-      "web/favn_web/package.json"
+      "apps/favn_view/mix.exs"
     ]
 
     Enum.all?(required, &File.exists?(Path.join(root, &1)))

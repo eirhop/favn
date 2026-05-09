@@ -103,7 +103,7 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
       {"relative sqlite path", &Map.put(&1, "FAVN_SQLITE_PATH", "relative.sqlite3")},
       {"unsupported postgres storage", &Map.put(&1, "FAVN_STORAGE", "postgres")},
       {"short service token",
-       &Map.put(&1, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "favn_web:short")}
+       &Map.put(&1, "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS", "favn_view:short")}
     ]
 
     Enum.each(cases, fn {name, mutate} ->

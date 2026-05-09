@@ -24,7 +24,7 @@ The feature must keep data-plane setup in the SQL runtime and DuckDB plugin boun
 - `apps/favn_duckdb` owns DuckDB-specific bootstrap config interpretation, SQL generation, execution ordering, extension install/load, DuckDB secrets, DuckLake attach, `USE`, quoting, and adapter diagnostics.
 - `apps/favn_runner` needs no new orchestration logic; SQL assets should receive bootstrap behavior automatically through `Favn.SQL.Client.connect/2`.
 - `apps/favn_orchestrator` should only store runner failure payloads already produced by the runner/runtime path.
-- `web/favn_web` should only display redacted bootstrap diagnostics if existing run error surfaces are sufficient.
+- `apps/favn_view` should only display redacted bootstrap diagnostics if existing run error surfaces are sufficient.
 - `apps/favn_core` should only change if recursive runtime config resolution or shared redaction helpers must be expanded for nested connection config. Avoid new public core structs unless tests show connection config cannot express the feature safely.
 
 ## Public Configuration Shape

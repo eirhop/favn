@@ -65,10 +65,8 @@ defmodule Favn.Dev.RuntimeSourceTest do
     File.write!(Path.join(runtime_root, "apps/favn_runner/_build/dev/lib/generated/file"), "beam")
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_runner/deps/generated"))
     File.write!(Path.join(runtime_root, "apps/favn_runner/deps/generated/file"), "dep")
-    File.mkdir_p!(Path.join(runtime_root, "web/favn_web/node_modules/vite"))
-    File.write!(Path.join(runtime_root, "web/favn_web/node_modules/vite/index.js"), "generated")
-    File.mkdir_p!(Path.join(runtime_root, "web/favn_web/dist/assets"))
-    File.write!(Path.join(runtime_root, "web/favn_web/dist/assets/index.js"), "built")
+    File.mkdir_p!(Path.join(runtime_root, "apps/favn_view/priv/static/assets/js"))
+    File.write!(Path.join(runtime_root, "apps/favn_view/priv/static/assets/js/app.js"), "built")
 
     assert {:ok, second} =
              RuntimeSource.fingerprint(%{kind: :dependency_checkout, root: runtime_root})
@@ -93,7 +91,9 @@ defmodule Favn.Dev.RuntimeSourceTest do
   defp create_runtime_root!(runtime_root) do
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_runner"))
     File.mkdir_p!(Path.join(runtime_root, "apps/favn_orchestrator"))
-    File.mkdir_p!(Path.join(runtime_root, "web/favn_web"))
+    File.mkdir_p!(Path.join(runtime_root, "apps/favn_view"))
+    File.mkdir_p!(Path.join(runtime_root, "apps/favn_view/priv"))
+    File.mkdir_p!(Path.join(runtime_root, "apps/favn_view/priv/static"))
 
     File.write!(Path.join(runtime_root, "mix.lock"), "lock")
 
@@ -107,6 +107,6 @@ defmodule Favn.Dev.RuntimeSourceTest do
       "defmodule Orchestrator.MixProject do end"
     )
 
-    File.write!(Path.join(runtime_root, "web/favn_web/package.json"), "{}")
+    File.write!(Path.join(runtime_root, "apps/favn_view/mix.exs"), "defmodule View.MixProject do end")
   end
 end

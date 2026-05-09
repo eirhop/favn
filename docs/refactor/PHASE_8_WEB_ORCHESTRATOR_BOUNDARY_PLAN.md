@@ -677,7 +677,7 @@ If later exposing orchestrator APIs via a gateway:
 Recommended default:
 
 - keep `favn_web` outside the Elixir umbrella as a separate monorepo workspace/package
-- likely path: `web/favn_web/` or similar JS workspace root
+- current path: `apps/favn_view/`
 
 Rationale:
 
@@ -1012,10 +1012,10 @@ Why open:
 
 Options:
 
-- `web/favn_web/`
+- `apps/favn_view/`
 - `frontend/favn_web/`
 - keep it inside umbrella anyway
 
 Recommended default:
 
-- `web/favn_web/` outside the umbrella; do not keep the steady-state web tier inside the BEAM app graph
+- `apps/favn_view/` inside the umbrella as a thin Phoenix/LiveView boundary app

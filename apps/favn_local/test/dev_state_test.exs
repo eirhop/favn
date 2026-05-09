@@ -22,7 +22,7 @@ defmodule Favn.Dev.StateTest do
     assert File.dir?(Path.join(root_dir, ".favn/logs"))
     assert File.dir?(Path.join(root_dir, ".favn/install"))
     assert File.dir?(Path.join(root_dir, ".favn/install/cache"))
-    assert File.dir?(Path.join(root_dir, ".favn/install/cache/npm"))
+    assert File.dir?(Path.join(root_dir, ".favn/install/cache"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtimes"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtime_root"))
     assert File.dir?(Path.join(root_dir, ".favn/install/runtimes/web"))

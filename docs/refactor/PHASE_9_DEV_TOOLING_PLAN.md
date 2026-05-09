@@ -115,7 +115,7 @@ Recommended default:
 - `apps/favn` is the thin public wrapper and public `mix favn.*` entrypoint owner
 - `apps/favn_authoring` owns authoring and manifest-facing implementation
 - `apps/favn_local` owns local lifecycle/tooling and packaging implementation
-- `web/favn_web` remains the web workspace/package source of truth
+- `apps/favn_view` is the Phoenix/LiveView web app source of truth
 - local lifecycle already persists project-local runtime state in `.favn/`
 - manifest publish/activate over the private orchestrator API already exists
 

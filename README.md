@@ -45,12 +45,12 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
   or product components, not ordinary user dependencies
 - local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, explicit service wrapper pid/log-write failures, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
-- the local web UI now includes a run inspector at `/runs`, an asset catalog at `/assets`, and an operational backfill area at `/backfills` for submitting explicit active-manifest pipeline backfills, inspecting parent windows, rerunning failed windows, and browsing coverage-baseline and asset/window state projections
+- the old SvelteKit frontend has been removed; the local web process is now the thin Phoenix/LiveView `apps/favn_view` shell on the standard local web port, `http://127.0.0.1:4173`
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
 - run snapshot, run event, and operational-backfill read-model persistence store explicit JSON-safe storage records, not BEAM terms or reconstructed exception structs; runner/backfill failures are normalized, bounded, and redacted before durable storage
 - run-event storage treats exact duplicate writes as idempotent success and rejects duplicate sequences with different event content
 - stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; manifest-persisted freshness policies can skip already-fresh nodes, force selected nodes, block failed dependencies, and dirty downstream nodes only when an upstream actually refreshes
-- run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, heartbeats, and SvelteKit BFF relays that keep orchestrator service tokens server-side
+- run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, and heartbeats from the orchestrator API
 - production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus operation-versioned JSON-safe replay response DTOs
 - the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/public-origin config, and the orchestrator now exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
@@ -472,11 +472,9 @@ remains an install/runtime-source override for split-root workflows.
 
 Local tooling HTTP calls are plain HTTP loopback calls to Favn-managed local
 services. They intentionally do not support remote or HTTPS URLs in the local
-developer loop. The local stack enables an explicit trusted local-dev context
-while the web UI and orchestrator API are bound to loopback, so `mix favn.dev`,
-the bundled local web UI, `mix favn.run`, and local backfill commands do not
-require usernames or passwords and do not persist local service tokens,
-passwords, RPC cookies, or session secrets under `.favn/`.
+developer loop. `mix favn.dev` starts the runner, orchestrator, and the Phoenix
+`favn_view` app. The UI is available at `http://127.0.0.1:4173` by default and
+does not require a separate Node/SvelteKit process.
 
 Production/server startup is separate from local dev. When production runtime
 configuration is enabled, the orchestrator requires explicit
@@ -524,11 +522,9 @@ asset/window state must also be recomputed. Child pipeline backfills default to
 `refresh: :missing`. Operational backfill submit does not accept lookback-policy
 input; asset window lookback remains part of normal windowed execution only.
 
-The local web UI exposes the same operator workflow through `/backfills`,
-including active-manifest pipeline selection, explicit range submission,
-optional coverage-baseline selection, parent backfill detail pages with child
-window rows, one-window failed reruns, `/backfills/coverage-baselines`, and
-`/assets/window-states`.
+The current Phoenix/LiveView UI is intentionally a placeholder shell only. Run,
+asset, graph, backfill, auth, and operator screens will be rebuilt in later PRs
+behind the public orchestrator facade.
 
 Backfill read commands are bounded. They default to `--limit 100 --offset 0`, reject
 `--limit` values above `500`, only accept known status values and manifest-owned
@@ -610,23 +606,16 @@ identities. The orchestrator stores only token hashes from production runtime
 config and records the matched `service_identity` in audit logs, diagnostics, and
 bootstrap auth responses without exposing raw token values.
 
-`web/favn_web` has an explicit SvelteKit Node production path. Build it with
-`npm run build` and start it with `npm run start` from `web/favn_web`; the start
-script runs `node build`. Required production env is
-`FAVN_WEB_ORCHESTRATOR_BASE_URL`, `FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN`, and
-`FAVN_WEB_PUBLIC_ORIGIN`, with optional `FAVN_WEB_ORCHESTRATOR_TIMEOUT_MS`
-defaulting to `2000`. The web process stores raw orchestrator session tokens in a
-process-local server-side web-session store and gives browsers only opaque
-`__Host-favn_web_session` ids. It exposes `/api/web/v1/health/live` without an orchestrator check and
-`/api/web/v1/health/ready` with a bounded orchestrator readiness check. See
-`docs/production/web_service.md` and `web/favn_web/README.md`.
+The Phoenix/LiveView UI lives in `apps/favn_view`. Production web deployment is
+not finalized in this foundational migration PR; the app currently provides only
+a minimal placeholder shell.
 
 `mix favn.bootstrap.single` bootstraps the backend control-plane side of the
 single-node shape through orchestrator APIs. Required inputs can be passed as
 `--manifest`, `--orchestrator-url`, and `--service-token`, or by the supported
 environment defaults documented by the task. Bootstrap uses
 `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN` or
-`FAVN_WEB_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
+`FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN` for service auth, with
 `FAVN_ORCHESTRATOR_SERVICE_TOKEN` accepted only as a legacy fallback.
 The command verifies service-token auth, reads and verifies the manifest JSON,
 registers the manifest, activates it by default, and calls
@@ -675,9 +664,8 @@ the adapter boundary.
   current project app so helper modules and connection modules are available at
   execution time
 - install now materializes a runnable runtime workspace under
-  `.favn/install/runtime_root`, records runtime metadata in
-  `.favn/install/runtime.json`, and caches npm data under
-  `.favn/install/cache/npm`
+  `.favn/install/runtime_root` and records runtime metadata in
+  `.favn/install/runtime.json`
 
 ## Common Public API Entry Points
 

@@ -10,13 +10,11 @@ defmodule Favn.Dev.Build.WebTest do
         "favn_dev_build_web_test_#{System.unique_integer([:positive])}"
       )
 
-    File.mkdir_p!(Path.join(root_dir, "web/favn_web"))
     File.mkdir_p!(Path.join(root_dir, "apps/favn_runner"))
     File.mkdir_p!(Path.join(root_dir, "apps/favn_orchestrator"))
+    File.mkdir_p!(Path.join(root_dir, "apps/favn_view"))
 
     File.write!(Path.join(root_dir, "mix.lock"), "lock")
-    File.write!(Path.join(root_dir, "web/favn_web/package.json"), "{}")
-    File.write!(Path.join(root_dir, "web/favn_web/package-lock.json"), "{}")
 
     File.write!(
       Path.join(root_dir, "apps/favn_runner/mix.exs"),
@@ -27,6 +25,8 @@ defmodule Favn.Dev.Build.WebTest do
       Path.join(root_dir, "apps/favn_orchestrator/mix.exs"),
       "defmodule Orchestrator.MixProject do end"
     )
+
+    File.write!(Path.join(root_dir, "apps/favn_view/mix.exs"), "defmodule View.MixProject do end")
 
     on_exit(fn ->
       File.rm_rf(root_dir)

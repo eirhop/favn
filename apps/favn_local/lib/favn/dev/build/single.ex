@@ -195,7 +195,7 @@ defmodule Favn.Dev.Build.Single do
       "FAVN_SQLITE_POOL_SIZE=1",
       "FAVN_ORCHESTRATOR_API_BIND_HOST=127.0.0.1",
       "FAVN_ORCHESTRATOR_API_PORT=4101",
-      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_web:replace-with-32-plus-char-service-token",
+      "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view:replace-with-32-plus-char-service-token",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN=replace-with-32-plus-char-service-token",
       "FAVN_SCHEDULER_ENABLED=true",
       "FAVN_SCHEDULER_TICK_MS=15000",

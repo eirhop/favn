@@ -177,7 +177,7 @@ passwords, service tokens, RPC cookies, or session secrets there.
 
 `mix favn.install`:
 
-- validates tool prerequisites (node/npm by default)
+- validates Elixir runtime metadata
 - computes and stores an install fingerprint, including a deterministic hash of
   the copied runtime source tree while excluding generated dependency/build
   directories
@@ -185,7 +185,6 @@ passwords, service tokens, RPC cookies, or session secrets there.
 - resolves a runnable Favn runtime workspace under `.favn/install/runtime_root`
 - records runtime source/materialization metadata in `.favn/install/runtime.json`
 - installs runtime-root Mix deps for orchestrator/runner/storage apps
-- stores npm cache under `.favn/install/cache/npm`
 
 `mix favn.dev` and build tasks validate install freshness before running. When
 the source-tree hash changes, rerunning `mix favn.install` refreshes the
@@ -194,8 +193,9 @@ unconditional rebuild.
 
 ### Local dev startup
 
-`mix favn.dev` starts runner, orchestrator, and web as separate local processes
-and writes runtime state to `.favn/runtime.json`.
+`mix favn.dev` starts runner, orchestrator, and the Phoenix/LiveView `favn_view`
+app as separate local processes and writes runtime state to `.favn/runtime.json`.
+The UI is available at `http://127.0.0.1:4173` by default.
 
 The local scheduler is disabled by default so active pipeline schedules do not
 surprise one-time local ETL work. Manual `mix favn.run PipelineModule` is the
@@ -234,8 +234,7 @@ workspace.
 
 Readiness is checked by TCP connection to configured service URLs.
 
-Web asset build is performed only when `web/favn_web/dist/index.html` is
-missing.
+Phoenix asset watchers are managed by the `favn_view` endpoint during local dev.
 
 ### Reload
 
@@ -266,7 +265,7 @@ is out of sync.
 
 - `build.runner`: project-specific runner artifact with user code + pinned
   manifest + plugin inventory metadata
-- `build.web`: web/BFF artifact metadata and bundle contract
+- `build.web`: Phoenix/LiveView UI artifact metadata and bundle contract
 - `build.orchestrator`: orchestrator artifact metadata and storage contract
 - `build.single`: assembles a project-local backend-only SQLite launcher with
   generated `config/assembly.json`, `env/backend.env.example`, and executable
@@ -279,4 +278,4 @@ is out of sync.
 
 `favn_local` supports Unix and Windows process checks/termination paths.
 
-Node/npm are required for web install/build flows.
+No separate Node/SvelteKit frontend process is required for local dev.
