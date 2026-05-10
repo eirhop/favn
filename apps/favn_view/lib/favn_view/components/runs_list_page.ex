@@ -74,6 +74,7 @@ defmodule FavnView.Components.RunsListPage do
     <tr
       class="group border-base-content/10 transition hover:bg-primary/10 focus-within:bg-primary/10"
       data-testid="run-row"
+      data-run-id={@run.id}
     >
       <td>
         <.run_id_link run={@run} />
@@ -108,6 +109,7 @@ defmodule FavnView.Components.RunsListPage do
     <div
       class="card glass favn-surface-list favn-density-list-card block rounded-box"
       data-testid="run-card"
+      data-run-id={@run.id}
     >
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1 space-y-2">

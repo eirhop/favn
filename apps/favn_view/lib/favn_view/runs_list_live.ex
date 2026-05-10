@@ -6,6 +6,7 @@ defmodule FavnView.RunsListLive do
   alias FavnView.Components.RunsListPage
   alias FavnView.LogsViewModel
 
+  @refresh_interval_ms 1_500
   @active_statuses [:pending, :running]
   @valid_modes ~w(list)
 
@@ -21,8 +22,21 @@ defmodule FavnView.RunsListLive do
         error: error,
         nav_items: RunsListPage.nav_items(:runs)
       )
+      |> maybe_schedule_refresh()
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_info(:refresh_runs, socket) do
+    {runs, error} = load_runs()
+
+    socket =
+      socket
+      |> assign(runs: runs, error: error)
+      |> maybe_schedule_refresh()
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -54,6 +68,16 @@ defmodule FavnView.RunsListLive do
         {[], inspect(reason)}
     end
   end
+
+  defp maybe_schedule_refresh(%{assigns: %{runs: runs}} = socket) do
+    if connected?(socket) and Enum.any?(runs, &active_status?(&1.raw_status)) do
+      Process.send_after(self(), :refresh_runs, @refresh_interval_ms)
+    end
+
+    socket
+  end
+
+  defp maybe_schedule_refresh(socket), do: socket
 
   defp run_from_public(run) do
     targets = targets(run)
@@ -119,42 +143,74 @@ defmodule FavnView.RunsListLive do
   end
 
   defp progress(run, targets) do
-    results = run_results(run)
+    node_results = raw_node_results(run)
+
+    if node_results == [] do
+      asset_progress(run, targets)
+    else
+      step_progress(run, node_results)
+    end
+  end
+
+  defp asset_progress(run, targets) do
+    results = Map.get(run, :asset_results, %{}) |> result_values()
+    progress_count(run, targets, results, "asset", "target progress")
+  end
+
+  defp step_progress(run, results) do
+    progress_count(run, [], results, "step", "execution progress")
+  end
+
+  defp progress_count(run, targets, results, unit, fallback_title) do
     total = max(length(targets), length(results))
     done = Enum.count(results, &terminal_result?/1)
-    unit = if total == 1, do: "asset", else: "assets"
+    units = pluralize(unit, total)
 
     cond do
-      total == 0 ->
-        %{label: "-", title: "No target progress available"}
-
       results == [] && active_status?(Map.get(run, :status)) ->
-        %{label: "Waiting", title: "Run accepted. Waiting for asset execution results."}
+        %{label: "Waiting", title: "Run accepted. Waiting for #{fallback_title}."}
+
+      total == 0 && active_status?(Map.get(run, :status)) ->
+        %{label: "Waiting", title: "Run accepted. Waiting for #{fallback_title}."}
+
+      total == 0 ->
+        %{label: "-", title: "No #{fallback_title} available"}
 
       true ->
         %{
-          label: "#{done}/#{total} #{unit}",
-          title: "#{done} of #{total} #{unit} have reported terminal results"
+          label: "#{done}/#{total} #{units}",
+          title: "#{done} of #{total} #{units} have reported terminal results"
         }
     end
   end
 
-  defp run_results(run) do
-    node_results = Map.get(run, :node_results, %{}) |> result_values()
-
-    if node_results == [] do
-      Map.get(run, :asset_results, %{}) |> result_values()
-    else
-      node_results
-    end
-  end
+  defp pluralize(unit, 1), do: unit
+  defp pluralize(unit, _total), do: unit <> "s"
 
   defp result_values(results) when is_map(results), do: Map.values(results)
   defp result_values(results) when is_list(results), do: results
   defp result_values(_results), do: []
 
+  defp raw_node_results(run) do
+    run
+    |> Map.get(:result, %{})
+    |> case do
+      %{node_results: results} -> result_values(results)
+      %{"node_results" => results} -> result_values(results)
+      _other -> []
+    end
+  end
+
   defp terminal_result?(result) do
-    Map.get(result, :status) in [:ok, :partial, :error, :cancelled, :timed_out, :skipped_fresh]
+    Map.get(result, :status) in [
+      :ok,
+      :partial,
+      :error,
+      :blocked,
+      :cancelled,
+      :timed_out,
+      :skipped_fresh
+    ]
   end
 
   defp active_status?(status), do: status in @active_statuses
