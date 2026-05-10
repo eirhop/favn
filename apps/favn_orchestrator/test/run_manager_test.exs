@@ -736,6 +736,72 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientMalformedLogStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, execution_id(work)}
+
+    @impl true
+    def await_result(execution_id, _timeout, _opts) do
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(execution_id)],
+         metadata: %{stub: :malformed_log}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    @impl true
+    def subscribe_execution_logs(execution_id, subscriber, _opts) do
+      send(subscriber, {
+        :runner_log_entry,
+        execution_id,
+        %{level: :fatal, source: :alien, message: "bad runner log"}
+      })
+
+      :ok
+    end
+
+    @impl true
+    def unsubscribe_execution_logs(_execution_id, _subscriber, _opts), do: :ok
+
+    defp asset_result(execution_id) do
+      %Favn.Run.AssetResult{
+        ref: execution_ref(execution_id),
+        stage: 0,
+        status: :ok,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: nil,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
+  end
+
   defmodule RunnerClientRetryMetadataLeakStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -857,6 +923,26 @@ defmodule FavnOrchestrator.RunManagerTest do
            ]
 
     assert Enum.map(events, & &1.sequence) == [1, 2, 3, 4, 5]
+  end
+
+  test "malformed runner log entries do not fail active runs" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientMalformedLogStub)
+
+    version = manifest_version("mv_malformed_runner_log")
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               manifest_version_id: version.manifest_version_id
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :ok
+
+    assert {:ok, page} = FavnOrchestrator.list_logs(%Favn.Log.Filter{run_id: run_id})
+    assert page.items == []
   end
 
   test "accepted success transitions broadcast on both run and global topics in storage order" do

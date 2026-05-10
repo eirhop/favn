@@ -47,6 +47,10 @@ defmodule FavnOrchestrator.Storage.LogEntryCodec do
 
       {:ok, Favn.Log.Entry.normalize(attrs)}
     end
+  rescue
+    error -> {:error, {:invalid_log_entry, error}}
+  catch
+    kind, reason -> {:error, {:invalid_log_entry, {kind, reason}}}
   end
 
   defp entry_to_map(%_{} = entry), do: Map.from_struct(entry)

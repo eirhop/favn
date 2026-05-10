@@ -288,12 +288,16 @@ defmodule FavnOrchestrator do
 
   @doc """
   Subscribes the caller to live backend logs matching the given filter.
+
+  Run-scoped filters subscribe to the run topic. Filters with both `run_id` and
+  `asset_step_id` subscribe to the asset-step topic, then apply the remaining
+  `Favn.Log.Filter` fields before forwarding entries to the caller.
   """
   @spec subscribe_logs(term()) :: {:ok, term()} | {:error, term()}
   def subscribe_logs(filter \\ default_log_filter()), do: Logs.subscribe_logs(filter)
 
   @doc """
-  Unsubscribes the caller from a prior backend log subscription or equivalent filter.
+  Unsubscribes the caller from a prior backend log subscription.
   """
   @spec unsubscribe_logs(term()) :: :ok
   def unsubscribe_logs(subscription_or_filter), do: Logs.unsubscribe_logs(subscription_or_filter)

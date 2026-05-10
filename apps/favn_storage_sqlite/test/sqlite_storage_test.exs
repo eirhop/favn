@@ -147,6 +147,18 @@ defmodule Favn.SQLiteStorageTest do
     assert persisted_first.message == "line one\nline two"
     assert persisted_first.metadata["password"] == "[REDACTED]"
 
+    assert {:ok, %{rows: [[metadata_blob, log_blob]]}} =
+             SQL.query(
+               Repo,
+               "SELECT metadata_blob, log_blob FROM favn_log_entries WHERE global_sequence = ?1",
+               [persisted_first.global_sequence]
+             )
+
+    assert Jason.decode!(metadata_blob)["password"] == "[REDACTED]"
+    assert Jason.decode!(log_blob)["metadata"]["password"] == "[REDACTED]"
+    refute metadata_blob =~ "secret"
+    refute log_blob =~ "secret"
+
     assert {:ok, [^persisted_first]} = OrchestratorStorage.persist_log_entries([first])
 
     assert {:ok, page} =
