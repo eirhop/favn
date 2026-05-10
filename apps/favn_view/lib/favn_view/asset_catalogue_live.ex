@@ -3,6 +3,7 @@ defmodule FavnView.AssetCatalogueLive do
 
   use FavnView, :live_view
 
+  alias FavnView.AssetRoute
   alias FavnView.Components.AssetCataloguePage
 
   @default_filters %{search: "", connection: "all", catalogue: "all"}
@@ -96,6 +97,7 @@ defmodule FavnView.AssetCatalogueLive do
 
     %{
       id: Map.fetch!(entry, :target_id),
+      route_id: entry |> Map.fetch!(:target_id) |> AssetRoute.to_param(),
       name: relation_field(relation, :name) || asset_name(entry),
       connection: relation_field(relation, :connection) || "unknown",
       catalogue: relation_field(relation, :catalog) || "uncatalogued",

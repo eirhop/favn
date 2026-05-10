@@ -13,6 +13,8 @@ defmodule FavnOrchestrator do
   alias Favn.Manifest.Version
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
+  alias Favn.Window.Request, as: WindowRequest
+  alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
   alias FavnOrchestrator.BackfillManager
@@ -68,6 +70,36 @@ defmodule FavnOrchestrator do
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
           required(:latest_run_at) => DateTime.t() | nil
+        }
+
+  @type asset_timeline_window :: %{
+          required(:id) => String.t(),
+          required(:label) => String.t(),
+          required(:date) => Date.t(),
+          required(:range) => String.t(),
+          required(:status) => :healthy | :running | :failed | :unknown,
+          required(:latest_run_id) => String.t() | nil,
+          required(:latest_run_status) => atom() | nil,
+          required(:latest_run_at) => DateTime.t() | nil,
+          required(:run_enabled?) => boolean(),
+          required(:run_disabled_reason) => atom() | nil,
+          required(:run_label) => String.t()
+        }
+
+  @type asset_detail :: %{
+          required(:target_id) => String.t(),
+          required(:manifest_version_id) => String.t(),
+          required(:label) => String.t(),
+          required(:name) => String.t(),
+          required(:asset_ref) => String.t() | nil,
+          required(:relation) => map() | nil,
+          required(:type) => String.t() | nil,
+          required(:status) => :healthy | :running | :failed | :unknown,
+          required(:latest_run_id) => String.t() | nil,
+          required(:latest_run_status) => atom() | nil,
+          required(:latest_run_at) => DateTime.t() | nil,
+          required(:window) => map() | nil,
+          required(:timeline) => [asset_timeline_window()]
         }
 
   @doc """
@@ -205,6 +237,26 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Returns an operator-facing detail read model for one active asset target.
+
+  The detail is a DTO built at the orchestrator boundary. It includes manifest
+  target metadata, latest known freshness/run state, and a conservative 30-day
+  daily timeline. Missing runtime evidence is represented as `:unknown`.
+  """
+  @spec active_asset_detail(String.t(), keyword()) :: {:ok, asset_detail()} | {:error, term()}
+  def active_asset_detail(target_id, opts \\ []) when is_binary(target_id) and is_list(opts) do
+    with {:ok, manifest_version_id} <- active_manifest(),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, freshness_states} <- detail_freshness_states(manifest_version_id),
+         {:ok, runs} <- catalogue_runs(manifest_version_id) do
+      case asset_detail_entry(version, target_id, freshness_states, runs, opts) do
+        nil -> {:error, :not_found}
+        detail -> {:ok, detail}
+      end
+    end
+  end
+
+  @doc """
   Submits one asset run by manifest-scoped target id.
   """
   @spec submit_asset_run_for_manifest(String.t(), String.t(), keyword()) ::
@@ -215,6 +267,56 @@ defmodule FavnOrchestrator do
          {:ok, asset_ref} <- resolve_asset_target_ref(version, target_id) do
       submit_asset_run(asset_ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
     end
+  end
+
+  @doc """
+  Submits a manifest-pinned asset run for one stable asset detail window id.
+  """
+  @spec submit_asset_window_run(String.t(), String.t(), String.t(), keyword()) ::
+          {:ok, run_id()} | {:error, term()}
+  def submit_asset_window_run(manifest_version_id, target_id, window_id, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_binary(window_id) and
+             is_list(opts) do
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, asset} <- resolve_asset_target(version, target_id),
+         {:ok, window_request} <- window_request_from_id(window_id),
+         {:ok, anchor_window} <- resolve_asset_window(asset, window_request) do
+      submit_asset_run(
+        asset.ref,
+        opts
+        |> Keyword.put(:manifest_version_id, manifest_version_id)
+        |> Keyword.put(:anchor_window, anchor_window)
+        |> put_window_run_metadata(window_id, anchor_window)
+      )
+    end
+  end
+
+  defp put_window_run_metadata(opts, window_id, %Anchor{} = anchor_window) do
+    selected_window_metadata = window_run_metadata(window_id, anchor_window)
+
+    case Keyword.fetch(opts, :metadata) do
+      :error ->
+        Keyword.put(opts, :metadata, selected_window_metadata)
+
+      {:ok, metadata} when is_map(metadata) ->
+        Keyword.put(opts, :metadata, Map.merge(metadata, selected_window_metadata))
+
+      {:ok, _invalid_metadata} ->
+        opts
+    end
+  end
+
+  defp window_run_metadata(window_id, %Anchor{} = anchor_window) do
+    %{
+      selected_window: %{
+        id: window_id,
+        kind: anchor_window.kind,
+        key: anchor_window.key,
+        start_at: anchor_window.start_at,
+        end_at: anchor_window.end_at,
+        timezone: anchor_window.timezone
+      }
+    }
   end
 
   @doc """
@@ -800,6 +902,14 @@ defmodule FavnOrchestrator do
     list_runs(manifest_version_id: manifest_version_id)
   end
 
+  defp detail_freshness_states(manifest_version_id) do
+    case list_asset_freshness(manifest_version_id: manifest_version_id, limit: Page.max_limit()) do
+      {:ok, page} -> {:ok, page.items}
+      {:error, :asset_freshness_state_not_supported} -> {:ok, []}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp asset_catalogue_entries(%Version{} = version, freshness_states, runs) do
     freshness_by_ref = Map.new(freshness_states, &{freshness_ref_string(&1), &1})
 
@@ -825,6 +935,232 @@ defmodule FavnOrchestrator do
     end)
     |> Enum.sort_by(& &1.label)
   end
+
+  defp asset_detail_entry(%Version{} = version, target_id, freshness_states, runs, opts) do
+    version.manifest.assets
+    |> List.wrap()
+    |> Enum.find(&(manifest_asset_target(&1).target_id == target_id))
+    |> case do
+      nil ->
+        nil
+
+      asset ->
+        target = manifest_asset_target(asset)
+        ref_string = ref_to_string(asset.ref)
+        latest_freshness = latest_freshness_for_ref(freshness_states, ref_string)
+        latest_run = latest_run_for_ref(runs, ref_string)
+
+        target
+        |> Map.take([:target_id, :label, :asset_ref, :relation, :type, :window])
+        |> Map.put(:manifest_version_id, version.manifest_version_id)
+        |> Map.put(:name, asset_detail_name(target))
+        |> Map.put(:status, catalogue_status(latest_freshness, latest_run))
+        |> Map.put(:latest_run_id, latest_run_id(latest_freshness, latest_run))
+        |> Map.put(:latest_run_status, latest_run_status(latest_freshness, latest_run))
+        |> Map.put(:latest_run_at, latest_run_at(latest_freshness, latest_run))
+        |> Map.put(
+          :timeline,
+          asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts)
+        )
+    end
+  end
+
+  defp latest_run_for_ref(runs, ref_string) do
+    runs
+    |> Enum.flat_map(&run_ref_entries/1)
+    |> Enum.filter(fn {run_ref_string, _run} -> run_ref_string == ref_string end)
+    |> Enum.map(fn {_run_ref_string, run} -> run end)
+    |> latest_run()
+  end
+
+  defp latest_freshness_for_ref(freshness_states, ref_string) do
+    Enum.find(freshness_states, fn state ->
+      freshness_ref_string(state) == ref_string &&
+        state.freshness_key == Favn.Freshness.Key.latest()
+    end)
+  end
+
+  defp asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts) do
+    selected_date = detail_timeline_selected_date(latest_freshness, latest_run, opts)
+    window_states = asset_window_freshness_by_date(asset, freshness_states)
+    latest_run_date = latest_run_at(latest_freshness, latest_run) |> detail_date_from_datetime()
+
+    for offset <- 0..29 do
+      date = Date.add(selected_date, offset - 29)
+      date_iso = Date.to_iso8601(date)
+      window_freshness = Map.get(window_states, date_iso)
+
+      %{
+        id: "window:day:#{date_iso}",
+        label: Calendar.strftime(date, "%b %-d"),
+        date: date,
+        range: Calendar.strftime(date, "%b %-d, %Y"),
+        status:
+          timeline_status(window_freshness, latest_freshness, latest_run, date, latest_run_date),
+        latest_run_id: latest_run_id(window_freshness, nil),
+        latest_run_status: latest_run_status(window_freshness, nil),
+        latest_run_at: latest_run_at(window_freshness, nil),
+        run_label: "Run this window"
+      }
+      |> put_window_run_state(asset)
+      |> maybe_put_latest_run(latest_freshness, latest_run, date, latest_run_date)
+    end
+  end
+
+  defp put_window_run_state(window, %{window: nil}) do
+    window
+    |> Map.put(:run_enabled?, false)
+    |> Map.put(:run_disabled_reason, :asset_has_no_window_policy)
+  end
+
+  defp put_window_run_state(%{id: window_id} = window, asset) do
+    with {:ok, window_request} <- window_request_from_id(window_id),
+         {:ok, _anchor_window} <- resolve_asset_window(asset, window_request) do
+      window
+      |> Map.put(:run_enabled?, true)
+      |> Map.put(:run_disabled_reason, nil)
+    else
+      {:error, reason} ->
+        window
+        |> Map.put(:run_enabled?, false)
+        |> Map.put(:run_disabled_reason, run_disabled_reason(reason))
+    end
+  end
+
+  defp run_disabled_reason({:window_request_without_policy, _kind}),
+    do: :asset_has_no_window_policy
+
+  defp run_disabled_reason(_reason), do: :invalid_window
+
+  defp detail_timeline_selected_date(latest_freshness, latest_run, opts) do
+    case {opts[:today], latest_run_at(latest_freshness, latest_run)} do
+      {%Date{} = date, _latest_run_at} -> date
+      {_today, %DateTime{} = datetime} -> DateTime.to_date(datetime)
+      _other -> Date.utc_today()
+    end
+  end
+
+  defp asset_window_freshness_by_date(asset, freshness_states) do
+    asset_ref_string = ref_to_string(asset.ref)
+
+    freshness_states
+    |> Enum.filter(&(freshness_ref_string(&1) == asset_ref_string))
+    |> Enum.flat_map(fn state ->
+      case window_date_from_freshness_key(state.freshness_key) do
+        nil -> []
+        date -> [{date, state}]
+      end
+    end)
+    |> Map.new(fn {date, state} -> {date, state} end)
+  end
+
+  defp window_date_from_freshness_key("calendar:day:" <> rest) do
+    rest
+    |> String.split(":")
+    |> List.last()
+    |> case do
+      <<_::binary-size(10)>> = date -> date
+      _other -> nil
+    end
+  end
+
+  defp window_date_from_freshness_key(_key), do: nil
+
+  defp window_request_from_id("window:day:" <> date) do
+    case WindowRequest.parse("day:#{date}") do
+      {:ok, request} -> {:ok, request}
+      {:error, reason} -> {:error, {:invalid_window_id, reason}}
+    end
+  end
+
+  defp window_request_from_id(window_id), do: {:error, {:invalid_window_id, window_id}}
+
+  defp resolve_asset_window(%{window: nil}, %WindowRequest{kind: kind}) do
+    {:error, {:window_request_without_policy, kind}}
+  end
+
+  defp resolve_asset_window(%{window: %WindowSpec{} = spec}, %WindowRequest{kind: kind} = request) do
+    if spec.kind == kind do
+      WindowRequest.to_anchor(request, spec.timezone)
+    else
+      {:error, {:window_kind_mismatch, spec.kind, kind}}
+    end
+  end
+
+  defp resolve_asset_window(asset, %WindowRequest{} = request) when is_atom(asset.window) do
+    with {:ok, spec} <- WindowSpec.new(asset.window) do
+      resolve_asset_window(%{asset | window: spec}, request)
+    end
+  end
+
+  defp resolve_asset_window(%{window: %{} = window}, %WindowRequest{} = request) do
+    case {Map.get(window, :kind) || Map.get(window, "kind"),
+          Map.get(window, :timezone) || Map.get(window, "timezone")} do
+      {kind, timezone} when not is_nil(kind) ->
+        with {:ok, normalized_kind} <- Policy.normalize_kind(kind),
+             {:ok, spec} <- WindowSpec.new(normalized_kind, timezone: timezone || "Etc/UTC") do
+          resolve_asset_window(%{window: spec}, request)
+        end
+
+      _other ->
+        {:error, :invalid_window_policy}
+    end
+  end
+
+  defp detail_date_from_datetime(%DateTime{} = datetime), do: DateTime.to_date(datetime)
+  defp detail_date_from_datetime(_datetime), do: nil
+
+  defp timeline_status(
+         %AssetFreshnessState{} = freshness,
+         _latest_freshness,
+         _latest_run,
+         _date,
+         _latest_run_date
+       ) do
+    catalogue_status(freshness, nil)
+  end
+
+  defp timeline_status(nil, latest_freshness, latest_run, date, date) do
+    catalogue_status(latest_freshness, latest_run)
+  end
+
+  defp timeline_status(nil, _latest_freshness, _latest_run, _date, _latest_run_date), do: :unknown
+
+  defp maybe_put_latest_run(window, latest_freshness, latest_run, date, date) do
+    window
+    |> Map.put_new(:latest_run_id, latest_run_id(latest_freshness, latest_run))
+    |> Map.put_new(:latest_run_status, latest_run_status(latest_freshness, latest_run))
+    |> Map.put_new(:latest_run_at, latest_run_at(latest_freshness, latest_run))
+    |> put_latest_run_if_missing(:latest_run_id, latest_run_id(latest_freshness, latest_run))
+    |> put_latest_run_if_missing(
+      :latest_run_status,
+      latest_run_status(latest_freshness, latest_run)
+    )
+    |> put_latest_run_if_missing(:latest_run_at, latest_run_at(latest_freshness, latest_run))
+  end
+
+  defp maybe_put_latest_run(window, _latest_freshness, _latest_run, _date, _latest_run_date),
+    do: window
+
+  defp put_latest_run_if_missing(window, key, value) do
+    if is_nil(window[key]), do: Map.put(window, key, value), else: window
+  end
+
+  defp asset_detail_name(%{relation: relation, asset_ref: asset_ref, label: label}) do
+    relation_name(relation) || asset_ref_name(asset_ref) || label
+  end
+
+  defp relation_name(%{name: name}) when is_binary(name), do: name
+  defp relation_name(%{"name" => name}) when is_binary(name), do: name
+  defp relation_name(_relation), do: nil
+
+  defp asset_ref_name(asset_ref) when is_binary(asset_ref) do
+    asset_ref
+    |> String.split(":")
+    |> List.last()
+  end
+
+  defp asset_ref_name(_asset_ref), do: nil
 
   defp manifest_asset_target(asset) do
     target_ref = asset.ref
@@ -1009,11 +1345,15 @@ defmodule FavnOrchestrator do
   defp normalize_data(value), do: value
 
   defp resolve_asset_target_ref(%Version{} = version, target_id) when is_binary(target_id) do
+    with {:ok, asset} <- resolve_asset_target(version, target_id), do: {:ok, asset.ref}
+  end
+
+  defp resolve_asset_target(%Version{} = version, target_id) when is_binary(target_id) do
     case Enum.find(
            List.wrap(version.manifest.assets),
            &(target_id_for_asset(&1.ref) == target_id)
          ) do
-      %{ref: target_ref} -> {:ok, target_ref}
+      %{ref: _target_ref} = asset -> {:ok, asset}
       _ -> {:error, :invalid_asset_target}
     end
   end

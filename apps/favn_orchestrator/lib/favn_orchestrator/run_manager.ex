@@ -290,6 +290,7 @@ defmodule FavnOrchestrator.RunManager do
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, 0)
     timeout_ms = Keyword.get(opts, :timeout_ms, RunState.default_timeout_ms())
     dependencies = Keyword.get(opts, :dependencies, :all)
+    anchor_window = Keyword.get(opts, :anchor_window)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
@@ -303,12 +304,17 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
          :ok <- validate_timeout_ms(timeout_ms),
+         :ok <- validate_anchor_window(anchor_window),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
          {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
          {:ok, plan} <-
-           Planner.plan(asset_ref, graph_index: index.graph_index, dependencies: dependencies) do
+           Planner.plan(asset_ref,
+             graph_index: index.graph_index,
+             dependencies: dependencies,
+             anchor_window: anchor_window
+           ) do
       run_state =
         RunState.new(
           id: run_id,

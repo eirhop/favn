@@ -31,6 +31,7 @@ defmodule FavnView.Components.ModeRail do
         @class
       ]}
       aria-label="View modes"
+      data-testid="view-mode-rail"
     >
       <div :for={mode <- @mode_items} class="tooltip tooltip-left" data-tip={mode.label}>
         <.mode_button mode={mode} active={mode_active?(mode, @active)} on_select={@on_select} />
@@ -41,9 +42,10 @@ defmodule FavnView.Components.ModeRail do
       :if={@mode_items != []}
       class="favn-mobile-mode-dock card glass favn-surface-list fixed inset-x-6 bottom-3 z-30 mx-auto flex flex-row! max-w-md items-center justify-around gap-1 rounded-box p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] lg:hidden"
       aria-label="View modes"
+      data-testid="view-mode-dock"
     >
       <.mode_button
-        :for={mode <- Enum.take(@mode_items, 5)}
+        :for={mode <- @mode_items}
         mode={mode}
         active={mode_active?(mode, @active)}
         on_select={@on_select}
@@ -70,7 +72,7 @@ defmodule FavnView.Components.ModeRail do
         @mode[:disabled] && "btn-disabled opacity-45"
       ]}
       aria-label={@mode.label}
-      aria-pressed={@active}
+      aria-pressed={to_string(@active)}
       disabled={@mode[:disabled] || false}
       phx-click={@on_select}
       phx-value-mode={@mode.id}
