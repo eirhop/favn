@@ -61,6 +61,21 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([aria-label="Catalogue filter"]))
   end
 
+  test "renders the runs list", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/runs")
+
+    assert html =~ "Runs"
+    assert html =~ "Recent orchestration activity"
+    assert has_element?(view, ~s([data-testid="runs-table"]))
+    assert has_element?(view, ~s([data-testid="run-card-list"]))
+
+    assert has_element?(view, ~s(a[href="/runs/run_customer_orders_daily"]), "run_custo..._daily")
+    assert html =~ "customer_orders_daily"
+    assert html =~ "Succeeded"
+    assert html =~ "1/1 asset"
+    assert html =~ "+2"
+  end
+
   test "filters assets by search, connection, and catalogue", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/assets")
 
