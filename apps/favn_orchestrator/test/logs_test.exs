@@ -206,6 +206,11 @@ defmodule FavnOrchestrator.LogsTest do
     assert :ok = FavnOrchestrator.unsubscribe_logs(subscription)
   end
 
+  test "unsubscribe requires the returned subscription handle" do
+    assert {:error, :invalid_log_subscription} =
+             FavnOrchestrator.unsubscribe_logs(%Filter{run_id: "run_unsubscribe_filter"})
+  end
+
   test "live asset-step subscriptions use asset topics and honor remaining filters" do
     assert {:ok, subscription} =
              FavnOrchestrator.subscribe_logs(%Filter{

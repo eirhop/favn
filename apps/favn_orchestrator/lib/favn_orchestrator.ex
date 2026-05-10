@@ -298,9 +298,12 @@ defmodule FavnOrchestrator do
 
   @doc """
   Unsubscribes the caller from a prior backend log subscription.
+
+  Callers must pass the subscription returned by `subscribe_logs/1`; equivalent
+  filters cannot stop the owned forwarding process.
   """
-  @spec unsubscribe_logs(term()) :: :ok
-  def unsubscribe_logs(subscription_or_filter), do: Logs.unsubscribe_logs(subscription_or_filter)
+  @spec unsubscribe_logs(term()) :: :ok | {:error, :invalid_log_subscription}
+  def unsubscribe_logs(subscription), do: Logs.unsubscribe_logs(subscription)
 
   @doc """
   Submits one asset run by manifest-scoped target id.

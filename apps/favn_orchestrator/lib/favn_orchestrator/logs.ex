@@ -18,27 +18,13 @@ defmodule FavnOrchestrator.Logs do
     end
   end
 
-  @spec unsubscribe_logs(term()) :: :ok
+  @spec unsubscribe_logs(term()) :: :ok | {:error, :invalid_log_subscription}
   def unsubscribe_logs(%{pid: pid}) when is_pid(pid) do
     send(pid, :stop)
     :ok
   end
 
-  def unsubscribe_logs(%{topics: topics}) when is_list(topics) do
-    Enum.each(topics, &Phoenix.PubSub.unsubscribe(pubsub_name(), &1))
-    :ok
-  end
-
-  def unsubscribe_logs(filter) do
-    with {:ok, normalized_filter} <- normalize_filter(filter) do
-      Enum.each(
-        subscription_topics(normalized_filter),
-        &Phoenix.PubSub.unsubscribe(pubsub_name(), &1)
-      )
-    end
-
-    :ok
-  end
+  def unsubscribe_logs(_subscription), do: {:error, :invalid_log_subscription}
 
   @spec broadcast_log_entry(term()) :: :ok
   def broadcast_log_entry(entry) do
