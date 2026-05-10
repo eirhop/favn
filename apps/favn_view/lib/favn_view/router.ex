@@ -20,7 +20,10 @@ defmodule FavnView.Router do
     live "/", PageLive, :home
     live "/assets", AssetCatalogueLive, :index
     live "/assets/:asset_id", AssetDetailLive, :show
+    live "/logs", LogsLive, :index
     live "/runs/:run_id", RunDetailLive, :show
+    live "/runs/:run_id/logs", RunLogsLive, :show
+    live "/runs/:run_id/assets/:asset_step_id/logs", AssetRunLogsLive, :show
   end
 
   # Other scopes may use custom stacks.

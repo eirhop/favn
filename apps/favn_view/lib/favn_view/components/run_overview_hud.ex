@@ -86,49 +86,69 @@ defmodule FavnView.Components.RunOverviewHud do
 
   def asset_result_row(assigns) do
     ~H"""
-    <div
+    <.link
+      :if={@asset.inspectable?}
+      navigate={~p"/runs/#{@run_id}/assets/#{@asset.id}/logs"}
       class={[
-        "group grid gap-3 rounded-box border bg-base-content/[0.025] p-4 transition hover:border-primary/35 hover:bg-primary/[0.045] hover:shadow-lg hover:shadow-primary/10 lg:grid-cols-[1fr_10rem_8rem_10rem_2rem] lg:items-center",
+        "group grid gap-3 rounded-box border bg-base-content/[0.025] p-4 transition hover:border-primary/35 hover:bg-primary/[0.045] hover:shadow-lg hover:shadow-primary/10 lg:grid-cols-[1fr_10rem_8rem_10rem_2rem] lg:items-center no-underline",
         row_border_class(@asset.status_tone)
       ]}
       data-testid="run-asset-result-row"
       data-run-id={@run_id}
       data-asset-step-id={@asset.id}
-      role={if(@asset.inspectable?, do: "button", else: nil)}
-      tabindex={if(@asset.inspectable?, do: "0", else: nil)}
     >
-      <div class="flex min-w-0 items-center gap-3">
-        <span class={[
-          "flex size-9 shrink-0 items-center justify-center rounded-box",
-          icon_shell_class(@asset.status_tone)
-        ]}>
-          <.icon name="hero-table-cells" class="size-5" />
-        </span>
-        <div class="min-w-0">
-          <p class="truncate text-sm font-medium text-base-content">{@asset.display_name}</p>
-          <p class="truncate font-mono text-xs text-base-content/45">{@asset.asset_ref}</p>
-          <p :if={@asset.secondary} class="text-xs text-base-content/50">{@asset.secondary}</p>
-          <p :if={@asset.error} class="mt-1 text-xs text-error">{@asset.error}</p>
-        </div>
-      </div>
+      <.asset_result_row_content asset={@asset} />
+    </.link>
 
-      <div class="flex items-center gap-2 text-sm font-medium">
-        <.icon
-          name={status_icon(@asset.status_tone)}
-          class={["size-4", status_text_class(@asset.status_tone)]}
-        />
-        <span class={status_text_class(@asset.status_tone)}>{@asset.status}</span>
-      </div>
-
-      <p class="text-sm text-base-content/85">{@asset.duration}</p>
-      <p class="text-sm text-base-content/70">{@asset.started_at}</p>
-      <%!-- TODO: Attach /runs/:run_id/assets/:asset_step_id navigation here once that route and ID contract exist. --%>
-      <.icon
-        :if={@asset.inspectable?}
-        name="hero-chevron-right"
-        class="size-5 text-base-content/60 transition group-hover:text-primary"
-      />
+    <div
+      :if={!@asset.inspectable?}
+      class={[
+        "group grid gap-3 rounded-box border bg-base-content/[0.025] p-4 transition lg:grid-cols-[1fr_10rem_8rem_10rem_2rem] lg:items-center",
+        row_border_class(@asset.status_tone)
+      ]}
+      data-testid="run-asset-result-row"
+      data-run-id={@run_id}
+      data-asset-step-id={@asset.id}
+    >
+      <.asset_result_row_content asset={@asset} />
     </div>
+    """
+  end
+
+  attr :asset, :map, required: true
+
+  def asset_result_row_content(assigns) do
+    ~H"""
+    <div class="flex min-w-0 items-center gap-3">
+      <span class={[
+        "flex size-9 shrink-0 items-center justify-center rounded-box",
+        icon_shell_class(@asset.status_tone)
+      ]}>
+        <.icon name="hero-table-cells" class="size-5" />
+      </span>
+      <div class="min-w-0">
+        <p class="truncate text-sm font-medium text-base-content">{@asset.display_name}</p>
+        <p class="truncate font-mono text-xs text-base-content/45">{@asset.asset_ref}</p>
+        <p :if={@asset.secondary} class="text-xs text-base-content/50">{@asset.secondary}</p>
+        <p :if={@asset.error} class="mt-1 text-xs text-error">{@asset.error}</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 text-sm font-medium">
+      <.icon
+        name={status_icon(@asset.status_tone)}
+        class={["size-4", status_text_class(@asset.status_tone)]}
+      />
+      <span class={status_text_class(@asset.status_tone)}>{@asset.status}</span>
+    </div>
+
+    <p class="text-sm text-base-content/85">{@asset.duration}</p>
+    <p class="text-sm text-base-content/70">{@asset.started_at}</p>
+    <.icon
+      :if={@asset.inspectable?}
+      name="hero-chevron-right"
+      class="size-5 text-base-content/60 transition group-hover:text-primary"
+    />
     """
   end
 

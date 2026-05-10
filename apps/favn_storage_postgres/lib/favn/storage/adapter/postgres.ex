@@ -324,7 +324,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   def list_logs(filter, opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
     with {:ok, page_opts} <- page_opts(opts),
          {:ok, repo} <- resolve_repo(adapter_opts),
-         {:ok, sql, params} <- list_logs_query(filter) do
+         {:ok, sql, params} <- list_logs_query(filter, opts) do
       query_and_decode_page(repo, sql, params, page_opts, &decode_log_entry_row/1)
     end
   end
@@ -1678,15 +1678,25 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  defp list_logs_query(filter) do
+  defp list_logs_query(filter, opts) do
     with {:ok, {where_sql, params}} <- build_log_filter_sql(filter) do
+      order = log_order_sql(opts)
+
       {:ok,
        """
        SELECT log_blob
        FROM favn_log_entries
        #{where_sql}
-       ORDER BY global_sequence ASC
+       ORDER BY global_sequence #{order}
        """, params}
+    end
+  end
+
+  defp log_order_sql(opts) do
+    case Keyword.get(opts, :order, :asc) do
+      :desc -> "DESC"
+      "desc" -> "DESC"
+      _other -> "ASC"
     end
   end
 

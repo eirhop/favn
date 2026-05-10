@@ -2124,19 +2124,28 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  defp list_logs_query(filter, _opts) do
+  defp list_logs_query(filter, opts) do
     with {:ok, {where_sql, params}} <- build_log_filter_sql(filter) do
       limit_placeholder = "?#{length(params) + 1}"
       offset_placeholder = "?#{length(params) + 2}"
+      order = log_order_sql(opts)
 
       {:ok,
        """
        SELECT log_blob
        FROM favn_log_entries
        #{where_sql}
-       ORDER BY global_sequence ASC
+       ORDER BY global_sequence #{order}
        LIMIT #{limit_placeholder} OFFSET #{offset_placeholder}
        """, params}
+    end
+  end
+
+  defp log_order_sql(opts) do
+    case Keyword.get(opts, :order, :asc) do
+      :desc -> "DESC"
+      "desc" -> "DESC"
+      _other -> "ASC"
     end
   end
 

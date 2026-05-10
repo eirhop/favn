@@ -166,6 +166,14 @@ defmodule Favn.SQLiteStorageTest do
 
     assert Enum.map(page.items, & &1.global_sequence) == [1, 2]
 
+    assert {:ok, latest_page} =
+             OrchestratorStorage.list_logs(%Favn.Log.Filter{run_id: "sqlite-log-run"},
+               limit: 1,
+               order: :desc
+             )
+
+    assert Enum.map(latest_page.items, & &1.global_sequence) == [2]
+
     assert {:ok, filtered} = OrchestratorStorage.list_logs(%Favn.Log.Filter{levels: [:error]})
     assert Enum.map(filtered.items, & &1.message) == ["failed"]
 

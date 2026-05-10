@@ -85,6 +85,29 @@ defmodule FavnOrchestrator.LogsTest do
     assert Enum.map(replayed, & &1.message) == ["second"]
   end
 
+  test "list logs supports descending order for latest pages" do
+    entries =
+      for sequence <- 1..5 do
+        %Entry{
+          run_id: "run_log_latest",
+          message: "log #{sequence}",
+          producer_id: "latest",
+          producer_sequence: sequence
+        }
+      end
+
+    assert {:ok, _persisted} = FavnOrchestrator.emit_logs(entries)
+
+    assert {:ok, page} =
+             FavnOrchestrator.list_logs(%Filter{run_id: "run_log_latest"},
+               limit: 2,
+               order: :desc
+             )
+
+    assert Enum.map(page.items, & &1.message) == ["log 5", "log 4"]
+    assert page.has_more?
+  end
+
   test "runner bridge merges step context so runner logs filter by asset step" do
     runner_opts = [
       runner_log_entries: %{
