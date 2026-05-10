@@ -36,32 +36,45 @@ defmodule FavnView.Components.LogViewer do
     ~H"""
     <section class="mx-auto w-full max-w-6xl" data-testid="log-viewer" data-log-scope={@scope}>
       <div class="card glass favn-glass-panel overflow-hidden rounded-box border border-primary/20 bg-base-200/35 shadow-2xl">
-        <div class="flex flex-col gap-5 border-b border-base-content/10 p-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
+        <div class="flex flex-col gap-3 border-b border-base-content/10 p-4 sm:gap-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
           <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-3">
-              <h2 class="text-2xl font-medium tracking-tight">{@title}</h2>
+            <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+              <h2 class="text-xl font-medium tracking-tight sm:text-2xl">{@title}</h2>
               <span class={live_badge_class(@live?)} data-testid="log-live-status">
                 <span class={["status", @live? && "status-success", !@live? && "status-neutral"]}>
                 </span>
                 {if @live?, do: "Live streaming", else: "Loaded"}
               </span>
             </div>
-            <p :if={@subtitle} class="mt-2 text-sm text-base-content/55">{@subtitle}</p>
-            <p :if={@context_note} class="mt-3 text-sm text-warning/80" data-testid="log-context-note">
+            <p :if={@subtitle} class="mt-1 text-xs text-base-content/55 sm:mt-2 sm:text-sm">
+              {@subtitle}
+            </p>
+            <p
+              :if={@context_note}
+              class="mt-2 text-xs text-warning/80 sm:mt-3 sm:text-sm"
+              data-testid="log-context-note"
+            >
               {@context_note}
             </p>
-            <p :if={@warning} class="mt-3 text-sm text-warning/80" data-testid="log-stream-warning">
+            <p
+              :if={@warning}
+              class="mt-2 text-xs text-warning/80 sm:mt-3 sm:text-sm"
+              data-testid="log-stream-warning"
+            >
               {@warning}
             </p>
           </div>
 
-          <dl :if={@facts != []} class="grid gap-4 text-sm sm:grid-cols-3 lg:min-w-[24rem]">
+          <dl
+            :if={@facts != []}
+            class="grid grid-cols-3 gap-2 rounded-box border border-base-content/10 bg-base-content/[0.03] p-2 text-xs sm:gap-4 sm:border-0 sm:bg-transparent sm:p-0 sm:text-sm lg:min-w-[24rem]"
+          >
             <div
               :for={fact <- @facts}
-              class="border-base-content/20 sm:border-l sm:pl-5 first:border-l-0 first:pl-0"
+              class="min-w-0 border-base-content/10 px-2 first:pl-0 sm:border-l sm:border-base-content/20 sm:pl-5 sm:first:border-l-0 sm:first:pl-0"
             >
-              <dt class="text-base-content/55">{fact.label}</dt>
-              <dd class="mt-1 font-medium text-base-content">{fact.value}</dd>
+              <dt class="truncate text-base-content/55">{fact.label}</dt>
+              <dd class="mt-0.5 truncate font-medium text-base-content sm:mt-1">{fact.value}</dd>
             </div>
           </dl>
         </div>
@@ -332,8 +345,12 @@ defmodule FavnView.Components.LogViewer do
   defp level_class("error"), do: "text-error"
   defp level_class(_level), do: "text-info"
 
-  defp live_badge_class(true), do: "badge badge-success badge-soft gap-2 px-3 py-3"
-  defp live_badge_class(false), do: "badge badge-ghost gap-2 px-3 py-3"
+  defp live_badge_class(true),
+    do:
+      "badge badge-success badge-soft gap-1.5 px-2 py-2 text-xs sm:gap-2 sm:px-3 sm:py-3 sm:text-sm"
+
+  defp live_badge_class(false),
+    do: "badge badge-ghost gap-1.5 px-2 py-2 text-xs sm:gap-2 sm:px-3 sm:py-3 sm:text-sm"
 
   defp sequence_title(%{global_sequence: nil}), do: nil
   defp sequence_title(%{global_sequence: sequence}), do: "global sequence #{sequence}"
