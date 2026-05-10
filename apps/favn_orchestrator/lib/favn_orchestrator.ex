@@ -69,10 +69,7 @@ defmodule FavnOrchestrator do
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
-          required(:latest_run_at) => DateTime.t() | nil,
-          required(:run_enabled?) => boolean(),
-          required(:run_disabled_reason) => atom() | nil,
-          required(:run_label) => String.t()
+          required(:latest_run_at) => DateTime.t() | nil
         }
 
   @type asset_timeline_window :: %{
@@ -83,7 +80,10 @@ defmodule FavnOrchestrator do
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
-          required(:latest_run_at) => DateTime.t() | nil
+          required(:latest_run_at) => DateTime.t() | nil,
+          required(:run_enabled?) => boolean(),
+          required(:run_disabled_reason) => atom() | nil,
+          required(:run_label) => String.t()
         }
 
   @type asset_detail :: %{
@@ -286,8 +286,28 @@ defmodule FavnOrchestrator do
         opts
         |> Keyword.put(:manifest_version_id, manifest_version_id)
         |> Keyword.put(:anchor_window, anchor_window)
+        |> put_window_run_metadata(window_id, anchor_window)
       )
     end
+  end
+
+  defp put_window_run_metadata(opts, window_id, %Anchor{} = anchor_window) do
+    Keyword.update(opts, :metadata, window_run_metadata(window_id, anchor_window), fn metadata ->
+      Map.merge(Map.new(metadata), window_run_metadata(window_id, anchor_window))
+    end)
+  end
+
+  defp window_run_metadata(window_id, %Anchor{} = anchor_window) do
+    %{
+      selected_window: %{
+        id: window_id,
+        kind: anchor_window.kind,
+        key: anchor_window.key,
+        start_at: anchor_window.start_at,
+        end_at: anchor_window.end_at,
+        timezone: anchor_window.timezone
+      }
+    }
   end
 
   @doc """

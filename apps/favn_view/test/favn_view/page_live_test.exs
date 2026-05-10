@@ -105,6 +105,7 @@ defmodule FavnView.PageLiveTest do
     {:ok, run_view, html} = live(conn, run_path)
 
     assert html =~ "Run run_"
+    assert html =~ "window:day:#{Date.to_iso8601(Date.utc_today())}"
     assert has_element?(run_view, ~s([data-testid="run-overview-panel"]))
   end
 

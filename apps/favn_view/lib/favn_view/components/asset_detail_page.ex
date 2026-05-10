@@ -300,15 +300,21 @@ defmodule FavnView.Components.AssetDetailPage do
     "border-warning/45 bg-warning/15 text-warning"
   end
 
+  defp timeline_window_class(%{status: :error}) do
+    "border-error/45 bg-error/15 text-error"
+  end
+
   defp timeline_window_class(%{status: :muted}) do
     "border-base-content/15 bg-base-content/10 text-base-content/45"
   end
 
   defp timeline_icon(:success), do: "hero-check-circle"
   defp timeline_icon(:warning), do: "hero-clock"
+  defp timeline_icon(:error), do: "hero-x-circle"
   defp timeline_icon(:muted), do: "hero-minus-circle"
 
   defp timeline_label(:success), do: "healthy"
   defp timeline_label(:warning), do: "late"
+  defp timeline_label(:error), do: "failed"
   defp timeline_label(:muted), do: "pending"
 end

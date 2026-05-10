@@ -198,7 +198,7 @@ defmodule FavnView.AssetDetailLive do
 
   defp timeline_status(:healthy), do: :success
   defp timeline_status(:running), do: :warning
-  defp timeline_status(:failed), do: :warning
+  defp timeline_status(:failed), do: :error
   defp timeline_status(_status), do: :muted
 
   defp window_range([]), do: "No windows"

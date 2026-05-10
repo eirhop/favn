@@ -15,7 +15,7 @@ defmodule FavnView.RunDetailLive do
         run_id: run_id,
         run: load_run(run_id),
         active_mode: :overview,
-        nav_items: AssetCataloguePage.nav_items()
+        nav_items: AssetCataloguePage.nav_items(:runs)
       )
 
     {:ok, socket}
@@ -139,14 +139,17 @@ defmodule FavnView.RunDetailLive do
   defp trigger_label(_trigger, submit_kind), do: humanize(submit_kind)
 
   defp window_label(params, metadata) do
-    window = Map.get(params, :window) || Map.get(params, "window") || Map.get(metadata, :window)
+    window =
+      Map.get(params, :window) || Map.get(params, "window") || Map.get(metadata, :selected_window) ||
+        Map.get(metadata, "selected_window") || Map.get(metadata, :window)
 
     cond do
       is_binary(window) ->
         window
 
       is_map(window) ->
-        Map.get(window, :label) || Map.get(window, "label") || Map.get(window, :key)
+        Map.get(window, :label) || Map.get(window, "label") || Map.get(window, :id) ||
+          Map.get(window, "id") || Map.get(window, :key)
 
       true ->
         nil

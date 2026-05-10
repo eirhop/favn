@@ -218,6 +218,10 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert {:ok, run} = Storage.get_run(run_id)
     assert run.manifest_version_id == "mv_a"
     assert run.asset_ref == {MyApp.AssetA, :asset}
+    assert run.metadata.selected_window.id == "window:day:2026-05-10"
+    assert run.metadata.selected_window.kind == :day
+    assert run.metadata.selected_window.start_at == ~U[2026-05-10 00:00:00Z]
+
     target_start_us = DateTime.to_unix(~U[2026-05-10 00:00:00Z], :microsecond)
 
     assert {{MyApp.AssetA, :asset}, target_window_key} =

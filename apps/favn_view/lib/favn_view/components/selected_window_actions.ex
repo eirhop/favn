@@ -55,6 +55,7 @@ defmodule FavnView.Components.SelectedWindowActions do
 
   defp status_label(:success), do: "healthy"
   defp status_label(:warning), do: "late"
+  defp status_label(:error), do: "failed"
   defp status_label(:muted), do: "pending"
   defp status_label(_status), do: "unknown"
 
