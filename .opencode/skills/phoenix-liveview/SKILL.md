@@ -20,10 +20,13 @@ JavaScript when necessary.
 - Avoid product UI feature work unless the user explicitly requested it.
 - Prefer LiveView-native behavior over custom JavaScript.
 - Prefer small function components over large templates.
+- Everything reusable, page-shaped, or visually meaningful should be a component with an explicit Storybook story.
+- LiveViews should render only one top-level page component after preparing assigns.
 - Reusable components must declare explicit `attr` and `slot` contracts.
 - Mutating LiveView events must authorize server-side; hiding buttons is not authorization.
 - Use stable DOM ids and `data-testid` selectors for tests and agent navigation.
 - Add or update PhoenixStorybook stories for reusable UI components.
+- Build responsive designs by default and verify at multiple viewport sizes before finishing UI work.
 - Use Tidewave only in dev, and do not use runtime inspection to bypass Favn app boundaries.
 
 ## Components-First LiveView Approach
@@ -38,7 +41,8 @@ A LiveView should be thin. It should:
 - prepare simple view-model assigns
 - render one top-level page component
 
-A LiveView should not contain large page markup directly.
+A LiveView should not contain page markup directly. It should render exactly one
+top-level page component unless there is a narrow framework reason not to.
 
 Preferred pattern:
 
@@ -77,8 +81,8 @@ AssetDetailLive
 
 ## Storybook Rule
 
-Every reusable component and every page component should have a Phoenix Storybook
-story.
+Every reusable component, page component, and small item component should have a
+Phoenix Storybook story.
 
 Use Storybook as the explicit UI contract for agents and humans:
 
@@ -91,6 +95,8 @@ Use Storybook as the explicit UI contract for agents and humans:
 - error state
 - long text / overflow state
 - realistic Favn examples
+
+If a component is introduced without a story, treat that as incomplete work.
 
 Agents should check Storybook before creating new UI. Reuse existing components
 first.
@@ -130,6 +136,14 @@ Use it for:
 - validating loading, empty, error, and success states
 - checking responsive/narrow layouts
 - taking screenshots for visual verification
+
+For responsive UI work, verify at least:
+
+- mobile viewport around `390x844`
+- desktop viewport around `1440x1000`
+- any intermediate/tablet viewport when layout changes at that breakpoint
+
+Check that primary navigation, mode controls, theme controls, focus states, and the main content remain reachable and usable at each verified viewport.
 
 Use `tidewave_view` for Phoenix/LiveView runtime inspection:
 
@@ -257,6 +271,14 @@ Avoid:
 
 ### DaisyUI usage
 
+Read these DaisyUI docs before changing Favn UI foundations or shared components:
+
+- https://daisyui.com/llms.txt
+- https://daisyui.com/docs/themes/
+- https://daisyui.com/docs/layout-and-typography/
+- https://daisyui.com/docs/utilities/
+- https://daisyui.com/docs/base/
+
 Use DaisyUI primitives first.
 
 Use Tailwind only for layout, spacing, positioning, and light custom polish.
@@ -264,6 +286,8 @@ Use Tailwind only for layout, spacing, positioning, and light custom polish.
 Prefer semantic DaisyUI/theme tokens over hardcoded colors.
 
 Create or use Favn-specific light and dark themes, but keep custom CSS small. The goal is not to build a new component library; it is to make DaisyUI feel like Favn.
+
+Preserve Favn boundaries: UI components and stories may use local sample data or public view models, but must not call orchestrator, runner, storage, compiler, or plugin internals directly.
 
 ### Favn boundaries
 
