@@ -142,65 +142,135 @@ defmodule FavnView.Components.LogViewer do
     ~H"""
     <form
       phx-change="filter_logs"
-      class="grid gap-3 border-t border-base-content/10 p-4 sm:grid-cols-[minmax(14rem,1fr)_10rem_11rem_auto_auto_auto] sm:items-center sm:p-5"
+      class="border-t border-base-content/10 p-3 sm:grid sm:grid-cols-[minmax(14rem,1fr)_10rem_11rem_auto_auto_auto] sm:items-center sm:gap-3 sm:p-5"
     >
-      <label class="input favn-control-glass flex items-center gap-2 rounded-box">
-        <.icon name="hero-magnifying-glass" class="size-5 text-base-content/55" />
-        <input
-          type="search"
-          name="filters[search]"
-          value={@search_query}
-          placeholder="Search logs..."
-          class="grow"
-          data-testid="log-search-input"
+      <div class="flex items-center gap-2 sm:contents">
+        <label class="input favn-control-glass min-w-0 flex-1 items-center gap-2 rounded-box sm:flex">
+          <.icon name="hero-magnifying-glass" class="size-5 text-base-content/55" />
+          <input
+            type="search"
+            name="filters[search]"
+            value={@search_query}
+            placeholder="Search logs..."
+            class="grow"
+            data-testid="log-search-input"
+          />
+        </label>
+
+        <details class="dropdown dropdown-end sm:hidden">
+          <summary
+            class="btn btn-square favn-control-glass rounded-box"
+            aria-label="Log filters"
+            data-testid="log-filter-menu-toggle"
+          >
+            <.icon name="hero-funnel" class="size-5" />
+          </summary>
+          <div class="dropdown-content z-20 mt-2 w-[min(20rem,calc(100vw-2rem))] rounded-box border border-base-content/10 bg-base-200/95 p-3 shadow-2xl backdrop-blur">
+            <div class="grid gap-2">
+              <.level_select
+                selected_level={@selected_level}
+                levels={@levels}
+                testid="log-level-filter-mobile"
+              />
+              <.source_select
+                selected_source={@selected_source}
+                sources={@sources}
+                testid="log-source-filter-mobile"
+              />
+              <.toggle_button
+                event="toggle_wrap"
+                label="Wrap"
+                enabled?={@wrap?}
+                testid="log-wrap-toggle-mobile"
+              />
+              <.toggle_button
+                event="toggle_live_tail"
+                label="Live tail"
+                enabled?={@live_tail?}
+                testid="log-live-tail-toggle-mobile"
+              />
+              <.copy_button class="w-full justify-center" />
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="hidden sm:contents">
+        <.level_select selected_level={@selected_level} levels={@levels} testid="log-level-filter" />
+        <.source_select
+          selected_source={@selected_source}
+          sources={@sources}
+          testid="log-source-filter"
         />
-      </label>
-
-      <label class="select favn-control-glass rounded-box">
-        <span class="label">Level</span>
-        <select name="filters[level]" data-testid="log-level-filter">
-          <option value="all" selected={@selected_level == "all"}>All</option>
-          <option
-            :for={level <- @levels}
-            value={level}
-            selected={@selected_level == Atom.to_string(level)}
-          >
-            {level_label(level)}
-          </option>
-        </select>
-      </label>
-
-      <label class="select favn-control-glass rounded-box">
-        <span class="label">Source</span>
-        <select name="filters[source]" data-testid="log-source-filter">
-          <option value="all" selected={@selected_source == "all"}>All</option>
-          <option
-            :for={source <- @sources}
-            value={source}
-            selected={@selected_source == Atom.to_string(source)}
-          >
-            {source_label(source)}
-          </option>
-        </select>
-      </label>
-
-      <.toggle_button event="toggle_wrap" label="Wrap" enabled?={@wrap?} testid="log-wrap-toggle" />
-      <.toggle_button
-        event="toggle_live_tail"
-        label="Live tail"
-        enabled?={@live_tail?}
-        testid="log-live-tail-toggle"
-      />
-
-      <button
-        type="button"
-        class="btn favn-control-glass rounded-box"
-        data-copy-logs
-        data-testid="log-copy-button"
-      >
-        <.icon name="hero-clipboard-document" class="size-5" /> Copy
-      </button>
+        <.toggle_button event="toggle_wrap" label="Wrap" enabled?={@wrap?} testid="log-wrap-toggle" />
+        <.toggle_button
+          event="toggle_live_tail"
+          label="Live tail"
+          enabled?={@live_tail?}
+          testid="log-live-tail-toggle"
+        />
+        <.copy_button />
+      </div>
     </form>
+    """
+  end
+
+  attr :selected_level, :string, required: true
+  attr :levels, :list, required: true
+  attr :testid, :string, required: true
+
+  def level_select(assigns) do
+    ~H"""
+    <label class="select favn-control-glass rounded-box">
+      <span class="label">Level</span>
+      <select name="filters[level]" data-testid={@testid}>
+        <option value="all" selected={@selected_level == "all"}>All</option>
+        <option
+          :for={level <- @levels}
+          value={level}
+          selected={@selected_level == Atom.to_string(level)}
+        >
+          {level_label(level)}
+        </option>
+      </select>
+    </label>
+    """
+  end
+
+  attr :selected_source, :string, required: true
+  attr :sources, :list, required: true
+  attr :testid, :string, required: true
+
+  def source_select(assigns) do
+    ~H"""
+    <label class="select favn-control-glass rounded-box">
+      <span class="label">Source</span>
+      <select name="filters[source]" data-testid={@testid}>
+        <option value="all" selected={@selected_source == "all"}>All</option>
+        <option
+          :for={source <- @sources}
+          value={source}
+          selected={@selected_source == Atom.to_string(source)}
+        >
+          {source_label(source)}
+        </option>
+      </select>
+    </label>
+    """
+  end
+
+  attr :class, :any, default: nil
+
+  def copy_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      class={["btn favn-control-glass rounded-box", @class]}
+      data-copy-logs
+      data-testid="log-copy-button"
+    >
+      <.icon name="hero-clipboard-document" class="size-5" /> Copy
+    </button>
     """
   end
 

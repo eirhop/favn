@@ -3,8 +3,7 @@ defmodule FavnView.RunLogsLive do
 
   use FavnView, :live_view
 
-  alias FavnView.Components.AppShell
-  alias FavnView.Components.LogViewer
+  alias FavnView.Components.LogPages
   alias FavnView.LogsLiveSupport
 
   @impl true
@@ -52,35 +51,7 @@ defmodule FavnView.RunLogsLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <AppShell.app_shell
-      title={@title}
-      subtitle={@subtitle}
-      status={@status}
-      status_tone={@status_tone}
-      nav_items={@nav_items}
-      back_href={@back_href}
-      back_label={@back_label}
-      facts={@facts}
-    >
-      <LogViewer.log_viewer
-        logs={@logs}
-        visible_logs={@visible_logs}
-        filter={@filter}
-        scope={@scope}
-        title="Logs"
-        subtitle="Run-scoped backend logs"
-        status={@logs_status}
-        live?={@live?}
-        live_tail?={@live_tail?}
-        wrap?={@wrap?}
-        search_query={@search_query}
-        selected_level={@selected_level}
-        selected_source={@selected_source}
-        next_cursor={@next_cursor}
-        empty_state={@empty_state}
-        warning={@stream_warning}
-      />
-    </AppShell.app_shell>
+    <LogPages.run_logs_page {assigns} />
     """
   end
 end
