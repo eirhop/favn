@@ -97,8 +97,8 @@ defmodule FavnOrchestrator.ManifestStoreTest do
              allow_full_load: false
            }
 
-    finished_at = DateTime.add(DateTime.utc_now(), -300, :second)
-    old_finished_at = DateTime.add(finished_at, -3_600, :second)
+    finished_at = ~U[2026-05-10 12:00:00Z]
+    old_finished_at = ~U[2026-05-09 12:00:00Z]
 
     assert :ok =
              Storage.put_run(
@@ -153,6 +153,94 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert entry.latest_run_id == "run_asset_a"
     assert entry.latest_run_status == :ok
     assert entry.latest_run_at == finished_at
+
+    assert {:error, :not_found} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetA:not_real")
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetA:asset")
+
+    assert detail.target_id == "asset:Elixir.MyApp.AssetA:asset"
+    assert detail.name == "asset"
+    assert detail.asset_ref == "Elixir.MyApp.AssetA:asset"
+    assert detail.type == asset.type
+    assert detail.status == :healthy
+    assert detail.latest_run_id == "run_asset_a"
+    assert detail.latest_run_status == :ok
+    assert detail.latest_run_at == finished_at
+    assert detail.window == asset.window
+    assert length(detail.timeline) == 30
+
+    assert latest_window = Enum.find(detail.timeline, &(&1.date == ~D[2026-05-10]))
+    assert latest_window.id == "window:day:2026-05-10"
+    assert latest_window.label == "May 10"
+    assert latest_window.range == "May 10, 2026"
+    assert latest_window.status == :healthy
+    assert latest_window.latest_run_id == "run_asset_a"
+    assert latest_window.latest_run_status == :ok
+    assert latest_window.latest_run_at == finished_at
+    assert latest_window.run_enabled?
+    assert is_nil(latest_window.run_disabled_reason)
+    assert latest_window.run_label == "Run this window"
+
+    assert failed_window = Enum.find(detail.timeline, &(&1.date == ~D[2026-05-09]))
+    assert failed_window.status == :failed
+    assert failed_window.latest_run_id == "run_old_asset_a"
+    assert failed_window.latest_run_status == :error
+    assert failed_window.latest_run_at == old_finished_at
+
+    assert unknown_window = Enum.find(detail.timeline, &(&1.date == ~D[2026-04-11]))
+    assert unknown_window.status == :unknown
+    assert is_nil(unknown_window.latest_run_id)
+
+    assert {:error, {:invalid_window_id, "not-a-window"}} =
+             FavnOrchestrator.submit_asset_window_run(
+               "mv_a",
+               "asset:Elixir.MyApp.AssetA:asset",
+               "not-a-window"
+             )
+
+    assert {:error, :invalid_asset_target} =
+             FavnOrchestrator.submit_asset_window_run(
+               "mv_a",
+               "asset:Elixir.MyApp.AssetA:not_real",
+               "window:day:2026-05-10"
+             )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_window_run(
+               "mv_a",
+               "asset:Elixir.MyApp.AssetA:asset",
+               "window:day:2026-05-10",
+               dependencies: :none
+             )
+
+    assert {:ok, run} = Storage.get_run(run_id)
+    assert run.manifest_version_id == "mv_a"
+    assert run.asset_ref == {MyApp.AssetA, :asset}
+    target_start_us = DateTime.to_unix(~U[2026-05-10 00:00:00Z], :microsecond)
+
+    assert {{MyApp.AssetA, :asset}, target_window_key} =
+             Enum.find(run.plan.target_node_keys, fn
+               {{MyApp.AssetA, :asset}, %{start_at_us: ^target_start_us}} -> true
+               _other -> false
+             end)
+
+    assert target_window_key.kind == :day
+    assert target_window_key.start_at_us == target_start_us
+
+    assert target_node = run.plan.nodes[{{MyApp.AssetA, :asset}, target_window_key}]
+    assert target_node.window.kind == :day
+    assert target_node.window.start_at == ~U[2026-05-10 00:00:00Z]
+
+    assert :ok = ManifestStore.set_active_manifest("mv_b")
+
+    assert {:ok, no_window_detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetB:asset")
+
+    assert no_window = List.last(no_window_detail.timeline)
+    refute no_window.run_enabled?
+    assert no_window.run_disabled_reason == :asset_has_no_window_policy
   end
 
   test "publishes duplicate content under the existing canonical manifest version" do

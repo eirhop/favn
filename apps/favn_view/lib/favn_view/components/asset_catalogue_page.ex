@@ -158,7 +158,7 @@ defmodule FavnView.Components.AssetCataloguePage do
     >
       <td>
         <.link
-          navigate={~p"/assets/#{@asset.id}"}
+          navigate={~p"/assets/#{asset_route_id(@asset)}"}
           class="flex items-center gap-3 font-medium text-base-content focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
         >
           <span class="flex size-8 items-center justify-center rounded-field border border-success/25 bg-success/10 text-success">
@@ -179,7 +179,7 @@ defmodule FavnView.Components.AssetCataloguePage do
       <td class="text-base-content/70">{@asset.last_run_label}</td>
       <td class="text-right">
         <.icon_button
-          navigate={~p"/assets/#{@asset.id}"}
+          navigate={~p"/assets/#{asset_route_id(@asset)}"}
           label={"Open #{@asset.name}"}
           icon="hero-chevron-right"
         />
@@ -203,7 +203,7 @@ defmodule FavnView.Components.AssetCataloguePage do
   def asset_card(assigns) do
     ~H"""
     <.link
-      navigate={~p"/assets/#{@asset.id}"}
+      navigate={~p"/assets/#{asset_route_id(@asset)}"}
       class="card glass favn-surface-list favn-density-list-card block rounded-box transition hover:border-primary/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary"
       data-testid="asset-card"
     >
@@ -458,6 +458,8 @@ defmodule FavnView.Components.AssetCataloguePage do
   defp status_label(:missed), do: "Missed"
   defp status_label(:unknown), do: "Unknown"
   defp status_label(_status), do: "Unknown"
+
+  defp asset_route_id(asset), do: Map.get(asset, :route_id, asset.id)
 
   defp connection_label("s3"), do: "s3"
   defp connection_label(connection), do: connection

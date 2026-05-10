@@ -11,6 +11,7 @@ defmodule FavnView.Components.AppShell do
   attr :title, :string, required: true
   attr :subtitle, :string, default: nil
   attr :status, :string, default: nil
+  attr :status_tone, :atom, default: :success
   attr :nav_items, :list, default: []
 
   slot :inner_block, required: true
@@ -58,9 +59,12 @@ defmodule FavnView.Components.AppShell do
             </div>
             <span
               :if={@status}
-              class="badge badge-success badge-soft favn-status-glow gap-2 px-4 py-4"
+              class={[
+                "badge badge-soft favn-status-glow gap-2 px-4 py-4",
+                status_badge_class(@status_tone)
+              ]}
             >
-              <span class="status status-success"></span>
+              <span class={["status", status_dot_class(@status_tone)]}></span>
               {@status}
             </span>
           </section>
@@ -73,4 +77,16 @@ defmodule FavnView.Components.AppShell do
     </div>
     """
   end
+
+  defp status_badge_class(:info), do: "badge-info"
+  defp status_badge_class(:warning), do: "badge-warning"
+  defp status_badge_class(:error), do: "badge-error"
+  defp status_badge_class(:neutral), do: "badge-neutral"
+  defp status_badge_class(_tone), do: "badge-success"
+
+  defp status_dot_class(:info), do: "status-info"
+  defp status_dot_class(:warning), do: "status-warning"
+  defp status_dot_class(:error), do: "status-error"
+  defp status_dot_class(:neutral), do: "status-neutral"
+  defp status_dot_class(_tone), do: "status-success"
 end
