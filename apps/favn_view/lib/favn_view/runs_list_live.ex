@@ -170,9 +170,6 @@ defmodule FavnView.RunsListLive do
       results == [] && active_status?(Map.get(run, :status)) ->
         %{label: "Waiting", title: "Run accepted. Waiting for #{fallback_title}."}
 
-      total == 0 && active_status?(Map.get(run, :status)) ->
-        %{label: "Waiting", title: "Run accepted. Waiting for #{fallback_title}."}
-
       total == 0 ->
         %{label: "-", title: "No #{fallback_title} available"}
 
