@@ -84,6 +84,14 @@ defmodule FavnView.Storybook.Components.RunDetailPage do
         }
       },
       %Variation{
+        id: :node_statuses,
+        attributes: %{
+          run: RunDetailPage.sample_run_with_node_statuses(),
+          run_id: "run_01jrun_detail_sample",
+          nav_items: RunDetailPage.sample_nav_items()
+        }
+      },
+      %Variation{
         id: :not_found,
         attributes: %{
           run: RunDetailPage.not_found_run(),

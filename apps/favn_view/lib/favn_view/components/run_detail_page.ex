@@ -255,6 +255,48 @@ defmodule FavnView.Components.RunDetailPage do
     ])
   end
 
+  def sample_run_with_node_statuses do
+    sample_run(:partial)
+    |> Map.put(:asset_results, [
+      %{
+        id: "node-raw-orders-window-2026-06-12",
+        asset_ref: "FavnView.Assets.raw_orders",
+        display_name: "raw_orders",
+        secondary: "window:day:2026-06-12 · Fresh · Stage 0",
+        status: "Skipped fresh",
+        status_tone: :neutral,
+        started_at: "Jun 12, 2026 14:00:00 UTC",
+        duration: "1.0 s",
+        error: nil,
+        inspectable?: true
+      },
+      %{
+        id: "node-stg-orders-window-2026-06-12",
+        asset_ref: "FavnView.Assets.stg_orders",
+        display_name: "stg_orders",
+        secondary: "window:day:2026-06-12 · Stage 1",
+        status: "Retrying",
+        status_tone: :info,
+        started_at: "Jun 12, 2026 14:00:01 UTC",
+        duration: "500 ms",
+        error: nil,
+        inspectable?: true
+      },
+      %{
+        id: "node-customer-orders-window-2026-06-12",
+        asset_ref: "FavnView.Assets.customer_orders_daily",
+        display_name: "customer_orders_daily",
+        secondary: "window:day:2026-06-12 · Upstream failed · Stage 2",
+        status: "Blocked",
+        status_tone: :error,
+        started_at: "Jun 12, 2026 14:00:02 UTC",
+        duration: "1 ms",
+        error: "Upstream failed",
+        inspectable?: true
+      }
+    ])
+  end
+
   def not_found_run do
     %{
       found?: false,

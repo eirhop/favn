@@ -6,6 +6,7 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -28,6 +29,8 @@ defmodule FavnView.PageLiveTest do
 
     assert :ok =
              Storage.put_run(empty_run_state(:stg_payments, :error, "run_failed_empty"))
+
+    assert :ok = Storage.put_run(node_results_run_state())
 
     seed_run_events!("run_customer_orders_daily")
     seed_run_events!("run_failed_empty", :error)
@@ -210,6 +213,21 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="run-asset-results"]), "customer_orders_daily")
     assert has_element?(view, ~s([data-testid="run-asset-results"]), "Stage 0")
     assert has_element?(view, ~s([data-testid="run-asset-result-row"][data-asset-step-id]))
+  end
+
+  test "run detail prefers node results for execution rows", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_node_results")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Skipped fresh")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Retrying")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Blocked")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"][data-asset-step-id]))
+
+    refute has_element?(
+             view,
+             ~s([data-testid="run-asset-result-row"]),
+             "asset aggregate fallback"
+           )
   end
 
   test "active run refreshes from running to terminal", %{conn: conn} do
@@ -419,7 +437,7 @@ defmodule FavnView.PageLiveTest do
   defp failed_run_state(name, run_id) do
     ref = {__MODULE__.Assets, name}
     upstream_ref = {__MODULE__.Assets, :raw_payments}
-    finished_at = DateTime.utc_now()
+    finished_at = DateTime.add(DateTime.utc_now(), -1_200, :second)
     started_at = DateTime.add(finished_at, -2, :second)
 
     RunState.new(
@@ -450,6 +468,75 @@ defmodule FavnView.PageLiveTest do
             duration_ms: 1_000,
             error: %{message: "Warehouse timeout"}
           }
+        ]
+      }
+    )
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp node_results_run_state do
+    finished_at = DateTime.add(DateTime.utc_now(), -1_200, :second)
+    started_at = DateTime.add(finished_at, -2, :second)
+    raw_ref = {__MODULE__.Assets, :raw_payments}
+    stg_ref = {__MODULE__.Assets, :stg_payments}
+    customer_ref = {__MODULE__.Assets, :customer_orders_daily}
+
+    RunState.new(
+      id: "run_node_results",
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: customer_ref,
+      target_refs: [raw_ref, stg_ref, customer_ref]
+    )
+    |> RunState.transition(
+      status: :partial,
+      result: %{
+        asset_results: [
+          %AssetResult{
+            ref: customer_ref,
+            stage: 99,
+            status: :ok,
+            started_at: started_at,
+            finished_at: finished_at,
+            duration_ms: 1,
+            meta: %{note: "asset aggregate fallback"}
+          }
+        ],
+        node_results: [
+          NodeResult.new(%{
+            node_key: {raw_ref, "window:day:2026-06-12"},
+            ref: raw_ref,
+            window: %{id: "window:day:2026-06-12"},
+            stage: 0,
+            status: :skipped_fresh,
+            reason: :fresh,
+            started_at: started_at,
+            finished_at: DateTime.add(started_at, 1, :second),
+            duration_ms: 1_000
+          }),
+          NodeResult.new(%{
+            node_key: {stg_ref, "window:day:2026-06-12"},
+            ref: stg_ref,
+            window: %{id: "window:day:2026-06-12"},
+            stage: 1,
+            status: :retrying,
+            started_at: DateTime.add(started_at, 1, :second),
+            duration_ms: 500
+          }),
+          NodeResult.new(%{
+            node_key: {customer_ref, "window:day:2026-06-12"},
+            ref: customer_ref,
+            window: %{id: "window:day:2026-06-12"},
+            stage: 2,
+            status: :blocked,
+            reason: :upstream_failed,
+            started_at: DateTime.add(started_at, 2, :second),
+            finished_at: finished_at,
+            duration_ms: 1,
+            error: %{reason: :upstream_failed}
+          })
         ]
       }
     )

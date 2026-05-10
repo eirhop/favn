@@ -29,7 +29,7 @@ defmodule FavnView.RunDetailLive do
 
   @impl true
   def handle_info(:refresh_run, socket) do
-    run = load_run(socket.assigns.run_id)
+    run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
 
     socket =
       socket
@@ -58,25 +58,25 @@ defmodule FavnView.RunDetailLive do
     """
   end
 
-  defp load_run(run_id) do
+  defp load_run(run_id, back_asset_href \\ nil) do
     with {:ok, run} <- FavnOrchestrator.get_run(run_id),
          {:ok, events} <- FavnOrchestrator.list_run_events(run_id) do
-      run_from_public(run, events)
+      run_from_public(run, events, back_asset_href)
     else
       {:error, reason} -> %{id: run_id, found?: false, error: error_label(reason)}
     end
   end
 
-  defp run_from_public(run, events) do
+  defp run_from_public(run, events, existing_back_asset_href) do
     started_at = Map.get(run, :started_at)
     finished_at = Map.get(run, :finished_at)
     status = Map.get(run, :status)
     target = target_label(Map.get(run, :asset_ref), Map.get(run, :target_refs, []))
     trigger = trigger_label(Map.get(run, :trigger, %{}), Map.get(run, :submit_kind))
     window = window_label(Map.get(run, :params, %{}), Map.get(run, :metadata, %{}))
-    asset_results = asset_results(Map.get(run, :asset_results, %{}), run.id)
+    asset_results = run_step_results(run, run.id)
     event_items = event_items(events)
-    back_asset_href = back_asset_href(Map.get(run, :asset_ref))
+    back_asset_href = existing_back_asset_href || back_asset_href(Map.get(run, :asset_ref))
     failure_summary = failure_summary(status, asset_results, event_items)
     current_activity = current_activity(status, asset_results, event_items)
 
@@ -106,8 +106,8 @@ defmodule FavnView.RunDetailLive do
       outputs: outputs(asset_results),
       context: context_items(run, target, trigger, window),
       back_asset_href: back_asset_href,
-      raw_run: inspect(run, pretty: true, limit: :infinity),
-      raw_events: inspect(events, pretty: true, limit: :infinity)
+      raw_run: debug_inspect(run),
+      raw_events: debug_inspect(events)
     }
   end
 
@@ -121,6 +121,48 @@ defmodule FavnView.RunDetailLive do
 
   defp active_status?(status),
     do: status in @active_statuses or status in Enum.map(@active_statuses, &to_string/1)
+
+  defp run_step_results(run, run_id) do
+    node_results = node_results(Map.get(run, :node_results, %{}), run_id)
+
+    if node_results == [] do
+      asset_results(Map.get(run, :asset_results, %{}), run_id)
+    else
+      node_results
+    end
+  end
+
+  defp node_results(results, run_id) when is_map(results) do
+    results
+    |> Enum.map(fn {key, result} -> node_result(result, run_id, key) end)
+    |> Enum.sort_by(&{Map.get(&1, :secondary) || "", &1.asset_ref})
+  end
+
+  defp node_results(results, run_id) when is_list(results) do
+    results
+    |> Enum.map(&node_result(&1, run_id, node_key(&1)))
+    |> Enum.sort_by(&{Map.get(&1, :secondary) || "", &1.asset_ref})
+  end
+
+  defp node_results(_results, _run_id), do: []
+
+  defp node_result(result, run_id, node_key) do
+    asset_ref = ref_label(Map.get(result, :ref) || node_asset_ref(node_key))
+
+    %{
+      id: node_step_id(result, run_id, node_key, asset_ref),
+      asset_ref: asset_ref,
+      display_name: display_name(asset_ref),
+      secondary: node_secondary(result),
+      status: status_label(Map.get(result, :status)),
+      status_tone: status_tone(Map.get(result, :status)),
+      duration: duration_ms_label(Map.get(result, :duration_ms)),
+      started_at: timestamp_label(Map.get(result, :started_at)),
+      error: error_summary(Map.get(result, :error) || Map.get(result, :reason)),
+      output: output_metadata(result),
+      inspectable?: true
+    }
+  end
 
   defp asset_results(results, run_id) when is_map(results) do
     results
@@ -230,19 +272,30 @@ defmodule FavnView.RunDetailLive do
 
   defp status_label(status) when status in [:ok, "ok"], do: "Succeeded"
   defp status_label(status) when status in [:running, "running"], do: "Running"
+  defp status_label(status) when status in [:retrying, "retrying"], do: "Retrying"
   defp status_label(status) when status in [:pending, "pending"], do: "Pending"
   defp status_label(status) when status in [:partial, "partial"], do: "Partial"
   defp status_label(status) when status in [:error, "error"], do: "Failed"
+  defp status_label(status) when status in [:blocked, "blocked"], do: "Blocked"
   defp status_label(status) when status in [:cancelled, "cancelled"], do: "Cancelled"
+  defp status_label(status) when status in [:skipped_fresh, "skipped_fresh"], do: "Skipped fresh"
   defp status_label(status) when status in [:timed_out, "timed_out"], do: "Timed out"
   defp status_label(nil), do: "Unknown"
   defp status_label(status), do: humanize(status)
 
   defp status_tone(status) when status in [:ok, "ok"], do: :success
-  defp status_tone(status) when status in [:running, :pending, "running", "pending"], do: :info
+
+  defp status_tone(status)
+       when status in [:running, :pending, :retrying, "running", "pending", "retrying"], do: :info
+
   defp status_tone(status) when status in [:partial, "partial"], do: :warning
-  defp status_tone(status) when status in [:error, :timed_out, "error", "timed_out"], do: :error
-  defp status_tone(status) when status in [:cancelled, "cancelled"], do: :neutral
+
+  defp status_tone(status)
+       when status in [:error, :timed_out, :blocked, "error", "timed_out", "blocked"], do: :error
+
+  defp status_tone(status)
+       when status in [:cancelled, :skipped_fresh, "cancelled", "skipped_fresh"], do: :neutral
+
   defp status_tone(_status), do: :neutral
 
   defp timestamp_label(%DateTime{} = value),
@@ -355,6 +408,12 @@ defmodule FavnView.RunDetailLive do
   defp asset_empty_message(_status, _failure_summary),
     do: "No asset results persisted for this run yet."
 
+  defp node_step_id(result, run_id, node_key, asset_ref) do
+    Map.get(result, :id) || Map.get(result, "id") || Map.get(result, :step_id) ||
+      Map.get(result, "step_id") || persisted_key_id(node_key, asset_ref) ||
+      deterministic_step_id(run_id, asset_ref)
+  end
+
   defp asset_step_id(result, run_id, key, asset_ref) do
     Map.get(result, :id) || Map.get(result, "id") || Map.get(result, :step_id) ||
       Map.get(result, "step_id") || persisted_key_id(key, asset_ref) ||
@@ -363,6 +422,10 @@ defmodule FavnView.RunDetailLive do
 
   defp persisted_key_id(nil, _asset_ref), do: nil
   defp persisted_key_id(key, asset_ref) when is_binary(key) and key != asset_ref, do: safe_id(key)
+
+  defp persisted_key_id(key, _asset_ref) when is_tuple(key),
+    do: safe_id(:erlang.term_to_binary(key) |> Base.url_encode64(padding: false))
+
   defp persisted_key_id(_key, _asset_ref), do: nil
 
   defp deterministic_step_id(run_id, asset_ref), do: safe_id("#{run_id}:#{asset_ref}")
@@ -379,6 +442,40 @@ defmodule FavnView.RunDetailLive do
       stage -> "Stage #{stage}"
     end
   end
+
+  defp node_secondary(result) do
+    [
+      window_secondary(Map.get(result, :window)),
+      freshness_secondary(Map.get(result, :freshness_key)),
+      reason_secondary(Map.get(result, :reason)),
+      asset_secondary(result)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+    |> case do
+      "" -> nil
+      secondary -> secondary
+    end
+  end
+
+  defp window_secondary(nil), do: nil
+  defp window_secondary(%{label: label}) when is_binary(label), do: label
+  defp window_secondary(%{"label" => label}) when is_binary(label), do: label
+  defp window_secondary(%{id: id}) when is_binary(id), do: id
+  defp window_secondary(%{"id" => id}) when is_binary(id), do: id
+  defp window_secondary(window), do: "Window #{inspect(window, limit: 5)}"
+
+  defp freshness_secondary(nil), do: nil
+  defp freshness_secondary(key), do: "Freshness #{key}"
+
+  defp reason_secondary(nil), do: nil
+  defp reason_secondary(reason) when reason in [:fresh, "fresh"], do: "Fresh"
+  defp reason_secondary(reason), do: humanize(reason)
+
+  defp node_key(result), do: Map.get(result, :node_key) || Map.get(result, "node_key")
+
+  defp node_asset_ref({ref, _window}) when is_tuple(ref), do: ref
+  defp node_asset_ref(_node_key), do: nil
 
   defp output_metadata(result) do
     meta = Map.get(result, :meta, %{}) || %{}
@@ -411,13 +508,23 @@ defmodule FavnView.RunDetailLive do
   defp submit_kind_label(nil), do: "Unknown"
   defp submit_kind_label(value), do: humanize(value)
 
+  defp debug_inspect(value), do: inspect(value, pretty: true, limit: 50, printable_limit: 2_000)
+
   defp status_summary(nil), do: nil
   defp status_summary(status), do: "Status #{status_label(status)}"
 
   defp error_summary(nil), do: nil
   defp error_summary(%{message: message}) when is_binary(message), do: message
   defp error_summary(%{"message" => message}) when is_binary(message), do: message
-  defp error_summary(error), do: inspect(error)
+  defp error_summary(%{reason: reason}), do: error_reason_summary(reason)
+  defp error_summary(%{"reason" => reason}), do: error_reason_summary(reason)
+  defp error_summary(reason) when is_binary(reason), do: reason
+  defp error_summary(reason) when is_atom(reason), do: humanize(reason)
+  defp error_summary(_error), do: "Execution error"
+
+  defp error_reason_summary(reason) when is_binary(reason), do: reason
+  defp error_reason_summary(reason) when is_atom(reason), do: humanize(reason)
+  defp error_reason_summary(reason), do: inspect(reason, limit: 5, printable_limit: 200)
 
   defp humanize(value) when is_atom(value), do: value |> Atom.to_string() |> humanize()
 
