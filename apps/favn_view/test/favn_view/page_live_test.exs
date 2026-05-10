@@ -210,10 +210,18 @@ defmodule FavnView.PageLiveTest do
 
   test "run detail renders asset results when present", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+    asset_step_id = asset_step_id("run_customer_orders_daily", :customer_orders_daily)
 
     assert has_element?(view, ~s([data-testid="run-asset-results"]), "customer_orders_daily")
     assert has_element?(view, ~s([data-testid="run-asset-results"]), "Stage 0")
     assert has_element?(view, ~s([data-testid="run-asset-result-row"][data-asset-step-id]))
+
+    view
+    |> element(~s(a[data-testid="run-asset-result-row"][data-asset-step-id="#{asset_step_id}"]))
+    |> render_click()
+
+    assert {path, _flash} = assert_redirect(view)
+    assert path == ~p"/runs/run_customer_orders_daily/assets/#{asset_step_id}/logs"
   end
 
   test "run detail prefers node results for execution rows", %{conn: conn} do
@@ -347,6 +355,19 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "Live system and run logs"
     assert has_element?(view, ~s([data-testid="log-viewer"][data-log-scope="global"]))
     assert has_element?(view, ~s([data-testid="log-row"]), "global boot")
+  end
+
+  test "/logs loads newest entries when more than one backend page exists", %{conn: conn} do
+    for index <- 1..510 do
+      seed_log!("paged log #{index}", producer_id: "paged", producer_sequence: index)
+    end
+
+    {:ok, view, _html} = live(conn, ~p"/logs")
+
+    assert has_element?(view, ~s([data-testid="log-row"]), "paged log 510")
+    assert has_element?(view, ~s([data-testid="log-row"]), "paged log 311")
+    refute has_element?(view, ~s([data-testid="log-row"]), "paged log 310")
+    refute has_element?(view, ~s([data-testid="log-row"]), "paged log 1")
   end
 
   test "/runs/:run_id/logs renders only run-scoped logs", %{conn: conn} do
@@ -735,6 +756,8 @@ defmodule FavnView.PageLiveTest do
       global_sequence: Keyword.get(opts, :global_sequence),
       run_id: Keyword.get(opts, :run_id),
       asset_step_id: Keyword.get(opts, :asset_step_id),
+      producer_id: Keyword.get(opts, :producer_id),
+      producer_sequence: Keyword.get(opts, :producer_sequence),
       occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
       level: Keyword.get(opts, :level, :info),
       source: Keyword.get(opts, :source, :runner),
@@ -744,8 +767,12 @@ defmodule FavnView.PageLiveTest do
   end
 
   defp asset_step_id(run_id, name) do
-    asset_ref = "#{inspect(__MODULE__.Assets)}.#{name}"
-    "#{run_id}:#{asset_ref}" |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
+    {:ok, run} = FavnOrchestrator.get_run(run_id)
+
+    run
+    |> FavnView.RunStepViewModel.from_run()
+    |> Enum.find(&(Map.get(&1, :display_name) == Atom.to_string(name)))
+    |> Map.fetch!(:id)
   end
 
   defp target_id(name) do

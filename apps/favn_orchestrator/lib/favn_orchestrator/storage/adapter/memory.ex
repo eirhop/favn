@@ -774,11 +774,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   def handle_call({:list_logs, filter, opts}, _from, state) do
     page_opts = page_opts(opts)
+    order = log_order(opts)
 
     rows =
       log_entries(state)
       |> filter_logs(filter)
-      |> Enum.sort_by(&Map.get(&1, :global_sequence, 0))
+      |> Enum.sort_by(&Map.get(&1, :global_sequence, 0), order)
       |> Enum.drop(Keyword.fetch!(page_opts, :offset))
       |> Enum.take(Keyword.fetch!(page_opts, :limit) + 1)
 
@@ -1277,6 +1278,15 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   defp log_entries(state), do: Map.get(state, :log_entries, [])
+
+  defp log_order(opts) do
+    case Keyword.get(opts, :order, :asc) do
+      :desc -> :desc
+      "desc" -> :desc
+      _other -> :asc
+    end
+  end
+
   defp log_global_sequence(state), do: Map.get(state, :log_global_sequence, 0)
 
   defp find_idempotent_log_entry(entries, entry) do
