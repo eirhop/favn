@@ -61,6 +61,64 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([aria-label="Catalogue filter"]))
   end
 
+  test "renders the runs list", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/runs")
+
+    assert html =~ "Runs"
+    assert html =~ "Recent orchestration activity"
+    assert has_element?(view, ~s([data-testid="runs-table"]))
+    assert has_element?(view, ~s([data-testid="run-card-list"]))
+
+    assert has_element?(view, ~s(a[href="/runs/run_customer_orders_daily"]), "run_custo..._daily")
+    assert html =~ "customer_orders_daily"
+    assert html =~ "Succeeded"
+    assert html =~ "1/1 asset"
+    assert html =~ "2/3 steps"
+    assert html =~ "+2"
+  end
+
+  test "runs list refreshes active runs", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-row"][data-run-id="run_empty_running"]),
+             "Waiting"
+           )
+
+    {:ok, active_run} = Storage.get_run("run_empty_running")
+
+    terminal_run =
+      RunState.transition(active_run,
+        status: :ok,
+        result: %{asset_results: terminal_asset_results(:stg_payments)}
+      )
+
+    assert :ok =
+             Storage.persist_run_transition(terminal_run, %{
+               run_id: terminal_run.id,
+               sequence: 3,
+               event_type: :run_finished,
+               occurred_at: DateTime.utc_now(),
+               status: :ok,
+               data: %{message: "Run finished"}
+             })
+
+    send(view.pid, :refresh_runs)
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-row"][data-run-id="run_empty_running"]),
+             "Succeeded"
+           )
+
+    refute has_element?(
+             view,
+             ~s([data-testid="run-row"][data-run-id="run_empty_running"]),
+             "Waiting"
+           )
+  end
+
   test "filters assets by search, connection, and catalogue", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/assets")
 
