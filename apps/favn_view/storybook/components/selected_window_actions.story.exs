@@ -8,7 +8,7 @@ defmodule FavnView.Storybook.Components.SelectedWindowActions do
   def layout, do: :one_column
   def render_source, do: :function
 
-  def container, do: {:iframe, style: "width: 100%; height: 360px; border: 0;"}
+  def container, do: {:iframe, style: "width: 100%; height: 720px; border: 0;"}
 
   def template do
     """
@@ -27,6 +27,27 @@ defmodule FavnView.Storybook.Components.SelectedWindowActions do
         attributes: %{
           selected_window: AssetDetailPage.selected_sample_window()
         }
+      },
+      %Variation{
+        id: :run_window_config_default_auto,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "auto"})
+      },
+      %Variation{
+        id: :run_window_config_missing_only,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "missing"})
+      },
+      %Variation{
+        id: :run_window_config_force_selected_asset,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "force_selected"})
+      },
+      %Variation{
+        id: :run_window_config_force_selected_upstream,
+        attributes:
+          run_config_attributes(%{dependencies: "all", refresh: "force_selected_upstream"})
+      },
+      %Variation{
+        id: :run_window_config_force_full_graph,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "force_all"})
       },
       %Variation{
         id: :submitting,
@@ -56,5 +77,13 @@ defmodule FavnView.Storybook.Components.SelectedWindowActions do
         }
       }
     ]
+  end
+
+  defp run_config_attributes(run_config) do
+    %{
+      selected_window: AssetDetailPage.selected_sample_window(),
+      run_config_open?: true,
+      run_config: run_config
+    }
   end
 end

@@ -130,6 +130,7 @@ defmodule FavnView.Components.RunOverviewHud do
         <p class="truncate text-sm font-medium text-base-content">{@asset.display_name}</p>
         <p class="truncate font-mono text-xs text-base-content/45">{@asset.asset_ref}</p>
         <p :if={@asset.secondary} class="text-xs text-base-content/50">{@asset.secondary}</p>
+        <p :if={@asset.explanation} class="mt-1 text-xs text-base-content/60">{@asset.explanation}</p>
         <p :if={@asset.error} class="mt-1 text-xs text-error">{@asset.error}</p>
       </div>
     </div>

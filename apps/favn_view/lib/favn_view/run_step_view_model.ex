@@ -50,12 +50,14 @@ defmodule FavnView.RunStepViewModel do
       asset_ref: asset_ref,
       display_name: LogsViewModel.display_name(asset_ref),
       secondary: node_secondary(result),
-      status: LogsViewModel.status_label(Map.get(result, :status)),
+      status: step_status_label(Map.get(result, :status)),
+      raw_status: Map.get(result, :status),
       status_tone: LogsViewModel.status_tone(Map.get(result, :status)),
       duration: LogsViewModel.duration_ms_label(Map.get(result, :duration_ms)),
       started_at: LogsViewModel.timestamp_label(Map.get(result, :started_at)),
       attempt: Map.get(result, :attempt),
       error: error_summary(Map.get(result, :error) || Map.get(result, :reason)),
+      explanation: node_explanation(result),
       output: output_metadata(result),
       inspectable?: true
     }
@@ -69,12 +71,14 @@ defmodule FavnView.RunStepViewModel do
       asset_ref: asset_ref,
       display_name: LogsViewModel.display_name(asset_ref),
       secondary: asset_secondary(result),
-      status: LogsViewModel.status_label(Map.get(result, :status)),
+      status: step_status_label(Map.get(result, :status)),
+      raw_status: Map.get(result, :status),
       status_tone: LogsViewModel.status_tone(Map.get(result, :status)),
       duration: LogsViewModel.duration_ms_label(Map.get(result, :duration_ms)),
       started_at: LogsViewModel.timestamp_label(Map.get(result, :started_at)),
       attempt: Map.get(result, :attempt),
       error: error_summary(Map.get(result, :error)),
+      explanation: asset_explanation(result),
       output: output_metadata(result),
       inspectable?: true
     }
@@ -158,6 +162,69 @@ defmodule FavnView.RunStepViewModel do
   defp error_summary(reason) when is_binary(reason), do: reason
   defp error_summary(reason) when is_atom(reason), do: humanize(reason)
   defp error_summary(_error), do: "Execution error"
+
+  defp step_status_label(status) when status in [:ok, "ok"], do: "Ran"
+  defp step_status_label(status), do: LogsViewModel.status_label(status)
+
+  defp node_explanation(result) do
+    status = Map.get(result, :status)
+    reason = Map.get(result, :reason)
+
+    cond do
+      status in [:skipped_fresh, "skipped_fresh"] ->
+        freshness_suffix(result, "Skipped because backend marked this node fresh.")
+
+      status in [:blocked, "blocked"] ->
+        reason_suffix(reason, "Blocked by a backend execution decision.")
+
+      status in [:error, "error"] ->
+        "Failed while executing this planned node."
+
+      status in [:cancelled, "cancelled"] ->
+        "Cancelled before this planned node completed."
+
+      status in [:timed_out, "timed_out"] ->
+        "Timed out while executing this planned node."
+
+      status in [:ok, "ok"] and reason in [:forced, "forced", :force, "force"] ->
+        "Ran because refresh policy forced this node."
+
+      status in [:ok, "ok"] ->
+        "Ran as part of the backend plan."
+
+      status in [:pending, :running, :retrying, "pending", "running", "retrying"] ->
+        "Backend is still working on this planned node."
+
+      true ->
+        nil
+    end
+  end
+
+  defp asset_explanation(result) do
+    case Map.get(result, :status) do
+      status when status in [:ok, "ok"] ->
+        "Ran as part of the backend plan."
+
+      status when status in [:error, "error"] ->
+        "Failed while executing this asset."
+
+      status when status in [:pending, :running, :retrying, "pending", "running", "retrying"] ->
+        "Backend is still working on this asset."
+
+      _status ->
+        nil
+    end
+  end
+
+  defp freshness_suffix(result, fallback) do
+    case Map.get(result, :freshness_key) do
+      nil -> fallback
+      key -> "#{fallback} Freshness key: #{key}."
+    end
+  end
+
+  defp reason_suffix(nil, fallback), do: fallback
+  defp reason_suffix(reason, fallback), do: "#{fallback} Reason: #{humanize(reason)}."
 
   defp error_reason_summary(reason) when is_binary(reason), do: reason
   defp error_reason_summary(reason) when is_atom(reason), do: humanize(reason)

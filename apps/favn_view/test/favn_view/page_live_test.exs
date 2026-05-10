@@ -9,6 +9,8 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias Favn.Window.Spec, as: WindowSpec
+  alias FavnView.Components.AssetDetailPage
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -32,6 +34,7 @@ defmodule FavnView.PageLiveTest do
              Storage.put_run(empty_run_state(:stg_payments, :error, "run_failed_empty"))
 
     assert :ok = Storage.put_run(node_results_run_state())
+    seed_freshness_states!()
 
     seed_run_events!("run_customer_orders_daily")
     seed_run_events!("run_failed_empty", :error)
@@ -149,9 +152,80 @@ defmodule FavnView.PageLiveTest do
 
     assert html =~ "customer_orders_daily"
     assert html =~ "Healthy"
+    assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "Stale")
+    assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "daily Europe/Oslo")
     assert html =~ "Window timeline"
     assert has_element?(view, ~s([data-testid="window-timeline-panel"]))
     assert has_element?(view, ~s([aria-label="View modes"]))
+  end
+
+  test "asset detail renders stale freshness explanation in details mode", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Details"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="asset-freshness-detail-panel"]), "Stale")
+    assert has_element?(view, ~s([data-testid="asset-freshness-reasons"]), "raw_payments")
+    assert has_element?(view, ~s([data-testid="asset-freshness-reasons"]), "raw:v1")
+    assert has_element?(view, ~s([data-testid="asset-freshness-reasons"]), "raw:v2")
+  end
+
+  test "asset detail renders unknown freshness explanation", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:stg_payments))
+
+    assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "Unknown")
+    assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "No freshness policy")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Details"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="asset-freshness-reasons"]), "No freshness policy")
+  end
+
+  test "asset detail renders always-run freshness explanation", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:always_refresh))
+
+    assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "Always run")
+    assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "always run")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Details"]))
+    |> render_click()
+
+    assert has_element?(
+             view,
+             ~s([data-testid="asset-freshness-reasons"]),
+             "Manifest policy is always run"
+           )
+  end
+
+  test "asset detail component tolerates missing or partial freshness detail" do
+    attrs = %{
+      title: "partial_freshness_asset",
+      status: "Unknown",
+      status_tone: :neutral,
+      window_range: "No windows",
+      nav_items: AssetDetailPage.sample_nav_items(),
+      timeline: AssetDetailPage.sample_timeline(),
+      selected_window: AssetDetailPage.selected_sample_window(),
+      active_mode: :timeline,
+      freshness: nil
+    }
+
+    assert render_component(&AssetDetailPage.asset_detail_page/1, attrs) =~ "Window timeline"
+
+    html =
+      render_component(&AssetDetailPage.asset_detail_page/1, %{
+        attrs
+        | active_mode: :details,
+          freshness: %{state: :unknown, explanation: "Backend returned partial freshness detail."}
+      })
+
+    assert html =~ "Backend returned partial freshness detail."
+    assert html =~ "policy unavailable"
   end
 
   test "asset detail defaults to timeline mode", %{conn: conn} do
@@ -164,15 +238,32 @@ defmodule FavnView.PageLiveTest do
     refute has_element?(view, ~s([data-testid="asset-mode-placeholder"]))
   end
 
-  test "run selected window submits and navigates to run detail", %{conn: conn} do
+  test "run selected window opens run config panel with defaults", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 
     view
     |> element(~s([data-testid="run-selected-window"]), "Run this window")
     |> render_click()
 
+    assert has_element?(view, ~s([data-testid="run-config-panel"]), "Plan scope / dependencies")
+    assert has_element?(view, ~s(input[name="run_config[dependencies]"][value="all"][checked]))
+    assert has_element?(view, ~s(input[name="run_config[refresh]"][value="auto"][checked]))
+  end
+
+  test "run selected window submits default auto config and navigates to run detail", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    open_run_config(view)
+
+    view
+    |> element(~s([data-testid="run-config-form"]))
+    |> render_submit(%{"run_config" => %{"dependencies" => "all", "refresh" => "auto"}})
+
     assert {run_path, %{"info" => "Run submitted"}} = assert_redirect(view)
     assert String.starts_with?(run_path, "/runs/run_")
+    assert_submitted_refresh(run_path, :all, %{mode: :auto, refs: [], include_upstream?: false})
 
     {:ok, run_view, html} = live(conn, run_path)
 
@@ -181,12 +272,73 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(run_view, ~s([data-testid="run-overview-panel"]))
   end
 
+  test "run selected window submits missing refresh config", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    open_run_config(view)
+
+    view
+    |> element(~s([data-testid="run-config-form"]))
+    |> render_submit(%{"run_config" => %{"dependencies" => "all", "refresh" => "missing"}})
+
+    assert {run_path, _flash} = assert_redirect(view)
+
+    assert_submitted_refresh(run_path, :all, %{mode: :missing, refs: [], include_upstream?: false})
+  end
+
+  test "run selected window submits force selected refresh config", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    open_run_config(view)
+
+    view
+    |> element(~s([data-testid="run-config-form"]))
+    |> render_submit(%{"run_config" => %{"dependencies" => "all", "refresh" => "force_selected"}})
+
+    assert {run_path, _flash} = assert_redirect(view)
+
+    assert_submitted_refresh(run_path, :all, %{
+      mode: :force_assets,
+      refs: [{__MODULE__.Assets, :customer_orders_daily}],
+      include_upstream?: false
+    })
+  end
+
+  test "run selected window submits force selected plus upstream refresh config", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    open_run_config(view)
+
+    view
+    |> element(~s([data-testid="run-config-form"]))
+    |> render_submit(%{
+      "run_config" => %{"dependencies" => "all", "refresh" => "force_selected_upstream"}
+    })
+
+    assert {run_path, _flash} = assert_redirect(view)
+
+    assert_submitted_refresh(run_path, :all, %{
+      mode: :force_assets,
+      refs: [{__MODULE__.Assets, :customer_orders_daily}],
+      include_upstream?: true
+    })
+  end
+
   test "non-runnable selected window keeps run disabled", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:stg_payments))
 
     assert has_element?(view, ~s([data-testid="run-selected-window"][disabled]))
     refute has_element?(view, ~s([data-testid="create-backfill"]))
     assert has_element?(view, ~s([data-testid="selected-window-actions"]), "No window policy")
+
+    render_click(view, "open_run_config", %{})
+    refute has_element?(view, ~s([data-testid="run-config-panel"]))
+
+    assert has_element?(
+             view,
+             ~s([data-testid="selected-window-error"]),
+             "This asset has no window policy."
+           )
   end
 
   test "asset detail mode rail changes the central panel", %{conn: conn} do
@@ -219,7 +371,7 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(
              view,
-             ~s([data-testid="timeline-window-#{window_id}"][aria-label*="pending"])
+             ~s([data-testid="timeline-window-#{window_id}"][aria-label*="unknown"])
            )
   end
 
@@ -580,9 +732,18 @@ defmodule FavnView.PageLiveTest do
   defp manifest_version do
     manifest = %Manifest{
       assets: [
-        asset(:customer_orders_daily, :snowflake, "sales", :sql, WindowSpec.new!(:day)),
-        asset(:raw_payments, :s3, "finance", :source),
-        asset(:stg_payments, :postgres, "finance", :sql)
+        asset(:raw_payments, :s3, "finance", :source,
+          freshness: Favn.Freshness.Policy.from_value!(max_age: {:hours, 24})
+        ),
+        asset(:customer_orders_daily, :snowflake, "sales", :sql,
+          window: WindowSpec.new!(:day),
+          freshness: Favn.Freshness.Policy.from_value!({:daily, timezone: "Europe/Oslo"}),
+          depends_on: [{__MODULE__.Assets, :raw_payments}]
+        ),
+        asset(:stg_payments, :postgres, "finance", :sql),
+        asset(:always_refresh, :snowflake, "sales", :sql,
+          freshness: Favn.Freshness.Policy.from_value!(:always)
+        )
       ]
     }
 
@@ -590,13 +751,15 @@ defmodule FavnView.PageLiveTest do
     version
   end
 
-  defp asset(name, connection, catalog, type, window \\ nil) do
+  defp asset(name, connection, catalog, type, opts \\ []) do
     %Favn.Manifest.Asset{
       ref: {__MODULE__.Assets, name},
       module: __MODULE__.Assets,
       name: name,
       type: type,
-      window: window,
+      window: Keyword.get(opts, :window),
+      freshness: Keyword.get(opts, :freshness),
+      depends_on: Keyword.get(opts, :depends_on, []),
       relation: %{connection: connection, catalog: catalog, name: Atom.to_string(name)}
     }
   end
@@ -761,6 +924,55 @@ defmodule FavnView.PageLiveTest do
     |> RunState.with_snapshot_hash()
   end
 
+  defp seed_freshness_states! do
+    now = DateTime.utc_now()
+    customer_at = DateTime.add(now, -600, :second)
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(:raw_payments, "raw:v2", now, run_id: "run_raw_payments")
+             )
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(:customer_orders_daily, "customer:v1", customer_at,
+                 run_id: "run_customer_orders_daily",
+                 input_versions: [
+                   %{
+                     upstream_ref: {__MODULE__.Assets, :raw_payments},
+                     upstream_node_key: {{__MODULE__.Assets, :raw_payments}, nil},
+                     freshness_version: "raw:v1",
+                     success_run_id: "run_raw_old"
+                   }
+                 ]
+               )
+             )
+  end
+
+  defp freshness_state(name, version, at, opts) do
+    run_id = Keyword.fetch!(opts, :run_id)
+
+    {:ok, state} =
+      AssetFreshnessState.new(%{
+        asset_ref_module: __MODULE__.Assets,
+        asset_ref_name: name,
+        freshness_key: Favn.Freshness.Key.latest(),
+        status: :ok,
+        freshness_version: version,
+        latest_success_run_id: run_id,
+        latest_success_node_key: {{__MODULE__.Assets, name}, nil},
+        latest_success_at: at,
+        latest_attempt_run_id: run_id,
+        latest_attempt_status: :ok,
+        latest_attempt_at: at,
+        manifest_version_id: "mv_view_assets",
+        input_versions: Keyword.get(opts, :input_versions, []),
+        updated_at: at
+      })
+
+    state
+  end
+
   defp terminal_asset_results(name) do
     ref = {__MODULE__.Assets, name}
     finished_at = DateTime.utc_now()
@@ -831,6 +1043,19 @@ defmodule FavnView.PageLiveTest do
     |> FavnView.RunStepViewModel.from_run()
     |> Enum.find(&(Map.get(&1, :display_name) == Atom.to_string(name)))
     |> Map.fetch!(:id)
+  end
+
+  defp open_run_config(view) do
+    view
+    |> element(~s([data-testid="run-selected-window"]), "Run this window")
+    |> render_click()
+  end
+
+  defp assert_submitted_refresh(run_path, dependencies, refresh_policy) do
+    run_id = String.replace_prefix(run_path, "/runs/", "")
+    assert {:ok, run} = Storage.get_run(run_id)
+    assert run.metadata.asset_dependencies == dependencies
+    assert run.metadata.refresh_policy == refresh_policy
   end
 
   defp target_id(name) do

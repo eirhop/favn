@@ -94,6 +94,7 @@ defmodule FavnOrchestrator do
           required(:label) => String.t(),
           required(:name) => String.t(),
           required(:asset_ref) => String.t() | nil,
+          required(:canonical_asset_ref) => Favn.Ref.t(),
           required(:relation) => map() | nil,
           required(:type) => String.t() | nil,
           required(:status) => :healthy | :running | :failed | :unknown,
@@ -101,7 +102,25 @@ defmodule FavnOrchestrator do
           required(:latest_run_status) => atom() | nil,
           required(:latest_run_at) => DateTime.t() | nil,
           required(:window) => map() | nil,
+          required(:freshness) => asset_freshness_detail(),
           required(:timeline) => [asset_timeline_window()]
+        }
+
+  @type asset_freshness_reason :: %{
+          required(:kind) => atom(),
+          required(:message) => String.t(),
+          optional(:upstream_ref) => String.t() | nil,
+          optional(:previous_version) => String.t() | nil,
+          optional(:current_version) => String.t() | nil,
+          optional(:run_id) => String.t() | nil
+        }
+
+  @type asset_freshness_detail :: %{
+          required(:state) => :fresh | :stale | :unknown | :always_run,
+          required(:policy) => %{required(:kind) => atom(), required(:label) => String.t()},
+          required(:latest_success) => map() | nil,
+          required(:explanation) => String.t(),
+          required(:reasons) => [asset_freshness_reason()]
         }
 
   @doc """
@@ -1002,17 +1021,209 @@ defmodule FavnOrchestrator do
         target
         |> Map.take([:target_id, :label, :asset_ref, :relation, :type, :window])
         |> Map.put(:manifest_version_id, version.manifest_version_id)
+        |> Map.put(:canonical_asset_ref, asset.ref)
         |> Map.put(:name, asset_detail_name(target))
         |> Map.put(:status, catalogue_status(latest_freshness, latest_run))
         |> Map.put(:latest_run_id, latest_run_id(latest_freshness, latest_run))
         |> Map.put(:latest_run_status, latest_run_status(latest_freshness, latest_run))
         |> Map.put(:latest_run_at, latest_run_at(latest_freshness, latest_run))
+        |> Map.put(:freshness, asset_freshness_detail(asset, latest_freshness))
         |> Map.put(
           :timeline,
           asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts)
         )
     end
   end
+
+  defp asset_freshness_detail(asset, latest_freshness) do
+    policy = asset_freshness_policy(asset)
+
+    cond do
+      policy.kind == :always ->
+        freshness_detail(
+          :always_run,
+          policy,
+          nil,
+          "Freshness is intentionally bypassed; this asset runs whenever it is planned.",
+          [
+            %{kind: :always_run, message: "Manifest policy is always run."}
+          ]
+        )
+
+      policy.kind == :none ->
+        freshness_detail(
+          :unknown,
+          policy,
+          nil,
+          "No freshness policy is declared for this asset.",
+          [
+            %{kind: :no_freshness_policy, message: "No freshness policy is declared."}
+          ]
+        )
+
+      is_nil(latest_freshness) or is_nil(latest_freshness.latest_success_run_id) ->
+        freshness_detail(
+          :unknown,
+          policy,
+          latest_success_detail(latest_freshness),
+          "No successful freshness evidence exists for this asset yet.",
+          [
+            %{
+              kind: :never_run,
+              message: "No successful freshness-producing run has been recorded."
+            }
+          ]
+        )
+
+      true ->
+        explain_asset_freshness(asset, latest_freshness, policy)
+    end
+  end
+
+  defp explain_asset_freshness(asset, latest_freshness, policy) do
+    upstream_node_keys = Enum.map(asset.depends_on, &{&1, nil})
+
+    case explain_asset_staleness(asset.ref,
+           freshness_key: Favn.Freshness.Key.latest(),
+           upstream_node_keys: upstream_node_keys
+         ) do
+      {:ok, %{status: :fresh}} ->
+        freshness_detail(
+          :fresh,
+          policy,
+          latest_success_detail(latest_freshness),
+          "Backend freshness state currently satisfies this asset's policy.",
+          [
+            %{
+              kind: :policy_fresh,
+              message: "Backend freshness state satisfies the declared policy."
+            }
+          ]
+        )
+
+      {:ok, %{status: :stale, stale_reasons: reasons}} ->
+        reasons = Enum.map(reasons, &asset_freshness_reason/1)
+
+        freshness_detail(
+          :stale,
+          policy,
+          latest_success_detail(latest_freshness),
+          stale_explanation(asset, reasons),
+          reasons
+        )
+
+      {:error, _reason} ->
+        freshness_detail(
+          :unknown,
+          policy,
+          latest_success_detail(latest_freshness),
+          "Freshness state exists, but backend could not explain whether it is stale.",
+          [
+            %{
+              kind: :insufficient_state,
+              message: "Backend could not build a staleness explanation from available state."
+            }
+          ]
+        )
+    end
+  end
+
+  defp freshness_detail(state, policy, latest_success, explanation, reasons) do
+    %{
+      state: state,
+      policy: policy,
+      latest_success: latest_success,
+      explanation: explanation,
+      reasons: reasons
+    }
+  end
+
+  defp latest_success_detail(nil), do: nil
+
+  defp latest_success_detail(%AssetFreshnessState{latest_success_run_id: nil}), do: nil
+
+  defp latest_success_detail(%AssetFreshnessState{} = state) do
+    %{
+      run_id: state.latest_success_run_id,
+      at: state.latest_success_at,
+      freshness_key: state.freshness_key
+    }
+  end
+
+  defp asset_freshness_policy(%{freshness: nil}), do: %{kind: :none, label: "no freshness policy"}
+
+  defp asset_freshness_policy(%{
+         freshness: %Favn.Freshness.Policy{mode: :calendar_period, kind: :day, timezone: timezone}
+       }),
+       do: %{kind: :daily, label: "daily #{timezone || "Etc/UTC"}"}
+
+  defp asset_freshness_policy(%{
+         freshness: %Favn.Freshness.Policy{mode: :max_age, amount: amount, unit: unit}
+       }),
+       do: %{kind: :max_age, label: "max age #{amount} #{pluralize(unit, amount)}"}
+
+  defp asset_freshness_policy(%{freshness: %Favn.Freshness.Policy{mode: :window_success}}),
+    do: %{kind: :window_success, label: "window success"}
+
+  defp asset_freshness_policy(%{freshness: %Favn.Freshness.Policy{mode: :always}}),
+    do: %{kind: :always, label: "always run"}
+
+  defp asset_freshness_policy(_asset), do: %{kind: :none, label: "no freshness policy"}
+
+  defp asset_freshness_reason(%{type: :upstream_version_changed} = reason) do
+    upstream_ref = Map.get(reason, :upstream_ref)
+    label = ref_display_name(upstream_ref)
+
+    %{
+      kind: :upstream_version_changed,
+      message: "#{label} refreshed after this asset last consumed it.",
+      upstream_ref: ref_to_string(upstream_ref),
+      previous_version: Map.get(reason, :consumed_version),
+      current_version: Map.get(reason, :current_version),
+      run_id: Map.get(reason, :current_success_run_id)
+    }
+  end
+
+  defp asset_freshness_reason(%{type: :missing_upstream_version} = reason) do
+    upstream_ref = Map.get(reason, :upstream_ref)
+    label = ref_display_name(upstream_ref)
+
+    %{
+      kind: :upstream_missing,
+      message: "#{label} has no current upstream freshness version available.",
+      upstream_ref: ref_to_string(upstream_ref),
+      previous_version: Map.get(reason, :consumed_version),
+      current_version: nil,
+      run_id: nil
+    }
+  end
+
+  defp asset_freshness_reason(reason) do
+    %{
+      kind: :unknown,
+      message: "Backend returned an unrecognized stale reason: #{inspect(reason, limit: 5)}."
+    }
+  end
+
+  defp stale_explanation(asset, []),
+    do: "#{ref_display_name(asset.ref)} is stale according to backend freshness state."
+
+  defp stale_explanation(asset, [reason | _reasons]) do
+    "#{ref_display_name(asset.ref)} is stale because #{String.downcase(reason.message)}"
+  end
+
+  defp ref_display_name({module, name}) when is_atom(module) and is_atom(name) do
+    module
+    |> inspect()
+    |> String.split(".")
+    |> List.last()
+    |> Kernel.<>(".#{name}")
+  end
+
+  defp ref_display_name(ref), do: ref_to_string(ref)
+
+  defp pluralize(unit, 1), do: Atom.to_string(unit)
+  defp pluralize(unit, _amount), do: Atom.to_string(unit) <> "s"
 
   defp latest_run_for_ref(runs, ref_string) do
     runs
