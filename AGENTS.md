@@ -24,6 +24,7 @@ Load the relevant repo-local OpenCode skill before framework-specific work:
 - `phoenix-web-api`: Phoenix Endpoint, Router, Controller, Plug, and API work, especially in `apps/favn_orchestrator`.
 - `phoenix-liveview`: LiveView, HEEx, components, layouts, Storybook, Tidewave, and UI work in `apps/favn_view`.
 - `ecto-storage`: repos, migrations, Ecto queries, transactions, storage adapters, SQL sandbox, and persistence tests.
+- When working with front-end components webfetch and read DaisyUI docs `https://daisyui.com/llms.txt`
 
 ## Repo Rules
 

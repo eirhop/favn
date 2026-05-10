@@ -204,3 +204,69 @@ Use these docs for details when implementing:
 - Prefer `Phoenix.LiveViewTest` selectors such as `element/2`, `has_element?/2`, and forms over raw HTML assertions.
 - Test behavior and outcomes, not implementation details.
 - Keep placeholder stories/tooling stories separate from product UI work.
+
+## Favn LiveView UI Philosophy
+
+When working on `favn_view`, first read:
+
+- https://daisyui.com/llms.txt
+
+Use that as the source of truth for DaisyUI syntax, component classes, theme setup, and current best practices. Do not guess DaisyUI APIs from memory.
+
+### Design direction
+
+Favn should feel like a calm operator HUD, not a crowded admin dashboard.
+
+The visual language is:
+
+- Apple Liquid Glass-inspired
+- dark-first, but with a supported light theme
+- minimal, spacious, and atmospheric
+- floating panels, soft borders, subtle glow
+- icon-first navigation
+- progressive disclosure instead of visible clutter
+
+Default screens should show only the essential thing the operator needs.
+
+For asset detail, the default view is:
+
+- asset title
+- health/status badge
+- window timeline
+
+Everything else should be secondary and reachable through icons, hover/focus previews, pinned modes, or drill-downs.
+
+### Interaction philosophy
+
+Prefer:
+
+- one primary visual per screen
+- one primary action per state
+- icon rails instead of dense tab bars
+- hover/focus preview plus click-to-pin
+- keyboard-accessible controls
+- clear empty/error/loading states
+
+Avoid:
+
+- dashboards full of cards
+- large tables as the first view
+- visible debug/raw JSON by default
+- too many filters, buttons, and knobs
+- backend DTO shapes leaking into the UI
+
+### DaisyUI usage
+
+Use DaisyUI primitives first.
+
+Use Tailwind only for layout, spacing, positioning, and light custom polish.
+
+Prefer semantic DaisyUI/theme tokens over hardcoded colors.
+
+Create or use Favn-specific light and dark themes, but keep custom CSS small. The goal is not to build a new component library; it is to make DaisyUI feel like Favn.
+
+### Favn boundaries
+
+`favn_view` owns the browser/operator experience only.
+
+It must not reach into orchestrator, runner, storage, or internal runtime apps directly. UI data should come through explicit view/API boundaries and stable view models.
