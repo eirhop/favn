@@ -13,6 +13,9 @@ defmodule FavnView.Components.AppShell do
   attr :status, :string, default: nil
   attr :status_tone, :atom, default: :success
   attr :nav_items, :list, default: []
+  attr :back_href, :string, default: nil
+  attr :back_label, :string, default: nil
+  attr :facts, :list, default: []
 
   slot :inner_block, required: true
   slot :mode_rail
@@ -48,25 +51,47 @@ defmodule FavnView.Components.AppShell do
         </header>
 
         <main class="mx-auto flex min-h-[calc(100vh-5.5rem)] max-w-7xl flex-col justify-start py-8 md:justify-center md:py-12">
-          <section class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start md:mb-8 md:gap-4">
-            <div>
-              <h1 class="text-3xl font-light tracking-tight text-base-content sm:text-5xl lg:text-6xl">
-                {@title}
-              </h1>
+          <section class="mb-6 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between md:mb-8">
+            <div class="min-w-0">
+              <.link
+                :if={@back_href && @back_label}
+                navigate={@back_href}
+                class="mb-6 inline-flex items-center gap-2 text-sm text-base-content/70 transition hover:text-primary"
+              >
+                <.icon name="hero-arrow-left" class="size-4" />
+                {@back_label}
+              </.link>
+
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-center md:gap-4">
+                <h1 class="truncate text-3xl font-light tracking-tight text-base-content sm:text-5xl lg:text-6xl">
+                  {@title}
+                </h1>
+                <span
+                  :if={@status}
+                  class={[
+                    "badge badge-soft favn-status-glow gap-2 px-4 py-4",
+                    status_badge_class(@status_tone)
+                  ]}
+                >
+                  <span class={["status", status_dot_class(@status_tone)]}></span>
+                  {@status}
+                </span>
+              </div>
+
               <p :if={@subtitle} class="mt-2 text-base text-base-content/60 md:mt-3 md:text-lg">
                 {@subtitle}
               </p>
             </div>
-            <span
-              :if={@status}
-              class={[
-                "badge badge-soft favn-status-glow gap-2 px-4 py-4",
-                status_badge_class(@status_tone)
-              ]}
-            >
-              <span class={["status", status_dot_class(@status_tone)]}></span>
-              {@status}
-            </span>
+
+            <dl :if={@facts != []} class="grid gap-4 text-sm sm:grid-cols-3 lg:min-w-[28rem]">
+              <div
+                :for={fact <- @facts}
+                class="border-base-content/20 sm:border-l sm:pl-5 first:border-l-0 first:pl-0"
+              >
+                <dt class="text-base-content/55">{fact.label}</dt>
+                <dd class="mt-1 font-medium text-base-content">{fact.value}</dd>
+              </div>
+            </dl>
           </section>
 
           {render_slot(@inner_block)}

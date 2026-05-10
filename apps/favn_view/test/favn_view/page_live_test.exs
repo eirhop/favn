@@ -19,7 +19,18 @@ defmodule FavnView.PageLiveTest do
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
     assert :ok = Storage.put_run(run_state(:customer_orders_daily, :ok, -600))
     assert :ok = Storage.put_run(run_state(:raw_payments, :running, -30))
+
+    assert :ok =
+             Storage.put_run(empty_run_state(:stg_payments, :running, "run_empty_running"))
+
+    assert :ok =
+             Storage.put_run(failed_run_state(:stg_payments, "run_failed_customer_orders"))
+
+    assert :ok =
+             Storage.put_run(empty_run_state(:stg_payments, :error, "run_failed_empty"))
+
     seed_run_events!("run_customer_orders_daily")
+    seed_run_events!("run_failed_empty", :error)
 
     :ok
   end
@@ -40,7 +51,6 @@ defmodule FavnView.PageLiveTest do
 
     assert html =~ "Healthy"
     assert html =~ "10m ago"
-    assert html =~ "Running"
 
     assert has_element?(view, ~s([aria-label="View modes"]))
     assert has_element?(view, ~s([aria-label="Connection filter"]))
@@ -104,7 +114,7 @@ defmodule FavnView.PageLiveTest do
 
     {:ok, run_view, html} = live(conn, run_path)
 
-    assert html =~ "Run run_"
+    assert html =~ "run_"
     assert html =~ "window:day:#{Date.to_iso8601(Date.utc_today())}"
     assert has_element?(run_view, ~s([data-testid="run-overview-panel"]))
   end
@@ -171,14 +181,24 @@ defmodule FavnView.PageLiveTest do
   test "renders existing run detail overview", %{conn: conn} do
     {:ok, view, html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
-    assert html =~ "Run run_customer_order"
+    assert html =~ "run_customer_order"
     assert has_element?(view, ~s([data-testid="run-overview-panel"]))
-    assert has_element?(view, ~s([data-testid="run-summary-row"]), "Succeeded")
-    assert has_element?(view, ~s([data-testid="run-summary-row"]), "mv_view_assets")
+    assert has_element?(view, ~s([data-testid="run-overview-panel"]), "Succeeded")
+    refute html =~ "Healthy"
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Context"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="run-context-panel"]), "mv_view_assets")
   end
 
-  test "run detail renders events when present", %{conn: conn} do
+  test "run detail renders events mode when present", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Events"]))
+    |> render_click()
 
     assert has_element?(view, ~s([data-testid="run-event-timeline"]), "Run started")
     assert has_element?(view, ~s([data-testid="run-event-timeline"]), "Run finished")
@@ -189,23 +209,107 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="run-asset-results"]), "customer_orders_daily")
     assert has_element?(view, ~s([data-testid="run-asset-results"]), "Stage 0")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"][data-asset-step-id]))
   end
 
-  test "run detail mode rail changes to placeholder modes", %{conn: conn} do
+  test "active run refreshes from running to terminal", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="true"]))
+    assert has_element?(view, ~s([data-testid="run-asset-results-empty"]), "Run accepted")
+
+    {:ok, active_run} = Storage.get_run("run_empty_running")
+
+    terminal_run =
+      RunState.transition(active_run,
+        status: :ok,
+        result: %{asset_results: terminal_asset_results(:stg_payments)}
+      )
+
+    assert :ok =
+             Storage.persist_run_transition(terminal_run, %{
+               run_id: terminal_run.id,
+               sequence: 3,
+               event_type: :run_finished,
+               occurred_at: DateTime.utc_now(),
+               status: :ok,
+               data: %{message: "Run finished"}
+             })
+
+    send(view.pid, :refresh_run)
+
+    assert render(view) =~ "Succeeded"
+    assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="false"]))
+  end
+
+  test "terminal run does not render as refreshing", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+
+    assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="false"]))
+  end
+
+  test "running run with no asset results shows waiting state and no fake rows", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-results-empty"]), "Run accepted")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-current-activity"]),
+             "Waiting for first execution event"
+           )
+
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]))
+  end
+
+  test "failed run surfaces failed asset and error in overview", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_failed_customer_orders")
+
+    assert has_element?(view, ~s([data-testid="run-overview-panel"]), "Failed")
+    assert has_element?(view, ~s([data-testid="run-failure-summary"]), "1 of 2 assets failed")
+    assert has_element?(view, ~s([data-testid="run-failure-summary"]), "stg_payments")
+    assert has_element?(view, ~s([data-testid="run-failure-summary"]), "Warehouse timeout")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Failed")
+  end
+
+  test "failed run without asset results surfaces latest error event", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_failed_empty")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-asset-results-empty"]),
+             "Run failed before asset results"
+           )
+
+    assert has_element?(view, ~s([data-testid="run-failure-summary"]), "Warehouse timeout")
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]))
+  end
+
+  test "run detail mode rail changes to events mode", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
     view
     |> element(~s([data-testid="view-mode-rail"] button[aria-label="Events"]))
     |> render_click()
 
-    assert has_element?(view, ~s([data-testid="run-mode-placeholder"]), "Events")
+    assert has_element?(view, ~s([data-testid="run-event-timeline"]), "Events")
     refute has_element?(view, ~s([data-testid="run-overview-panel"]))
+  end
+
+  test "run detail right rail exposes expected modes", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+
+    for label <- ["Overview", "Events", "Outputs", "Context", "Debug"] do
+      assert has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="#{label}"]))
+    end
+
+    refute has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="Assets"]))
   end
 
   test "run detail ignores invalid mode events", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
-    assert render_click(view, "set_mode", %{"mode" => "not_real"}) =~ "Asset execution"
+    assert render_click(view, "set_mode", %{"mode" => "not_real"}) =~ "Run status"
     assert has_element?(view, ~s([data-testid="run-overview-panel"]))
   end
 
@@ -263,13 +367,13 @@ defmodule FavnView.PageLiveTest do
     }
   end
 
-  defp run_state(name, status, seconds_from_now) do
+  defp run_state(name, status, seconds_from_now, run_id \\ nil) do
     ref = {__MODULE__.Assets, name}
     finished_at = DateTime.add(DateTime.utc_now(), seconds_from_now, :second)
     started_at = DateTime.add(finished_at, -1, :second)
 
     RunState.new(
-      id: "run_#{name}",
+      id: run_id || "run_#{name}",
       manifest_version_id: "mv_view_assets",
       manifest_content_hash: "hash_view_assets",
       asset_ref: ref,
@@ -295,7 +399,83 @@ defmodule FavnView.PageLiveTest do
     |> RunState.with_snapshot_hash()
   end
 
-  defp seed_run_events!(run_id) do
+  defp empty_run_state(name, status, run_id) do
+    ref = {__MODULE__.Assets, name}
+    now = DateTime.utc_now()
+
+    RunState.new(
+      id: run_id,
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: ref,
+      target_refs: [ref]
+    )
+    |> RunState.transition(status: status, result: %{asset_results: []})
+    |> Map.put(:inserted_at, now)
+    |> Map.put(:updated_at, now)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp failed_run_state(name, run_id) do
+    ref = {__MODULE__.Assets, name}
+    upstream_ref = {__MODULE__.Assets, :raw_payments}
+    finished_at = DateTime.utc_now()
+    started_at = DateTime.add(finished_at, -2, :second)
+
+    RunState.new(
+      id: run_id,
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: ref,
+      target_refs: [upstream_ref, ref]
+    )
+    |> RunState.transition(
+      status: :error,
+      result: %{
+        asset_results: [
+          %AssetResult{
+            ref: upstream_ref,
+            stage: 0,
+            status: :ok,
+            started_at: started_at,
+            finished_at: DateTime.add(started_at, 1, :second),
+            duration_ms: 1_000
+          },
+          %AssetResult{
+            ref: ref,
+            stage: 1,
+            status: :error,
+            started_at: DateTime.add(started_at, 1, :second),
+            finished_at: finished_at,
+            duration_ms: 1_000,
+            error: %{message: "Warehouse timeout"}
+          }
+        ]
+      }
+    )
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp terminal_asset_results(name) do
+    ref = {__MODULE__.Assets, name}
+    finished_at = DateTime.utc_now()
+    started_at = DateTime.add(finished_at, -1, :second)
+
+    [
+      %AssetResult{
+        ref: ref,
+        stage: 0,
+        status: :ok,
+        started_at: started_at,
+        finished_at: finished_at,
+        duration_ms: 1_000
+      }
+    ]
+  end
+
+  defp seed_run_events!(run_id, status \\ :ok) do
     now = DateTime.utc_now()
 
     assert :ok =
@@ -312,10 +492,12 @@ defmodule FavnView.PageLiveTest do
              Storage.append_run_event(run_id, %{
                run_id: run_id,
                sequence: 2,
-               event_type: :run_finished,
+               event_type: if(status == :error, do: :run_failed, else: :run_finished),
                occurred_at: now,
-               status: :ok,
-               data: %{message: "Run finished"}
+               status: status,
+               data: %{
+                 message: if(status == :error, do: "Warehouse timeout", else: "Run finished")
+               }
              })
   end
 

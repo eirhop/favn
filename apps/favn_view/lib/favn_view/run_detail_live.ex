@@ -5,20 +5,38 @@ defmodule FavnView.RunDetailLive do
 
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.RunDetailPage
+  alias FavnView.AssetRoute
 
-  @valid_modes ~w(overview events assets output debug)
+  @refresh_interval_ms 1_500
+  @active_statuses [:pending, :running]
+  @valid_modes ~w(overview events outputs context debug)
 
   @impl true
   def mount(%{"run_id" => run_id}, _session, socket) do
+    run = load_run(run_id)
+
     socket =
       assign(socket,
         run_id: run_id,
-        run: load_run(run_id),
+        run: run,
         active_mode: :overview,
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
+      |> maybe_schedule_refresh()
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_info(:refresh_run, socket) do
+    run = load_run(socket.assigns.run_id)
+
+    socket =
+      socket
+      |> assign(:run, run)
+      |> maybe_schedule_refresh()
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -56,15 +74,20 @@ defmodule FavnView.RunDetailLive do
     target = target_label(Map.get(run, :asset_ref), Map.get(run, :target_refs, []))
     trigger = trigger_label(Map.get(run, :trigger, %{}), Map.get(run, :submit_kind))
     window = window_label(Map.get(run, :params, %{}), Map.get(run, :metadata, %{}))
-    asset_results = asset_results(Map.get(run, :asset_results, %{}))
+    asset_results = asset_results(Map.get(run, :asset_results, %{}), run.id)
     event_items = event_items(events)
+    back_asset_href = back_asset_href(Map.get(run, :asset_ref))
+    failure_summary = failure_summary(status, asset_results, event_items)
+    current_activity = current_activity(status, asset_results, event_items)
 
     %{
       found?: true,
       id: run.id,
+      raw_status: status,
+      active?: active_status?(status),
       short_id: short_id(run.id),
-      title: "Run #{short_id(run.id)}",
-      subtitle: subtitle([target, trigger, window]),
+      title: short_id(run.id),
+      subtitle: subtitle([target, window]),
       status: status_label(status),
       status_tone: status_tone(status),
       target: target || "No target",
@@ -75,36 +98,60 @@ defmodule FavnView.RunDetailLive do
       duration: duration_label(started_at, finished_at),
       manifest_version_id: run.manifest_version_id || "Unknown",
       asset_results: asset_results,
-      asset_result_groups: asset_result_groups(asset_results),
       events: event_items,
-      latest_events: Enum.take(Enum.reverse(event_items), 8)
+      latest_event_summary: latest_event_summary(event_items),
+      current_activity: current_activity,
+      failure_summary: failure_summary,
+      asset_empty_message: asset_empty_message(status, failure_summary),
+      outputs: outputs(asset_results),
+      context: context_items(run, target, trigger, window),
+      back_asset_href: back_asset_href,
+      raw_run: inspect(run, pretty: true, limit: :infinity),
+      raw_events: inspect(events, pretty: true, limit: :infinity)
     }
   end
 
-  defp asset_results(results) when is_map(results) do
-    results
-    |> Map.values()
-    |> Enum.map(fn result ->
-      %{
-        ref: ref_label(Map.get(result, :ref)),
-        stage: Map.get(result, :stage),
-        status: status_label(Map.get(result, :status)),
-        status_tone: status_tone(Map.get(result, :status)),
-        started_at: timestamp_label(Map.get(result, :started_at)),
-        duration: duration_ms_label(Map.get(result, :duration_ms)),
-        error: error_summary(Map.get(result, :error))
-      }
-    end)
-    |> Enum.sort_by(&{&1.stage || 0, &1.ref})
+  defp maybe_schedule_refresh(%{assigns: %{run: %{active?: true}}} = socket) do
+    if connected?(socket), do: Process.send_after(self(), :refresh_run, @refresh_interval_ms)
+
+    socket
   end
 
-  defp asset_results(_results), do: []
+  defp maybe_schedule_refresh(socket), do: socket
 
-  defp asset_result_groups(results) do
+  defp active_status?(status),
+    do: status in @active_statuses or status in Enum.map(@active_statuses, &to_string/1)
+
+  defp asset_results(results, run_id) when is_map(results) do
     results
-    |> Enum.group_by(& &1.stage)
-    |> Enum.sort_by(fn {stage, _items} -> stage || 0 end)
-    |> Enum.map(fn {stage, items} -> %{stage: stage, items: items} end)
+    |> Enum.map(fn {key, result} -> asset_result(result, run_id, key) end)
+    |> Enum.sort_by(&{Map.get(&1, :secondary) || "", &1.asset_ref})
+  end
+
+  defp asset_results(results, run_id) when is_list(results) do
+    results
+    |> Enum.map(&asset_result(&1, run_id, nil))
+    |> Enum.sort_by(&{Map.get(&1, :secondary) || "", &1.asset_ref})
+  end
+
+  defp asset_results(_results, _run_id), do: []
+
+  defp asset_result(result, run_id, key) do
+    asset_ref = ref_label(Map.get(result, :ref) || key)
+
+    %{
+      id: asset_step_id(result, run_id, key, asset_ref),
+      asset_ref: asset_ref,
+      display_name: display_name(asset_ref),
+      secondary: asset_secondary(result),
+      status: status_label(Map.get(result, :status)),
+      status_tone: status_tone(Map.get(result, :status)),
+      duration: duration_ms_label(Map.get(result, :duration_ms)),
+      started_at: timestamp_label(Map.get(result, :started_at)),
+      error: error_summary(Map.get(result, :error)),
+      output: output_metadata(result),
+      inspectable?: true
+    }
   end
 
   defp event_items(events) when is_list(events) do
@@ -112,10 +159,12 @@ defmodule FavnView.RunDetailLive do
     |> Enum.map(fn event ->
       %{
         sequence: Map.get(event, :sequence),
+        raw_status: Map.get(event, :status),
         timestamp: timestamp_label(Map.get(event, :occurred_at)),
         event_type: event_type_label(Map.get(event, :event_type)),
         status: status_label(Map.get(event, :status)),
         status_tone: status_tone(Map.get(event, :status)),
+        asset: event_asset(event),
         summary: event_summary(event)
       }
     end)
@@ -132,6 +181,21 @@ defmodule FavnView.RunDetailLive do
   defp target_label(nil, []), do: nil
   defp target_label(nil, refs), do: refs |> Enum.map(&ref_label/1) |> Enum.join(", ")
   defp target_label(ref, _refs), do: ref_label(ref)
+
+  defp back_asset_href(nil), do: nil
+
+  defp back_asset_href(ref) do
+    ref_string = ref_label(ref)
+
+    with {:ok, entries} <- FavnOrchestrator.active_asset_catalogue(),
+         entry when not is_nil(entry) <-
+           Enum.find(entries, fn entry -> ref_label(Map.get(entry, :asset_ref)) == ref_string end),
+         target_id when is_binary(target_id) <- Map.get(entry, :target_id) do
+      "/assets/#{AssetRoute.to_param(target_id)}"
+    else
+      _other -> nil
+    end
+  end
 
   defp trigger_label(%{kind: kind}, _submit_kind), do: humanize(kind)
   defp trigger_label(%{"kind" => kind}, _submit_kind), do: humanize(kind)
@@ -164,13 +228,13 @@ defmodule FavnView.RunDetailLive do
   defp ref_label(ref) when is_binary(ref), do: ref
   defp ref_label(ref), do: inspect(ref)
 
-  defp status_label(:ok), do: "Succeeded"
-  defp status_label(:running), do: "Running"
-  defp status_label(:pending), do: "Pending"
-  defp status_label(:partial), do: "Partial"
-  defp status_label(:error), do: "Failed"
-  defp status_label(:cancelled), do: "Cancelled"
-  defp status_label(:timed_out), do: "Timed out"
+  defp status_label(status) when status in [:ok, "ok"], do: "Succeeded"
+  defp status_label(status) when status in [:running, "running"], do: "Running"
+  defp status_label(status) when status in [:pending, "pending"], do: "Pending"
+  defp status_label(status) when status in [:partial, "partial"], do: "Partial"
+  defp status_label(status) when status in [:error, "error"], do: "Failed"
+  defp status_label(status) when status in [:cancelled, "cancelled"], do: "Cancelled"
+  defp status_label(status) when status in [:timed_out, "timed_out"], do: "Timed out"
   defp status_label(nil), do: "Unknown"
   defp status_label(status), do: humanize(status)
 
@@ -224,6 +288,128 @@ defmodule FavnView.RunDetailLive do
       ref -> "Asset #{ref_label(ref)}"
     end
   end
+
+  defp event_asset(event) do
+    case Map.get(event, :asset_ref) do
+      nil -> nil
+      ref -> ref_label(ref)
+    end
+  end
+
+  defp latest_event_summary([]), do: nil
+  defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
+
+  defp failure_summary(status, asset_results, events)
+       when status in [:partial, :error, :timed_out, "partial", "error", "timed_out"] do
+    failed_assets = Enum.filter(asset_results, &(&1.status_tone == :error))
+    failed_asset = List.first(failed_assets)
+    error_event = latest_error_event(events)
+
+    %{
+      count: length(failed_assets),
+      total: length(asset_results),
+      asset: failed_asset && failed_asset.asset_ref,
+      error: (failed_asset && failed_asset.error) || (error_event && error_event.summary)
+    }
+  end
+
+  defp failure_summary(_status, _asset_results, _events), do: nil
+
+  defp latest_error_event(events) do
+    Enum.find(Enum.reverse(events), fn event ->
+      event.status_tone == :error or
+        event.raw_status in [:error, :timed_out, "error", "timed_out"]
+    end)
+  end
+
+  defp current_activity(status, asset_results, events)
+       when status in [:pending, :running, "pending", "running"] do
+    running_asset = Enum.find(asset_results, &(&1.status == "Running"))
+    latest_event = List.last(events)
+
+    cond do
+      running_asset -> "Currently executing #{running_asset.asset_ref}"
+      latest_event && latest_event.asset -> "Latest event: #{latest_event.asset}"
+      latest_event -> "Latest event: #{latest_event.summary}"
+      true -> "Waiting for first execution event..."
+    end
+  end
+
+  defp current_activity(_status, _asset_results, _events), do: nil
+
+  defp asset_empty_message(status, _failure_summary)
+       when status in [:pending, :running, "pending", "running"],
+       do: "Run accepted. Waiting for asset execution results..."
+
+  defp asset_empty_message(status, _failure_summary) when status in [:ok, "ok"],
+    do: "Run completed, but no asset results were persisted."
+
+  defp asset_empty_message(status, %{error: error})
+       when status in [:error, :timed_out, "error", "timed_out"] and is_binary(error),
+       do: "Run failed before asset results were persisted. Latest error: #{error}"
+
+  defp asset_empty_message(status, _failure_summary)
+       when status in [:error, :timed_out, "error", "timed_out"],
+       do: "Run failed before asset results were persisted."
+
+  defp asset_empty_message(_status, _failure_summary),
+    do: "No asset results persisted for this run yet."
+
+  defp asset_step_id(result, run_id, key, asset_ref) do
+    Map.get(result, :id) || Map.get(result, "id") || Map.get(result, :step_id) ||
+      Map.get(result, "step_id") || persisted_key_id(key, asset_ref) ||
+      deterministic_step_id(run_id, asset_ref)
+  end
+
+  defp persisted_key_id(nil, _asset_ref), do: nil
+  defp persisted_key_id(key, asset_ref) when is_binary(key) and key != asset_ref, do: safe_id(key)
+  defp persisted_key_id(_key, _asset_ref), do: nil
+
+  defp deterministic_step_id(run_id, asset_ref), do: safe_id("#{run_id}:#{asset_ref}")
+
+  defp safe_id(value), do: value |> to_string() |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
+
+  defp display_name(asset_ref), do: asset_ref |> String.split(".") |> List.last()
+
+  defp asset_secondary(result) do
+    result
+    |> Map.get(:stage)
+    |> case do
+      nil -> nil
+      stage -> "Stage #{stage}"
+    end
+  end
+
+  defp output_metadata(result) do
+    meta = Map.get(result, :meta, %{}) || %{}
+
+    Map.get(meta, :output) || Map.get(meta, "output") || Map.get(meta, :outputs) ||
+      Map.get(meta, "outputs") || Map.get(meta, :materialization) ||
+      Map.get(meta, "materialization")
+  end
+
+  defp outputs(asset_results) do
+    asset_results
+    |> Enum.filter(& &1.output)
+    |> Enum.map(fn asset ->
+      %{asset: asset.asset_ref, output: inspect(asset.output, pretty: true)}
+    end)
+  end
+
+  defp context_items(run, target, trigger, window) do
+    [
+      %{label: "Run ID", value: run.id},
+      %{label: "Manifest version", value: run.manifest_version_id || "Unknown"},
+      %{label: "Target", value: target || "No target"},
+      %{label: "Trigger", value: trigger || "Manual"},
+      %{label: "Window", value: window || "No window metadata"},
+      %{label: "Submit kind", value: submit_kind_label(Map.get(run, :submit_kind))},
+      %{label: "Replay mode", value: submit_kind_label(Map.get(run, :replay_mode))}
+    ]
+  end
+
+  defp submit_kind_label(nil), do: "Unknown"
+  defp submit_kind_label(value), do: humanize(value)
 
   defp status_summary(nil), do: nil
   defp status_summary(status), do: "Status #{status_label(status)}"
