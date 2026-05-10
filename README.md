@@ -476,6 +476,22 @@ developer loop. `mix favn.dev` starts the runner, orchestrator, and the Phoenix
 `favn_view` app. The UI is available at `http://127.0.0.1:4173` by default and
 does not require a separate Node/SvelteKit process.
 
+AI-assisted development guidance is split between the root `AGENTS.md` and
+project-local OpenCode skills. `AGENTS.md` contains universal repo-wide rules.
+OpenCode skills under `.opencode/skills/` contain conditional framework-specific
+guidance: `favn-architecture` for boundaries, manifests, public facades, and
+orchestration contracts; `phoenix-web-api` for Phoenix Endpoint, Router,
+Controller, Plug, and API work, especially in `apps/favn_orchestrator`;
+`phoenix-liveview` for LiveView, HEEx, components, Storybook, Tidewave, and UI
+work in `apps/favn_view`; and `ecto-storage` for repos, migrations, Ecto
+queries, transactions, storage adapters, and persistence tests. Tidewave is
+dev-only and project-local OpenCode MCP servers are configured in `opencode.json`
+for `favn_view` on `http://127.0.0.1:4173/tidewave/mcp` and the orchestrator API
+on `http://127.0.0.1:4101/tidewave/mcp`; start the relevant runtime before
+running `opencode mcp list` or `opencode`. PhoenixStorybook is for UI component
+states under `apps/favn_view/storybook/`. The obsolete SvelteKit-focused
+OpenCode agent has been removed.
+
 Production/server startup is separate from local dev. When production runtime
 configuration is enabled, the orchestrator requires explicit
 `FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME` and

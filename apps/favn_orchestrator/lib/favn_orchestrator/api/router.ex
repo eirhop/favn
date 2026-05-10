@@ -30,6 +30,10 @@ defmodule FavnOrchestrator.API.Router do
 
   plug(Plug.RequestId)
 
+  if Mix.env() == :dev do
+    plug(Tidewave)
+  end
+
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],

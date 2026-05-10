@@ -1,18 +1,15 @@
 # FavnView
 
-To start your Phoenix server:
+`favn_view` is the thin Phoenix/LiveView UI/API boundary for local Favn
+tooling. It must call backend behavior only through the public orchestrator
+facade.
 
-* Run `mix setup` to install and setup dependencies
-* Start Phoenix endpoint with `mix phx.server`
+## Local Tooling
 
-Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
+- Start through the root local loop with `mix favn.dev`, or from this app with `mix phx.server`.
+- The default local URL is `http://127.0.0.1:4173`.
+- Tidewave is plugged only in dev. Use it from the local Phoenix endpoint; do not enable remote access unless you intentionally change local dev networking and understand Tidewave's security guidance.
+- PhoenixStorybook is available at `/storybook` when dev routes are enabled.
+- Stories live under `apps/favn_view/storybook/`. Add or update stories when adding reusable UI components.
 
-Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
-
-## Learn more
-
-* Official website: https://www.phoenixframework.org/
-* Guides: https://hexdocs.pm/phoenix/overview.html
-* Docs: https://hexdocs.pm/phoenix
-* Forum: https://elixirforum.com/c/phoenix-forum
-* Source: https://github.com/phoenixframework/phoenix
+Do not build product UI screens here unless explicitly requested.

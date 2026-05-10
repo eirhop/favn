@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "tidewave_view": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4173/tidewave/mcp",
+      "enabled": true
+    },
+    "tidewave_orchestrator": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4101/tidewave/mcp",
+      "enabled": true
+    },
+    "playwright": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@playwright/mcp@latest",
+        "--isolated",
+        "--viewport-size=1440x1000"
+      ],
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}

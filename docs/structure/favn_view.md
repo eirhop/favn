@@ -9,7 +9,11 @@ Ownership rules:
 - `apps/favn_view/lib/favn_view/` contains the endpoint, router, LiveViews,
   controllers, components, and web helpers.
 - `apps/favn_view/assets/` contains the standard Phoenix-generated asset setup.
+- `apps/favn_view/storybook/` contains PhoenixStorybook stories for reusable
+  UI component states.
 - `apps/favn_view/test/` contains endpoint, controller, and LiveView tests.
 - `favn_view` must call backend behavior only through the public orchestrator
   facade. It must not depend on storage, scheduler, runner, persistence, repo,
   manifest compiler, plugin, adapter, or low-level orchestrator internals.
+- Tidewave is plugged only in dev. PhoenixStorybook is mounted under
+  `/storybook` when dev routes are enabled.

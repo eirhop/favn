@@ -181,7 +181,7 @@ Owns execution only.
 
 ### `favn_web`
 
-Owns operator UX through the web-dev workflow.
+Owns operator UX through the relevant repo-local OpenCode skills.
 
 - Display pipeline window policy from active-manifest target data.
 - Allow manual pipeline submission with one explicit month/day/hour where the pipeline has a window policy.
@@ -309,7 +309,8 @@ mix dialyzer
 mix xref graph --format stats --label compile-connected
 ```
 
-For `favn_web` changes, use the web-dev workflow and run the workspace's relevant lint/build/e2e checks.
+For future `favn_view` changes, load `phoenix-liveview` and run the relevant
+format, compile, test, Storybook, and asset checks.
 
 ## Acceptance Mapping
 
