@@ -168,6 +168,49 @@ defmodule FavnRunnerTest do
     assert asset_result.meta[:observed] == true
   end
 
+  test "server forwards subscribed execution logs" do
+    fixture_ref = {FavnRunnerTest.SleepLogAsset, :asset}
+
+    fixture_manifest =
+      build_manifest([
+        %Asset{
+          ref: fixture_ref,
+          module: elem(fixture_ref, 0),
+          name: :asset,
+          type: :elixir,
+          execution: %{entrypoint: :asset, arity: 1}
+        }
+      ])
+
+    {:ok, fixture_version} =
+      Version.new(fixture_manifest,
+        manifest_version_id:
+          "mv_log_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    assert :ok = FavnRunner.register_manifest(fixture_version)
+
+    work = %RunnerWork{
+      run_id: "run_log_forward",
+      manifest_version_id: fixture_version.manifest_version_id,
+      manifest_content_hash: fixture_version.content_hash,
+      asset_ref: fixture_ref,
+      metadata: %{attempt: 1}
+    }
+
+    assert {:ok, execution_id} = FavnRunner.submit_work(work)
+    assert :ok = FavnRunner.subscribe_execution_logs(execution_id, self())
+    assert {:ok, entry} = receive_runner_log(execution_id)
+
+    assert entry.run_id == "run_log_forward"
+    assert entry.source == :runner
+    assert entry.runner_execution_id == execution_id
+    assert entry.producer_id == "runner:" <> execution_id
+    assert is_integer(entry.producer_sequence)
+
+    assert {:ok, _result} = FavnRunner.await_result(execution_id, 1_000)
+  end
+
   test "rejects unknown manifest version" do
     work =
       %RunnerWork{
@@ -178,6 +221,18 @@ defmodule FavnRunnerTest do
       }
 
     assert {:error, :manifest_not_found} = FavnRunner.submit_work(work)
+  end
+
+  defp receive_runner_log(execution_id, timeout \\ 1_000) do
+    receive do
+      {:runner_log_entry, ^execution_id, entry} ->
+        {:ok, entry}
+
+      {:runner_log_entry, _other_execution_id, _entry} ->
+        receive_runner_log(execution_id, timeout)
+    after
+      timeout -> {:error, :timeout}
+    end
   end
 
   defp build_manifest(assets) do
@@ -212,6 +267,16 @@ defmodule FavnRunnerTest.ElixirAsset do
 end
 
 defmodule FavnRunnerTest.SourceAsset do
+end
+
+defmodule FavnRunnerTest.SleepLogAsset do
+  alias Favn.Run.Context
+
+  @spec asset(Context.t()) :: :ok
+  def asset(%Context{}) do
+    Process.sleep(100)
+    :ok
+  end
 end
 
 defmodule FavnRunnerTest.ConnectionModule do

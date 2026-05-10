@@ -30,7 +30,7 @@ defmodule FavnOrchestrator.API.Router do
 
   plug(Plug.RequestId)
 
-  if Mix.env() == :dev do
+  if Mix.env() == :dev and Code.ensure_loaded?(Tidewave) do
     plug(Tidewave)
   end
 

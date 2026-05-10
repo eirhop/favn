@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RefreshPolicy
+  alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -436,10 +437,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
       case runner_client.submit_work(work, runner_opts) do
         {:ok, execution_id} ->
           updated_run = with_inflight_execution(current_run, execution_id, work.metadata)
+          asset_step_id = Map.fetch!(work.metadata, :asset_step_id)
 
           case Persistence.persist_run_step(updated_run, :step_started, %{
                  asset_ref: asset_ref,
                  runner_execution_id: execution_id,
+                 asset_step_id: asset_step_id,
                  stage: stage,
                  attempt: attempt,
                  max_attempts: current_run.max_attempts,
@@ -447,9 +450,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
                }) do
             :ok ->
               entry = %{
+                run_id: current_run.id,
+                asset_step_id: asset_step_id,
                 asset_ref: asset_ref,
                 node_key: node_key,
                 execution_id: execution_id,
+                runner_execution_id: execution_id,
+                attempt: attempt,
                 stage: stage,
                 freshness_key: decision_freshness_key(decisions, node_key)
               }
@@ -538,7 +545,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp await_runner_result(entry, timeout_ms, runner_client, runner_opts) do
-    runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+    bridge = start_runner_log_bridge(runner_client, entry.execution_id, runner_opts, entry)
+
+    try do
+      runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+    after
+      stop_runner_log_bridge(bridge, runner_client, entry.execution_id, runner_opts)
+    end
   rescue
     exception ->
       {:error,
@@ -1066,6 +1079,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp stage_work(%RunState{} = run_state, %Version{} = version, node_key, stage, attempt) do
     node = Map.fetch!(run_state.plan.nodes, node_key)
     asset_ref = node.ref
+    asset_step_id = asset_step_id(run_state.id, node_key, asset_ref)
 
     %RunnerWork{
       run_id: run_state.id,
@@ -1082,6 +1096,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       metadata:
         Map.merge(work_metadata(run_state.metadata), %{
           attempt: attempt,
+          asset_step_id: asset_step_id,
           max_attempts: run_state.max_attempts,
           stage: stage,
           node_key: node_key
@@ -1586,6 +1601,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         metadata:
           Map.merge(work_metadata(run_state.metadata), %{
             attempt: attempt,
+            asset_step_id: asset_step_id(run_state.id, {asset_ref, nil}, asset_ref),
             max_attempts: max_attempts,
             stage: stage,
             node_key: {asset_ref, nil}
@@ -1671,7 +1687,24 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_client,
          runner_opts
        ) do
-    case runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts) do
+    bridge =
+      start_runner_log_bridge(runner_client, execution_id, runner_opts, %{
+        run_id: running_with_execution.id,
+        asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
+        node_key: Map.get(running_with_execution.metadata, :node_key),
+        asset_ref: asset_ref,
+        runner_execution_id: execution_id,
+        attempt: attempt
+      })
+
+    await_result =
+      try do
+        runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts)
+      after
+        stop_runner_log_bridge(bridge, runner_client, execution_id, runner_opts)
+      end
+
+    case await_result do
       {:ok, %RunnerResult{} = result} ->
         result = sanitize_runner_result(result)
 
@@ -1776,6 +1809,33 @@ defmodule FavnOrchestrator.RunServer.Execution do
             Snapshots.cancelled_state(running_with_execution)
         end
     end
+  end
+
+  defp start_runner_log_bridge(runner_client, execution_id, runner_opts, context) do
+    case RunnerLogBridge.start(runner_client, execution_id, runner_opts, context) do
+      {:ok, pid} -> pid
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp asset_step_id(run_id, node_key, asset_ref) do
+    persisted_key_id(node_key, asset_ref) || safe_id("#{run_id}:#{inspect(asset_ref)}")
+  end
+
+  defp persisted_key_id(nil, _asset_ref), do: nil
+  defp persisted_key_id(key, asset_ref) when is_binary(key) and key != asset_ref, do: safe_id(key)
+
+  defp persisted_key_id(key, _asset_ref) when is_tuple(key),
+    do: key |> :erlang.term_to_binary() |> Base.url_encode64(padding: false) |> safe_id()
+
+  defp persisted_key_id(_key, _asset_ref), do: nil
+
+  defp safe_id(value), do: value |> to_string() |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
+
+  defp stop_runner_log_bridge(nil, _runner_client, _execution_id, _runner_opts), do: :ok
+
+  defp stop_runner_log_bridge(pid, runner_client, execution_id, runner_opts) when is_pid(pid) do
+    RunnerLogBridge.stop(pid, runner_client, execution_id, runner_opts)
   end
 
   defp maybe_retry_step(

@@ -56,6 +56,24 @@ defmodule Favn.StorageFacadeTest do
     def list_global_run_events(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def persist_log_entries(entries, _opts), do: {:ok, entries}
+
+    @impl true
+    def list_logs(_filter, _opts, _adapter_opts),
+      do:
+        {:ok,
+         %FavnOrchestrator.Page{
+           items: [],
+           limit: 100,
+           offset: 0,
+           has_more?: false,
+           next_offset: nil
+         }}
+
+    @impl true
+    def replay_logs_after(_cursor, _filter, _opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
     def put_scheduler_state(_key, _state, _opts), do: :ok
 
     @impl true
@@ -178,6 +196,24 @@ defmodule Favn.StorageFacadeTest do
     def list_global_run_events(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def persist_log_entries(entries, _opts), do: {:ok, entries}
+
+    @impl true
+    def list_logs(_filter, _opts, _adapter_opts),
+      do:
+        {:ok,
+         %FavnOrchestrator.Page{
+           items: [],
+           limit: 100,
+           offset: 0,
+           has_more?: false,
+           next_offset: nil
+         }}
+
+    @impl true
+    def replay_logs_after(_cursor, _filter, _opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
     def put_scheduler_state(_key, _state, _opts), do: :ok
 
     @impl true
@@ -287,6 +323,62 @@ defmodule Favn.StorageFacadeTest do
     assert {:ok, run_state} = OrchestratorStorage.get_run("run_storage_facade")
     assert run_state.id == "run_storage_facade"
     assert run_state.manifest_version_id == "mv_storage_facade"
+  end
+
+  test "memory storage persists paginates filters and replays log entries" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    first =
+      Favn.Log.Entry.normalize(%{
+        run_id: "run_logs",
+        asset_step_id: "step_a",
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        producer_id: "runner-1",
+        producer_sequence: 1,
+        occurred_at: now,
+        level: :info,
+        source: :runner,
+        stream: :stdout,
+        message: "hello\nworld",
+        metadata: %{password: "secret", visible: "yes"}
+      })
+
+    second =
+      Favn.Log.Entry.normalize(%{
+        run_id: "run_logs",
+        asset_step_id: "step_b",
+        producer_id: "runner-1",
+        producer_sequence: 2,
+        occurred_at: DateTime.add(now, 1, :second),
+        level: :error,
+        source: :runner,
+        stream: :stderr,
+        message: "boom"
+      })
+
+    assert {:ok, [persisted_first, persisted_second]} =
+             OrchestratorStorage.persist_log_entries([first, second])
+
+    assert persisted_first.global_sequence == 1
+    assert persisted_second.global_sequence == 2
+    assert persisted_first.message == "hello\nworld"
+    assert persisted_first.metadata["password"] == "[REDACTED]"
+
+    assert {:ok, [^persisted_first]} = OrchestratorStorage.persist_log_entries([first])
+
+    assert {:ok, page} =
+             OrchestratorStorage.list_logs(%Favn.Log.Filter{run_id: "run_logs"}, limit: 1)
+
+    assert Enum.map(page.items, & &1.global_sequence) == [1]
+    assert page.has_more? == true
+
+    assert {:ok, filtered} = OrchestratorStorage.list_logs(%Favn.Log.Filter{levels: [:error]})
+    assert Enum.map(filtered.items, & &1.message) == ["boom"]
+
+    cursor = %Favn.Log.Cursor{scope: :run, run_id: "run_logs", global_sequence: 1}
+
+    assert {:ok, [^persisted_second]} =
+             OrchestratorStorage.replay_logs_after(cursor, [run_id: "run_logs"], limit: 10)
   end
 
   test "always delegates child spec setup to orchestrator storage" do

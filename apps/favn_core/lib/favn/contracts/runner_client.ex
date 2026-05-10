@@ -24,10 +24,16 @@ defmodule Favn.Contracts.RunnerClient do
 
   @callback cancel_work(execution_id(), map(), keyword()) :: :ok | {:error, term()}
 
+  @callback subscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok | {:error, term()}
+
+  @callback unsubscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok
+
   @callback inspect_relation(RelationInspectionRequest.t(), keyword()) ::
               {:ok, RelationInspectionResult.t()} | {:error, term()}
 
   @callback diagnostics(keyword()) :: {:ok, map()} | {:error, term()}
 
-  @optional_callbacks diagnostics: 1
+  @optional_callbacks diagnostics: 1,
+                      subscribe_execution_logs: 3,
+                      unsubscribe_execution_logs: 3
 end

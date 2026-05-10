@@ -87,6 +87,24 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     def list_global_run_events(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def persist_log_entries(entries, _opts), do: {:ok, entries}
+
+    @impl true
+    def list_logs(_filter, _opts, _adapter_opts),
+      do:
+        {:ok,
+         %FavnOrchestrator.Page{
+           items: [],
+           limit: 100,
+           offset: 0,
+           has_more?: false,
+           next_offset: nil
+         }}
+
+    @impl true
+    def replay_logs_after(_cursor, _filter, _opts, _adapter_opts), do: {:ok, []}
+
+    @impl true
     def put_scheduler_state(_key, _state, _opts), do: :ok
 
     @impl true

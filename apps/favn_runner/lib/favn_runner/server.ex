@@ -30,13 +30,15 @@ defmodule FavnRunner.Server do
           optional(:pid) => pid(),
           optional(:monitor_ref) => reference(),
           optional(:result) => RunnerResult.t(),
-          optional(:events) => [term()]
+          optional(:events) => [term()],
+          optional(:logs) => [term()]
         }
 
   @type state :: %{
           executions: %{required(execution_id()) => execution_state()},
           monitor_to_execution: %{required(reference()) => execution_id()},
-          waiters: %{required(execution_id()) => [waiter()]}
+          waiters: %{required(execution_id()) => [waiter()]},
+          log_subscribers: %{required(execution_id()) => MapSet.t(pid())}
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -80,6 +82,29 @@ defmodule FavnRunner.Server do
 
   def cancel_work(_execution_id, _reason, _opts), do: {:error, :invalid_cancel_args}
 
+  @spec subscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok | {:error, term()}
+  def subscribe_execution_logs(execution_id, subscriber, opts \\ [])
+
+  def subscribe_execution_logs(execution_id, subscriber, opts)
+      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:subscribe_execution_logs, execution_id, subscriber})
+  end
+
+  def subscribe_execution_logs(_execution_id, _subscriber, _opts),
+    do: {:error, :invalid_log_subscription_args}
+
+  @spec unsubscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok
+  def unsubscribe_execution_logs(execution_id, subscriber, opts \\ [])
+
+  def unsubscribe_execution_logs(execution_id, subscriber, opts)
+      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:unsubscribe_execution_logs, execution_id, subscriber})
+  end
+
+  def unsubscribe_execution_logs(_execution_id, _subscriber, _opts), do: :ok
+
   @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::
           {:ok, term()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do
@@ -99,7 +124,7 @@ defmodule FavnRunner.Server do
 
   @impl true
   def init(_args) do
-    {:ok, %{executions: %{}, monitor_to_execution: %{}, waiters: %{}}}
+    {:ok, %{executions: %{}, monitor_to_execution: %{}, waiters: %{}, log_subscribers: %{}}}
   end
 
   @impl true
@@ -127,7 +152,8 @@ defmodule FavnRunner.Server do
                 status: :running,
                 pid: pid,
                 monitor_ref: monitor_ref,
-                events: []
+                events: [],
+                logs: []
               }
 
               next_state =
@@ -143,7 +169,8 @@ defmodule FavnRunner.Server do
               work: work,
               status: :completed,
               result: preflight_failed_result(work, version, diagnostic),
-              events: []
+              events: [],
+              logs: []
             }
 
             next_state = put_in(state, [:executions, execution_id], execution)
@@ -195,6 +222,42 @@ defmodule FavnRunner.Server do
     end
   end
 
+  def handle_call({:subscribe_execution_logs, execution_id, subscriber}, _from, state) do
+    case Map.fetch(state.executions, execution_id) do
+      {:ok, %{status: status} = execution} when status in [:running, :completed] ->
+        subscribers =
+          state.log_subscribers
+          |> Map.get(execution_id, MapSet.new())
+          |> MapSet.put(subscriber)
+
+        execution
+        |> Map.get(:logs, [])
+        |> Enum.reverse()
+        |> Enum.each(fn entry -> send(subscriber, {:runner_log_entry, execution_id, entry}) end)
+
+        {:reply, :ok, put_in(state, [:log_subscribers, execution_id], subscribers)}
+
+      :error ->
+        {:reply, {:error, :execution_not_found}, state}
+    end
+  end
+
+  def handle_call({:unsubscribe_execution_logs, execution_id, subscriber}, _from, state) do
+    subscribers =
+      state.log_subscribers
+      |> Map.get(execution_id, MapSet.new())
+      |> MapSet.delete(subscriber)
+
+    log_subscribers =
+      if MapSet.size(subscribers) == 0 do
+        Map.delete(state.log_subscribers, execution_id)
+      else
+        Map.put(state.log_subscribers, execution_id, subscribers)
+      end
+
+    {:reply, :ok, %{state | log_subscribers: log_subscribers}}
+  end
+
   def handle_call({:inspect_relation, %RelationInspectionRequest{} = request}, _from, state) do
     reply =
       with {:ok, version} <-
@@ -230,6 +293,24 @@ defmodule FavnRunner.Server do
         nil -> [event]
         events -> [event | events]
       end)
+
+    {:noreply, next_state}
+  end
+
+  def handle_info({:runner_log_entry, execution_id, entry}, state) do
+    state.log_subscribers
+    |> Map.get(execution_id, MapSet.new())
+    |> Enum.each(fn subscriber -> send(subscriber, {:runner_log_entry, execution_id, entry}) end)
+
+    next_state =
+      if Map.has_key?(state.executions, execution_id) do
+        update_in(state, [:executions, execution_id, :logs], fn
+          nil -> [entry]
+          logs -> [entry | logs]
+        end)
+      else
+        state
+      end
 
     {:noreply, next_state}
   end
@@ -306,8 +387,14 @@ defmodule FavnRunner.Server do
         work: execution[:work],
         status: :completed,
         result: result,
-        events: execution[:events] || []
+        events: execution[:events] || [],
+        logs: execution[:logs] || []
       })
+
+    next_state = %{
+      next_state
+      | log_subscribers: Map.delete(next_state.log_subscribers, execution_id)
+    }
 
     {waiters, remaining_waiters} = Map.pop(next_state.waiters, execution_id, [])
 

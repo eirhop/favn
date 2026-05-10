@@ -107,6 +107,76 @@ defmodule Favn.SQLiteStorageTest do
     assert {:error, :not_found} = Storage.get_run("missing-sqlite-run")
   end
 
+  test "persists lists replays and deduplicates log entries" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    first =
+      Favn.Log.Entry.normalize(%{
+        run_id: "sqlite-log-run",
+        asset_step_id: "step_a",
+        asset_ref: {Favn.SQLiteStorageTest, :sample_asset},
+        node_key: "node-a",
+        producer_id: "sqlite-runner",
+        producer_sequence: 1,
+        occurred_at: now,
+        level: :info,
+        source: :runner,
+        stream: :stdout,
+        message: "line one\nline two",
+        metadata: %{password: "secret", keep: "visible"}
+      })
+
+    second =
+      Favn.Log.Entry.normalize(%{
+        run_id: "sqlite-log-run",
+        asset_step_id: "step_b",
+        producer_id: "sqlite-runner",
+        producer_sequence: 2,
+        occurred_at: DateTime.add(now, 1, :second),
+        level: :error,
+        source: :runner,
+        stream: :stderr,
+        message: "failed"
+      })
+
+    assert {:ok, [persisted_first, persisted_second]} =
+             OrchestratorStorage.persist_log_entries([first, second])
+
+    assert persisted_first.global_sequence == 1
+    assert persisted_second.global_sequence == 2
+    assert persisted_first.message == "line one\nline two"
+    assert persisted_first.metadata["password"] == "[REDACTED]"
+
+    assert {:ok, %{rows: [[metadata_blob, log_blob]]}} =
+             SQL.query(
+               Repo,
+               "SELECT metadata_blob, log_blob FROM favn_log_entries WHERE global_sequence = ?1",
+               [persisted_first.global_sequence]
+             )
+
+    assert Jason.decode!(metadata_blob)["password"] == "[REDACTED]"
+    assert Jason.decode!(log_blob)["metadata"]["password"] == "[REDACTED]"
+    refute metadata_blob =~ "secret"
+    refute log_blob =~ "secret"
+
+    assert {:ok, [^persisted_first]} = OrchestratorStorage.persist_log_entries([first])
+
+    assert {:ok, page} =
+             OrchestratorStorage.list_logs(%Favn.Log.Filter{run_id: "sqlite-log-run"}, limit: 10)
+
+    assert Enum.map(page.items, & &1.global_sequence) == [1, 2]
+
+    assert {:ok, filtered} = OrchestratorStorage.list_logs(%Favn.Log.Filter{levels: [:error]})
+    assert Enum.map(filtered.items, & &1.message) == ["failed"]
+
+    assert {:ok, [^persisted_second]} =
+             OrchestratorStorage.replay_logs_after(
+               "run:sqlite-log-run:1",
+               [run_id: "sqlite-log-run"],
+               limit: 10
+             )
+  end
+
   test "run recovery accepts consumer module atoms from the run manifest" do
     run = sample_run("sqlite-run-manifest-atom", :running)
     existing_module = Atom.to_string(Favn.SQLiteStorageTest)

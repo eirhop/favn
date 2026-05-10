@@ -126,6 +126,35 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.list_global_run_events(run_event_opts, opts) end)
   end
 
+  @spec persist_log_entries([Favn.Log.Entry.t()]) ::
+          {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def persist_log_entries(entries) when is_list(entries) do
+    with {:ok, redacted_entries} <- redact_log_entries(entries) do
+      adapter_call(fn adapter, opts -> adapter.persist_log_entries(redacted_entries, opts) end)
+    end
+  end
+
+  @spec list_logs(Favn.Log.Filter.t() | map() | keyword(), keyword()) ::
+          {:ok, Page.t(Favn.Log.Entry.t())} | {:error, term()}
+  def list_logs(filter \\ [], opts \\ []) when is_list(opts) do
+    with {:ok, page_opts} <- Page.normalize_opts(opts) do
+      adapter_call(fn adapter, adapter_opts ->
+        adapter.list_logs(filter, Keyword.merge(opts, page_opts), adapter_opts)
+      end)
+    end
+  end
+
+  @spec replay_logs_after(
+          Favn.Log.Cursor.t() | String.t() | nil,
+          Favn.Log.Filter.t() | map() | keyword(),
+          keyword()
+        ) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def replay_logs_after(cursor, filter \\ [], opts \\ []) when is_list(opts) do
+    adapter_call(fn adapter, adapter_opts ->
+      adapter.replay_logs_after(cursor, filter, opts, adapter_opts)
+    end)
+  end
+
   @spec put_scheduler_state({module(), atom() | nil}, map()) :: :ok | {:error, term()}
   def put_scheduler_state({module, schedule_id} = key, state)
       when is_atom(module) and is_map(state) do
@@ -371,6 +400,40 @@ defmodule FavnOrchestrator.Storage do
   @spec adapter_opts() :: keyword()
   def adapter_opts do
     Application.get_env(:favn_orchestrator, :storage_adapter_opts, [])
+  end
+
+  defp redact_log_entries(entries) do
+    entries
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+      case redact_log_entry(entry) do
+        {:ok, redacted} -> {:cont, {:ok, [redacted | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, redacted} -> {:ok, Enum.reverse(redacted)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp redact_log_entry(entry) do
+    with {:module, Favn.Log.Redactor} <- Code.ensure_loaded(Favn.Log.Redactor),
+         true <- function_exported?(Favn.Log.Redactor, :redact, 2) do
+      case Favn.Log.Redactor.redact(entry, log_redaction_policy()) do
+        {redacted_entry, _redacted?} -> {:ok, redacted_entry}
+        redacted_entry -> {:ok, redacted_entry}
+      end
+    else
+      _other -> {:ok, entry}
+    end
+  rescue
+    error -> {:error, {:invalid_log_entry, error}}
+  catch
+    kind, reason -> {:error, {:invalid_log_entry, {kind, reason}}}
+  end
+
+  defp log_redaction_policy do
+    Application.get_env(:favn_orchestrator, :log_redaction_policy)
   end
 
   @spec validate_adapter(module()) :: :ok | {:error, term()}
