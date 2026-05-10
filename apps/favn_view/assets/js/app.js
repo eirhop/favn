@@ -25,11 +25,37 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/favn_view"
 import topbar from "../vendor/topbar"
 
+const Hooks = {
+  FavnLogViewer: {
+    mounted() {
+      this.scrollToBottom()
+      this.el.addEventListener("click", event => {
+        const button = event.target.closest("[data-copy-logs]")
+        if (!button) return
+
+        const source = document.getElementById(this.el.dataset.copySource)
+        if (!source) return
+
+        navigator.clipboard?.writeText(source.value)
+      })
+    },
+    updated() {
+      this.scrollToBottom()
+    },
+    scrollToBottom() {
+      if (this.el.dataset.liveTail !== "true") return
+
+      const terminal = this.el.querySelector("[data-testid='log-terminal-window']")
+      if (terminal) terminal.scrollTop = terminal.scrollHeight
+    }
+  }
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, ...Hooks},
 })
 
 // Show progress bar on live navigation and form submits
@@ -80,4 +106,3 @@ if (process.env.NODE_ENV === "development") {
     window.liveReloader = reloader
   })
 }
-

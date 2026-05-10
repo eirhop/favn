@@ -3,6 +3,7 @@ defmodule FavnView.PageLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias Favn.Log.Entry
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
@@ -338,6 +339,142 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="run-not-found-state"]), "run_missing")
   end
 
+  test "/logs renders the global log viewer", %{conn: conn} do
+    seed_log!("global boot", source: :system)
+
+    {:ok, view, html} = live(conn, ~p"/logs")
+
+    assert html =~ "Live system and run logs"
+    assert has_element?(view, ~s([data-testid="log-viewer"][data-log-scope="global"]))
+    assert has_element?(view, ~s([data-testid="log-row"]), "global boot")
+  end
+
+  test "/runs/:run_id/logs renders only run-scoped logs", %{conn: conn} do
+    seed_log!("visible run log", run_id: "run_customer_orders_daily")
+    seed_log!("other run log", run_id: "run_failed_empty")
+
+    {:ok, view, html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
+
+    assert html =~ "Run logs"
+    assert has_element?(view, ~s([data-testid="log-viewer"][data-log-scope="run"]))
+    assert has_element?(view, ~s([data-testid="log-row"]), "visible run log")
+    refute has_element?(view, ~s([data-testid="log-row"]), "other run log")
+  end
+
+  test "/runs/:run_id/assets/:asset_step_id/logs renders only asset-scoped logs", %{conn: conn} do
+    asset_step_id = asset_step_id("run_customer_orders_daily", :customer_orders_daily)
+
+    seed_log!("visible asset log",
+      run_id: "run_customer_orders_daily",
+      asset_step_id: asset_step_id
+    )
+
+    seed_log!("run-only log", run_id: "run_customer_orders_daily")
+
+    {:ok, view, html} =
+      live(conn, ~p"/runs/run_customer_orders_daily/assets/#{asset_step_id}/logs")
+
+    assert html =~ "customer_orders_daily"
+    assert has_element?(view, ~s([data-testid="log-viewer"][data-log-scope="asset"]))
+    assert has_element?(view, ~s([data-testid="log-row"]), "visible asset log")
+    refute has_element?(view, ~s([data-testid="log-row"]), "run-only log")
+  end
+
+  test "asset logs show fallback when asset context is missing", %{conn: conn} do
+    seed_log!("orphan asset log",
+      run_id: "run_customer_orders_daily",
+      asset_step_id: "missing-step"
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/assets/missing-step/logs")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="log-context-note"]),
+             "Asset step context not found"
+           )
+
+    assert has_element?(view, ~s([data-testid="log-row"]), "orphan asset log")
+  end
+
+  test "multi-line log messages preserve newlines", %{conn: conn} do
+    seed_log!("Running SQL:\nSELECT customer_id\nFROM raw.orders",
+      run_id: "run_customer_orders_daily"
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
+
+    assert render(view) =~ "Running SQL:\nSELECT customer_id\nFROM raw.orders"
+  end
+
+  test "level source and search filters affect rendered logs", %{conn: conn} do
+    seed_log!("warehouse threshold", level: :warning, source: :adapter)
+    seed_log!("runner heartbeat", level: :info, source: :runner)
+
+    {:ok, view, _html} = live(conn, ~p"/logs")
+
+    view
+    |> element("form")
+    |> render_change(%{
+      "filters" => %{"search" => "warehouse", "level" => "warning", "source" => "adapter"}
+    })
+
+    assert has_element?(view, ~s([data-testid="log-row"]), "warehouse threshold")
+    refute has_element?(view, ~s([data-testid="log-row"]), "runner heartbeat")
+  end
+
+  test "live log messages append and duplicate global sequences are ignored", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/logs")
+
+    entry = log_entry("live append", id: "manual-live", global_sequence: 4242)
+    send(view.pid, {:favn_log_entry, entry})
+    send(view.pid, {:favn_log_entry, entry})
+
+    html = render(view)
+    assert html =~ "live append"
+    assert Regex.scan(~r/data-testid="log-row"/, html) |> length() == 1
+  end
+
+  test "subscription failure shows non-fatal warning", %{conn: conn} do
+    original = Application.get_env(:favn_view, :log_subscribe_fun)
+    Application.put_env(:favn_view, :log_subscribe_fun, fn _filter -> {:error, :unavailable} end)
+
+    try do
+      {:ok, view, _html} = live(conn, ~p"/logs")
+
+      assert has_element?(
+               view,
+               ~s([data-testid="log-stream-warning"]),
+               "live streaming is unavailable"
+             )
+    after
+      if original do
+        Application.put_env(:favn_view, :log_subscribe_fun, original)
+      else
+        Application.delete_env(:favn_view, :log_subscribe_fun)
+      end
+    end
+  end
+
+  test "copy text formatting preserves multi-line logs" do
+    text =
+      [log_entry("first\nsecond", global_sequence: 1)]
+      |> FavnView.LogsViewModel.entries()
+      |> FavnView.LogsViewModel.plain_text()
+
+    assert text =~ "first\nsecond"
+  end
+
+  test "favn_view lib does not call storage adapters directly" do
+    files = Path.wildcard(Path.expand("../../lib/favn_view/**/*.ex", __DIR__))
+
+    for file <- files do
+      source = File.read!(file)
+      refute source =~ "Storage.Adapter"
+      refute source =~ "FavnOrchestrator.Storage"
+    end
+  end
+
   test "catalogue links open the detail route", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/assets")
     detail_path = detail_path(:customer_orders_daily)
@@ -586,6 +723,29 @@ defmodule FavnView.PageLiveTest do
                  message: if(status == :error, do: "Warehouse timeout", else: "Run finished")
                }
              })
+  end
+
+  defp seed_log!(message, opts) do
+    assert {:ok, [_entry]} = FavnOrchestrator.emit_log(log_entry(message, opts))
+  end
+
+  defp log_entry(message, opts) do
+    %Entry{
+      id: Keyword.get(opts, :id),
+      global_sequence: Keyword.get(opts, :global_sequence),
+      run_id: Keyword.get(opts, :run_id),
+      asset_step_id: Keyword.get(opts, :asset_step_id),
+      occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
+      level: Keyword.get(opts, :level, :info),
+      source: Keyword.get(opts, :source, :runner),
+      message: message,
+      metadata: Keyword.get(opts, :metadata, %{})
+    }
+  end
+
+  defp asset_step_id(run_id, name) do
+    asset_ref = "#{inspect(__MODULE__.Assets)}.#{name}"
+    "#{run_id}:#{asset_ref}" |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
   end
 
   defp target_id(name) do
