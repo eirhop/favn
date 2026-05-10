@@ -12,6 +12,7 @@ JavaScript when necessary.
 
 ## Core Rules
 
+- Load `favn-design-system` as well before creating or changing reusable low-level UI primitives, Favn surface classes, theme tokens, glass/HUD styling, or Storybook visual contracts.
 - Always use the `tidewave_view` MCP when the `apps/favn_view` runtime is running and the task involves LiveView/UI routes, rendered behavior, logs, source lookup, runtime inspection, or Phoenix/LiveView docs.
 - If `tidewave_view` is unavailable because the runtime is not running, say so explicitly and continue with static inspection only when that is sufficient.
 - `favn_view` is a thin UI/API boundary.
@@ -218,6 +219,13 @@ Use these docs for details when implementing:
 - Prefer `Phoenix.LiveViewTest` selectors such as `element/2`, `has_element?/2`, and forms over raw HTML assertions.
 - Test behavior and outcomes, not implementation details.
 - Keep placeholder stories/tooling stories separate from product UI work.
+- When changes are limited to `apps/favn_view`, do not run umbrella-level tests by default. Run the `favn_view` app-local test suite instead:
+
+```bash
+cd apps/favn_view && mix test
+```
+
+- Use umbrella-level tests only when the change crosses app boundaries, changes shared dependencies/contracts, or the user explicitly requests broader verification.
 
 ## Favn LiveView UI Philosophy
 

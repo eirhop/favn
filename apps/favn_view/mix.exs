@@ -59,6 +59,7 @@ defmodule FavnView.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
+      {:favn_orchestrator, in_umbrella: true},
       {:bandit, "~> 1.5"}
     ]
   end

@@ -13,7 +13,11 @@ defmodule FavnView.Components.GlassPanel do
 
   def glass_panel(assigns) do
     ~H"""
-    <section id={@id} class={["glass favn-glass-panel rounded-box", @class]} {@rest}>
+    <section
+      id={@id}
+      class={["glass favn-surface-panel favn-glass-panel rounded-box", @class]}
+      {@rest}
+    >
       {render_slot(@inner_block)}
     </section>
     """

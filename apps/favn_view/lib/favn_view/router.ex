@@ -18,6 +18,8 @@ defmodule FavnView.Router do
     pipe_through :browser
 
     live "/", PageLive, :home
+    live "/assets", AssetCatalogueLive, :index
+    live "/assets/:asset_id", AssetDetailLive, :show
   end
 
   # Other scopes may use custom stacks.

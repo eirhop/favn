@@ -9,6 +9,7 @@ defmodule FavnView.Components.AppShell do
   alias FavnView.Components.ThemeToggle
 
   attr :title, :string, required: true
+  attr :subtitle, :string, default: nil
   attr :status, :string, default: nil
   attr :nav_items, :list, default: []
 
@@ -21,7 +22,7 @@ defmodule FavnView.Components.AppShell do
       <div class="favn-orbital-grid" aria-hidden="true"></div>
       <IconNav.icon_nav items={@nav_items} />
 
-      <div class="relative z-10 min-h-screen px-5 py-5 md:pl-32 md:pr-8 lg:pr-32">
+      <div class="relative z-10 min-h-screen px-5 py-4 md:py-5 md:pl-32 md:pr-8 lg:pr-32">
         <header class="mx-auto flex max-w-7xl items-center justify-between gap-3">
           <div class="flex items-center gap-2 md:hidden">
             <IconNav.mobile_icon_nav items={@nav_items} />
@@ -45,11 +46,16 @@ defmodule FavnView.Components.AppShell do
           </div>
         </header>
 
-        <main class="mx-auto flex min-h-[calc(100vh-5.5rem)] max-w-7xl flex-col justify-center py-12">
-          <section class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center">
-            <h1 class="text-4xl font-light tracking-tight text-base-content sm:text-5xl lg:text-6xl">
-              {@title}
-            </h1>
+        <main class="mx-auto flex min-h-[calc(100vh-5.5rem)] max-w-7xl flex-col justify-start py-8 md:justify-center md:py-12">
+          <section class="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start md:mb-8 md:gap-4">
+            <div>
+              <h1 class="text-3xl font-light tracking-tight text-base-content sm:text-5xl lg:text-6xl">
+                {@title}
+              </h1>
+              <p :if={@subtitle} class="mt-2 text-base text-base-content/60 md:mt-3 md:text-lg">
+                {@subtitle}
+              </p>
+            </div>
             <span
               :if={@status}
               class="badge badge-success badge-soft favn-status-glow gap-2 px-4 py-4"
