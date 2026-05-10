@@ -21,16 +21,15 @@ defmodule FavnView.Storybook.Components.ModeRail do
     [
       %Variation{
         id: :asset_modes,
-        slots: [
-          """
-          <:item label="Overview" icon="hero-play-circle" active>Overview</:item>
-          <:item label="Docs" icon="hero-book-open">Docs</:item>
-          <:item label="Definition" icon="hero-code-bracket">Definition</:item>
-          <:item label="Lineage" icon="hero-share">Lineage</:item>
-          <:item label="Notes" icon="hero-document-text">Notes</:item>
-          <:item label="Settings" icon="hero-cog-6-tooth">Settings</:item>
-          """
-        ]
+        attributes: %{
+          active: :list,
+          modes: [
+            %{id: :list, label: "List", icon: "hero-list-bullet"},
+            %{id: :tree, label: "Tree", icon: "hero-share", disabled: true},
+            %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
+            %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
+          ]
+        }
       }
     ]
   end
