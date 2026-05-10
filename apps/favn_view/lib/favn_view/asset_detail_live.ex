@@ -21,6 +21,8 @@ defmodule FavnView.AssetDetailLive do
         asset: asset,
         active_mode: :timeline,
         selected_window: default_selected_window(asset),
+        run_config_open?: false,
+        run_config: default_run_config(),
         submitting_window_run?: false,
         submitted_run_id: nil,
         selected_window_error: nil,
@@ -48,6 +50,8 @@ defmodule FavnView.AssetDetailLive do
       {:noreply,
        assign(socket,
          selected_window: selected_window,
+         run_config_open?: false,
+         run_config: default_run_config(),
          selected_window_error: nil,
          submitted_run_id: nil
        )}
@@ -58,7 +62,7 @@ defmodule FavnView.AssetDetailLive do
 
   def handle_event("select_window", _params, socket), do: {:noreply, socket}
 
-  def handle_event("run_selected_window", _params, socket) do
+  def handle_event("open_run_config", _params, socket) do
     %{asset: asset, selected_window: selected_window} = socket.assigns
 
     cond do
@@ -74,31 +78,78 @@ defmodule FavnView.AssetDetailLive do
          )}
 
       true ->
-        socket =
-          assign(socket,
-            submitting_window_run?: true,
-            selected_window_error: nil,
-            submitted_run_id: nil
-          )
+        {:noreply,
+         assign(socket,
+           run_config_open?: true,
+           run_config: default_run_config(),
+           selected_window_error: nil,
+           submitted_run_id: nil
+         )}
+    end
+  end
 
-        case FavnOrchestrator.submit_asset_window_run(
-               asset.manifest_version_id,
-               asset.target_id,
-               selected_window.id
-             ) do
-          {:ok, run_id} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "Run submitted")
-             |> push_navigate(to: ~p"/runs/#{run_id}")}
+  def handle_event("close_run_config", _params, socket) do
+    {:noreply, assign(socket, :run_config_open?, false)}
+  end
+
+  def handle_event("run_selected_window", params, socket) do
+    %{asset: asset, selected_window: selected_window} = socket.assigns
+    run_config = run_config_from_params(params)
+
+    cond do
+      is_nil(asset) or is_nil(selected_window) ->
+        {:noreply, assign(socket, :selected_window_error, "Select a runnable window first.")}
+
+      !selected_window.run_enabled? ->
+        {:noreply,
+         assign(
+           socket,
+           :selected_window_error,
+           disabled_reason_label(selected_window.run_disabled_reason)
+         )}
+
+      true ->
+        case run_submit_opts(asset, run_config) do
+          {:ok, opts} ->
+            submit_selected_window(socket, asset, selected_window, run_config, opts)
 
           {:error, reason} ->
             {:noreply,
              assign(socket,
-               submitting_window_run?: false,
+               run_config: run_config,
                selected_window_error: submit_error_label(reason)
              )}
         end
+    end
+  end
+
+  defp submit_selected_window(socket, asset, selected_window, run_config, opts) do
+    socket =
+      assign(socket,
+        run_config: run_config,
+        submitting_window_run?: true,
+        selected_window_error: nil,
+        submitted_run_id: nil
+      )
+
+    case FavnOrchestrator.submit_asset_window_run(
+           asset.manifest_version_id,
+           asset.target_id,
+           selected_window.id,
+           opts
+         ) do
+      {:ok, run_id} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Run submitted")
+         |> push_navigate(to: ~p"/runs/#{run_id}")}
+
+      {:error, reason} ->
+        {:noreply,
+         assign(socket,
+           submitting_window_run?: false,
+           selected_window_error: submit_error_label(reason)
+         )}
     end
   end
 
@@ -114,7 +165,10 @@ defmodule FavnView.AssetDetailLive do
       nav_items={@nav_items}
       timeline={@asset.timeline}
       active_mode={@active_mode}
+      freshness={@asset.freshness}
       selected_window={@selected_window}
+      run_config_open?={@run_config_open?}
+      run_config={@run_config}
       submitting_window_run?={@submitting_window_run?}
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
@@ -162,9 +216,11 @@ defmodule FavnView.AssetDetailLive do
     %{
       manifest_version_id: detail.manifest_version_id,
       target_id: detail.target_id,
+      canonical_asset_ref: detail.canonical_asset_ref,
       title: detail.name || asset_name(detail),
       status: status_label(Map.get(detail, :status)),
       status_tone: status_tone(Map.get(detail, :status)),
+      freshness: Map.get(detail, :freshness, missing_freshness_detail()),
       window_range: window_range(timeline),
       timeline: timeline
     }
@@ -235,6 +291,63 @@ defmodule FavnView.AssetDetailLive do
   defp asset_timeline(nil), do: []
   defp asset_timeline(asset), do: Map.get(asset, :timeline, [])
 
+  defp missing_freshness_detail do
+    %{
+      state: :unknown,
+      policy: %{kind: :none, label: "no freshness policy"},
+      latest_success: nil,
+      explanation: "Freshness detail is not available from the backend.",
+      reasons: [
+        %{
+          kind: :insufficient_state,
+          message: "Freshness detail is not available from the backend."
+        }
+      ]
+    }
+  end
+
+  defp default_run_config, do: %{dependencies: "all", refresh: "auto"}
+
+  defp run_config_from_params(%{"run_config" => params}) when is_map(params) do
+    %{
+      dependencies: Map.get(params, "dependencies", "all"),
+      refresh: Map.get(params, "refresh", "auto")
+    }
+  end
+
+  defp run_config_from_params(_params), do: default_run_config()
+
+  defp run_submit_opts(asset, %{dependencies: dependencies, refresh: refresh}) do
+    with {:ok, dependencies} <- dependency_option(dependencies),
+         {:ok, refresh} <-
+           refresh_option(refresh, Map.get(asset, :canonical_asset_ref), dependencies) do
+      {:ok, [dependencies: dependencies, refresh: refresh]}
+    end
+  end
+
+  defp dependency_option("all"), do: {:ok, :all}
+  defp dependency_option("none"), do: {:ok, :none}
+  defp dependency_option(value), do: {:error, {:invalid_dependencies_mode, value}}
+
+  defp refresh_option("auto", _asset_ref, _dependencies), do: {:ok, :auto}
+  defp refresh_option("missing", _asset_ref, _dependencies), do: {:ok, :missing}
+  defp refresh_option("force_all", _asset_ref, _dependencies), do: {:ok, :force}
+
+  defp refresh_option("force_selected", asset_ref, _dependencies) when is_tuple(asset_ref) do
+    {:ok, {:force_assets, [asset_ref]}}
+  end
+
+  defp refresh_option("force_selected_upstream", _asset_ref, :none) do
+    {:error, {:refresh_include_upstream_requires_dependencies, :all}}
+  end
+
+  defp refresh_option("force_selected_upstream", asset_ref, :all) when is_tuple(asset_ref) do
+    {:ok, {:force_assets, [asset_ref], include_upstream: true}}
+  end
+
+  defp refresh_option(value, _asset_ref, _dependencies),
+    do: {:error, {:invalid_refresh_policy, value}}
+
   defp disabled_reason_label(:asset_has_no_window_policy), do: "This asset has no window policy."
   defp disabled_reason_label(:invalid_window), do: "This window cannot be run."
   defp disabled_reason_label(_reason), do: "This window is not runnable."
@@ -244,6 +357,13 @@ defmodule FavnView.AssetDetailLive do
 
   defp submit_error_label({:window_request_without_policy, _kind}),
     do: "This asset has no window policy."
+
+  defp submit_error_label({:refresh_include_upstream_requires_dependencies, :all}),
+    do: "Force selected + upstream requires including upstream dependencies."
+
+  defp submit_error_label({:invalid_dependencies_mode, _value}), do: "Dependency mode is invalid."
+
+  defp submit_error_label({:invalid_refresh_policy, _value}), do: "Refresh behavior is invalid."
 
   defp submit_error_label(_reason), do: "Could not submit run."
 end

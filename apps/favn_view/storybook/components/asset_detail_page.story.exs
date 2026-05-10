@@ -20,6 +20,7 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           window_range: "May 24 - Jun 22, 2026",
           nav_items: AssetDetailPage.sample_nav_items(),
           timeline: AssetDetailPage.sample_timeline(),
+          freshness: AssetDetailPage.sample_freshness(:fresh),
           active_mode: :timeline,
           selected_window: AssetDetailPage.selected_sample_window()
         }
@@ -33,9 +34,53 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           window_range: "May 24 - Jun 22, 2026",
           nav_items: AssetDetailPage.sample_nav_items(),
           timeline: AssetDetailPage.sample_timeline(),
+          freshness: AssetDetailPage.sample_freshness(:fresh),
           active_mode: :timeline,
           selected_window: AssetDetailPage.selected_sample_window()
         }
+      },
+      %Variation{
+        id: :fresh_freshness_detail,
+        attributes: freshness_attributes(:fresh)
+      },
+      %Variation{
+        id: :stale_with_upstream_reason,
+        attributes: freshness_attributes(:stale)
+      },
+      %Variation{
+        id: :unknown_never_run_freshness,
+        attributes: freshness_attributes(:unknown)
+      },
+      %Variation{
+        id: :always_run_freshness,
+        attributes: freshness_attributes(:always_run)
+      },
+      %Variation{
+        id: :failed_latest_run_stale_unknown,
+        attributes:
+          freshness_attributes(:failed_unknown)
+          |> Map.merge(%{status: "Failed", status_tone: :error})
+      },
+      %Variation{
+        id: :default_auto_run_config,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "auto"})
+      },
+      %Variation{
+        id: :missing_only_run_config,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "missing"})
+      },
+      %Variation{
+        id: :force_selected_asset_run_config,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "force_selected"})
+      },
+      %Variation{
+        id: :force_selected_upstream_run_config,
+        attributes:
+          run_config_attributes(%{dependencies: "all", refresh: "force_selected_upstream"})
+      },
+      %Variation{
+        id: :force_full_graph_run_config,
+        attributes: run_config_attributes(%{dependencies: "all", refresh: "force_all"})
       },
       %Variation{
         id: :selected_non_runnable_window,
@@ -46,6 +91,7 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           window_range: "May 24 - Jun 22, 2026",
           nav_items: AssetDetailPage.sample_nav_items(),
           timeline: AssetDetailPage.non_runnable_timeline(),
+          freshness: AssetDetailPage.sample_freshness(:unknown),
           active_mode: :timeline,
           selected_window: AssetDetailPage.selected_non_runnable_window()
         }
@@ -59,6 +105,7 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           window_range: "May 24 - Jun 22, 2026",
           nav_items: AssetDetailPage.sample_nav_items(),
           timeline: AssetDetailPage.sample_timeline(),
+          freshness: AssetDetailPage.sample_freshness(:fresh),
           active_mode: :timeline,
           selected_window: AssetDetailPage.selected_sample_window(),
           submitted_run_id: "run_01HZ"
@@ -73,6 +120,7 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           window_range: "May 24 - Jun 22, 2026",
           nav_items: AssetDetailPage.sample_nav_items(),
           timeline: AssetDetailPage.sample_timeline(),
+          freshness: AssetDetailPage.sample_freshness(:fresh),
           active_mode: :timeline,
           selected_window: AssetDetailPage.selected_sample_window(),
           selected_window_error: "Could not submit run."
@@ -87,6 +135,7 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           window_range: "May 24 - Jun 22, 2026",
           nav_items: AssetDetailPage.sample_nav_items(),
           timeline: AssetDetailPage.muted_timeline(),
+          freshness: AssetDetailPage.sample_freshness(:unknown),
           active_mode: :timeline,
           selected_window: AssetDetailPage.selected_muted_window()
         }
@@ -100,10 +149,41 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
           window_range: "May 24 - Jun 22, 2026",
           nav_items: AssetDetailPage.sample_nav_items(),
           timeline: AssetDetailPage.sample_timeline(),
+          freshness: AssetDetailPage.sample_freshness(:fresh),
           active_mode: :runs,
           selected_window: AssetDetailPage.selected_sample_window()
         }
       }
     ]
+  end
+
+  defp run_config_attributes(run_config) do
+    %{
+      title: "customer_orders_daily",
+      status: "Healthy",
+      status_tone: :success,
+      window_range: "May 24 - Jun 22, 2026",
+      nav_items: AssetDetailPage.sample_nav_items(),
+      timeline: AssetDetailPage.sample_timeline(),
+      freshness: AssetDetailPage.sample_freshness(:fresh),
+      active_mode: :timeline,
+      selected_window: AssetDetailPage.selected_sample_window(),
+      run_config_open?: true,
+      run_config: run_config
+    }
+  end
+
+  defp freshness_attributes(state) do
+    %{
+      title: "customer_orders_daily",
+      status: "Healthy",
+      status_tone: :success,
+      window_range: "May 24 - Jun 22, 2026",
+      nav_items: AssetDetailPage.sample_nav_items(),
+      timeline: AssetDetailPage.sample_timeline(),
+      freshness: AssetDetailPage.sample_freshness(state),
+      active_mode: :details,
+      selected_window: AssetDetailPage.selected_sample_window()
+    }
   end
 end
