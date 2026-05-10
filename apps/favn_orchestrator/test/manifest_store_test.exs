@@ -207,6 +207,14 @@ defmodule FavnOrchestrator.ManifestStoreTest do
                "window:day:2026-05-10"
              )
 
+    assert {:error, :invalid_run_metadata} =
+             FavnOrchestrator.submit_asset_window_run(
+               "mv_a",
+               "asset:Elixir.MyApp.AssetA:asset",
+               "window:day:2026-05-10",
+               metadata: :invalid
+             )
+
     assert {:ok, run_id} =
              FavnOrchestrator.submit_asset_window_run(
                "mv_a",

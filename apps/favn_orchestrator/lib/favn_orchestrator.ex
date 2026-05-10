@@ -292,9 +292,18 @@ defmodule FavnOrchestrator do
   end
 
   defp put_window_run_metadata(opts, window_id, %Anchor{} = anchor_window) do
-    Keyword.update(opts, :metadata, window_run_metadata(window_id, anchor_window), fn metadata ->
-      Map.merge(Map.new(metadata), window_run_metadata(window_id, anchor_window))
-    end)
+    selected_window_metadata = window_run_metadata(window_id, anchor_window)
+
+    case Keyword.fetch(opts, :metadata) do
+      :error ->
+        Keyword.put(opts, :metadata, selected_window_metadata)
+
+      {:ok, metadata} when is_map(metadata) ->
+        Keyword.put(opts, :metadata, Map.merge(metadata, selected_window_metadata))
+
+      {:ok, _invalid_metadata} ->
+        opts
+    end
   end
 
   defp window_run_metadata(window_id, %Anchor{} = anchor_window) do
