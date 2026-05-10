@@ -4,10 +4,14 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   alias Favn.Manifest
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Version
+  alias Favn.Run.AssetResult
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
   setup do
@@ -92,6 +96,33 @@ defmodule FavnOrchestrator.ManifestStoreTest do
              timezone: nil,
              allow_full_load: false
            }
+
+    finished_at = DateTime.add(DateTime.utc_now(), -300, :second)
+
+    assert :ok =
+             Storage.put_run(run_state("run_asset_a", {MyApp.AssetA, :asset}, :ok, finished_at))
+
+    assert {:ok, freshness} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.AssetA,
+               asset_ref_name: :asset,
+               freshness_key: "latest",
+               status: :ok,
+               latest_success_run_id: "run_asset_a",
+               latest_success_at: finished_at,
+               latest_attempt_status: :ok,
+               latest_attempt_at: finished_at,
+               updated_at: finished_at
+             })
+
+    assert :ok = Storage.put_asset_freshness_state(freshness)
+
+    assert {:ok, [entry]} = FavnOrchestrator.active_asset_catalogue()
+    assert entry.target_id == "asset:Elixir.MyApp.AssetA:asset"
+    assert entry.status == :healthy
+    assert entry.latest_run_id == "run_asset_a"
+    assert entry.latest_run_status == :ok
+    assert entry.latest_run_at == finished_at
   end
 
   test "publishes duplicate content under the existing canonical manifest version" do
@@ -117,5 +148,32 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
+  end
+
+  defp run_state(id, ref, status, finished_at) do
+    RunState.new(
+      id: id,
+      manifest_version_id: "mv_a",
+      manifest_content_hash: "hash_a",
+      asset_ref: ref,
+      target_refs: [ref]
+    )
+    |> RunState.transition(
+      status: status,
+      result: %{
+        asset_results: [
+          %AssetResult{
+            ref: ref,
+            stage: 0,
+            status: status,
+            started_at: DateTime.add(finished_at, -1, :second),
+            finished_at: finished_at,
+            duration_ms: 1
+          }
+        ]
+      }
+    )
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
   end
 end

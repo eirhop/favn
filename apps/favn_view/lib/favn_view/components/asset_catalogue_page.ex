@@ -304,8 +304,8 @@ defmodule FavnView.Components.AssetCataloguePage do
     [
       %{id: :list, label: "List", icon: "hero-list-bullet"},
       %{id: :tree, label: "Tree", icon: "hero-share", disabled: true},
-      %{id: :filters, label: "Filters", icon: "hero-funnel"},
-      %{id: :more, label: "More", icon: "hero-ellipsis-vertical"}
+      %{id: :filters, label: "Filters", icon: "hero-funnel", disabled: true},
+      %{id: :more, label: "More", icon: "hero-ellipsis-vertical", disabled: true}
     ]
   end
 

@@ -6,6 +6,7 @@ defmodule FavnView.AssetCatalogueLive do
   alias FavnView.Components.AssetCataloguePage
 
   @default_filters %{search: "", connection: "all", catalogue: "all"}
+  @valid_modes ~w(list)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -38,9 +39,11 @@ defmodule FavnView.AssetCatalogueLive do
      )}
   end
 
-  def handle_event("set_mode", %{"mode" => mode}, socket) do
+  def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
     {:noreply, assign(socket, :active_mode, String.to_existing_atom(mode))}
   end
+
+  def handle_event("set_mode", _params, socket), do: {:noreply, socket}
 
   @impl true
   def render(assigns) do
@@ -79,26 +82,26 @@ defmodule FavnView.AssetCatalogueLive do
   end
 
   defp load_assets do
-    case FavnOrchestrator.active_manifest_targets() do
-      {:ok, %{assets: targets}} ->
-        {Enum.map(targets, &asset_from_target/1), nil}
+    case FavnOrchestrator.active_asset_catalogue() do
+      {:ok, entries} ->
+        {Enum.map(entries, &asset_from_entry/1), nil}
 
       {:error, reason} ->
         {[], reason}
     end
   end
 
-  defp asset_from_target(target) do
-    relation = Map.get(target, :relation) || %{}
+  defp asset_from_entry(entry) do
+    relation = Map.get(entry, :relation) || %{}
 
     %{
-      id: Map.fetch!(target, :target_id),
-      name: relation_field(relation, :name) || asset_name(target),
+      id: Map.fetch!(entry, :target_id),
+      name: relation_field(relation, :name) || asset_name(entry),
       connection: relation_field(relation, :connection) || "unknown",
       catalogue: relation_field(relation, :catalog) || "uncatalogued",
-      type: target[:type] || "asset",
-      status: :unknown,
-      last_run_label: "No runs yet"
+      type: entry[:type] || "asset",
+      status: entry[:status] || :unknown,
+      last_run_label: last_run_label(entry[:latest_run_at])
     }
   end
 
@@ -134,4 +137,17 @@ defmodule FavnView.AssetCatalogueLive do
     |> String.replace("_", " ")
     |> String.capitalize()
   end
+
+  defp last_run_label(%DateTime{} = datetime) do
+    seconds = DateTime.diff(DateTime.utc_now(), datetime, :second)
+
+    cond do
+      seconds < 60 -> "just now"
+      seconds < 3_600 -> "#{div(seconds, 60)}m ago"
+      seconds < 86_400 -> "#{div(seconds, 3_600)}h ago"
+      true -> Calendar.strftime(datetime, "%b %-d %H:%M")
+    end
+  end
+
+  defp last_run_label(_value), do: "No runs yet"
 end

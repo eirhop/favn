@@ -5,6 +5,9 @@ defmodule FavnView.PageLiveTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Version
+  alias Favn.Run.AssetResult
+  alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
   setup do
@@ -13,6 +16,8 @@ defmodule FavnView.PageLiveTest do
     version = manifest_version()
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+    assert :ok = Storage.put_run(run_state(:customer_orders_daily, :ok, -600))
+    assert :ok = Storage.put_run(run_state(:raw_payments, :running, -30))
 
     :ok
   end
@@ -41,6 +46,10 @@ defmodule FavnView.PageLiveTest do
              ~s(a[href*="customer_orders_daily"]),
              "customer_orders_daily"
            )
+
+    assert html =~ "Healthy"
+    assert html =~ "10m ago"
+    assert html =~ "Running"
 
     assert has_element?(view, ~s([aria-label="View modes"]))
     assert has_element?(view, ~s([aria-label="Connection filter"]))
@@ -79,6 +88,12 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "Asset detail coming soon"
   end
 
+  test "ignores invalid mode events", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/assets")
+
+    assert render_click(view, "set_mode", %{"mode" => "not_real"}) =~ "Asset catalogue"
+  end
+
   defp manifest_version do
     manifest = %Manifest{
       assets: [
@@ -100,5 +115,37 @@ defmodule FavnView.PageLiveTest do
       type: type,
       relation: %{connection: connection, catalog: catalog, name: Atom.to_string(name)}
     }
+  end
+
+  defp run_state(name, status, seconds_from_now) do
+    ref = {__MODULE__.Assets, name}
+    finished_at = DateTime.add(DateTime.utc_now(), seconds_from_now, :second)
+    started_at = DateTime.add(finished_at, -1, :second)
+
+    RunState.new(
+      id: "run_#{name}",
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: ref,
+      target_refs: [ref]
+    )
+    |> RunState.transition(
+      status: status,
+      result: %{
+        asset_results: [
+          %AssetResult{
+            ref: ref,
+            stage: 0,
+            status: status,
+            started_at: started_at,
+            finished_at: if(status in [:pending, :running], do: nil, else: finished_at),
+            duration_ms: 1
+          }
+        ]
+      }
+    )
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
   end
 end

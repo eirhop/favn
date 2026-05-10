@@ -65,8 +65,8 @@ classes above.
 
 ## Component Rules
 
-- Every UI element used in product screens must be a reusable component with a Storybook story, down to low-level controls such as buttons, icon buttons, dropdown/select controls, input boxes, badges, cards, rails, and docks.
-- Editing a component is incomplete until its Storybook story has been opened with Playwright and visually inspected.
+- Reusable Favn-specific components, page components, and customized primitives need Storybook coverage. Plain DaisyUI primitives do not need wrappers or stories unless they are reused as a Favn-specific pattern or customized beyond local composition.
+- Editing a reusable Favn-specific component is incomplete until its Storybook story has been opened with Playwright and visually inspected.
 - Always evaluate pixel-perfectness against the approved design reference or current Storybook contract. If spacing, surface strength, radius, typography, icon weight, focus state, or density is visibly off, improve it before finishing.
 - Low-level components should expose variants before callers hand-roll surface utilities.
 - Prefer classes like `favn-surface-control` or `favn-surface-list` over copying border/background/shadow utility stacks.

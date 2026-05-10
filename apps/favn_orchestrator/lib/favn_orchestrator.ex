@@ -13,12 +13,14 @@ defmodule FavnOrchestrator do
   alias Favn.Manifest.Version
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
+  alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
   alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Freshness.Query, as: FreshnessQuery
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunManager
@@ -53,6 +55,19 @@ defmodule FavnOrchestrator do
           required(:manifest_version_id) => String.t(),
           required(:assets) => [manifest_target_option()],
           required(:pipelines) => [manifest_target_option()]
+        }
+
+  @type asset_catalogue_entry :: %{
+          required(:target_id) => String.t(),
+          required(:label) => String.t(),
+          optional(:asset_ref) => String.t(),
+          optional(:type) => String.t(),
+          optional(:relation) => map() | nil,
+          optional(:metadata) => map(),
+          required(:status) => :healthy | :running | :failed | :unknown,
+          required(:latest_run_id) => String.t() | nil,
+          required(:latest_run_status) => atom() | nil,
+          required(:latest_run_at) => DateTime.t() | nil
         }
 
   @doc """
@@ -169,6 +184,23 @@ defmodule FavnOrchestrator do
   def active_manifest_targets do
     with {:ok, manifest_version_id} <- active_manifest() do
       manifest_targets(manifest_version_id)
+    end
+  end
+
+  @doc """
+  Returns operator-facing catalogue entries for the currently active manifest.
+
+  Entries are manifest target metadata enriched with latest known freshness/run
+  state. Missing runtime state is represented explicitly as `:unknown` with no
+  latest run timestamp.
+  """
+  @spec active_asset_catalogue() :: {:ok, [asset_catalogue_entry()]} | {:error, term()}
+  def active_asset_catalogue do
+    with {:ok, manifest_version_id} <- active_manifest(),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, freshness_states} <- catalogue_freshness_states(),
+         {:ok, runs} <- list_runs(limit: Page.max_limit()) do
+      {:ok, asset_catalogue_entries(version, freshness_states, runs)}
     end
   end
 
@@ -748,23 +780,59 @@ defmodule FavnOrchestrator do
   defp manifest_asset_targets(%Version{} = version) do
     version.manifest.assets
     |> List.wrap()
-    |> Enum.map(fn asset ->
-      target_ref = asset.ref
+    |> Enum.map(&manifest_asset_target/1)
+    |> Enum.sort_by(& &1.label)
+  end
 
-      %{
-        target_id: target_id_for_asset(target_ref),
-        label: inspect(target_ref),
-        asset_ref: ref_to_string(target_ref),
-        type: atom_name(asset.type),
-        relation: relation_dto(asset.relation),
-        metadata: normalize_map(asset.metadata),
-        runtime_config: normalize_data(asset.runtime_config),
-        depends_on: Enum.map(List.wrap(asset.depends_on), &ref_to_string/1),
-        materialization: normalize_data(asset.materialization),
-        window: normalize_data(asset.window)
-      }
+  defp catalogue_freshness_states do
+    case list_asset_freshness(limit: Page.max_limit()) do
+      {:ok, page} -> {:ok, page.items}
+      {:error, :asset_freshness_state_not_supported} -> {:ok, []}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp asset_catalogue_entries(%Version{} = version, freshness_states, runs) do
+    freshness_by_ref = Map.new(freshness_states, &{freshness_ref_string(&1), &1})
+
+    runs_by_ref =
+      runs
+      |> Enum.flat_map(&run_ref_entries/1)
+      |> Enum.group_by(fn {ref_string, _run} -> ref_string end, fn {_ref_string, run} -> run end)
+      |> Map.new(fn {ref_string, ref_runs} -> {ref_string, latest_run(ref_runs)} end)
+
+    version.manifest.assets
+    |> List.wrap()
+    |> Enum.map(fn asset ->
+      target = manifest_asset_target(asset)
+      ref_string = ref_to_string(asset.ref)
+      freshness = Map.get(freshness_by_ref, ref_string)
+      run = Map.get(runs_by_ref, ref_string)
+
+      target
+      |> Map.put(:status, catalogue_status(freshness, run))
+      |> Map.put(:latest_run_id, latest_run_id(freshness, run))
+      |> Map.put(:latest_run_status, latest_run_status(freshness, run))
+      |> Map.put(:latest_run_at, latest_run_at(freshness, run))
     end)
     |> Enum.sort_by(& &1.label)
+  end
+
+  defp manifest_asset_target(asset) do
+    target_ref = asset.ref
+
+    %{
+      target_id: target_id_for_asset(target_ref),
+      label: inspect(target_ref),
+      asset_ref: ref_to_string(target_ref),
+      type: atom_name(asset.type),
+      relation: relation_dto(asset.relation),
+      metadata: normalize_map(asset.metadata),
+      runtime_config: normalize_data(asset.runtime_config),
+      depends_on: Enum.map(List.wrap(asset.depends_on), &ref_to_string/1),
+      materialization: normalize_data(asset.materialization),
+      window: normalize_data(asset.window)
+    }
   end
 
   defp manifest_pipeline_targets(%Version{} = version) do
@@ -781,6 +849,82 @@ defmodule FavnOrchestrator do
     end)
     |> Enum.sort_by(& &1.label)
   end
+
+  defp freshness_ref_string(%AssetFreshnessState{} = state) do
+    ref_to_string({state.asset_ref_module, state.asset_ref_name})
+  end
+
+  defp run_ref_entries(run) do
+    refs =
+      [run.asset_ref | List.wrap(run.target_refs)] ++
+        ((run.asset_results || %{})
+         |> Map.keys()
+         |> List.wrap())
+
+    refs
+    |> Enum.filter(&match?({_module, _name}, &1))
+    |> Enum.uniq()
+    |> Enum.map(&{ref_to_string(&1), run})
+  end
+
+  defp latest_run(runs) do
+    Enum.max_by(
+      runs,
+      &DateTime.to_unix(run_time_sort_key(&1), :microsecond),
+      &>=/2,
+      fn -> nil end
+    )
+  end
+
+  defp run_time_sort_key(run), do: run.finished_at || run.started_at || DateTime.from_unix!(0)
+
+  defp catalogue_status(%AssetFreshnessState{} = freshness, _run) do
+    case freshness.latest_attempt_status || freshness.status do
+      status when status in [:ok, :skipped_fresh] -> :healthy
+      :running -> :running
+      status when status in [:error, :cancelled, :timed_out, :blocked] -> :failed
+      _other -> :unknown
+    end
+  end
+
+  defp catalogue_status(nil, run), do: run_status(run)
+
+  defp run_status(nil), do: :unknown
+  defp run_status(%{status: status}) when status in [:pending, :running], do: :running
+  defp run_status(%{status: :ok}), do: :healthy
+
+  defp run_status(%{status: status}) when status in [:partial, :error, :cancelled, :timed_out],
+    do: :failed
+
+  defp run_status(_run), do: :unknown
+
+  defp latest_run_id(%AssetFreshnessState{latest_attempt_run_id: id}, _run) when is_binary(id),
+    do: id
+
+  defp latest_run_id(%AssetFreshnessState{latest_success_run_id: id}, _run) when is_binary(id),
+    do: id
+
+  defp latest_run_id(_freshness, %{id: id}) when is_binary(id), do: id
+  defp latest_run_id(_freshness, _run), do: nil
+
+  defp latest_run_status(%AssetFreshnessState{latest_attempt_status: status}, _run)
+       when not is_nil(status),
+       do: status
+
+  defp latest_run_status(%AssetFreshnessState{status: status}, _run) when not is_nil(status),
+    do: status
+
+  defp latest_run_status(_freshness, %{status: status}), do: status
+  defp latest_run_status(_freshness, _run), do: nil
+
+  defp latest_run_at(%AssetFreshnessState{latest_attempt_at: at}, _run) when not is_nil(at),
+    do: at
+
+  defp latest_run_at(%AssetFreshnessState{latest_success_at: at}, _run) when not is_nil(at),
+    do: at
+
+  defp latest_run_at(_freshness, run) when not is_nil(run), do: run.finished_at || run.started_at
+  defp latest_run_at(_freshness, _run), do: nil
 
   defp window_policy_dto(nil), do: nil
 
