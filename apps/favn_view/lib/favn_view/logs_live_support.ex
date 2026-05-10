@@ -219,8 +219,8 @@ defmodule FavnView.LogsLiveSupport do
     %{
       found?: true,
       id: run.id,
-      title: LogsViewModel.short_id(run.id),
-      subtitle: Enum.reject([target], &is_nil/1) |> Enum.join(" · "),
+      title: target || LogsViewModel.short_id(run.id),
+      subtitle: LogsViewModel.short_id(run.id),
       status: LogsViewModel.status_label(status),
       status_tone: LogsViewModel.status_tone(status),
       started_at: LogsViewModel.timestamp_label(started_at),

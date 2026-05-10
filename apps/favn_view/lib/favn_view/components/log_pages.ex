@@ -35,7 +35,12 @@ defmodule FavnView.Components.LogPages do
 
   def global_logs_page(assigns) do
     ~H"""
-    <AppShell.app_shell title={@title} subtitle={@subtitle} nav_items={@nav_items}>
+    <AppShell.app_shell
+      title={@title}
+      subtitle={@subtitle}
+      nav_items={@nav_items}
+      show_header?={false}
+    >
       <.viewer assigns={assigns} viewer_title="Logs" viewer_subtitle={@subtitle} />
     </AppShell.app_shell>
     """
@@ -74,7 +79,6 @@ defmodule FavnView.Components.LogPages do
         assigns={assigns}
         viewer_title="Logs"
         viewer_subtitle="Asset-step scoped backend logs"
-        facts={@facts}
       />
 
       <:mode_rail>

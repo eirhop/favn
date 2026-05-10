@@ -376,7 +376,7 @@ defmodule FavnView.PageLiveTest do
 
     {:ok, view, html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
 
-    assert html =~ "Run logs"
+    assert html =~ "run_customer_orders_daily"
     assert has_element?(view, ~s([data-testid="log-viewer"][data-log-scope="run"]))
     assert has_element?(view, ~s([data-testid="log-row"]), "visible run log")
     refute has_element?(view, ~s([data-testid="log-row"]), "other run log")
