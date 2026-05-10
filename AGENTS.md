@@ -101,4 +101,7 @@ Run the narrowest useful check first. Before finishing changes, run:
 - `mix compile --warnings-as-errors`
 - `mix test`
 
+For app-scoped changes, run compile/test from each affected app directory rather
+than using umbrella `mix do --app ...`, which can trigger unrelated app suites.
+
 If dependencies change, update lockfiles and run the relevant verification.
