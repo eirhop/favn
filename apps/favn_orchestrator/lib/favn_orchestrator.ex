@@ -21,6 +21,8 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.Freshness.Query, as: FreshnessQuery
+  alias FavnOrchestrator.LogWriter
+  alias FavnOrchestrator.Logs
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
@@ -255,6 +257,46 @@ defmodule FavnOrchestrator do
       end
     end
   end
+
+  @doc """
+  Persists and publishes one trusted backend log entry.
+  """
+  @spec emit_log(term()) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def emit_log(entry), do: LogWriter.write(entry)
+
+  @doc """
+  Persists and publishes trusted backend log entries as one batch.
+  """
+  @spec emit_logs([term()]) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def emit_logs(entries) when is_list(entries), do: LogWriter.write(entries)
+
+  @doc """
+  Lists persisted backend logs matching the given filter.
+  """
+  @spec list_logs(term(), keyword()) :: {:ok, Page.t(Favn.Log.Entry.t())} | {:error, term()}
+  def list_logs(filter \\ default_log_filter(), opts \\ []) when is_list(opts) do
+    Storage.list_logs(filter, opts)
+  end
+
+  @doc """
+  Replays persisted backend logs after an authoritative log cursor.
+  """
+  @spec replay_logs(term(), term(), keyword()) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def replay_logs(cursor, filter \\ default_log_filter(), opts \\ []) when is_list(opts) do
+    Storage.replay_logs_after(cursor, filter, opts)
+  end
+
+  @doc """
+  Subscribes the caller to live backend logs matching the given filter.
+  """
+  @spec subscribe_logs(term()) :: {:ok, term()} | {:error, term()}
+  def subscribe_logs(filter \\ default_log_filter()), do: Logs.subscribe_logs(filter)
+
+  @doc """
+  Unsubscribes the caller from a prior backend log subscription or equivalent filter.
+  """
+  @spec unsubscribe_logs(term()) :: :ok
+  def unsubscribe_logs(subscription_or_filter), do: Logs.unsubscribe_logs(subscription_or_filter)
 
   @doc """
   Submits one asset run by manifest-scoped target id.
@@ -1383,6 +1425,13 @@ defmodule FavnOrchestrator do
 
   defp configured_runner_opts do
     Application.get_env(:favn_orchestrator, :runner_client_opts, [])
+  end
+
+  defp default_log_filter do
+    case Code.ensure_loaded(Favn.Log.Filter) do
+      {:module, Favn.Log.Filter} -> struct(Favn.Log.Filter)
+      _other -> %{}
+    end
   end
 
   defp validate_runner_client(module) when is_atom(module) do

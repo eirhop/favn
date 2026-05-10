@@ -68,6 +68,14 @@ defmodule FavnStoragePostgres.AdapterTest do
     assert {:error, :invalid_pagination} = Adapter.list_asset_window_states(filters, opts)
   end
 
+  test "log read APIs validate pagination and cursors before database access" do
+    opts = [repo_mode: :managed, repo_config: repo_config()]
+
+    assert {:error, :invalid_pagination} = Adapter.list_logs([], [limit: 0], opts)
+    assert {:error, :cursor_invalid} = Adapter.replay_logs_after("bad", [], [limit: 10], opts)
+    assert {:error, :cursor_invalid} = Adapter.replay_logs_after(nil, [], [limit: 0], opts)
+  end
+
   defp repo_config do
     [
       hostname: "localhost",

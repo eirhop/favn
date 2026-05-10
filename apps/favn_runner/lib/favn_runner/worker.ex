@@ -14,6 +14,7 @@ defmodule FavnRunner.Worker do
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
   alias FavnRunner.EventSink
+  alias FavnRunner.LogSink
   alias FavnRunner.RuntimeConfigDiagnostic
 
   @type init_arg :: %{
@@ -49,6 +50,7 @@ defmodule FavnRunner.Worker do
     started_at = DateTime.utc_now()
 
     emit_event(server, execution_id, work, :asset_started, %{asset_ref: asset.ref})
+    emit_log(server, execution_id, work, asset, 1, :info, "asset execution started")
 
     result =
       case asset.type do
@@ -78,6 +80,7 @@ defmodule FavnRunner.Worker do
     case result do
       {:ok, meta} ->
         emit_event(server, execution_id, work, :asset_succeeded, %{asset_ref: asset.ref})
+        emit_log(server, execution_id, work, asset, 2, :info, "asset execution finished")
 
         build_runner_result(
           work,
@@ -91,6 +94,8 @@ defmodule FavnRunner.Worker do
           asset_ref: asset.ref,
           error: error
         })
+
+        emit_log(server, execution_id, work, asset, 2, :error, "asset execution failed")
 
         build_runner_result(
           work,
@@ -228,6 +233,34 @@ defmodule FavnRunner.Worker do
     }
 
     EventSink.emit(server, execution_id, event)
+  end
+
+  defp emit_log(
+         server,
+         execution_id,
+         %RunnerWork{} = work,
+         %Asset{} = asset,
+         sequence,
+         level,
+         message
+       ) do
+    producer_id = "runner:" <> execution_id
+
+    LogSink.emit(server, execution_id, %{
+      source: :runner,
+      level: level,
+      message: message,
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      asset_ref: asset.ref,
+      runner_execution_id: execution_id,
+      attempt: Map.get(work.metadata, :attempt),
+      metadata: Map.put(work.metadata, :runner_execution_id, execution_id),
+      occurred_at: DateTime.utc_now(),
+      producer_id: producer_id,
+      producer_sequence: sequence
+    })
   end
 
   defp execute_sql_asset(%Asset{} = asset, %Version{} = version, %RunnerWork{} = work) do

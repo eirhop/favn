@@ -6,6 +6,7 @@ defmodule FavnStorageSqlite.Migrations do
   alias FavnStorageSqlite.Migrations.AddAssetFreshnessState
   alias FavnStorageSqlite.Migrations.AddBackfillState
   alias FavnStorageSqlite.Migrations.AddIdempotencyRecords
+  alias FavnStorageSqlite.Migrations.AddLogEntries
   alias FavnStorageSqlite.Migrations.AddRunEventGlobalSequence
   alias FavnStorageSqlite.Migrations.CreateFoundation
   alias FavnStorageSqlite.Migrations.RebuildBackfillReadModelsForDtos
@@ -17,7 +18,8 @@ defmodule FavnStorageSqlite.Migrations do
     {20_260_503_100_000, AddIdempotencyRecords},
     {20_260_503_120_000, AddRunEventGlobalSequence},
     {20_260_505_100_000, RebuildBackfillReadModelsForDtos},
-    {20_260_509_100_000, AddAssetFreshnessState}
+    {20_260_509_100_000, AddAssetFreshnessState},
+    {20_260_510_100_000, AddLogEntries}
   ]
   @required_tables [
     "favn_manifest_versions",
@@ -34,7 +36,8 @@ defmodule FavnStorageSqlite.Migrations do
     "favn_auth_sessions",
     "favn_auth_audits",
     "favn_idempotency_records",
-    "favn_counters"
+    "favn_counters",
+    "favn_log_entries"
   ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 

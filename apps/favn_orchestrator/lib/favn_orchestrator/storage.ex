@@ -126,6 +126,33 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.list_global_run_events(run_event_opts, opts) end)
   end
 
+  @spec persist_log_entries([Favn.Log.Entry.t()]) ::
+          {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def persist_log_entries(entries) when is_list(entries) do
+    adapter_call(fn adapter, opts -> adapter.persist_log_entries(entries, opts) end)
+  end
+
+  @spec list_logs(Favn.Log.Filter.t() | map() | keyword(), keyword()) ::
+          {:ok, Page.t(Favn.Log.Entry.t())} | {:error, term()}
+  def list_logs(filter \\ [], opts \\ []) when is_list(opts) do
+    with {:ok, page_opts} <- Page.normalize_opts(opts) do
+      adapter_call(fn adapter, adapter_opts ->
+        adapter.list_logs(filter, Keyword.merge(opts, page_opts), adapter_opts)
+      end)
+    end
+  end
+
+  @spec replay_logs_after(
+          Favn.Log.Cursor.t() | String.t() | nil,
+          Favn.Log.Filter.t() | map() | keyword(),
+          keyword()
+        ) :: {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
+  def replay_logs_after(cursor, filter \\ [], opts \\ []) when is_list(opts) do
+    adapter_call(fn adapter, adapter_opts ->
+      adapter.replay_logs_after(cursor, filter, opts, adapter_opts)
+    end)
+  end
+
   @spec put_scheduler_state({module(), atom() | nil}, map()) :: :ok | {:error, term()}
   def put_scheduler_state({module, schedule_id} = key, state)
       when is_atom(module) and is_map(state) do

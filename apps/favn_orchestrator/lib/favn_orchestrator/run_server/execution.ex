@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RefreshPolicy
+  alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -538,7 +539,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp await_runner_result(entry, timeout_ms, runner_client, runner_opts) do
-    runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+    bridge = start_runner_log_bridge(runner_client, entry.execution_id, runner_opts)
+
+    try do
+      runner_client.await_result(entry.execution_id, timeout_ms, runner_opts)
+    after
+      stop_runner_log_bridge(bridge, runner_client, entry.execution_id, runner_opts)
+    end
   rescue
     exception ->
       {:error,
@@ -1671,7 +1678,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_client,
          runner_opts
        ) do
-    case runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts) do
+    bridge = start_runner_log_bridge(runner_client, execution_id, runner_opts)
+
+    await_result =
+      try do
+        runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts)
+      after
+        stop_runner_log_bridge(bridge, runner_client, execution_id, runner_opts)
+      end
+
+    case await_result do
       {:ok, %RunnerResult{} = result} ->
         result = sanitize_runner_result(result)
 
@@ -1776,6 +1792,19 @@ defmodule FavnOrchestrator.RunServer.Execution do
             Snapshots.cancelled_state(running_with_execution)
         end
     end
+  end
+
+  defp start_runner_log_bridge(runner_client, execution_id, runner_opts) do
+    case RunnerLogBridge.start_link(runner_client, execution_id, runner_opts) do
+      {:ok, pid} -> pid
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp stop_runner_log_bridge(nil, _runner_client, _execution_id, _runner_opts), do: :ok
+
+  defp stop_runner_log_bridge(pid, runner_client, execution_id, runner_opts) when is_pid(pid) do
+    RunnerLogBridge.stop(pid, runner_client, execution_id, runner_opts)
   end
 
   defp maybe_retry_step(

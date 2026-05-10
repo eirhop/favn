@@ -294,6 +294,15 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_global_run_events(_filters, _opts), do: {:ok, []}
 
   @impl true
+  def persist_log_entries(entries, _opts), do: {:ok, entries}
+
+  @impl true
+  def list_logs(_filter, opts, _adapter_opts), do: {:ok, empty_page(opts)}
+
+  @impl true
+  def replay_logs_after(_cursor, _filter, _opts, _adapter_opts), do: {:ok, []}
+
+  @impl true
   def put_scheduler_state(_scheduler_key, _state, _opts), do: :ok
 
   @impl true

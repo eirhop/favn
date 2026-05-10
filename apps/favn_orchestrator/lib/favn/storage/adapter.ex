@@ -71,6 +71,17 @@ defmodule Favn.Storage.Adapter do
   @callback list_global_run_events(filter_opts(), adapter_opts()) ::
               {:ok, [map()]} | {:error, error()}
 
+  @callback persist_log_entries([Favn.Log.Entry.t()], adapter_opts()) ::
+              {:ok, [Favn.Log.Entry.t()]} | {:error, error()}
+  @callback list_logs(Favn.Log.Filter.t() | map() | keyword(), keyword(), adapter_opts()) ::
+              {:ok, Page.t(Favn.Log.Entry.t())} | {:error, error()}
+  @callback replay_logs_after(
+              Favn.Log.Cursor.t() | String.t() | nil,
+              Favn.Log.Filter.t() | map() | keyword(),
+              keyword(),
+              adapter_opts()
+            ) :: {:ok, [Favn.Log.Entry.t()]} | {:error, error()}
+
   @callback put_scheduler_state(scheduler_key(), map(), adapter_opts()) ::
               :ok | {:error, error()}
 

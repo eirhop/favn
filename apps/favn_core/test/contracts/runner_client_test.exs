@@ -11,9 +11,12 @@ defmodule Favn.Contracts.RunnerClientTest do
                diagnostics: 1,
                inspect_relation: 2,
                register_manifest: 2,
-               submit_work: 2
+               submit_work: 2,
+               subscribe_execution_logs: 3,
+               unsubscribe_execution_logs: 3
              ]
 
-    assert RunnerClient.behaviour_info(:optional_callbacks) == [diagnostics: 1]
+    assert RunnerClient.behaviour_info(:optional_callbacks) |> Enum.sort() ==
+             [diagnostics: 1, subscribe_execution_logs: 3, unsubscribe_execution_logs: 3]
   end
 end

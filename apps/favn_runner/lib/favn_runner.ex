@@ -84,6 +84,33 @@ defmodule FavnRunner do
   def cancel_work(_execution_id, _reason, _opts), do: {:error, :invalid_cancel_args}
 
   @doc """
+  Subscribes a process to live logs for one runner execution.
+  """
+  @spec subscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok | {:error, term()}
+  def subscribe_execution_logs(execution_id, subscriber, opts \\ [])
+
+  def subscribe_execution_logs(execution_id, subscriber, opts)
+      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
+    Server.subscribe_execution_logs(execution_id, subscriber, opts)
+  end
+
+  def subscribe_execution_logs(_execution_id, _subscriber, _opts),
+    do: {:error, :invalid_log_subscription_args}
+
+  @doc """
+  Unsubscribes a process from live logs for one runner execution.
+  """
+  @spec unsubscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok
+  def unsubscribe_execution_logs(execution_id, subscriber, opts \\ [])
+
+  def unsubscribe_execution_logs(execution_id, subscriber, opts)
+      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
+    Server.unsubscribe_execution_logs(execution_id, subscriber, opts)
+  end
+
+  def unsubscribe_execution_logs(_execution_id, _subscriber, _opts), do: :ok
+
+  @doc """
   Runs one safe read-only relation inspection request through the runner boundary.
   """
   @spec inspect_relation(RelationInspectionRequest.t(), keyword()) ::

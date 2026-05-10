@@ -13,10 +13,27 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.WriteSemantics
+
+  @log_filter_keys [
+    :run_id,
+    :asset_step_id,
+    :runner_execution_id,
+    :level,
+    :source,
+    :stream,
+    :levels,
+    :sources,
+    :since,
+    :until,
+    :asset_ref,
+    :node_key,
+    :after_global_sequence
+  ]
 
   @type state :: %{
           manifests: %{required(String.t()) => Version.t()},
@@ -24,6 +41,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           runs: %{required(String.t()) => RunState.t()},
           run_events: %{required(String.t()) => [map()]},
           run_event_global_sequence: non_neg_integer(),
+          log_entries: [Favn.Log.Entry.t()],
+          log_global_sequence: non_neg_integer(),
           scheduler_states: %{required({module(), atom() | nil}) => map()},
           coverage_baselines: %{required(String.t()) => CoverageBaseline.t()},
           backfill_windows: %{required({String.t(), module(), String.t()}) => BackfillWindow.t()},
@@ -195,6 +214,27 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       when is_list(run_event_opts) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:list_global_run_events, run_event_opts})
+  end
+
+  @impl true
+  def persist_log_entries(entries, opts) when is_list(entries) and is_list(opts) do
+    with {:ok, normalized} <- normalize_log_entries(entries) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:persist_log_entries, normalized})
+    end
+  end
+
+  @impl true
+  def list_logs(filter, opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
+    server = Keyword.get(adapter_opts, :server, __MODULE__)
+    GenServer.call(server, {:list_logs, filter, opts})
+  end
+
+  @impl true
+  def replay_logs_after(cursor, filter, opts, adapter_opts)
+      when is_list(opts) and is_list(adapter_opts) do
+    server = Keyword.get(adapter_opts, :server, __MODULE__)
+    GenServer.call(server, {:replay_logs_after, cursor, filter, opts})
   end
 
   @impl true
@@ -480,6 +520,8 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       runs: %{},
       run_events: %{},
       run_event_global_sequence: 0,
+      log_entries: [],
+      log_global_sequence: 0,
       scheduler_states: %{},
       coverage_baselines: %{},
       backfill_windows: %{},
@@ -704,6 +746,59 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
         true ->
           {:error, :cursor_invalid}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:persist_log_entries, entries}, _from, state) do
+    {persisted, next_entries, next_sequence} =
+      Enum.reduce(entries, {[], log_entries(state), log_global_sequence(state)}, fn entry,
+                                                                                    {persisted,
+                                                                                     stored,
+                                                                                     sequence} ->
+        case find_idempotent_log_entry(stored, entry) do
+          nil ->
+            next_sequence = sequence + 1
+            persisted_entry = LogEntryCodec.assign_global_sequence(entry, next_sequence)
+            {[persisted_entry | persisted], stored ++ [persisted_entry], next_sequence}
+
+          existing ->
+            {[existing | persisted], stored, sequence}
+        end
+      end)
+
+    {:reply, {:ok, Enum.reverse(persisted)},
+     Map.merge(state, %{log_entries: next_entries, log_global_sequence: next_sequence})}
+  end
+
+  def handle_call({:list_logs, filter, opts}, _from, state) do
+    page_opts = page_opts(opts)
+
+    rows =
+      log_entries(state)
+      |> filter_logs(filter)
+      |> Enum.sort_by(&Map.get(&1, :global_sequence, 0))
+      |> Enum.drop(Keyword.fetch!(page_opts, :offset))
+      |> Enum.take(Keyword.fetch!(page_opts, :limit) + 1)
+
+    {:reply, {:ok, Page.from_fetched(rows, page_opts)}, state}
+  end
+
+  def handle_call({:replay_logs_after, cursor, filter, opts}, _from, state) do
+    limit = Keyword.get(opts, :limit, 200)
+
+    reply =
+      with {:ok, after_sequence} <- log_cursor_sequence(cursor),
+           :ok <- validate_replay_limit(limit) do
+        rows =
+          log_entries(state)
+          |> filter_logs(filter)
+          |> Enum.filter(&(Map.get(&1, :global_sequence, 0) > after_sequence))
+          |> Enum.sort_by(&Map.get(&1, :global_sequence, 0))
+          |> Enum.take(limit)
+
+        {:ok, rows}
       end
 
     {:reply, reply, state}
@@ -1167,6 +1262,125 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       if key in allowed_keys, do: false, else: {:error, {:unsupported_filter, key}}
     end)
   end
+
+  defp normalize_log_entries(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      case LogEntryCodec.normalize(entry) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp log_entries(state), do: Map.get(state, :log_entries, [])
+  defp log_global_sequence(state), do: Map.get(state, :log_global_sequence, 0)
+
+  defp find_idempotent_log_entry(entries, entry) do
+    producer_id = Map.get(entry, :producer_id)
+    producer_sequence = Map.get(entry, :producer_sequence)
+
+    if is_binary(producer_id) and is_integer(producer_sequence) do
+      Enum.find(entries, fn existing ->
+        Map.get(existing, :producer_id) == producer_id and
+          Map.get(existing, :producer_sequence) == producer_sequence
+      end)
+    end
+  end
+
+  defp filter_logs(entries, filter) do
+    filters = normalize_log_filter(filter)
+
+    Enum.filter(entries, fn entry ->
+      Enum.all?(filters, fn
+        {:after_global_sequence, sequence} ->
+          Map.get(entry, :global_sequence, 0) > sequence
+
+        {:levels, []} ->
+          true
+
+        {:levels, levels} when is_list(levels) ->
+          Map.get(entry, :level) in levels
+
+        {:sources, []} ->
+          true
+
+        {:sources, sources} when is_list(sources) ->
+          Map.get(entry, :source) in sources
+
+        {:since, %DateTime{} = since} ->
+          DateTime.compare(Map.get(entry, :occurred_at), since) != :lt
+
+        {:until, %DateTime{} = until} ->
+          DateTime.compare(Map.get(entry, :occurred_at), until) != :gt
+
+        {:asset_ref, expected} ->
+          Map.get(entry, :asset_ref) == expected
+
+        {:node_key, expected} ->
+          Map.get(entry, :node_key) == expected
+
+        {key, expected} ->
+          Map.get(entry, key) == expected
+      end)
+    end)
+  end
+
+  defp normalize_log_filter(filter) when is_list(filter),
+    do: Keyword.drop(filter, [:limit, :offset])
+
+  defp normalize_log_filter(%_{} = filter),
+    do: filter |> Map.from_struct() |> normalize_log_filter()
+
+  defp normalize_log_filter(filter) when is_map(filter) do
+    filter
+    |> Enum.map(fn {key, value} -> {normalize_filter_key(key), value} end)
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp normalize_log_filter(_filter), do: []
+
+  defp normalize_filter_key(key) when is_atom(key), do: key
+
+  defp normalize_filter_key(key) when is_binary(key) do
+    Enum.find(@log_filter_keys, key, &(Atom.to_string(&1) == key)) || key
+  end
+
+  defp log_cursor_sequence(nil), do: {:ok, 0}
+  defp log_cursor_sequence(value) when is_integer(value) and value >= 0, do: {:ok, value}
+
+  defp log_cursor_sequence(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {sequence, ""} when sequence >= 0 ->
+        {:ok, sequence}
+
+      _ ->
+        case Favn.Log.Cursor.parse(value) do
+          {:ok, cursor} -> log_cursor_sequence(cursor)
+          {:error, _reason} -> {:error, :cursor_invalid}
+        end
+    end
+  end
+
+  defp log_cursor_sequence(%_{} = cursor),
+    do: cursor |> Map.from_struct() |> log_cursor_sequence()
+
+  defp log_cursor_sequence(%{} = cursor) do
+    cursor
+    |> Map.get(
+      :global_sequence,
+      Map.get(cursor, :after_global_sequence, Map.get(cursor, "global_sequence"))
+    )
+    |> log_cursor_sequence()
+  end
+
+  defp log_cursor_sequence(_cursor), do: {:error, :cursor_invalid}
+
+  defp validate_replay_limit(limit) when is_integer(limit) and limit > 0, do: :ok
+  defp validate_replay_limit(_limit), do: {:error, :cursor_invalid}
 
   defp reject_scoped(_values, []), do: %{}
 

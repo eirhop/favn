@@ -50,6 +50,23 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   end
 
   @impl true
+  @spec subscribe_execution_logs(String.t(), pid(), [opt()]) :: :ok | {:error, term()}
+  def subscribe_execution_logs(execution_id, subscriber, opts \\ [])
+      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
+    dispatch(opts, :subscribe_execution_logs, [execution_id, subscriber, opts])
+  end
+
+  @impl true
+  @spec unsubscribe_execution_logs(String.t(), pid(), [opt()]) :: :ok
+  def unsubscribe_execution_logs(execution_id, subscriber, opts \\ [])
+      when is_binary(execution_id) and is_pid(subscriber) and is_list(opts) do
+    case dispatch(opts, :unsubscribe_execution_logs, [execution_id, subscriber, opts]) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  @impl true
   @spec inspect_relation(RelationInspectionRequest.t(), [opt()]) ::
           {:ok, RelationInspectionResult.t()} | {:error, term()}
   def inspect_relation(%RelationInspectionRequest{} = request, opts \\ []) when is_list(opts) do

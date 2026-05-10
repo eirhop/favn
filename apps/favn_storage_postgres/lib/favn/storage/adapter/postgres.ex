@@ -17,6 +17,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
+  alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
@@ -30,6 +31,20 @@ defmodule Favn.Storage.Adapter.Postgres do
   @active_manifest_key "active_manifest_version_id"
   @nil_schedule_id "__nil__"
   @schema_ready_cache_key {__MODULE__, :external_schema_ready}
+  @log_filter_keys [
+    :run_id,
+    :asset_step_id,
+    :runner_execution_id,
+    :level,
+    :source,
+    :stream,
+    :levels,
+    :sources,
+    :since,
+    :until,
+    :asset_ref,
+    :node_key
+  ]
 
   @impl true
   def child_spec(opts) when is_list(opts) do
@@ -289,6 +304,39 @@ defmodule Favn.Storage.Adapter.Postgres do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  @impl true
+  def persist_log_entries(entries, opts) when is_list(entries) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, normalized} <- normalize_log_entries(entries) do
+      repo.transact(fn ->
+        case persist_log_entries_in_transaction(repo, normalized) do
+          {:ok, persisted} -> {:ok, persisted}
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+    end
+  end
+
+  @impl true
+  def list_logs(filter, opts, adapter_opts) when is_list(opts) and is_list(adapter_opts) do
+    with {:ok, page_opts} <- page_opts(opts),
+         {:ok, repo} <- resolve_repo(adapter_opts),
+         {:ok, sql, params} <- list_logs_query(filter) do
+      query_and_decode_page(repo, sql, params, page_opts, &decode_log_entry_row/1)
+    end
+  end
+
+  @impl true
+  def replay_logs_after(cursor, filter, opts, adapter_opts)
+      when is_list(opts) and is_list(adapter_opts) do
+    with {:ok, after_sequence} <- log_cursor_sequence(cursor),
+         :ok <- validate_log_replay_limit(Keyword.get(opts, :limit, 200)),
+         {:ok, repo} <- resolve_repo(adapter_opts),
+         {:ok, sql, params} <- replay_logs_query(filter, after_sequence, opts) do
+      query_and_decode_rows(repo, sql, params, &decode_log_entry_row/1)
     end
   end
 
@@ -975,6 +1023,8 @@ defmodule Favn.Storage.Adapter.Postgres do
   defp decode_asset_freshness_state_row([record_payload]),
     do: AssetFreshnessStateCodec.decode(record_payload)
 
+  defp decode_log_entry_row([payload]), do: LogEntryCodec.decode(payload)
+
   defp persist_run(repo, run) do
     repo.transact(fn ->
       case guarded_put_run(repo, run) do
@@ -1191,6 +1241,135 @@ defmodule Favn.Storage.Adapter.Postgres do
     sql = "SELECT nextval('favn_run_event_global_seq')"
 
     case SQL.query(repo, sql, []) do
+      {:ok, %{rows: [[value]]}} when is_integer(value) -> {:ok, value}
+      {:ok, _} -> {:error, :invalid_counter_value}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_log_entries(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      case LogEntryCodec.normalize(entry) do
+        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp persist_log_entries_in_transaction(repo, entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      case persist_log_entry(repo, entry) do
+        {:ok, persisted} -> {:cont, {:ok, [persisted | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, persisted} -> {:ok, Enum.reverse(persisted)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp persist_log_entry(repo, entry) do
+    with {:ok, existing} <- fetch_log_entry_by_producer(repo, entry),
+         nil <- existing,
+         {:ok, global_sequence} <- next_log_global_sequence(repo) do
+      entry = LogEntryCodec.assign_global_sequence(entry, global_sequence)
+      {node_key_hash, node_key_blob} = LogEntryCodec.node_key_storage(Map.get(entry, :node_key))
+
+      {asset_ref_key, asset_ref_blob} =
+        LogEntryCodec.asset_ref_storage(Map.get(entry, :asset_ref))
+
+      now = DateTime.utc_now()
+
+      sql =
+        """
+        INSERT INTO favn_log_entries (
+          id, global_sequence, run_id, asset_step_id, node_key_hash, node_key_blob,
+          asset_ref_key, asset_ref_blob, runner_execution_id, attempt, producer_id,
+          producer_sequence, occurred_at, level, source, stream, message, metadata_blob,
+          log_blob, truncated, inserted_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+        """
+
+      params = [
+        entry.id,
+        entry.global_sequence,
+        entry.run_id,
+        entry.asset_step_id,
+        node_key_hash,
+        node_key_blob,
+        asset_ref_key,
+        asset_ref_blob,
+        entry.runner_execution_id,
+        entry.attempt,
+        entry.producer_id,
+        entry.producer_sequence,
+        entry.occurred_at,
+        optional_atom_to_string(entry.level),
+        optional_atom_to_string(entry.source),
+        optional_atom_to_string(entry.stream),
+        entry.message,
+        Jason.encode!(entry.metadata || %{}),
+        encode_log_entry(entry),
+        entry.truncated == true,
+        now
+      ]
+
+      case SQL.query(repo, sql, params) do
+        {:ok, _} ->
+          {:ok, entry}
+
+        {:error, %{postgres: %{code: :unique_violation}}} ->
+          resolve_log_entry_conflict(repo, entry)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      %_{} = existing -> {:ok, existing}
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:invalid_log_entry_insert, other}}
+    end
+  end
+
+  defp fetch_log_entry_by_producer(_repo, %{
+         producer_id: producer_id,
+         producer_sequence: producer_sequence
+       })
+       when not is_binary(producer_id) or not is_integer(producer_sequence),
+       do: {:ok, nil}
+
+  defp fetch_log_entry_by_producer(repo, entry) do
+    sql =
+      """
+      SELECT log_blob
+      FROM favn_log_entries
+      WHERE producer_id = $1 AND producer_sequence = $2
+      LIMIT 1
+      """
+
+    case SQL.query(repo, sql, [entry.producer_id, entry.producer_sequence]) do
+      {:ok, %{rows: [[blob]]}} -> LogEntryCodec.decode(blob)
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp resolve_log_entry_conflict(repo, entry) do
+    with {:ok, existing} <- fetch_log_entry_by_producer(repo, entry) do
+      case existing do
+        nil -> {:error, :log_entry_conflict}
+        existing -> {:ok, existing}
+      end
+    end
+  end
+
+  defp next_log_global_sequence(repo) do
+    case SQL.query(repo, "SELECT nextval('favn_log_global_seq')", []) do
       {:ok, %{rows: [[value]]}} when is_integer(value) -> {:ok, value}
       {:ok, _} -> {:error, :invalid_counter_value}
       {:error, reason} -> {:error, reason}
@@ -1499,6 +1678,165 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
+  defp list_logs_query(filter) do
+    with {:ok, {where_sql, params}} <- build_log_filter_sql(filter) do
+      {:ok,
+       """
+       SELECT log_blob
+       FROM favn_log_entries
+       #{where_sql}
+       ORDER BY global_sequence ASC
+       """, params}
+    end
+  end
+
+  defp replay_logs_query(filter, after_sequence, opts) do
+    with {:ok, {where_sql, params}} <- build_log_filter_sql(filter) do
+      limit = Keyword.get(opts, :limit, 200)
+      prefix = if where_sql == "", do: " WHERE ", else: where_sql <> " AND "
+      after_placeholder = "$#{length(params) + 1}"
+      limit_placeholder = "$#{length(params) + 2}"
+
+      {:ok,
+       """
+       SELECT log_blob
+       FROM favn_log_entries
+       #{prefix}global_sequence > #{after_placeholder}
+       ORDER BY global_sequence ASC
+       LIMIT #{limit_placeholder}
+       """, params ++ [after_sequence, limit]}
+    end
+  end
+
+  defp build_log_filter_sql(filter) do
+    filter
+    |> normalize_log_filter()
+    |> Enum.reduce_while({:ok, [], []}, fn {key, value}, {:ok, clauses, params} ->
+      case log_filter_clause(key, value, length(params) + 1) do
+        {:ok, clause, encoded} ->
+          {:cont, {:ok, [clause | clauses], params ++ List.wrap(encoded)}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, [], []} ->
+        {:ok, {"", []}}
+
+      {:ok, clauses, params} ->
+        {:ok, {"WHERE " <> Enum.join(Enum.reverse(clauses), " AND "), params}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp normalize_log_filter(filter) when is_list(filter),
+    do: Keyword.drop(filter, [:limit, :offset])
+
+  defp normalize_log_filter(%_{} = filter),
+    do: filter |> Map.from_struct() |> normalize_log_filter()
+
+  defp normalize_log_filter(filter) when is_map(filter) do
+    filter
+    |> Enum.map(fn {key, value} -> {normalize_log_filter_key(key), value} end)
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp normalize_log_filter(_filter), do: []
+
+  defp normalize_log_filter_key(key) when is_atom(key), do: key
+
+  defp normalize_log_filter_key(key) when is_binary(key) do
+    Enum.find(@log_filter_keys, key, &(Atom.to_string(&1) == key)) || key
+  end
+
+  defp log_filter_clause(:run_id, value, next), do: {:ok, "run_id = $#{next}", value}
+
+  defp log_filter_clause(:asset_step_id, value, next),
+    do: {:ok, "asset_step_id = $#{next}", value}
+
+  defp log_filter_clause(:runner_execution_id, value, next),
+    do: {:ok, "runner_execution_id = $#{next}", value}
+
+  defp log_filter_clause(:level, value, next),
+    do: {:ok, "level = $#{next}", encode_log_filter_atom(value)}
+
+  defp log_filter_clause(:source, value, next),
+    do: {:ok, "source = $#{next}", encode_log_filter_atom(value)}
+
+  defp log_filter_clause(:stream, value, next),
+    do: {:ok, "stream = $#{next}", encode_log_filter_atom(value)}
+
+  defp log_filter_clause(:levels, [], next), do: {:ok, "1 = $#{next}", 1}
+
+  defp log_filter_clause(:levels, values, next) when is_list(values) do
+    placeholders = Enum.map_join(0..(length(values) - 1), ",", &"$#{next + &1}")
+    {:ok, "level IN (#{placeholders})", Enum.map(values, &encode_log_filter_atom/1)}
+  end
+
+  defp log_filter_clause(:sources, [], next), do: {:ok, "1 = $#{next}", 1}
+
+  defp log_filter_clause(:sources, values, next) when is_list(values) do
+    placeholders = Enum.map_join(0..(length(values) - 1), ",", &"$#{next + &1}")
+    {:ok, "source IN (#{placeholders})", Enum.map(values, &encode_log_filter_atom/1)}
+  end
+
+  defp log_filter_clause(:since, %DateTime{} = value, next),
+    do: {:ok, "occurred_at >= $#{next}", value}
+
+  defp log_filter_clause(:until, %DateTime{} = value, next),
+    do: {:ok, "occurred_at <= $#{next}", value}
+
+  defp log_filter_clause(:asset_ref, value, next) do
+    {key, _blob} = LogEntryCodec.asset_ref_storage(value)
+    {:ok, "asset_ref_key = $#{next}", key}
+  end
+
+  defp log_filter_clause(:node_key, value, next) do
+    {hash, _blob} = LogEntryCodec.node_key_storage(value)
+    {:ok, "node_key_hash = $#{next}", hash}
+  end
+
+  defp log_filter_clause(key, _value, _next), do: {:error, {:unsupported_filter, key}}
+
+  defp encode_log_filter_atom(value) when is_atom(value), do: Atom.to_string(value)
+  defp encode_log_filter_atom(value), do: value
+
+  defp log_cursor_sequence(nil), do: {:ok, 0}
+  defp log_cursor_sequence(value) when is_integer(value) and value >= 0, do: {:ok, value}
+
+  defp log_cursor_sequence(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {sequence, ""} when sequence >= 0 ->
+        {:ok, sequence}
+
+      _ ->
+        case Favn.Log.Cursor.parse(value) do
+          {:ok, cursor} -> log_cursor_sequence(cursor)
+          {:error, _reason} -> {:error, :cursor_invalid}
+        end
+    end
+  end
+
+  defp log_cursor_sequence(%_{} = cursor),
+    do: cursor |> Map.from_struct() |> log_cursor_sequence()
+
+  defp log_cursor_sequence(%{} = cursor) do
+    cursor
+    |> Map.get(
+      :global_sequence,
+      Map.get(cursor, :after_global_sequence, Map.get(cursor, "global_sequence"))
+    )
+    |> log_cursor_sequence()
+  end
+
+  defp log_cursor_sequence(_cursor), do: {:error, :cursor_invalid}
+
+  defp validate_log_replay_limit(limit) when is_integer(limit) and limit > 0, do: :ok
+  defp validate_log_replay_limit(_limit), do: {:error, :cursor_invalid}
+
   defp run_snapshot_select do
     """
     SELECT r.run_blob, r.manifest_version_id, m.manifest_version_id, m.content_hash, m.schema_version, m.runner_contract_version, m.serialization_format, m.manifest_json, m.inserted_at
@@ -1627,6 +1965,13 @@ defmodule Favn.Storage.Adapter.Postgres do
     case RunEventCodec.encode(event) do
       {:ok, payload} -> payload
       {:error, reason} -> raise ArgumentError, "invalid run event payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_log_entry(entry) do
+    case LogEntryCodec.encode(entry) do
+      {:ok, payload} -> payload
+      {:error, reason} -> raise ArgumentError, "invalid log entry payload: #{inspect(reason)}"
     end
   end
 
