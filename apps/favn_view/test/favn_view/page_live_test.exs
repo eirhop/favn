@@ -937,6 +937,7 @@ defmodule FavnView.PageLiveTest do
              Storage.put_asset_freshness_state(
                freshness_state(:customer_orders_daily, "customer:v1", customer_at,
                  run_id: "run_customer_orders_daily",
+                 freshness_key: current_daily_freshness_key(now),
                  input_versions: [
                    %{
                      upstream_ref: {__MODULE__.Assets, :raw_payments},
@@ -956,7 +957,7 @@ defmodule FavnView.PageLiveTest do
       AssetFreshnessState.new(%{
         asset_ref_module: __MODULE__.Assets,
         asset_ref_name: name,
-        freshness_key: Favn.Freshness.Key.latest(),
+        freshness_key: Keyword.get(opts, :freshness_key, Favn.Freshness.Key.latest()),
         status: :ok,
         freshness_version: version,
         latest_success_run_id: run_id,
@@ -971,6 +972,11 @@ defmodule FavnView.PageLiveTest do
       })
 
     state
+  end
+
+  defp current_daily_freshness_key(now) do
+    {:ok, period} = Favn.TimePeriod.current(:day, now, "Europe/Oslo")
+    Favn.Freshness.Key.calendar!(:day, "Europe/Oslo", period.start_at)
   end
 
   defp terminal_asset_results(name) do

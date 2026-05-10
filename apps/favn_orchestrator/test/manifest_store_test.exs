@@ -289,6 +289,32 @@ defmodule FavnOrchestrator.ManifestStoreTest do
           {MyApp.NeverRun, :asset},
           Favn.Freshness.Policy.from_value!(window_success: true)
         ),
+        freshness_asset(
+          {MyApp.WindowedOrders, :asset},
+          Favn.Freshness.Policy.from_value!(window_success: true),
+          [],
+          WindowSpec.new!(:day)
+        ),
+        freshness_asset(
+          {MyApp.FreshMaxAge, :asset},
+          Favn.Freshness.Policy.from_value!(max_age: {:hours, 24})
+        ),
+        freshness_asset(
+          {MyApp.ExpiredMaxAge, :asset},
+          Favn.Freshness.Policy.from_value!(max_age: {:hours, 24})
+        ),
+        freshness_asset(
+          {MyApp.WindowRaw, :asset},
+          Favn.Freshness.Policy.from_value!(window_success: true),
+          [],
+          WindowSpec.new!(:day)
+        ),
+        freshness_asset(
+          {MyApp.WindowGold, :asset},
+          Favn.Freshness.Policy.from_value!(window_success: true),
+          [{MyApp.WindowRaw, :asset}],
+          WindowSpec.new!(:day)
+        ),
         freshness_asset({MyApp.AlwaysRun, :asset}, Favn.Freshness.Policy.from_value!(:always)),
         freshness_asset({MyApp.NoPolicy, :asset}, nil)
       ]
@@ -298,9 +324,15 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert :ok = ManifestStore.register_manifest(version)
     assert :ok = ManifestStore.set_active_manifest("mv_freshness_detail")
 
+    daily_key = Favn.Freshness.Key.calendar!(:day, "Europe/Oslo", ~D[2026-05-10])
+    window_key = day_window_key(now)
+
     assert :ok =
              Storage.put_asset_freshness_state(
-               freshness_state({MyApp.RawOrders, :asset}, "raw:v2", now, run_id: "run_raw_v2")
+               freshness_state({MyApp.RawOrders, :asset}, "raw:v2", now,
+                 run_id: "run_raw_v2",
+                 freshness_key: daily_key
+               )
              )
 
     assert :ok =
@@ -318,16 +350,73 @@ defmodule FavnOrchestrator.ManifestStoreTest do
                )
              )
 
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state({MyApp.WindowedOrders, :asset}, "windowed:v1", now,
+                 run_id: "run_windowed_v1",
+                 freshness_key: Favn.Freshness.Key.window!(window_key),
+                 node_key: {{MyApp.WindowedOrders, :asset}, window_key}
+               )
+             )
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state({MyApp.FreshMaxAge, :asset}, "fresh_age:v1", now,
+                 run_id: "run_fresh_age"
+               )
+             )
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(
+                 {MyApp.ExpiredMaxAge, :asset},
+                 "expired_age:v1",
+                 DateTime.add(now, -3, :day),
+                 run_id: "run_expired_age"
+               )
+             )
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state({MyApp.WindowRaw, :asset}, "window_raw:v2", now,
+                 run_id: "run_window_raw_v2",
+                 freshness_key: Favn.Freshness.Key.window!(window_key),
+                 node_key: {{MyApp.WindowRaw, :asset}, window_key}
+               )
+             )
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state({MyApp.WindowGold, :asset}, "window_gold:v1", now,
+                 run_id: "run_window_gold_v1",
+                 freshness_key: Favn.Freshness.Key.window!(window_key),
+                 node_key: {{MyApp.WindowGold, :asset}, window_key},
+                 input_versions: [
+                   %{
+                     upstream_ref: {MyApp.WindowRaw, :asset},
+                     upstream_node_key: {{MyApp.WindowRaw, :asset}, window_key},
+                     freshness_version: "window_raw:v1",
+                     success_run_id: "run_window_raw_v1"
+                   }
+                 ]
+               )
+             )
+
     assert {:ok, raw_detail} =
-             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.RawOrders:asset")
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.RawOrders:asset",
+               now: now
+             )
 
     assert raw_detail.freshness.state == :fresh
     assert raw_detail.freshness.policy == %{kind: :daily, label: "daily Europe/Oslo"}
     assert raw_detail.freshness.latest_success.run_id == "run_raw_v2"
+    assert raw_detail.freshness.latest_success.freshness_key == daily_key
     assert [%{kind: :policy_fresh}] = raw_detail.freshness.reasons
 
     assert {:ok, gold_detail} =
-             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.GoldOrders:asset")
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.GoldOrders:asset",
+               now: now
+             )
 
     assert gold_detail.freshness.state == :stale
     assert gold_detail.freshness.policy == %{kind: :max_age, label: "max age 24 hours"}
@@ -339,6 +428,44 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert reason.previous_version == "raw:v1"
     assert reason.current_version == "raw:v2"
     assert reason.run_id == "run_raw_v2"
+
+    assert {:ok, windowed_detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.WindowedOrders:asset",
+               now: now
+             )
+
+    assert windowed_detail.freshness.state == :fresh
+    assert windowed_detail.freshness.policy == %{kind: :window_success, label: "window success"}
+
+    assert windowed_detail.freshness.latest_success.freshness_key ==
+             Favn.Freshness.Key.window!(window_key)
+
+    assert {:ok, fresh_age_detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.FreshMaxAge:asset",
+               now: now
+             )
+
+    assert fresh_age_detail.freshness.state == :fresh
+
+    assert {:ok, expired_age_detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.ExpiredMaxAge:asset",
+               now: now
+             )
+
+    assert expired_age_detail.freshness.state == :stale
+    assert [%{kind: :freshness_expired}] = expired_age_detail.freshness.reasons
+
+    assert {:ok, window_gold_detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.WindowGold:asset",
+               now: now
+             )
+
+    assert window_gold_detail.freshness.state == :stale
+    assert [window_reason] = window_gold_detail.freshness.reasons
+    assert window_reason.kind == :upstream_version_changed
+    assert window_reason.upstream_ref == "Elixir.MyApp.WindowRaw:asset"
+    assert window_reason.previous_version == "window_raw:v1"
+    assert window_reason.current_version == "window_raw:v2"
 
     assert {:ok, never_run_detail} =
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.NeverRun:asset")
@@ -374,13 +501,14 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     version
   end
 
-  defp freshness_asset(ref, freshness, depends_on \\ []) do
+  defp freshness_asset(ref, freshness, depends_on \\ [], window \\ nil) do
     %Favn.Manifest.Asset{
       ref: ref,
       module: elem(ref, 0),
       name: elem(ref, 1),
       freshness: freshness,
-      depends_on: depends_on
+      depends_on: depends_on,
+      window: window
     }
   end
 
@@ -392,11 +520,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       AssetFreshnessState.new(%{
         asset_ref_module: module,
         asset_ref_name: name,
-        freshness_key: Favn.Freshness.Key.latest(),
+        freshness_key: Keyword.get(opts, :freshness_key, Favn.Freshness.Key.latest()),
         status: Keyword.get(opts, :status, :ok),
         freshness_version: version,
         latest_success_run_id: run_id,
-        latest_success_node_key: {ref, nil},
+        latest_success_node_key: Keyword.get(opts, :node_key, {ref, nil}),
         latest_success_at: at,
         latest_attempt_run_id: run_id,
         latest_attempt_status: Keyword.get(opts, :status, :ok),
@@ -407,6 +535,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       })
 
     state
+  end
+
+  defp day_window_key(now) do
+    {:ok, period} = Favn.TimePeriod.current(:day, now, "Etc/UTC")
+    Favn.Window.Key.new!(:day, period.start_at, "Etc/UTC")
   end
 
   defp run_state(id, ref, status, finished_at, manifest_version_id) do

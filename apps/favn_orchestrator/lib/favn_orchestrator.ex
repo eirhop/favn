@@ -7,6 +7,7 @@ defmodule FavnOrchestrator do
   most application code should build against.
   """
 
+  alias Favn.Assets.Planner
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Index
@@ -20,6 +21,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.Events
+  alias FavnOrchestrator.Freshness.Decider, as: FreshnessDecider
   alias FavnOrchestrator.Freshness.Query, as: FreshnessQuery
   alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.Logs
@@ -1027,7 +1029,7 @@ defmodule FavnOrchestrator do
         |> Map.put(:latest_run_id, latest_run_id(latest_freshness, latest_run))
         |> Map.put(:latest_run_status, latest_run_status(latest_freshness, latest_run))
         |> Map.put(:latest_run_at, latest_run_at(latest_freshness, latest_run))
-        |> Map.put(:freshness, asset_freshness_detail(asset, latest_freshness))
+        |> Map.put(:freshness, asset_freshness_detail(asset, version, freshness_states, opts))
         |> Map.put(
           :timeline,
           asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts)
@@ -1035,8 +1037,9 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp asset_freshness_detail(asset, latest_freshness) do
+  defp asset_freshness_detail(asset, version, freshness_states, opts) do
     policy = asset_freshness_policy(asset)
+    now = Keyword.get(opts, :now, DateTime.utc_now())
 
     cond do
       policy.kind == :always ->
@@ -1061,62 +1064,33 @@ defmodule FavnOrchestrator do
           ]
         )
 
-      is_nil(latest_freshness) or is_nil(latest_freshness.latest_success_run_id) ->
-        freshness_detail(
-          :unknown,
-          policy,
-          latest_success_detail(latest_freshness),
-          "No successful freshness evidence exists for this asset yet.",
-          [
-            %{
-              kind: :never_run,
-              message: "No successful freshness-producing run has been recorded."
-            }
-          ]
-        )
-
       true ->
-        explain_asset_freshness(asset, latest_freshness, policy)
+        classify_asset_freshness(asset, version, freshness_states, policy, now)
     end
   end
 
-  defp explain_asset_freshness(asset, latest_freshness, policy) do
-    upstream_node_keys = Enum.map(asset.depends_on, &{&1, nil})
+  defp classify_asset_freshness(asset, version, freshness_states, policy, now) do
+    with {:ok, plan} <- asset_freshness_plan(asset, version, now),
+         {:ok, target_node_key} <- asset_freshness_target_node_key(plan, asset.ref) do
+      states = freshness_state_lookup(freshness_states)
+      assets_by_ref = Map.new(version.manifest.assets, &{&1.ref, &1})
 
-    case explain_asset_staleness(asset.ref,
-           freshness_key: Favn.Freshness.Key.latest(),
-           upstream_node_keys: upstream_node_keys
-         ) do
-      {:ok, %{status: :fresh}} ->
-        freshness_detail(
-          :fresh,
-          policy,
-          latest_success_detail(latest_freshness),
-          "Backend freshness state currently satisfies this asset's policy.",
-          [
-            %{
-              kind: :policy_fresh,
-              message: "Backend freshness state satisfies the declared policy."
-            }
-          ]
+      decision =
+        FreshnessDecider.decide(plan, target_node_key,
+          assets_by_ref: assets_by_ref,
+          prior_states: states,
+          current_states: states,
+          now: now
         )
 
-      {:ok, %{status: :stale, stale_reasons: reasons}} ->
-        reasons = Enum.map(reasons, &asset_freshness_reason/1)
-
-        freshness_detail(
-          :stale,
-          policy,
-          latest_success_detail(latest_freshness),
-          stale_explanation(asset, reasons),
-          reasons
-        )
-
+      state = Map.get(states, {asset.ref, Map.fetch!(decision, :freshness_key)})
+      freshness_detail_from_decision(asset, policy, state, decision)
+    else
       {:error, _reason} ->
         freshness_detail(
           :unknown,
           policy,
-          latest_success_detail(latest_freshness),
+          nil,
           "Freshness state exists, but backend could not explain whether it is stale.",
           [
             %{
@@ -1126,6 +1100,126 @@ defmodule FavnOrchestrator do
           ]
         )
     end
+  end
+
+  defp freshness_detail_from_decision(_asset, policy, state, %{decision: :skipped_fresh}) do
+    freshness_detail(
+      :fresh,
+      policy,
+      latest_success_detail(state),
+      "Backend freshness state currently satisfies this asset's policy.",
+      [
+        %{
+          kind: :policy_fresh,
+          message: "Backend freshness state satisfies the declared policy."
+        }
+      ]
+    )
+  end
+
+  defp freshness_detail_from_decision(asset, policy, state, %{
+         decision: :run,
+         reason: :upstream_version_changed,
+         stale_reasons: stale_reasons
+       }) do
+    reasons = Enum.map(stale_reasons, &asset_freshness_reason/1)
+
+    freshness_detail(
+      :stale,
+      policy,
+      latest_success_detail(state),
+      stale_explanation(asset, reasons),
+      reasons
+    )
+  end
+
+  defp freshness_detail_from_decision(_asset, policy, nil, %{decision: :run}) do
+    freshness_detail(
+      :unknown,
+      policy,
+      nil,
+      "No successful freshness evidence exists for this asset yet.",
+      [
+        %{
+          kind: :never_run,
+          message: "No successful freshness-producing run has been recorded."
+        }
+      ]
+    )
+  end
+
+  defp freshness_detail_from_decision(_asset, policy, state, %{
+         decision: :run,
+         reason: :freshness_expired
+       }) do
+    freshness_detail(
+      :stale,
+      policy,
+      latest_success_detail(state),
+      "Stored freshness evidence no longer satisfies this asset's policy.",
+      [
+        %{
+          kind: :freshness_expired,
+          message: "Stored freshness evidence no longer satisfies the declared policy."
+        }
+      ]
+    )
+  end
+
+  defp freshness_detail_from_decision(_asset, policy, state, %{decision: :run, reason: reason}) do
+    freshness_detail(
+      :stale,
+      policy,
+      latest_success_detail(state),
+      "Backend freshness policy requires this asset to run.",
+      [
+        %{
+          kind: reason,
+          message: "Backend freshness policy requires this asset to run."
+        }
+      ]
+    )
+  end
+
+  defp asset_freshness_plan(asset, version, now) do
+    with {:ok, index} <- Index.build_from_version(version) do
+      opts = [dependencies: :all, graph_index: index.graph_index]
+
+      opts =
+        case asset_current_anchor_window(asset, now) do
+          {:ok, anchor_window} -> Keyword.put(opts, :anchor_window, anchor_window)
+          :error -> opts
+        end
+
+      Planner.plan(asset.ref, opts)
+    end
+  end
+
+  defp asset_current_anchor_window(%{window: %WindowSpec{} = spec}, now) do
+    with {:ok, period} <- Favn.TimePeriod.current(spec.kind, now, spec.timezone) do
+      {:ok, Anchor.new!(period.kind, period.start_at, period.end_at, timezone: period.timezone)}
+    end
+  end
+
+  defp asset_current_anchor_window(_asset, _now), do: :error
+
+  defp asset_freshness_target_node_key(plan, asset_ref) do
+    Enum.find(plan.target_node_keys, fn {ref, _window_key} -> ref == asset_ref end)
+    |> case do
+      nil -> {:error, :target_node_key_not_found}
+      node_key -> {:ok, node_key}
+    end
+  end
+
+  defp freshness_state_lookup(freshness_states) do
+    Enum.reduce(freshness_states, %{}, fn %AssetFreshnessState{} = state, acc ->
+      ref = {state.asset_ref_module, state.asset_ref_name}
+
+      acc
+      |> Map.put(state.latest_success_node_key, state)
+      |> Map.put({ref, state.freshness_key}, state)
+      |> Map.put(ref_to_string(ref) <> ":" <> state.freshness_key, state)
+    end)
   end
 
   defp freshness_detail(state, policy, latest_success, explanation, reasons) do
