@@ -315,6 +315,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
           [{MyApp.WindowRaw, :asset}],
           WindowSpec.new!(:day)
         ),
+        freshness_asset(
+          {MyApp.NeverRunDownstream, :asset},
+          Favn.Freshness.Policy.from_value!(max_age: {:hours, 24}),
+          [{MyApp.RawOrders, :asset}]
+        ),
         freshness_asset({MyApp.AlwaysRun, :asset}, Favn.Freshness.Policy.from_value!(:always)),
         freshness_asset({MyApp.NoPolicy, :asset}, nil)
       ]
@@ -466,6 +471,14 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert window_reason.upstream_ref == "Elixir.MyApp.WindowRaw:asset"
     assert window_reason.previous_version == "window_raw:v1"
     assert window_reason.current_version == "window_raw:v2"
+
+    assert {:ok, never_run_downstream_detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.NeverRunDownstream:asset",
+               now: now
+             )
+
+    assert never_run_downstream_detail.freshness.state == :unknown
+    assert [%{kind: :never_run}] = never_run_downstream_detail.freshness.reasons
 
     assert {:ok, never_run_detail} =
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.NeverRun:asset")

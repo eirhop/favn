@@ -1117,6 +1117,22 @@ defmodule FavnOrchestrator do
     )
   end
 
+  defp freshness_detail_from_decision(_asset, policy, state, %{decision: :run})
+       when is_nil(state) or is_nil(state.latest_success_run_id) do
+    freshness_detail(
+      :unknown,
+      policy,
+      nil,
+      "No successful freshness evidence exists for this asset yet.",
+      [
+        %{
+          kind: :never_run,
+          message: "No successful freshness-producing run has been recorded."
+        }
+      ]
+    )
+  end
+
   defp freshness_detail_from_decision(asset, policy, state, %{
          decision: :run,
          reason: :upstream_version_changed,
@@ -1130,21 +1146,6 @@ defmodule FavnOrchestrator do
       latest_success_detail(state),
       stale_explanation(asset, reasons),
       reasons
-    )
-  end
-
-  defp freshness_detail_from_decision(_asset, policy, nil, %{decision: :run}) do
-    freshness_detail(
-      :unknown,
-      policy,
-      nil,
-      "No successful freshness evidence exists for this asset yet.",
-      [
-        %{
-          kind: :never_run,
-          message: "No successful freshness-producing run has been recorded."
-        }
-      ]
     )
   end
 

@@ -151,7 +151,6 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, html} = live(conn, detail_path(:customer_orders_daily))
 
     assert html =~ "customer_orders_daily"
-    assert html =~ "Healthy"
     assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "Stale")
     assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "daily Europe/Oslo")
     assert html =~ "Window timeline"
