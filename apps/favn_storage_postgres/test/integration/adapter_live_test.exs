@@ -116,6 +116,50 @@ defmodule FavnStoragePostgres.Integration.AdapterLiveTest do
     end
   end
 
+  test "lists logs in descending global sequence order", context do
+    case context[:opts] do
+      nil ->
+        :ok
+
+      opts ->
+        run_id = "run_pg_logs_#{System.unique_integer([:positive])}"
+        now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+        entries =
+          for sequence <- 1..3 do
+            Favn.Log.Entry.normalize(%{
+              run_id: run_id,
+              asset_step_id: "step_a",
+              producer_id: "pg-test-#{run_id}",
+              producer_sequence: sequence,
+              occurred_at: DateTime.add(now, sequence, :second),
+              level: :info,
+              source: :runner,
+              stream: :stdout,
+              message: "postgres log #{sequence}"
+            })
+          end
+
+        assert {:ok, persisted} = Adapter.persist_log_entries(entries, opts)
+
+        assert {:ok, page} =
+                 Adapter.list_logs(
+                   %Favn.Log.Filter{run_id: run_id},
+                   [limit: 2, order: :desc],
+                   opts
+                 )
+
+        expected_sequences =
+          persisted
+          |> Enum.map(& &1.global_sequence)
+          |> Enum.sort(:desc)
+          |> Enum.take(2)
+
+        assert Enum.map(page.items, & &1.global_sequence) == expected_sequences
+        assert Enum.map(page.items, & &1.message) == ["postgres log 3", "postgres log 2"]
+    end
+  end
+
   test "run recovery accepts only consumer module atoms from the run manifest", context do
     case context[:opts] do
       nil ->
