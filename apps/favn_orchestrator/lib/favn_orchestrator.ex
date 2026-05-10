@@ -198,8 +198,8 @@ defmodule FavnOrchestrator do
   def active_asset_catalogue do
     with {:ok, manifest_version_id} <- active_manifest(),
          {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, freshness_states} <- catalogue_freshness_states(),
-         {:ok, runs} <- list_runs(limit: Page.max_limit()) do
+         {:ok, freshness_states} <- catalogue_freshness_states(manifest_version_id),
+         {:ok, runs} <- catalogue_runs(manifest_version_id) do
       {:ok, asset_catalogue_entries(version, freshness_states, runs)}
     end
   end
@@ -784,12 +784,20 @@ defmodule FavnOrchestrator do
     |> Enum.sort_by(& &1.label)
   end
 
-  defp catalogue_freshness_states do
-    case list_asset_freshness(limit: Page.max_limit()) do
+  defp catalogue_freshness_states(manifest_version_id) do
+    case list_asset_freshness(
+           manifest_version_id: manifest_version_id,
+           freshness_key: Favn.Freshness.Key.latest(),
+           limit: Page.max_limit()
+         ) do
       {:ok, page} -> {:ok, page.items}
       {:error, :asset_freshness_state_not_supported} -> {:ok, []}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp catalogue_runs(manifest_version_id) do
+    list_runs(manifest_version_id: manifest_version_id)
   end
 
   defp asset_catalogue_entries(%Version{} = version, freshness_states, runs) do

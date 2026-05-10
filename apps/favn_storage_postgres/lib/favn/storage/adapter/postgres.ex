@@ -1472,29 +1472,30 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp list_runs_query(run_opts) do
-    status = Keyword.get(run_opts, :status)
     limit = Keyword.get(run_opts, :limit)
+    filters = Keyword.take(run_opts, [:status, :manifest_version_id])
 
-    cond do
-      is_nil(status) and is_nil(limit) ->
-        {run_snapshot_select() <> " ORDER BY r.updated_seq DESC, r.run_id DESC", []}
+    {where_sql, params} = run_filter_sql(filters)
+    limit_sql = if is_integer(limit) and limit > 0, do: " LIMIT $#{length(params) + 1}", else: ""
+    params = if limit_sql == "", do: params, else: params ++ [limit]
 
-      is_nil(status) ->
-        {run_snapshot_select() <> " ORDER BY r.updated_seq DESC, r.run_id DESC LIMIT $1", [limit]}
+    {run_snapshot_select() <>
+       where_sql <> " ORDER BY r.updated_seq DESC, r.run_id DESC" <> limit_sql, params}
+  end
 
-      is_nil(limit) ->
-        {
-          run_snapshot_select() <>
-            " WHERE r.status = $1 ORDER BY r.updated_seq DESC, r.run_id DESC",
-          [Atom.to_string(status)]
-        }
+  defp run_filter_sql(filters) do
+    filters
+    |> Enum.reduce({[], []}, fn
+      {:status, status}, {clauses, params} ->
+        {clauses ++ ["r.status = $#{length(params) + 1}"], params ++ [Atom.to_string(status)]}
 
-      true ->
-        {
-          run_snapshot_select() <>
-            " WHERE r.status = $1 ORDER BY r.updated_seq DESC, r.run_id DESC LIMIT $2",
-          [Atom.to_string(status), limit]
-        }
+      {:manifest_version_id, manifest_version_id}, {clauses, params} ->
+        {clauses ++ ["r.manifest_version_id = $#{length(params) + 1}"],
+         params ++ [manifest_version_id]}
+    end)
+    |> case do
+      {[], params} -> {"", params}
+      {clauses, params} -> {" WHERE " <> Enum.join(clauses, " AND "), params}
     end
   end
 

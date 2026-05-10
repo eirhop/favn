@@ -1087,11 +1087,18 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp normalize_put_run_reply({{:error, reason}, runs}), do: {{:error, reason}, runs}
 
   defp filter_runs(runs, run_opts) do
-    case Keyword.get(run_opts, :status) do
-      nil -> runs
-      status -> Enum.filter(runs, &(&1.status == status))
-    end
+    Enum.filter(runs, fn run ->
+      matches_run_filter?(run, :status, Keyword.get(run_opts, :status)) and
+        matches_run_filter?(
+          run,
+          :manifest_version_id,
+          Keyword.get(run_opts, :manifest_version_id)
+        )
+    end)
   end
+
+  defp matches_run_filter?(_run, _field, nil), do: true
+  defp matches_run_filter?(run, field, expected), do: Map.get(run, field) == expected
 
   defp run_sort_key(%RunState{updated_at: %DateTime{} = updated_at}),
     do: DateTime.to_unix(updated_at, :microsecond)

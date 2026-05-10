@@ -98,9 +98,23 @@ defmodule FavnOrchestrator.ManifestStoreTest do
            }
 
     finished_at = DateTime.add(DateTime.utc_now(), -300, :second)
+    old_finished_at = DateTime.add(finished_at, -3_600, :second)
 
     assert :ok =
-             Storage.put_run(run_state("run_asset_a", {MyApp.AssetA, :asset}, :ok, finished_at))
+             Storage.put_run(
+               run_state(
+                 "run_old_asset_a",
+                 {MyApp.AssetA, :asset},
+                 :error,
+                 old_finished_at,
+                 "mv_old"
+               )
+             )
+
+    assert :ok =
+             Storage.put_run(
+               run_state("run_asset_a", {MyApp.AssetA, :asset}, :ok, finished_at, "mv_a")
+             )
 
     assert {:ok, freshness} =
              AssetFreshnessState.new(%{
@@ -112,10 +126,26 @@ defmodule FavnOrchestrator.ManifestStoreTest do
                latest_success_at: finished_at,
                latest_attempt_status: :ok,
                latest_attempt_at: finished_at,
+               manifest_version_id: "mv_a",
                updated_at: finished_at
              })
 
     assert :ok = Storage.put_asset_freshness_state(freshness)
+
+    assert {:ok, stale_window_freshness} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.AssetA,
+               asset_ref_name: :asset,
+               freshness_key: "calendar:day:Etc/UTC:2026-05-09",
+               status: :error,
+               latest_attempt_run_id: "run_old_asset_a",
+               latest_attempt_status: :error,
+               latest_attempt_at: old_finished_at,
+               manifest_version_id: "mv_a",
+               updated_at: old_finished_at
+             })
+
+    assert :ok = Storage.put_asset_freshness_state(stale_window_freshness)
 
     assert {:ok, [entry]} = FavnOrchestrator.active_asset_catalogue()
     assert entry.target_id == "asset:Elixir.MyApp.AssetA:asset"
@@ -150,10 +180,10 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     version
   end
 
-  defp run_state(id, ref, status, finished_at) do
+  defp run_state(id, ref, status, finished_at, manifest_version_id) do
     RunState.new(
       id: id,
-      manifest_version_id: "mv_a",
+      manifest_version_id: manifest_version_id,
       manifest_content_hash: "hash_a",
       asset_ref: ref,
       target_refs: [ref]
