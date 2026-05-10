@@ -20,6 +20,8 @@ defmodule FavnView.Storybook.Components.AppShell do
         attributes: %{
           title: "customer_orders_daily",
           status: "Healthy",
+          back_href: "/assets",
+          back_label: "Back to assets",
           nav_items: AssetDetailPage.sample_nav_items()
         },
         slots: [

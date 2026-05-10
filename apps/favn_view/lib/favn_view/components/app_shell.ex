@@ -26,17 +26,24 @@ defmodule FavnView.Components.AppShell do
       <div class="favn-orbital-grid" aria-hidden="true"></div>
       <IconNav.icon_nav items={@nav_items} />
 
-      <div class="relative z-10 min-h-screen px-5 py-4 md:py-5 md:pl-32 md:pr-8 lg:pr-32">
+      <div class="relative z-10 min-h-screen px-5 py-3 md:py-4 md:pl-32 md:pr-8 lg:pr-32">
         <header class="mx-auto flex max-w-7xl items-center justify-between gap-3">
-          <div class="flex items-center gap-2 md:hidden">
+          <div class="flex min-w-0 items-center gap-2">
             <IconNav.mobile_icon_nav items={@nav_items} />
-            <a href={~p"/"} class="btn btn-ghost gap-2 px-2" aria-label="Favn home">
+            <a href={~p"/"} class="btn btn-ghost gap-2 px-2 md:hidden" aria-label="Favn home">
               <.icon name="hero-sparkles" class="size-5" />
               <span class="text-lg font-semibold">Favn</span>
             </a>
-          </div>
 
-          <div class="hidden md:block" aria-hidden="true"></div>
+            <.link
+              :if={@back_href && @back_label}
+              navigate={@back_href}
+              class="btn btn-ghost btn-sm min-w-0 gap-2 px-2 text-base-content/70 hover:text-primary md:px-3"
+            >
+              <.icon name="hero-arrow-left" class="size-4 shrink-0" />
+              <span class="truncate">{@back_label}</span>
+            </.link>
+          </div>
 
           <div class="flex items-center gap-3">
             <button
@@ -50,26 +57,17 @@ defmodule FavnView.Components.AppShell do
           </div>
         </header>
 
-        <main class="mx-auto flex min-h-[calc(100vh-5.5rem)] max-w-7xl flex-col justify-start py-8 md:justify-center md:py-12">
-          <section class="mb-6 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between md:mb-8">
+        <main class="mx-auto flex min-h-[calc(100vh-4rem)] max-w-7xl flex-col justify-start py-4 md:py-6">
+          <section class="mb-4 flex flex-col gap-4 md:mb-5 lg:flex-row lg:items-end lg:justify-between">
             <div class="min-w-0">
-              <.link
-                :if={@back_href && @back_label}
-                navigate={@back_href}
-                class="mb-6 inline-flex items-center gap-2 text-sm text-base-content/70 transition hover:text-primary"
-              >
-                <.icon name="hero-arrow-left" class="size-4" />
-                {@back_label}
-              </.link>
-
-              <div class="flex flex-col gap-3 sm:flex-row sm:items-center md:gap-4">
-                <h1 class="truncate text-3xl font-light tracking-tight text-base-content sm:text-5xl lg:text-6xl">
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-center md:gap-3">
+                <h1 class="truncate text-2xl font-light tracking-tight text-base-content sm:text-3xl lg:text-4xl">
                   {@title}
                 </h1>
                 <span
                   :if={@status}
                   class={[
-                    "badge badge-soft favn-status-glow gap-2 px-4 py-4",
+                    "badge badge-soft favn-status-glow gap-2 px-3 py-3",
                     status_badge_class(@status_tone)
                   ]}
                 >
@@ -78,7 +76,7 @@ defmodule FavnView.Components.AppShell do
                 </span>
               </div>
 
-              <p :if={@subtitle} class="mt-2 text-base text-base-content/60 md:mt-3 md:text-lg">
+              <p :if={@subtitle} class="mt-1.5 text-sm text-base-content/60 md:text-base">
                 {@subtitle}
               </p>
             </div>
