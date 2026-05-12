@@ -87,6 +87,32 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
              validator.(extensions: [load: ["invalid extension"]])
   end
 
+  test "schema field accepts typed settings and rejects unknown settings" do
+    assert %{type: {:custom, validator}} = DuckDB.bootstrap_schema_field()
+
+    assert :ok = validator.(settings: [azure_transport_option_type: :curl])
+    assert :ok = validator.(settings: [azure_transport_option_type: "default"])
+
+    assert {:error, {:unsupported_setting, :some_unknown_setting}} =
+             validator.(settings: [some_unknown_setting: "value"])
+
+    assert {:error, {:invalid_setting_value, :azure_transport_option_type, "bad"}} =
+             validator.(settings: [azure_transport_option_type: :bad])
+  end
+
+  test "normalizes setting atom and string values into SET statements" do
+    assert {:ok, atom_steps} = Bootstrap.build_steps(settings_resolved(:curl))
+    assert {:ok, string_steps} = Bootstrap.build_steps(settings_resolved("default"))
+
+    assert Enum.find(atom_steps, &(&1.id == "set_azure_transport_option_type"))
+           |> Map.fetch!(:statement)
+           |> IO.iodata_to_binary() == "SET azure_transport_option_type = 'curl'"
+
+    assert Enum.find(string_steps, &(&1.id == "set_azure_transport_option_type"))
+           |> Map.fetch!(:statement)
+           |> IO.iodata_to_binary() == "SET azure_transport_option_type = 'default'"
+  end
+
   test "schema field validates Azure credential chain and scope" do
     assert %{type: {:custom, validator}} = DuckDB.bootstrap_schema_field()
 
@@ -219,6 +245,24 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
            ]
   end
 
+  test "runs settings after extension load and before secrets, attach, and use" do
+    resolved = ducklake_postgres_resolved(settings: [azure_transport_option_type: :curl])
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    assert :ok = DuckDB.bootstrap(conn, resolved, [])
+
+    assert statements() == [
+             "LOAD ducklake",
+             "LOAD postgres",
+             "LOAD azure",
+             "SET azure_transport_option_type = 'curl'",
+             "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
+             "CREATE SECRET \"oceanos_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
+             "ATTACH 'ducklake:postgres:sslmode=require' AS \"oceanos_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"oceanos_meta\")",
+             ~s(USE "oceanos_lake")
+           ]
+  end
+
   test "injects Azure PostgreSQL Entra token into temporary PostgreSQL secret" do
     resolved = ducklake_postgres_entra_resolved()
     {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
@@ -340,6 +384,23 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     assert reason =~ "redacted"
   end
 
+  test "setting execution failure reports bootstrap setting step" do
+    resolved = settings_resolved(:curl)
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    TestSupport.put_mode(:bootstrap_fail_sql, "SET azure_transport_option_type = 'curl'")
+
+    assert {:error,
+            %Error{
+              operation: :bootstrap,
+              details: %{
+                step: "set_azure_transport_option_type",
+                bootstrap_kind: :set_setting,
+                statement: "SET azure_transport_option_type = 'curl'"
+              }
+            }} = DuckDB.bootstrap(conn, resolved, [])
+  end
+
   test "PostgreSQL secret bootstrap failure redacts password only" do
     resolved = ducklake_postgres_resolved()
     {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
@@ -450,7 +511,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     }
   end
 
-  defp ducklake_postgres_resolved do
+  defp ducklake_postgres_resolved(opts \\ []) do
+    settings = Keyword.get(opts, :settings, [])
+
     %Resolved{
       name: :warehouse,
       adapter: DuckDB,
@@ -459,6 +522,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
         database: ":memory:",
         duckdb_bootstrap: [
           extensions: [load: [:ducklake, :postgres, :azure]],
+          settings: settings,
           secrets: [
             azure_adls: [
               type: :azure,
@@ -484,6 +548,22 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
             data_path: "abfss://lake@storageaccount.dfs.core.windows.net/data/"
           ],
           use: :oceanos_lake
+        ]
+      },
+      secret_fields: [:duckdb_bootstrap]
+    }
+  end
+
+  defp settings_resolved(value) do
+    %Resolved{
+      name: :warehouse,
+      adapter: DuckDB,
+      module: __MODULE__,
+      config: %{
+        database: ":memory:",
+        duckdb_bootstrap: [
+          extensions: [load: [:azure]],
+          settings: [azure_transport_option_type: value]
         ]
       },
       secret_fields: [:duckdb_bootstrap]
