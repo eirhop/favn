@@ -111,7 +111,7 @@ defmodule FavnView.AssetDetailLive do
         {:noreply,
          assign(socket,
            run_config_open?: true,
-           run_config: selected_run_config(selected_window),
+           run_config: context_run_config(asset, socket.assigns.active_timeline, selected_window),
            selected_window_error: nil,
            submitted_run_id: nil
          )}
@@ -124,7 +124,7 @@ defmodule FavnView.AssetDetailLive do
 
   def handle_event("run_selected_window", params, socket) do
     %{asset: asset, selected_window: selected_window} = socket.assigns
-    run_config = run_config_from_params(params)
+    run_config = run_config_from_params(params, socket.assigns.run_config)
 
     cond do
       is_nil(asset) or !asset.can_run_asset? ->
@@ -165,7 +165,7 @@ defmodule FavnView.AssetDetailLive do
     case FavnOrchestrator.submit_asset_run_for_manifest(
            asset.manifest_version_id,
            asset.target_id,
-           %{selection: timeline_selection(selected_window), config: Map.new(opts)}
+           %{selection: timeline_selection(selected_window, run_config), config: Map.new(opts)}
          ) do
       {:ok, run_id} ->
         {:noreply,
@@ -191,6 +191,9 @@ defmodule FavnView.AssetDetailLive do
       status={@asset.status}
       status_tone={@asset.status_tone}
       window_kind_label={@asset.window_kind_label}
+      refresh_timeline_label={@asset.refresh_timeline_label}
+      refresh_cadence_label={@asset.refresh_cadence_label}
+      data_coverage_timeline_label={@asset.data_coverage_timeline_label}
       window_range={@asset.window_range}
       refresh_window_range={@asset.refresh_window_range}
       data_coverage_window_range={@asset.data_coverage_window_range}
@@ -259,6 +262,10 @@ defmodule FavnView.AssetDetailLive do
       status_tone: status_tone(Map.get(detail, :status)),
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
       window_kind_label: window_kind_label(Map.get(detail, :window)),
+      refresh_timeline_label: Map.get(detail, :refresh_timeline_label, "Refresh periods"),
+      refresh_cadence_label: Map.get(detail, :refresh_cadence_label, "Refresh cadence"),
+      data_coverage_timeline_label:
+        Map.get(detail, :data_coverage_timeline_label, "Data windows"),
       window_range: window_range(timeline),
       refresh_window_range: window_range(refresh_timeline),
       data_coverage_window_range: window_range(data_coverage_timeline || []),
@@ -287,7 +294,8 @@ defmodule FavnView.AssetDetailLive do
       run_enabled?: window.run_enabled?,
       run_disabled_reason: window.run_disabled_reason,
       run_label: window.run_label || "Run asset",
-      default_run_config: Map.get(window, :default_run_config, %{})
+      default_run_config: Map.get(window, :default_run_config, %{}),
+      latest_run_config: Map.get(window, :latest_run_config)
     }
   end
 
@@ -350,18 +358,46 @@ defmodule FavnView.AssetDetailLive do
   defp asset_timeline(asset, :data_coverage),
     do: Map.get(asset, :data_coverage_timeline, []) || []
 
+  defp context_run_config(asset, active_timeline, nil) do
+    asset
+    |> asset_timeline(active_timeline)
+    |> List.last()
+    |> selected_run_config()
+  end
+
+  defp context_run_config(_asset, _active_timeline, selected_window),
+    do: selected_run_config(selected_window)
+
   defp selected_run_config(nil), do: default_run_config()
 
+  defp selected_run_config(%{latest_run_config: config}) when is_map(config) do
+    config_from_backend(config)
+  end
+
   defp selected_run_config(%{default_run_config: config}) when is_map(config) do
+    config_from_backend(config)
+  end
+
+  defp config_from_backend(config) do
     %{
       dependencies: config |> Map.get(:dependencies, :all) |> config_atom_value(),
-      refresh: config |> Map.get(:refresh, :auto) |> refresh_config_value()
+      refresh: config |> Map.get(:refresh, :auto) |> refresh_config_value(),
+      source: config |> Map.get(:source) |> source_config_value(),
+      kind: config |> Map.get(:kind) |> kind_config_value(),
+      value: config |> Map.get(:value, "") |> to_string(),
+      timezone: config |> Map.get(:timezone, "Etc/UTC") |> to_string()
     }
   end
 
   defp config_atom_value(value) when is_atom(value), do: Atom.to_string(value)
   defp config_atom_value(value) when is_binary(value), do: value
   defp config_atom_value(_value), do: "all"
+
+  defp kind_config_value(value) when value in [:hour, :day, :month, :year],
+    do: Atom.to_string(value)
+
+  defp kind_config_value(value) when value in ["hour", "day", "month", "year"], do: value
+  defp kind_config_value(_value), do: ""
 
   defp refresh_config_value(value) when value in [:auto, "auto"], do: "auto"
   defp refresh_config_value(value) when value in [:missing, "missing"], do: "missing"
@@ -378,9 +414,28 @@ defmodule FavnView.AssetDetailLive do
 
   defp refresh_config_value(_value), do: "auto"
 
-  defp timeline_selection(nil), do: nil
+  defp source_config_value(:refresh_timeline), do: "refresh_timeline"
+  defp source_config_value(:data_coverage_timeline), do: "data_coverage_timeline"
+  defp source_config_value("refresh_timeline"), do: "refresh_timeline"
+  defp source_config_value("data_coverage_timeline"), do: "data_coverage_timeline"
+  defp source_config_value(_source), do: nil
 
-  defp timeline_selection(window) do
+  defp timeline_selection(nil, %{source: source, kind: kind, value: value, timezone: timezone})
+       when is_binary(source) and source != nil and is_binary(kind) and kind != "" and
+              is_binary(value) and value != "" do
+    %{
+      source: source,
+      id: selection_id(source, kind, value),
+      kind: kind,
+      value: value,
+      timezone: timezone,
+      run_id: nil
+    }
+  end
+
+  defp timeline_selection(nil, _run_config), do: nil
+
+  defp timeline_selection(window, _run_config) do
     %{
       source: window.source,
       id: window.id,
@@ -390,6 +445,10 @@ defmodule FavnView.AssetDetailLive do
       run_id: window.latest_run_id
     }
   end
+
+  defp selection_id("refresh_timeline", kind, value), do: "refresh:#{kind}:#{value}"
+  defp selection_id("data_coverage_timeline", kind, value), do: "window:#{kind}:#{value}"
+  defp selection_id(_source, kind, value), do: "window:#{kind}:#{value}"
 
   defp missing_freshness_detail do
     %{
@@ -406,16 +465,28 @@ defmodule FavnView.AssetDetailLive do
     }
   end
 
-  defp default_run_config, do: %{dependencies: "all", refresh: "auto"}
+  defp default_run_config,
+    do: %{
+      dependencies: "all",
+      refresh: "auto",
+      source: nil,
+      kind: "",
+      value: "",
+      timezone: "Etc/UTC"
+    }
 
-  defp run_config_from_params(%{"run_config" => params}) when is_map(params) do
+  defp run_config_from_params(%{"run_config" => params}, current_config) when is_map(params) do
     %{
       dependencies: Map.get(params, "dependencies", "all"),
-      refresh: Map.get(params, "refresh", "auto")
+      refresh: Map.get(params, "refresh", "auto"),
+      source: Map.get(params, "source", Map.get(current_config, :source)),
+      kind: Map.get(params, "kind", Map.get(current_config, :kind, "")),
+      value: Map.get(params, "value", Map.get(current_config, :value, "")),
+      timezone: Map.get(params, "timezone", Map.get(current_config, :timezone, "Etc/UTC"))
     }
   end
 
-  defp run_config_from_params(_params), do: default_run_config()
+  defp run_config_from_params(_params, current_config), do: current_config || default_run_config()
 
   defp run_submit_opts(asset, %{dependencies: dependencies, refresh: refresh}) do
     with {:ok, dependencies} <- dependency_option(dependencies),

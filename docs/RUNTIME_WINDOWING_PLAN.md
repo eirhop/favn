@@ -174,13 +174,21 @@ fresh enough?". Asset detail surfaces these separately: full-refresh assets may
 only have a run/refresh timeline, while windowed assets can also expose data
 coverage windows derived from the asset-level `Window.Spec`.
 
+Operator-submitted data coverage selections are exact runtime-window intent for
+the selected target asset. They must validate against the asset `Window.Spec` and
+must not reapply the asset lookback to the target window. Refresh timeline
+selections remain anchor-window intent and may expand through normal planner
+lookback and dependency-window rules.
+
 ## Planner/runtime behavior
 
 ### Window-aware planning
 
 1. Resolve target assets and dependencies as today.
 2. Resolve one anchor window (or a range for backfill).
-3. Expand each asset into concrete runtime windows from `window_spec`.
+3. Expand each asset into concrete runtime windows from `window_spec`, except
+   explicit exact runtime-window overrides supplied for selected target data
+   coverage windows.
 4. Build dependency graph over `{asset_ref, window_key}` nodes.
 5. Dedupe repeated node keys globally.
 

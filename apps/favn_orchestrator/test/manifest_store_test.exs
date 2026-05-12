@@ -267,7 +267,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   end
 
   test "asset detail timeline uses the asset window policy kind for runnable windows" do
-    window_spec = WindowSpec.new!(:month, required: true)
+    window_spec = WindowSpec.new!(:month, lookback: 1, required: true)
 
     version =
       manifest_version(
@@ -330,6 +330,26 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert run.metadata.selected_window.kind == :month
     assert run.metadata.timeline_selection.source == :data_coverage_timeline
 
+    assert run.plan.target_node_keys == [
+             {{MyApp.MonthlyAsset, :asset}, run.metadata.selected_window.key}
+           ]
+
+    assert {:error, {:window_kind_mismatch, :month, :day}} =
+             FavnOrchestrator.submit_asset_run_for_manifest(
+               "mv_monthly",
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               %{
+                 selection: %{
+                   source: :data_coverage_timeline,
+                   id: "window:day:2026-05-12",
+                   kind: :day,
+                   value: "2026-05-12",
+                   timezone: "Etc/UTC"
+                 },
+                 config: %{dependencies: :none, refresh: :auto}
+               }
+             )
+
     assert refresh_window = List.last(detail.refresh_timeline)
 
     assert {:ok, refresh_run_id} =
@@ -350,6 +370,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
     assert {:ok, refresh_run} = Storage.get_run(refresh_run_id)
     assert refresh_run.metadata.timeline_selection.source == :refresh_timeline
+    assert length(refresh_run.plan.target_node_keys) == 2
   end
 
   test "hourly asset detail timeline uses hours without collapsing same-day freshness" do

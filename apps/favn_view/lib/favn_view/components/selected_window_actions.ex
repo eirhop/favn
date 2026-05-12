@@ -8,8 +8,19 @@ defmodule FavnView.Components.SelectedWindowActions do
   attr :selected_window, :map, default: nil
   attr :can_run_asset?, :boolean, default: true
   attr :has_data_windows?, :boolean, default: false
+  attr :active_timeline, :atom, default: :refresh
   attr :run_config_open?, :boolean, default: false
-  attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
+
+  attr :run_config, :map,
+    default: %{
+      dependencies: "all",
+      refresh: "auto",
+      source: nil,
+      kind: "",
+      value: "",
+      timezone: "Etc/UTC"
+    }
+
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
@@ -62,6 +73,7 @@ defmodule FavnView.Components.SelectedWindowActions do
         :if={@run_config_open?}
         selected_window={@selected_window}
         has_data_windows?={@has_data_windows?}
+        active_timeline={@active_timeline}
         run_config={@run_config}
         submitting_window_run?={@submitting_window_run?}
       />
@@ -71,6 +83,7 @@ defmodule FavnView.Components.SelectedWindowActions do
 
   attr :selected_window, :map, default: nil
   attr :has_data_windows?, :boolean, default: false
+  attr :active_timeline, :atom, default: :refresh
   attr :run_config, :map, required: true
   attr :submitting_window_run?, :boolean, default: false
 
@@ -123,11 +136,55 @@ defmodule FavnView.Components.SelectedWindowActions do
           />
         </fieldset>
 
-        <fieldset :if={@has_data_windows?} class="fieldset">
-          <legend class="fieldset-legend">Timeline context</legend>
-          <div class="rounded-box border border-base-content/10 bg-base-content/[0.025] p-3 text-xs text-base-content/65">
-            {selection_label(@selected_window)}
+        <fieldset :if={window_context_enabled?(@has_data_windows?, @selected_window)} class="fieldset">
+          <legend class="fieldset-legend">{window_context_legend(@active_timeline)}</legend>
+          <input
+            type="hidden"
+            name="run_config[source]"
+            value={@run_config.source || default_source(@active_timeline)}
+          />
+          <div class="grid gap-3 sm:grid-cols-[8rem_1fr_10rem]">
+            <label class="form-control">
+              <span class="label-text text-xs">Kind</span>
+              <select
+                name="run_config[kind]"
+                class="select select-bordered select-sm"
+                disabled={@submitting_window_run? || !is_nil(@selected_window)}
+                data-testid="run-config-window-kind"
+              >
+                <option value="hour" selected={@run_config.kind == "hour"}>Hour</option>
+                <option value="day" selected={@run_config.kind == "day"}>Day</option>
+                <option value="month" selected={@run_config.kind == "month"}>Month</option>
+                <option value="year" selected={@run_config.kind == "year"}>Year</option>
+              </select>
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs">Value</span>
+              <input
+                type="text"
+                name="run_config[value]"
+                value={@run_config.value}
+                class="input input-bordered input-sm"
+                placeholder="YYYY-MM-DD, YYYY-MM, or YYYY"
+                disabled={@submitting_window_run? || !is_nil(@selected_window)}
+                data-testid="run-config-window-value"
+              />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs">Timezone</span>
+              <input
+                type="text"
+                name="run_config[timezone]"
+                value={@run_config.timezone || "Etc/UTC"}
+                class="input input-bordered input-sm"
+                disabled={@submitting_window_run? || !is_nil(@selected_window)}
+                data-testid="run-config-window-timezone"
+              />
+            </label>
           </div>
+          <p class="mt-2 text-xs text-base-content/55">
+            {window_context_description(@selected_window, @active_timeline)}
+          </p>
         </fieldset>
 
         <fieldset class="fieldset">
@@ -224,6 +281,27 @@ defmodule FavnView.Components.SelectedWindowActions do
 
   defp selection_label(nil), do: "No timeline context selected. The run will use default config."
   defp selection_label(window), do: window.range_label
+
+  defp window_context_enabled?(true, _selected_window), do: true
+
+  defp window_context_enabled?(_has_data_windows?, selected_window),
+    do: not is_nil(selected_window)
+
+  defp window_context_legend(:data_coverage), do: "Data window"
+  defp window_context_legend(_active_timeline), do: "Run period"
+
+  defp window_context_description(nil, :data_coverage),
+    do: "Choose the exact data window to run. Lookback is not added to this target window."
+
+  defp window_context_description(nil, _active_timeline),
+    do:
+      "Choose the run period used as the planner anchor. Asset lookback can expand from this period."
+
+  defp window_context_description(window, _active_timeline),
+    do: "Prefilled from #{window.range_label}. Clear the timeline selection to edit this context."
+
+  defp default_source(:data_coverage), do: "data_coverage_timeline"
+  defp default_source(_active_timeline), do: "refresh_timeline"
 
   defp run_plan_description(nil), do: "Submit a planned graph for this asset."
 

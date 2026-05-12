@@ -31,6 +31,11 @@ defmodule FavnView.PageLiveTest do
              Storage.put_run(failed_run_state(:stg_payments, "run_failed_customer_orders"))
 
     assert :ok =
+             Storage.put_run(
+               failed_run_state(:customer_orders_daily, "run_failed_customer_daily")
+             )
+
+    assert :ok =
              Storage.put_run(empty_run_state(:stg_payments, :error, "run_failed_empty"))
 
     assert :ok = Storage.put_run(node_results_run_state())
@@ -245,6 +250,7 @@ defmodule FavnView.PageLiveTest do
         status: "Unknown",
         status_tone: :neutral,
         window_kind_label: "Yearly windows",
+        refresh_cadence_label: "Yearly refresh periods",
         window_range: "1997 - 2026",
         nav_items: AssetDetailPage.sample_nav_items(),
         timeline: [yearly_window],
@@ -253,7 +259,7 @@ defmodule FavnView.PageLiveTest do
         freshness: nil
       })
 
-    assert html =~ "Yearly windows"
+    assert html =~ "Yearly refresh periods"
     assert html =~ "2026"
     refute html =~ "Jan"
   end
@@ -284,6 +290,24 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="run-config-panel"]), "Plan scope / dependencies")
     assert has_element?(view, ~s(input[name="run_config[dependencies]"][value="all"][checked]))
     assert has_element?(view, ~s(input[name="run_config[refresh]"][value="auto"][checked]))
+    assert has_element?(view, ~s([data-testid="run-config-window-kind"]), "Day")
+    assert has_element?(view, ~s([data-testid="run-config-window-value"]))
+    assert has_element?(view, ~s(input[name="run_config[source]"][value="refresh_timeline"]))
+  end
+
+  test "selected failed timeline item prepopulates failed run config", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+    failed_date = Date.utc_today() |> Date.add(-1) |> Date.to_iso8601()
+    window_id = "refresh:day:#{failed_date}"
+
+    view
+    |> element(~s([data-testid="timeline-window-#{window_id}"]))
+    |> render_click()
+
+    open_run_config(view)
+
+    assert has_element?(view, ~s(input[name="run_config[dependencies]"][value="none"][checked]))
+    assert has_element?(view, ~s(input[name="run_config[refresh]"][value="force_all"][checked]))
   end
 
   test "run selected window submits default auto config and navigates to run detail", %{
@@ -908,6 +932,10 @@ defmodule FavnView.PageLiveTest do
     )
     |> Map.put(:inserted_at, started_at)
     |> Map.put(:updated_at, finished_at)
+    |> Map.put(:metadata, %{
+      asset_dependencies: :none,
+      refresh_policy: %{mode: :force, refs: [], include_upstream?: false}
+    })
     |> RunState.with_snapshot_hash()
   end
 
@@ -1004,6 +1032,20 @@ defmodule FavnView.PageLiveTest do
                  ]
                )
              )
+
+    failed_date = Date.utc_today() |> Date.add(-1) |> Date.to_iso8601()
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(
+                 :customer_orders_daily,
+                 "customer:failed",
+                 DateTime.add(now, -1_200, :second),
+                 run_id: "run_failed_customer_daily",
+                 freshness_key: "calendar:day:Etc/UTC:#{failed_date}",
+                 status: :error
+               )
+             )
   end
 
   defp freshness_state(name, version, at, opts) do
@@ -1020,7 +1062,7 @@ defmodule FavnView.PageLiveTest do
         latest_success_node_key: {{__MODULE__.Assets, name}, nil},
         latest_success_at: at,
         latest_attempt_run_id: run_id,
-        latest_attempt_status: :ok,
+        latest_attempt_status: Keyword.get(opts, :status, :ok),
         latest_attempt_at: at,
         manifest_version_id: "mv_view_assets",
         input_versions: Keyword.get(opts, :input_versions, []),

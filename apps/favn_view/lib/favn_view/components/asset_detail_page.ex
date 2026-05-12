@@ -14,6 +14,9 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :status, :string, required: true
   attr :status_tone, :atom, default: :success
   attr :window_kind_label, :string, default: "Windows"
+  attr :refresh_timeline_label, :string, default: "Refresh periods"
+  attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :window_range, :string, required: true
   attr :refresh_window_range, :string, default: "No windows"
   attr :data_coverage_window_range, :string, default: "No windows"
@@ -46,6 +49,9 @@ defmodule FavnView.Components.AssetDetailPage do
       <.central_view
         active_mode={@active_mode}
         window_kind_label={@window_kind_label}
+        refresh_timeline_label={@refresh_timeline_label}
+        refresh_cadence_label={@refresh_cadence_label}
+        data_coverage_timeline_label={@data_coverage_timeline_label}
         window_range={@window_range}
         refresh_window_range={@refresh_window_range}
         data_coverage_window_range={@data_coverage_window_range}
@@ -72,6 +78,9 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :active_mode, :atom, required: true
   attr :window_kind_label, :string, default: "Windows"
+  attr :refresh_timeline_label, :string, default: "Refresh periods"
+  attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :window_range, :string, required: true
   attr :refresh_window_range, :string, default: "No windows"
   attr :data_coverage_window_range, :string, default: "No windows"
@@ -93,6 +102,9 @@ defmodule FavnView.Components.AssetDetailPage do
     <.window_timeline_panel
       :if={@active_mode == :timeline}
       window_kind_label={@window_kind_label}
+      refresh_timeline_label={@refresh_timeline_label}
+      refresh_cadence_label={@refresh_cadence_label}
+      data_coverage_timeline_label={@data_coverage_timeline_label}
       window_range={@window_range}
       refresh_window_range={@refresh_window_range}
       data_coverage_window_range={@data_coverage_window_range}
@@ -120,6 +132,9 @@ defmodule FavnView.Components.AssetDetailPage do
 
   attr :window_range, :string, required: true
   attr :window_kind_label, :string, default: "Windows"
+  attr :refresh_timeline_label, :string, default: "Refresh periods"
+  attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :refresh_window_range, :string, default: "No windows"
   attr :data_coverage_window_range, :string, default: "No windows"
   attr :active_timeline, :atom, default: :refresh
@@ -139,6 +154,7 @@ defmodule FavnView.Components.AssetDetailPage do
     assigns = assign(assigns, :timeline, active_timeline(assigns))
     assigns = assign(assigns, :timeline_range, active_timeline_range(assigns))
     assigns = assign(assigns, :timeline_label, active_timeline_label(assigns))
+    assigns = assign(assigns, :timeline_kind_label, active_timeline_kind_label(assigns))
 
     ~H"""
     <GlassPanel.glass_panel
@@ -150,7 +166,7 @@ defmodule FavnView.Components.AssetDetailPage do
         <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h2 class="text-xl font-medium tracking-tight">{@timeline_label}</h2>
-            <p class="mt-2 text-sm text-base-content/60">{@window_kind_label}</p>
+            <p class="mt-2 text-sm text-base-content/60">{@timeline_kind_label}</p>
           </div>
 
           <div class="join self-start text-sm text-base-content/70">
@@ -225,6 +241,7 @@ defmodule FavnView.Components.AssetDetailPage do
           selected_window={@selected_window}
           can_run_asset?={@can_run_asset?}
           has_data_windows?={@has_data_windows?}
+          active_timeline={@active_timeline}
           run_config_open?={@run_config_open?}
           run_config={@run_config}
           submitting_window_run?={@submitting_window_run?}
@@ -570,6 +587,14 @@ defmodule FavnView.Components.AssetDetailPage do
 
   defp active_timeline_label(%{active_timeline: :data_coverage}), do: "Data coverage timeline"
   defp active_timeline_label(_assigns), do: "Refresh timeline"
+
+  defp active_timeline_kind_label(%{
+         active_timeline: :data_coverage,
+         data_coverage_timeline_label: label
+       }),
+       do: label
+
+  defp active_timeline_kind_label(%{refresh_cadence_label: label}), do: label
 
   defp sample_window(%{month: month, day: day} = window) do
     year = if month == "May", do: 2026, else: 2026

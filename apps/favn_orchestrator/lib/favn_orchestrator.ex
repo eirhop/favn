@@ -15,6 +15,7 @@ defmodule FavnOrchestrator do
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
   alias Favn.Window.Request, as: WindowRequest
+  alias Favn.Window.Runtime, as: RuntimeWindow
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
@@ -378,7 +379,7 @@ defmodule FavnOrchestrator do
     selection = Map.get(request, :selection) || Map.get(request, "selection")
 
     with {:ok, opts} <- asset_run_config_opts(asset, config),
-         {:ok, opts} <- put_asset_run_selection_opts(opts, selection) do
+         {:ok, opts} <- put_asset_run_selection_opts(opts, asset, selection) do
       {:ok, opts}
     end
   end
@@ -409,28 +410,35 @@ defmodule FavnOrchestrator do
 
   defp asset_run_config_opts(_asset, _config), do: {:error, :invalid_asset_run_config}
 
-  defp put_asset_run_selection_opts(opts, nil), do: {:ok, opts}
+  defp put_asset_run_selection_opts(opts, _asset, nil), do: {:ok, opts}
 
-  defp put_asset_run_selection_opts(opts, %{} = selection) do
+  defp put_asset_run_selection_opts(opts, asset, %{} = selection) do
     source = Map.get(selection, :source) || Map.get(selection, "source")
     id = Map.get(selection, :id) || Map.get(selection, "id")
 
     case normalize_selection_source(source) do
-      {:ok, :data_coverage_timeline} -> put_data_coverage_selection_opts(opts, id, selection)
-      {:ok, :refresh_timeline} -> put_refresh_selection_opts(opts, id, selection)
-      {:error, _reason} = error -> error
+      {:ok, :data_coverage_timeline} ->
+        put_data_coverage_selection_opts(opts, asset, id, selection)
+
+      {:ok, :refresh_timeline} ->
+        put_refresh_selection_opts(opts, id, selection)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
-  defp put_asset_run_selection_opts(_opts, _selection), do: {:error, :invalid_asset_run_selection}
+  defp put_asset_run_selection_opts(_opts, _asset, _selection),
+    do: {:error, :invalid_asset_run_selection}
 
-  defp put_data_coverage_selection_opts(opts, id, selection) when is_binary(id) do
+  defp put_data_coverage_selection_opts(opts, asset, id, selection) when is_binary(id) do
     with {:ok, window_request} <- window_request_from_id(id),
-         {:ok, anchor_window} <-
-           WindowRequest.to_anchor(window_request, selection_timezone(selection)) do
+         {:ok, anchor_window} <- resolve_asset_window(asset, window_request),
+         {:ok, runtime_window} <- runtime_window_from_anchor(anchor_window) do
       opts =
         opts
         |> Keyword.put(:anchor_window, anchor_window)
+        |> Keyword.put(:exact_windows, %{asset.ref => [runtime_window]})
         |> put_window_run_metadata(id, anchor_window)
         |> put_selection_metadata(:data_coverage_timeline, selection)
 
@@ -438,8 +446,18 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp put_data_coverage_selection_opts(_opts, _id, _selection),
+  defp put_data_coverage_selection_opts(_opts, _asset, _id, _selection),
     do: {:error, :invalid_asset_run_selection}
+
+  defp runtime_window_from_anchor(%Anchor{} = anchor_window) do
+    RuntimeWindow.new(
+      anchor_window.kind,
+      anchor_window.start_at,
+      anchor_window.end_at,
+      anchor_window.key,
+      timezone: anchor_window.timezone
+    )
+  end
 
   defp put_refresh_selection_opts(opts, id, selection) when is_binary(id) do
     with {:ok, window_request} <- refresh_request_from_id(id),
@@ -1186,6 +1204,9 @@ defmodule FavnOrchestrator do
         ref_string = ref_to_string(asset.ref)
         latest_freshness = latest_freshness_for_ref(freshness_states, ref_string)
         latest_run = latest_run_for_ref(runs, ref_string)
+        runs_by_id = Map.new(runs, &{&1.id, &1})
+        {refresh_kind, refresh_timezone} = detail_refresh_policy(version, asset)
+        {data_coverage_kind, _data_coverage_timezone} = detail_timeline_policy(asset)
 
         refresh_timeline =
           asset_refresh_timeline(
@@ -1194,6 +1215,7 @@ defmodule FavnOrchestrator do
             latest_freshness,
             latest_run,
             freshness_states,
+            runs_by_id,
             opts
           )
 
@@ -1203,6 +1225,7 @@ defmodule FavnOrchestrator do
             latest_freshness,
             latest_run,
             freshness_states,
+            runs_by_id,
             opts
           )
 
@@ -1216,6 +1239,15 @@ defmodule FavnOrchestrator do
         |> Map.put(:latest_run_status, latest_run_status(latest_freshness, latest_run))
         |> Map.put(:latest_run_at, latest_run_at(latest_freshness, latest_run))
         |> Map.put(:freshness, asset_freshness_detail(asset, version, freshness_states, opts))
+        |> Map.put(:refresh_timeline_label, timeline_kind_label(refresh_kind, "refresh periods"))
+        |> Map.put(
+          :refresh_cadence_label,
+          "#{timeline_kind_label(refresh_kind, "refresh")} #{refresh_timezone}"
+        )
+        |> Map.put(
+          :data_coverage_timeline_label,
+          timeline_kind_label(data_coverage_kind, "data windows")
+        )
         |> Map.put(:refresh_timeline, refresh_timeline)
         |> Map.put(:data_coverage_timeline, data_coverage_timeline)
         |> Map.put(:has_data_windows?, not is_nil(data_coverage_timeline))
@@ -1527,11 +1559,19 @@ defmodule FavnOrchestrator do
          _latest_freshness,
          _latest_run,
          _freshness_states,
+         _runs_by_id,
          _opts
        ),
        do: nil
 
-  defp asset_data_coverage_timeline(asset, latest_freshness, latest_run, freshness_states, opts) do
+  defp asset_data_coverage_timeline(
+         asset,
+         latest_freshness,
+         latest_run,
+         freshness_states,
+         runs_by_id,
+         opts
+       ) do
     {kind, timezone} = detail_timeline_policy(asset)
 
     selected_value =
@@ -1570,6 +1610,7 @@ defmodule FavnOrchestrator do
         :default_run_config,
         default_timeline_run_config(:data_coverage_timeline, kind, value, timezone)
       )
+      |> put_latest_run_config(runs_by_id)
     end
   end
 
@@ -1579,6 +1620,7 @@ defmodule FavnOrchestrator do
          latest_freshness,
          latest_run,
          freshness_states,
+         runs_by_id,
          opts
        ) do
     {kind, timezone} = detail_refresh_policy(version, asset)
@@ -1622,8 +1664,15 @@ defmodule FavnOrchestrator do
         default_run_config: default_timeline_run_config(:refresh_timeline, kind, value, timezone)
       }
       |> maybe_put_latest_run(latest_freshness, latest_run, value, latest_run_value)
+      |> put_latest_run_config(runs_by_id)
     end
   end
+
+  defp timeline_kind_label(:hour, suffix), do: "Hourly #{suffix}"
+  defp timeline_kind_label(:day, suffix), do: "Daily #{suffix}"
+  defp timeline_kind_label(:month, suffix), do: "Monthly #{suffix}"
+  defp timeline_kind_label(:year, suffix), do: "Yearly #{suffix}"
+  defp timeline_kind_label(_kind, suffix), do: "#{String.capitalize(suffix)}"
 
   defp detail_refresh_policy(version, asset) do
     version.manifest.pipelines
@@ -1687,6 +1736,40 @@ defmodule FavnOrchestrator do
       refresh: :auto
     }
   end
+
+  defp put_latest_run_config(%{latest_run_id: run_id} = window, runs_by_id)
+       when is_binary(run_id) do
+    case Map.get(runs_by_id, run_id) do
+      nil ->
+        window
+
+      run ->
+        Map.put(window, :latest_run_config, run_config_from_run(run, window.default_run_config))
+    end
+  end
+
+  defp put_latest_run_config(window, _runs_by_id), do: window
+
+  defp run_config_from_run(run, default_config) do
+    metadata = Map.get(run, :metadata, %{}) || %{}
+
+    default_config
+    |> Map.put(:dependencies, Map.get(metadata, :asset_dependencies, default_config.dependencies))
+    |> Map.put(
+      :refresh,
+      refresh_config_from_metadata(Map.get(metadata, :refresh_policy), default_config.refresh)
+    )
+  end
+
+  defp refresh_config_from_metadata(%{mode: :auto}, _default), do: :auto
+  defp refresh_config_from_metadata(%{mode: :missing}, _default), do: :missing
+  defp refresh_config_from_metadata(%{mode: :force}, _default), do: :force
+
+  defp refresh_config_from_metadata(%{mode: :force_assets, include_upstream?: true}, _default),
+    do: :force_selected_upstream
+
+  defp refresh_config_from_metadata(%{mode: :force_assets}, _default), do: :force_selected
+  defp refresh_config_from_metadata(_refresh_policy, default), do: default
 
   defp detail_timeline_policy(%{window: %WindowSpec{kind: kind, timezone: timezone}}),
     do: {kind, timezone}
