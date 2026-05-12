@@ -119,6 +119,9 @@ defmodule Favn.Dev.Paths do
   @spec web_log_path(Path.t()) :: Path.t()
   def web_log_path(root_dir), do: Path.join(logs_dir(root_dir), "web.log")
 
+  @spec operator_log_path(Path.t()) :: Path.t()
+  def operator_log_path(root_dir), do: Path.join(logs_dir(root_dir), "operator.log")
+
   @spec orchestrator_log_path(Path.t()) :: Path.t()
   def orchestrator_log_path(root_dir), do: Path.join(logs_dir(root_dir), "orchestrator.log")
 

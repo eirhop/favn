@@ -8,7 +8,7 @@ defmodule Favn.Dev.Logs do
   @type root_opt :: [root_dir: Path.t()]
   @type logs_opt :: [
           root_dir: Path.t(),
-          service: :all | :web | :orchestrator | :runner,
+          service: :all | :operator | :web | :orchestrator | :runner,
           tail: pos_integer(),
           follow: boolean()
         ]
@@ -33,9 +33,10 @@ defmodule Favn.Dev.Logs do
     end
   end
 
-  @spec selected_services(keyword()) :: [:web | :orchestrator | :runner]
+  @spec selected_services(keyword()) :: [:operator | :web | :orchestrator | :runner]
   def selected_services(opts) do
     case Keyword.get(opts, :service, :all) do
+      :operator -> [:operator]
       :web -> [:web]
       :orchestrator -> [:orchestrator]
       :runner -> [:runner]
@@ -148,7 +149,17 @@ defmodule Favn.Dev.Logs do
   defp format_line(service, line, true), do: "[#{service}] " <> line
   defp format_line(_service, line, false), do: line
 
-  defp log_path(:web, root_dir), do: Paths.web_log_path(root_dir)
-  defp log_path(:orchestrator, root_dir), do: Paths.orchestrator_log_path(root_dir)
+  defp log_path(:operator, root_dir), do: Paths.operator_log_path(root_dir)
+
+  defp log_path(:web, root_dir),
+    do: legacy_or_operator_log_path(Paths.web_log_path(root_dir), root_dir)
+
+  defp log_path(:orchestrator, root_dir),
+    do: legacy_or_operator_log_path(Paths.orchestrator_log_path(root_dir), root_dir)
+
   defp log_path(:runner, root_dir), do: Paths.runner_log_path(root_dir)
+
+  defp legacy_or_operator_log_path(path, root_dir) do
+    if File.exists?(path), do: path, else: Paths.operator_log_path(root_dir)
+  end
 end

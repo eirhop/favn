@@ -30,6 +30,9 @@ defmodule Mix.Tasks.Favn.Logs do
       nil ->
         opts
 
+      "operator" ->
+        Keyword.put(opts, :service, :operator)
+
       "web" ->
         Keyword.put(opts, :service, :web)
 
@@ -43,7 +46,9 @@ defmodule Mix.Tasks.Favn.Logs do
         Keyword.put(opts, :service, :all)
 
       other ->
-        Mix.raise("invalid service #{inspect(other)}; expected web|orchestrator|runner|all")
+        Mix.raise(
+          "invalid service #{inspect(other)}; expected operator|web|orchestrator|runner|all"
+        )
     end
   end
 end

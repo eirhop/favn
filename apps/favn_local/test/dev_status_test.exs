@@ -70,7 +70,10 @@ defmodule Favn.Dev.StatusTest do
     assert status.user_urls.orchestrator_api == "http://127.0.0.1:4101"
     assert status.internal_control.runner_node.node_name == "favn_runner_test@localhost"
     assert status.internal_control.runner_node.distribution_port == 45_001
-    assert status.internal_control.orchestrator_node.node_name == "favn_orchestrator_test@localhost"
+
+    assert status.internal_control.orchestrator_node.node_name ==
+             "favn_orchestrator_test@localhost"
+
     assert status.internal_control.orchestrator_node.distribution_port == 45_002
     assert status.internal_control.control_node.node_name == "favn_local_ctl_test@localhost"
     assert status.internal_control.control_node.distribution_port == 45_003

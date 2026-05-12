@@ -116,7 +116,7 @@ defmodule Favn.Dev.LifecycleTest do
                      "materialized_root" => runtime_root,
                      "runner_root" => runtime_root,
                      "orchestrator_root" => runtime_root,
-                      "web_root" => Path.join(runtime_root, "apps/favn_view")
+                     "web_root" => Path.join(runtime_root, "apps/favn_view")
                    },
                    root_dir: root_dir
                  )
@@ -388,6 +388,41 @@ defmodule Favn.Dev.LifecycleTest do
                )
     end)
 
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  after
+    _ = Dev.stop(root_dir: root_dir)
+  end
+
+  test "foreground exits cleanly when stopped externally", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+    specs = service_specs(root_dir)
+
+    task =
+      Task.async(fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :ok =
+                   Dev.dev(
+                     root_dir: root_dir,
+                     orchestrator_port: free_port(),
+                     web_port: free_port(),
+                     skip_install_check: true,
+                     skip_bootstrap: true,
+                     skip_readiness: true,
+                     service_specs_override: specs
+                   )
+        end)
+      end)
+
+    assert :ok =
+             wait_until(fn ->
+               match?(
+                 {:ok, %{"services" => %{"runner" => _, "orchestrator" => _, "web" => _}}},
+                 State.read_runtime(root_dir: root_dir)
+               )
+             end)
+
+    assert :ok = Dev.stop(root_dir: root_dir)
+    assert Task.await(task, 5_000) =~ "Favn local dev stack"
     assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
   after
     _ = Dev.stop(root_dir: root_dir)

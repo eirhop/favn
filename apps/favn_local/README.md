@@ -193,9 +193,9 @@ unconditional rebuild.
 
 ### Local dev startup
 
-`mix favn.dev` starts runner, orchestrator, and the Phoenix/LiveView `favn_view`
-app as separate local processes and writes runtime state to `.favn/runtime.json`.
-The UI is available at `http://127.0.0.1:4173` by default.
+`mix favn.dev` starts a runner process plus one operator process that runs both
+orchestrator and the Phoenix/LiveView `favn_view` app. It writes runtime state to
+`.favn/runtime.json`. The UI is available at `http://127.0.0.1:4173` by default.
 
 The local scheduler is disabled by default so active pipeline schedules do not
 surprise one-time local ETL work. Manual `mix favn.run PipelineModule` is the
