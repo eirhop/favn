@@ -256,6 +256,58 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert no_window.run_disabled_reason == :asset_has_no_window_policy
   end
 
+  test "asset detail timeline uses the asset window policy kind for runnable windows" do
+    window_spec = WindowSpec.new!(:month, required: true)
+
+    version =
+      manifest_version(
+        "mv_monthly",
+        {MyApp.MonthlyAsset, :asset},
+        [
+          %Pipeline{
+            module: MyApp.MonthlyPipeline,
+            name: :monthly_pipeline,
+            selectors: [{MyApp.MonthlyAsset, :asset}],
+            deps: :all,
+            window: Policy.new!(:monthly),
+            source: :dsl,
+            outputs: [],
+            config: %{},
+            metadata: %{}
+          }
+        ],
+        window_spec
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_monthly")
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               today: ~D[2026-05-12]
+             )
+
+    assert window = List.last(detail.timeline)
+    assert window.id == "window:month:2026-05"
+    assert window.label == "May 2026"
+    assert window.range == "May 2026"
+    assert window.run_enabled?
+    assert is_nil(window.run_disabled_reason)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_window_run(
+               "mv_monthly",
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               window.id,
+               dependencies: :none
+             )
+
+    assert {:ok, run} = Storage.get_run(run_id)
+    assert run.metadata.selected_window.id == "window:month:2026-05"
+    assert run.metadata.selected_window.kind == :month
+  end
+
   test "publishes duplicate content under the existing canonical manifest version" do
     original = manifest_version("mv_original", {MyApp.AssetA, :asset})
     duplicate = manifest_version("mv_duplicate", {MyApp.AssetA, :asset})

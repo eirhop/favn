@@ -161,6 +161,7 @@ defmodule FavnView.AssetDetailLive do
       title={@asset.title}
       status={@asset.status}
       status_tone={@asset.status_tone}
+      window_kind_label={@asset.window_kind_label}
       window_range={@asset.window_range}
       nav_items={@nav_items}
       timeline={@asset.timeline}
@@ -221,6 +222,7 @@ defmodule FavnView.AssetDetailLive do
       status: status_label(Map.get(detail, :status)),
       status_tone: status_tone(Map.get(detail, :status)),
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
+      window_kind_label: window_kind_label(Map.get(detail, :window)),
       window_range: window_range(timeline),
       timeline: timeline
     }
@@ -281,6 +283,14 @@ defmodule FavnView.AssetDetailLive do
   defp status_tone(:running), do: :warning
   defp status_tone(:failed), do: :error
   defp status_tone(_status), do: :neutral
+
+  defp window_kind_label(%{kind: kind}), do: window_kind_label(kind)
+  defp window_kind_label(%{"kind" => kind}), do: window_kind_label(kind)
+  defp window_kind_label(kind) when kind in [:hour, "hour"], do: "Hourly windows"
+  defp window_kind_label(kind) when kind in [:day, "day"], do: "Daily windows"
+  defp window_kind_label(kind) when kind in [:month, "month"], do: "Monthly windows"
+  defp window_kind_label(kind) when kind in [:year, "year"], do: "Yearly windows"
+  defp window_kind_label(_kind), do: "Windows"
 
   defp default_selected_window(nil), do: nil
 

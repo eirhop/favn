@@ -13,6 +13,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :title, :string, required: true
   attr :status, :string, required: true
   attr :status_tone, :atom, default: :success
+  attr :window_kind_label, :string, default: "Windows"
   attr :window_range, :string, required: true
   attr :nav_items, :list, required: true
   attr :timeline, :list, required: true
@@ -35,6 +36,7 @@ defmodule FavnView.Components.AssetDetailPage do
     >
       <.central_view
         active_mode={@active_mode}
+        window_kind_label={@window_kind_label}
         window_range={@window_range}
         timeline={@timeline}
         freshness={@freshness}
@@ -54,6 +56,7 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   attr :active_mode, :atom, required: true
+  attr :window_kind_label, :string, default: "Windows"
   attr :window_range, :string, required: true
   attr :timeline, :list, required: true
   attr :freshness, :map, default: nil
@@ -68,6 +71,7 @@ defmodule FavnView.Components.AssetDetailPage do
     ~H"""
     <.window_timeline_panel
       :if={@active_mode == :timeline}
+      window_kind_label={@window_kind_label}
       window_range={@window_range}
       timeline={@timeline}
       freshness={@freshness}
@@ -88,6 +92,7 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   attr :window_range, :string, required: true
+  attr :window_kind_label, :string, default: "Windows"
   attr :timeline, :list, required: true
   attr :freshness, :map, default: nil
   attr :selected_window, :map, default: nil
@@ -108,7 +113,7 @@ defmodule FavnView.Components.AssetDetailPage do
         <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h2 class="text-xl font-medium tracking-tight">Window timeline</h2>
-            <p class="mt-2 text-sm text-base-content/60">Daily windows</p>
+            <p class="mt-2 text-sm text-base-content/60">{@window_kind_label}</p>
           </div>
 
           <div class="join self-start text-sm text-base-content/70">

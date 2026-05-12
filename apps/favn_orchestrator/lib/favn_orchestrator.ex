@@ -263,8 +263,9 @@ defmodule FavnOrchestrator do
   Returns an operator-facing detail read model for one active asset target.
 
   The detail is a DTO built at the orchestrator boundary. It includes manifest
-  target metadata, latest known freshness/run state, and a conservative 30-day
-  daily timeline. Missing runtime evidence is represented as `:unknown`.
+  target metadata, latest known freshness/run state, and a conservative 30-window
+  timeline matching the asset window policy. Missing runtime evidence is
+  represented as `:unknown`.
   """
   @spec active_asset_detail(String.t(), keyword()) :: {:ok, asset_detail()} | {:error, term()}
   def active_asset_detail(target_id, opts \\ []) when is_binary(target_id) and is_list(opts) do
@@ -1336,20 +1337,30 @@ defmodule FavnOrchestrator do
   end
 
   defp asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts) do
-    selected_date = detail_timeline_selected_date(latest_freshness, latest_run, opts)
-    window_states = asset_window_freshness_by_date(asset, freshness_states)
-    latest_run_date = latest_run_at(latest_freshness, latest_run) |> detail_date_from_datetime()
+    kind = detail_timeline_kind(asset)
+
+    selected_date =
+      latest_freshness
+      |> detail_timeline_selected_date(latest_run, opts)
+      |> timeline_period_date(kind)
+
+    window_states = asset_window_freshness_by_date(asset, freshness_states, kind)
+
+    latest_run_date =
+      latest_run_at(latest_freshness, latest_run)
+      |> detail_date_from_datetime()
+      |> timeline_period_date(kind)
 
     for offset <- 0..29 do
-      date = Date.add(selected_date, offset - 29)
+      date = shift_timeline_date(selected_date, kind, offset - 29)
       date_iso = Date.to_iso8601(date)
       window_freshness = Map.get(window_states, date_iso)
 
       %{
-        id: "window:day:#{date_iso}",
-        label: Calendar.strftime(date, "%b %-d"),
+        id: timeline_window_id(kind, date),
+        label: timeline_window_label(kind, date),
         date: date,
-        range: Calendar.strftime(date, "%b %-d, %Y"),
+        range: timeline_window_range(kind, date),
         status:
           timeline_status(window_freshness, latest_freshness, latest_run, date, latest_run_date),
         latest_run_id: latest_run_id(window_freshness, nil),
@@ -1361,6 +1372,26 @@ defmodule FavnOrchestrator do
       |> maybe_put_latest_run(latest_freshness, latest_run, date, latest_run_date)
     end
   end
+
+  defp detail_timeline_kind(%{window: %WindowSpec{kind: kind}}), do: kind
+
+  defp detail_timeline_kind(%{window: window}) when is_atom(window) do
+    case normalize_window_kind(window) do
+      {:ok, kind} -> kind
+      {:error, _reason} -> :day
+    end
+  end
+
+  defp detail_timeline_kind(%{window: %{} = window}) do
+    kind = Map.get(window, :kind) || Map.get(window, "kind")
+
+    case normalize_window_kind(kind) do
+      {:ok, kind} -> kind
+      {:error, _reason} -> :day
+    end
+  end
+
+  defp detail_timeline_kind(_asset), do: :day
 
   defp put_window_run_state(window, %{window: nil}) do
     window
@@ -1395,15 +1426,15 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp asset_window_freshness_by_date(asset, freshness_states) do
+  defp asset_window_freshness_by_date(asset, freshness_states, timeline_kind) do
     asset_ref_string = ref_to_string(asset.ref)
 
     freshness_states
     |> Enum.filter(&(freshness_ref_string(&1) == asset_ref_string))
     |> Enum.flat_map(fn state ->
       case window_date_from_freshness_key(state.freshness_key) do
-        nil -> []
-        date -> [{date, state}]
+        {^timeline_kind, date} -> [{date, state}]
+        _other -> []
       end
     end)
     |> Map.new(fn {date, state} -> {date, state} end)
@@ -1414,15 +1445,106 @@ defmodule FavnOrchestrator do
     |> String.split(":")
     |> List.last()
     |> case do
-      <<_::binary-size(10)>> = date -> date
+      <<_::binary-size(10)>> = date -> {:day, date}
+      _other -> nil
+    end
+  end
+
+  defp window_date_from_freshness_key("calendar:month:" <> rest) do
+    rest
+    |> String.split(":")
+    |> List.last()
+    |> case do
+      <<year::binary-size(4), "-", month::binary-size(2)>> ->
+        {:month, "#{year}-#{month}-01"}
+
+      _other ->
+        nil
+    end
+  end
+
+  defp window_date_from_freshness_key("calendar:year:" <> rest) do
+    rest
+    |> String.split(":")
+    |> List.last()
+    |> case do
+      <<year::binary-size(4)>> -> {:year, "#{year}-01-01"}
+      _other -> nil
+    end
+  end
+
+  defp window_date_from_freshness_key("calendar:hour:" <> rest) do
+    rest
+    |> String.split(":")
+    |> List.last()
+    |> case do
+      <<date::binary-size(10), "T", _hour::binary-size(2)>> -> {:hour, date}
       _other -> nil
     end
   end
 
   defp window_date_from_freshness_key(_key), do: nil
 
+  defp timeline_period_date(nil, _kind), do: nil
+  defp timeline_period_date(%Date{} = date, :day), do: date
+  defp timeline_period_date(%Date{} = date, :hour), do: date
+  defp timeline_period_date(%Date{} = date, :month), do: %{date | day: 1}
+  defp timeline_period_date(%Date{} = date, :year), do: %{date | month: 1, day: 1}
+
+  defp shift_timeline_date(%Date{} = date, kind, 0) when kind in [:day, :hour], do: date
+
+  defp shift_timeline_date(%Date{} = date, kind, count) when kind in [:day, :hour],
+    do: Date.add(date, count)
+
+  defp shift_timeline_date(%Date{} = date, :month, count) do
+    total = date.year * 12 + (date.month - 1) + count
+    Date.new!(div(total, 12), rem(total, 12) + 1, 1)
+  end
+
+  defp shift_timeline_date(%Date{} = date, :year, count), do: %{date | year: date.year + count}
+
+  defp timeline_window_id(:hour, date), do: "window:hour:#{Date.to_iso8601(date)}T00"
+  defp timeline_window_id(:day, date), do: "window:day:#{Date.to_iso8601(date)}"
+  defp timeline_window_id(:month, date), do: "window:month:#{format_month(date)}"
+  defp timeline_window_id(:year, date), do: "window:year:#{date.year}"
+
+  defp timeline_window_label(:hour, date), do: Calendar.strftime(date, "%b %-d 00:00")
+  defp timeline_window_label(:day, date), do: Calendar.strftime(date, "%b %-d")
+  defp timeline_window_label(:month, date), do: Calendar.strftime(date, "%b %Y")
+  defp timeline_window_label(:year, date), do: Integer.to_string(date.year)
+
+  defp timeline_window_range(:hour, date), do: Calendar.strftime(date, "%b %-d, %Y 00:00")
+  defp timeline_window_range(:day, date), do: Calendar.strftime(date, "%b %-d, %Y")
+  defp timeline_window_range(:month, date), do: Calendar.strftime(date, "%B %Y")
+  defp timeline_window_range(:year, date), do: Integer.to_string(date.year)
+
+  defp format_month(%Date{} = date), do: "#{date.year}-#{pad2(date.month)}"
+
+  defp pad2(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
+
   defp window_request_from_id("window:day:" <> date) do
     case WindowRequest.parse("day:#{date}") do
+      {:ok, request} -> {:ok, request}
+      {:error, reason} -> {:error, {:invalid_window_id, reason}}
+    end
+  end
+
+  defp window_request_from_id("window:hour:" <> hour) do
+    case WindowRequest.parse("hour:#{hour}") do
+      {:ok, request} -> {:ok, request}
+      {:error, reason} -> {:error, {:invalid_window_id, reason}}
+    end
+  end
+
+  defp window_request_from_id("window:month:" <> month) do
+    case WindowRequest.parse("month:#{month}") do
+      {:ok, request} -> {:ok, request}
+      {:error, reason} -> {:error, {:invalid_window_id, reason}}
+    end
+  end
+
+  defp window_request_from_id("window:year:" <> year) do
+    case WindowRequest.parse("year:#{year}") do
       {:ok, request} -> {:ok, request}
       {:error, reason} -> {:error, {:invalid_window_id, reason}}
     end
@@ -1452,13 +1574,21 @@ defmodule FavnOrchestrator do
     case {Map.get(window, :kind) || Map.get(window, "kind"),
           Map.get(window, :timezone) || Map.get(window, "timezone")} do
       {kind, timezone} when not is_nil(kind) ->
-        with {:ok, normalized_kind} <- Policy.normalize_kind(kind),
+        with {:ok, normalized_kind} <- normalize_window_kind(kind),
              {:ok, spec} <- WindowSpec.new(normalized_kind, timezone: timezone || "Etc/UTC") do
           resolve_asset_window(%{window: spec}, request)
         end
 
       _other ->
         {:error, :invalid_window_policy}
+    end
+  end
+
+  defp normalize_window_kind(kind) do
+    case Policy.from_value(kind) do
+      {:ok, %Policy{kind: normalized_kind}} -> {:ok, normalized_kind}
+      {:ok, nil} -> {:error, {:invalid_window_policy_kind, kind}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
