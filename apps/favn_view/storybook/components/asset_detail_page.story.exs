@@ -28,32 +28,78 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
   def variations do
     [
       %Variation{
-        id: :default_timeline,
-        attributes: %{
-          title: "customer_orders_daily",
-          status: "Healthy",
-          status_tone: :success,
-          window_range: "May 24 - Jun 22, 2026",
-          nav_items: AssetDetailPage.sample_nav_items(),
-          timeline: AssetDetailPage.sample_timeline(),
-          freshness: AssetDetailPage.sample_freshness(:fresh),
-          active_mode: :timeline,
-          selected_window: AssetDetailPage.selected_sample_window()
-        }
+        id: :refresh_timeline_default_no_selection,
+        attributes: base_attributes()
       },
       %Variation{
-        id: :selected_runnable_window,
-        attributes: %{
-          title: "customer_orders_daily",
-          status: "Healthy",
-          status_tone: :success,
-          window_range: "May 24 - Jun 22, 2026",
-          nav_items: AssetDetailPage.sample_nav_items(),
-          timeline: AssetDetailPage.sample_timeline(),
-          freshness: AssetDetailPage.sample_freshness(:fresh),
-          active_mode: :timeline,
-          selected_window: AssetDetailPage.selected_sample_window()
-        }
+        id: :full_refresh_asset_no_data_windows,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            title: "stg_payments",
+            status: "Unknown",
+            status_tone: :neutral,
+            has_data_windows?: false,
+            data_coverage_timeline: nil,
+            data_coverage_window_range: "No windows",
+            selected_window: nil,
+            freshness: AssetDetailPage.sample_freshness(:unknown)
+          })
+      },
+      %Variation{
+        id: :active_data_coverage_timeline,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            active_timeline: :data_coverage,
+            selected_window: nil
+          })
+      },
+      %Variation{
+        id: :selected_refresh_period,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{selected_window: List.last(refresh_timeline())})
+      },
+      %Variation{
+        id: :selected_data_window,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            active_timeline: :data_coverage,
+            selected_window: List.last(data_coverage_timeline())
+          })
+      },
+      %Variation{
+        id: :refresh_run_config_open_editable,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            selected_window: nil,
+            run_config_open?: true,
+            run_config: run_config(:refresh_timeline, :day, "2026-06-12")
+          })
+      },
+      %Variation{
+        id: :data_coverage_run_config_open_editable,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            active_timeline: :data_coverage,
+            selected_window: nil,
+            run_config_open?: true,
+            run_config: run_config(:data_coverage_timeline, :day, "2026-06-12")
+          })
+      },
+      %Variation{
+        id: :prefilled_failed_run_config,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            selected_window: failed_refresh_window(),
+            run_config_open?: true,
+            run_config: run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all")
+          })
       },
       %Variation{
         id: :fresh_freshness_detail,
@@ -72,134 +118,146 @@ defmodule FavnView.Storybook.Components.AssetDetailPage do
         attributes: freshness_attributes(:always_run)
       },
       %Variation{
-        id: :failed_latest_run_stale_unknown,
-        attributes:
-          freshness_attributes(:failed_unknown)
-          |> Map.merge(%{status: "Failed", status_tone: :error})
-      },
-      %Variation{
-        id: :default_auto_run_config,
-        attributes: run_config_attributes(%{dependencies: "all", refresh: "auto"})
-      },
-      %Variation{
-        id: :missing_only_run_config,
-        attributes: run_config_attributes(%{dependencies: "all", refresh: "missing"})
-      },
-      %Variation{
-        id: :force_selected_asset_run_config,
-        attributes: run_config_attributes(%{dependencies: "all", refresh: "force_selected"})
-      },
-      %Variation{
-        id: :force_selected_upstream_run_config,
-        attributes:
-          run_config_attributes(%{dependencies: "all", refresh: "force_selected_upstream"})
-      },
-      %Variation{
-        id: :force_full_graph_run_config,
-        attributes: run_config_attributes(%{dependencies: "all", refresh: "force_all"})
-      },
-      %Variation{
-        id: :selected_non_runnable_window,
-        attributes: %{
-          title: "raw_payments",
-          status: "Unknown",
-          status_tone: :neutral,
-          window_range: "May 24 - Jun 22, 2026",
-          nav_items: AssetDetailPage.sample_nav_items(),
-          timeline: AssetDetailPage.non_runnable_timeline(),
-          freshness: AssetDetailPage.sample_freshness(:unknown),
-          active_mode: :timeline,
-          selected_window: AssetDetailPage.selected_non_runnable_window()
-        }
-      },
-      %Variation{
         id: :submit_success,
-        attributes: %{
-          title: "customer_orders_daily",
-          status: "Healthy",
-          status_tone: :success,
-          window_range: "May 24 - Jun 22, 2026",
-          nav_items: AssetDetailPage.sample_nav_items(),
-          timeline: AssetDetailPage.sample_timeline(),
-          freshness: AssetDetailPage.sample_freshness(:fresh),
-          active_mode: :timeline,
-          selected_window: AssetDetailPage.selected_sample_window(),
-          submitted_run_id: "run_01HZ"
-        }
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            selected_window: List.last(refresh_timeline()),
+            submitted_run_id: "run_01HZ"
+          })
       },
       %Variation{
         id: :submit_error,
-        attributes: %{
-          title: "customer_orders_daily",
-          status: "Healthy",
-          status_tone: :success,
-          window_range: "May 24 - Jun 22, 2026",
-          nav_items: AssetDetailPage.sample_nav_items(),
-          timeline: AssetDetailPage.sample_timeline(),
-          freshness: AssetDetailPage.sample_freshness(:fresh),
-          active_mode: :timeline,
-          selected_window: AssetDetailPage.selected_sample_window(),
-          selected_window_error: "Could not submit run."
-        }
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            selected_window: List.last(refresh_timeline()),
+            selected_window_error: "Could not submit run."
+          })
       },
       %Variation{
-        id: :selected_muted_window,
-        attributes: %{
-          title: "raw_payments",
-          status: "Unknown",
-          status_tone: :neutral,
-          window_range: "May 24 - Jun 22, 2026",
-          nav_items: AssetDetailPage.sample_nav_items(),
-          timeline: AssetDetailPage.muted_timeline(),
-          freshness: AssetDetailPage.sample_freshness(:unknown),
-          active_mode: :timeline,
-          selected_window: AssetDetailPage.selected_muted_window()
-        }
+        id: :selected_non_runnable_window,
+        attributes:
+          base_attributes()
+          |> Map.merge(%{
+            active_timeline: :data_coverage,
+            selected_window:
+              data_window("2026-06-12", "Jun 12", :muted)
+              |> Map.merge(%{run_enabled?: false, run_disabled_reason: :invalid_window})
+          })
       },
       %Variation{
         id: :placeholder_mode,
-        attributes: %{
-          title: "customer_orders_daily",
-          status: "Healthy",
-          status_tone: :success,
-          window_range: "May 24 - Jun 22, 2026",
-          nav_items: AssetDetailPage.sample_nav_items(),
-          timeline: AssetDetailPage.sample_timeline(),
-          freshness: AssetDetailPage.sample_freshness(:fresh),
-          active_mode: :runs,
-          selected_window: AssetDetailPage.selected_sample_window()
-        }
+        attributes:
+          base_attributes()
+          |> Map.merge(%{active_mode: :runs, selected_window: List.last(refresh_timeline())})
       }
     ]
   end
 
-  defp run_config_attributes(run_config) do
+  defp base_attributes do
     %{
       title: "customer_orders_daily",
       status: "Healthy",
       status_tone: :success,
-      window_range: "May 24 - Jun 22, 2026",
+      window_range: "May 14 - Jun 12",
+      refresh_window_range: "May 14 - Jun 12",
+      data_coverage_window_range: "May 14 - Jun 12",
+      refresh_timeline_label: "Refresh timeline",
+      refresh_cadence_label: "Daily refresh periods Etc/UTC",
+      data_coverage_timeline_label: "Daily data windows",
+      active_timeline: :refresh,
+      has_data_windows?: true,
+      can_run_asset?: true,
       nav_items: AssetDetailPage.sample_nav_items(),
-      timeline: AssetDetailPage.sample_timeline(),
+      refresh_timeline: refresh_timeline(),
+      data_coverage_timeline: data_coverage_timeline(),
       freshness: AssetDetailPage.sample_freshness(:fresh),
       active_mode: :timeline,
-      selected_window: AssetDetailPage.selected_sample_window(),
-      run_config_open?: true,
-      run_config: run_config
+      selected_window: nil,
+      run_config_open?: false,
+      run_config: run_config(:refresh_timeline, :day, "2026-06-12")
     }
   end
 
   defp freshness_attributes(state) do
-    %{
-      title: "customer_orders_daily",
-      status: "Healthy",
-      status_tone: :success,
-      window_range: "May 24 - Jun 22, 2026",
-      nav_items: AssetDetailPage.sample_nav_items(),
-      timeline: AssetDetailPage.sample_timeline(),
-      freshness: AssetDetailPage.sample_freshness(state),
+    base_attributes()
+    |> Map.merge(%{
       active_mode: :details,
-      selected_window: AssetDetailPage.selected_sample_window()
+      selected_window: List.last(refresh_timeline()),
+      freshness: AssetDetailPage.sample_freshness(state)
+    })
+  end
+
+  defp refresh_timeline do
+    [
+      refresh_window("2026-06-09", "Jun 9", :success),
+      failed_refresh_window(),
+      refresh_window("2026-06-11", "Jun 11", :warning),
+      refresh_window("2026-06-12", "Jun 12", :success)
+    ]
+  end
+
+  defp data_coverage_timeline do
+    [
+      data_window("2026-06-09", "Jun 9", :success),
+      data_window("2026-06-10", "Jun 10", :error),
+      data_window("2026-06-11", "Jun 11", :muted),
+      data_window("2026-06-12", "Jun 12", :success)
+    ]
+  end
+
+  defp refresh_window(value, label, status) do
+    timeline_window("refresh:day:#{value}", :refresh_timeline, :day, value, label, status)
+  end
+
+  defp failed_refresh_window do
+    refresh_window("2026-06-10", "Jun 10", :error)
+    |> Map.merge(%{
+      latest_run_id: "run_failed_window",
+      latest_run_status: :error,
+      latest_run_config: run_config(:refresh_timeline, :day, "2026-06-10", "none", "force_all")
+    })
+  end
+
+  defp data_window(value, label, status) do
+    timeline_window("window:day:#{value}", :data_coverage_timeline, :day, value, label, status)
+  end
+
+  defp timeline_window(id, source, kind, value, label, status) do
+    %{
+      id: id,
+      source: source,
+      kind: kind,
+      value: value,
+      timezone: "Etc/UTC",
+      label: label,
+      date_label: "#{label}, 2026",
+      range_label: "#{label}, 2026",
+      status: status,
+      status_label: status_label(status),
+      latest_run_id: if(status == :error, do: "run_failed_window"),
+      latest_run_status: if(status == :error, do: :error),
+      run_enabled?: true,
+      run_disabled_reason: nil,
+      run_label: "Run asset",
+      default_run_config: run_config(source, kind, value)
     }
   end
+
+  defp run_config(source, kind, value, dependencies \\ "all", refresh \\ "auto") do
+    %{
+      dependencies: dependencies,
+      refresh: refresh,
+      source: Atom.to_string(source),
+      kind: Atom.to_string(kind),
+      value: value,
+      timezone: "Etc/UTC"
+    }
+  end
+
+  defp status_label(:success), do: "Fresh"
+  defp status_label(:warning), do: "Running"
+  defp status_label(:error), do: "Failed"
+  defp status_label(:muted), do: "Missing"
 end
