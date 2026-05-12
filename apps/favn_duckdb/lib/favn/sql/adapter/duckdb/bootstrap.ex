@@ -7,6 +7,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   alias Favn.SQL.Error
 
   @config_key :duckdb_bootstrap
+  @azure_transport_option_type_values ~w(default curl)
   @azure_credential_chain_values ~w(cli managed_identity workload_identity env default)
   @postgres_sslmodes ~w(disable allow prefer require verify-ca verify-full)
 
@@ -84,11 +85,19 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   defp normalize_config(config) do
     with {:ok, normalized} <- normalize_keyword_config(config, :bootstrap),
          {:ok, extensions} <- normalize_extensions(Keyword.get(normalized, :extensions, [])),
+         {:ok, settings} <- normalize_settings(Keyword.get(normalized, :settings, [])),
          {:ok, secrets} <- normalize_secrets(Keyword.get(normalized, :secrets, [])),
          {:ok, attach} <- normalize_attach(Keyword.get(normalized, :attach)),
          {:ok, attach} <- inherit_attach_metadata_options(attach, secrets),
          {:ok, use_catalog} <- normalize_optional_identifier(Keyword.get(normalized, :use)) do
-      {:ok, %{extensions: extensions, secrets: secrets, attach: attach, use: use_catalog}}
+      {:ok,
+       %{
+         extensions: extensions,
+         settings: settings,
+         secrets: secrets,
+         attach: attach,
+         use: use_catalog
+       }}
     end
   end
 
@@ -117,6 +126,48 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   defp normalize_extension_list(_values), do: {:error, :invalid_extension_list}
 
   defp normalize_extension_name(name), do: normalize_identifier(name)
+
+  defp normalize_settings(config) do
+    with {:ok, settings} <- normalize_keyword_config(config, :settings) do
+      settings
+      |> Enum.reduce_while({:ok, []}, fn {name, value}, {:ok, acc} ->
+        case normalize_setting(name, value) do
+          {:ok, setting} -> {:cont, {:ok, [setting | acc]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, settings} -> {:ok, Enum.reverse(settings)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp normalize_setting(:azure_transport_option_type, value) do
+    case normalize_azure_transport_option_type(value) do
+      {:ok, normalized} -> {:ok, %{name: "azure_transport_option_type", value: normalized}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_setting(name, _value), do: {:error, {:unsupported_setting, name}}
+
+  defp normalize_azure_transport_option_type(value) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> normalize_azure_transport_option_type()
+  end
+
+  defp normalize_azure_transport_option_type(value) when is_binary(value) do
+    if value in @azure_transport_option_type_values do
+      {:ok, value}
+    else
+      {:error, {:invalid_setting_value, :azure_transport_option_type, value}}
+    end
+  end
+
+  defp normalize_azure_transport_option_type(value),
+    do: {:error, {:invalid_setting_value, :azure_transport_option_type, value}}
 
   defp normalize_secrets(config) do
     with {:ok, secrets} <- normalize_keyword_config(config, :secrets) do
@@ -431,9 +482,16 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     end
   end
 
-  defp steps(%{extensions: extensions, secrets: secrets, attach: attach, use: use_catalog}) do
+  defp steps(%{
+         extensions: extensions,
+         settings: settings,
+         secrets: secrets,
+         attach: attach,
+         use: use_catalog
+       }) do
     extension_steps(:install, extensions.install) ++
       extension_steps(:load, extensions.load) ++
+      setting_steps(settings) ++
       Enum.map(secrets, &secret_step/1) ++
       attach_steps(attach) ++
       use_steps(use_catalog)
@@ -446,6 +504,20 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
       %{
         id: step_id(kind, name),
         kind: kind,
+        statement: sql,
+        safe_statement: sql,
+        sensitive_values: []
+      }
+    end)
+  end
+
+  defp setting_steps(settings) do
+    Enum.map(settings, fn %{name: name, value: value} ->
+      sql = ["SET ", name, " = ", quote_literal(value)]
+
+      %{
+        id: step_id(:set, name),
+        kind: :set_setting,
         statement: sql,
         safe_statement: sql,
         sensitive_values: []

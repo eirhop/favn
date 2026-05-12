@@ -371,8 +371,10 @@ PostgreSQL metadata catalog. Add `Favn.SQL.Adapter.DuckDB.bootstrap_schema_field
 to the connection module schema, then configure extension install/load, Azure
 credential-chain secret creation, DuckLake attach, and `USE` under the named
 connection. Bootstrap extension names can be any valid DuckDB extension
-identifier; secret runtime refs are resolved on the runner side and redacted
-from diagnostics. DuckDB worker unavailability,
+identifier, and typed session settings such as
+`settings: [azure_transport_option_type: :curl]` run after extension load and
+before secrets or attach. Secret runtime refs are resolved on the runner side and
+redacted from diagnostics. DuckDB worker unavailability,
 worker-call timeouts, bootstrap failures, materialization failures, and appender
 failures are normalized into structured SQL errors suitable for logs, API/UI
 payloads, and run diagnostics without exposing configured secrets. Worker-call
