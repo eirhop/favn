@@ -44,6 +44,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert web.exec == (System.find_executable("elixir") || "elixir")
     assert "mix" in web.args
     assert "--no-compile" in web.args
+    assert web.env["FAVN_DEV_STORAGE"] == "sqlite"
+    assert web.env["FAVN_DEV_SQLITE_PATH"] == Path.expand(config.sqlite_path)
     assert web.env["FAVN_VIEW_PUBLIC_ORIGIN"] == config.web_base_url
     assert web.env["FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH"] == "1"
   end
@@ -94,8 +96,18 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert web.env["FAVN_VIEW_PORT"] == "4173"
 
     web_code = eval_code!(web)
+    assert web_code =~ "storage = System.fetch_env!(\"FAVN_DEV_STORAGE\")"
+    assert web_code =~ "Application.put_env(:favn_orchestrator, :storage_adapter"
+    assert web_code =~ "Application.ensure_all_started(:favn_storage_sqlite)"
     assert web_code =~ "endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])"
     assert web_code =~ "Keyword.merge(endpoint_config"
+
+    assert before?(
+             web_code,
+             "Application.put_env(:favn_orchestrator, :storage_adapter",
+             "Application.ensure_all_started(:favn_view)"
+           )
+
     assert web_code =~ "Application.ensure_all_started(:favn_view)"
   end
 

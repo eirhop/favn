@@ -11,7 +11,7 @@ defmodule FavnView.Components.IconNav do
   def icon_nav(assigns) do
     ~H"""
     <aside class={[
-      "favn-icon-rail fixed inset-y-0 left-0 z-20 hidden w-24 flex-col items-center justify-between border-y-0 border-l-0 px-4 py-8 md:flex",
+      "favn-icon-rail absolute inset-y-0 left-0 z-20 hidden w-24 flex-col items-center justify-between border-y-0 border-l-0 px-4 py-8 md:flex",
       @class
     ]}>
       <a href={~p"/"} class="btn btn-ghost gap-2 px-2 text-xl font-semibold" aria-label="Favn home">

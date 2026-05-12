@@ -235,6 +235,45 @@ defmodule Favn.Dev.RuntimeLaunch do
 
     code =
       """
+      storage = System.fetch_env!("FAVN_DEV_STORAGE")
+
+      case storage do
+        "memory" ->
+          Application.put_env(:favn_orchestrator, :storage_adapter, FavnOrchestrator.Storage.Adapter.Memory)
+          Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+        "sqlite" ->
+          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.SQLite)
+          Application.put_env(:favn_orchestrator, :storage_adapter_opts,
+            database: System.fetch_env!("FAVN_DEV_SQLITE_PATH"),
+            migration_mode: :auto
+          )
+          {:ok, _} = Application.ensure_all_started(:favn_storage_sqlite)
+
+        "postgres" ->
+          Application.put_env(:favn_orchestrator, :storage_adapter, Favn.Storage.Adapter.Postgres)
+
+          Application.put_env(
+            :favn_orchestrator,
+            :storage_adapter_opts,
+            hostname: System.fetch_env!("FAVN_DEV_POSTGRES_HOST"),
+            port: String.to_integer(System.fetch_env!("FAVN_DEV_POSTGRES_PORT")),
+            username: System.fetch_env!("FAVN_DEV_POSTGRES_USERNAME"),
+            password: System.fetch_env!("FAVN_DEV_POSTGRES_PASSWORD"),
+            database: System.fetch_env!("FAVN_DEV_POSTGRES_DATABASE"),
+            ssl: System.get_env("FAVN_DEV_POSTGRES_SSL", "false") == "true",
+            pool_size: String.to_integer(System.get_env("FAVN_DEV_POSTGRES_POOL_SIZE", "10"))
+          )
+
+          {:ok, _} = Application.ensure_all_started(:favn_storage_postgres)
+
+        other ->
+          raise ArgumentError,
+                "unsupported FAVN_DEV_STORAGE=\#{inspect(other)}; expected memory, sqlite, or postgres"
+      end
+
+      Application.put_env(:favn_orchestrator, :local_dev_mode, true)
+
       endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])
 
       Application.put_env(
@@ -268,6 +307,15 @@ defmodule Favn.Dev.RuntimeLaunch do
       env:
         EnvFile.loaded_env(opts)
         |> Map.merge(%{
+          "FAVN_DEV_STORAGE" => Atom.to_string(config.storage),
+          "FAVN_DEV_SQLITE_PATH" => Path.expand(config.sqlite_path, Paths.root_dir(opts)),
+          "FAVN_DEV_POSTGRES_HOST" => config.postgres.hostname,
+          "FAVN_DEV_POSTGRES_PORT" => Integer.to_string(config.postgres.port),
+          "FAVN_DEV_POSTGRES_USERNAME" => config.postgres.username,
+          "FAVN_DEV_POSTGRES_PASSWORD" => config.postgres.password,
+          "FAVN_DEV_POSTGRES_DATABASE" => config.postgres.database,
+          "FAVN_DEV_POSTGRES_SSL" => if(config.postgres.ssl, do: "true", else: "false"),
+          "FAVN_DEV_POSTGRES_POOL_SIZE" => Integer.to_string(config.postgres.pool_size),
           "FAVN_VIEW_PORT" => Integer.to_string(config.web_port),
           "FAVN_VIEW_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
           "FAVN_VIEW_PUBLIC_ORIGIN" => config.web_base_url,

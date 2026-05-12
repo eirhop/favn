@@ -27,7 +27,7 @@ defmodule FavnView.Components.ModeRail do
     <nav
       :if={@mode_items != []}
       class={[
-        "card glass favn-surface-list fixed right-5 top-1/2 z-20 hidden -translate-y-1/2 flex-col! items-center gap-2 rounded-box p-2 lg:flex",
+        "card glass favn-surface-list absolute right-5 top-1/2 z-20 hidden -translate-y-1/2 flex-col! items-center gap-2 rounded-box p-2 lg:flex",
         @class
       ]}
       aria-label="View modes"
@@ -40,7 +40,7 @@ defmodule FavnView.Components.ModeRail do
 
     <nav
       :if={@mode_items != []}
-      class="favn-mobile-mode-dock card glass favn-surface-list fixed inset-x-6 bottom-3 z-30 mx-auto flex flex-row! max-w-md items-center justify-around gap-1 rounded-box p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] lg:hidden"
+      class="favn-mobile-mode-dock card glass favn-surface-list absolute inset-x-6 bottom-3 z-30 mx-auto flex flex-row! max-w-md items-center justify-around gap-1 rounded-box p-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] lg:hidden"
       aria-label="View modes"
       data-testid="view-mode-dock"
     >
