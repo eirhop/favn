@@ -29,6 +29,36 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     end
   end
 
+  defmodule FakeTokenProvider do
+    @behaviour Favn.Azure.PostgresEntraTokenProvider
+
+    alias Favn.Azure.Token
+    alias FavnDuckdb.TestSupport
+
+    @impl true
+    def fetch_token(auth, _opts) do
+      TestSupport.record({:token_auth, auth})
+      {:ok, %Token{access_token: "entra-token", expires_on: "1770000000"}}
+    end
+  end
+
+  defmodule FailingTokenProvider do
+    @behaviour Favn.Azure.PostgresEntraTokenProvider
+
+    alias Favn.Azure.TokenError
+
+    @impl true
+    def fetch_token(_auth, _opts) do
+      {:error,
+       %TokenError{
+         type: :connection_error,
+         message: "managed identity token request failed",
+         retryable?: true,
+         details: %{status: 429, access_token: "entra-token"}
+       }}
+    end
+  end
+
   setup do
     TestSupport.start_events()
 
@@ -56,6 +86,103 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
              validator.(extensions: [load: ["invalid extension"]])
   end
 
+  test "schema field validates Azure credential chain and scope" do
+    assert %{type: {:custom, validator}} = DuckDB.bootstrap_schema_field()
+
+    assert :ok =
+             validator.(
+               secrets: [
+                 azure_adls: [
+                   type: :azure,
+                   provider: :credential_chain,
+                   account_name: "storageaccount",
+                   chain: [:cli, "env"],
+                   scope: "abfss://lake@storageaccount.dfs.core.windows.net/"
+                 ]
+               ]
+             )
+
+    assert {:error, {:invalid_azure_credential_chain, "bad"}} =
+             validator.(
+               secrets: [
+                 azure_adls: [
+                   type: :azure,
+                   provider: :credential_chain,
+                   account_name: "storageaccount",
+                   chain: [:cli, "bad"]
+                 ]
+               ]
+             )
+
+    assert {:error, {:invalid_azure_scope, :missing_trailing_slash}} =
+             validator.(
+               secrets: [
+                 azure_adls: [
+                   type: :azure,
+                   provider: :credential_chain,
+                   account_name: "storageaccount",
+                   scope: "abfss://lake@storageaccount.dfs.core.windows.net"
+                 ]
+               ]
+             )
+  end
+
+  test "schema field redacts invalid PostgreSQL password values" do
+    assert %{type: {:custom, validator}} = DuckDB.bootstrap_schema_field()
+
+    assert {:error, {:invalid_secret_field, "oceanos_meta", :password}} =
+             validator.(
+               secrets: [
+                 oceanos_meta: [
+                   type: :postgres,
+                   host: "pg.example.com",
+                   port: 5432,
+                   database: "ducklake",
+                   user: "ducklake_user",
+                   password: {:raw_secret, "super-secret"}
+                 ]
+               ]
+             )
+  end
+
+  test "schema field accepts Azure PostgreSQL Entra auth and rejects password conflicts" do
+    assert %{type: {:custom, validator}} = DuckDB.bootstrap_schema_field()
+
+    assert :ok =
+             validator.(
+               secrets: [
+                 oceanos_meta: [
+                   type: :postgres,
+                   host: "pg.example.com",
+                   port: 5432,
+                   database: "ducklake",
+                   user: "ducklake_user",
+                   auth: [
+                     type: :azure_postgres_entra,
+                     provider: :managed_identity,
+                     client_id: "client-1",
+                     endpoint: :auto
+                   ]
+                 ]
+               ]
+             )
+
+    assert {:error, {:conflicting_secret_fields, "oceanos_meta", [:password, :auth]}} =
+             validator.(
+               secrets: [
+                 oceanos_meta: [
+                   type: :postgres,
+                   host: "pg.example.com",
+                   port: 5432,
+                   database: "ducklake",
+                   user: "ducklake_user",
+                   password: "super-secret",
+                   auth: [type: :azure_postgres_entra, provider: :azure_cli]
+                 ]
+               ]
+             )
+  end
+
   test "runs DuckLake bootstrap statements in configured order" do
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
 
@@ -72,6 +199,66 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
              "ATTACH 'postgres://user:password@localhost:5432/ducklake' AS \"lake\" (TYPE ducklake, DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/raw')",
              ~s(USE "lake")
            ]
+  end
+
+  test "runs DuckLake bootstrap with ADLS and PostgreSQL secrets" do
+    resolved = ducklake_postgres_resolved()
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    assert :ok = DuckDB.bootstrap(conn, resolved, [])
+
+    assert statements() == [
+             "LOAD ducklake",
+             "LOAD postgres",
+             "LOAD azure",
+             "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
+             "CREATE SECRET \"oceanos_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
+             "ATTACH 'ducklake:postgres:sslmode=require' AS \"oceanos_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"oceanos_meta\")",
+             ~s(USE "oceanos_lake")
+           ]
+  end
+
+  test "injects Azure PostgreSQL Entra token into temporary PostgreSQL secret" do
+    resolved = ducklake_postgres_entra_resolved()
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    assert :ok = DuckDB.bootstrap(conn, resolved, azure_token_provider_module: FakeTokenProvider)
+
+    assert {:token_auth,
+            [
+              type: :azure_postgres_entra,
+              provider: :managed_identity,
+              client_id: "client-1",
+              endpoint: :auto
+            ]} in TestSupport.events()
+
+    assert statements() == [
+             "LOAD ducklake",
+             "LOAD postgres",
+             "CREATE SECRET \"oceanos_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'entra-token')",
+             "ATTACH 'ducklake:postgres:sslmode=require' AS \"oceanos_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"oceanos_meta\")",
+             ~s(USE "oceanos_lake")
+           ]
+  end
+
+  test "token acquisition failure returns redacted bootstrap error" do
+    resolved = ducklake_postgres_entra_resolved()
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    assert {:error,
+            %Error{
+              type: :connection_error,
+              operation: :bootstrap,
+              message: "DuckDB connection bootstrap failed at create_secret_oceanos_meta",
+              details: %{statement: safe_statement, adapter_details: adapter_details}
+            }} =
+             DuckDB.bootstrap(conn, resolved, azure_token_provider_module: FailingTokenProvider)
+
+    assert safe_statement =~ "PASSWORD 'redacted'"
+    refute safe_statement =~ "entra-token"
+    refute inspect(adapter_details) =~ "entra-token"
+    assert adapter_details.access_token == :redacted
+    assert statements() == []
   end
 
   test "bootstrap failure reports failing step without exposing secret values" do
@@ -104,6 +291,33 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     refute inspect(adapter_details) =~ secret_metadata
     assert safe_statement =~ "redacted"
     assert reason =~ "redacted"
+  end
+
+  test "PostgreSQL secret bootstrap failure redacts password only" do
+    resolved = ducklake_postgres_resolved()
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    failing_sql =
+      "CREATE SECRET \"oceanos_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')"
+
+    TestSupport.put_mode(:bootstrap_fail_sql, failing_sql)
+
+    assert {:error,
+            %Error{
+              operation: :bootstrap,
+              details: %{
+                statement: safe_statement,
+                reason: reason,
+                adapter_details: adapter_details
+              }
+            }} = DuckDB.bootstrap(conn, resolved, [])
+
+    refute safe_statement =~ "super-secret"
+    refute reason =~ "super-secret"
+    refute inspect(adapter_details) =~ "super-secret"
+    assert safe_statement =~ "HOST 'pg.example.com'"
+    assert safe_statement =~ "USER 'ducklake_user'"
+    assert safe_statement =~ "PASSWORD 'redacted'"
   end
 
   test "invalid bootstrap config returns structured invalid config error" do
@@ -183,6 +397,84 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
             data_path: "abfss://lake@storageaccount.dfs.core.windows.net/raw"
           ],
           use: :lake
+        ]
+      },
+      secret_fields: [:duckdb_bootstrap]
+    }
+  end
+
+  defp ducklake_postgres_resolved do
+    %Resolved{
+      name: :warehouse,
+      adapter: DuckDB,
+      module: __MODULE__,
+      config: %{
+        database: ":memory:",
+        duckdb_bootstrap: [
+          extensions: [load: [:ducklake, :postgres, :azure]],
+          secrets: [
+            azure_adls: [
+              type: :azure,
+              provider: :credential_chain,
+              account_name: "storageaccount",
+              chain: [:cli, :env],
+              scope: "abfss://lake@storageaccount.dfs.core.windows.net/"
+            ],
+            oceanos_meta: [
+              type: :postgres,
+              host: "pg.example.com",
+              port: 5432,
+              database: "ducklake",
+              user: "ducklake_user",
+              password: "super-secret",
+              sslmode: :require
+            ]
+          ],
+          attach: [
+            name: :oceanos_lake,
+            type: :ducklake,
+            metadata: [type: :postgres, secret: :oceanos_meta],
+            data_path: "abfss://lake@storageaccount.dfs.core.windows.net/data/"
+          ],
+          use: :oceanos_lake
+        ]
+      },
+      secret_fields: [:duckdb_bootstrap]
+    }
+  end
+
+  defp ducklake_postgres_entra_resolved do
+    %Resolved{
+      name: :warehouse,
+      adapter: DuckDB,
+      module: __MODULE__,
+      config: %{
+        database: ":memory:",
+        duckdb_bootstrap: [
+          extensions: [load: [:ducklake, :postgres]],
+          secrets: [
+            oceanos_meta: [
+              type: :postgres,
+              host: "pg.example.com",
+              port: 5432,
+              database: "ducklake",
+              user: "ducklake_user",
+              auth: [
+                type: :azure_postgres_entra,
+                provider: :managed_identity,
+                client_id: "client-1",
+                endpoint: :auto
+              ],
+              sslmode: :require
+            ]
+          ],
+          attach: [
+            name: :oceanos_lake,
+            type: :ducklake,
+            metadata: [type: :postgres, secret: :oceanos_meta],
+            data_path: "abfss://lake@storageaccount.dfs.core.windows.net/data/"
+          ],
+          use: :oceanos_lake
         ]
       },
       secret_fields: [:duckdb_bootstrap]
