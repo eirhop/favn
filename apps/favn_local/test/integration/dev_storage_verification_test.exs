@@ -176,19 +176,11 @@ defmodule Favn.Dev.StorageVerificationTest do
         env: %{}
       },
       %{
-        name: "orchestrator",
+        name: "operator",
         exec: shell,
         args: ["-lc", "sleep 60"],
         cwd: root_dir,
-        log_path: Paths.orchestrator_log_path(root_dir),
-        env: %{}
-      },
-      %{
-        name: "web",
-        exec: shell,
-        args: ["-lc", "sleep 60"],
-        cwd: root_dir,
-        log_path: Paths.web_log_path(root_dir),
+        log_path: Paths.operator_log_path(root_dir),
         env: %{}
       }
     ]

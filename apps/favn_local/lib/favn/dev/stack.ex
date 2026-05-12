@@ -290,7 +290,8 @@ defmodule Favn.Dev.Stack do
   defp runtime_service_statuses(runtime) do
     services = Map.get(runtime, "services", %{})
 
-    ["web", "orchestrator", "runner"]
+    services
+    |> runtime_service_names()
     |> Enum.map(fn service_name ->
       state =
         case get_in(services, [service_name, "pid"]) do
@@ -303,6 +304,14 @@ defmodule Favn.Dev.Stack do
 
       {service_name, state}
     end)
+  end
+
+  defp runtime_service_names(services) when is_map(services) do
+    if Map.has_key?(services, "operator") do
+      ["operator", "runner"]
+    else
+      ["web", "orchestrator", "runner"]
+    end
   end
 
   defp compile_runtime_apps(runtime, opts) when is_map(runtime) do

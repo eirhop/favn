@@ -206,6 +206,89 @@ defmodule Favn.Dev.LifecycleTest do
     refute DevProcess.alive?(info.pid)
   end
 
+  test "dev detects running operator runtime", %{root_dir: root_dir} do
+    log_path = Paths.runner_log_path(root_dir)
+    assert :ok = File.mkdir_p(Path.dirname(log_path))
+
+    spec = %{
+      name: "operator",
+      exec: System.find_executable("bash") || "/bin/bash",
+      args: ["-lc", "sleep 30"],
+      cwd: root_dir,
+      log_path: Paths.operator_log_path(root_dir),
+      env: %{}
+    }
+
+    runner_spec = %{spec | name: "runner", log_path: log_path}
+
+    assert {:ok, operator} = DevProcess.start_service(spec)
+    assert {:ok, runner} = DevProcess.start_service(runner_spec)
+
+    runtime = %{
+      "services" => %{
+        "operator" => %{"pid" => operator.pid},
+        "runner" => %{"pid" => runner.pid}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    assert {:error, :stack_already_running} =
+             Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
+
+    assert :ok = Dev.stop(root_dir: root_dir)
+    refute DevProcess.alive?(operator.pid)
+    refute DevProcess.alive?(runner.pid)
+  end
+
+  test "dev auto-clears stale operator runtime before continuing", %{root_dir: root_dir} do
+    stale_runtime = %{
+      "services" => %{
+        "operator" => %{"pid" => 999_999},
+        "runner" => %{"pid" => 999_998}
+      }
+    }
+
+    assert :ok = State.write_runtime(stale_runtime, root_dir: root_dir)
+    assert {:error, :install_required} = Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  end
+
+  test "dev reports partial operator runtime and does not clear state", %{root_dir: root_dir} do
+    log_path = Paths.runner_log_path(root_dir)
+    assert :ok = File.mkdir_p(Path.dirname(log_path))
+
+    spec = %{
+      name: "runner",
+      exec: System.find_executable("bash") || "/bin/bash",
+      args: ["-lc", "sleep 30"],
+      cwd: root_dir,
+      log_path: log_path,
+      env: %{}
+    }
+
+    assert {:ok, info} = DevProcess.start_service(spec)
+
+    runtime = %{
+      "services" => %{
+        "operator" => %{"pid" => 999_999},
+        "runner" => %{"pid" => info.pid}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    assert {:error, {:stack_partially_running, states}} =
+             Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
+
+    assert {"operator", :dead} in states
+    assert {"runner", :running} in states
+    assert {:ok, _runtime} = State.read_runtime(root_dir: root_dir)
+
+    assert :ok = Dev.stop(root_dir: root_dir)
+    refute DevProcess.alive?(info.pid)
+  end
+
   test "dev/1 returns explicit port conflict before startup", %{root_dir: root_dir} do
     {:ok, socket} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, false}])
     {:ok, port} = :inet.port(socket)
