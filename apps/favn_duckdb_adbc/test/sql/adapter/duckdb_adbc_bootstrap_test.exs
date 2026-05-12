@@ -150,6 +150,32 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
     assert statements() == ["LOAD ducklake", "LOAD postgres"]
   end
 
+  test "PostgreSQL Entra secret execution failure redacts fetched token" do
+    resolved = ducklake_postgres_entra_resolved()
+    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
+
+    failing_sql =
+      "CREATE SECRET \"oceanos_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'entra-token')"
+
+    TestSupport.put_mode(:bootstrap_fail_sql, failing_sql)
+
+    assert {:error,
+            %Error{
+              operation: :bootstrap,
+              details: %{
+                statement: safe_statement,
+                reason: reason,
+                adapter_details: adapter_details
+              }
+            }} = ADBC.bootstrap(conn, resolved, azure_token_provider_module: FakeTokenProvider)
+
+    refute safe_statement =~ "entra-token"
+    refute reason =~ "entra-token"
+    refute inspect(adapter_details) =~ "entra-token"
+    assert safe_statement =~ "PASSWORD 'redacted'"
+    assert reason =~ "PASSWORD 'redacted'"
+  end
+
   test "bootstrap failure reports failing step without exposing secret values" do
     {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
 

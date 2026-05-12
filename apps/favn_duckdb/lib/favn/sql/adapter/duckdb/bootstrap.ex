@@ -65,15 +65,18 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   defp execute_steps(%DuckDB.Conn{} = conn, %Resolved{} = resolved, steps, opts) do
     Enum.reduce_while(steps, :ok, fn step, :ok ->
-      with {:ok, step} <- materialize_step(step, opts),
-           {:ok, _result} <- DuckDB.execute(conn, step.statement, []) do
-        {:cont, :ok}
-      else
+      case materialize_step(step, opts) do
+        {:ok, executable_step} ->
+          case DuckDB.execute(conn, executable_step.statement, []) do
+            {:ok, _result} ->
+              {:cont, :ok}
+
+            {:error, %Error{} = error} ->
+              {:halt, {:error, bootstrap_error(resolved, executable_step, error)}}
+          end
+
         {:error, %TokenError{} = error} ->
           {:halt, {:error, token_error(resolved, step, error)}}
-
-        {:error, %Error{} = error} ->
-          {:halt, {:error, bootstrap_error(resolved, step, error)}}
       end
     end)
   end
