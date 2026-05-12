@@ -32,8 +32,8 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   @spec run(DuckDB.Conn.t(), Resolved.t(), keyword()) :: :ok | {:error, Error.t()}
   def run(%DuckDB.Conn{} = conn, %Resolved{} = resolved, opts) do
-    with {:ok, steps} <- build_steps(resolved, opts) do
-      execute_steps(conn, resolved, steps)
+    with {:ok, steps} <- build_steps(resolved) do
+      execute_steps(conn, resolved, steps, opts)
     end
   end
 
@@ -41,7 +41,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   def build_steps(%Resolved{} = resolved), do: build_steps(resolved, [])
 
   @spec build_steps(Resolved.t(), keyword()) :: {:ok, [step()]} | {:error, Error.t()}
-  def build_steps(%Resolved{} = resolved, opts) do
+  def build_steps(%Resolved{} = resolved, _opts) do
     case Map.get(resolved.config || %{}, @config_key) do
       nil ->
         {:ok, []}
@@ -53,26 +53,24 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
         config
         |> normalize_config()
         |> case do
-          {:ok, normalized} -> build_normalized_steps(resolved, normalized, opts)
+          {:ok, normalized} -> build_normalized_steps(normalized)
           {:error, reason} -> {:error, config_error(resolved, reason)}
         end
     end
   end
 
-  defp build_normalized_steps(%Resolved{} = resolved, normalized, opts) do
-    case materialize_auth_secrets(normalized.secrets, opts) do
-      {:ok, secrets} -> {:ok, steps(%{normalized | secrets: secrets})}
-      {:error, secret, %TokenError{} = error} -> {:error, token_error(resolved, secret, error)}
-    end
-  end
+  defp build_normalized_steps(normalized), do: {:ok, steps(normalized)}
 
-  defp execute_steps(_conn, _resolved, []), do: :ok
+  defp execute_steps(_conn, _resolved, [], _opts), do: :ok
 
-  defp execute_steps(%DuckDB.Conn{} = conn, %Resolved{} = resolved, steps) do
+  defp execute_steps(%DuckDB.Conn{} = conn, %Resolved{} = resolved, steps, opts) do
     Enum.reduce_while(steps, :ok, fn step, :ok ->
-      case DuckDB.execute(conn, step.statement, []) do
-        {:ok, _result} ->
-          {:cont, :ok}
+      with {:ok, step} <- materialize_step(step, opts),
+           {:ok, _result} <- DuckDB.execute(conn, step.statement, []) do
+        {:cont, :ok}
+      else
+        {:error, %TokenError{} = error} ->
+          {:halt, {:error, token_error(resolved, step, error)}}
 
         {:error, %Error{} = error} ->
           {:halt, {:error, bootstrap_error(resolved, step, error)}}
@@ -228,21 +226,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   defp normalize_managed_identity_endpoint(endpoint),
     do: {:error, {:invalid_managed_identity_endpoint, endpoint}}
 
-  defp materialize_auth_secrets(secrets, opts) do
-    secrets
-    |> Enum.reduce_while({:ok, []}, fn secret, {:ok, acc} ->
-      case materialize_auth_secret(secret, opts) do
-        {:ok, secret} -> {:cont, {:ok, [secret | acc]}}
-        {:error, %TokenError{} = error} -> {:halt, {:error, secret, error}}
-      end
-    end)
-    |> case do
-      {:ok, secrets} -> {:ok, Enum.reverse(secrets)}
-      {:error, _secret, %TokenError{} = _error} = error -> error
-    end
-  end
-
-  defp materialize_auth_secret(%{type: :postgres, auth: auth} = secret, opts)
+  defp materialize_step(%{postgres_secret: secret, postgres_auth: auth}, opts)
        when is_list(auth) do
     token_opts =
       case Keyword.get(opts, :azure_token_provider_module) do
@@ -251,12 +235,12 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
       end
 
     case PostgresEntraToken.fetch_token(auth, token_opts) do
-      {:ok, token} -> {:ok, %{secret | password: token.access_token}}
+      {:ok, token} -> {:ok, postgres_secret_step(secret, token.access_token, nil)}
       {:error, %TokenError{} = error} -> {:error, error}
     end
   end
 
-  defp materialize_auth_secret(secret, _opts), do: {:ok, secret}
+  defp materialize_step(step, _opts), do: {:ok, step}
 
   defp normalize_attach(nil), do: {:ok, nil}
 
@@ -521,17 +505,41 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     }
   end
 
-  defp secret_step(%{
-         name: name,
-         type: :postgres,
-         host: host,
-         port: port,
-         database: database,
-         user: user,
-         password: password,
-         auth: _auth,
-         sslmode: _sslmode
-       }) do
+  defp secret_step(
+         %{
+           name: name,
+           type: :postgres,
+           host: host,
+           port: port,
+           database: database,
+           user: user,
+           password: password,
+           auth: auth,
+           sslmode: _sslmode
+         } = secret
+       ) do
+    step = postgres_secret_step(secret, password, auth)
+
+    if is_list(auth) do
+      step
+      |> Map.put(:postgres_secret, %{
+        name: name,
+        host: host,
+        port: port,
+        database: database,
+        user: user
+      })
+      |> Map.put(:postgres_auth, auth)
+    else
+      step
+    end
+  end
+
+  defp postgres_secret_step(
+         %{name: name, host: host, port: port, database: database, user: user},
+         password,
+         auth
+       ) do
     options = [
       "TYPE postgres",
       ["HOST ", quote_literal(host)],
@@ -551,7 +559,8 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     ]
 
     safe_options =
-      safe_options ++ if(password, do: [["PASSWORD ", quote_literal(:redacted)]], else: [])
+      safe_options ++
+        if(password || auth, do: [["PASSWORD ", quote_literal(:redacted)]], else: [])
 
     %{
       id: step_id(:create_secret, name),
@@ -716,9 +725,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     }
   end
 
-  defp token_error(%Resolved{} = resolved, secret, %TokenError{} = error) do
-    step = %{id: step_id(:create_secret, secret.name), kind: :create_secret}
-
+  defp token_error(%Resolved{} = resolved, step, %TokenError{} = error) do
     %Error{
       type: error.type,
       message: "DuckDB connection bootstrap failed at #{step.id}",
@@ -729,8 +736,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
       details: %{
         step: step.id,
         bootstrap_kind: step.kind,
-        statement:
-          "CREATE SECRET #{IO.iodata_to_binary(quote_ident(secret.name))} (TYPE postgres, PASSWORD 'redacted')",
+        statement: IO.iodata_to_binary(step.safe_statement),
         reason: error.message,
         adapter_error_type: error.type,
         adapter_details: Error.redact(error.details)

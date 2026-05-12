@@ -30,7 +30,7 @@ defmodule Favn.Azure.PostgresEntraTokenTest do
     http_client = fn :get, {url, headers}, _http_opts, _opts ->
       url = to_string(url)
       assert url =~ "http://localhost/msi/token?"
-      assert url =~ "api_version=2019-08-01"
+      assert url =~ "api-version=2019-08-01"
       assert url =~ "resource=https%3A%2F%2Fossrdbms-aad.database.windows.net"
       assert url =~ "client_id=client-1"
       assert {~c"X-IDENTITY-HEADER", ~c"identity-header"} in headers
@@ -56,7 +56,7 @@ defmodule Favn.Azure.PostgresEntraTokenTest do
 
     http_client = fn :get, {url, headers}, _http_opts, _opts ->
       assert to_string(url) =~ "http://169.254.169.254/metadata/identity/oauth2/token?"
-      assert to_string(url) =~ "api_version=2018-02-01"
+      assert to_string(url) =~ "api-version=2018-02-01"
       assert {~c"Metadata", ~c"true"} in headers
 
       {:ok,

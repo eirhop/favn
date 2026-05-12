@@ -3,6 +3,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
 
   alias Favn.Connection.Resolved
   alias Favn.SQL.Adapter.DuckDB.ADBC
+  alias Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap
   alias Favn.SQL.Error
   alias FavnDuckdbADBC.TestSupport
 
@@ -115,7 +116,19 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
              "CREATE SECRET \"oceanos_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'entra-token')",
              "ATTACH 'ducklake:postgres:sslmode=require' AS \"oceanos_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"oceanos_meta\")",
              ~s(USE "oceanos_lake")
-           ]
+            ]
+  end
+
+  test "builds Azure PostgreSQL Entra bootstrap steps without fetching token" do
+    resolved = ducklake_postgres_entra_resolved()
+
+    assert {:ok, steps} = Bootstrap.build_steps(resolved, azure_token_provider_module: FakeTokenProvider)
+
+    create_secret = Enum.find(steps, &(&1.id == "create_secret_oceanos_meta"))
+
+    refute IO.iodata_to_binary(create_secret.statement) =~ "entra-token"
+    assert IO.iodata_to_binary(create_secret.safe_statement) =~ "PASSWORD 'redacted'"
+    assert statements() == []
   end
 
   test "token acquisition failure returns redacted bootstrap error" do
@@ -134,7 +147,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
     refute safe_statement =~ "entra-token"
     refute inspect(adapter_details) =~ "entra-token"
     assert adapter_details.access_token == :redacted
-    assert statements() == []
+    assert statements() == ["LOAD ducklake", "LOAD postgres"]
   end
 
   test "bootstrap failure reports failing step without exposing secret values" do

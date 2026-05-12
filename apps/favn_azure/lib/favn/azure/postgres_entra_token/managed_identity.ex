@@ -81,7 +81,7 @@ defmodule Favn.Azure.PostgresEntraToken.ManagedIdentity do
 
   defp request(url, headers, auth, api_version) do
     query =
-      [api_version: api_version, resource: @resource]
+      [{:"api-version", api_version}, {:resource, @resource}]
       |> maybe_put(:client_id, Keyword.get(auth, :client_id))
       |> URI.encode_query()
 
