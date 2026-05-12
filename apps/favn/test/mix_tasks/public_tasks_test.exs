@@ -356,12 +356,6 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
           "node_name" => "favn_orchestrator_task@localhost",
           "distribution_port" => 45_102
         },
-        "web" => %{"pid" => pid},
-        "orchestrator" => %{
-          "pid" => pid,
-          "node_name" => "favn_orchestrator_task@localhost",
-          "distribution_port" => 45_102
-        },
         "runner" => %{
           "pid" => pid,
           "node_name" => "favn_runner_task@localhost",

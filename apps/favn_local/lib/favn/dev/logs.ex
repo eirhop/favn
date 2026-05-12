@@ -4,6 +4,7 @@ defmodule Favn.Dev.Logs do
   """
 
   alias Favn.Dev.Paths
+  alias Favn.Dev.State
 
   @type root_opt :: [root_dir: Path.t()]
   @type logs_opt :: [
@@ -19,15 +20,22 @@ defmodule Favn.Dev.Logs do
     follow? = Keyword.get(opts, :follow, false)
     tail_lines = max(1, Keyword.get(opts, :tail, 100))
 
-    services = selected_services(opts)
     root_dir = Paths.root_dir(opts)
+    context = log_context(root_dir)
+    services = selected_services(opts, context)
 
     Enum.each(services, fn service ->
-      output_tail(service, log_path(service, root_dir), tail_lines, writer, length(services) > 1)
+      output_tail(
+        service,
+        log_path(service, root_dir, context),
+        tail_lines,
+        writer,
+        length(services) > 1
+      )
     end)
 
     if follow? do
-      follow_logs(services, root_dir, writer, opts)
+      follow_logs(services, root_dir, context, writer, opts)
     else
       :ok
     end
@@ -35,12 +43,16 @@ defmodule Favn.Dev.Logs do
 
   @spec selected_services(keyword()) :: [:operator | :web | :orchestrator | :runner]
   def selected_services(opts) do
+    opts |> Paths.root_dir() |> log_context() |> then(&selected_services(opts, &1))
+  end
+
+  defp selected_services(opts, context) do
     case Keyword.get(opts, :service, :all) do
       :operator -> [:operator]
       :web -> [:web]
       :orchestrator -> [:orchestrator]
       :runner -> [:runner]
-      _ -> [:web, :orchestrator, :runner]
+      _ -> if(context.operator?, do: [:operator, :runner], else: [:web, :orchestrator, :runner])
     end
   end
 
@@ -68,26 +80,45 @@ defmodule Favn.Dev.Logs do
     end
   end
 
-  defp follow_logs(services, root_dir, writer, opts) do
+  defp follow_logs(services, root_dir, context, writer, opts) do
     include_prefix? = length(services) > 1
     sleep_ms = Keyword.get(opts, :follow_sleep_ms, 200)
     ticks = Keyword.get(opts, :follow_ticks, :infinity)
 
     initial_offsets =
       Map.new(services, fn service ->
-        path = log_path(service, root_dir)
+        path = log_path(service, root_dir, context)
         {service, file_size(path)}
       end)
 
-    do_follow(services, root_dir, writer, include_prefix?, initial_offsets, ticks, sleep_ms)
+    do_follow(
+      services,
+      root_dir,
+      context,
+      writer,
+      include_prefix?,
+      initial_offsets,
+      ticks,
+      sleep_ms
+    )
   end
 
-  defp do_follow(_services, _root_dir, _writer, _include_prefix?, _offsets, 0, _sleep_ms), do: :ok
+  defp do_follow(
+         _services,
+         _root_dir,
+         _context,
+         _writer,
+         _include_prefix?,
+         _offsets,
+         0,
+         _sleep_ms
+       ),
+       do: :ok
 
-  defp do_follow(services, root_dir, writer, include_prefix?, offsets, ticks, sleep_ms) do
+  defp do_follow(services, root_dir, context, writer, include_prefix?, offsets, ticks, sleep_ms) do
     next_offsets =
       Enum.reduce(services, offsets, fn service, acc ->
-        path = log_path(service, root_dir)
+        path = log_path(service, root_dir, context)
         previous = Map.get(acc, service, 0)
 
         case read_append(path, previous) do
@@ -117,7 +148,16 @@ defmodule Favn.Dev.Logs do
         number -> number - 1
       end
 
-    do_follow(services, root_dir, writer, include_prefix?, next_offsets, next_ticks, sleep_ms)
+    do_follow(
+      services,
+      root_dir,
+      context,
+      writer,
+      include_prefix?,
+      next_offsets,
+      next_ticks,
+      sleep_ms
+    )
   end
 
   defp read_append(path, offset) do
@@ -149,17 +189,28 @@ defmodule Favn.Dev.Logs do
   defp format_line(service, line, true), do: "[#{service}] " <> line
   defp format_line(_service, line, false), do: line
 
-  defp log_path(:operator, root_dir), do: Paths.operator_log_path(root_dir)
+  defp log_context(root_dir) do
+    case State.read_runtime(root_dir: root_dir) do
+      {:ok, %{"services" => %{"operator" => operator}}} when is_map(operator) ->
+        %{
+          operator?: true,
+          operator_log_path: Map.get(operator, "log_path") || Paths.operator_log_path(root_dir)
+        }
 
-  defp log_path(:web, root_dir),
-    do: legacy_or_operator_log_path(Paths.web_log_path(root_dir), root_dir)
-
-  defp log_path(:orchestrator, root_dir),
-    do: legacy_or_operator_log_path(Paths.orchestrator_log_path(root_dir), root_dir)
-
-  defp log_path(:runner, root_dir), do: Paths.runner_log_path(root_dir)
-
-  defp legacy_or_operator_log_path(path, root_dir) do
-    if File.exists?(path), do: path, else: Paths.operator_log_path(root_dir)
+      _other ->
+        %{operator?: false, operator_log_path: Paths.operator_log_path(root_dir)}
+    end
   end
+
+  defp log_path(:operator, _root_dir, context), do: context.operator_log_path
+
+  defp log_path(:web, _root_dir, %{operator?: true} = context), do: context.operator_log_path
+  defp log_path(:web, root_dir, _context), do: Paths.web_log_path(root_dir)
+
+  defp log_path(:orchestrator, _root_dir, %{operator?: true} = context),
+    do: context.operator_log_path
+
+  defp log_path(:orchestrator, root_dir, _context), do: Paths.orchestrator_log_path(root_dir)
+
+  defp log_path(:runner, root_dir, _context), do: Paths.runner_log_path(root_dir)
 end

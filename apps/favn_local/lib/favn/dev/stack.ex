@@ -520,20 +520,12 @@ defmodule Favn.Dev.Stack do
             end
 
           {name, service}
-        end)
-        |> put_operator_aliases(),
+        end),
       "service_token_ref" => "secrets.service_token",
       "web_session_secret_ref" => "secrets.web_session_secret"
     }
 
     State.write_runtime(runtime, opts)
-  end
-
-  defp put_operator_aliases(services) when is_map(services) do
-    case Map.get(services, "operator") do
-      nil -> services
-      operator -> services |> Map.put("web", operator) |> Map.put("orchestrator", operator)
-    end
   end
 
   defp bootstrap_manifest(startup, opts) do

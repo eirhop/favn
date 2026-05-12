@@ -85,7 +85,7 @@ defmodule Favn.Dev.StorageVerificationTest do
     assert :ok =
              wait_until(fn ->
                match?(
-                 {:ok, %{"services" => %{"web" => _, "orchestrator" => _, "runner" => _}}},
+                 {:ok, %{"services" => %{"operator" => _, "runner" => _}}},
                  State.read_runtime(root_dir: root_dir)
                )
              end)
@@ -149,7 +149,7 @@ defmodule Favn.Dev.StorageVerificationTest do
       assert :ok =
                wait_until(fn ->
                  match?(
-                   {:ok, %{"services" => %{"web" => _, "orchestrator" => _, "runner" => _}}},
+                   {:ok, %{"services" => %{"operator" => _, "runner" => _}}},
                    State.read_runtime(root_dir: root_dir)
                  )
                end)
