@@ -78,6 +78,8 @@ defmodule FavnOrchestrator do
 
   @type asset_timeline_window :: %{
           required(:id) => String.t(),
+          required(:kind) => :hour | :day | :month | :year,
+          required(:value) => String.t(),
           required(:label) => String.t(),
           required(:date) => Date.t(),
           required(:range) => String.t(),
@@ -1337,61 +1339,62 @@ defmodule FavnOrchestrator do
   end
 
   defp asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts) do
-    kind = detail_timeline_kind(asset)
+    {kind, timezone} = detail_timeline_policy(asset)
 
-    selected_date =
-      latest_freshness
-      |> detail_timeline_selected_date(latest_run, opts)
-      |> timeline_period_date(kind)
+    selected_value =
+      detail_timeline_selected_value(kind, timezone, latest_freshness, latest_run, opts)
 
     window_states = asset_window_freshness_by_date(asset, freshness_states, kind)
 
-    latest_run_date =
+    latest_run_value =
       latest_run_at(latest_freshness, latest_run)
-      |> detail_date_from_datetime()
-      |> timeline_period_date(kind)
+      |> detail_value_from_datetime(kind, timezone)
 
     for offset <- 0..29 do
-      date = shift_timeline_date(selected_date, kind, offset - 29)
-      date_iso = Date.to_iso8601(date)
-      window_freshness = Map.get(window_states, date_iso)
+      value = shift_timeline_value(kind, timezone, selected_value, offset - 29)
+      date = timeline_value_date(kind, value)
+      window_freshness = Map.get(window_states, value)
 
       %{
-        id: timeline_window_id(kind, date),
-        label: timeline_window_label(kind, date),
+        id: timeline_window_id(kind, value),
+        kind: kind,
+        value: value,
+        label: timeline_window_label(kind, value),
         date: date,
-        range: timeline_window_range(kind, date),
+        range: timeline_window_range(kind, value),
         status:
-          timeline_status(window_freshness, latest_freshness, latest_run, date, latest_run_date),
+          timeline_status(window_freshness, latest_freshness, latest_run, value, latest_run_value),
         latest_run_id: latest_run_id(window_freshness, nil),
         latest_run_status: latest_run_status(window_freshness, nil),
         latest_run_at: latest_run_at(window_freshness, nil),
         run_label: "Run this window"
       }
       |> put_window_run_state(asset)
-      |> maybe_put_latest_run(latest_freshness, latest_run, date, latest_run_date)
+      |> maybe_put_latest_run(latest_freshness, latest_run, value, latest_run_value)
     end
   end
 
-  defp detail_timeline_kind(%{window: %WindowSpec{kind: kind}}), do: kind
+  defp detail_timeline_policy(%{window: %WindowSpec{kind: kind, timezone: timezone}}),
+    do: {kind, timezone}
 
-  defp detail_timeline_kind(%{window: window}) when is_atom(window) do
+  defp detail_timeline_policy(%{window: window}) when is_atom(window) do
     case normalize_window_kind(window) do
-      {:ok, kind} -> kind
-      {:error, _reason} -> :day
+      {:ok, kind} -> {kind, "Etc/UTC"}
+      {:error, _reason} -> {:day, "Etc/UTC"}
     end
   end
 
-  defp detail_timeline_kind(%{window: %{} = window}) do
+  defp detail_timeline_policy(%{window: %{} = window}) do
     kind = Map.get(window, :kind) || Map.get(window, "kind")
+    timezone = Map.get(window, :timezone) || Map.get(window, "timezone") || "Etc/UTC"
 
     case normalize_window_kind(kind) do
-      {:ok, kind} -> kind
-      {:error, _reason} -> :day
+      {:ok, kind} -> {kind, timezone}
+      {:error, _reason} -> {:day, "Etc/UTC"}
     end
   end
 
-  defp detail_timeline_kind(_asset), do: :day
+  defp detail_timeline_policy(_asset), do: {:day, "Etc/UTC"}
 
   defp put_window_run_state(window, %{window: nil}) do
     window
@@ -1418,11 +1421,19 @@ defmodule FavnOrchestrator do
 
   defp run_disabled_reason(_reason), do: :invalid_window
 
-  defp detail_timeline_selected_date(latest_freshness, latest_run, opts) do
-    case {opts[:today], latest_run_at(latest_freshness, latest_run)} do
-      {%Date{} = date, _latest_run_at} -> date
-      {_today, %DateTime{} = datetime} -> DateTime.to_date(datetime)
-      _other -> Date.utc_today()
+  defp detail_timeline_selected_value(kind, timezone, latest_freshness, latest_run, opts) do
+    case {opts[:now], opts[:today], latest_run_at(latest_freshness, latest_run)} do
+      {%DateTime{} = now, _today, _latest_run_at} ->
+        timeline_value_from_datetime(kind, timezone, now)
+
+      {_now, %Date{} = date, _latest_run_at} ->
+        timeline_value_from_date(kind, date)
+
+      {_now, _today, %DateTime{} = datetime} ->
+        timeline_value_from_datetime(kind, timezone, datetime)
+
+      _other ->
+        timeline_value_from_date(kind, Date.utc_today())
     end
   end
 
@@ -1433,7 +1444,7 @@ defmodule FavnOrchestrator do
     |> Enum.filter(&(freshness_ref_string(&1) == asset_ref_string))
     |> Enum.flat_map(fn state ->
       case window_date_from_freshness_key(state.freshness_key) do
-        {^timeline_kind, date} -> [{date, state}]
+        {^timeline_kind, value} -> [{value, state}]
         _other -> []
       end
     end)
@@ -1445,7 +1456,7 @@ defmodule FavnOrchestrator do
     |> String.split(":")
     |> List.last()
     |> case do
-      <<_::binary-size(10)>> = date -> {:day, date}
+      <<_::binary-size(10)>> = value -> {:day, value}
       _other -> nil
     end
   end
@@ -1455,8 +1466,8 @@ defmodule FavnOrchestrator do
     |> String.split(":")
     |> List.last()
     |> case do
-      <<year::binary-size(4), "-", month::binary-size(2)>> ->
-        {:month, "#{year}-#{month}-01"}
+      <<_year::binary-size(4), "-", _month::binary-size(2)>> = value ->
+        {:month, value}
 
       _other ->
         nil
@@ -1468,7 +1479,7 @@ defmodule FavnOrchestrator do
     |> String.split(":")
     |> List.last()
     |> case do
-      <<year::binary-size(4)>> -> {:year, "#{year}-01-01"}
+      <<_year::binary-size(4)>> = value -> {:year, value}
       _other -> nil
     end
   end
@@ -1478,47 +1489,112 @@ defmodule FavnOrchestrator do
     |> String.split(":")
     |> List.last()
     |> case do
-      <<date::binary-size(10), "T", _hour::binary-size(2)>> -> {:hour, date}
+      <<_date::binary-size(10), "T", _hour::binary-size(2)>> = value -> {:hour, value}
       _other -> nil
     end
   end
 
   defp window_date_from_freshness_key(_key), do: nil
 
-  defp timeline_period_date(nil, _kind), do: nil
-  defp timeline_period_date(%Date{} = date, :day), do: date
-  defp timeline_period_date(%Date{} = date, :hour), do: date
-  defp timeline_period_date(%Date{} = date, :month), do: %{date | day: 1}
-  defp timeline_period_date(%Date{} = date, :year), do: %{date | month: 1, day: 1}
+  defp detail_value_from_datetime(nil, _kind, _timezone), do: nil
 
-  defp shift_timeline_date(%Date{} = date, kind, 0) when kind in [:day, :hour], do: date
+  defp detail_value_from_datetime(%DateTime{} = datetime, kind, timezone),
+    do: timeline_value_from_datetime(kind, timezone, datetime)
 
-  defp shift_timeline_date(%Date{} = date, kind, count) when kind in [:day, :hour],
-    do: Date.add(date, count)
-
-  defp shift_timeline_date(%Date{} = date, :month, count) do
-    total = date.year * 12 + (date.month - 1) + count
-    Date.new!(div(total, 12), rem(total, 12) + 1, 1)
+  defp timeline_value_from_datetime(:hour, timezone, %DateTime{} = datetime) do
+    datetime
+    |> DateTime.shift_zone!(timezone, Favn.Timezone.database!())
+    |> then(&"#{Date.to_iso8601(DateTime.to_date(&1))}T#{pad2(&1.hour)}")
   end
 
-  defp shift_timeline_date(%Date{} = date, :year, count), do: %{date | year: date.year + count}
+  defp timeline_value_from_datetime(:day, timezone, %DateTime{} = datetime) do
+    datetime
+    |> DateTime.shift_zone!(timezone, Favn.Timezone.database!())
+    |> DateTime.to_date()
+    |> Date.to_iso8601()
+  end
 
-  defp timeline_window_id(:hour, date), do: "window:hour:#{Date.to_iso8601(date)}T00"
-  defp timeline_window_id(:day, date), do: "window:day:#{Date.to_iso8601(date)}"
-  defp timeline_window_id(:month, date), do: "window:month:#{format_month(date)}"
-  defp timeline_window_id(:year, date), do: "window:year:#{date.year}"
+  defp timeline_value_from_datetime(:month, timezone, %DateTime{} = datetime) do
+    datetime
+    |> DateTime.shift_zone!(timezone, Favn.Timezone.database!())
+    |> then(&format_month(&1.year, &1.month))
+  end
 
-  defp timeline_window_label(:hour, date), do: Calendar.strftime(date, "%b %-d 00:00")
-  defp timeline_window_label(:day, date), do: Calendar.strftime(date, "%b %-d")
-  defp timeline_window_label(:month, date), do: Calendar.strftime(date, "%b %Y")
-  defp timeline_window_label(:year, date), do: Integer.to_string(date.year)
+  defp timeline_value_from_datetime(:year, timezone, %DateTime{} = datetime) do
+    datetime
+    |> DateTime.shift_zone!(timezone, Favn.Timezone.database!())
+    |> then(&Integer.to_string(&1.year))
+  end
 
-  defp timeline_window_range(:hour, date), do: Calendar.strftime(date, "%b %-d, %Y 00:00")
-  defp timeline_window_range(:day, date), do: Calendar.strftime(date, "%b %-d, %Y")
-  defp timeline_window_range(:month, date), do: Calendar.strftime(date, "%B %Y")
-  defp timeline_window_range(:year, date), do: Integer.to_string(date.year)
+  defp timeline_value_from_date(:hour, %Date{} = date), do: "#{Date.to_iso8601(date)}T00"
+  defp timeline_value_from_date(:day, %Date{} = date), do: Date.to_iso8601(date)
+  defp timeline_value_from_date(:month, %Date{} = date), do: format_month(date.year, date.month)
+  defp timeline_value_from_date(:year, %Date{} = date), do: Integer.to_string(date.year)
 
-  defp format_month(%Date{} = date), do: "#{date.year}-#{pad2(date.month)}"
+  defp shift_timeline_value(kind, timezone, value, 0),
+    do: normalize_timeline_value(kind, timezone, value)
+
+  defp shift_timeline_value(kind, timezone, value, count) do
+    {:ok, period} = Favn.TimePeriod.bounds(kind, value, timezone)
+    {:ok, shifted} = Favn.TimePeriod.shift(period.start_at, kind, count)
+    timeline_value_from_datetime(kind, timezone, shifted)
+  end
+
+  defp normalize_timeline_value(kind, timezone, value) do
+    {:ok, period} = Favn.TimePeriod.bounds(kind, value, timezone)
+    timeline_value_from_datetime(kind, timezone, period.start_at)
+  end
+
+  defp timeline_value_date(:hour, <<date::binary-size(10), "T", _hour::binary-size(2)>>),
+    do: Date.from_iso8601!(date)
+
+  defp timeline_value_date(:day, value), do: Date.from_iso8601!(value)
+
+  defp timeline_value_date(:month, <<year::binary-size(4), "-", month::binary-size(2)>>) do
+    Date.new!(String.to_integer(year), String.to_integer(month), 1)
+  end
+
+  defp timeline_value_date(:year, value), do: Date.new!(String.to_integer(value), 1, 1)
+
+  defp timeline_window_id(kind, value), do: "window:#{kind}:#{value}"
+
+  defp timeline_window_label(:hour, <<date::binary-size(10), "T", hour::binary-size(2)>>) do
+    date
+    |> Date.from_iso8601!()
+    |> Calendar.strftime("%b %-d")
+    |> then(&"#{&1} #{hour}:00")
+  end
+
+  defp timeline_window_label(:day, value),
+    do: value |> Date.from_iso8601!() |> Calendar.strftime("%b %-d")
+
+  defp timeline_window_label(:month, value) do
+    :month
+    |> timeline_value_date(value)
+    |> Calendar.strftime("%b %Y")
+  end
+
+  defp timeline_window_label(:year, value), do: value
+
+  defp timeline_window_range(:hour, <<date::binary-size(10), "T", hour::binary-size(2)>>) do
+    date
+    |> Date.from_iso8601!()
+    |> Calendar.strftime("%b %-d, %Y")
+    |> then(&"#{&1} #{hour}:00")
+  end
+
+  defp timeline_window_range(:day, value),
+    do: value |> Date.from_iso8601!() |> Calendar.strftime("%b %-d, %Y")
+
+  defp timeline_window_range(:month, value) do
+    :month
+    |> timeline_value_date(value)
+    |> Calendar.strftime("%B %Y")
+  end
+
+  defp timeline_window_range(:year, value), do: value
+
+  defp format_month(year, month), do: "#{year}-#{pad2(month)}"
 
   defp pad2(value), do: value |> Integer.to_string() |> String.pad_leading(2, "0")
 
@@ -1591,9 +1667,6 @@ defmodule FavnOrchestrator do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp detail_date_from_datetime(%DateTime{} = datetime), do: DateTime.to_date(datetime)
-  defp detail_date_from_datetime(_datetime), do: nil
 
   defp timeline_status(
          %AssetFreshnessState{} = freshness,

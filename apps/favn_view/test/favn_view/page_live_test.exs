@@ -227,6 +227,37 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "policy unavailable"
   end
 
+  test "asset detail timeline renders backend-provided window labels" do
+    yearly_window = %{
+      id: "window:year:2026",
+      label: "2026",
+      date_label: "2026",
+      range_label: "2026",
+      status: :muted,
+      run_enabled?: true,
+      run_disabled_reason: nil,
+      run_label: "Run this window"
+    }
+
+    html =
+      render_component(&AssetDetailPage.asset_detail_page/1, %{
+        title: "yearly_asset",
+        status: "Unknown",
+        status_tone: :neutral,
+        window_kind_label: "Yearly windows",
+        window_range: "1997 - 2026",
+        nav_items: AssetDetailPage.sample_nav_items(),
+        timeline: [yearly_window],
+        selected_window: yearly_window,
+        active_mode: :timeline,
+        freshness: nil
+      })
+
+    assert html =~ "Yearly windows"
+    assert html =~ "2026"
+    refute html =~ "Jan"
+  end
+
   test "asset detail defaults to timeline mode", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 

@@ -231,9 +231,10 @@ defmodule FavnView.AssetDetailLive do
   defp timeline_window(window) do
     %{
       id: window.id,
+      label: window.label,
+      value: Map.get(window, :value),
+      kind: Map.get(window, :kind),
       date: window.date,
-      day: Calendar.strftime(window.date, "%d") |> String.trim_leading("0"),
-      month: Calendar.strftime(window.date, "%b"),
       date_label: window.range,
       range_label: window.range,
       status: timeline_status(window.status),
@@ -247,10 +248,8 @@ defmodule FavnView.AssetDetailLive do
   end
 
   defp timeline_selected_window(timeline, detail) do
-    latest_run_date = detail.latest_run_at && DateTime.to_date(detail.latest_run_at)
-
     Enum.find(timeline, fn window ->
-      latest_run_date && window.id == "window:day:#{Date.to_iso8601(latest_run_date)}"
+      detail.latest_run_id && window.latest_run_id == detail.latest_run_id
     end) || List.last(timeline)
   end
 
@@ -263,7 +262,7 @@ defmodule FavnView.AssetDetailLive do
 
   defp window_range([first | _] = timeline) do
     last = List.last(timeline)
-    "#{first.month} #{first.day} - #{last.month} #{last.day}, #{last.date.year}"
+    "#{first.label} - #{last.label}"
   end
 
   defp asset_name(detail) do

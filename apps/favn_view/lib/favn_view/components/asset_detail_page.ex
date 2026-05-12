@@ -303,8 +303,7 @@ defmodule FavnView.Components.AssetDetailPage do
         "text-center text-xs leading-tight text-base-content/60",
         @selected && "text-primary"
       ]}>
-        <div>{@window.day}</div>
-        <div :if={@window.day in ["24", "1"]} class="uppercase tracking-wide">{@window.month}</div>
+        <div class="max-w-16 text-balance">{@window.label}</div>
       </div>
       <span :if={@selected} class="status status-primary favn-status-glow"></span>
     </div>
@@ -495,6 +494,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
     window
     |> Map.put(:id, "#{String.downcase(month)}-#{day}-#{year}")
+    |> Map.put(:label, day)
     |> Map.put(:date_label, date_label)
     |> Map.put(:range_label, date_label)
     |> Map.put(:run_enabled?, true)
