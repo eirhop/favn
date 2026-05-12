@@ -13,9 +13,20 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :title, :string, required: true
   attr :status, :string, required: true
   attr :status_tone, :atom, default: :success
+  attr :window_kind_label, :string, default: "Windows"
+  attr :refresh_timeline_label, :string, default: "Refresh periods"
+  attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :window_range, :string, required: true
+  attr :refresh_window_range, :string, default: "No windows"
+  attr :data_coverage_window_range, :string, default: "No windows"
+  attr :active_timeline, :atom, default: :refresh
+  attr :has_data_windows?, :boolean, default: false
+  attr :can_run_asset?, :boolean, default: true
   attr :nav_items, :list, required: true
-  attr :timeline, :list, required: true
+  attr :timeline, :list, default: []
+  attr :refresh_timeline, :list, default: nil
+  attr :data_coverage_timeline, :list, default: nil
   attr :active_mode, :atom, default: :timeline
   attr :freshness, :map, default: nil
   attr :selected_window, :map, default: nil
@@ -26,6 +37,8 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :submitted_run_id, :string, default: nil
 
   def asset_detail_page(assigns) do
+    assigns = assign(assigns, :refresh_timeline, assigns.refresh_timeline || assigns.timeline)
+
     ~H"""
     <AppShell.app_shell
       title={@title}
@@ -35,8 +48,18 @@ defmodule FavnView.Components.AssetDetailPage do
     >
       <.central_view
         active_mode={@active_mode}
+        window_kind_label={@window_kind_label}
+        refresh_timeline_label={@refresh_timeline_label}
+        refresh_cadence_label={@refresh_cadence_label}
+        data_coverage_timeline_label={@data_coverage_timeline_label}
         window_range={@window_range}
-        timeline={@timeline}
+        refresh_window_range={@refresh_window_range}
+        data_coverage_window_range={@data_coverage_window_range}
+        active_timeline={@active_timeline}
+        has_data_windows?={@has_data_windows?}
+        can_run_asset?={@can_run_asset?}
+        refresh_timeline={@refresh_timeline}
+        data_coverage_timeline={@data_coverage_timeline}
         freshness={@freshness}
         selected_window={@selected_window}
         run_config_open?={@run_config_open?}
@@ -54,8 +77,18 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   attr :active_mode, :atom, required: true
+  attr :window_kind_label, :string, default: "Windows"
+  attr :refresh_timeline_label, :string, default: "Refresh periods"
+  attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :data_coverage_timeline_label, :string, default: "Data windows"
   attr :window_range, :string, required: true
-  attr :timeline, :list, required: true
+  attr :refresh_window_range, :string, default: "No windows"
+  attr :data_coverage_window_range, :string, default: "No windows"
+  attr :active_timeline, :atom, default: :refresh
+  attr :has_data_windows?, :boolean, default: false
+  attr :can_run_asset?, :boolean, default: true
+  attr :refresh_timeline, :list, default: []
+  attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
@@ -68,8 +101,18 @@ defmodule FavnView.Components.AssetDetailPage do
     ~H"""
     <.window_timeline_panel
       :if={@active_mode == :timeline}
+      window_kind_label={@window_kind_label}
+      refresh_timeline_label={@refresh_timeline_label}
+      refresh_cadence_label={@refresh_cadence_label}
+      data_coverage_timeline_label={@data_coverage_timeline_label}
       window_range={@window_range}
-      timeline={@timeline}
+      refresh_window_range={@refresh_window_range}
+      data_coverage_window_range={@data_coverage_window_range}
+      active_timeline={@active_timeline}
+      has_data_windows?={@has_data_windows?}
+      can_run_asset?={@can_run_asset?}
+      refresh_timeline={@refresh_timeline}
+      data_coverage_timeline={@data_coverage_timeline}
       freshness={@freshness}
       selected_window={@selected_window}
       run_config_open?={@run_config_open?}
@@ -88,7 +131,17 @@ defmodule FavnView.Components.AssetDetailPage do
   end
 
   attr :window_range, :string, required: true
-  attr :timeline, :list, required: true
+  attr :window_kind_label, :string, default: "Windows"
+  attr :refresh_timeline_label, :string, default: "Refresh periods"
+  attr :refresh_cadence_label, :string, default: "Refresh cadence"
+  attr :data_coverage_timeline_label, :string, default: "Data windows"
+  attr :refresh_window_range, :string, default: "No windows"
+  attr :data_coverage_window_range, :string, default: "No windows"
+  attr :active_timeline, :atom, default: :refresh
+  attr :has_data_windows?, :boolean, default: false
+  attr :can_run_asset?, :boolean, default: true
+  attr :refresh_timeline, :list, default: []
+  attr :data_coverage_timeline, :list, default: nil
   attr :freshness, :map, default: nil
   attr :selected_window, :map, default: nil
   attr :run_config_open?, :boolean, default: false
@@ -98,6 +151,11 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :submitted_run_id, :string, default: nil
 
   def window_timeline_panel(assigns) do
+    assigns = assign(assigns, :timeline, active_timeline(assigns))
+    assigns = assign(assigns, :timeline_range, active_timeline_range(assigns))
+    assigns = assign(assigns, :timeline_label, active_timeline_label(assigns))
+    assigns = assign(assigns, :timeline_kind_label, active_timeline_kind_label(assigns))
+
     ~H"""
     <GlassPanel.glass_panel
       id="window-timeline"
@@ -107,11 +165,39 @@ defmodule FavnView.Components.AssetDetailPage do
       <div class="flex flex-col gap-10">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h2 class="text-xl font-medium tracking-tight">Window timeline</h2>
-            <p class="mt-2 text-sm text-base-content/60">Daily windows</p>
+            <h2 class="text-xl font-medium tracking-tight">{@timeline_label}</h2>
+            <p class="mt-2 text-sm text-base-content/60">{@timeline_kind_label}</p>
           </div>
 
           <div class="join self-start text-sm text-base-content/70">
+            <button
+              :if={@has_data_windows?}
+              type="button"
+              class={[
+                "btn btn-sm join-item",
+                @active_timeline == :refresh && "btn-primary btn-soft",
+                @active_timeline != :refresh && "btn-ghost"
+              ]}
+              phx-click="set_timeline"
+              phx-value-timeline="refresh"
+              data-testid="refresh-timeline-toggle"
+            >
+              Refresh
+            </button>
+            <button
+              :if={@has_data_windows?}
+              type="button"
+              class={[
+                "btn btn-sm join-item",
+                @active_timeline == :data_coverage && "btn-primary btn-soft",
+                @active_timeline != :data_coverage && "btn-ghost"
+              ]}
+              phx-click="set_timeline"
+              phx-value-timeline="data_coverage"
+              data-testid="data-coverage-timeline-toggle"
+            >
+              Data
+            </button>
             <button
               type="button"
               class="btn btn-ghost btn-sm join-item"
@@ -120,7 +206,7 @@ defmodule FavnView.Components.AssetDetailPage do
               <.icon name="hero-chevron-left" class="size-4" />
             </button>
             <span class="btn btn-ghost btn-sm join-item pointer-events-none normal-case">
-              {@window_range}
+              {@timeline_range}
             </span>
             <button
               type="button"
@@ -153,6 +239,9 @@ defmodule FavnView.Components.AssetDetailPage do
 
         <SelectedWindowActions.selected_window_actions
           selected_window={@selected_window}
+          can_run_asset?={@can_run_asset?}
+          has_data_windows?={@has_data_windows?}
+          active_timeline={@active_timeline}
           run_config_open?={@run_config_open?}
           run_config={@run_config}
           submitting_window_run?={@submitting_window_run?}
@@ -298,8 +387,7 @@ defmodule FavnView.Components.AssetDetailPage do
         "text-center text-xs leading-tight text-base-content/60",
         @selected && "text-primary"
       ]}>
-        <div>{@window.day}</div>
-        <div :if={@window.day in ["24", "1"]} class="uppercase tracking-wide">{@window.month}</div>
+        <div class="max-w-16 text-balance">{@window.label}</div>
       </div>
       <span :if={@selected} class="status status-primary favn-status-glow"></span>
     </div>
@@ -484,12 +572,37 @@ defmodule FavnView.Components.AssetDetailPage do
   defp selected_window?(nil, _window), do: false
   defp selected_window?(selected_window, window), do: selected_window.id == window.id
 
+  defp active_timeline(%{active_timeline: :data_coverage, data_coverage_timeline: timeline})
+       when is_list(timeline), do: timeline
+
+  defp active_timeline(%{refresh_timeline: timeline}), do: timeline
+
+  defp active_timeline_range(%{
+         active_timeline: :data_coverage,
+         data_coverage_window_range: range
+       }),
+       do: range
+
+  defp active_timeline_range(%{refresh_window_range: range}), do: range
+
+  defp active_timeline_label(%{active_timeline: :data_coverage}), do: "Data coverage timeline"
+  defp active_timeline_label(_assigns), do: "Refresh timeline"
+
+  defp active_timeline_kind_label(%{
+         active_timeline: :data_coverage,
+         data_coverage_timeline_label: label
+       }),
+       do: label
+
+  defp active_timeline_kind_label(%{refresh_cadence_label: label}), do: label
+
   defp sample_window(%{month: month, day: day} = window) do
     year = if month == "May", do: 2026, else: 2026
     date_label = "#{month} #{day}, #{year}"
 
     window
     |> Map.put(:id, "#{String.downcase(month)}-#{day}-#{year}")
+    |> Map.put(:label, day)
     |> Map.put(:date_label, date_label)
     |> Map.put(:range_label, date_label)
     |> Map.put(:run_enabled?, true)

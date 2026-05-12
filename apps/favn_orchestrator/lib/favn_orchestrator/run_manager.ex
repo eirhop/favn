@@ -291,6 +291,7 @@ defmodule FavnOrchestrator.RunManager do
     timeout_ms = Keyword.get(opts, :timeout_ms, RunState.default_timeout_ms())
     dependencies = Keyword.get(opts, :dependencies, :all)
     anchor_window = Keyword.get(opts, :anchor_window)
+    exact_windows = Keyword.get(opts, :exact_windows, %{})
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
@@ -313,7 +314,8 @@ defmodule FavnOrchestrator.RunManager do
            Planner.plan(asset_ref,
              graph_index: index.graph_index,
              dependencies: dependencies,
-             anchor_window: anchor_window
+             anchor_window: anchor_window,
+             exact_windows: exact_windows
            ) do
       run_state =
         RunState.new(

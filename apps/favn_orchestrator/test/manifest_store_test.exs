@@ -175,7 +175,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert latest_window.id == "window:day:2026-05-10"
     assert latest_window.label == "May 10"
     assert latest_window.range == "May 10, 2026"
-    assert latest_window.status == :healthy
+    assert latest_window.status == :covered
     assert latest_window.latest_run_id == "run_asset_a"
     assert latest_window.latest_run_status == :ok
     assert latest_window.latest_run_at == finished_at
@@ -191,7 +191,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert failed_window.latest_run_at == old_finished_at
 
     assert unknown_window = Enum.find(detail.timeline, &(&1.date == ~D[2026-04-11]))
-    assert unknown_window.status == :unknown
+    assert unknown_window.status == :missing
     assert is_nil(unknown_window.latest_run_id)
 
     assert {:error, {:invalid_window_id, "not-a-window"}} =
@@ -251,9 +251,238 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert {:ok, no_window_detail} =
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetB:asset")
 
-    assert no_window = List.last(no_window_detail.timeline)
-    refute no_window.run_enabled?
-    assert no_window.run_disabled_reason == :asset_has_no_window_policy
+    assert no_window_detail.refresh_timeline != []
+    assert is_nil(no_window_detail.data_coverage_timeline)
+    assert no_window_detail.can_run_asset?
+
+    assert {:ok, full_refresh_run_id} =
+             FavnOrchestrator.submit_asset_run_for_manifest(
+               "mv_b",
+               "asset:Elixir.MyApp.AssetB:asset",
+               %{selection: nil, config: %{dependencies: :none, refresh: :auto}}
+             )
+
+    assert {:ok, full_refresh_run} = Storage.get_run(full_refresh_run_id)
+    assert full_refresh_run.asset_ref == {MyApp.AssetB, :asset}
+  end
+
+  test "asset detail timeline uses the asset window policy kind for runnable windows" do
+    window_spec = WindowSpec.new!(:month, lookback: 1, required: true)
+
+    version =
+      manifest_version(
+        "mv_monthly",
+        {MyApp.MonthlyAsset, :asset},
+        [
+          %Pipeline{
+            module: MyApp.MonthlyPipeline,
+            name: :monthly_pipeline,
+            selectors: [{MyApp.MonthlyAsset, :asset}],
+            deps: :all,
+            window: Policy.new!(:monthly),
+            source: :dsl,
+            outputs: [],
+            config: %{},
+            metadata: %{}
+          }
+        ],
+        window_spec
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_monthly")
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               today: ~D[2026-05-12]
+             )
+
+    assert detail.refresh_timeline != []
+    assert detail.data_coverage_timeline != nil
+    assert detail.has_data_windows?
+
+    assert window = List.last(detail.data_coverage_timeline)
+    assert window.id == "window:month:2026-05"
+    assert window.label == "May 2026"
+    assert window.range == "May 2026"
+    assert window.run_enabled?
+    assert is_nil(window.run_disabled_reason)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run_for_manifest(
+               "mv_monthly",
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               %{
+                 selection: %{
+                   source: :data_coverage_timeline,
+                   id: window.id,
+                   kind: window.kind,
+                   value: window.value,
+                   timezone: window.timezone
+                 },
+                 config: %{dependencies: :none, refresh: :auto}
+               }
+             )
+
+    assert {:ok, run} = Storage.get_run(run_id)
+    assert run.metadata.selected_window.id == "window:month:2026-05"
+    assert run.metadata.selected_window.kind == :month
+    assert run.metadata.timeline_selection.source == :data_coverage_timeline
+
+    assert run.plan.target_node_keys == [
+             {{MyApp.MonthlyAsset, :asset}, run.metadata.selected_window.key}
+           ]
+
+    assert {:error, {:window_kind_mismatch, :month, :day}} =
+             FavnOrchestrator.submit_asset_run_for_manifest(
+               "mv_monthly",
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               %{
+                 selection: %{
+                   source: :data_coverage_timeline,
+                   id: "window:day:2026-05-12",
+                   kind: :day,
+                   value: "2026-05-12",
+                   timezone: "Etc/UTC"
+                 },
+                 config: %{dependencies: :none, refresh: :auto}
+               }
+             )
+
+    assert refresh_window = List.last(detail.refresh_timeline)
+
+    assert {:ok, refresh_run_id} =
+             FavnOrchestrator.submit_asset_run_for_manifest(
+               "mv_monthly",
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               %{
+                 selection: %{
+                   source: :refresh_timeline,
+                   id: refresh_window.id,
+                   kind: refresh_window.kind,
+                   value: refresh_window.value,
+                   timezone: refresh_window.timezone
+                 },
+                 config: %{dependencies: :none, refresh: :auto}
+               }
+             )
+
+    assert {:ok, refresh_run} = Storage.get_run(refresh_run_id)
+    assert refresh_run.metadata.timeline_selection.source == :refresh_timeline
+    assert length(refresh_run.plan.target_node_keys) == 2
+  end
+
+  test "hourly asset detail timeline uses hours without collapsing same-day freshness" do
+    window_spec = WindowSpec.new!(:hour, required: true)
+
+    version =
+      manifest_version(
+        "mv_hourly",
+        {MyApp.HourlyAsset, :asset},
+        [
+          %Pipeline{
+            module: MyApp.HourlyPipeline,
+            name: :hourly_pipeline,
+            selectors: [{MyApp.HourlyAsset, :asset}],
+            deps: :all,
+            window: Policy.new!(:hourly),
+            source: :dsl,
+            outputs: [],
+            config: %{},
+            metadata: %{}
+          }
+        ],
+        window_spec
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_hourly")
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(
+                 {MyApp.HourlyAsset, :asset},
+                 "hourly:v8",
+                 ~U[2026-05-12 08:30:00Z],
+                 freshness_key: "calendar:hour:Etc/UTC:2026-05-12T08",
+                 status: :error,
+                 run_id: "run_hour_08",
+                 manifest_version_id: "mv_hourly"
+               )
+             )
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(
+                 {MyApp.HourlyAsset, :asset},
+                 "hourly:v9",
+                 ~U[2026-05-12 09:30:00Z],
+                 freshness_key: "calendar:hour:Etc/UTC:2026-05-12T09",
+                 status: :ok,
+                 run_id: "run_hour_09",
+                 manifest_version_id: "mv_hourly"
+               )
+             )
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.HourlyAsset:asset",
+               now: ~U[2026-05-12 10:15:00Z]
+             )
+
+    assert Enum.take(detail.timeline, -3) |> Enum.map(& &1.id) == [
+             "window:hour:2026-05-12T08",
+             "window:hour:2026-05-12T09",
+             "window:hour:2026-05-12T10"
+           ]
+
+    assert hour_08 = Enum.find(detail.timeline, &(&1.id == "window:hour:2026-05-12T08"))
+    assert hour_08.status == :failed
+    assert hour_08.latest_run_id == "run_hour_08"
+
+    assert hour_09 = Enum.find(detail.timeline, &(&1.id == "window:hour:2026-05-12T09"))
+    assert hour_09.status == :covered
+    assert hour_09.latest_run_id == "run_hour_09"
+  end
+
+  test "yearly asset detail timeline uses yearly ids and labels" do
+    window_spec = WindowSpec.new!(:year, required: true)
+
+    version =
+      manifest_version(
+        "mv_yearly",
+        {MyApp.YearlyAsset, :asset},
+        [
+          %Pipeline{
+            module: MyApp.YearlyPipeline,
+            name: :yearly_pipeline,
+            selectors: [{MyApp.YearlyAsset, :asset}],
+            deps: :all,
+            window: Policy.new!(:yearly),
+            source: :dsl,
+            outputs: [],
+            config: %{},
+            metadata: %{}
+          }
+        ],
+        window_spec
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_yearly")
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail(
+               "asset:Elixir.MyApp.YearlyAsset:asset",
+               today: ~D[2026-05-12]
+             )
+
+    assert window = List.last(detail.timeline)
+    assert window.id == "window:year:2026"
+    assert window.label == "2026"
+    assert window.range == "2026"
+    assert window.run_enabled?
   end
 
   test "publishes duplicate content under the existing canonical manifest version" do

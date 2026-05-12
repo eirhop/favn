@@ -31,6 +31,11 @@ defmodule FavnView.PageLiveTest do
              Storage.put_run(failed_run_state(:stg_payments, "run_failed_customer_orders"))
 
     assert :ok =
+             Storage.put_run(
+               failed_run_state(:customer_orders_daily, "run_failed_customer_daily")
+             )
+
+    assert :ok =
              Storage.put_run(empty_run_state(:stg_payments, :error, "run_failed_empty"))
 
     assert :ok = Storage.put_run(node_results_run_state())
@@ -153,7 +158,7 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "customer_orders_daily"
     assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "Stale")
     assert has_element?(view, ~s([data-testid="asset-freshness-summary"]), "daily Europe/Oslo")
-    assert html =~ "Window timeline"
+    assert html =~ "Refresh timeline"
     assert has_element?(view, ~s([data-testid="window-timeline-panel"]))
     assert has_element?(view, ~s([aria-label="View modes"]))
   end
@@ -214,7 +219,7 @@ defmodule FavnView.PageLiveTest do
       freshness: nil
     }
 
-    assert render_component(&AssetDetailPage.asset_detail_page/1, attrs) =~ "Window timeline"
+    assert render_component(&AssetDetailPage.asset_detail_page/1, attrs) =~ "Refresh timeline"
 
     html =
       render_component(&AssetDetailPage.asset_detail_page/1, %{
@@ -227,11 +232,49 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "policy unavailable"
   end
 
+  test "asset detail timeline renders backend-provided window labels" do
+    yearly_window = %{
+      id: "window:year:2026",
+      label: "2026",
+      date_label: "2026",
+      range_label: "2026",
+      status: :muted,
+      run_enabled?: true,
+      run_disabled_reason: nil,
+      run_label: "Run this window"
+    }
+
+    html =
+      render_component(&AssetDetailPage.asset_detail_page/1, %{
+        title: "yearly_asset",
+        status: "Unknown",
+        status_tone: :neutral,
+        window_kind_label: "Yearly windows",
+        refresh_cadence_label: "Yearly refresh periods",
+        window_range: "1997 - 2026",
+        nav_items: AssetDetailPage.sample_nav_items(),
+        timeline: [yearly_window],
+        selected_window: yearly_window,
+        active_mode: :timeline,
+        freshness: nil
+      })
+
+    assert html =~ "Yearly refresh periods"
+    assert html =~ "2026"
+    refute html =~ "Jan"
+  end
+
   test "asset detail defaults to timeline mode", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 
-    assert has_element?(view, ~s([data-testid="window-timeline-panel"]), "Window timeline")
-    assert has_element?(view, ~s([data-testid="selected-window-actions"]), today_label())
+    assert has_element?(view, ~s([data-testid="window-timeline-panel"]), "Refresh timeline")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="selected-window-actions"]),
+             "No timeline context selected"
+           )
+
     assert has_element?(view, "[data-testid='run-selected-window']:not([disabled])")
     refute has_element?(view, ~s([data-testid="create-backfill"]))
     refute has_element?(view, ~s([data-testid="asset-mode-placeholder"]))
@@ -241,12 +284,30 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 
     view
-    |> element(~s([data-testid="run-selected-window"]), "Run this window")
+    |> element(~s([data-testid="run-selected-window"]), "Run asset")
     |> render_click()
 
     assert has_element?(view, ~s([data-testid="run-config-panel"]), "Plan scope / dependencies")
     assert has_element?(view, ~s(input[name="run_config[dependencies]"][value="all"][checked]))
     assert has_element?(view, ~s(input[name="run_config[refresh]"][value="auto"][checked]))
+    assert has_element?(view, ~s([data-testid="run-config-window-kind"]), "Day")
+    assert has_element?(view, ~s([data-testid="run-config-window-value"]))
+    assert has_element?(view, ~s(input[name="run_config[source]"][value="refresh_timeline"]))
+  end
+
+  test "selected failed timeline item prepopulates failed run config", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+    failed_date = Date.utc_today() |> Date.add(-1) |> Date.to_iso8601()
+    window_id = "refresh:day:#{failed_date}"
+
+    view
+    |> element(~s([data-testid="timeline-window-#{window_id}"]))
+    |> render_click()
+
+    open_run_config(view)
+
+    assert has_element?(view, ~s(input[name="run_config[dependencies]"][value="none"][checked]))
+    assert has_element?(view, ~s(input[name="run_config[refresh]"][value="force_all"][checked]))
   end
 
   test "run selected window submits default auto config and navigates to run detail", %{
@@ -267,7 +328,6 @@ defmodule FavnView.PageLiveTest do
     {:ok, run_view, html} = live(conn, run_path)
 
     assert html =~ "run_"
-    assert html =~ "window:day:#{Date.to_iso8601(Date.utc_today())}"
     assert has_element?(run_view, ~s([data-testid="run-overview-panel"]))
   end
 
@@ -323,21 +383,22 @@ defmodule FavnView.PageLiveTest do
     })
   end
 
-  test "non-runnable selected window keeps run disabled", %{conn: conn} do
+  test "full-refresh asset can run without data coverage windows", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:stg_payments))
 
-    assert has_element?(view, ~s([data-testid="run-selected-window"][disabled]))
+    assert has_element?(view, ~s([data-testid="run-selected-window"]), "Run asset")
+    refute has_element?(view, ~s([data-testid="data-coverage-timeline-toggle"]))
     refute has_element?(view, ~s([data-testid="create-backfill"]))
-    assert has_element?(view, ~s([data-testid="selected-window-actions"]), "No window policy")
-
-    render_click(view, "open_run_config", %{})
-    refute has_element?(view, ~s([data-testid="run-config-panel"]))
 
     assert has_element?(
              view,
-             ~s([data-testid="selected-window-error"]),
-             "This asset has no window policy."
+             ~s([data-testid="selected-window-actions"]),
+             "No timeline context selected"
            )
+
+    render_click(view, "open_run_config", %{})
+    assert has_element?(view, ~s([data-testid="run-config-panel"]))
+    refute has_element?(view, ~s([data-testid="run-config-panel"]), "Timeline context")
   end
 
   test "asset detail mode rail changes the central panel", %{conn: conn} do
@@ -354,7 +415,7 @@ defmodule FavnView.PageLiveTest do
 
   test "clicking a timeline window changes the selected window", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
-    window_id = "window:day:#{Date.utc_today() |> Date.add(-29) |> Date.to_iso8601()}"
+    window_id = "refresh:day:#{Date.utc_today() |> Date.add(-29) |> Date.to_iso8601()}"
     window_label = Date.utc_today() |> Date.add(-29) |> Calendar.strftime("%b %-d, %Y")
 
     view
@@ -372,13 +433,33 @@ defmodule FavnView.PageLiveTest do
              view,
              ~s([data-testid="timeline-window-#{window_id}"][aria-label*="unknown"])
            )
+
+    view
+    |> element(~s([data-testid="timeline-window-#{window_id}"]))
+    |> render_click()
+
+    assert has_element?(
+             view,
+             ~s([data-testid="selected-window-actions"]),
+             "No timeline context selected"
+           )
+
+    assert has_element?(
+             view,
+             ~s([data-testid="timeline-window-#{window_id}"][aria-pressed="false"])
+           )
   end
 
   test "asset detail ignores invalid mode and window events", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 
-    assert render_click(view, "set_mode", %{"mode" => "not_real"}) =~ "Window timeline"
-    assert has_element?(view, ~s([data-testid="selected-window-actions"]), today_label())
+    assert render_click(view, "set_mode", %{"mode" => "not_real"}) =~ "Refresh timeline"
+
+    assert has_element?(
+             view,
+             ~s([data-testid="selected-window-actions"]),
+             "No timeline context selected"
+           )
 
     assert render_click(view, "select_window", %{"window-id" => "not-real"}) =~ today_label()
     assert has_element?(view, ~s([data-testid="window-timeline-panel"]))
@@ -851,6 +932,10 @@ defmodule FavnView.PageLiveTest do
     )
     |> Map.put(:inserted_at, started_at)
     |> Map.put(:updated_at, finished_at)
+    |> Map.put(:metadata, %{
+      asset_dependencies: :none,
+      refresh_policy: %{mode: :force, refs: [], include_upstream?: false}
+    })
     |> RunState.with_snapshot_hash()
   end
 
@@ -947,6 +1032,20 @@ defmodule FavnView.PageLiveTest do
                  ]
                )
              )
+
+    failed_date = Date.utc_today() |> Date.add(-1) |> Date.to_iso8601()
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(
+                 :customer_orders_daily,
+                 "customer:failed",
+                 DateTime.add(now, -1_200, :second),
+                 run_id: "run_failed_customer_daily",
+                 freshness_key: "calendar:day:Etc/UTC:#{failed_date}",
+                 status: :error
+               )
+             )
   end
 
   defp freshness_state(name, version, at, opts) do
@@ -963,7 +1062,7 @@ defmodule FavnView.PageLiveTest do
         latest_success_node_key: {{__MODULE__.Assets, name}, nil},
         latest_success_at: at,
         latest_attempt_run_id: run_id,
-        latest_attempt_status: :ok,
+        latest_attempt_status: Keyword.get(opts, :status, :ok),
         latest_attempt_at: at,
         manifest_version_id: "mv_view_assets",
         input_versions: Keyword.get(opts, :input_versions, []),
@@ -1052,7 +1151,7 @@ defmodule FavnView.PageLiveTest do
 
   defp open_run_config(view) do
     view
-    |> element(~s([data-testid="run-selected-window"]), "Run this window")
+    |> element(~s([data-testid="run-selected-window"]), "Run asset")
     |> render_click()
   end
 

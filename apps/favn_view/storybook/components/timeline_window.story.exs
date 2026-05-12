@@ -17,17 +17,49 @@ defmodule FavnView.Storybook.Components.TimelineWindow do
   def variations do
     [
       %Variation{
-        id: :healthy,
-        attributes: %{window: %{day: "12", month: "Jun", status: :success, current: true}}
+        id: :fresh_refresh_period,
+        attributes: %{window: timeline_window("refresh:day:2026-06-12", "Jun 12", :success)}
       },
       %Variation{
-        id: :late,
-        attributes: %{window: %{day: "28", month: "May", status: :warning}}
+        id: :running_refresh_period,
+        attributes: %{window: timeline_window("refresh:day:2026-06-13", "Jun 13", :warning)}
       },
       %Variation{
-        id: :pending,
-        attributes: %{window: %{day: "29", month: "May", status: :muted}}
+        id: :failed_data_window,
+        attributes: %{window: timeline_window("window:day:2026-06-10", "Jun 10", :error)}
+      },
+      %Variation{
+        id: :missing_data_window,
+        attributes: %{window: timeline_window("window:day:2026-06-11", "Jun 11", :muted)}
+      },
+      %Variation{
+        id: :selected_month_window,
+        attributes: %{
+          selected: true,
+          window:
+            timeline_window("window:month:2026-06", "Jun 2026", :success)
+            |> Map.merge(%{date_label: "June 2026", range_label: "June 2026"})
+        }
       }
     ]
   end
+
+  defp timeline_window(id, label, status) do
+    %{
+      id: id,
+      label: label,
+      date_label: label,
+      range_label: label,
+      status: status,
+      status_label: status_label(status),
+      run_enabled?: true,
+      run_disabled_reason: nil,
+      run_label: "Run asset"
+    }
+  end
+
+  defp status_label(:success), do: "Fresh"
+  defp status_label(:warning), do: "Running"
+  defp status_label(:error), do: "Failed"
+  defp status_label(:muted), do: "Unknown"
 end
