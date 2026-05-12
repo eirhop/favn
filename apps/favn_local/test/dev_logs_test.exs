@@ -68,6 +68,66 @@ defmodule Favn.Dev.LogsTest do
     assert output =~ "after"
   end
 
+  test "run/1 defaults to current operator log when operator runtime is active", %{
+    root_dir: root_dir
+  } do
+    File.write!(Paths.web_log_path(root_dir), "stale-web\n")
+    File.write!(Paths.orchestrator_log_path(root_dir), "stale-orchestrator\n")
+    File.write!(Paths.operator_log_path(root_dir), "operator-current\n")
+    File.write!(Paths.runner_log_path(root_dir), "runner-current\n")
+
+    assert :ok =
+             State.write_runtime(
+               %{
+                 "services" => %{
+                   "operator" => %{"pid" => 123, "log_path" => Paths.operator_log_path(root_dir)},
+                   "runner" => %{"pid" => 456, "log_path" => Paths.runner_log_path(root_dir)}
+                 }
+               },
+               root_dir: root_dir
+             )
+
+    output = collect(fn writer -> Logs.run(root_dir: root_dir, writer: writer) end)
+
+    assert output =~ "[operator] operator-current"
+    assert output =~ "[runner] runner-current"
+    refute output =~ "[web] operator-current"
+    refute output =~ "[orchestrator] operator-current"
+    refute output =~ "stale-web"
+    refute output =~ "stale-orchestrator"
+  end
+
+  test "run/1 aliases legacy web and orchestrator selections to active operator log", %{
+    root_dir: root_dir
+  } do
+    File.write!(Paths.web_log_path(root_dir), "stale-web\n")
+    File.write!(Paths.orchestrator_log_path(root_dir), "stale-orchestrator\n")
+    File.write!(Paths.operator_log_path(root_dir), "operator-current\n")
+
+    assert :ok =
+             State.write_runtime(
+               %{
+                 "services" => %{
+                   "operator" => %{"pid" => 123, "log_path" => Paths.operator_log_path(root_dir)}
+                 }
+               },
+               root_dir: root_dir
+             )
+
+    web_output =
+      collect(fn writer -> Logs.run(root_dir: root_dir, service: :web, writer: writer) end)
+
+    orchestrator_output =
+      collect(fn writer ->
+        Logs.run(root_dir: root_dir, service: :orchestrator, writer: writer)
+      end)
+
+    assert web_output =~ "operator-current"
+    assert orchestrator_output =~ "operator-current"
+    refute web_output =~ "stale-web"
+    refute orchestrator_output =~ "stale-orchestrator"
+  end
+
   defp collect(fun) do
     parent = self()
     writer = fn data -> send(parent, {:log_chunk, IO.iodata_to_binary(data)}) end

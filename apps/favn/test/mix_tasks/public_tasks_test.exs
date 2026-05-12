@@ -351,8 +351,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         "control" => 45_103
       },
       "services" => %{
-        "web" => %{"pid" => pid},
-        "orchestrator" => %{
+        "operator" => %{
           "pid" => pid,
           "node_name" => "favn_orchestrator_task@localhost",
           "distribution_port" => 45_102
@@ -374,16 +373,17 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     assert output =~ "Favn local dev stack"
     assert output =~ "manifest: mv_task_test"
+    assert output =~ "operator: running pid=#{pid}"
     assert output =~ "local URLs:"
-    assert output =~ "web: running pid=#{pid} url=http://127.0.0.1:4173"
-    assert output =~ "orchestrator API: running pid=#{pid} url=http://127.0.0.1:4101"
+    assert output =~ "web: url=http://127.0.0.1:4173"
+    assert output =~ "orchestrator API: url=http://127.0.0.1:4101"
     assert output =~ "internal control plane:"
 
     assert output =~
              "runner node: running pid=#{pid} node=favn_runner_task@localhost distribution_port=45101"
 
     assert output =~
-             "orchestrator node: running pid=#{pid} node=favn_orchestrator_task@localhost distribution_port=45102"
+             "operator node: running pid=#{pid} node=favn_orchestrator_task@localhost distribution_port=45102"
 
     assert output =~ "control node: node=favn_local_ctl_task@localhost distribution_port=45103"
   end

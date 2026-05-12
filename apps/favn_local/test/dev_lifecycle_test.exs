@@ -41,7 +41,7 @@ defmodule Favn.Dev.LifecycleTest do
     assert :ok =
              wait_until(fn ->
                match?(
-                 {:ok, %{"services" => %{"runner" => _, "orchestrator" => _, "web" => _}}},
+                 {:ok, %{"services" => %{"runner" => _, "operator" => _}}},
                  State.read_runtime(root_dir: root_dir)
                )
              end)
@@ -116,7 +116,7 @@ defmodule Favn.Dev.LifecycleTest do
                      "materialized_root" => runtime_root,
                      "runner_root" => runtime_root,
                      "orchestrator_root" => runtime_root,
-                      "web_root" => Path.join(runtime_root, "apps/favn_view")
+                     "web_root" => Path.join(runtime_root, "apps/favn_view")
                    },
                    root_dir: root_dir
                  )
@@ -199,6 +199,89 @@ defmodule Favn.Dev.LifecycleTest do
     assert {:error, {:stack_partially_running, states}} =
              Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
 
+    assert {"runner", :running} in states
+    assert {:ok, _runtime} = State.read_runtime(root_dir: root_dir)
+
+    assert :ok = Dev.stop(root_dir: root_dir)
+    refute DevProcess.alive?(info.pid)
+  end
+
+  test "dev detects running operator runtime", %{root_dir: root_dir} do
+    log_path = Paths.runner_log_path(root_dir)
+    assert :ok = File.mkdir_p(Path.dirname(log_path))
+
+    spec = %{
+      name: "operator",
+      exec: System.find_executable("bash") || "/bin/bash",
+      args: ["-lc", "sleep 30"],
+      cwd: root_dir,
+      log_path: Paths.operator_log_path(root_dir),
+      env: %{}
+    }
+
+    runner_spec = %{spec | name: "runner", log_path: log_path}
+
+    assert {:ok, operator} = DevProcess.start_service(spec)
+    assert {:ok, runner} = DevProcess.start_service(runner_spec)
+
+    runtime = %{
+      "services" => %{
+        "operator" => %{"pid" => operator.pid},
+        "runner" => %{"pid" => runner.pid}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    assert {:error, :stack_already_running} =
+             Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
+
+    assert :ok = Dev.stop(root_dir: root_dir)
+    refute DevProcess.alive?(operator.pid)
+    refute DevProcess.alive?(runner.pid)
+  end
+
+  test "dev auto-clears stale operator runtime before continuing", %{root_dir: root_dir} do
+    stale_runtime = %{
+      "services" => %{
+        "operator" => %{"pid" => 999_999},
+        "runner" => %{"pid" => 999_998}
+      }
+    }
+
+    assert :ok = State.write_runtime(stale_runtime, root_dir: root_dir)
+    assert {:error, :install_required} = Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  end
+
+  test "dev reports partial operator runtime and does not clear state", %{root_dir: root_dir} do
+    log_path = Paths.runner_log_path(root_dir)
+    assert :ok = File.mkdir_p(Path.dirname(log_path))
+
+    spec = %{
+      name: "runner",
+      exec: System.find_executable("bash") || "/bin/bash",
+      args: ["-lc", "sleep 30"],
+      cwd: root_dir,
+      log_path: log_path,
+      env: %{}
+    }
+
+    assert {:ok, info} = DevProcess.start_service(spec)
+
+    runtime = %{
+      "services" => %{
+        "operator" => %{"pid" => 999_999},
+        "runner" => %{"pid" => info.pid}
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    assert {:error, {:stack_partially_running, states}} =
+             Dev.dev(root_dir: root_dir, skip_runtime_compile: true)
+
+    assert {"operator", :dead} in states
     assert {"runner", :running} in states
     assert {:ok, _runtime} = State.read_runtime(root_dir: root_dir)
 
@@ -359,7 +442,7 @@ defmodule Favn.Dev.LifecycleTest do
              |> short_host?()
 
       assert runtime
-             |> get_in(["services", "orchestrator", "node_name"])
+             |> get_in(["services", "operator", "node_name"])
              |> short_host()
              |> short_host?()
 
@@ -393,6 +476,41 @@ defmodule Favn.Dev.LifecycleTest do
     _ = Dev.stop(root_dir: root_dir)
   end
 
+  test "foreground exits cleanly when stopped externally", %{root_dir: root_dir} do
+    root_dir = root_with_free_distribution_ports(root_dir)
+    specs = service_specs(root_dir)
+
+    task =
+      Task.async(fn ->
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :ok =
+                   Dev.dev(
+                     root_dir: root_dir,
+                     orchestrator_port: free_port(),
+                     web_port: free_port(),
+                     skip_install_check: true,
+                     skip_bootstrap: true,
+                     skip_readiness: true,
+                     service_specs_override: specs
+                   )
+        end)
+      end)
+
+    assert :ok =
+             wait_until(fn ->
+               match?(
+                 {:ok, %{"services" => %{"runner" => _, "operator" => _}}},
+                 State.read_runtime(root_dir: root_dir)
+               )
+             end)
+
+    assert :ok = Dev.stop(root_dir: root_dir)
+    assert Task.await(task, 5_000) =~ "Favn local dev stack"
+    assert {:error, :not_found} = State.read_runtime(root_dir: root_dir)
+  after
+    _ = Dev.stop(root_dir: root_dir)
+  end
+
   defp service_specs(root_dir, opts \\ []) do
     shell = System.find_executable("bash") || "/bin/bash"
     runner_args = Keyword.get(opts, :runner_args, ["-lc", "sleep 60"])
@@ -407,19 +525,11 @@ defmodule Favn.Dev.LifecycleTest do
         env: %{}
       },
       %{
-        name: "orchestrator",
+        name: "operator",
         exec: shell,
         args: ["-lc", "sleep 60"],
         cwd: root_dir,
-        log_path: Paths.orchestrator_log_path(root_dir),
-        env: %{}
-      },
-      %{
-        name: "web",
-        exec: shell,
-        args: ["-lc", "sleep 60"],
-        cwd: root_dir,
-        log_path: Paths.web_log_path(root_dir),
+        log_path: Paths.operator_log_path(root_dir),
         env: %{}
       }
     ]

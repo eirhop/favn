@@ -22,19 +22,15 @@ defmodule Mix.Tasks.Favn.Status do
     IO.puts("status: #{status.stack_status}")
     IO.puts("storage: #{status.storage}")
     IO.puts("manifest: #{status.active_manifest_version_id || "none"}")
+    IO.puts("operator: #{format_service(status.services.operator)}")
     IO.puts("local URLs:")
-    IO.puts("web: #{format_service(status.services.web)} url=#{status.user_urls.web}")
-
-    IO.puts(
-      "orchestrator API: #{format_service(status.services.orchestrator)} url=#{status.user_urls.orchestrator_api}"
-    )
+    IO.puts("web: url=#{status.user_urls.web}")
+    IO.puts("orchestrator API: url=#{status.user_urls.orchestrator_api}")
 
     IO.puts("internal control plane:")
     IO.puts("runner node: #{format_internal_node(status.internal_control.runner_node)}")
 
-    IO.puts(
-      "orchestrator node: #{format_internal_node(status.internal_control.orchestrator_node)}"
-    )
+    IO.puts("operator node: #{format_internal_node(status.internal_control.orchestrator_node)}")
 
     IO.puts("control node: #{format_control_node(status.internal_control.control_node)}")
 

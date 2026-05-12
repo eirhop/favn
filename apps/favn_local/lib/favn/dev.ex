@@ -26,7 +26,7 @@ defmodule Favn.Dev do
   - `install/1`: prepare local tooling inputs and snapshots
   - `init/1`: generate a local DuckDB sample project scaffold
   - `doctor/1`: validate local project setup before running
-  - `dev/1`: start local runner, orchestrator, and web processes
+  - `dev/1`: start a local runner process plus one operator process for orchestrator and web
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
