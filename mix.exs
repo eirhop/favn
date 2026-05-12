@@ -7,6 +7,7 @@ defmodule FavnUmbrella.MixProject do
       apps: [
         :favn,
         :favn_authoring,
+        :favn_azure,
         :favn_core,
         :favn_duckdb,
         :favn_duckdb_adbc,
@@ -42,6 +43,7 @@ defmodule FavnUmbrella.MixProject do
         "do --app favn_test_support test",
         "do --app favn_core test",
         "do --app favn_authoring test",
+        "do --app favn_azure test",
         "do --app favn test",
         "do --app favn_sql_runtime test",
         "do --app favn_runner test",

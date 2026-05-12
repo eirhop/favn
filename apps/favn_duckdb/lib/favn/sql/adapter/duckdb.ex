@@ -53,13 +53,29 @@ defmodule Favn.SQL.Adapter.DuckDB do
                 azure_adls: [
                   type: :azure,
                   provider: :credential_chain,
-                  account_name: Favn.RuntimeConfig.Ref.env!("AZURE_STORAGE_ACCOUNT")
+                  account_name: Favn.RuntimeConfig.Ref.env!("AZURE_STORAGE_ACCOUNT"),
+                  chain: [:cli, :env],
+                  scope: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_DATA_SCOPE")
+                ],
+                oceanos_meta: [
+                  type: :postgres,
+                  host: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_POSTGRES_HOST"),
+                  port: 5432,
+                  database: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_POSTGRES_DATABASE"),
+                  user: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_POSTGRES_USER"),
+                  auth: [
+                    type: :azure_postgres_entra,
+                    provider: :managed_identity,
+                    client_id: Favn.RuntimeConfig.Ref.env!("AZURE_CLIENT_ID", required?: false),
+                    endpoint: :auto
+                  ],
+                  sslmode: :require
                 ]
               ],
               attach: [
                 name: :lake,
                 type: :ducklake,
-                metadata: Favn.RuntimeConfig.Ref.secret_env!("DUCKLAKE_POSTGRES_DSN"),
+                metadata: [type: :postgres, secret: :oceanos_meta],
                 data_path: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_DATA_PATH")
               ],
               use: :lake
@@ -69,6 +85,52 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   Bootstrap failures return `Favn.SQL.Error` values with `operation: :bootstrap`,
   the failing step id, and redacted diagnostics.
+
+  ## Supported DuckLake bootstrap secrets
+
+  DuckDB bootstrap is intentionally DuckDB-specific. It can install/load
+  extensions, create temporary DuckDB secrets, attach a DuckLake catalog, and set
+  the active catalog with `USE`.
+
+  Azure ADLS secrets support DuckDB's `credential_chain` provider with optional
+  `:chain` and `:scope` fields. Chain values must be one or more of `:cli`,
+  `:managed_identity`, `:workload_identity`, `:env`, or `:default`; they render
+  as DuckDB's semicolon-separated `CHAIN` value. Scoped Azure secrets must use a
+  trailing slash, for example `abfss://container@account.dfs.core.windows.net/path/`.
+
+  PostgreSQL metadata catalog credentials can be supplied as DuckDB Postgres
+  secrets and then referenced from DuckLake attach metadata with
+  `metadata: [type: :postgres, secret: :secret_name]`. The optional `:sslmode`
+  value is passed through the DuckLake/Postgres metadata path because DuckDB's
+  Postgres secret type does not accept `SSLMODE` as a secret parameter.
+
+  PostgreSQL secrets accept either `:password` or Azure PostgreSQL Entra `:auth`,
+  not both. Azure auth supports managed identity and Azure CLI dogfooding:
+
+      auth: [
+        type: :azure_postgres_entra,
+        provider: :managed_identity,
+        client_id: Favn.RuntimeConfig.Ref.env!("AZURE_CLIENT_ID", required?: false),
+        endpoint: :auto
+      ]
+
+      auth: [type: :azure_postgres_entra, provider: :azure_cli]
+
+  Managed identity `endpoint: :auto` uses Azure App Service managed identity when
+  `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` are present, otherwise IMDS. The
+  PostgreSQL `:user` must be the PostgreSQL role created for the Entra principal
+  or managed identity, for example with
+  `select * from pgaadauth_create_principal('<identity_name>', false, false);`.
+  Tokens are fetched during DuckDB bootstrap immediately before the temporary
+  `CREATE SECRET` statement, injected as `PASSWORD`, never cached or persisted,
+  and require reconnect/rebootstrap after expiry.
+
+  Existing `metadata: Favn.RuntimeConfig.Ref.secret_env!("DUCKLAKE_POSTGRES_DSN")`
+  attach configuration remains supported as a fallback, but storing PostgreSQL
+  credentials in DuckDB secrets is preferred because connection-string failures
+  can expose raw credentials in lower-level errors.
+
+  Generated bootstrap SQL uses temporary DuckDB secrets (`CREATE SECRET`) only.
   """
 
   @behaviour Favn.SQL.Adapter

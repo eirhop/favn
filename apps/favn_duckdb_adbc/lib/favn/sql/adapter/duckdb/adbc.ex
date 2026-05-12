@@ -40,6 +40,33 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   Large data movement should stay in DuckDB via `execute/3` and explicit SQL such
   as `COPY TO`, `COPY FROM`, `read_json`, or `read_ndjson` against caller-owned
   paths.
+
+  ## DuckLake bootstrap
+
+  This adapter supports the same `:duckdb_bootstrap` shape as
+  `Favn.SQL.Adapter.DuckDB`, including extension loading, Azure ADLS
+  `credential_chain` secrets with validated `:chain` and trailing-slash `:scope`,
+  PostgreSQL DuckDB secrets, DuckLake attach through `META_SECRET`, and the
+  existing metadata DSN fallback.
+
+  PostgreSQL secrets accept either `:password` or Azure PostgreSQL Entra `:auth`,
+  not both. Azure auth supports managed identity and Azure CLI dogfooding:
+
+      auth: [
+        type: :azure_postgres_entra,
+        provider: :managed_identity,
+        client_id: Favn.RuntimeConfig.Ref.env!("AZURE_CLIENT_ID", required?: false),
+        endpoint: :auto
+      ]
+
+      auth: [type: :azure_postgres_entra, provider: :azure_cli]
+
+  The PostgreSQL `:user` must be the PostgreSQL role created for the Entra
+  principal or managed identity, for example with
+  `select * from pgaadauth_create_principal('<identity_name>', false, false);`.
+  Tokens are fetched during bootstrap immediately before temporary `CREATE
+  SECRET`, injected as `PASSWORD`, never cached or persisted, and require
+  reconnect/rebootstrap after expiry.
   """
 
   @behaviour Favn.SQL.Adapter
