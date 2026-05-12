@@ -175,7 +175,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert latest_window.id == "window:day:2026-05-10"
     assert latest_window.label == "May 10"
     assert latest_window.range == "May 10, 2026"
-    assert latest_window.status == :healthy
+    assert latest_window.status == :covered
     assert latest_window.latest_run_id == "run_asset_a"
     assert latest_window.latest_run_status == :ok
     assert latest_window.latest_run_at == finished_at
@@ -191,7 +191,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert failed_window.latest_run_at == old_finished_at
 
     assert unknown_window = Enum.find(detail.timeline, &(&1.date == ~D[2026-04-11]))
-    assert unknown_window.status == :unknown
+    assert unknown_window.status == :missing
     assert is_nil(unknown_window.latest_run_id)
 
     assert {:error, {:invalid_window_id, "not-a-window"}} =
@@ -251,9 +251,19 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert {:ok, no_window_detail} =
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetB:asset")
 
-    assert no_window = List.last(no_window_detail.timeline)
-    refute no_window.run_enabled?
-    assert no_window.run_disabled_reason == :asset_has_no_window_policy
+    assert no_window_detail.refresh_timeline != []
+    assert is_nil(no_window_detail.data_coverage_timeline)
+    assert no_window_detail.can_run_asset?
+
+    assert {:ok, full_refresh_run_id} =
+             FavnOrchestrator.submit_asset_run_for_manifest(
+               "mv_b",
+               "asset:Elixir.MyApp.AssetB:asset",
+               %{selection: nil, config: %{dependencies: :none, refresh: :auto}}
+             )
+
+    assert {:ok, full_refresh_run} = Storage.get_run(full_refresh_run_id)
+    assert full_refresh_run.asset_ref == {MyApp.AssetB, :asset}
   end
 
   test "asset detail timeline uses the asset window policy kind for runnable windows" do
@@ -288,7 +298,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
                today: ~D[2026-05-12]
              )
 
-    assert window = List.last(detail.timeline)
+    assert detail.refresh_timeline != []
+    assert detail.data_coverage_timeline != nil
+    assert detail.has_data_windows?
+
+    assert window = List.last(detail.data_coverage_timeline)
     assert window.id == "window:month:2026-05"
     assert window.label == "May 2026"
     assert window.range == "May 2026"
@@ -296,16 +310,46 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert is_nil(window.run_disabled_reason)
 
     assert {:ok, run_id} =
-             FavnOrchestrator.submit_asset_window_run(
+             FavnOrchestrator.submit_asset_run_for_manifest(
                "mv_monthly",
                "asset:Elixir.MyApp.MonthlyAsset:asset",
-               window.id,
-               dependencies: :none
+               %{
+                 selection: %{
+                   source: :data_coverage_timeline,
+                   id: window.id,
+                   kind: window.kind,
+                   value: window.value,
+                   timezone: window.timezone
+                 },
+                 config: %{dependencies: :none, refresh: :auto}
+               }
              )
 
     assert {:ok, run} = Storage.get_run(run_id)
     assert run.metadata.selected_window.id == "window:month:2026-05"
     assert run.metadata.selected_window.kind == :month
+    assert run.metadata.timeline_selection.source == :data_coverage_timeline
+
+    assert refresh_window = List.last(detail.refresh_timeline)
+
+    assert {:ok, refresh_run_id} =
+             FavnOrchestrator.submit_asset_run_for_manifest(
+               "mv_monthly",
+               "asset:Elixir.MyApp.MonthlyAsset:asset",
+               %{
+                 selection: %{
+                   source: :refresh_timeline,
+                   id: refresh_window.id,
+                   kind: refresh_window.kind,
+                   value: refresh_window.value,
+                   timezone: refresh_window.timezone
+                 },
+                 config: %{dependencies: :none, refresh: :auto}
+               }
+             )
+
+    assert {:ok, refresh_run} = Storage.get_run(refresh_run_id)
+    assert refresh_run.metadata.timeline_selection.source == :refresh_timeline
   end
 
   test "hourly asset detail timeline uses hours without collapsing same-day freshness" do
@@ -377,7 +421,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert hour_08.latest_run_id == "run_hour_08"
 
     assert hour_09 = Enum.find(detail.timeline, &(&1.id == "window:hour:2026-05-12T09"))
-    assert hour_09.status == :healthy
+    assert hour_09.status == :covered
     assert hour_09.latest_run_id == "run_hour_09"
   end
 

@@ -6,6 +6,8 @@ defmodule FavnView.Components.SelectedWindowActions do
   use FavnView, :html
 
   attr :selected_window, :map, default: nil
+  attr :can_run_asset?, :boolean, default: true
+  attr :has_data_windows?, :boolean, default: false
   attr :run_config_open?, :boolean, default: false
   attr :run_config, :map, default: %{dependencies: "all", refresh: "auto"}
   attr :submitting_window_run?, :boolean, default: false
@@ -15,15 +17,17 @@ defmodule FavnView.Components.SelectedWindowActions do
   def selected_window_actions(assigns) do
     ~H"""
     <div
-      :if={@selected_window}
       class="grid gap-3 rounded-box border border-base-content/10 bg-base-content/[0.04] p-4 sm:grid-cols-[1fr_auto] sm:items-center"
       data-testid="selected-window-actions"
     >
       <div class="min-w-0">
-        <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Selected window</p>
-        <p class="mt-1 text-sm font-medium text-base-content">{@selected_window.range_label}</p>
-        <p class="mt-0.5 text-xs text-base-content/55">{status_label(@selected_window.status)}</p>
-        <p :if={!@selected_window.run_enabled?} class="mt-1 text-xs text-base-content/45">
+        <p class="text-xs uppercase tracking-[0.18em] text-base-content/45">Run asset</p>
+        <p class="mt-1 text-sm font-medium text-base-content">{selection_label(@selected_window)}</p>
+        <p class="mt-0.5 text-xs text-base-content/55">{status_label(@selected_window)}</p>
+        <p
+          :if={@selected_window && !@selected_window.run_enabled?}
+          class="mt-1 text-xs text-base-content/45"
+        >
           {run_disabled_reason_label(@selected_window.run_disabled_reason)}
         </p>
         <p
@@ -43,17 +47,21 @@ defmodule FavnView.Components.SelectedWindowActions do
           type="button"
           class="btn btn-primary btn-soft btn-sm"
           phx-click="open_run_config"
-          disabled={!@selected_window.run_enabled? || @submitting_window_run?}
+          disabled={
+            !@can_run_asset? || (@selected_window && !@selected_window.run_enabled?) ||
+              @submitting_window_run?
+          }
           data-testid="run-selected-window"
         >
           <span :if={@submitting_window_run?} class="loading loading-spinner loading-xs"></span>
-          {@selected_window.run_label || "Run this window"}
+          Run asset
         </button>
       </div>
 
       <.run_config_panel
         :if={@run_config_open?}
         selected_window={@selected_window}
+        has_data_windows?={@has_data_windows?}
         run_config={@run_config}
         submitting_window_run?={@submitting_window_run?}
       />
@@ -61,7 +69,8 @@ defmodule FavnView.Components.SelectedWindowActions do
     """
   end
 
-  attr :selected_window, :map, required: true
+  attr :selected_window, :map, default: nil
+  attr :has_data_windows?, :boolean, default: false
   attr :run_config, :map, required: true
   attr :submitting_window_run?, :boolean, default: false
 
@@ -82,7 +91,7 @@ defmodule FavnView.Components.SelectedWindowActions do
           <div>
             <h3 class="text-sm font-medium text-base-content">Run plan</h3>
             <p class="mt-1 text-xs text-base-content/55">
-              Submit a planned graph rooted at {@selected_window.range_label}.
+              {run_plan_description(@selected_window)}
             </p>
           </div>
           <button
@@ -112,6 +121,13 @@ defmodule FavnView.Components.SelectedWindowActions do
             title="Only this asset/window"
             description="Plan only the selected target and window."
           />
+        </fieldset>
+
+        <fieldset :if={@has_data_windows?} class="fieldset">
+          <legend class="fieldset-legend">Timeline context</legend>
+          <div class="rounded-box border border-base-content/10 bg-base-content/[0.025] p-3 text-xs text-base-content/65">
+            {selection_label(@selected_window)}
+          </div>
         </fieldset>
 
         <fieldset class="fieldset">
@@ -206,10 +222,20 @@ defmodule FavnView.Components.SelectedWindowActions do
     """
   end
 
-  defp status_label(:success), do: "Fresh"
-  defp status_label(:warning), do: "Running"
-  defp status_label(:error), do: "Failed"
-  defp status_label(:muted), do: "Unknown / never run"
+  defp selection_label(nil), do: "No timeline context selected. The run will use default config."
+  defp selection_label(window), do: window.range_label
+
+  defp run_plan_description(nil), do: "Submit a planned graph for this asset."
+
+  defp run_plan_description(window),
+    do: "Submit a planned graph using #{window.range_label} as editable context."
+
+  defp status_label(nil), do: "Default run config"
+  defp status_label(%{status_label: label}), do: label
+  defp status_label(%{status: :success}), do: "Fresh"
+  defp status_label(%{status: :warning}), do: "Running"
+  defp status_label(%{status: :error}), do: "Failed"
+  defp status_label(%{status: :muted}), do: "Unknown / never run"
   defp status_label(_status), do: "Unknown"
 
   defp run_disabled_reason_label(:asset_has_no_window_policy), do: "No window policy"

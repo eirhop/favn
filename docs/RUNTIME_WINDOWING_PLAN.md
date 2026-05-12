@@ -158,6 +158,22 @@ Expose both:
 
 This is required for mixed granularity and SQL parity.
 
+Runtime windowing uses three separate concepts that are easy to confuse in the
+operator UI and orchestrator read models:
+
+| Concept | Runtime field | Defined by | Used for |
+| --- | --- | --- | --- |
+| Data coverage timeline | `ctx.window` | asset `Window.Spec` | SQL/API filters and the concrete data period an asset execution reads or writes |
+| Run timeline | `ctx.pipeline.anchor_window` | pipeline `Window.Policy` | Planning expansion, scheduler/manual run intent, and mixed-granularity dependency expansion |
+| Freshness rule | `Favn.Freshness.Policy` | asset freshness declaration or default | Skip-run decisions and operator health/status explanation |
+
+The data coverage timeline answers "what data period does this asset cover?".
+The run timeline answers "what operational period was requested for this run?".
+The freshness rule answers "can execution be skipped because existing state is
+fresh enough?". Asset detail surfaces these separately: full-refresh assets may
+only have a run/refresh timeline, while windowed assets can also expose data
+coverage windows derived from the asset-level `Window.Spec`.
+
 ## Planner/runtime behavior
 
 ### Window-aware planning

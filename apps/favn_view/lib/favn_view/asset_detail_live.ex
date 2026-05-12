@@ -20,7 +20,8 @@ defmodule FavnView.AssetDetailLive do
         asset_id: asset_id,
         asset: asset,
         active_mode: :timeline,
-        selected_window: default_selected_window(asset),
+        active_timeline: :refresh,
+        selected_window: nil,
         run_config_open?: false,
         run_config: default_run_config(),
         submitting_window_run?: false,
@@ -40,36 +41,65 @@ defmodule FavnView.AssetDetailLive do
   def handle_event("set_mode", _params, socket), do: {:noreply, socket}
 
   def handle_event("select_window", %{"window-id" => window_id}, socket) do
+    current = socket.assigns.selected_window
+
     selected_window =
       socket.assigns
       |> Map.get(:asset)
-      |> asset_timeline()
+      |> asset_timeline(socket.assigns.active_timeline)
       |> Enum.find(&(&1.id == window_id))
 
-    if selected_window do
-      {:noreply,
-       assign(socket,
-         selected_window: selected_window,
-         run_config_open?: false,
-         run_config: default_run_config(),
-         selected_window_error: nil,
-         submitted_run_id: nil
-       )}
-    else
-      {:noreply, socket}
+    cond do
+      current && current.id == window_id ->
+        {:noreply,
+         assign(socket,
+           selected_window: nil,
+           run_config_open?: false,
+           run_config: default_run_config(),
+           selected_window_error: nil,
+           submitted_run_id: nil
+         )}
+
+      selected_window ->
+        {:noreply,
+         assign(socket,
+           selected_window: selected_window,
+           run_config_open?: false,
+           run_config: default_run_config(),
+           selected_window_error: nil,
+           submitted_run_id: nil
+         )}
+
+      true ->
+        {:noreply, socket}
     end
   end
 
   def handle_event("select_window", _params, socket), do: {:noreply, socket}
 
+  def handle_event("set_timeline", %{"timeline" => timeline}, socket)
+      when timeline in ["refresh", "data_coverage"] do
+    {:noreply,
+     assign(socket,
+       active_timeline: timeline_atom(timeline),
+       selected_window: nil,
+       run_config_open?: false,
+       run_config: default_run_config(),
+       selected_window_error: nil,
+       submitted_run_id: nil
+     )}
+  end
+
+  def handle_event("set_timeline", _params, socket), do: {:noreply, socket}
+
   def handle_event("open_run_config", _params, socket) do
     %{asset: asset, selected_window: selected_window} = socket.assigns
 
     cond do
-      is_nil(asset) or is_nil(selected_window) ->
-        {:noreply, assign(socket, :selected_window_error, "Select a runnable window first.")}
+      is_nil(asset) or !asset.can_run_asset? ->
+        {:noreply, assign(socket, :selected_window_error, "This asset cannot be run.")}
 
-      !selected_window.run_enabled? ->
+      selected_window && !selected_window.run_enabled? ->
         {:noreply,
          assign(
            socket,
@@ -81,7 +111,7 @@ defmodule FavnView.AssetDetailLive do
         {:noreply,
          assign(socket,
            run_config_open?: true,
-           run_config: default_run_config(),
+           run_config: selected_run_config(selected_window),
            selected_window_error: nil,
            submitted_run_id: nil
          )}
@@ -97,10 +127,10 @@ defmodule FavnView.AssetDetailLive do
     run_config = run_config_from_params(params)
 
     cond do
-      is_nil(asset) or is_nil(selected_window) ->
-        {:noreply, assign(socket, :selected_window_error, "Select a runnable window first.")}
+      is_nil(asset) or !asset.can_run_asset? ->
+        {:noreply, assign(socket, :selected_window_error, "This asset cannot be run.")}
 
-      !selected_window.run_enabled? ->
+      selected_window && !selected_window.run_enabled? ->
         {:noreply,
          assign(
            socket,
@@ -111,7 +141,7 @@ defmodule FavnView.AssetDetailLive do
       true ->
         case run_submit_opts(asset, run_config) do
           {:ok, opts} ->
-            submit_selected_window(socket, asset, selected_window, run_config, opts)
+            submit_asset_run(socket, asset, selected_window, run_config, opts)
 
           {:error, reason} ->
             {:noreply,
@@ -123,7 +153,7 @@ defmodule FavnView.AssetDetailLive do
     end
   end
 
-  defp submit_selected_window(socket, asset, selected_window, run_config, opts) do
+  defp submit_asset_run(socket, asset, selected_window, run_config, opts) do
     socket =
       assign(socket,
         run_config: run_config,
@@ -132,11 +162,10 @@ defmodule FavnView.AssetDetailLive do
         submitted_run_id: nil
       )
 
-    case FavnOrchestrator.submit_asset_window_run(
+    case FavnOrchestrator.submit_asset_run_for_manifest(
            asset.manifest_version_id,
            asset.target_id,
-           selected_window.id,
-           opts
+           %{selection: timeline_selection(selected_window), config: Map.new(opts)}
          ) do
       {:ok, run_id} ->
         {:noreply,
@@ -163,8 +192,14 @@ defmodule FavnView.AssetDetailLive do
       status_tone={@asset.status_tone}
       window_kind_label={@asset.window_kind_label}
       window_range={@asset.window_range}
+      refresh_window_range={@asset.refresh_window_range}
+      data_coverage_window_range={@asset.data_coverage_window_range}
+      active_timeline={@active_timeline}
+      has_data_windows?={@asset.has_data_windows?}
+      can_run_asset?={@asset.can_run_asset?}
       nav_items={@nav_items}
-      timeline={@asset.timeline}
+      refresh_timeline={@asset.refresh_timeline}
+      data_coverage_timeline={@asset.data_coverage_timeline}
       active_mode={@active_mode}
       freshness={@asset.freshness}
       selected_window={@selected_window}
@@ -206,24 +241,29 @@ defmodule FavnView.AssetDetailLive do
   end
 
   defp asset_from_detail(detail) do
-    timeline = Enum.map(detail.timeline, &timeline_window/1)
-    selected_window = timeline_selected_window(timeline, detail)
+    refresh_timeline = Enum.map(detail.refresh_timeline, &timeline_window/1)
 
-    timeline =
-      Enum.map(timeline, fn window ->
-        Map.put(window, :current, selected_window && window.id == selected_window.id)
-      end)
+    data_coverage_timeline =
+      detail.data_coverage_timeline && Enum.map(detail.data_coverage_timeline, &timeline_window/1)
+
+    timeline = refresh_timeline
 
     %{
       manifest_version_id: detail.manifest_version_id,
       target_id: detail.target_id,
       canonical_asset_ref: detail.canonical_asset_ref,
+      can_run_asset?: detail.can_run_asset?,
+      has_data_windows?: detail.has_data_windows?,
       title: detail.name || asset_name(detail),
       status: status_label(Map.get(detail, :status)),
       status_tone: status_tone(Map.get(detail, :status)),
       freshness: Map.get(detail, :freshness, missing_freshness_detail()),
       window_kind_label: window_kind_label(Map.get(detail, :window)),
       window_range: window_range(timeline),
+      refresh_window_range: window_range(refresh_timeline),
+      data_coverage_window_range: window_range(data_coverage_timeline || []),
+      refresh_timeline: refresh_timeline,
+      data_coverage_timeline: data_coverage_timeline,
       timeline: timeline
     }
   end
@@ -234,29 +274,39 @@ defmodule FavnView.AssetDetailLive do
       label: window.label,
       value: Map.get(window, :value),
       kind: Map.get(window, :kind),
+      source: Map.get(window, :source),
+      timezone: Map.get(window, :timezone),
       date: window.date,
       date_label: window.range,
       range_label: window.range,
       status: timeline_status(window.status),
+      status_label: timeline_status_label(window.status),
       latest_run_id: window.latest_run_id,
       latest_run_status: window.latest_run_status,
       latest_run_at: window.latest_run_at,
       run_enabled?: window.run_enabled?,
       run_disabled_reason: window.run_disabled_reason,
-      run_label: window.run_label || "Run this window"
+      run_label: window.run_label || "Run asset",
+      default_run_config: Map.get(window, :default_run_config, %{})
     }
   end
 
-  defp timeline_selected_window(timeline, detail) do
-    Enum.find(timeline, fn window ->
-      detail.latest_run_id && window.latest_run_id == detail.latest_run_id
-    end) || List.last(timeline)
-  end
-
   defp timeline_status(:healthy), do: :success
+  defp timeline_status(:fresh), do: :success
+  defp timeline_status(:covered), do: :success
   defp timeline_status(:running), do: :warning
   defp timeline_status(:failed), do: :error
+  defp timeline_status(:stale), do: :warning
+  defp timeline_status(:missing), do: :muted
   defp timeline_status(_status), do: :muted
+
+  defp timeline_status_label(:fresh), do: "Fresh"
+  defp timeline_status_label(:covered), do: "Covered"
+  defp timeline_status_label(:missing), do: "Missing"
+  defp timeline_status_label(:stale), do: "Stale"
+  defp timeline_status_label(:failed), do: "Failed"
+  defp timeline_status_label(:running), do: "Running"
+  defp timeline_status_label(_status), do: "Unknown"
 
   defp window_range([]), do: "No windows"
 
@@ -291,14 +341,55 @@ defmodule FavnView.AssetDetailLive do
   defp window_kind_label(kind) when kind in [:year, "year"], do: "Yearly windows"
   defp window_kind_label(_kind), do: "Windows"
 
-  defp default_selected_window(nil), do: nil
+  defp timeline_atom("refresh"), do: :refresh
+  defp timeline_atom("data_coverage"), do: :data_coverage
 
-  defp default_selected_window(asset) do
-    Enum.find(asset.timeline, & &1.current) || List.last(asset.timeline)
+  defp asset_timeline(nil, _active_timeline), do: []
+  defp asset_timeline(asset, :refresh), do: Map.get(asset, :refresh_timeline, [])
+
+  defp asset_timeline(asset, :data_coverage),
+    do: Map.get(asset, :data_coverage_timeline, []) || []
+
+  defp selected_run_config(nil), do: default_run_config()
+
+  defp selected_run_config(%{default_run_config: config}) when is_map(config) do
+    %{
+      dependencies: config |> Map.get(:dependencies, :all) |> config_atom_value(),
+      refresh: config |> Map.get(:refresh, :auto) |> refresh_config_value()
+    }
   end
 
-  defp asset_timeline(nil), do: []
-  defp asset_timeline(asset), do: Map.get(asset, :timeline, [])
+  defp config_atom_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp config_atom_value(value) when is_binary(value), do: value
+  defp config_atom_value(_value), do: "all"
+
+  defp refresh_config_value(value) when value in [:auto, "auto"], do: "auto"
+  defp refresh_config_value(value) when value in [:missing, "missing"], do: "missing"
+
+  defp refresh_config_value(value) when value in [:force, :force_all, "force", "force_all"],
+    do: "force_all"
+
+  defp refresh_config_value(value) when value in [:force_selected, "force_selected"],
+    do: "force_selected"
+
+  defp refresh_config_value(value)
+       when value in [:force_selected_upstream, "force_selected_upstream"],
+       do: "force_selected_upstream"
+
+  defp refresh_config_value(_value), do: "auto"
+
+  defp timeline_selection(nil), do: nil
+
+  defp timeline_selection(window) do
+    %{
+      source: window.source,
+      id: window.id,
+      kind: window.kind,
+      value: window.value,
+      timezone: window.timezone,
+      run_id: window.latest_run_id
+    }
+  end
 
   defp missing_freshness_detail do
     %{

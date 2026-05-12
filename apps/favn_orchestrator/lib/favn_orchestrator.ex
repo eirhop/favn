@@ -106,6 +106,10 @@ defmodule FavnOrchestrator do
           required(:latest_run_status) => atom() | nil,
           required(:latest_run_at) => DateTime.t() | nil,
           required(:window) => map() | nil,
+          required(:refresh_timeline) => [asset_timeline_window()],
+          required(:data_coverage_timeline) => [asset_timeline_window()] | nil,
+          required(:has_data_windows?) => boolean(),
+          required(:can_run_asset?) => boolean(),
           required(:freshness) => asset_freshness_detail(),
           required(:timeline) => [asset_timeline_window()]
         }
@@ -334,7 +338,20 @@ defmodule FavnOrchestrator do
   """
   @spec submit_asset_run_for_manifest(String.t(), String.t(), keyword()) ::
           {:ok, run_id()} | {:error, term()}
-  def submit_asset_run_for_manifest(manifest_version_id, target_id, opts \\ [])
+  @spec submit_asset_run_for_manifest(String.t(), String.t(), map()) ::
+          {:ok, run_id()} | {:error, term()}
+  def submit_asset_run_for_manifest(manifest_version_id, target_id, opts_or_request \\ [])
+
+  def submit_asset_run_for_manifest(manifest_version_id, target_id, request)
+      when is_binary(manifest_version_id) and is_binary(target_id) and is_map(request) do
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, asset} <- resolve_asset_target(version, target_id),
+         {:ok, opts} <- asset_run_request_opts(asset, request) do
+      submit_asset_run(asset.ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
+    end
+  end
+
+  def submit_asset_run_for_manifest(manifest_version_id, target_id, opts)
       when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
     with {:ok, version} <- get_manifest(manifest_version_id),
          {:ok, asset_ref} <- resolve_asset_target_ref(version, target_id) do
@@ -350,19 +367,143 @@ defmodule FavnOrchestrator do
   def submit_asset_window_run(manifest_version_id, target_id, window_id, opts \\ [])
       when is_binary(manifest_version_id) and is_binary(target_id) and is_binary(window_id) and
              is_list(opts) do
-    with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, asset} <- resolve_asset_target(version, target_id),
-         {:ok, window_request} <- window_request_from_id(window_id),
-         {:ok, anchor_window} <- resolve_asset_window(asset, window_request) do
-      submit_asset_run(
-        asset.ref,
-        opts
-        |> Keyword.put(:manifest_version_id, manifest_version_id)
-        |> Keyword.put(:anchor_window, anchor_window)
-        |> put_window_run_metadata(window_id, anchor_window)
-      )
+    submit_asset_run_for_manifest(manifest_version_id, target_id, %{
+      selection: %{source: :data_coverage_timeline, id: window_id},
+      config: Map.new(opts)
+    })
+  end
+
+  defp asset_run_request_opts(asset, request) do
+    config = Map.get(request, :config) || Map.get(request, "config") || %{}
+    selection = Map.get(request, :selection) || Map.get(request, "selection")
+
+    with {:ok, opts} <- asset_run_config_opts(asset, config),
+         {:ok, opts} <- put_asset_run_selection_opts(opts, selection) do
+      {:ok, opts}
     end
   end
+
+  defp asset_run_config_opts(asset, config) when is_map(config) do
+    dependencies_value = Map.get(config, :dependencies) || Map.get(config, "dependencies") || :all
+    refresh_value = Map.get(config, :refresh) || Map.get(config, "refresh") || :auto
+
+    with {:ok, dependencies} <- request_dependency_option(dependencies_value),
+         {:ok, refresh} <- request_refresh_option(refresh_value, asset.ref, dependencies) do
+      opts = [dependencies: dependencies, refresh: refresh]
+
+      opts =
+        cond do
+          Map.has_key?(config, :metadata) ->
+            Keyword.put(opts, :metadata, Map.get(config, :metadata))
+
+          Map.has_key?(config, "metadata") ->
+            Keyword.put(opts, :metadata, Map.get(config, "metadata"))
+
+          true ->
+            opts
+        end
+
+      {:ok, opts}
+    end
+  end
+
+  defp asset_run_config_opts(_asset, _config), do: {:error, :invalid_asset_run_config}
+
+  defp put_asset_run_selection_opts(opts, nil), do: {:ok, opts}
+
+  defp put_asset_run_selection_opts(opts, %{} = selection) do
+    source = Map.get(selection, :source) || Map.get(selection, "source")
+    id = Map.get(selection, :id) || Map.get(selection, "id")
+
+    case normalize_selection_source(source) do
+      {:ok, :data_coverage_timeline} -> put_data_coverage_selection_opts(opts, id, selection)
+      {:ok, :refresh_timeline} -> put_refresh_selection_opts(opts, id, selection)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp put_asset_run_selection_opts(_opts, _selection), do: {:error, :invalid_asset_run_selection}
+
+  defp put_data_coverage_selection_opts(opts, id, selection) when is_binary(id) do
+    with {:ok, window_request} <- window_request_from_id(id),
+         {:ok, anchor_window} <-
+           WindowRequest.to_anchor(window_request, selection_timezone(selection)) do
+      opts =
+        opts
+        |> Keyword.put(:anchor_window, anchor_window)
+        |> put_window_run_metadata(id, anchor_window)
+        |> put_selection_metadata(:data_coverage_timeline, selection)
+
+      {:ok, opts}
+    end
+  end
+
+  defp put_data_coverage_selection_opts(_opts, _id, _selection),
+    do: {:error, :invalid_asset_run_selection}
+
+  defp put_refresh_selection_opts(opts, id, selection) when is_binary(id) do
+    with {:ok, window_request} <- refresh_request_from_id(id),
+         {:ok, anchor_window} <-
+           WindowRequest.to_anchor(window_request, selection_timezone(selection)) do
+      opts =
+        opts
+        |> Keyword.put(:anchor_window, anchor_window)
+        |> put_selection_metadata(:refresh_timeline, selection)
+
+      {:ok, opts}
+    end
+  end
+
+  defp put_refresh_selection_opts(_opts, _id, _selection),
+    do: {:error, :invalid_asset_run_selection}
+
+  defp normalize_selection_source(source) when source in [:refresh_timeline, "refresh_timeline"],
+    do: {:ok, :refresh_timeline}
+
+  defp normalize_selection_source(source)
+       when source in [:data_coverage_timeline, "data_coverage_timeline"],
+       do: {:ok, :data_coverage_timeline}
+
+  defp normalize_selection_source(source), do: {:error, {:invalid_selection_source, source}}
+
+  defp selection_timezone(selection),
+    do: Map.get(selection, :timezone) || Map.get(selection, "timezone") || "Etc/UTC"
+
+  defp request_dependency_option(value) when value in [:all, "all"], do: {:ok, :all}
+  defp request_dependency_option(value) when value in [:none, "none"], do: {:ok, :none}
+  defp request_dependency_option(value), do: {:error, {:invalid_dependencies_mode, value}}
+
+  defp request_refresh_option(value, _asset_ref, _dependencies) when value in [:auto, "auto"],
+    do: {:ok, :auto}
+
+  defp request_refresh_option(value, _asset_ref, _dependencies)
+       when value in [:missing, "missing"], do: {:ok, :missing}
+
+  defp request_refresh_option(value, _asset_ref, _dependencies)
+       when value in [:force, :force_all, "force", "force_all"], do: {:ok, :force}
+
+  defp request_refresh_option({:force_assets, refs}, _asset_ref, _dependencies)
+       when is_list(refs),
+       do: {:ok, {:force_assets, refs}}
+
+  defp request_refresh_option({:force_assets, refs, opts}, _asset_ref, _dependencies)
+       when is_list(refs) and is_list(opts),
+       do: {:ok, {:force_assets, refs, opts}}
+
+  defp request_refresh_option(value, asset_ref, _dependencies)
+       when value in [:force_selected, "force_selected"] and is_tuple(asset_ref),
+       do: {:ok, {:force_assets, [asset_ref]}}
+
+  defp request_refresh_option(value, _asset_ref, :none)
+       when value in [:force_selected_upstream, "force_selected_upstream"],
+       do: {:error, {:refresh_include_upstream_requires_dependencies, :all}}
+
+  defp request_refresh_option(value, asset_ref, :all)
+       when value in [:force_selected_upstream, "force_selected_upstream"] and is_tuple(asset_ref),
+       do: {:ok, {:force_assets, [asset_ref], include_upstream: true}}
+
+  defp request_refresh_option(value, _asset_ref, _dependencies),
+    do: {:error, {:invalid_refresh_policy, value}}
 
   defp put_window_run_metadata(opts, window_id, %Anchor{} = anchor_window) do
     selected_window_metadata = window_run_metadata(window_id, anchor_window)
@@ -373,6 +514,29 @@ defmodule FavnOrchestrator do
 
       {:ok, metadata} when is_map(metadata) ->
         Keyword.put(opts, :metadata, Map.merge(metadata, selected_window_metadata))
+
+      {:ok, _invalid_metadata} ->
+        opts
+    end
+  end
+
+  defp put_selection_metadata(opts, source, selection) do
+    selection_metadata = %{
+      timeline_selection: %{
+        source: source,
+        id: Map.get(selection, :id) || Map.get(selection, "id"),
+        kind: Map.get(selection, :kind) || Map.get(selection, "kind"),
+        value: Map.get(selection, :value) || Map.get(selection, "value"),
+        run_id: Map.get(selection, :run_id) || Map.get(selection, "run_id")
+      }
+    }
+
+    case Keyword.fetch(opts, :metadata) do
+      :error ->
+        Keyword.put(opts, :metadata, selection_metadata)
+
+      {:ok, metadata} when is_map(metadata) ->
+        Keyword.put(opts, :metadata, Map.merge(metadata, selection_metadata))
 
       {:ok, _invalid_metadata} ->
         opts
@@ -1023,6 +1187,25 @@ defmodule FavnOrchestrator do
         latest_freshness = latest_freshness_for_ref(freshness_states, ref_string)
         latest_run = latest_run_for_ref(runs, ref_string)
 
+        refresh_timeline =
+          asset_refresh_timeline(
+            version,
+            asset,
+            latest_freshness,
+            latest_run,
+            freshness_states,
+            opts
+          )
+
+        data_coverage_timeline =
+          asset_data_coverage_timeline(
+            asset,
+            latest_freshness,
+            latest_run,
+            freshness_states,
+            opts
+          )
+
         target
         |> Map.take([:target_id, :label, :asset_ref, :relation, :type, :window])
         |> Map.put(:manifest_version_id, version.manifest_version_id)
@@ -1033,10 +1216,11 @@ defmodule FavnOrchestrator do
         |> Map.put(:latest_run_status, latest_run_status(latest_freshness, latest_run))
         |> Map.put(:latest_run_at, latest_run_at(latest_freshness, latest_run))
         |> Map.put(:freshness, asset_freshness_detail(asset, version, freshness_states, opts))
-        |> Map.put(
-          :timeline,
-          asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts)
-        )
+        |> Map.put(:refresh_timeline, refresh_timeline)
+        |> Map.put(:data_coverage_timeline, data_coverage_timeline)
+        |> Map.put(:has_data_windows?, not is_nil(data_coverage_timeline))
+        |> Map.put(:can_run_asset?, true)
+        |> Map.put(:timeline, data_coverage_timeline || refresh_timeline)
     end
   end
 
@@ -1338,7 +1522,16 @@ defmodule FavnOrchestrator do
     end)
   end
 
-  defp asset_detail_timeline(asset, latest_freshness, latest_run, freshness_states, opts) do
+  defp asset_data_coverage_timeline(
+         %{window: nil},
+         _latest_freshness,
+         _latest_run,
+         _freshness_states,
+         _opts
+       ),
+       do: nil
+
+  defp asset_data_coverage_timeline(asset, latest_freshness, latest_run, freshness_states, opts) do
     {kind, timezone} = detail_timeline_policy(asset)
 
     selected_value =
@@ -1359,6 +1552,7 @@ defmodule FavnOrchestrator do
         id: timeline_window_id(kind, value),
         kind: kind,
         value: value,
+        timezone: timezone,
         label: timeline_window_label(kind, value),
         date: date,
         range: timeline_window_range(kind, value),
@@ -1371,7 +1565,127 @@ defmodule FavnOrchestrator do
       }
       |> put_window_run_state(asset)
       |> maybe_put_latest_run(latest_freshness, latest_run, value, latest_run_value)
+      |> Map.put(:source, :data_coverage_timeline)
+      |> Map.put(
+        :default_run_config,
+        default_timeline_run_config(:data_coverage_timeline, kind, value, timezone)
+      )
     end
+  end
+
+  defp asset_refresh_timeline(
+         version,
+         asset,
+         latest_freshness,
+         latest_run,
+         freshness_states,
+         opts
+       ) do
+    {kind, timezone} = detail_refresh_policy(version, asset)
+
+    selected_value =
+      detail_timeline_selected_value(kind, timezone, latest_freshness, latest_run, opts)
+
+    freshness_by_value = asset_window_freshness_by_date(asset, freshness_states, kind)
+
+    latest_run_value =
+      latest_run_at(latest_freshness, latest_run)
+      |> detail_value_from_datetime(kind, timezone)
+
+    for offset <- 0..29 do
+      value = shift_timeline_value(kind, timezone, selected_value, offset - 29)
+      freshness = Map.get(freshness_by_value, value)
+
+      %{
+        id: "refresh:#{kind}:#{value}",
+        source: :refresh_timeline,
+        kind: kind,
+        value: value,
+        timezone: timezone,
+        label: timeline_window_label(kind, value),
+        date: timeline_value_date(kind, value),
+        range: timeline_window_range(kind, value),
+        status:
+          refresh_timeline_status(
+            freshness,
+            latest_freshness,
+            latest_run,
+            value,
+            latest_run_value
+          ),
+        latest_run_id: latest_run_id(freshness, nil),
+        latest_run_status: latest_run_status(freshness, nil),
+        latest_run_at: latest_run_at(freshness, nil),
+        run_enabled?: true,
+        run_disabled_reason: nil,
+        run_label: "Run asset",
+        default_run_config: default_timeline_run_config(:refresh_timeline, kind, value, timezone)
+      }
+      |> maybe_put_latest_run(latest_freshness, latest_run, value, latest_run_value)
+    end
+  end
+
+  defp detail_refresh_policy(version, asset) do
+    version.manifest.pipelines
+    |> List.wrap()
+    |> Enum.find(fn pipeline -> asset.ref in List.wrap(pipeline.selectors) end)
+    |> case do
+      %{window: %Policy{kind: kind, timezone: timezone}} -> {kind, timezone || "Etc/UTC"}
+      %{window: nil} -> {:day, "Etc/UTC"}
+      _pipeline -> {:day, "Etc/UTC"}
+    end
+  end
+
+  defp refresh_timeline_status(
+         %AssetFreshnessState{status: :ok},
+         _latest_freshness,
+         _latest_run,
+         _value,
+         _latest_run_value
+       ),
+       do: :fresh
+
+  defp refresh_timeline_status(
+         %AssetFreshnessState{status: :error},
+         _latest_freshness,
+         _latest_run,
+         _value,
+         _latest_run_value
+       ),
+       do: :failed
+
+  defp refresh_timeline_status(
+         %AssetFreshnessState{status: status},
+         _latest_freshness,
+         _latest_run,
+         _value,
+         _latest_run_value
+       )
+       when status in [:running, :pending], do: :running
+
+  defp refresh_timeline_status(nil, latest_freshness, latest_run, value, value),
+    do: refresh_status_from_latest(latest_freshness, latest_run)
+
+  defp refresh_timeline_status(nil, _latest_freshness, _latest_run, _value, _latest_run_value),
+    do: :missing
+
+  defp refresh_status_from_latest(%AssetFreshnessState{status: :ok}, _run), do: :fresh
+  defp refresh_status_from_latest(%AssetFreshnessState{status: :error}, _run), do: :failed
+
+  defp refresh_status_from_latest(_freshness, %{status: status})
+       when status in [:running, :pending], do: :running
+
+  defp refresh_status_from_latest(_freshness, _run), do: :unknown
+
+  defp default_timeline_run_config(source, kind, value, timezone) do
+    %{
+      source: source,
+      kind: kind,
+      value: value,
+      timezone: timezone,
+      dependencies: :all,
+      refresh: :auto
+    }
   end
 
   defp detail_timeline_policy(%{window: %WindowSpec{kind: kind, timezone: timezone}}),
@@ -1628,6 +1942,19 @@ defmodule FavnOrchestrator do
 
   defp window_request_from_id(window_id), do: {:error, {:invalid_window_id, window_id}}
 
+  defp refresh_request_from_id("refresh:hour:" <> hour), do: parse_window_request(:hour, hour)
+  defp refresh_request_from_id("refresh:day:" <> date), do: parse_window_request(:day, date)
+  defp refresh_request_from_id("refresh:month:" <> month), do: parse_window_request(:month, month)
+  defp refresh_request_from_id("refresh:year:" <> year), do: parse_window_request(:year, year)
+  defp refresh_request_from_id(id), do: {:error, {:invalid_refresh_id, id}}
+
+  defp parse_window_request(kind, value) do
+    case WindowRequest.parse("#{kind}:#{value}") do
+      {:ok, request} -> {:ok, request}
+      {:error, reason} -> {:error, {:invalid_window_id, reason}}
+    end
+  end
+
   defp resolve_asset_window(%{window: nil}, %WindowRequest{kind: kind}) do
     {:error, {:window_request_without_policy, kind}}
   end
@@ -1675,14 +2002,19 @@ defmodule FavnOrchestrator do
          _date,
          _latest_run_date
        ) do
-    catalogue_status(freshness, nil)
+    data_coverage_status_from_catalogue(catalogue_status(freshness, nil))
   end
 
   defp timeline_status(nil, latest_freshness, latest_run, date, date) do
-    catalogue_status(latest_freshness, latest_run)
+    data_coverage_status_from_catalogue(catalogue_status(latest_freshness, latest_run))
   end
 
-  defp timeline_status(nil, _latest_freshness, _latest_run, _date, _latest_run_date), do: :unknown
+  defp timeline_status(nil, _latest_freshness, _latest_run, _date, _latest_run_date), do: :missing
+
+  defp data_coverage_status_from_catalogue(:healthy), do: :covered
+  defp data_coverage_status_from_catalogue(:failed), do: :failed
+  defp data_coverage_status_from_catalogue(:running), do: :running
+  defp data_coverage_status_from_catalogue(_status), do: :unknown
 
   defp maybe_put_latest_run(window, latest_freshness, latest_run, date, date) do
     window
