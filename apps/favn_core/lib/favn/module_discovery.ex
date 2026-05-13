@@ -13,6 +13,7 @@ defmodule Favn.ModuleDiscovery do
           apps: [:my_app],
           assets: :all,
           pipelines: :all,
+          schedules: :all,
           connections: :all
         ]
 
@@ -24,7 +25,10 @@ defmodule Favn.ModuleDiscovery do
   alias Favn.Assets.Compiler
 
   @type kind :: :assets | :pipelines | :schedules | :connections
-  @type error :: {:invalid_discovery_config, term()} | {:app_modules_unavailable, atom(), term()}
+  @type error ::
+          {:invalid_discovery_config, term()}
+          | {:app_modules_unavailable, atom(), term()}
+          | {:asset_discovery_failed, module(), term()}
 
   @doc """
   Discovers modules of `kind` from configured application modules.
@@ -33,10 +37,7 @@ defmodule Favn.ModuleDiscovery do
   def discover(kind, config) when kind in [:assets, :pipelines, :schedules, :connections] do
     with {:ok, apps} <- configured_apps(config),
          {:ok, modules} <- app_modules(apps) do
-      modules
-      |> Enum.filter(&matches_kind?(&1, kind))
-      |> sort_modules()
-      |> then(&{:ok, &1})
+      discover_modules(modules, kind)
     end
   end
 
@@ -93,21 +94,51 @@ defmodule Favn.ModuleDiscovery do
     end
   end
 
-  defp matches_kind?(module, :assets) do
-    match?({:ok, [_asset | _]}, Compiler.compile_module_assets(module))
+  defp discover_modules(modules, kind) do
+    Enum.reduce_while(modules, {:ok, []}, fn module, {:ok, acc} ->
+      case classify_module(module, kind) do
+        {:match, module} -> {:cont, {:ok, [module | acc]}}
+        :no_match -> {:cont, {:ok, acc}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, modules} -> {:ok, modules |> Enum.uniq() |> sort_modules()}
+      {:error, _reason} = error -> error
+    end
   end
 
-  defp matches_kind?(module, :pipelines) do
-    Code.ensure_loaded?(module) and function_exported?(module, :__favn_pipeline__, 0)
+  defp classify_module(module, :assets) do
+    case Compiler.compile_module_assets(module) do
+      {:ok, _assets} -> {:match, module}
+      {:error, :not_asset_module} -> :no_match
+      {:error, reason} -> {:error, {:asset_discovery_failed, module, reason}}
+    end
   end
 
-  defp matches_kind?(module, :schedules) do
-    Code.ensure_loaded?(module) and function_exported?(module, :__favn_schedules__, 0)
+  defp classify_module(module, :pipelines) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :__favn_pipeline__, 0) do
+      {:match, module}
+    else
+      :no_match
+    end
   end
 
-  defp matches_kind?(module, :connections) do
-    Code.ensure_loaded?(module) and function_exported?(module, :definition, 0) and
-      Favn.Connection in module_behaviours(module)
+  defp classify_module(module, :schedules) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :__favn_schedules__, 0) do
+      {:match, module}
+    else
+      :no_match
+    end
+  end
+
+  defp classify_module(module, :connections) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :definition, 0) and
+         Favn.Connection in module_behaviours(module) do
+      {:match, module}
+    else
+      :no_match
+    end
   end
 
   defp module_behaviours(module) do

@@ -87,6 +87,7 @@ defmodule Favn.Dev.InitTest do
     assert config =~ "apps: [#{inspect(app)}]"
     assert config =~ "assets: :all"
     assert config =~ "pipelines: :all"
+    assert config =~ "schedules: :all"
     assert config =~ "connections: :all"
     assert config =~ "runner_plugins: ["
     assert config =~ "FavnDuckdb"

@@ -219,6 +219,7 @@ defmodule Favn.Dev.Init do
         apps: [#{inspect(project.app)}],
         assets: :all,
         pipelines: :all,
+        schedules: :all,
         connections: :all
       ],
       connections: [

@@ -28,6 +28,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
   test "roundtrips supported consumer config and module atoms" do
     config = [
+      discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all, connections: :all],
       connection_modules: [MyApp.Connections.Warehouse],
       connections: [
         warehouse: [adapter: Favn.SQL.Adapter.DuckDB, database: "/tmp/warehouse.duckdb"]
@@ -141,10 +142,10 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert {:error, :invalid_payload} =
              ConsumerConfigTransport.decode(
                encode_payload(%{
-                 "schema_version" => 1,
-                 "entries" => duplicate_entries(6)
-               })
-             )
+                  "schema_version" => 1,
+                  "entries" => duplicate_entries(7)
+                })
+              )
 
     assert {:error, :invalid_payload} =
              ConsumerConfigTransport.decode(

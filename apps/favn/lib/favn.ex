@@ -154,11 +154,11 @@ defmodule Favn do
   If no explicit modules are passed, `Favn` reads `:asset_modules`,
   `:pipeline_modules`, and `:schedule_modules` from `config :favn`. Projects can
   also opt into release-safe app-scoped discovery with `config :favn, discovery:
-  [apps: [:my_app], assets: :all, pipelines: :all]`.
+  [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]`.
 
   ## Example
 
-      # With config :favn, discovery: [apps: [:my_app], assets: :all, pipelines: :all]
+      # With config :favn, discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
       {:ok, manifest} = Favn.generate_manifest()
 
       {:ok, manifest} = Favn.generate_manifest(

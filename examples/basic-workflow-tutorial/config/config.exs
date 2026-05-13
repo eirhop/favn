@@ -5,6 +5,7 @@ config :favn,
     apps: [:basic_workflow_tutorial],
     assets: :all,
     pipelines: :all,
+    schedules: :all,
     connections: :all
   ],
   connections: [

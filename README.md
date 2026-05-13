@@ -324,6 +324,7 @@ config :favn,
     apps: [:my_app],
     assets: :all,
     pipelines: :all,
+    schedules: :all,
     connections: :all
   ]
 ```

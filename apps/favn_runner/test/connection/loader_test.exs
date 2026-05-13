@@ -67,10 +67,12 @@ defmodule FavnRunner.ConnectionLoaderTest do
   setup do
     previous_modules = Application.get_env(:favn, :connection_modules)
     previous_connections = Application.get_env(:favn, :connections)
+    previous_discovery = Application.get_env(:favn, :discovery)
 
     on_exit(fn ->
       restore_env(:connection_modules, previous_modules)
       restore_env(:connections, previous_connections)
+      restore_env(:discovery, previous_discovery)
     end)
 
     :ok
@@ -89,6 +91,15 @@ defmodule FavnRunner.ConnectionLoaderTest do
     assert resolved.warehouse.config.read_only == false
     assert resolved.warehouse.secret_fields == [:password]
     assert resolved.analytics.required_keys == [:database]
+  end
+
+  test "configured_modules discovers connections when connection_modules is :all" do
+    app = load_test_app!([WarehouseConnection, AnalyticsConnection])
+
+    Application.put_env(:favn, :discovery, apps: [app])
+    Application.put_env(:favn, :connection_modules, :all)
+
+    assert {:ok, [AnalyticsConnection, WarehouseConnection]} = Loader.configured_modules()
   end
 
   test "loader rejects unknown runtime keys" do
@@ -250,6 +261,26 @@ defmodule FavnRunner.ConnectionLoaderTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)
   defp restore_env(key, value), do: Application.put_env(:favn, key, value)
+
+  defp load_test_app!(modules) do
+    app = String.to_atom("favn_connection_loader_test_#{System.unique_integer([:positive])}")
+
+    :ok =
+      :application.load(
+        {:application, app,
+         [
+           description: ~c"Favn connection loader test app",
+           vsn: ~c"1",
+           modules: modules,
+           registered: [],
+           applications: [:kernel, :stdlib]
+         ]}
+      )
+
+    on_exit(fn -> :application.unload(app) end)
+
+    app
+  end
 
   defp restore_system_env(key, nil), do: System.delete_env(key)
   defp restore_system_env(key, value), do: System.put_env(key, value)
