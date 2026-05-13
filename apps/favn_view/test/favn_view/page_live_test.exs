@@ -653,6 +653,47 @@ defmodule FavnView.PageLiveTest do
     refute has_element?(view, ~s([data-testid="run-asset-results-empty"]))
   end
 
+  test "run detail shows failed step event error before final results persist", %{conn: conn} do
+    step_id = "run_empty_running-stg-payments"
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 4,
+               event_type: :step_failed,
+               occurred_at: DateTime.utc_now(),
+               status: :error,
+               data: %{
+                 "error" => %{"message" => "Warehouse timeout"},
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Failed")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Warehouse timeout")
+  end
+
   test "failed run surfaces failed asset and error in overview", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_failed_customer_orders")
 

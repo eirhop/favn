@@ -205,9 +205,7 @@ defmodule FavnView.RunDetailLive do
   defp event_execution_row(run_id, events) do
     latest = List.last(events)
 
-    first_started =
-      Enum.find(events, &(&1.raw_event_type in [:step_started, "step_started"])) ||
-        List.first(events)
+    first_started = started_event_for_attempt(events, latest.attempt) || List.first(events)
 
     asset_ref = latest.asset || "Unknown asset"
     status = event_step_status(latest)
@@ -335,8 +333,18 @@ defmodule FavnView.RunDetailLive do
 
   defp event_row_error(%{data: data}) do
     data
-    |> Map.get(:error)
+    |> event_data_value(:error)
     |> error_summary()
+  end
+
+  defp started_event_for_attempt(events, nil) do
+    Enum.find(Enum.reverse(events), &(&1.raw_event_type in [:step_started, "step_started"]))
+  end
+
+  defp started_event_for_attempt(events, attempt) do
+    Enum.find(Enum.reverse(events), fn event ->
+      event.raw_event_type in [:step_started, "step_started"] and event.attempt == attempt
+    end) || started_event_for_attempt(events, nil)
   end
 
   defp event_row_explanation(%{raw_event_type: type})
@@ -480,8 +488,10 @@ defmodule FavnView.RunDetailLive do
 
   defp event_data(event, key) do
     data = Map.get(event, :data, %{}) || %{}
-    Map.get(data, key) || Map.get(data, Atom.to_string(key))
+    event_data_value(data, key)
   end
+
+  defp event_data_value(data, key), do: Map.get(data, key) || Map.get(data, Atom.to_string(key))
 
   defp latest_event_summary([]), do: nil
   defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
