@@ -13,6 +13,8 @@ defmodule FavnAuthoring do
   ## Related Modules
 
   - `Favn`: public facade
+  - `Favn.ModuleDiscovery`: app-scoped `:all` discovery for assets, pipelines,
+    schedules, and connections
   - `Favn.Dev`: local tooling owner
   - `Favn.Manifest.Generator`, `Favn.Pipeline.Resolver`, `Favn.Assets.Planner`:
     deeper internals
@@ -27,6 +29,7 @@ defmodule FavnAuthoring do
   alias Favn.Manifest.Generator
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
+  alias Favn.ModuleDiscovery
   alias Favn.Pipeline
   alias Favn.Pipeline.Resolver
   alias Favn.Triggers.Schedules, as: PipelineSchedules
@@ -36,9 +39,9 @@ defmodule FavnAuthoring do
   @type asset_error :: :not_asset_module | :asset_not_found
   @type dependencies_mode :: :all | :none
   @type manifest_opts :: [
-          asset_modules: [module()],
-          pipeline_modules: [module()],
-          schedule_modules: [module()]
+          asset_modules: [module()] | :all,
+          pipeline_modules: [module()] | :all,
+          schedule_modules: [module()] | :all
         ]
 
   @doc """
@@ -56,7 +59,9 @@ defmodule FavnAuthoring do
   """
   @spec list_assets() :: {:ok, [asset()]} | {:error, term()}
   def list_assets do
-    list_assets(default_asset_modules())
+    with {:ok, modules} <- default_asset_modules() do
+      list_assets(modules)
+    end
   end
 
   @doc """
@@ -148,8 +153,11 @@ defmodule FavnAuthoring do
   Generates a manifest from explicit modules or app config.
   """
   @spec generate_manifest(manifest_opts()) :: {:ok, Manifest.t()} | {:error, term()}
-  def generate_manifest(opts \\ []) when is_list(opts),
-    do: opts |> with_default_manifest_modules() |> Generator.generate()
+  def generate_manifest(opts \\ []) when is_list(opts) do
+    with {:ok, opts} <- with_default_manifest_modules(opts) do
+      Generator.generate(opts)
+    end
+  end
 
   @doc """
   Generates a manifest build output with build-only metadata separated from
@@ -157,9 +165,9 @@ defmodule FavnAuthoring do
   """
   @spec build_manifest(manifest_opts()) :: {:ok, Build.t()} | {:error, term()}
   def build_manifest(opts \\ []) when is_list(opts) do
-    opts
-    |> with_default_manifest_modules()
-    |> Generator.build()
+    with {:ok, opts} <- with_default_manifest_modules(opts) do
+      Generator.build(opts)
+    end
   end
 
   @doc """
@@ -193,10 +201,31 @@ defmodule FavnAuthoring do
   end
 
   defp with_default_manifest_modules(opts) when is_list(opts) do
-    opts
-    |> Keyword.put_new(:asset_modules, default_asset_modules())
-    |> Keyword.put_new(:pipeline_modules, default_pipeline_modules())
-    |> Keyword.put_new(:schedule_modules, default_schedule_modules())
+    with {:ok, opts} <-
+           put_default_modules(opts, :asset_modules, :assets, &default_asset_modules/0),
+         {:ok, opts} <-
+           put_default_modules(opts, :pipeline_modules, :pipelines, &default_pipeline_modules/0),
+         {:ok, opts} <-
+           put_default_modules(opts, :schedule_modules, :schedules, &default_schedule_modules/0) do
+      {:ok, opts}
+    end
+  end
+
+  defp put_default_modules(opts, key, discovery_key, default_fun) do
+    case Keyword.fetch(opts, key) do
+      {:ok, :all} ->
+        with {:ok, modules} <- discover_modules(discovery_key) do
+          {:ok, Keyword.put(opts, key, modules)}
+        end
+
+      {:ok, _modules} ->
+        {:ok, opts}
+
+      :error ->
+        with {:ok, modules} <- default_fun.() do
+          {:ok, Keyword.put(opts, key, modules)}
+        end
+    end
   end
 
   defp configured_asset_modules do
@@ -204,23 +233,55 @@ defmodule FavnAuthoring do
   end
 
   defp default_asset_modules do
-    Application.get_env(:favn, :asset_modules, [])
+    default_modules(:asset_modules, :assets)
   end
 
   defp default_pipeline_modules do
-    Application.get_env(:favn, :pipeline_modules, [])
+    default_modules(:pipeline_modules, :pipelines)
   end
 
   defp default_schedule_modules do
-    Application.get_env(:favn, :schedule_modules, [])
+    default_modules(:schedule_modules, :schedules)
   end
+
+  defp default_modules(config_key, discovery_key) do
+    discovery = Application.get_env(:favn, :discovery, [])
+
+    case Application.get_env(:favn, config_key, :unset) do
+      :unset ->
+        if discovery_enabled?(discovery, discovery_key) do
+          discover_modules(discovery_key)
+        else
+          {:ok, []}
+        end
+
+      :all ->
+        discover_modules(discovery_key)
+
+      modules ->
+        {:ok, modules}
+    end
+  end
+
+  defp discover_modules(discovery_key) do
+    discovery = Application.get_env(:favn, :discovery, [])
+    ModuleDiscovery.discover(discovery_key, discovery)
+  end
+
+  defp discovery_enabled?(discovery, discovery_key) when is_list(discovery) do
+    Keyword.get(discovery, discovery_key) == :all
+  end
+
+  defp discovery_enabled?(_discovery, _discovery_key), do: false
 
   @doc false
   @spec plan_asset_run(asset_ref() | [asset_ref()], keyword()) ::
           {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_asset_run(target_refs, opts \\ []) do
-    opts = Keyword.put_new(opts, :asset_modules, default_asset_modules())
-    Planner.plan(target_refs, opts)
+    with {:ok, asset_modules} <- default_asset_modules() do
+      opts = Keyword.put_new(opts, :asset_modules, asset_modules)
+      Planner.plan(target_refs, opts)
+    end
   end
 
   @doc false

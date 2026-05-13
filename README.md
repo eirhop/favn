@@ -320,14 +320,16 @@ skipped while missing windows are filled.
 import Config
 
 config :favn,
-  asset_modules: [
-    MyApp.Warehouse.Raw.Orders,
-    MyApp.Warehouse.Mart.OrderSummary
-  ],
-  pipeline_modules: [
-    MyApp.Pipelines.DailySales
+  discovery: [
+    apps: [:my_app],
+    assets: :all,
+    pipelines: :all,
+    connections: :all
   ]
 ```
+
+Use explicit `asset_modules`, `pipeline_modules`, or `connection_modules` lists
+when a project needs tighter control than app-scoped discovery.
 
 ### 6. Inspect and compile from IEx
 
@@ -345,8 +347,10 @@ config :favn,
 :ok = Favn.SQLClient.disconnect(session)
 ```
 
-For this flow, configure `:connection_modules` and runtime `:connections` under
-`config :favn` using the `Favn.Connection` contract.
+For this flow, configure app-scoped `discovery` and runtime `:connections` under
+`config :favn` using the `Favn.Connection` contract. Use explicit
+`:connection_modules` only when the project needs tighter control than
+`connections: :all` discovery.
 
 Connection runtime values can also use `Favn.RuntimeConfig.Ref.env!/1` and
 `Favn.RuntimeConfig.Ref.secret_env!/1` when values should be resolved from the
@@ -553,7 +557,7 @@ For `submit`, `--wait-timeout-ms` controls local CLI polling only, while
 orchestrator.
 
 The local runner receives only the explicitly supported consumer `:favn` config
-needed for local execution: `:connection_modules`, `:connections`,
+needed for local execution: `:discovery`, `:connection_modules`, `:connections`,
 `:runner_plugins`, and `:duckdb_in_process_client`. This transport is local-dev
 plumbing only; it uses a tagged payload rather than arbitrary app-env forwarding,
 maps top-level keys explicitly, validates transported module/local atoms before

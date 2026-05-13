@@ -4,6 +4,7 @@ defmodule Favn.Dev.Doctor do
   """
 
   alias Favn.Dev.Paths
+  alias Favn.ModuleDiscovery
 
   @type check :: %{name: String.t(), status: :ok | :error, message: String.t()}
 
@@ -14,10 +15,10 @@ defmodule Favn.Dev.Doctor do
     checks = [
       safe_check("mix project", fn -> mix_project_check(root_dir) end),
       safe_check("config", fn -> config_file_check(root_dir) end),
-      safe_check("asset_modules", fn -> config_key_check(:asset_modules, :module_list) end),
-      safe_check("pipeline_modules", fn -> config_key_check(:pipeline_modules, :module_list) end),
+      safe_check("asset_modules", fn -> module_config_check(:asset_modules, :assets) end),
+      safe_check("pipeline_modules", fn -> module_config_check(:pipeline_modules, :pipelines) end),
       safe_check("connection_modules", fn ->
-        config_key_check(:connection_modules, :module_list)
+        module_config_check(:connection_modules, :connections)
       end),
       safe_check("connections", fn -> config_key_check(:connections, :keyword) end),
       safe_check("runner_plugins", fn -> config_key_check(:runner_plugins, :plugin_list) end),
@@ -84,6 +85,46 @@ defmodule Favn.Dev.Doctor do
     else
       error(to_string(key), "expected plugin modules or {module, keyword_opts} entries")
     end
+  end
+
+  defp module_config_check(key, discovery_key) do
+    discovery = Application.get_env(:favn, :discovery, [])
+
+    case Application.get_env(:favn, key, :unset) do
+      modules when is_list(modules) and modules != [] ->
+        validate_config_shape(key, modules, :module_list)
+
+      :all ->
+        discovery_config_check(key, discovery)
+
+      :unset ->
+        if discovery_enabled?(discovery, discovery_key) do
+          discovery_config_check(key, discovery)
+        else
+          error(to_string(key), "missing or empty config :favn, #{key}")
+        end
+
+      _other ->
+        error(to_string(key), "expected a non-empty list of modules or :all")
+    end
+  end
+
+  defp discovery_config_check(key, discovery) when is_list(discovery) do
+    case Keyword.get(discovery, :apps, []) do
+      apps when is_list(apps) and apps != [] ->
+        if Enum.all?(apps, &is_atom/1) do
+          ok(to_string(key), "configured by discovery")
+        else
+          error(to_string(key), "discovery apps must be atoms")
+        end
+
+      _other ->
+        error(to_string(key), "discovery requires non-empty :apps")
+    end
+  end
+
+  defp discovery_config_check(key, _discovery) do
+    error(to_string(key), "discovery config must be a keyword list")
   end
 
   defp modules_check(key) do
@@ -169,7 +210,20 @@ defmodule Favn.Dev.Doctor do
   defp valid_plugin_entry?(_other), do: false
 
   defp fetch_module_list(key) do
-    case Application.get_env(:favn, key, []) do
+    discovery = Application.get_env(:favn, :discovery, [])
+    discovery_key = module_discovery_key(key)
+
+    case Application.get_env(:favn, key, :unset) do
+      :unset when discovery_key != nil ->
+        if discovery_enabled?(discovery, discovery_key) do
+          discover_module_list(discovery_key, discovery)
+        else
+          {:ok, []}
+        end
+
+      :all when discovery_key != nil ->
+        discover_module_list(discovery_key, discovery)
+
       modules when is_list(modules) ->
         if Enum.all?(modules, &is_atom/1), do: {:ok, modules}, else: {:error, "expected modules"}
 
@@ -177,6 +231,21 @@ defmodule Favn.Dev.Doctor do
         {:error, "expected a list"}
     end
   end
+
+  defp discover_module_list(discovery_key, discovery) do
+    case ModuleDiscovery.discover(discovery_key, discovery) do
+      {:ok, modules} -> {:ok, modules}
+      {:error, reason} -> {:error, "discovery failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp module_discovery_key(:asset_modules), do: :assets
+  defp module_discovery_key(:pipeline_modules), do: :pipelines
+  defp module_discovery_key(:connection_modules), do: :connections
+  defp module_discovery_key(_key), do: nil
+
+  defp discovery_enabled?(discovery, key) when is_list(discovery), do: Keyword.get(discovery, key) == :all
+  defp discovery_enabled?(_discovery, _key), do: false
 
   defp fetch_keyword(key) do
     case Application.get_env(:favn, key, []) do

@@ -11,7 +11,14 @@ defmodule Favn.Dev.DoctorTest do
     File.write!(Path.join(root_dir, "mix.exs"), "defmodule DoctorSample.MixProject do end\n")
     File.write!(Path.join(root_dir, "config/config.exs"), "import Config\n")
 
-    keys = [:asset_modules, :pipeline_modules, :connection_modules, :connections, :runner_plugins]
+    keys = [
+      :asset_modules,
+      :pipeline_modules,
+      :connection_modules,
+      :connections,
+      :runner_plugins,
+      :discovery
+    ]
     previous = Map.new(keys, &{&1, Application.get_env(:favn, &1, :__missing__)})
 
     on_exit(fn ->
