@@ -3,6 +3,7 @@ defmodule Favn.Connection.Loader do
 
   alias Favn.Connection.Definition
   alias Favn.Connection.Error
+  alias Favn.ModuleDiscovery
   alias Favn.Connection.Validator
 
   @spec load() :: {:ok, %{atom() => Favn.Connection.Resolved.t()}} | {:error, [Error.t()]}
@@ -32,13 +33,44 @@ defmodule Favn.Connection.Loader do
 
   @spec configured_modules() :: {:ok, [module()]} | {:error, [Error.t()]}
   def configured_modules do
-    case Application.get_env(:favn, :connection_modules, []) do
+    discovery = Application.get_env(:favn, :discovery, [])
+
+    case Application.get_env(:favn, :connection_modules, :unset) do
+      :unset ->
+        if discovery_enabled?(discovery, :connections) do
+          discover_connection_modules(discovery)
+        else
+          {:ok, []}
+        end
+
+      :all ->
+        discover_connection_modules(discovery)
+
       modules when is_list(modules) ->
         {:ok, Enum.uniq(modules)}
 
       other ->
         {:error,
          [%Error{type: :invalid_connection_modules, message: invalid_modules_message(other)}]}
+    end
+  end
+
+  defp discovery_enabled?(discovery, key) when is_list(discovery), do: Keyword.get(discovery, key) == :all
+  defp discovery_enabled?(_discovery, _key), do: false
+
+  defp discover_connection_modules(discovery) do
+    case ModuleDiscovery.discover(:connections, discovery) do
+      {:ok, modules} ->
+        {:ok, Enum.uniq(modules)}
+
+      {:error, reason} ->
+        {:error,
+         [
+           %Error{
+             type: :invalid_connection_modules,
+             message: "connection module discovery failed: #{inspect(reason)}"
+           }
+         ]}
     end
   end
 

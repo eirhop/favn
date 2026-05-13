@@ -83,8 +83,12 @@ defmodule Favn.Dev.InitTest do
     assert pipeline =~ "deps(:all)"
 
     config = File.read!(Path.join(root_dir, "config/config.exs"))
-    assert config =~ "asset_modules: ["
-    assert config =~ "connection_modules: ["
+    assert config =~ "discovery: ["
+    assert config =~ "apps: [#{inspect(app)}]"
+    assert config =~ "assets: :all"
+    assert config =~ "pipelines: :all"
+    assert config =~ "schedules: :all"
+    assert config =~ "connections: :all"
     assert config =~ "runner_plugins: ["
     assert config =~ "FavnDuckdb"
 

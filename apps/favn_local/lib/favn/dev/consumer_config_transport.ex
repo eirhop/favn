@@ -4,6 +4,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
   alias Favn.Dev.Paths
 
   @supported_keys [
+    :discovery,
     :connection_modules,
     :connections,
     :runner_plugins,
@@ -26,6 +27,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
   @module_atom_pattern ~r/^Elixir(\.[A-Z][A-Za-z0-9_]*)+$/
   @local_atom_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*[?!]?$/
   @transport_key_atoms %{
+    "discovery" => :discovery,
     "connection_modules" => :connection_modules,
     "connections" => :connections,
     "runner_plugins" => :runner_plugins,
@@ -109,6 +111,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
       @module_atom_pattern ~r/^Elixir(\.[A-Z][A-Za-z0-9_]*)+$/
       @local_atom_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*[?!]?$/
       @transport_key_atoms %{
+        "discovery" => :discovery,
         "connection_modules" => :connection_modules,
         "connections" => :connections,
         "runner_plugins" => :runner_plugins,

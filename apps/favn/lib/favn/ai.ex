@@ -71,7 +71,8 @@ defmodule Favn.AI do
     local operator CLI, read `Favn.Dev.Backfill` and
     `Mix.Tasks.Favn.Backfill`.
   - To define connection contracts, read `Favn.Connection`; if connection
-    values come from environment variables or secrets, also read
+    modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
+    If connection values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
   - To configure DuckDB/DuckLake connection bootstrap for extension loading,
     Azure credential-chain secrets, ADLS `SCOPE`/`CHAIN`, PostgreSQL metadata
@@ -85,7 +86,9 @@ defmodule Favn.AI do
     rebootstrap.
   - To run SQL queries from plain Elixir code using named Favn connections, read
     `Favn.SQLClient`.
-  - To compile a manifest, read `Favn generate_manifest`, then
+  - To compile a manifest, read `Favn generate_manifest`; if the project uses
+    `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
+    schedules: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then
     `Favn.Pipeline.Resolver` if needed.
@@ -111,6 +114,8 @@ defmodule Favn.AI do
 
   - `Favn.Manifest.Generator`: when you need the exact manifest compilation path
     from modules to `%Favn.Manifest{}`
+  - `Favn.ModuleDiscovery`: when app-scoped `:all` discovery maps compiled OTP
+    application modules to authored assets, pipelines, schedules, or connections
   - `Favn.Pipeline.Resolver`: when you need selector normalization, schedule
     resolution, or the exact `%Favn.Pipeline.Resolution{}` shape
   - `Favn.Assets.Planner`: when you need topological stages, dependency
