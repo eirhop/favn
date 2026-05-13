@@ -112,7 +112,22 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="pipeline-summary-panel"]), "customer_orders_daily")
     assert has_element?(view, ~s([data-testid="pipeline-actions-panel"]), "Run pipeline")
     assert has_element?(view, ~s([data-testid="pipeline-backfill-form"]))
+    assert has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]), "day")
+    assert has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]), "Europe/Oslo")
     assert has_element?(view, ~s([data-testid="pipeline-runs-table"]), "run_daily_orders")
+  end
+
+  test "pipeline detail does not invent an implicit window for normal pipeline runs", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, pipeline_detail_path())
+
+    html =
+      view
+      |> element(~s([data-testid="run-pipeline-form"]))
+      |> render_submit()
+
+    assert html =~ "This day pipeline requires an explicit window request."
   end
 
   test "pipeline detail submits a pipeline run and navigates to run detail", %{conn: conn} do
@@ -129,6 +144,28 @@ defmodule FavnView.PageLiveTest do
     assert {:ok, run} = Storage.get_run(run_id)
     assert run.submit_kind == :pipeline
     assert run.metadata.pipeline_submit_ref == __MODULE__.Pipelines.FullRefresh
+  end
+
+  test "pipeline detail submits a backfill using pipeline window defaults", %{conn: conn} do
+    {:ok, view, _html} = live(conn, pipeline_detail_path())
+
+    view
+    |> element(~s([data-testid="pipeline-backfill-form"]))
+    |> render_submit(%{
+      "backfill" => %{
+        "from" => "2026-01-01",
+        "to" => "2026-01-02",
+        "kind" => "day",
+        "timezone" => "Europe/Oslo"
+      }
+    })
+
+    assert {run_path, %{"info" => "Pipeline backfill submitted"}} = assert_redirect(view)
+    run_id = String.replace_prefix(run_path, "/runs/", "")
+    assert {:ok, run} = Storage.get_run(run_id)
+    assert run.submit_kind == :backfill_pipeline
+    assert run.metadata.backfill.kind == :day
+    assert run.metadata.backfill.timezone == "Europe/Oslo"
   end
 
   test "runs list refreshes active runs", %{conn: conn} do

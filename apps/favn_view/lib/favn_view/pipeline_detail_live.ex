@@ -3,8 +3,6 @@ defmodule FavnView.PipelineDetailLive do
 
   use FavnView, :live_view
 
-  alias Favn.Backfill.RangeRequest
-  alias Favn.Window.Request, as: WindowRequest
   alias FavnView.AssetRoute
   alias FavnView.Components.AppShell
   alias FavnView.Components.GlassPanel
@@ -25,7 +23,7 @@ defmodule FavnView.PipelineDetailLive do
         active_mode: :runs,
         run_error: nil,
         backfill_error: nil,
-        backfill_config: %{from: "2024-01", to: "2026-12", kind: "month"},
+        backfill_config: default_backfill_config(pipeline),
         nav_items: PipelinesPage.nav_items(:pipelines)
       )
 
@@ -49,7 +47,7 @@ defmodule FavnView.PipelineDetailLive do
     case FavnOrchestrator.submit_pipeline_run_for_manifest(
            pipeline.manifest_version_id,
            pipeline.id,
-           pipeline_run_opts(pipeline)
+           %{}
          ) do
       {:ok, run_id} ->
         {:noreply,
@@ -78,19 +76,11 @@ defmodule FavnView.PipelineDetailLive do
     config = backfill_config(params)
     pipeline = socket.assigns.pipeline
 
-    with {:ok, kind} <- backfill_kind(config.kind),
-         {:ok, range_request} <-
-           RangeRequest.explicit(
-             from: config.from,
-             to: config.to,
-             kind: kind,
-             timezone: "Etc/UTC"
-           ),
-         {:ok, run_id} <-
+    with {:ok, run_id} <-
            FavnOrchestrator.submit_pipeline_backfill_for_manifest(
              pipeline.manifest_version_id,
              pipeline.id,
-             range_request: range_request
+             %{range: config}
            ) do
       {:noreply,
        socket
@@ -180,7 +170,7 @@ defmodule FavnView.PipelineDetailLive do
       short_id: short_id(run.id),
       status: run_status(Map.get(run, :status)),
       kind_label: kind_label(Map.get(run, :submit_kind)),
-      window_label: window_label_value(Map.get(run, :window)),
+      window_label: scope_label(Map.get(run, :scope) || Map.get(run, :window)),
       started_at_label: timestamp_label(Map.get(run, :started_at)),
       duration_label: LogsViewModel.duration_ms_label(Map.get(run, :duration_ms))
     }
@@ -190,31 +180,9 @@ defmodule FavnView.PipelineDetailLive do
     %{
       from: params |> Map.get("from", "") |> String.trim(),
       to: params |> Map.get("to", "") |> String.trim(),
-      kind: params |> Map.get("kind", "month") |> String.trim()
+      kind: params |> Map.get("kind", "month") |> String.trim(),
+      timezone: params |> Map.get("timezone", "Etc/UTC") |> String.trim()
     }
-  end
-
-  defp pipeline_run_opts(%{window: nil}), do: []
-
-  defp pipeline_run_opts(%{window: window}) do
-    kind = Map.get(window, :kind) || Map.get(window, "kind")
-    timezone = Map.get(window, :timezone) || Map.get(window, "timezone") || "Etc/UTC"
-
-    case current_window_request(kind, timezone) do
-      {:ok, request} -> [window_request: request]
-      {:error, _reason} -> []
-    end
-  end
-
-  defp current_window_request(kind, timezone) do
-    kind = normalize_window_kind(kind)
-
-    with kind when kind in [:hour, :day, :month, :year] <- kind,
-         {:ok, value} <- current_window_value(kind, timezone) do
-      WindowRequest.parse("#{kind}:#{value}", timezone: timezone)
-    else
-      _other -> {:error, :invalid_window_kind}
-    end
   end
 
   defp normalize_window_kind(kind) when kind in [:hour, :day, :month, :year], do: kind
@@ -233,24 +201,32 @@ defmodule FavnView.PipelineDetailLive do
 
   defp normalize_window_kind(_kind), do: nil
 
-  defp current_window_value(kind, timezone) do
-    with {:ok, datetime} <- DateTime.now(timezone) do
-      value =
-        case kind do
-          :hour -> Calendar.strftime(datetime, "%Y-%m-%dT%H")
-          :day -> Calendar.strftime(datetime, "%Y-%m-%d")
-          :month -> Calendar.strftime(datetime, "%Y-%m")
-          :year -> Calendar.strftime(datetime, "%Y")
-        end
+  defp default_backfill_config(nil), do: %{from: "", to: "", kind: "month", timezone: "Etc/UTC"}
+  defp default_backfill_config(%{window: nil}), do: default_backfill_config(nil)
 
-      {:ok, value}
+  defp default_backfill_config(%{window: window}) do
+    %{
+      from: "",
+      to: "",
+      kind: window |> window_kind() |> Atom.to_string(),
+      timezone: window_timezone(window)
+    }
+  end
+
+  defp window_kind(nil), do: :month
+
+  defp window_kind(window) do
+    window
+    |> then(&(Map.get(&1, :kind) || Map.get(&1, "kind")))
+    |> normalize_window_kind()
+    |> case do
+      nil -> :month
+      kind -> kind
     end
   end
 
-  defp backfill_kind(kind) when kind in ~w(hour day month year),
-    do: {:ok, String.to_existing_atom(kind)}
-
-  defp backfill_kind(kind), do: {:error, {:invalid_backfill_kind, kind}}
+  defp window_timezone(window),
+    do: Map.get(window, :timezone) || Map.get(window, "timezone") || "Etc/UTC"
 
   defp pipeline_name(label), do: label |> String.split(".") |> List.last()
 
@@ -276,15 +252,32 @@ defmodule FavnView.PipelineDetailLive do
   defp window_label(kind, nil), do: humanize(kind)
   defp window_label(kind, timezone), do: "#{humanize(kind)} #{timezone}"
 
-  defp window_label_value(nil), do: "-"
-  defp window_label_value(value) when is_binary(value), do: value
+  defp scope_label(nil), do: "-"
+  defp scope_label(value) when is_binary(value), do: value
 
-  defp window_label_value(value) when is_map(value) do
+  defp scope_label(%{type: :range} = value) do
+    [
+      Map.get(value, :kind),
+      range_boundary_label(Map.get(value, :range_start_at)),
+      range_boundary_label(Map.get(value, :range_end_at)),
+      Map.get(value, :timezone)
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> case do
+      [] -> inspect(value)
+      [kind | rest] -> Enum.join([humanize(kind) | rest], " / ")
+    end
+  end
+
+  defp scope_label(value) when is_map(value) do
     Map.get(value, :label) || Map.get(value, "label") || Map.get(value, :id) ||
       Map.get(value, "id") || Map.get(value, :key) || Map.get(value, "key") || inspect(value)
   end
 
-  defp window_label_value(value), do: inspect(value)
+  defp scope_label(value), do: inspect(value)
+
+  defp range_boundary_label(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp range_boundary_label(value), do: value
 
   defp status_label(:healthy), do: "Healthy"
   defp status_label(:running), do: "Running"
@@ -341,10 +334,11 @@ defmodule FavnView.PipelineDetailLive do
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
 
-  defp submit_error_label({:invalid_backfill_kind, kind}), do: "Invalid backfill kind: #{kind}."
-
   defp submit_error_label({:invalid_backfill_range_request, _value}),
     do: "Invalid backfill range."
+
+  defp submit_error_label({:missing_window_request, kind}),
+    do: "This #{kind} pipeline requires an explicit window request."
 
   defp submit_error_label(:not_found), do: "Pipeline not found."
   defp submit_error_label(reason), do: "Submit failed: #{inspect(reason)}"

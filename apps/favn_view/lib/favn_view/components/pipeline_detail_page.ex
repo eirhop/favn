@@ -129,13 +129,14 @@ defmodule FavnView.Components.PipelineDetailPage do
             class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_8rem_auto]"
             data-testid="pipeline-backfill-form"
           >
+            <input type="hidden" name="backfill[timezone]" value={@backfill_config.timezone} />
             <label class="form-control">
               <span class="label-text text-xs">From</span>
               <input
                 name="backfill[from]"
                 value={@backfill_config.from}
                 class="input input-sm favn-surface-control"
-                placeholder="2024-01"
+                placeholder={backfill_placeholder(@backfill_config.kind)}
               />
             </label>
             <label class="form-control">
@@ -144,7 +145,7 @@ defmodule FavnView.Components.PipelineDetailPage do
                 name="backfill[to]"
                 value={@backfill_config.to}
                 class="input input-sm favn-surface-control"
-                placeholder="2026-12"
+                placeholder={backfill_placeholder(@backfill_config.kind)}
               />
             </label>
             <label class="form-control">
@@ -167,6 +168,9 @@ defmodule FavnView.Components.PipelineDetailPage do
               Backfill
             </button>
           </form>
+          <p class="mt-2 text-xs text-base-content/55" data-testid="pipeline-backfill-defaults">
+            Defaults to {@backfill_config.kind} windows in {@backfill_config.timezone}.
+          </p>
           <p
             :if={@backfill_error}
             class="mt-3 text-sm text-error"
@@ -273,4 +277,10 @@ defmodule FavnView.Components.PipelineDetailPage do
   defp status_tone(:running), do: :info
   defp status_tone(:failed), do: :error
   defp status_tone(_status), do: :neutral
+
+  defp backfill_placeholder("hour"), do: "2026-01-31T13"
+  defp backfill_placeholder("day"), do: "2026-01-31"
+  defp backfill_placeholder("month"), do: "2026-01"
+  defp backfill_placeholder("year"), do: "2026"
+  defp backfill_placeholder(_kind), do: "2026-01"
 end
