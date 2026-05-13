@@ -5,9 +5,11 @@ defmodule FavnView.PageLiveTest do
 
   alias Favn.Log.Entry
   alias Favn.Manifest
+  alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
   alias FavnOrchestrator.AssetFreshnessState
@@ -23,6 +25,7 @@ defmodule FavnView.PageLiveTest do
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
     assert :ok = Storage.put_run(run_state(:customer_orders_daily, :ok, -600))
     assert :ok = Storage.put_run(run_state(:raw_payments, :running, -30))
+    assert :ok = Storage.put_run(pipeline_run_state())
 
     assert :ok =
              Storage.put_run(empty_run_state(:stg_payments, :running, "run_empty_running"))
@@ -83,6 +86,22 @@ defmodule FavnView.PageLiveTest do
     assert html =~ "1/1 asset"
     assert html =~ "2/3 steps"
     assert html =~ "+2"
+  end
+
+  test "renders the pipelines list", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/pipelines")
+
+    assert html =~ "Pipelines"
+    assert html =~ "Monitor active manifest pipelines"
+    assert has_element?(view, ~s([data-testid="pipelines-table"]))
+    assert has_element?(view, ~s([data-testid="pipeline-card-list"]))
+
+    assert html =~ "daily_orders"
+    assert html =~ "customer_orders_daily"
+    assert html =~ "Include deps"
+    assert html =~ "Day Europe/Oslo"
+    assert html =~ "Healthy"
+    assert html =~ "5.0 s"
   end
 
   test "runs list refreshes active runs", %{conn: conn} do
@@ -824,6 +843,15 @@ defmodule FavnView.PageLiveTest do
         asset(:always_refresh, :snowflake, "sales", :sql,
           freshness: Favn.Freshness.Policy.from_value!(:always)
         )
+      ],
+      pipelines: [
+        %Pipeline{
+          module: __MODULE__.Pipelines.DailyOrders,
+          name: :daily_orders,
+          selectors: [{:asset, {__MODULE__.Assets, :customer_orders_daily}}],
+          deps: :all,
+          window: Policy.new!(:daily, timezone: "Europe/Oslo")
+        }
       ]
     }
 
@@ -870,6 +898,33 @@ defmodule FavnView.PageLiveTest do
           }
         ]
       }
+    )
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp pipeline_run_state do
+    ref = {__MODULE__.Assets, :customer_orders_daily}
+    finished_at = DateTime.add(DateTime.utc_now(), -900, :second)
+    started_at = DateTime.add(finished_at, -5, :second)
+
+    RunState.new(
+      id: "run_daily_orders",
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: ref,
+      target_refs: [ref],
+      submit_kind: :pipeline,
+      metadata: %{
+        pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders,
+        pipeline_target_refs: [ref],
+        pipeline_dependencies: :all
+      }
+    )
+    |> RunState.transition(
+      status: :ok,
+      result: %{asset_results: terminal_asset_results(:customer_orders_daily)}
     )
     |> Map.put(:inserted_at, started_at)
     |> Map.put(:updated_at, finished_at)
