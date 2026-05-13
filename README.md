@@ -329,7 +329,7 @@ config :favn,
   ]
 ```
 
-Use explicit `asset_modules`, `pipeline_modules`, or `connection_modules` lists
+Use explicit `asset_modules`, `pipeline_modules`, `schedule_modules`, or `connection_modules` lists
 when a project needs tighter control than app-scoped discovery.
 
 ### 6. Inspect and compile from IEx

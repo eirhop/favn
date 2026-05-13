@@ -69,15 +69,11 @@ defmodule FavnAuthoring do
   """
   @spec list_assets(module() | [module()]) :: {:ok, [asset()]} | {:error, term()}
   def list_assets(module) when is_atom(module) do
-    case configured_asset_modules() do
-      modules when is_list(modules) ->
-        if module in modules do
-          list_assets_for_module_from_catalog(module, modules)
-        else
-          Compiler.compile_module_assets(module)
-        end
-
-      _other ->
+    with {:ok, modules} <- default_asset_modules(),
+         true <- module in modules do
+      list_assets_for_module_from_catalog(module, modules)
+    else
+      _ ->
         Compiler.compile_module_assets(module)
     end
   end
@@ -226,10 +222,6 @@ defmodule FavnAuthoring do
           {:ok, Keyword.put(opts, key, modules)}
         end
     end
-  end
-
-  defp configured_asset_modules do
-    Application.get_env(:favn, :asset_modules, :unset)
   end
 
   defp default_asset_modules do
