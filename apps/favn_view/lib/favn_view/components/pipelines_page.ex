@@ -124,7 +124,10 @@ defmodule FavnView.Components.PipelinesPage do
     ~H"""
     <tr class="group border-base-content/10 transition hover:bg-primary/10" data-testid="pipeline-row">
       <td>
-        <div class="flex items-center gap-3 font-medium text-base-content">
+        <.link
+          navigate={~p"/pipelines/#{FavnView.AssetRoute.to_param(@pipeline.id)}"}
+          class="flex items-center gap-3 font-medium text-base-content"
+        >
           <span class="flex size-8 items-center justify-center rounded-field border border-primary/25 bg-primary/10 text-primary">
             <.icon name="hero-queue-list" class="size-4" />
           </span>
@@ -134,7 +137,7 @@ defmodule FavnView.Components.PipelinesPage do
               {@pipeline.label}
             </p>
           </div>
-        </div>
+        </.link>
       </td>
       <td class="whitespace-nowrap text-base-content/70">{@pipeline.dependencies_label}</td>
       <td class="whitespace-nowrap text-base-content/70">{@pipeline.window_label}</td>
@@ -162,7 +165,8 @@ defmodule FavnView.Components.PipelinesPage do
 
   def pipeline_card(assigns) do
     ~H"""
-    <div
+    <.link
+      navigate={~p"/pipelines/#{FavnView.AssetRoute.to_param(@pipeline.id)}"}
       class="card glass favn-surface-list favn-density-list-card block rounded-box"
       data-testid="pipeline-card"
     >
@@ -196,7 +200,7 @@ defmodule FavnView.Components.PipelinesPage do
           </p>
         </div>
       </div>
-    </div>
+    </.link>
     """
   end
 

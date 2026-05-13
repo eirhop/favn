@@ -92,6 +92,32 @@ defmodule FavnOrchestrator do
           required(:latest_run_duration_ms) => non_neg_integer() | nil
         }
 
+  @type pipeline_run_history_entry :: %{
+          required(:id) => String.t(),
+          required(:status) => atom(),
+          required(:submit_kind) => atom() | nil,
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:duration_ms) => non_neg_integer() | nil,
+          required(:window) => map() | String.t() | nil
+        }
+
+  @type pipeline_detail :: %{
+          required(:target_id) => String.t(),
+          required(:manifest_version_id) => String.t(),
+          required(:label) => String.t(),
+          required(:name) => String.t(),
+          required(:selected_assets) => [String.t()],
+          required(:dependencies) => :all | :none | :unknown,
+          required(:window) => map() | nil,
+          required(:status) => :healthy | :running | :failed | :unknown,
+          required(:latest_run_id) => String.t() | nil,
+          required(:latest_run_status) => atom() | nil,
+          required(:latest_run_at) => DateTime.t() | nil,
+          required(:latest_run_duration_ms) => non_neg_integer() | nil,
+          required(:runs) => [pipeline_run_history_entry()]
+        }
+
   @type asset_timeline_window :: %{
           required(:id) => String.t(),
           required(:kind) => :hour | :day | :month | :year,
@@ -294,6 +320,26 @@ defmodule FavnOrchestrator do
          {:ok, index} <- Index.build_from_version(version),
          {:ok, runs} <- catalogue_runs(manifest_version_id) do
       {:ok, pipeline_catalogue_entries(version, index, runs)}
+    end
+  end
+
+  @doc """
+  Returns an operator-facing detail read model for one active pipeline target.
+
+  The detail is built at the orchestrator boundary and includes manifest target
+  metadata, selected assets, latest run state, and persisted run history matched
+  to the pipeline submit ref.
+  """
+  @spec active_pipeline_detail(String.t()) :: {:ok, pipeline_detail()} | {:error, term()}
+  def active_pipeline_detail(target_id) when is_binary(target_id) do
+    with {:ok, manifest_version_id} <- active_manifest(),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, index} <- Index.build_from_version(version),
+         {:ok, runs} <- catalogue_runs(manifest_version_id) do
+      case pipeline_detail_entry(version, index, target_id, runs) do
+        nil -> {:error, :not_found}
+        detail -> {:ok, detail}
+      end
     end
   end
 
@@ -1237,6 +1283,30 @@ defmodule FavnOrchestrator do
       |> Map.put(:latest_run_duration_ms, run_duration_ms(latest_run))
     end)
     |> Enum.sort_by(& &1.label)
+  end
+
+  defp pipeline_detail_entry(%Version{} = version, %Index{} = index, target_id, runs) do
+    version.manifest.pipelines
+    |> List.wrap()
+    |> Enum.find(&(manifest_pipeline_target(&1).target_id == target_id))
+    |> case do
+      nil ->
+        nil
+
+      pipeline ->
+        target = manifest_pipeline_target(index, pipeline)
+        pipeline_runs = pipeline_runs(pipeline, target, runs)
+        latest_run = latest_run(pipeline_runs)
+
+        target
+        |> Map.put(:manifest_version_id, version.manifest_version_id)
+        |> Map.put(:status, run_status(latest_run))
+        |> Map.put(:latest_run_id, latest_run_id(nil, latest_run))
+        |> Map.put(:latest_run_status, latest_run_status(nil, latest_run))
+        |> Map.put(:latest_run_at, latest_run_at(nil, latest_run))
+        |> Map.put(:latest_run_duration_ms, run_duration_ms(latest_run))
+        |> Map.put(:runs, Enum.map(pipeline_runs, &pipeline_run_history_entry/1))
+    end
   end
 
   defp asset_detail_entry(%Version{} = version, target_id, freshness_states, runs, opts) do
@@ -2294,6 +2364,12 @@ defmodule FavnOrchestrator do
   end
 
   defp latest_pipeline_run(pipeline, %{selected_assets: selected_assets}, runs) do
+    pipeline
+    |> pipeline_runs(%{selected_assets: selected_assets}, runs)
+    |> latest_run()
+  end
+
+  defp pipeline_runs(pipeline, %{selected_assets: selected_assets}, runs) do
     selected_assets = Enum.sort(selected_assets)
 
     runs
@@ -2301,7 +2377,28 @@ defmodule FavnOrchestrator do
       pipeline_submit_ref_matches?(run, pipeline) ||
         legacy_pipeline_targets_match?(run, selected_assets)
     end)
-    |> latest_run()
+    |> Enum.sort_by(&DateTime.to_unix(run_time_sort_key(&1), :microsecond), :desc)
+  end
+
+  defp pipeline_run_history_entry(run) do
+    %{
+      id: run.id,
+      status: run.status,
+      submit_kind: Map.get(run, :submit_kind),
+      started_at: Map.get(run, :started_at),
+      finished_at: Map.get(run, :finished_at),
+      duration_ms: run_duration_ms(run),
+      window: run_history_window(run)
+    }
+  end
+
+  defp run_history_window(run) do
+    params = Map.get(run, :params, %{}) || %{}
+    metadata = Map.get(run, :metadata, %{}) || %{}
+
+    Map.get(params, :window) || Map.get(params, "window") || Map.get(metadata, :selected_window) ||
+      Map.get(metadata, "selected_window") || Map.get(metadata, :window) ||
+      Map.get(metadata, "window")
   end
 
   defp pipeline_submit_ref_matches?(run, pipeline) do

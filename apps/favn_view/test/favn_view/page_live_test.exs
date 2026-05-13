@@ -97,11 +97,38 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="pipeline-card-list"]))
 
     assert html =~ "daily_orders"
+    assert has_element?(view, ~s(a[href="#{pipeline_detail_path()}"]), "daily_orders")
     assert html =~ "customer_orders_daily"
     assert html =~ "Include deps"
     assert html =~ "Day Europe/Oslo"
     assert html =~ "Healthy"
     assert html =~ "5.0 s"
+  end
+
+  test "renders the pipeline detail page with run history and actions", %{conn: conn} do
+    {:ok, view, html} = live(conn, pipeline_detail_path())
+
+    assert html =~ "daily_orders"
+    assert has_element?(view, ~s([data-testid="pipeline-summary-panel"]), "customer_orders_daily")
+    assert has_element?(view, ~s([data-testid="pipeline-actions-panel"]), "Run pipeline")
+    assert has_element?(view, ~s([data-testid="pipeline-backfill-form"]))
+    assert has_element?(view, ~s([data-testid="pipeline-runs-table"]), "run_daily_orders")
+  end
+
+  test "pipeline detail submits a pipeline run and navigates to run detail", %{conn: conn} do
+    {:ok, view, _html} = live(conn, pipeline_detail_path("full_refresh"))
+
+    view
+    |> element(~s([data-testid="run-pipeline-form"]))
+    |> render_submit()
+
+    assert {run_path, %{"info" => "Pipeline run submitted"}} = assert_redirect(view)
+    assert String.starts_with?(run_path, "/runs/run_")
+
+    run_id = String.replace_prefix(run_path, "/runs/", "")
+    assert {:ok, run} = Storage.get_run(run_id)
+    assert run.submit_kind == :pipeline
+    assert run.metadata.pipeline_submit_ref == __MODULE__.Pipelines.FullRefresh
   end
 
   test "runs list refreshes active runs", %{conn: conn} do
@@ -851,6 +878,13 @@ defmodule FavnView.PageLiveTest do
           selectors: [{:asset, {__MODULE__.Assets, :customer_orders_daily}}],
           deps: :all,
           window: Policy.new!(:daily, timezone: "Europe/Oslo")
+        },
+        %Pipeline{
+          module: __MODULE__.Pipelines.FullRefresh,
+          name: :full_refresh,
+          selectors: [{:asset, {__MODULE__.Assets, :customer_orders_daily}}],
+          deps: :all,
+          window: nil
         }
       ]
     }
@@ -1227,6 +1261,18 @@ defmodule FavnView.PageLiveTest do
 
   defp detail_path(name) do
     ~p"/assets/#{FavnView.AssetRoute.to_param(target_id(name))}"
+  end
+
+  defp pipeline_target_id(name) do
+    {:ok, entries} = FavnOrchestrator.active_pipeline_catalogue()
+
+    entries
+    |> Enum.find(&(&1.name == name))
+    |> Map.fetch!(:target_id)
+  end
+
+  defp pipeline_detail_path(name \\ "daily_orders") do
+    ~p"/pipelines/#{FavnView.AssetRoute.to_param(pipeline_target_id(name))}"
   end
 
   defp today_label do
