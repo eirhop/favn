@@ -10,6 +10,7 @@ defmodule FavnOrchestrator do
   alias Favn.Assets.Planner
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerClient
+  alias Favn.Backfill.RangeRequest
   alias Favn.Manifest.Index
   alias Favn.Manifest.PipelineResolver
   alias Favn.Manifest.Version
@@ -85,6 +86,8 @@ defmodule FavnOrchestrator do
           required(:selected_assets) => [String.t()],
           required(:dependencies) => :all | :none | :unknown,
           required(:window) => map() | nil,
+          required(:can_run_without_window?) => boolean(),
+          required(:can_backfill?) => boolean(),
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
@@ -99,6 +102,7 @@ defmodule FavnOrchestrator do
           required(:started_at) => DateTime.t() | nil,
           required(:finished_at) => DateTime.t() | nil,
           required(:duration_ms) => non_neg_integer() | nil,
+          required(:scope) => map() | nil,
           required(:window) => map() | String.t() | nil
         }
 
@@ -110,6 +114,8 @@ defmodule FavnOrchestrator do
           required(:selected_assets) => [String.t()],
           required(:dependencies) => :all | :none | :unknown,
           required(:window) => map() | nil,
+          required(:can_run_without_window?) => boolean(),
+          required(:can_backfill?) => boolean(),
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
@@ -653,13 +659,18 @@ defmodule FavnOrchestrator do
 
   @doc """
   Submits one pipeline run by manifest-scoped target id.
+
+  Thin callers may pass plain map input with an optional `:window` map. The
+  orchestrator validates and translates it into the runtime window request.
   """
-  @spec submit_pipeline_run_for_manifest(String.t(), String.t(), keyword()) ::
+  @spec submit_pipeline_run_for_manifest(String.t(), String.t(), keyword() | map()) ::
           {:ok, run_id()} | {:error, term()}
   def submit_pipeline_run_for_manifest(manifest_version_id, target_id, opts \\ [])
-      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
+      when is_binary(manifest_version_id) and is_binary(target_id) and
+             (is_list(opts) or is_map(opts)) do
     with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id) do
+         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
+         {:ok, opts} <- normalize_pipeline_run_submit_opts(opts) do
       submit_pipeline_run(
         pipeline_module,
         Keyword.put(opts, :manifest_version_id, manifest_version_id)
@@ -785,13 +796,19 @@ defmodule FavnOrchestrator do
 
   @doc """
   Submits one pipeline backfill by manifest-scoped target id.
+
+  Thin callers may pass plain map input with `:range` containing `:from`, `:to`,
+  `:kind`, and `:timezone`. The orchestrator validates and translates it into
+  the runtime backfill range request.
   """
-  @spec submit_pipeline_backfill_for_manifest(String.t(), String.t(), keyword()) ::
+  @spec submit_pipeline_backfill_for_manifest(String.t(), String.t(), keyword() | map()) ::
           {:ok, run_id()} | {:error, term()}
   def submit_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts \\ [])
-      when is_binary(manifest_version_id) and is_binary(target_id) and is_list(opts) do
+      when is_binary(manifest_version_id) and is_binary(target_id) and
+             (is_list(opts) or is_map(opts)) do
     with {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id) do
+         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
+         {:ok, opts} <- normalize_pipeline_backfill_submit_opts(opts) do
       submit_pipeline_backfill(
         pipeline_module,
         Keyword.put(opts, :manifest_version_id, manifest_version_id)
@@ -2283,9 +2300,18 @@ defmodule FavnOrchestrator do
     %{
       target_id: target_id_for_pipeline(target_module),
       label: inspect(target_module),
-      window: window_policy_dto(pipeline.window)
+      window: window_policy_dto(pipeline.window),
+      can_run_without_window?: pipeline_can_run_without_window?(pipeline.window),
+      can_backfill?: pipeline_can_backfill?(pipeline.window)
     }
   end
+
+  defp pipeline_can_run_without_window?(nil), do: true
+  defp pipeline_can_run_without_window?(%Policy{allow_full_load: true}), do: true
+  defp pipeline_can_run_without_window?(_window), do: false
+
+  defp pipeline_can_backfill?(nil), do: false
+  defp pipeline_can_backfill?(_window), do: true
 
   defp manifest_pipeline_target(%Index{} = index, pipeline) do
     base = manifest_pipeline_target(pipeline)
@@ -2381,6 +2407,8 @@ defmodule FavnOrchestrator do
   end
 
   defp pipeline_run_history_entry(run) do
+    scope = run_history_scope(run)
+
     %{
       id: run.id,
       status: run.status,
@@ -2388,17 +2416,99 @@ defmodule FavnOrchestrator do
       started_at: Map.get(run, :started_at),
       finished_at: Map.get(run, :finished_at),
       duration_ms: run_duration_ms(run),
-      window: run_history_window(run)
+      scope: scope,
+      window: legacy_run_history_window(scope)
     }
   end
 
-  defp run_history_window(run) do
+  defp run_history_scope(run) do
     params = Map.get(run, :params, %{}) || %{}
     metadata = Map.get(run, :metadata, %{}) || %{}
 
-    Map.get(params, :window) || Map.get(params, "window") || Map.get(metadata, :selected_window) ||
-      Map.get(metadata, "selected_window") || Map.get(metadata, :window) ||
-      Map.get(metadata, "window")
+    cond do
+      backfill = Map.get(metadata, :backfill) || Map.get(metadata, "backfill") ->
+        Map.put(normalize_scope_map(backfill), :type, :range)
+
+      window =
+          Map.get(params, :window) || Map.get(params, "window") ||
+            Map.get(metadata, :selected_window) || Map.get(metadata, "selected_window") ||
+            Map.get(metadata, :window) || Map.get(metadata, "window") ->
+        Map.put(normalize_scope_map(window), :type, :window)
+
+      true ->
+        nil
+    end
+  end
+
+  defp legacy_run_history_window(%{type: :window} = scope), do: Map.delete(scope, :type)
+  defp legacy_run_history_window(_scope), do: nil
+
+  defp normalize_scope_map(value) when is_map(value), do: Map.new(value, &normalize_scope_pair/1)
+  defp normalize_scope_map(value), do: %{label: to_string(value)}
+
+  defp normalize_scope_pair({"type", value}), do: {:type, value}
+  defp normalize_scope_pair({"kind", value}), do: {:kind, value}
+  defp normalize_scope_pair({"timezone", value}), do: {:timezone, value}
+  defp normalize_scope_pair({"range_start_at", value}), do: {:range_start_at, value}
+  defp normalize_scope_pair({"range_end_at", value}), do: {:range_end_at, value}
+  defp normalize_scope_pair({"requested_count", value}), do: {:requested_count, value}
+  defp normalize_scope_pair({"window_keys", value}), do: {:window_keys, value}
+  defp normalize_scope_pair({"id", value}), do: {:id, value}
+  defp normalize_scope_pair({"key", value}), do: {:key, value}
+  defp normalize_scope_pair({"label", value}), do: {:label, value}
+  defp normalize_scope_pair(pair), do: pair
+
+  defp normalize_pipeline_run_submit_opts(opts) when is_list(opts) do
+    with {:ok, window_request} <- normalize_window_request(Keyword.get(opts, :window_request)) do
+      {:ok, Keyword.put(opts, :window_request, window_request)}
+    end
+  end
+
+  defp normalize_pipeline_run_submit_opts(opts) when is_map(opts) do
+    with {:ok, window_request} <- normalize_window_request(field_value(opts, :window)) do
+      opts =
+        []
+        |> maybe_put_opt(:metadata, field_value(opts, :metadata))
+        |> maybe_put_opt(:window_request, window_request)
+
+      {:ok, opts}
+    end
+  end
+
+  defp normalize_pipeline_backfill_submit_opts(opts) when is_list(opts) do
+    with {:ok, range_request} <- RangeRequest.from_value(Keyword.get(opts, :range_request)) do
+      {:ok, Keyword.put(opts, :range_request, range_request)}
+    end
+  end
+
+  defp normalize_pipeline_backfill_submit_opts(opts) when is_map(opts) do
+    range = field_value(opts, :range) || field_value(opts, :range_request)
+
+    with {:ok, range_request} <- RangeRequest.from_value(range) do
+      submit_opts =
+        []
+        |> Keyword.put(:range_request, range_request)
+        |> maybe_put_opt(:metadata, field_value(opts, :metadata))
+        |> maybe_put_opt(:coverage_baseline_id, field_value(opts, :coverage_baseline_id))
+
+      {:ok, submit_opts}
+    end
+  end
+
+  defp normalize_window_request(nil), do: {:ok, nil}
+  defp normalize_window_request(%WindowRequest{} = request), do: WindowRequest.from_value(request)
+
+  defp normalize_window_request(value) when is_binary(value), do: WindowRequest.parse(value)
+  defp normalize_window_request(value) when is_map(value), do: WindowRequest.from_value(value)
+
+  defp normalize_window_request(value), do: {:error, {:invalid_window_request, value}}
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, _key, ""), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp field_value(value, field) when is_map(value) do
+    Map.get(value, field) || Map.get(value, Atom.to_string(field))
   end
 
   defp pipeline_submit_ref_matches?(run, pipeline) do

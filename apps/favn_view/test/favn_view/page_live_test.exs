@@ -112,7 +112,25 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="pipeline-summary-panel"]), "customer_orders_daily")
     assert has_element?(view, ~s([data-testid="pipeline-actions-panel"]), "Run pipeline")
     assert has_element?(view, ~s([data-testid="pipeline-backfill-form"]))
+    assert has_element?(view, ~s([data-testid="run-pipeline-button"][disabled]))
+    assert has_element?(view, ~s([data-testid="pipeline-run-disabled-help"]), "explicit window")
+    assert has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]), "day")
+    assert has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]), "Europe/Oslo")
     assert has_element?(view, ~s([data-testid="pipeline-runs-table"]), "run_daily_orders")
+  end
+
+  test "pipeline detail does not invent an implicit window for normal pipeline runs", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, pipeline_detail_path())
+
+    html =
+      view
+      |> element(~s([data-testid="run-pipeline-form"]))
+      |> render_submit()
+
+    refute html =~ "Pipeline run submitted"
+    refute html =~ "pipeline-run-error"
   end
 
   test "pipeline detail submits a pipeline run and navigates to run detail", %{conn: conn} do
@@ -129,6 +147,42 @@ defmodule FavnView.PageLiveTest do
     assert {:ok, run} = Storage.get_run(run_id)
     assert run.submit_kind == :pipeline
     assert run.metadata.pipeline_submit_ref == __MODULE__.Pipelines.FullRefresh
+  end
+
+  test "pipeline detail disables backfill for non-windowed pipelines", %{conn: conn} do
+    {:ok, view, _html} = live(conn, pipeline_detail_path("full_refresh"))
+
+    assert has_element?(view, ~s([data-testid="submit-backfill-button"][disabled]))
+
+    assert has_element?(
+             view,
+             ~s([data-testid="pipeline-backfill-disabled-help"]),
+             "windowed pipeline"
+           )
+
+    refute has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]))
+  end
+
+  test "pipeline detail submits a backfill using pipeline window defaults", %{conn: conn} do
+    {:ok, view, _html} = live(conn, pipeline_detail_path())
+
+    view
+    |> element(~s([data-testid="pipeline-backfill-form"]))
+    |> render_submit(%{
+      "backfill" => %{
+        "from" => "2026-01-01",
+        "to" => "2026-01-02",
+        "kind" => "day",
+        "timezone" => "Europe/Oslo"
+      }
+    })
+
+    assert {run_path, %{"info" => "Pipeline backfill submitted"}} = assert_redirect(view)
+    run_id = String.replace_prefix(run_path, "/runs/", "")
+    assert {:ok, run} = Storage.get_run(run_id)
+    assert run.submit_kind == :backfill_pipeline
+    assert run.metadata.backfill.kind == :day
+    assert run.metadata.backfill.timezone == "Europe/Oslo"
   end
 
   test "runs list refreshes active runs", %{conn: conn} do
@@ -579,7 +633,7 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
 
     assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="true"]))
-    assert has_element?(view, ~s([data-testid="run-asset-results-empty"]), "Run accepted")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
 
     {:ok, active_run} = Storage.get_run("run_empty_running")
 
@@ -614,15 +668,202 @@ defmodule FavnView.PageLiveTest do
   test "running run with no asset results shows waiting state and no fake rows", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
 
-    assert has_element?(view, ~s([data-testid="run-asset-results-empty"]), "Run accepted")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "stg_payments")
 
     assert has_element?(
              view,
              ~s([data-testid="run-current-activity"]),
              "Waiting for first execution event"
            )
+  end
 
-    refute has_element?(view, ~s([data-testid="run-asset-result-row"]))
+  test "run detail derives active asset rows from step events before results persist", %{
+    conn: conn
+  } do
+    step_id = "run_empty_running-stg-payments"
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.utc_now(),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1,
+                 runner_execution_id: "exec_step_active"
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Stage 0")
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
+    refute has_element?(view, ~s([data-testid="run-asset-results-empty"]))
+  end
+
+  test "run detail does not duplicate event and persisted rows for same asset", %{conn: conn} do
+    ref = {__MODULE__.Assets, :customer_orders_daily}
+
+    assert :ok =
+             Storage.append_run_event("run_customer_orders_daily", %{
+               run_id: "run_customer_orders_daily",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -5, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: "different-live-step-id",
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+    html = render(view)
+
+    assert asset_result_row_count(html) == 1
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "customer_orders_daily")
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
+  end
+
+  test "run detail only merges by asset when asset refs are unique", %{conn: conn} do
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok = Storage.put_run(same_asset_node_results_run_state())
+
+    assert :ok =
+             Storage.append_run_event("run_same_asset_nodes", %{
+               run_id: "run_same_asset_nodes",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -2, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: "live-window-a",
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    assert :ok =
+             Storage.append_run_event("run_same_asset_nodes", %{
+               run_id: "run_same_asset_nodes",
+               sequence: 4,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: "live-window-b",
+                 stage: 1,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_same_asset_nodes")
+    html = render(view)
+
+    assert asset_result_row_count(html) == 4
+    assert html =~ "window:day:2026-06-12"
+    assert html =~ "window:day:2026-06-13"
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
+  end
+
+  test "run detail renders retrying step event before results persist", %{conn: conn} do
+    step_id = "run_empty_running-stg-payments"
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 4,
+               event_type: :step_retry_scheduled,
+               occurred_at: DateTime.utc_now(),
+               status: :retrying,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Retrying")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-asset-result-row"]),
+             "Retry has been scheduled"
+           )
+
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
+  end
+
+  test "run detail shows failed step event error before final results persist", %{conn: conn} do
+    step_id = "run_empty_running-stg-payments"
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 4,
+               event_type: :step_failed,
+               occurred_at: DateTime.utc_now(),
+               status: :error,
+               data: %{
+                 "error" => %{"message" => "Warehouse timeout"},
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Failed")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Warehouse timeout")
   end
 
   test "failed run surfaces failed asset and error in overview", %{conn: conn} do
@@ -762,6 +1003,23 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
 
     assert render(view) =~ "Running SQL:\nSELECT customer_id\nFROM raw.orders"
+  end
+
+  test "logs expose execution context details", %{conn: conn} do
+    seed_log!("asset execution started",
+      run_id: "run_customer_orders_daily",
+      asset_step_id: "customer-step",
+      asset_ref: {__MODULE__.Assets, :customer_orders_daily},
+      runner_execution_id: "runner_exec_123456789",
+      attempt: 2
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
+
+    assert has_element?(view, ~s([data-testid="log-row"]), "asset execution started")
+    assert has_element?(view, ~s([data-testid="log-detail-chip"]), "asset")
+    assert has_element?(view, ~s([data-testid="log-detail-chip"]), "customer_orders_daily")
+    assert has_element?(view, ~s([data-testid="log-detail-chip"]), "#2")
   end
 
   test "level source and search filters affect rendered logs", %{conn: conn} do
@@ -1097,6 +1355,50 @@ defmodule FavnView.PageLiveTest do
     |> RunState.with_snapshot_hash()
   end
 
+  defp same_asset_node_results_run_state do
+    finished_at = DateTime.add(DateTime.utc_now(), -1_200, :second)
+    started_at = DateTime.add(finished_at, -2, :second)
+    stg_ref = {__MODULE__.Assets, :stg_payments}
+
+    RunState.new(
+      id: "run_same_asset_nodes",
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: stg_ref,
+      target_refs: [stg_ref]
+    )
+    |> RunState.transition(
+      status: :partial,
+      result: %{
+        node_results: [
+          NodeResult.new(%{
+            node_key: {stg_ref, "window:day:2026-06-12"},
+            ref: stg_ref,
+            window: %{id: "window:day:2026-06-12"},
+            stage: 0,
+            status: :ok,
+            started_at: started_at,
+            finished_at: DateTime.add(started_at, 1, :second),
+            duration_ms: 1_000
+          }),
+          NodeResult.new(%{
+            node_key: {stg_ref, "window:day:2026-06-13"},
+            ref: stg_ref,
+            window: %{id: "window:day:2026-06-13"},
+            stage: 1,
+            status: :ok,
+            started_at: DateTime.add(started_at, 1, :second),
+            finished_at: finished_at,
+            duration_ms: 1_000
+          })
+        ]
+      }
+    )
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
   defp seed_freshness_states! do
     now = DateTime.utc_now()
     customer_at = DateTime.add(now, -600, :second)
@@ -1219,6 +1521,9 @@ defmodule FavnView.PageLiveTest do
       global_sequence: Keyword.get(opts, :global_sequence),
       run_id: Keyword.get(opts, :run_id),
       asset_step_id: Keyword.get(opts, :asset_step_id),
+      asset_ref: Keyword.get(opts, :asset_ref),
+      runner_execution_id: Keyword.get(opts, :runner_execution_id),
+      attempt: Keyword.get(opts, :attempt),
       producer_id: Keyword.get(opts, :producer_id),
       producer_sequence: Keyword.get(opts, :producer_sequence),
       occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
@@ -1273,6 +1578,12 @@ defmodule FavnView.PageLiveTest do
 
   defp pipeline_detail_path(name \\ "daily_orders") do
     ~p"/pipelines/#{FavnView.AssetRoute.to_param(pipeline_target_id(name))}"
+  end
+
+  defp asset_result_row_count(html) do
+    ~r/data-testid="run-asset-result-row"/
+    |> Regex.scan(html)
+    |> length()
   end
 
   defp today_label do

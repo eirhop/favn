@@ -6,6 +6,7 @@ defmodule FavnView.RunDetailLive do
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.Components.RunDetailPage
   alias FavnView.AssetRoute
+  alias FavnView.LogsViewModel
   alias FavnView.RunStepViewModel
 
   @refresh_interval_ms 1_500
@@ -75,8 +76,8 @@ defmodule FavnView.RunDetailLive do
     target = target_label(Map.get(run, :asset_ref), Map.get(run, :target_refs, []))
     trigger = trigger_label(Map.get(run, :trigger, %{}), Map.get(run, :submit_kind))
     window = window_label(Map.get(run, :params, %{}), Map.get(run, :metadata, %{}))
-    asset_results = RunStepViewModel.from_run(run)
     event_items = event_items(events)
+    asset_results = execution_rows(run, event_items)
     back_asset_href = existing_back_asset_href || back_asset_href(Map.get(run, :asset_ref))
     failure_summary = failure_summary(status, asset_results, event_items)
     current_activity = current_activity(status, asset_results, event_items)
@@ -131,9 +132,16 @@ defmodule FavnView.RunDetailLive do
         raw_status: Map.get(event, :status),
         timestamp: timestamp_label(Map.get(event, :occurred_at)),
         event_type: event_type_label(Map.get(event, :event_type)),
+        raw_event_type: Map.get(event, :event_type),
         status: status_label(Map.get(event, :status)),
         status_tone: status_tone(Map.get(event, :status)),
         asset: event_asset(event),
+        asset_step_id: event_data(event, :asset_step_id),
+        runner_execution_id: event_data(event, :runner_execution_id),
+        attempt: event_data(event, :attempt),
+        stage: Map.get(event, :stage) || event_data(event, :stage),
+        occurred_at: Map.get(event, :occurred_at),
+        data: Map.get(event, :data, %{}) || %{},
         summary: event_summary(event)
       }
     end)
@@ -150,6 +158,236 @@ defmodule FavnView.RunDetailLive do
   defp target_label(nil, []), do: nil
   defp target_label(nil, refs), do: refs |> Enum.map(&ref_label/1) |> Enum.join(", ")
   defp target_label(ref, _refs), do: ref_label(ref)
+
+  defp execution_rows(run, event_items) do
+    persisted_rows = RunStepViewModel.from_run(run)
+
+    persisted_rows
+    |> merge_event_rows(event_execution_rows(run, event_items))
+    |> append_waiting_rows(waiting_execution_rows(run, persisted_rows, event_items))
+    |> Enum.sort_by(&execution_sort_key/1)
+  end
+
+  defp merge_event_rows(persisted_rows, event_rows) do
+    event_rows_by_id = Map.new(event_rows, &{&1.id, &1})
+    unique_asset_refs = unique_asset_refs(persisted_rows, event_rows)
+
+    event_rows_by_asset =
+      event_rows
+      |> Enum.filter(&MapSet.member?(unique_asset_refs, &1.asset_ref))
+      |> Map.new(&{&1.asset_ref, &1})
+
+    merged_persisted_rows =
+      Enum.map(persisted_rows, fn row ->
+        case Map.get(event_rows_by_id, row.id) || Map.get(event_rows_by_asset, row.asset_ref) do
+          nil ->
+            row
+
+          event_row ->
+            Map.merge(event_row, row, fn _key, event_value, persisted_value ->
+              persisted_value || event_value
+            end)
+        end
+      end)
+
+    persisted_ids = MapSet.new(merged_persisted_rows, & &1.id)
+    persisted_refs = MapSet.new(merged_persisted_rows, & &1.asset_ref)
+
+    new_event_rows =
+      Enum.reject(event_rows, fn row ->
+        MapSet.member?(persisted_ids, row.id) ||
+          (MapSet.member?(unique_asset_refs, row.asset_ref) &&
+             MapSet.member?(persisted_refs, row.asset_ref))
+      end)
+
+    merged_persisted_rows ++ new_event_rows
+  end
+
+  defp unique_asset_refs(persisted_rows, event_rows) do
+    persisted_unique_refs = unique_refs(persisted_rows)
+    event_unique_refs = unique_refs(event_rows)
+
+    MapSet.intersection(persisted_unique_refs, event_unique_refs)
+  end
+
+  defp unique_refs(rows) do
+    rows
+    |> Enum.frequencies_by(& &1.asset_ref)
+    |> Enum.filter(fn {_asset_ref, count} -> count == 1 end)
+    |> Enum.map(fn {asset_ref, _count} -> asset_ref end)
+    |> MapSet.new()
+  end
+
+  defp append_waiting_rows(rows, waiting_rows) do
+    row_refs = rows |> Enum.map(& &1.asset_ref) |> MapSet.new()
+    rows ++ Enum.reject(waiting_rows, &MapSet.member?(row_refs, &1.asset_ref))
+  end
+
+  defp event_execution_rows(run, event_items) do
+    event_items
+    |> Enum.filter(&step_event?/1)
+    |> Enum.group_by(&event_row_key(run.id, &1))
+    |> Enum.map(fn {_key, events} -> event_execution_row(run.id, events) end)
+  end
+
+  defp event_execution_row(run_id, events) do
+    latest = List.last(events)
+
+    first_started = started_event_for_attempt(events, latest.attempt) || List.first(events)
+
+    asset_ref = latest.asset || "Unknown asset"
+    status = event_step_status(latest)
+
+    %{
+      id: latest.asset_step_id || LogsViewModel.deterministic_step_id(run_id, asset_ref),
+      asset_ref: asset_ref,
+      display_name: LogsViewModel.display_name(asset_ref) || asset_ref,
+      secondary: event_row_secondary(latest),
+      status: status_label(status),
+      raw_status: status,
+      status_tone: status_tone(status),
+      duration: event_row_duration(first_started, latest),
+      started_at: timestamp_label(first_started && first_started.occurred_at),
+      attempt: latest.attempt,
+      error: event_row_error(latest),
+      explanation: event_row_explanation(latest),
+      output: nil,
+      inspectable?: is_binary(latest.asset_step_id)
+    }
+  end
+
+  defp waiting_execution_rows(%{status: status} = run, persisted_rows, event_items)
+       when status in [:pending, :running, "pending", "running"] do
+    known_refs =
+      (Enum.map(persisted_rows, & &1.asset_ref) ++ Enum.map(event_items, & &1.asset))
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    run
+    |> Map.get(:target_refs, [])
+    |> Enum.map(&ref_label/1)
+    |> Enum.reject(&MapSet.member?(known_refs, &1))
+    |> Enum.map(fn asset_ref -> waiting_execution_row(run.id, asset_ref) end)
+  end
+
+  defp waiting_execution_rows(_run, _persisted_rows, _event_items), do: []
+
+  defp waiting_execution_row(run_id, asset_ref) do
+    %{
+      id: LogsViewModel.deterministic_step_id(run_id, asset_ref),
+      asset_ref: asset_ref,
+      display_name: LogsViewModel.display_name(asset_ref) || asset_ref,
+      secondary: "Waiting for scheduler",
+      status: "Waiting",
+      raw_status: :pending,
+      status_tone: :neutral,
+      duration: "-",
+      started_at: "-",
+      attempt: nil,
+      error: nil,
+      explanation: "Asset has not started yet for this run.",
+      output: nil,
+      inspectable?: false
+    }
+  end
+
+  defp execution_sort_key(row), do: {stage_sort(Map.get(row, :secondary)), row.asset_ref}
+
+  defp stage_sort(nil), do: 999_999
+
+  defp stage_sort(secondary) do
+    case Regex.run(~r/Stage (\d+)/, secondary) do
+      [_, stage] -> String.to_integer(stage)
+      _other -> 999_999
+    end
+  end
+
+  defp step_event?(%{raw_event_type: event_type}) when is_atom(event_type) do
+    String.starts_with?(Atom.to_string(event_type), "step_")
+  end
+
+  defp step_event?(%{raw_event_type: event_type}) when is_binary(event_type),
+    do: String.starts_with?(event_type, "step_")
+
+  defp step_event?(_event), do: false
+
+  defp event_row_key(run_id, event) do
+    event.asset_step_id || LogsViewModel.deterministic_step_id(run_id, event.asset || "unknown")
+  end
+
+  defp event_step_status(%{raw_event_type: event_type, raw_status: status}) do
+    case event_type do
+      type when type in [:step_started, "step_started"] -> :running
+      type when type in [:step_finished, "step_finished"] -> :ok
+      type when type in [:step_failed, "step_failed"] -> :error
+      type when type in [:step_timed_out, "step_timed_out"] -> :timed_out
+      type when type in [:step_cancelled, "step_cancelled"] -> :cancelled
+      type when type in [:step_retry_scheduled, "step_retry_scheduled"] -> :retrying
+      type when type in [:step_skipped_fresh, "step_skipped_fresh"] -> :skipped_fresh
+      type when type in [:step_blocked, "step_blocked"] -> :blocked
+      _other -> status || :running
+    end
+  end
+
+  defp event_row_secondary(event) do
+    [
+      event.stage && "Stage #{event.stage}",
+      event.attempt && "Attempt #{event.attempt}",
+      event.runner_execution_id && "Runner #{short_id(event.runner_execution_id)}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+    |> case do
+      "" -> nil
+      secondary -> secondary
+    end
+  end
+
+  defp event_row_duration(%{occurred_at: %DateTime{} = started_at}, %{
+         occurred_at: %DateTime{} = occurred_at,
+         raw_event_type: event_type
+       })
+       when event_type not in [:step_started, "step_started"] do
+    DateTime.diff(occurred_at, started_at, :millisecond)
+    |> duration_ms_label()
+  end
+
+  defp event_row_duration(%{occurred_at: %DateTime{} = started_at}, _latest) do
+    DateTime.diff(DateTime.utc_now(), started_at, :millisecond)
+    |> duration_ms_label()
+  end
+
+  defp event_row_duration(_started, _latest), do: "-"
+
+  defp event_row_error(%{data: data}) do
+    data
+    |> event_data_value(:error)
+    |> error_summary()
+  end
+
+  defp started_event_for_attempt(events, nil) do
+    Enum.find(Enum.reverse(events), &(&1.raw_event_type in [:step_started, "step_started"]))
+  end
+
+  defp started_event_for_attempt(events, attempt) do
+    Enum.find(Enum.reverse(events), fn event ->
+      event.raw_event_type in [:step_started, "step_started"] and event.attempt == attempt
+    end) || started_event_for_attempt(events, nil)
+  end
+
+  defp event_row_explanation(%{raw_event_type: type})
+       when type in [:step_started, "step_started"],
+       do: "Execution has started; waiting for runner result."
+
+  defp event_row_explanation(%{raw_event_type: type})
+       when type in [:step_retry_scheduled, "step_retry_scheduled"],
+       do: "Retry has been scheduled for this asset."
+
+  defp event_row_explanation(%{raw_event_type: type})
+       when type in [:step_finished, "step_finished"],
+       do: "Execution finished successfully."
+
+  defp event_row_explanation(_event), do: nil
 
   defp back_asset_href(nil), do: nil
 
@@ -276,6 +514,13 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
+  defp event_data(event, key) do
+    data = Map.get(event, :data, %{}) || %{}
+    event_data_value(data, key)
+  end
+
+  defp event_data_value(data, key), do: Map.get(data, key) || Map.get(data, Atom.to_string(key))
+
   defp latest_event_summary([]), do: nil
   defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
 
@@ -359,6 +604,15 @@ defmodule FavnView.RunDetailLive do
   defp submit_kind_label(value), do: humanize(value)
 
   defp debug_inspect(value), do: inspect(value, pretty: true, limit: 50, printable_limit: 2_000)
+
+  defp error_summary(nil), do: nil
+  defp error_summary(%{message: message}) when is_binary(message), do: message
+  defp error_summary(%{"message" => message}) when is_binary(message), do: message
+  defp error_summary(%{reason: reason}), do: error_summary(reason)
+  defp error_summary(%{"reason" => reason}), do: error_summary(reason)
+  defp error_summary(reason) when is_binary(reason), do: reason
+  defp error_summary(reason) when is_atom(reason), do: humanize(reason)
+  defp error_summary(reason), do: inspect(reason, limit: 5, printable_limit: 200)
 
   defp status_summary(nil), do: nil
   defp status_summary(status), do: "Status #{status_label(status)}"
