@@ -753,6 +753,77 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert [%{kind: :no_freshness_policy}] = no_policy_detail.freshness.reasons
   end
 
+  test "pipeline catalogue matches runs by pipeline identity before target refs" do
+    ref = {MyApp.AssetA, :asset}
+
+    version =
+      manifest_version(
+        "mv_same_targets",
+        ref,
+        [
+          %Pipeline{module: MyApp.PipelineA, name: :pipeline_a, selectors: [ref], deps: :all},
+          %Pipeline{module: MyApp.PipelineB, name: :pipeline_b, selectors: [ref], deps: :none}
+        ]
+      )
+
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_same_targets")
+
+    assert :ok =
+             Storage.put_run(
+               pipeline_run_state(
+                 "run_pipeline_b",
+                 MyApp.PipelineB,
+                 [ref],
+                 :ok,
+                 ~U[2026-05-10 12:00:00Z],
+                 "mv_same_targets"
+               )
+             )
+
+    assert :ok =
+             Storage.put_run(
+               run_state(
+                 "run_manual_asset_a",
+                 ref,
+                 :error,
+                 ~U[2026-05-10 12:05:00Z],
+                 "mv_same_targets"
+               )
+             )
+
+    assert {:ok, entries} = FavnOrchestrator.active_pipeline_catalogue()
+    pipeline_a = Enum.find(entries, &(&1.name == "pipeline_a"))
+    pipeline_b = Enum.find(entries, &(&1.name == "pipeline_b"))
+
+    assert pipeline_a.status == :unknown
+    assert is_nil(pipeline_a.latest_run_id)
+    assert pipeline_b.status == :healthy
+    assert pipeline_b.latest_run_id == "run_pipeline_b"
+
+    assert :ok =
+             Storage.put_run(
+               pipeline_run_state(
+                 "run_pipeline_b_rerun",
+                 MyApp.PipelineB,
+                 [ref],
+                 :error,
+                 ~U[2026-05-10 12:10:00Z],
+                 "mv_same_targets",
+                 submit_kind: :rerun
+               )
+             )
+
+    assert {:ok, entries} = FavnOrchestrator.active_pipeline_catalogue()
+    pipeline_a = Enum.find(entries, &(&1.name == "pipeline_a"))
+    pipeline_b = Enum.find(entries, &(&1.name == "pipeline_b"))
+
+    assert pipeline_a.status == :unknown
+    assert is_nil(pipeline_a.latest_run_id)
+    assert pipeline_b.status == :failed
+    assert pipeline_b.latest_run_id == "run_pipeline_b_rerun"
+  end
+
   defp manifest_version(manifest_version_id, ref, pipelines \\ [], window \\ nil) do
     manifest = %Manifest{
       assets: [
@@ -833,7 +904,15 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     |> RunState.with_snapshot_hash()
   end
 
-  defp pipeline_run_state(id, pipeline_module, refs, status, finished_at, manifest_version_id) do
+  defp pipeline_run_state(
+         id,
+         pipeline_module,
+         refs,
+         status,
+         finished_at,
+         manifest_version_id,
+         opts \\ []
+       ) do
     started_at = DateTime.add(finished_at, -1, :second)
 
     RunState.new(
@@ -842,7 +921,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
       manifest_content_hash: "hash_a",
       asset_ref: List.first(refs),
       target_refs: refs,
-      submit_kind: :pipeline,
+      submit_kind: Keyword.get(opts, :submit_kind, :pipeline),
       metadata: %{
         pipeline_submit_ref: pipeline_module,
         pipeline_target_refs: refs,

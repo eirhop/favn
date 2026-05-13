@@ -1227,7 +1227,7 @@ defmodule FavnOrchestrator do
     |> List.wrap()
     |> Enum.map(fn pipeline ->
       target = manifest_pipeline_target(index, pipeline)
-      latest_run = latest_pipeline_run(target, runs)
+      latest_run = latest_pipeline_run(pipeline, target, runs)
 
       target
       |> Map.put(:status, run_status(latest_run))
@@ -2293,23 +2293,26 @@ defmodule FavnOrchestrator do
     )
   end
 
-  defp latest_pipeline_run(%{selected_assets: selected_assets, label: label}, runs) do
+  defp latest_pipeline_run(pipeline, %{selected_assets: selected_assets}, runs) do
     selected_assets = Enum.sort(selected_assets)
 
     runs
     |> Enum.filter(fn run ->
-      pipeline_submit_ref?(run, label) || pipeline_targets_match?(run, selected_assets)
+      pipeline_submit_ref_matches?(run, pipeline) ||
+        legacy_pipeline_targets_match?(run, selected_assets)
     end)
     |> latest_run()
   end
 
-  defp pipeline_submit_ref?(run, label) do
-    Map.get(run, :submit_kind) in [:pipeline, :backfill_pipeline] &&
-      inspect(Map.get(run, :submit_ref)) == label
+  defp pipeline_submit_ref_matches?(run, pipeline) do
+    case pipeline_submit_ref(run) do
+      nil -> false
+      submit_ref -> same_pipeline_ref?(submit_ref, pipeline.module)
+    end
   end
 
-  defp pipeline_targets_match?(run, selected_assets) do
-    Map.get(run, :submit_kind) in [:pipeline, :backfill_pipeline] &&
+  defp legacy_pipeline_targets_match?(run, selected_assets) do
+    is_nil(pipeline_submit_ref(run)) && pipeline_origin?(run) &&
       selected_assets != [] &&
       run
       |> Map.get(:target_refs, [])
@@ -2317,6 +2320,34 @@ defmodule FavnOrchestrator do
       |> Enum.sort()
       |> Kernel.==(selected_assets)
   end
+
+  defp pipeline_origin?(run) do
+    Map.get(run, :submit_kind) in [:pipeline, :backfill_pipeline] ||
+      not is_nil(pipeline_metadata_value(run, :pipeline_submit_ref)) ||
+      not is_nil(pipeline_metadata_value(run, :pipeline_target_refs))
+  end
+
+  defp pipeline_submit_ref(run) do
+    pipeline_metadata_value(run, :pipeline_submit_ref) || direct_pipeline_submit_ref(run)
+  end
+
+  defp direct_pipeline_submit_ref(run) do
+    if Map.get(run, :submit_kind) in [:pipeline, :backfill_pipeline] do
+      Map.get(run, :submit_ref)
+    end
+  end
+
+  defp pipeline_metadata_value(run, key) do
+    metadata = Map.get(run, :metadata, %{}) || %{}
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
+
+  defp same_pipeline_ref?(module, module) when is_atom(module), do: true
+
+  defp same_pipeline_ref?(value, module) when is_atom(module),
+    do: to_string(value) == Atom.to_string(module)
+
+  defp same_pipeline_ref?(_value, _module), do: false
 
   defp run_time_sort_key(run), do: run.finished_at || run.started_at || DateTime.from_unix!(0)
 

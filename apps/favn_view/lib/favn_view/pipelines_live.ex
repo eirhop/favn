@@ -75,7 +75,7 @@ defmodule FavnView.PipelinesLive do
       id: Map.fetch!(entry, :target_id),
       name: Map.get(entry, :name) || pipeline_name(Map.fetch!(entry, :label)),
       label: Map.fetch!(entry, :label),
-      selected_assets: Enum.map(selected_assets, &LogsViewModel.display_name/1),
+      selected_assets: Enum.map(selected_assets, &asset_ref_label/1),
       asset_count: length(selected_assets),
       dependencies: Map.get(entry, :dependencies, :unknown),
       dependencies_label: dependencies_label(Map.get(entry, :dependencies, :unknown)),
@@ -128,6 +128,14 @@ defmodule FavnView.PipelinesLive do
     |> String.split(".")
     |> List.last()
   end
+
+  defp asset_ref_label(ref) when is_binary(ref) do
+    ref
+    |> String.split(":")
+    |> List.last()
+  end
+
+  defp asset_ref_label(ref), do: to_string(ref)
 
   defp dependencies_label(:all), do: "Include deps"
   defp dependencies_label(:none), do: "Selected only"
