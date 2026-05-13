@@ -734,6 +734,50 @@ defmodule FavnView.PageLiveTest do
     refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
   end
 
+  test "run detail only merges by asset when asset refs are unique", %{conn: conn} do
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok = Storage.put_run(same_asset_node_results_run_state())
+
+    assert :ok =
+             Storage.append_run_event("run_same_asset_nodes", %{
+               run_id: "run_same_asset_nodes",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -2, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: "live-window-a",
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    assert :ok =
+             Storage.append_run_event("run_same_asset_nodes", %{
+               run_id: "run_same_asset_nodes",
+               sequence: 4,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: "live-window-b",
+                 stage: 1,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_same_asset_nodes")
+    html = render(view)
+
+    assert asset_result_row_count(html) == 4
+    assert html =~ "window:day:2026-06-12"
+    assert html =~ "window:day:2026-06-13"
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
+  end
+
   test "run detail renders retrying step event before results persist", %{conn: conn} do
     step_id = "run_empty_running-stg-payments"
     ref = {__MODULE__.Assets, :stg_payments}
@@ -1302,6 +1346,50 @@ defmodule FavnView.PageLiveTest do
             finished_at: finished_at,
             duration_ms: 1,
             error: %{reason: :upstream_failed}
+          })
+        ]
+      }
+    )
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp same_asset_node_results_run_state do
+    finished_at = DateTime.add(DateTime.utc_now(), -1_200, :second)
+    started_at = DateTime.add(finished_at, -2, :second)
+    stg_ref = {__MODULE__.Assets, :stg_payments}
+
+    RunState.new(
+      id: "run_same_asset_nodes",
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: stg_ref,
+      target_refs: [stg_ref]
+    )
+    |> RunState.transition(
+      status: :partial,
+      result: %{
+        node_results: [
+          NodeResult.new(%{
+            node_key: {stg_ref, "window:day:2026-06-12"},
+            ref: stg_ref,
+            window: %{id: "window:day:2026-06-12"},
+            stage: 0,
+            status: :ok,
+            started_at: started_at,
+            finished_at: DateTime.add(started_at, 1, :second),
+            duration_ms: 1_000
+          }),
+          NodeResult.new(%{
+            node_key: {stg_ref, "window:day:2026-06-13"},
+            ref: stg_ref,
+            window: %{id: "window:day:2026-06-13"},
+            stage: 1,
+            status: :ok,
+            started_at: DateTime.add(started_at, 1, :second),
+            finished_at: finished_at,
+            duration_ms: 1_000
           })
         ]
       }

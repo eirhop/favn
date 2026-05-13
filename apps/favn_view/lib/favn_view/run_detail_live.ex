@@ -170,7 +170,12 @@ defmodule FavnView.RunDetailLive do
 
   defp merge_event_rows(persisted_rows, event_rows) do
     event_rows_by_id = Map.new(event_rows, &{&1.id, &1})
-    event_rows_by_asset = Map.new(event_rows, &{&1.asset_ref, &1})
+    unique_asset_refs = unique_asset_refs(persisted_rows, event_rows)
+
+    event_rows_by_asset =
+      event_rows
+      |> Enum.filter(&MapSet.member?(unique_asset_refs, &1.asset_ref))
+      |> Map.new(&{&1.asset_ref, &1})
 
     merged_persisted_rows =
       Enum.map(persisted_rows, fn row ->
@@ -190,10 +195,27 @@ defmodule FavnView.RunDetailLive do
 
     new_event_rows =
       Enum.reject(event_rows, fn row ->
-        MapSet.member?(persisted_ids, row.id) || MapSet.member?(persisted_refs, row.asset_ref)
+        MapSet.member?(persisted_ids, row.id) ||
+          (MapSet.member?(unique_asset_refs, row.asset_ref) &&
+             MapSet.member?(persisted_refs, row.asset_ref))
       end)
 
     merged_persisted_rows ++ new_event_rows
+  end
+
+  defp unique_asset_refs(persisted_rows, event_rows) do
+    persisted_unique_refs = unique_refs(persisted_rows)
+    event_unique_refs = unique_refs(event_rows)
+
+    MapSet.intersection(persisted_unique_refs, event_unique_refs)
+  end
+
+  defp unique_refs(rows) do
+    rows
+    |> Enum.frequencies_by(& &1.asset_ref)
+    |> Enum.filter(fn {_asset_ref, count} -> count == 1 end)
+    |> Enum.map(fn {asset_ref, _count} -> asset_ref end)
+    |> MapSet.new()
   end
 
   defp append_waiting_rows(rows, waiting_rows) do
