@@ -130,9 +130,11 @@ defmodule FavnView.PipelinesLive do
   end
 
   defp asset_ref_label(ref) when is_binary(ref) do
-    ref
-    |> String.split(":")
-    |> List.last()
+    case String.split(ref, ":", parts: 2) do
+      [module, "asset"] -> module |> String.split(".") |> List.last()
+      [_module, name] -> name
+      [value] -> value |> String.split(".") |> List.last()
+    end
   end
 
   defp asset_ref_label(ref), do: to_string(ref)
