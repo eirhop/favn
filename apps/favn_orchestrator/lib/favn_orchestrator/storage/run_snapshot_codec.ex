@@ -936,7 +936,24 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp selector_atoms(_selectors), do: {:ok, []}
 
-  defp selector_atom([_kind, ref]), do: ref_atoms(ref)
+  defp selector_atom([kind, value]) when kind in [:asset, "asset"], do: ref_atoms(value)
+  defp selector_atom([kind, value]) when kind in [:module, "module"], do: module_atom(value)
+
+  defp selector_atom([kind, value]) when kind in [:tag, "tag", :category, "category"],
+    do: manifest_atom(value)
+
+  defp selector_atom(%{"module" => kind, "name" => value})
+       when kind in [:asset, "asset"],
+       do: ref_atoms(value)
+
+  defp selector_atom(%{"module" => kind, "name" => value})
+       when kind in [:module, "module"],
+       do: module_atom(value)
+
+  defp selector_atom(%{"module" => kind, "name" => value})
+       when kind in [:tag, "tag", :category, "category"],
+       do: manifest_atom(value)
+
   defp selector_atom(%{"value" => ref}), do: ref_atoms(ref)
   defp selector_atom(%{"ref" => ref}), do: ref_atoms(ref)
   defp selector_atom(%{"module" => _module, "name" => _name} = ref), do: ref_atoms(ref)
