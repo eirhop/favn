@@ -11,6 +11,7 @@ defmodule FavnOrchestrator do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerClient
   alias Favn.Manifest.Index
+  alias Favn.Manifest.PipelineResolver
   alias Favn.Manifest.Version
   alias Favn.Window.Anchor
   alias Favn.Window.Policy
@@ -75,6 +76,20 @@ defmodule FavnOrchestrator do
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
           required(:latest_run_at) => DateTime.t() | nil
+        }
+
+  @type pipeline_catalogue_entry :: %{
+          required(:target_id) => String.t(),
+          required(:label) => String.t(),
+          required(:name) => String.t(),
+          required(:selected_assets) => [String.t()],
+          required(:dependencies) => :all | :none | :unknown,
+          required(:window) => map() | nil,
+          required(:status) => :healthy | :running | :failed | :unknown,
+          required(:latest_run_id) => String.t() | nil,
+          required(:latest_run_status) => atom() | nil,
+          required(:latest_run_at) => DateTime.t() | nil,
+          required(:latest_run_duration_ms) => non_neg_integer() | nil
         }
 
   @type asset_timeline_window :: %{
@@ -263,6 +278,22 @@ defmodule FavnOrchestrator do
          {:ok, freshness_states} <- catalogue_freshness_states(manifest_version_id),
          {:ok, runs} <- catalogue_runs(manifest_version_id) do
       {:ok, asset_catalogue_entries(version, freshness_states, runs)}
+    end
+  end
+
+  @doc """
+  Returns operator-facing catalogue entries for pipelines in the active manifest.
+
+  Entries include manifest-level pipeline selection metadata enriched with the
+  latest persisted run that can be associated with each pipeline.
+  """
+  @spec active_pipeline_catalogue() :: {:ok, [pipeline_catalogue_entry()]} | {:error, term()}
+  def active_pipeline_catalogue do
+    with {:ok, manifest_version_id} <- active_manifest(),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, index} <- Index.build_from_version(version),
+         {:ok, runs} <- catalogue_runs(manifest_version_id) do
+      {:ok, pipeline_catalogue_entries(version, index, runs)}
     end
   end
 
@@ -1187,6 +1218,23 @@ defmodule FavnOrchestrator do
       |> Map.put(:latest_run_id, latest_run_id(freshness, run))
       |> Map.put(:latest_run_status, latest_run_status(freshness, run))
       |> Map.put(:latest_run_at, latest_run_at(freshness, run))
+    end)
+    |> Enum.sort_by(& &1.label)
+  end
+
+  defp pipeline_catalogue_entries(%Version{} = version, %Index{} = index, runs) do
+    version.manifest.pipelines
+    |> List.wrap()
+    |> Enum.map(fn pipeline ->
+      target = manifest_pipeline_target(index, pipeline)
+      latest_run = latest_pipeline_run(target, runs)
+
+      target
+      |> Map.put(:status, run_status(latest_run))
+      |> Map.put(:latest_run_id, latest_run_id(nil, latest_run))
+      |> Map.put(:latest_run_status, latest_run_status(nil, latest_run))
+      |> Map.put(:latest_run_at, latest_run_at(nil, latest_run))
+      |> Map.put(:latest_run_duration_ms, run_duration_ms(latest_run))
     end)
     |> Enum.sort_by(& &1.label)
   end
@@ -2155,17 +2203,69 @@ defmodule FavnOrchestrator do
   defp manifest_pipeline_targets(%Version{} = version) do
     version.manifest.pipelines
     |> List.wrap()
-    |> Enum.map(fn pipeline ->
-      target_module = pipeline.module
-
-      %{
-        target_id: target_id_for_pipeline(target_module),
-        label: inspect(target_module),
-        window: window_policy_dto(pipeline.window)
-      }
-    end)
+    |> Enum.map(&manifest_pipeline_target/1)
     |> Enum.sort_by(& &1.label)
   end
+
+  defp manifest_pipeline_target(pipeline) do
+    target_module = pipeline.module
+
+    %{
+      target_id: target_id_for_pipeline(target_module),
+      label: inspect(target_module),
+      window: window_policy_dto(pipeline.window)
+    }
+  end
+
+  defp manifest_pipeline_target(%Index{} = index, pipeline) do
+    base = manifest_pipeline_target(pipeline)
+    resolved_refs = resolve_pipeline_refs(index, pipeline)
+
+    base
+    |> Map.put(:name, pipeline_name(pipeline))
+    |> Map.put(:selected_assets, Enum.map(resolved_refs, &ref_to_string/1))
+    |> Map.put(:dependencies, pipeline_dependencies(pipeline))
+  end
+
+  defp resolve_pipeline_refs(%Index{} = index, pipeline) do
+    case PipelineResolver.resolve(index, pipeline, trigger: %{kind: :catalogue}) do
+      {:ok, resolution} -> resolution.target_refs
+      {:error, _reason} -> raw_pipeline_selector_refs(index, pipeline)
+    end
+  end
+
+  defp raw_pipeline_selector_refs(%Index{} = index, pipeline) do
+    pipeline.selectors
+    |> List.wrap()
+    |> Enum.map(&raw_pipeline_selector_ref/1)
+    |> Enum.filter(&(not is_nil(&1) and Map.has_key?(index.assets_by_ref, &1)))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp raw_pipeline_selector_ref({:asset, ref}), do: ref
+
+  defp raw_pipeline_selector_ref({module, name} = ref) when is_atom(module) and is_atom(name),
+    do: ref
+
+  defp raw_pipeline_selector_ref(%{"module" => module, "name" => name})
+       when is_binary(module) and is_binary(name) do
+    {String.to_existing_atom(module), String.to_existing_atom(name)}
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp raw_pipeline_selector_ref(_selector), do: nil
+
+  defp pipeline_name(%{name: name}) when is_atom(name), do: Atom.to_string(name)
+
+  defp pipeline_name(%{module: module}) when is_atom(module),
+    do: module |> Atom.to_string() |> String.split(".") |> List.last()
+
+  defp pipeline_name(_pipeline), do: "pipeline"
+
+  defp pipeline_dependencies(%{deps: deps}) when deps in [:all, :none], do: deps
+  defp pipeline_dependencies(_pipeline), do: :unknown
 
   defp freshness_ref_string(%AssetFreshnessState{} = state) do
     ref_to_string({state.asset_ref_module, state.asset_ref_name})
@@ -2193,7 +2293,41 @@ defmodule FavnOrchestrator do
     )
   end
 
+  defp latest_pipeline_run(%{selected_assets: selected_assets, label: label}, runs) do
+    selected_assets = Enum.sort(selected_assets)
+
+    runs
+    |> Enum.filter(fn run ->
+      pipeline_submit_ref?(run, label) || pipeline_targets_match?(run, selected_assets)
+    end)
+    |> latest_run()
+  end
+
+  defp pipeline_submit_ref?(run, label) do
+    Map.get(run, :submit_kind) in [:pipeline, :backfill_pipeline] &&
+      inspect(Map.get(run, :submit_ref)) == label
+  end
+
+  defp pipeline_targets_match?(run, selected_assets) do
+    Map.get(run, :submit_kind) in [:pipeline, :backfill_pipeline] &&
+      selected_assets != [] &&
+      run
+      |> Map.get(:target_refs, [])
+      |> Enum.map(&ref_to_string/1)
+      |> Enum.sort()
+      |> Kernel.==(selected_assets)
+  end
+
   defp run_time_sort_key(run), do: run.finished_at || run.started_at || DateTime.from_unix!(0)
+
+  defp run_duration_ms(%{
+         started_at: %DateTime{} = started_at,
+         finished_at: %DateTime{} = finished_at
+       }) do
+    max(DateTime.diff(finished_at, started_at, :millisecond), 0)
+  end
+
+  defp run_duration_ms(_run), do: nil
 
   defp catalogue_status(%AssetFreshnessState{} = freshness, _run) do
     case freshness.latest_attempt_status || freshness.status do

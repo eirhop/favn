@@ -154,6 +154,28 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert entry.latest_run_status == :ok
     assert entry.latest_run_at == finished_at
 
+    assert :ok =
+             Storage.put_run(
+               pipeline_run_state(
+                 "run_pipeline_a",
+                 MyApp.PipelineA,
+                 [{MyApp.AssetA, :asset}],
+                 :ok,
+                 DateTime.add(finished_at, 5, :second),
+                 "mv_a"
+               )
+             )
+
+    assert {:ok, [pipeline_entry]} = FavnOrchestrator.active_pipeline_catalogue()
+    assert pipeline_entry.target_id == "pipeline:Elixir.MyApp.PipelineA"
+    assert pipeline_entry.name == "pipeline_a"
+    assert pipeline_entry.selected_assets == ["Elixir.MyApp.AssetA:asset"]
+    assert pipeline_entry.dependencies == :all
+    assert pipeline_entry.status == :healthy
+    assert pipeline_entry.latest_run_id == "run_pipeline_a"
+    assert pipeline_entry.latest_run_status == :ok
+    assert pipeline_entry.latest_run_duration_ms == 1_000
+
     assert {:error, :not_found} =
              FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.AssetA:not_real")
 
@@ -807,6 +829,28 @@ defmodule FavnOrchestrator.ManifestStoreTest do
         ]
       }
     )
+    |> Map.put(:updated_at, finished_at)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp pipeline_run_state(id, pipeline_module, refs, status, finished_at, manifest_version_id) do
+    started_at = DateTime.add(finished_at, -1, :second)
+
+    RunState.new(
+      id: id,
+      manifest_version_id: manifest_version_id,
+      manifest_content_hash: "hash_a",
+      asset_ref: List.first(refs),
+      target_refs: refs,
+      submit_kind: :pipeline,
+      metadata: %{
+        pipeline_submit_ref: pipeline_module,
+        pipeline_target_refs: refs,
+        pipeline_dependencies: :all
+      }
+    )
+    |> RunState.transition(status: status, result: %{asset_results: []})
+    |> Map.put(:inserted_at, started_at)
     |> Map.put(:updated_at, finished_at)
     |> RunState.with_snapshot_hash()
   end
