@@ -784,10 +784,9 @@ defmodule Favn.Manifest.Rehydrate do
   defp decode_atom_or_binary(value) when is_atom(value), do: value
 
   defp decode_atom_or_binary(value) when is_binary(value) do
-    if valid_manifest_atom?(value) do
-      decode_manifest_atom!(value)
-    else
-      value
+    case maybe_existing_atom(value) do
+      {:ok, atom} -> atom
+      :error -> value
     end
   end
 

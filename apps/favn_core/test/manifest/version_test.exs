@@ -304,63 +304,6 @@ defmodule Favn.Manifest.VersionTest do
     assert hd(version.manifest.assets).metadata.tags == ["external tag"]
   end
 
-  test "rehydrates atom-like metadata and selector values deterministically" do
-    suffix = System.unique_integer([:positive])
-    category = "category_#{suffix}"
-    tag = "tag_#{suffix}"
-
-    assert_raise ArgumentError, fn -> String.to_existing_atom(category) end
-    assert_raise ArgumentError, fn -> String.to_existing_atom(tag) end
-
-    manifest = %{
-      "schema_version" => 1,
-      "runner_contract_version" => 1,
-      "assets" => [
-        %{
-          "ref" => %{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"},
-          "module" => "Elixir.ExternalConsumer.UnknownAsset",
-          "name" => "asset",
-          "type" => "elixir",
-          "execution" => %{"entrypoint" => "asset", "arity" => 1},
-          "depends_on" => [],
-          "config" => %{},
-          "metadata" => %{"category" => category, "tags" => [tag]}
-        }
-      ],
-      "pipelines" => [
-        %{
-          "module" => "Elixir.ExternalConsumer.Pipeline",
-          "name" => "pipeline",
-          "selectors" => [["tag", tag], ["category", category]],
-          "deps" => "none",
-          "outputs" => [],
-          "config" => %{},
-          "metadata" => %{}
-        }
-      ],
-      "schedules" => [],
-      "graph" => %{
-        "nodes" => [%{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"}],
-        "edges" => [],
-        "topo_order" => [%{"module" => "Elixir.ExternalConsumer.UnknownAsset", "name" => "asset"}]
-      },
-      "metadata" => %{}
-    }
-
-    assert {:ok, version} = Version.new(manifest, manifest_version_id: "mv_atom_like_values")
-
-    category_atom = String.to_existing_atom(category)
-    tag_atom = String.to_existing_atom(tag)
-
-    assert hd(version.manifest.assets).metadata.category == category_atom
-    assert hd(version.manifest.assets).metadata.tags == [tag_atom]
-
-    assert hd(version.manifest.pipelines).selectors == [
-             {:tag, tag_atom},
-             {:category, category_atom}
-           ]
-  end
-
   test "rejects invalid unloaded module references during rehydration" do
     manifest = %{
       "schema_version" => 1,
