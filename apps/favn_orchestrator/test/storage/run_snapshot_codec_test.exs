@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Version
   alias Favn.Plan
   alias Favn.Run.AssetResult
@@ -120,6 +121,41 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert projected.replay_mode == :exact_replay
     assert projected.pipeline.resolved_refs == [{__MODULE__.Asset, :asset}]
     assert projected.submit_ref == __MODULE__.Asset
+  end
+
+  test "allows asset refs named tag when manifest contains tag selectors" do
+    version = tag_asset_manifest_version("mv_run_snapshot_asset_named_tag")
+
+    run =
+      RunState.new(
+        id: "run_snapshot_asset_named_tag",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {__MODULE__.TaggedAsset, :tag},
+        target_refs: [{__MODULE__.TaggedAsset, :tag}],
+        metadata: %{
+          pipeline_context: %{
+            id: "pipeline_1",
+            name: "mercatus_raw_full_refresh",
+            run_kind: :pipeline,
+            resolved_refs: [{__MODULE__.TaggedAsset, :tag}],
+            deps: :none
+          }
+        }
+      )
+
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.asset_ref == {__MODULE__.TaggedAsset, :tag}
+    assert restored.target_refs == [{__MODULE__.TaggedAsset, :tag}]
+    assert restored.metadata.pipeline_context.resolved_refs == [{__MODULE__.TaggedAsset, :tag}]
   end
 
   test "operational in-flight execution ids remain atom-keyed after DTO roundtrip" do
@@ -428,6 +464,30 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       assets: [
         %Asset{ref: {__MODULE__.AssetA, :asset}, module: __MODULE__.AssetA, name: :asset},
         %Asset{ref: {__MODULE__.AssetB, :asset}, module: __MODULE__.AssetB, name: :asset}
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp tag_asset_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Asset{
+          ref: {__MODULE__.TaggedAsset, :tag},
+          module: __MODULE__.TaggedAsset,
+          name: :tag,
+          metadata: %{tags: [:mercatus_full_refresh]}
+        }
+      ],
+      pipelines: [
+        %Pipeline{
+          module: __MODULE__.TaggedPipeline,
+          name: :mercatus_raw_full_refresh,
+          selectors: [{:tag, :mercatus_full_refresh}],
+          deps: :none
+        }
       ]
     }
 
