@@ -330,6 +330,16 @@ defmodule FavnView.Components.LogViewer do
           @wrap? && "whitespace-pre-wrap break-words",
           !@wrap? && "whitespace-pre"
         ]}><code>{@log.message}</code></pre>
+        <div :if={@log.details != []} class="mt-2 flex flex-wrap gap-1.5 text-[0.68rem] leading-4">
+          <span
+            :for={detail <- @log.details}
+            class="rounded-full border border-slate-700/80 bg-slate-900/80 px-2 py-0.5 text-slate-300"
+            title={detail.title}
+            data-testid="log-detail-chip"
+          >
+            <span class="text-slate-500">{detail.label}</span> {detail.display}
+          </span>
+        </div>
         <span
           :if={@log.truncated?}
           class="mt-1 inline-flex rounded-full border border-warning/30 px-2 py-0.5 text-[0.65rem] uppercase tracking-[0.16em] text-warning/80"

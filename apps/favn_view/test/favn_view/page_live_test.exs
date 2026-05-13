@@ -579,7 +579,7 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
 
     assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="true"]))
-    assert has_element?(view, ~s([data-testid="run-asset-results-empty"]), "Run accepted")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
 
     {:ok, active_run} = Storage.get_run("run_empty_running")
 
@@ -614,15 +614,43 @@ defmodule FavnView.PageLiveTest do
   test "running run with no asset results shows waiting state and no fake rows", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
 
-    assert has_element?(view, ~s([data-testid="run-asset-results-empty"]), "Run accepted")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "stg_payments")
 
     assert has_element?(
              view,
              ~s([data-testid="run-current-activity"]),
              "Waiting for first execution event"
            )
+  end
 
-    refute has_element?(view, ~s([data-testid="run-asset-result-row"]))
+  test "run detail derives active asset rows from step events before results persist", %{
+    conn: conn
+  } do
+    step_id = "run_empty_running-stg-payments"
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.utc_now(),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1,
+                 runner_execution_id: "exec_step_active"
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Stage 0")
+    refute has_element?(view, ~s([data-testid="run-asset-results-empty"]))
   end
 
   test "failed run surfaces failed asset and error in overview", %{conn: conn} do
@@ -762,6 +790,23 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
 
     assert render(view) =~ "Running SQL:\nSELECT customer_id\nFROM raw.orders"
+  end
+
+  test "logs expose execution context details", %{conn: conn} do
+    seed_log!("asset execution started",
+      run_id: "run_customer_orders_daily",
+      asset_step_id: "customer-step",
+      asset_ref: {__MODULE__.Assets, :customer_orders_daily},
+      runner_execution_id: "runner_exec_123456789",
+      attempt: 2
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
+
+    assert has_element?(view, ~s([data-testid="log-row"]), "asset execution started")
+    assert has_element?(view, ~s([data-testid="log-detail-chip"]), "asset")
+    assert has_element?(view, ~s([data-testid="log-detail-chip"]), "customer_orders_daily")
+    assert has_element?(view, ~s([data-testid="log-detail-chip"]), "#2")
   end
 
   test "level source and search filters affect rendered logs", %{conn: conn} do
@@ -1219,6 +1264,9 @@ defmodule FavnView.PageLiveTest do
       global_sequence: Keyword.get(opts, :global_sequence),
       run_id: Keyword.get(opts, :run_id),
       asset_step_id: Keyword.get(opts, :asset_step_id),
+      asset_ref: Keyword.get(opts, :asset_ref),
+      runner_execution_id: Keyword.get(opts, :runner_execution_id),
+      attempt: Keyword.get(opts, :attempt),
       producer_id: Keyword.get(opts, :producer_id),
       producer_sequence: Keyword.get(opts, :producer_sequence),
       occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
