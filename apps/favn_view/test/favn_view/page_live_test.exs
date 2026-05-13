@@ -112,6 +112,8 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="pipeline-summary-panel"]), "customer_orders_daily")
     assert has_element?(view, ~s([data-testid="pipeline-actions-panel"]), "Run pipeline")
     assert has_element?(view, ~s([data-testid="pipeline-backfill-form"]))
+    assert has_element?(view, ~s([data-testid="run-pipeline-button"][disabled]))
+    assert has_element?(view, ~s([data-testid="pipeline-run-disabled-help"]), "explicit window")
     assert has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]), "day")
     assert has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]), "Europe/Oslo")
     assert has_element?(view, ~s([data-testid="pipeline-runs-table"]), "run_daily_orders")
@@ -127,7 +129,8 @@ defmodule FavnView.PageLiveTest do
       |> element(~s([data-testid="run-pipeline-form"]))
       |> render_submit()
 
-    assert html =~ "This day pipeline requires an explicit window request."
+    refute html =~ "Pipeline run submitted"
+    refute html =~ "pipeline-run-error"
   end
 
   test "pipeline detail submits a pipeline run and navigates to run detail", %{conn: conn} do
@@ -144,6 +147,20 @@ defmodule FavnView.PageLiveTest do
     assert {:ok, run} = Storage.get_run(run_id)
     assert run.submit_kind == :pipeline
     assert run.metadata.pipeline_submit_ref == __MODULE__.Pipelines.FullRefresh
+  end
+
+  test "pipeline detail disables backfill for non-windowed pipelines", %{conn: conn} do
+    {:ok, view, _html} = live(conn, pipeline_detail_path("full_refresh"))
+
+    assert has_element?(view, ~s([data-testid="submit-backfill-button"][disabled]))
+
+    assert has_element?(
+             view,
+             ~s([data-testid="pipeline-backfill-disabled-help"]),
+             "windowed pipeline"
+           )
+
+    refute has_element?(view, ~s([data-testid="pipeline-backfill-defaults"]))
   end
 
   test "pipeline detail submits a backfill using pipeline window defaults", %{conn: conn} do
@@ -687,7 +704,81 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
     assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Stage 0")
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
     refute has_element?(view, ~s([data-testid="run-asset-results-empty"]))
+  end
+
+  test "run detail does not duplicate event and persisted rows for same asset", %{conn: conn} do
+    ref = {__MODULE__.Assets, :customer_orders_daily}
+
+    assert :ok =
+             Storage.append_run_event("run_customer_orders_daily", %{
+               run_id: "run_customer_orders_daily",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -5, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: "different-live-step-id",
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+    html = render(view)
+
+    assert asset_result_row_count(html) == 1
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "customer_orders_daily")
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
+  end
+
+  test "run detail renders retrying step event before results persist", %{conn: conn} do
+    step_id = "run_empty_running-stg-payments"
+    ref = {__MODULE__.Assets, :stg_payments}
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :step_started,
+               occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 4,
+               event_type: :step_retry_scheduled,
+               occurred_at: DateTime.utc_now(),
+               status: :retrying,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: step_id,
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Retrying")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-asset-result-row"]),
+             "Retry has been scheduled"
+           )
+
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Waiting")
   end
 
   test "run detail shows failed step event error before final results persist", %{conn: conn} do
@@ -1399,6 +1490,12 @@ defmodule FavnView.PageLiveTest do
 
   defp pipeline_detail_path(name \\ "daily_orders") do
     ~p"/pipelines/#{FavnView.AssetRoute.to_param(pipeline_target_id(name))}"
+  end
+
+  defp asset_result_row_count(html) do
+    ~r/data-testid="run-asset-result-row"/
+    |> Regex.scan(html)
+    |> length()
   end
 
   defp today_label do

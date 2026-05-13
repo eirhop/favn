@@ -41,6 +41,11 @@ defmodule FavnView.PipelineDetailLive do
     {:noreply, assign(socket, :run_error, "Pipeline not found.")}
   end
 
+  def handle_event("run_pipeline", _params, %{assigns: %{pipeline: pipeline}} = socket)
+      when pipeline.can_run_without_window? == false do
+    {:noreply, socket}
+  end
+
   def handle_event("run_pipeline", _params, socket) do
     pipeline = socket.assigns.pipeline
 
@@ -76,7 +81,8 @@ defmodule FavnView.PipelineDetailLive do
     config = backfill_config(params)
     pipeline = socket.assigns.pipeline
 
-    with {:ok, run_id} <-
+    with true <- pipeline.can_backfill?,
+         {:ok, run_id} <-
            FavnOrchestrator.submit_pipeline_backfill_for_manifest(
              pipeline.manifest_version_id,
              pipeline.id,
@@ -87,6 +93,13 @@ defmodule FavnView.PipelineDetailLive do
        |> put_flash(:info, "Pipeline backfill submitted")
        |> push_navigate(to: ~p"/runs/#{run_id}")}
     else
+      false ->
+        {:noreply,
+         assign(socket,
+           backfill_config: config,
+           backfill_error: "Backfill requires a windowed pipeline."
+         )}
+
       {:error, reason} ->
         {:noreply,
          assign(socket,
@@ -156,6 +169,8 @@ defmodule FavnView.PipelineDetailLive do
       dependencies_label: dependencies_label(Map.get(detail, :dependencies, :unknown)),
       window: Map.get(detail, :window),
       window_label: window_label(Map.get(detail, :window)),
+      can_run_without_window?: Map.get(detail, :can_run_without_window?, true),
+      can_backfill?: Map.get(detail, :can_backfill?, false),
       status: status,
       status_label: status_label(status),
       last_run_label: last_run_label(Map.get(detail, :latest_run_at)),

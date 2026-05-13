@@ -170,10 +170,11 @@ defmodule FavnView.RunDetailLive do
 
   defp merge_event_rows(persisted_rows, event_rows) do
     event_rows_by_id = Map.new(event_rows, &{&1.id, &1})
+    event_rows_by_asset = Map.new(event_rows, &{&1.asset_ref, &1})
 
     merged_persisted_rows =
       Enum.map(persisted_rows, fn row ->
-        case Map.get(event_rows_by_id, row.id) do
+        case Map.get(event_rows_by_id, row.id) || Map.get(event_rows_by_asset, row.asset_ref) do
           nil ->
             row
 
@@ -185,7 +186,12 @@ defmodule FavnView.RunDetailLive do
       end)
 
     persisted_ids = MapSet.new(merged_persisted_rows, & &1.id)
-    new_event_rows = Enum.reject(event_rows, &MapSet.member?(persisted_ids, &1.id))
+    persisted_refs = MapSet.new(merged_persisted_rows, & &1.asset_ref)
+
+    new_event_rows =
+      Enum.reject(event_rows, fn row ->
+        MapSet.member?(persisted_ids, row.id) || MapSet.member?(persisted_refs, row.asset_ref)
+      end)
 
     merged_persisted_rows ++ new_event_rows
   end

@@ -86,6 +86,8 @@ defmodule FavnOrchestrator do
           required(:selected_assets) => [String.t()],
           required(:dependencies) => :all | :none | :unknown,
           required(:window) => map() | nil,
+          required(:can_run_without_window?) => boolean(),
+          required(:can_backfill?) => boolean(),
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
@@ -112,6 +114,8 @@ defmodule FavnOrchestrator do
           required(:selected_assets) => [String.t()],
           required(:dependencies) => :all | :none | :unknown,
           required(:window) => map() | nil,
+          required(:can_run_without_window?) => boolean(),
+          required(:can_backfill?) => boolean(),
           required(:status) => :healthy | :running | :failed | :unknown,
           required(:latest_run_id) => String.t() | nil,
           required(:latest_run_status) => atom() | nil,
@@ -2296,9 +2300,18 @@ defmodule FavnOrchestrator do
     %{
       target_id: target_id_for_pipeline(target_module),
       label: inspect(target_module),
-      window: window_policy_dto(pipeline.window)
+      window: window_policy_dto(pipeline.window),
+      can_run_without_window?: pipeline_can_run_without_window?(pipeline.window),
+      can_backfill?: pipeline_can_backfill?(pipeline.window)
     }
   end
+
+  defp pipeline_can_run_without_window?(nil), do: true
+  defp pipeline_can_run_without_window?(%Policy{allow_full_load: true}), do: true
+  defp pipeline_can_run_without_window?(_window), do: false
+
+  defp pipeline_can_backfill?(nil), do: false
+  defp pipeline_can_backfill?(_window), do: true
 
   defp manifest_pipeline_target(%Index{} = index, pipeline) do
     base = manifest_pipeline_target(pipeline)

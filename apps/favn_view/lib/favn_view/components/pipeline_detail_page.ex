@@ -110,10 +110,22 @@ defmodule FavnView.Components.PipelineDetailPage do
             Submit the active manifest pipeline, equivalent to <code class="font-mono">mix favn.run</code>.
           </p>
           <form phx-submit="run_pipeline" class="mt-4" data-testid="run-pipeline-form">
-            <button type="submit" class="btn btn-primary" data-testid="run-pipeline-button">
+            <button
+              type="submit"
+              class="btn btn-primary"
+              disabled={!@pipeline.can_run_without_window?}
+              data-testid="run-pipeline-button"
+            >
               <.icon name="hero-play" class="size-4" /> Run pipeline
             </button>
           </form>
+          <p
+            :if={!@pipeline.can_run_without_window?}
+            class="mt-3 text-sm text-base-content/60"
+            data-testid="pipeline-run-disabled-help"
+          >
+            This pipeline requires an explicit window. Use backfill or choose a specific window.
+          </p>
           <p :if={@run_error} class="mt-3 text-sm text-error" data-testid="pipeline-run-error">
             {@run_error}
           </p>
@@ -137,6 +149,7 @@ defmodule FavnView.Components.PipelineDetailPage do
                 value={@backfill_config.from}
                 class="input input-sm favn-surface-control"
                 placeholder={backfill_placeholder(@backfill_config.kind)}
+                disabled={!@pipeline.can_backfill?}
               />
             </label>
             <label class="form-control">
@@ -146,11 +159,16 @@ defmodule FavnView.Components.PipelineDetailPage do
                 value={@backfill_config.to}
                 class="input input-sm favn-surface-control"
                 placeholder={backfill_placeholder(@backfill_config.kind)}
+                disabled={!@pipeline.can_backfill?}
               />
             </label>
             <label class="form-control">
               <span class="label-text text-xs">Kind</span>
-              <select name="backfill[kind]" class="select select-sm favn-surface-control">
+              <select
+                name="backfill[kind]"
+                class="select select-sm favn-surface-control"
+                disabled={!@pipeline.can_backfill?}
+              >
                 <option
                   :for={kind <- ~w(month day hour year)}
                   value={kind}
@@ -163,13 +181,25 @@ defmodule FavnView.Components.PipelineDetailPage do
             <button
               type="submit"
               class="btn btn-primary btn-soft self-end"
+              disabled={!@pipeline.can_backfill?}
               data-testid="submit-backfill-button"
             >
               Backfill
             </button>
           </form>
-          <p class="mt-2 text-xs text-base-content/55" data-testid="pipeline-backfill-defaults">
+          <p
+            :if={@pipeline.can_backfill?}
+            class="mt-2 text-xs text-base-content/55"
+            data-testid="pipeline-backfill-defaults"
+          >
             Defaults to {@backfill_config.kind} windows in {@backfill_config.timezone}.
+          </p>
+          <p
+            :if={!@pipeline.can_backfill?}
+            class="mt-2 text-xs text-base-content/55"
+            data-testid="pipeline-backfill-disabled-help"
+          >
+            Backfill requires a windowed pipeline.
           </p>
           <p
             :if={@backfill_error}
@@ -247,6 +277,8 @@ defmodule FavnView.Components.PipelineDetailPage do
       dependencies: :all,
       dependencies_label: "Include deps",
       window_label: "Month Etc/UTC",
+      can_run_without_window?: false,
+      can_backfill?: true,
       status: :healthy,
       status_label: "Healthy",
       last_run_label: "12m ago",
