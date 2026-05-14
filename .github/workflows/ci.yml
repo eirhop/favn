@@ -44,20 +44,7 @@ jobs:
       - name: Test
         env:
           MIX_ENV: test
-        run: |
-          mix do --app favn_test_support cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_core cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_authoring cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_sql_runtime cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_runner cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_orchestrator cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_storage_postgres cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_storage_sqlite cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_duckdb cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_duckdb_adbc cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-          mix do --app favn_view cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+        run: mix test.fast
 
   acceptance-tests:
     name: Acceptance tests
@@ -91,4 +78,4 @@ jobs:
       - name: Run favn_local acceptance tests
         env:
           MIX_ENV: test
-        run: mix do --app favn_local cmd mix test --only acceptance --slowest 20
+        run: mix test.acceptance

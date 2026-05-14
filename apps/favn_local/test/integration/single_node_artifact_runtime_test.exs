@@ -16,7 +16,7 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
     ensure_executable!("curl")
     ensure_executable!("env")
 
-    artifact = shared_fixture_artifact!("favn_single_node_acceptance")
+    artifact = shared_fixture_artifact!()
 
     {:ok, artifact: artifact}
   end

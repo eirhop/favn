@@ -5,6 +5,7 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
 
   @repo_root Path.expand("../../..", __DIR__)
   @shared_artifact_key {__MODULE__, :shared_fixture_artifact}
+  @shared_artifact_prefix "favn_single_node_acceptance"
 
   def fixture_project!(prefix \\ "favn_single_node_artifact") do
     project_dir =
@@ -45,10 +46,10 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     }
   end
 
-  def shared_fixture_artifact!(prefix \\ "favn_single_node_artifact") do
+  def shared_fixture_artifact! do
     case :persistent_term.get(@shared_artifact_key, nil) do
       nil ->
-        artifact = build_fixture_artifact!(prefix)
+        artifact = build_fixture_artifact!(@shared_artifact_prefix)
         :persistent_term.put(@shared_artifact_key, artifact)
         artifact
 
