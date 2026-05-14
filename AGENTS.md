@@ -62,8 +62,9 @@ root, use:
 
 ```bash
 MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
-MIX_ENV=test mix do --app favn_local cmd mix test --only acceptance --slowest 20
+MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance
 mix test.acceptance
+mix test.slow
 ```
 
 Replace `favn_local` with the affected app. Before finishing changes, run:

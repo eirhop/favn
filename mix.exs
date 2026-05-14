@@ -31,7 +31,8 @@ defmodule FavnUmbrella.MixProject do
   def cli do
     [
       preferred_envs: [
-        "test.acceptance": :test
+        "test.acceptance": :test,
+        "test.slow": :test
       ]
     ]
   end
@@ -48,7 +49,11 @@ defmodule FavnUmbrella.MixProject do
   defp aliases do
     [
       test: Enum.map(test_apps(), &"do --app #{&1} test"),
-      "test.acceptance": ["do --app favn_local cmd mix test --only acceptance --slowest 20"]
+      "test.acceptance": ["do --app favn_local cmd mix test --no-compile --only acceptance"],
+      "test.slow": [
+        "do --app favn cmd mix test --no-compile --only slow",
+        "do --app favn_local cmd mix test --no-compile --only slow"
+      ]
     ]
   end
 

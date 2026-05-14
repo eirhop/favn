@@ -7,7 +7,6 @@ defmodule Favn.SingleNodeBootstrapE2ETest do
 
   @moduletag :integration
   @moduletag :acceptance
-  @moduletag :slow
   @moduletag timeout: 600_000
 
   @service_token "favnweb-runtime-credential-alpha-1234567890"

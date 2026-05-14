@@ -37,9 +37,10 @@ Test tiers:
 
 Useful commands:
 - Fast local-tooling slice: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser`
-- Local acceptance suite: `MIX_ENV=test mix do --app favn_local cmd mix test --only acceptance --slowest 20`
+- Local acceptance suite: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance`
 - Full fast PR job: use the per-app commands in `.github/workflows/ci.yml`.
 - Full acceptance suite: `mix test.acceptance`
+- Non-acceptance slow suite: `mix test.slow`
 
 Single-node artifact invariant:
 - `dist_dir` is immutable after build. Runtime state must be written outside the
