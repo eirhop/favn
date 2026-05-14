@@ -41,6 +41,7 @@ Useful commands:
 - Full fast PR job: use the per-app commands in `.github/workflows/ci.yml`.
 - Full acceptance suite: `mix test.acceptance`
 - Non-acceptance slow suite: `mix test.slow`
+- Test tag coverage guard: `elixir scripts/check_test_tag_tiers.exs`
 
 Single-node artifact invariant:
 - `dist_dir` is immutable after build. Runtime state must be written outside the

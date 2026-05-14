@@ -65,7 +65,11 @@ MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude accepta
 MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance
 mix test.acceptance
 mix test.slow
+elixir scripts/check_test_tag_tiers.exs
 ```
+
+Untagged tests run in fast CI; `:acceptance`, `:slow`, and `:browser` tags must
+stay in apps covered by explicit CI slices or the tag guard must be updated.
 
 Replace `favn_local` with the affected app. Before finishing changes, run:
 
