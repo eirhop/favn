@@ -322,6 +322,8 @@ defmodule Favn.Dev.Init do
       use Favn.Namespace
       use Favn.Asset
 
+      @compile {:no_warn_undefined, Favn.SQLClient}
+
       alias Favn.SQLClient
 
       @meta owner: "local", category: :orders, tags: [:sample, :raw]

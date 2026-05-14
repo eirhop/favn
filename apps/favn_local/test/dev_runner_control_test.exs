@@ -160,8 +160,5 @@ defmodule Favn.Dev.RunnerControlTest do
 
   defp maybe_run_distributed?(%{distributed?: true}), do: true
 
-  defp maybe_run_distributed?(%{distributed?: false, skip_reason: reason}) do
-    IO.puts("Skipping RunnerControl distributed test: #{reason}")
-    false
-  end
+  defp maybe_run_distributed?(%{distributed?: false}), do: false
 end

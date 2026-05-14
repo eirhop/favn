@@ -15,6 +15,8 @@ defmodule Favn.Dev.InitTest do
       "import Config\nconfig :tzdata, :autoupdate, :disabled\n"
     )
 
+    favn_path = Path.expand("../../favn", __DIR__)
+
     File.write!(
       Path.join(root_dir, "mix.exs"),
       """
@@ -31,7 +33,7 @@ defmodule Favn.Dev.InitTest do
 
         defp deps do
           [
-            {:favn, path: "../favn/apps/favn"}
+            {:favn, path: #{inspect(favn_path)}}
           ]
         end
       end
@@ -59,6 +61,7 @@ defmodule Favn.Dev.InitTest do
       )
 
     assert raw_orders =~ "use Favn.Asset"
+    assert raw_orders =~ "@compile {:no_warn_undefined, Favn.SQLClient}"
     assert raw_orders =~ "alias Favn.SQLClient"
     assert raw_orders =~ "ctx.asset.relation"
     assert raw_orders =~ ~S|create or replace table #{qualified_relation(relation)}|
