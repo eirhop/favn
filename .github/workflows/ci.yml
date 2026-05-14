@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  fast-tests:
+    name: Fast tests
     runs-on: ubuntu-latest
 
     steps:
@@ -43,4 +44,51 @@ jobs:
       - name: Test
         env:
           MIX_ENV: test
-        run: mix test --no-compile
+        run: |
+          mix do --app favn_test_support cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_core cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_authoring cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_sql_runtime cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_runner cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_orchestrator cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_storage_postgres cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_storage_sqlite cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_duckdb cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_duckdb_adbc cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_view cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+
+  acceptance-tests:
+    name: Acceptance tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Elixir and Erlang
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.19.5'
+          otp-version: '28.4.2'
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Fetch dependencies
+        env:
+          MIX_ENV: test
+        run: mix deps.get
+
+      - name: Compile
+        env:
+          MIX_ENV: test
+        run: mix compile --warnings-as-errors
+
+      - name: Run favn_local acceptance tests
+        env:
+          MIX_ENV: test
+        run: mix do --app favn_local cmd mix test --only acceptance --slowest 20

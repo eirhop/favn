@@ -39,22 +39,26 @@ defmodule FavnUmbrella.MixProject do
 
   defp aliases do
     [
-      test: [
-        "do --app favn_test_support test",
-        "do --app favn_core test",
-        "do --app favn_authoring test",
-        "do --app favn_azure test",
-        "do --app favn test",
-        "do --app favn_sql_runtime test",
-        "do --app favn_runner test",
-        "do --app favn_orchestrator test",
-        "do --app favn_storage_postgres test",
-        "do --app favn_storage_sqlite test",
-        "do --app favn_duckdb test",
-        "do --app favn_duckdb_adbc test",
-        "do --app favn_local test",
-        "do --app favn_view test"
-      ]
+      test: Enum.map(test_apps(), &"do --app #{&1} test")
+    ]
+  end
+
+  defp test_apps do
+    [
+      :favn_test_support,
+      :favn_core,
+      :favn_authoring,
+      :favn_azure,
+      :favn,
+      :favn_sql_runtime,
+      :favn_runner,
+      :favn_orchestrator,
+      :favn_storage_postgres,
+      :favn_storage_sqlite,
+      :favn_duckdb,
+      :favn_duckdb_adbc,
+      :favn_local,
+      :favn_view
     ]
   end
 end

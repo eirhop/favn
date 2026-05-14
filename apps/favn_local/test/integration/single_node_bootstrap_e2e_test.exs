@@ -6,31 +6,45 @@ defmodule Favn.SingleNodeBootstrapE2ETest do
   alias Favn.Dev.OrchestratorClient
 
   @moduletag :integration
+  @moduletag :acceptance
+  @moduletag :slow
   @moduletag timeout: 600_000
 
   @service_token "favnweb-runtime-credential-alpha-1234567890"
   @admin_username "admin"
   @admin_password "admin-password-long"
 
-  test "production first-run bootstrap survives backend restart" do
+  setup_all do
     ensure_executable!("curl")
     ensure_executable!("env")
 
-    project_dir = fixture_project!("favn_single_bootstrap_e2e")
-    runtime_home = Path.join(project_dir, "runtime-home")
-    sqlite_path = Path.join(project_dir, "data/control-plane.sqlite3")
+    artifact = shared_fixture_artifact!("favn_single_node_acceptance")
+
+    {:ok, artifact: artifact}
+  end
+
+  setup %{artifact: artifact} do
+    snapshot = snapshot_dist_dir!(artifact.dist_dir)
+
+    on_exit(fn ->
+      assert_dist_dir_unchanged!(snapshot, artifact.dist_dir)
+    end)
+
+    :ok
+  end
+
+  test "production first-run bootstrap survives backend restart", %{artifact: artifact} do
+    project_dir = artifact.project_dir
+    dist_dir = artifact.dist_dir
+    manifest_path = artifact.manifest_path
+    manifest_metadata = artifact.manifest_metadata
+    runtime_home = fresh_path(project_dir, "runtime-home")
+    sqlite_path = fresh_path(project_dir, "data/control-plane.sqlite3")
     port = free_port()
     File.mkdir_p!(Path.dirname(sqlite_path))
 
-    on_exit(fn -> File.rm_rf(project_dir) end)
-
-    run_mix!(project_dir, ["deps.get"])
-    run_mix!(project_dir, ["favn.install", "--skip-web-install"])
-
-    {build_output, 0} = run_mix!(project_dir, ["favn.build.single"])
-    dist_dir = dist_dir_from_output!(build_output)
-    manifest_path = Path.join([dist_dir, "runner", "manifest.json"])
-    manifest_metadata = read_manifest_metadata!(dist_dir)
+    on_exit(fn -> File.rm_rf(runtime_home) end)
+    on_exit(fn -> File.rm_rf(Path.dirname(sqlite_path)) end)
 
     env =
       runtime_env(runtime_home, sqlite_path, port, @service_token, %{
@@ -135,19 +149,6 @@ defmodule Favn.SingleNodeBootstrapE2ETest do
     ])
   end
 
-  defp read_manifest_metadata!(dist_dir) do
-    metadata_path = Path.join([dist_dir, "runner", "metadata.json"])
-
-    case metadata_path |> File.read!() |> JSON.decode!() do
-      %{"manifest" => %{"manifest_version_id" => id, "content_hash" => hash}} = metadata
-      when is_binary(id) and is_binary(hash) ->
-        metadata["manifest"]
-
-      decoded ->
-        flunk("runner metadata did not include manifest identity: #{inspect(decoded)}")
-    end
-  end
-
   defp await_terminal_run(base_url, session_context, run_id, attempts \\ 120)
 
   defp await_terminal_run(base_url, session_context, run_id, attempts) when attempts > 0 do
@@ -182,5 +183,9 @@ defmodule Favn.SingleNodeBootstrapE2ETest do
              diagnostics
              |> Map.fetch!("checks")
              |> Enum.find(&(&1["check"] == check))
+  end
+
+  defp fresh_path(project_dir, relative) do
+    Path.join(project_dir, "#{System.unique_integer([:positive])}-#{relative}")
   end
 end

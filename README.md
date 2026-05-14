@@ -648,9 +648,11 @@ the command with the same manifest and runner registration is safe and
 repeatable, and the command prints manifest registration, runner registration,
 and active-manifest verification status. Active-manifest verification uses the
 service-auth-only `/api/orchestrator/v1/bootstrap/active-manifest` endpoint. The
-single-node integration path now verifies first-admin login, manifest-pinned run
+single-node acceptance path verifies first-admin login, manifest-pinned run
 submission, run history, auth/session state, diagnostics, and restart survival
-against the generated backend artifact with fresh SQLite storage.
+against the generated backend artifact with fresh SQLite storage. Built artifact
+contents under `dist_dir` are read-only after build; mutable runtime state is
+kept outside the artifact tree in runtime-home, database, log, and pid paths.
 
 Storage adapter startup reports recoverable configuration failures as
 `{:error, reason}`. Scheduler state keys are exact across built-in adapters:

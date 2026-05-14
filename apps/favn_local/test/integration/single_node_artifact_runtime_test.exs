@@ -4,29 +4,43 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
   import Favn.Local.SingleNodeArtifactHarness
 
   @moduletag :integration
+  @moduletag :acceptance
+  @moduletag :slow
   @moduletag timeout: 600_000
 
   @service_token "favnweb-runtime-credential-alpha-1234567890"
   @admin_username "admin"
   @admin_password "admin-password-long"
 
-  test "generated single-node artifact start stop runtime contract" do
+  setup_all do
     ensure_executable!("curl")
     ensure_executable!("env")
 
-    project_dir = fixture_project!("favn_single_artifact_runtime")
-    runtime_home = Path.join(project_dir, "runtime-home")
-    sqlite_path = Path.join(project_dir, "data/control-plane.sqlite3")
+    artifact = shared_fixture_artifact!("favn_single_node_acceptance")
+
+    {:ok, artifact: artifact}
+  end
+
+  setup %{artifact: artifact} do
+    snapshot = snapshot_dist_dir!(artifact.dist_dir)
+
+    on_exit(fn ->
+      assert_dist_dir_unchanged!(snapshot, artifact.dist_dir)
+    end)
+
+    :ok
+  end
+
+  test "generated single-node artifact start stop runtime contract", %{artifact: artifact} do
+    project_dir = artifact.project_dir
+    dist_dir = artifact.dist_dir
+    runtime_home = fresh_path(project_dir, "runtime-home")
+    sqlite_path = fresh_path(project_dir, "data/control-plane.sqlite3")
     port = free_port()
     File.mkdir_p!(Path.dirname(sqlite_path))
 
-    on_exit(fn -> File.rm_rf(project_dir) end)
-
-    run_mix!(project_dir, ["deps.get"])
-    run_mix!(project_dir, ["favn.install", "--skip-web-install"])
-
-    {build_output, 0} = run_mix!(project_dir, ["favn.build.single"])
-    dist_dir = dist_dir_from_output!(build_output)
+    on_exit(fn -> File.rm_rf(runtime_home) end)
+    on_exit(fn -> File.rm_rf(Path.dirname(sqlite_path)) end)
 
     assert File.exists?(Path.join(dist_dir, "metadata.json"))
     assert File.exists?(Path.join(dist_dir, "config/assembly.json"))
@@ -77,6 +91,32 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
 
     assert_stop_idempotency!(dist_dir, Path.join(project_dir, "stop-runtime"))
     assert_invalid_configs_fail_before_serving!(dist_dir, project_dir)
+  end
+
+  test "generated start and stop scripts do not mutate dist_dir", %{artifact: artifact} do
+    project_dir = artifact.project_dir
+    dist_dir = artifact.dist_dir
+    runtime_home = fresh_path(project_dir, "immutability-runtime-home")
+    sqlite_path = fresh_path(project_dir, "immutability-data/control-plane.sqlite3")
+    port = free_port()
+    File.mkdir_p!(Path.dirname(sqlite_path))
+
+    env = runtime_env(runtime_home, sqlite_path, port, @service_token, bootstrap_env())
+
+    on_exit(fn -> stop_artifact(dist_dir, env) end)
+    on_exit(fn -> File.rm_rf(runtime_home) end)
+    on_exit(fn -> File.rm_rf(Path.dirname(sqlite_path)) end)
+
+    assert_dist_dir_immutable!(dist_dir, fn ->
+      {start_output, start_status} = start_artifact(dist_dir, env)
+      assert start_status == 0, start_failure_message(start_output, runtime_home)
+      assert start_output =~ "Favn backend started with PID"
+      assert {:ok, %{"status" => "ready"}} = poll_json(ready_url(port))
+
+      assert_runtime_paths!(runtime_home, sqlite_path)
+      assert {stop_output, 0} = stop_artifact(dist_dir, env)
+      assert stop_output =~ "Favn backend stopped"
+    end)
   end
 
   defp assert_stop_idempotency!(dist_dir, runtime_home) do
@@ -133,5 +173,9 @@ defmodule Favn.SingleNodeArtifactRuntimeTest do
       "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" => "Favn Admin",
       "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" => "admin"
     }
+  end
+
+  defp fresh_path(project_dir, relative) do
+    Path.join(project_dir, "#{System.unique_integer([:positive])}-#{relative}")
   end
 end
