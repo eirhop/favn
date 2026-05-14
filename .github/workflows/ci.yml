@@ -170,11 +170,17 @@ jobs:
     steps:
       - name: Check CI result
         env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
           TESTS_CHANGED: ${{ needs.changes.outputs.tests }}
           FAST_RESULT: ${{ needs.fast-tests.result }}
           ACCEPTANCE_RESULT: ${{ needs.acceptance-tests.result }}
           SLOW_RESULT: ${{ needs.slow-tests.result }}
         run: |
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "Changes job failed: $CHANGES_RESULT"
+            exit 1
+          fi
+
           if [ "$TESTS_CHANGED" != "true" ]; then
             echo "No test-affecting changes; heavy CI skipped."
             exit 0
