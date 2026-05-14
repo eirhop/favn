@@ -27,6 +27,27 @@ Tests:
 - orchestrator bootstrap HTTP client tests under `apps/favn_local/test/dev_orchestrator_client_test.exs`
 - env-file parser/loader coverage under `apps/favn_local/test/dev_env_file_test.exs`
 
+Test tiers:
+- `:integration` means a test crosses an app, process, storage, or runtime boundary;
+  it is not excluded from fast CI by itself.
+- `:acceptance` means a product E2E workflow through a public user/operator path.
+- `:slow` marks tests excluded from fast PR CI by default.
+- `:browser` marks browser automation or browser smoke coverage excluded from fast
+  PR CI by default.
+
+Useful commands:
+- Fast local-tooling slice: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser`
+- Local acceptance suite: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance`
+- Full fast PR job: use the per-app commands in `.github/workflows/ci.yml`.
+- Full acceptance suite: `mix test.acceptance`
+- Non-acceptance slow suite: `mix test.slow`
+- Test tag coverage guard: `elixir scripts/check_test_tag_tiers.exs`
+
+Single-node artifact invariant:
+- `dist_dir` is immutable after build. Runtime state must be written outside the
+  artifact tree, including `runtime_home`, SQLite/DuckDB files, logs, and pid
+  paths.
+
 Use when changing `mix favn.*` local behavior, local runtime state, local HTTP
 client behavior, consumer config transport, install/runtime workspaces,
 single-node bootstrap, operator diagnostics, or local packaging outputs.

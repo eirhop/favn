@@ -149,10 +149,8 @@ defmodule Favn.Dev.LifecycleTest do
           stop_remote_node(runner_full, root_dir)
         end
 
-      {:error, reason} ->
-        IO.puts(
-          "Skipping staged runner cleanup test: distributed Erlang unavailable: #{inspect(reason)}"
-        )
+      {:error, _reason} ->
+        :ok
     end
   end
 
@@ -409,15 +407,17 @@ defmodule Favn.Dev.LifecycleTest do
   test "dev/1 writes shortname-compatible node names in runtime", %{root_dir: root_dir} do
     task =
       Task.async(fn ->
-        Dev.dev(
-          root_dir: root_dir,
-          orchestrator_port: free_port(),
-          web_port: free_port(),
-          skip_install_check: true,
-          skip_bootstrap: true,
-          skip_readiness: true,
-          service_specs_override: service_specs(root_dir)
-        )
+        ExUnit.CaptureIO.capture_io(fn ->
+          Dev.dev(
+            root_dir: root_dir,
+            orchestrator_port: free_port(),
+            web_port: free_port(),
+            skip_install_check: true,
+            skip_bootstrap: true,
+            skip_readiness: true,
+            service_specs_override: service_specs(root_dir)
+          )
+        end)
       end)
 
     try do

@@ -28,6 +28,8 @@ defmodule FavnDuckdb.MixProject do
       internal_dep(:favn_azure, "../favn_azure"),
       internal_dep(:favn_runner, "../favn_runner"),
       internal_dep(:favn_sql_runtime, "../favn_sql_runtime"),
+      internal_dep(:favn_authoring, "../favn_authoring", only: :test),
+      internal_dep(:favn_test_support, "../favn_test_support", only: :test),
       {:duckdbex, "~> 0.4.0"}
     ]
   end

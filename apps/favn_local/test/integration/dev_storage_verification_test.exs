@@ -2,6 +2,7 @@ defmodule Favn.Dev.StorageVerificationTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
+  @moduletag :slow
 
   alias Favn.Dev
   alias Favn.Dev.Paths
@@ -69,17 +70,19 @@ defmodule Favn.Dev.StorageVerificationTest do
 
     task =
       Task.async(fn ->
-        Dev.dev(
-          root_dir: root_dir,
-          orchestrator_port: orchestrator_port,
-          web_port: web_port,
-          storage: :sqlite,
-          sqlite_path: ".favn/data/storage_verification.sqlite3",
-          skip_tool_checks: true,
-          skip_bootstrap: true,
-          skip_readiness: true,
-          service_specs_override: service_specs(root_dir)
-        )
+        ExUnit.CaptureIO.capture_io(fn ->
+          Dev.dev(
+            root_dir: root_dir,
+            orchestrator_port: orchestrator_port,
+            web_port: web_port,
+            storage: :sqlite,
+            sqlite_path: ".favn/data/storage_verification.sqlite3",
+            skip_tool_checks: true,
+            skip_bootstrap: true,
+            skip_readiness: true,
+            service_specs_override: service_specs(root_dir)
+          )
+        end)
       end)
 
     assert :ok =
@@ -133,17 +136,19 @@ defmodule Favn.Dev.StorageVerificationTest do
 
       task =
         Task.async(fn ->
-          Dev.dev(
-            root_dir: root_dir,
-            orchestrator_port: orchestrator_port,
-            web_port: web_port,
-            storage: :postgres,
-            postgres: postgres,
-            skip_tool_checks: true,
-            skip_bootstrap: true,
-            skip_readiness: true,
-            service_specs_override: service_specs(root_dir)
-          )
+          ExUnit.CaptureIO.capture_io(fn ->
+            Dev.dev(
+              root_dir: root_dir,
+              orchestrator_port: orchestrator_port,
+              web_port: web_port,
+              storage: :postgres,
+              postgres: postgres,
+              skip_tool_checks: true,
+              skip_bootstrap: true,
+              skip_readiness: true,
+              service_specs_override: service_specs(root_dir)
+            )
+          end)
         end)
 
       assert :ok =

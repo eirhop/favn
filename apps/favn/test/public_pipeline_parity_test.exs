@@ -1,5 +1,5 @@
 defmodule Favn.PublicPipelineParityTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Test.Fixtures.Assets.Pipeline.ReportingAssets
   alias Favn.Test.Fixtures.Assets.Pipeline.SalesAssets
@@ -66,10 +66,10 @@ defmodule Favn.PublicPipelineParityTest do
   end
 
   test "resolve_pipeline/2 resolves single-asset module shorthand selector" do
-    asset_module = Module.concat(__MODULE__, "SingleAsset#{System.unique_integer([:positive])}")
+    asset_module = Module.concat(__MODULE__, "SingleAsset#{unique_suffix()}")
 
     pipeline_module =
-      Module.concat(__MODULE__, "SingleAssetPipeline#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "SingleAssetPipeline#{unique_suffix()}")
 
     compile_loadable_module!(
       asset_module,
@@ -114,7 +114,7 @@ defmodule Favn.PublicPipelineParityTest do
 
   test "resolve_pipeline/2 returns not_asset_module for asset module shorthand on multi-asset module" do
     module_name =
-      Module.concat(__MODULE__, "InvalidAssetShorthand#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "InvalidAssetShorthand#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -133,7 +133,7 @@ defmodule Favn.PublicPipelineParityTest do
   end
 
   test "resolve_pipeline/2 returns not_asset_module for invalid module selector" do
-    module_name = Module.concat(__MODULE__, "InvalidModule#{System.unique_integer([:positive])}")
+    module_name = Module.concat(__MODULE__, "InvalidModule#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -155,7 +155,7 @@ defmodule Favn.PublicPipelineParityTest do
 
   test "resolve_pipeline/2 returns invalid_selector for invalid tag/category selector values" do
     module_name =
-      Module.concat(__MODULE__, "InvalidSelectorValue#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "InvalidSelectorValue#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -178,10 +178,10 @@ defmodule Favn.PublicPipelineParityTest do
 
   test "resolve_pipeline/2 preserves compiler errors for invalid asset module shorthand" do
     bad_asset_module =
-      Module.concat(__MODULE__, "BadAssetModule#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "BadAssetModule#{unique_suffix()}")
 
     pipeline_module =
-      Module.concat(__MODULE__, "BadAssetPipeline#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "BadAssetPipeline#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -332,7 +332,7 @@ defmodule Favn.PublicPipelineParityTest do
   end
 
   test "get_pipeline/1 loads valid pipeline modules before export checks" do
-    module = Module.concat(__MODULE__, "LoadablePipeline#{System.unique_integer([:positive])}")
+    module = Module.concat(__MODULE__, "LoadablePipeline#{unique_suffix()}")
 
     compile_loadable_module!(
       module,
@@ -357,10 +357,10 @@ defmodule Favn.PublicPipelineParityTest do
 
   test "generate_manifest/1 compiles unloaded pipeline and schedule modules" do
     pipeline_module =
-      Module.concat(__MODULE__, "ManifestPipeline#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "ManifestPipeline#{unique_suffix()}")
 
     schedule_module =
-      Module.concat(__MODULE__, "ManifestSchedules#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "ManifestSchedules#{unique_suffix()}")
 
     compile_loadable_module!(
       schedule_module,
@@ -431,7 +431,7 @@ defmodule Favn.PublicPipelineParityTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "favn_pipeline_loadable_modules_#{System.unique_integer([:positive])}"
+        "favn_pipeline_loadable_modules_#{unique_suffix()}"
       )
 
     File.mkdir_p!(dir)
@@ -446,5 +446,9 @@ defmodule Favn.PublicPipelineParityTest do
              Kernel.ParallelCompiler.compile_to_path([file_path], dir, return_diagnostics: true)
 
     assert module in modules
+  end
+
+  defp unique_suffix do
+    "#{System.system_time(:nanosecond)}#{System.unique_integer([:positive, :monotonic])}"
   end
 end

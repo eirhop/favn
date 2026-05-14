@@ -123,10 +123,8 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
                    runner_node: Node.self()
                  )
 
-      {:error, reason} ->
-        IO.puts(
-          "Skipping remote LocalNode dispatch test: distributed Erlang unavailable: #{inspect(reason)}"
-        )
+      {:error, _reason} ->
+        :ok
     end
   end
 
@@ -145,10 +143,8 @@ defmodule FavnOrchestrator.RunnerClient.LocalNodeTest do
 
         assert_received {:await_result_called, _pid}
 
-      {:error, reason} ->
-        IO.puts(
-          "Skipping remote LocalNode await timeout test: distributed Erlang unavailable: #{inspect(reason)}"
-        )
+      {:error, _reason} ->
+        :ok
     end
   end
 

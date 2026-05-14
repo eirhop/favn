@@ -54,14 +54,32 @@ Use playwright to open http://127.0.0.1:4173/storybook and inspect the asset car
 
 ## Verification
 
-Run the narrowest useful check first. Before finishing changes, run:
+Prefer focused tests over E2E. One golden acceptance path is enough; bugs should
+get the smallest regression test at the owning layer.
+
+Run the narrowest useful check first. For app-scoped tests from the umbrella
+root, use:
+
+```bash
+MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --only acceptance
+mix test.acceptance
+mix test.slow
+elixir scripts/check_test_tag_tiers.exs
+```
+
+Untagged tests run in fast CI; `:acceptance`, `:slow`, and `:browser` tags must
+stay in apps covered by explicit CI slices or the tag guard must be updated.
+
+Replace `favn_local` with the affected app. Before finishing changes, run:
 
 - `mix format`
 - `mix compile --warnings-as-errors`
 - `mix test`
 
-For app-scoped changes, run compile/test from each affected app directory rather
-than using umbrella `mix do --app ...`, which can trigger unrelated app suites.
+Avoid plain `mix do --app <app> test ...` for scoped test arguments in this repo;
+the root `test` alias can recurse unexpectedly. Use `cmd mix test` under
+`mix do --app` as shown above.
 
 If dependencies change, update lockfiles and run the relevant verification.
 

@@ -40,7 +40,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "single-asset module rejects module shorthand for multi-asset dependency modules" do
-    module_name = Module.concat(__MODULE__, "BadDepends#{System.unique_integer([:positive])}")
+    module_name = Module.concat(__MODULE__, "BadDepends#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -61,7 +61,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "compile_module_assets/1 loads valid modules before export checks" do
-    module = Module.concat(__MODULE__, "LoadableAsset#{System.unique_integer([:positive])}")
+    module = Module.concat(__MODULE__, "LoadableAsset#{unique_suffix()}")
 
     compile_loadable_module!(
       module,
@@ -80,7 +80,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "resolves namespace inheritance from separately compiled ancestor modules" do
-    root = Module.concat(__MODULE__, "Root#{System.unique_integer([:positive])}")
+    root = Module.concat(__MODULE__, "Root#{unique_suffix()}")
     raw = Module.concat(root, Raw)
     sales = Module.concat(raw, Sales)
     assets = Module.concat(sales, Assets)
@@ -124,7 +124,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "relation inheritance is compile-order independent" do
-    root = Module.concat(__MODULE__, "OrderRoot#{System.unique_integer([:positive])}")
+    root = Module.concat(__MODULE__, "OrderRoot#{unique_suffix()}")
     raw = Module.concat(root, Raw)
     sales = Module.concat(raw, Sales)
     assets = Module.concat(sales, Assets)
@@ -168,7 +168,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "sql asset namespace inheritance is compile-order independent" do
-    root = Module.concat(__MODULE__, "SQLRoot#{System.unique_integer([:positive])}")
+    root = Module.concat(__MODULE__, "SQLRoot#{unique_suffix()}")
     gold = Module.concat(root, Gold)
     asset = Module.concat(gold, ExecutiveOverview)
 
@@ -225,7 +225,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "sql asset missing connection is reported during asset compilation" do
-    asset = Module.concat(__MODULE__, "SQLMissingConnection#{System.unique_integer([:positive])}")
+    asset = Module.concat(__MODULE__, "SQLMissingConnection#{unique_suffix()}")
 
     compile_modules_to_path!([
       {"sql_asset_missing_connection.ex",
@@ -249,7 +249,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
 
   test "sql asset missing materialization is reported during asset compilation" do
     root =
-      Module.concat(__MODULE__, "SQLMissingMaterializedRoot#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "SQLMissingMaterializedRoot#{unique_suffix()}")
 
     asset = Module.concat(root, MissingMaterialized)
 
@@ -274,7 +274,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "sql asset finalization resolves same-batch reusable SQL imports" do
-    root = Module.concat(__MODULE__, "SQLImportRoot#{System.unique_integer([:positive])}")
+    root = Module.concat(__MODULE__, "SQLImportRoot#{unique_suffix()}")
     helpers = Module.concat(root, SQLHelpers)
     asset = Module.concat(root, ImportedSQLAsset)
 
@@ -312,7 +312,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "multi-asset namespace inheritance is compile-order independent" do
-    root = Module.concat(__MODULE__, "MultiRoot#{System.unique_integer([:positive])}")
+    root = Module.concat(__MODULE__, "MultiRoot#{unique_suffix()}")
     raw = Module.concat(root, Raw)
     assets = Module.concat(raw, Extracts)
 
@@ -351,7 +351,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
   end
 
   test "multi-asset module runtime config compiles into every generated asset" do
-    assets = Module.concat(__MODULE__, "MultiRuntimeConfig#{System.unique_integer([:positive])}")
+    assets = Module.concat(__MODULE__, "MultiRuntimeConfig#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -397,7 +397,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
 
   test "relation normalization rejects duplicate canonical keys" do
     module_name =
-      Module.concat(__MODULE__, "DuplicateCatalog#{System.unique_integer([:positive])}")
+      Module.concat(__MODULE__, "DuplicateCatalog#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -435,7 +435,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "favn_authoring_loadable_modules_#{System.unique_integer([:positive])}"
+        "favn_authoring_loadable_modules_#{unique_suffix()}"
       )
 
     File.mkdir_p!(dir)
@@ -456,7 +456,7 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "favn_authoring_parallel_modules_#{System.unique_integer([:positive])}"
+        "favn_authoring_parallel_modules_#{unique_suffix()}"
       )
 
     File.mkdir_p!(dir)
@@ -474,5 +474,9 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
              Kernel.ParallelCompiler.compile_to_path(files, dir, return_diagnostics: true)
 
     :ok
+  end
+
+  defp unique_suffix do
+    "#{System.system_time(:nanosecond)}#{System.unique_integer([:positive, :monotonic])}"
   end
 end

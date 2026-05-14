@@ -10,19 +10,83 @@ defmodule FavnTestSupport.FixturesTest do
       []
       |> maybe_define_stub(Favn.Assets, """
       defmodule Favn.Assets do
-        defmacro __using__(_opts), do: quote(do: nil)
+        defmacro __using__(_opts) do
+          quote do
+            Module.register_attribute(__MODULE__, :asset, persist: false)
+            Module.register_attribute(__MODULE__, :depends, accumulate: true)
+            Module.register_attribute(__MODULE__, :freshness, accumulate: true)
+            Module.register_attribute(__MODULE__, :meta, persist: false)
+            Module.register_attribute(__MODULE__, :relation, accumulate: true)
+            Module.register_attribute(__MODULE__, :window, accumulate: true)
+
+            @on_definition Favn.Assets
+          end
+        end
+
+        def __on_definition__(env, _kind, _name, _args, _guards, _body) do
+          Module.delete_attribute(env.module, :asset)
+          Module.delete_attribute(env.module, :depends)
+          Module.delete_attribute(env.module, :freshness)
+          Module.delete_attribute(env.module, :meta)
+          Module.delete_attribute(env.module, :relation)
+          Module.delete_attribute(env.module, :window)
+        end
       end
       """)
       |> maybe_define_stub(Favn.Storage.Adapter, """
       defmodule Favn.Storage.Adapter do
         @callback child_spec(keyword()) :: any()
+        @callback readiness(keyword()) :: any()
+        @callback diagnostics(keyword()) :: any()
+        @callback put_manifest_version(term(), keyword()) :: :ok | {:error, term()}
+        @callback get_manifest_version(term(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback get_manifest_version_by_content_hash(term(), keyword()) ::
+                    {:ok, term()} | {:error, term()}
+        @callback list_manifest_versions(keyword()) :: {:ok, list()} | {:error, term()}
+        @callback set_active_manifest_version(term(), keyword()) :: :ok | {:error, term()}
+        @callback get_active_manifest_version(keyword()) :: {:ok, term()} | {:error, term()}
         @callback put_run(term(), keyword()) :: :ok | {:error, term()}
         @callback get_run(term(), keyword()) :: {:ok, term()} | {:error, term()}
         @callback list_runs(keyword(), keyword()) :: {:ok, list()} | {:error, term()}
-        @callback scheduler_child_spec(keyword()) :: any()
-        @callback put_scheduler_state(term(), keyword()) :: :ok | {:error, term()}
-        @callback get_scheduler_state(module(), term(), keyword()) ::
+        @callback persist_run_transition(term(), term(), keyword()) :: :ok | {:error, term()}
+        @callback append_run_event(term(), term(), keyword()) :: :ok | {:error, term()}
+        @callback list_run_events(term(), keyword()) :: {:ok, list()} | {:error, term()}
+        @callback list_global_run_events(keyword(), keyword()) :: {:ok, list()} | {:error, term()}
+        @callback persist_log_entries(list(), keyword()) :: {:ok, list()} | {:error, term()}
+        @callback list_logs(term(), keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback replay_logs_after(term(), term(), keyword(), keyword()) ::
+                    {:ok, list()} | {:error, term()}
+        @callback put_scheduler_state(term(), term(), keyword()) :: :ok | {:error, term()}
+        @callback get_scheduler_state(term(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback put_coverage_baseline(term(), keyword()) :: :ok | {:error, term()}
+        @callback get_coverage_baseline(term(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback list_coverage_baselines(keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback put_backfill_window(term(), keyword()) :: :ok | {:error, term()}
+        @callback get_backfill_window(term(), term(), term(), keyword()) ::
                     {:ok, term()} | {:error, term()}
+        @callback list_backfill_windows(keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback put_asset_window_state(term(), keyword()) :: :ok | {:error, term()}
+        @callback get_asset_window_state(term(), term(), term(), keyword()) ::
+                    {:ok, term()} | {:error, term()}
+        @callback list_asset_window_states(keyword(), keyword()) :: {:ok, term()} | {:error, term()}
+        @callback replace_backfill_read_models(term(), list(), list(), list(), keyword()) ::
+                    :ok | {:error, term()}
+
+        @optional_callbacks readiness: 1, diagnostics: 1
+      end
+      """)
+      |> maybe_define_stub(FavnOrchestrator.Page, """
+      defmodule FavnOrchestrator.Page do
+        def from_fetched(items, opts) do
+          %{
+            items: items,
+            pagination: %{
+              limit: Keyword.fetch!(opts, :limit),
+              offset: Keyword.fetch!(opts, :offset),
+              total: length(items)
+            }
+          }
+        end
       end
       """)
 

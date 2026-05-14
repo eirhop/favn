@@ -4,6 +4,8 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
   import ExUnit.Assertions
 
   @repo_root Path.expand("../../..", __DIR__)
+  @shared_artifact_key {__MODULE__, :shared_fixture_artifact}
+  @shared_artifact_prefix "favn_single_node_acceptance"
 
   def fixture_project!(prefix \\ "favn_single_node_artifact") do
     project_dir =
@@ -24,6 +26,47 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     File.write!(Path.join(project_dir, "mix.lock"), "%{}\n")
 
     project_dir
+  end
+
+  def build_fixture_artifact!(prefix \\ "favn_single_node_artifact") do
+    project_dir = fixture_project!(prefix)
+
+    run_mix!(project_dir, ["deps.get"])
+    run_mix!(project_dir, ["favn.install", "--skip-web-install"])
+
+    {build_output, 0} = run_mix!(project_dir, ["favn.build.single"])
+    dist_dir = dist_dir_from_output!(build_output)
+
+    %{
+      project_dir: project_dir,
+      dist_dir: dist_dir,
+      manifest_path: Path.join([dist_dir, "runner", "manifest.json"]),
+      manifest_metadata: read_manifest_metadata!(dist_dir),
+      build_output: build_output
+    }
+  end
+
+  def shared_fixture_artifact! do
+    case :persistent_term.get(@shared_artifact_key, nil) do
+      nil ->
+        artifact = build_fixture_artifact!(@shared_artifact_prefix)
+        :persistent_term.put(@shared_artifact_key, artifact)
+        artifact
+
+      artifact ->
+        artifact
+    end
+  end
+
+  def cleanup_shared_artifacts! do
+    case :persistent_term.get(@shared_artifact_key, nil) do
+      %{project_dir: project_dir} ->
+        File.rm_rf(project_dir)
+        :persistent_term.erase(@shared_artifact_key)
+
+      nil ->
+        :ok
+    end
   end
 
   def run_mix!(project_dir, args) do
@@ -112,6 +155,49 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     end)
   end
 
+  def snapshot_dist_dir!(dist_dir) do
+    dist_dir
+    |> snapshot_entries!("")
+    |> Map.new()
+  end
+
+  def assert_dist_dir_unchanged!(before_snapshot, dist_dir) when is_map(before_snapshot) do
+    after_snapshot = snapshot_dist_dir!(dist_dir)
+
+    added = sorted_difference(Map.keys(after_snapshot), Map.keys(before_snapshot))
+    removed = sorted_difference(Map.keys(before_snapshot), Map.keys(after_snapshot))
+
+    changed =
+      before_snapshot
+      |> Map.keys()
+      |> Enum.filter(&(Map.has_key?(after_snapshot, &1) and before_snapshot[&1] != after_snapshot[&1]))
+      |> Enum.sort()
+
+    assert added == [] and removed == [] and changed == [],
+           "dist_dir changed after build:\n" <>
+             format_dist_changes(added, removed, changed, before_snapshot, after_snapshot)
+  end
+
+  def assert_dist_dir_immutable!(dist_dir, fun) when is_function(fun, 0) do
+    snapshot = snapshot_dist_dir!(dist_dir)
+    result = fun.()
+    assert_dist_dir_unchanged!(snapshot, dist_dir)
+    result
+  end
+
+  def read_manifest_metadata!(dist_dir) do
+    metadata_path = Path.join([dist_dir, "runner", "metadata.json"])
+
+    case metadata_path |> File.read!() |> JSON.decode!() do
+      %{"manifest" => %{"manifest_version_id" => id, "content_hash" => hash}} = metadata
+      when is_binary(id) and is_binary(hash) ->
+        metadata["manifest"]
+
+      decoded ->
+        flunk("runner metadata did not include manifest identity: #{inspect(decoded)}")
+    end
+  end
+
   def start_failure_message(output, runtime_home) do
     "generated bin/start failed:\n#{output}\nbackend log:\n#{backend_log(runtime_home)}"
   end
@@ -183,6 +269,81 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp snapshot_entries!(root, relative_dir) do
+    dir = Path.join(root, relative_dir)
+
+    dir
+    |> File.ls!()
+    |> Enum.flat_map(fn basename ->
+      relative = Path.join(relative_dir, basename)
+      path = Path.join(root, relative)
+      {:ok, stat} = File.lstat(path)
+
+      entry = {relative, snapshot_metadata(path, stat)}
+
+      case stat.type do
+        :directory -> [entry | snapshot_entries!(root, relative)]
+        _other -> [entry]
+      end
+    end)
+  end
+
+  defp snapshot_metadata(path, stat) do
+    metadata = %{
+      type: stat.type,
+      size: stat.size,
+      mtime: stat.mtime
+    }
+
+    case stat.type do
+      :regular -> Map.put(metadata, :hash, hash_file!(path))
+      :symlink -> Map.put(metadata, :target, File.read_link!(path))
+      _other -> metadata
+    end
+  end
+
+  defp hash_file!(path) do
+    path
+    |> File.read!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp sorted_difference(left, right) do
+    left
+    |> MapSet.new()
+    |> MapSet.difference(MapSet.new(right))
+    |> MapSet.to_list()
+    |> Enum.sort()
+  end
+
+  defp format_dist_changes(added, removed, changed, before_snapshot, after_snapshot) do
+    [
+      format_path_list("added", added),
+      format_path_list("removed", removed),
+      format_changed_paths(changed, before_snapshot, after_snapshot)
+    ]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
+  end
+
+  defp format_path_list(_label, []), do: ""
+
+  defp format_path_list(label, paths) do
+    "#{label}:\n" <> Enum.map_join(paths, "\n", &"  #{&1}")
+  end
+
+  defp format_changed_paths([], _before_snapshot, _after_snapshot), do: ""
+
+  defp format_changed_paths(paths, before_snapshot, after_snapshot) do
+    details =
+      Enum.map_join(paths, "\n", fn path ->
+        "  #{path}: #{inspect(before_snapshot[path])} -> #{inspect(after_snapshot[path])}"
+      end)
+
+    "changed:\n" <> details
   end
 
   defp isolated_env_args(env) do
