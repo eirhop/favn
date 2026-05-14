@@ -2,6 +2,7 @@ defmodule Favn.Dev.StorageVerificationTest do
   use ExUnit.Case, async: false
 
   @moduletag :integration
+  @moduletag :slow
 
   alias Favn.Dev
   alias Favn.Dev.Paths

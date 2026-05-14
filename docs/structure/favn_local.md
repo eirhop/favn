@@ -38,7 +38,7 @@ Test tiers:
 Useful commands:
 - Fast local-tooling slice: `MIX_ENV=test mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser`
 - Local acceptance suite: `MIX_ENV=test mix do --app favn_local cmd mix test --only acceptance --slowest 20`
-- Full fast PR suite: `mix test.fast`
+- Full fast PR job: use the per-app commands in `.github/workflows/ci.yml`.
 - Full acceptance suite: `mix test.acceptance`
 
 Single-node artifact invariant:

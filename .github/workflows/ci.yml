@@ -39,12 +39,26 @@ jobs:
       - name: Build Phoenix assets
         env:
           MIX_ENV: test
-        run: mix cmd --app favn_view mix assets.build
+        run: mix do --app favn_view cmd mix assets.build
 
       - name: Test
         env:
           MIX_ENV: test
-        run: mix test.fast
+        run: |
+          mix do --app favn_test_support cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_core cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_authoring cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_azure cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_sql_runtime cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_runner cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_orchestrator cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_storage_postgres cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_storage_sqlite cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_duckdb cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_duckdb_adbc cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_local cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
+          mix do --app favn_view cmd mix test --no-compile --exclude acceptance --exclude slow --exclude browser
 
   acceptance-tests:
     name: Acceptance tests

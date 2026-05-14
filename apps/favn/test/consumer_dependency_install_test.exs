@@ -1,6 +1,8 @@
 defmodule Favn.ConsumerDependencyInstallTest do
   use ExUnit.Case, async: false
 
+  @moduletag :slow
+
   setup do
     base_dir =
       Path.join(
