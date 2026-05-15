@@ -12,6 +12,11 @@ Code:
   loopback and EPMD preflight
 - `apps/favn_local/lib/favn/dev/local_context.ex` for the shared trusted local-dev
   API context used by local CLI commands
+- `apps/favn_local/lib/favn/dev/init.ex` for generated local sample files; keep
+  its lakehouse sample aligned with the convention that connections are
+  server/session/auth, catalogs are phases, schemas are segments/domains, and
+  tables/views are assets. The bundled DuckDB smoke path attaches local `raw`
+  and `mart` catalog files during connection bootstrap.
 - `apps/favn_local/lib/favn/dev/env_file.ex` for local `.env` parsing/loading
   before dev/reload compile, manifest, and service launch work
 - single-node bootstrap implementation under `apps/favn_local/lib/favn/dev/bootstrap/`

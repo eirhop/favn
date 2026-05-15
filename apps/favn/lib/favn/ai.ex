@@ -13,11 +13,13 @@ defmodule Favn.AI do
   For project layout, namespace files, and relation hierarchy, read
   `Favn.Namespace` before authoring files. The short default is:
 
-  - `warehouse.ex` owns the warehouse connection namespace.
-  - `warehouse/<layer>.ex` owns each layer namespace.
-  - `warehouse/<layer>/<asset>.ex` owns leaf asset modules.
+  - `connections/important_lakehouse.ex` owns server/session/auth connection config.
+  - `lakehouse.ex` owns the root relation namespace with connection only.
+  - `lakehouse/<phase>.ex` owns each catalog/database phase such as `raw` or `mart`.
+  - `lakehouse/<phase>/<segment>.ex` owns each schema/domain such as `sales`.
+  - `lakehouse/<phase>/<segment>/<asset>.ex` owns leaf asset modules.
   - integration clients, pipelines, triggers, and reusable SQL live outside the
-    warehouse asset tree.
+    lakehouse asset tree.
 
   ## Consumer Dependency Shape
 
@@ -75,8 +77,9 @@ defmodule Favn.AI do
     If connection values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
   - To configure DuckDB/DuckLake connection bootstrap for extension loading,
-    Azure credential-chain secrets, ADLS `SCOPE`/`CHAIN`, PostgreSQL metadata
-    secrets, DuckLake `META_SECRET` attach, or ADLS paths, read
+    attached DuckDB catalog files, Azure credential-chain secrets, ADLS
+    `SCOPE`/`CHAIN`, PostgreSQL metadata secrets, DuckLake `META_SECRET` attach,
+    or ADLS paths, read
     `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQL.Adapter.DuckDB`, and
     `Favn.Azure.PostgresEntraToken`. If the deployment uses the ADBC DuckDB
     adapter, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Azure PostgreSQL Entra
@@ -143,8 +146,9 @@ defmodule Favn.AI do
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
   - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs the
-    `bootstrap_schema_field/0` helper for DuckLake session setup, Azure ADLS
-    DuckDB secrets, or PostgreSQL metadata secret wiring
+    `bootstrap_schema_field/0` helper for attached DuckDB catalog files,
+    DuckLake session setup, Azure ADLS DuckDB secrets, or PostgreSQL metadata
+    secret wiring
   - `Favn.SQL.Adapter.DuckDB.ADBC`: when the ADBC DuckDB adapter needs the same
     DuckLake bootstrap shape with explicit DuckDB driver control
   - `Favn.Azure.PostgresEntraToken`: when DuckDB bootstrap needs runtime Azure

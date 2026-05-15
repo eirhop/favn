@@ -224,6 +224,49 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
            }
   end
 
+  test "sql relation usage treats two segments as schema name and three as catalog schema name" do
+    root = Module.concat(__MODULE__, "SQLRelationUsageRoot#{unique_suffix()}")
+    asset = Module.concat(root, RelationUsageAsset)
+
+    compile_modules_to_path!([
+      {"root.ex",
+       "defmodule #{inspect(root)} do\n  use Favn.Namespace, relation: [connection: :warehouse, catalog: :lakehouse]\nend"},
+      {"sql_asset.ex",
+       """
+       defmodule #{inspect(asset)} do
+         use Favn.SQLAsset
+
+         @materialized :view
+         query do
+           ~SQL\"\"\"
+           select orders.id
+           from sales.orders
+           join mart.finance.invoices on invoices.order_id = orders.id
+           \"\"\"
+         end
+       end
+       """}
+    ])
+
+    assert {:ok, [%Asset{relation_inputs: relation_inputs}]} =
+             Compiler.compile_module_assets(asset)
+
+    assert Enum.map(relation_inputs, & &1.relation_ref) == [
+             %RelationRef{
+               connection: :warehouse,
+               catalog: "lakehouse",
+               schema: "sales",
+               name: "orders"
+             },
+             %RelationRef{
+               connection: :warehouse,
+               catalog: "mart",
+               schema: "finance",
+               name: "invoices"
+             }
+           ]
+  end
+
   test "sql asset missing connection is reported during asset compilation" do
     asset = Module.concat(__MODULE__, "SQLMissingConnection#{unique_suffix()}")
 

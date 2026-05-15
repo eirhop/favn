@@ -4,6 +4,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB
+  alias Favn.SQL.Capabilities
   alias Favn.SQL.Client
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
@@ -287,6 +288,14 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
              {:query, _conn_ref, "SELECT * FROM \"raw\".\"orders\" LIMIT 20"} -> true
              _ -> false
            end)
+  end
+
+  test "row_count rejects catalog-qualified relation without schema" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert_raise ArgumentError, ~r/catalog-qualified relations require schema/, fn ->
+      DuckDB.row_count(conn, %RelationRef{catalog: "raw", name: "orders"}, [])
+    end
   end
 
   test "query fetch error releases result handle" do
@@ -592,6 +601,112 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
              {:release, ^appender_ref} -> true
              _ -> false
            end)
+  end
+
+  test "catalog-qualified table materialization statements include schema setup and target" do
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "raw", schema: "sales", name: "products", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true
+    }
+
+    assert {:ok, statements} = DuckDB.materialization_statements(plan, %Capabilities{}, [])
+    sql = Enum.map(statements, &IO.iodata_to_binary/1)
+
+    assert Enum.any?(sql, &(&1 == ~s(CREATE SCHEMA IF NOT EXISTS "raw"."sales")))
+
+    assert Enum.any?(
+             sql,
+             &String.starts_with?(
+               &1,
+               ~s(CREATE OR REPLACE TABLE "raw"."sales"."products")
+             )
+           )
+  end
+
+  test "catalog-qualified materialization statements reject missing schema" do
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "raw", name: "products", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true
+    }
+
+    assert {:error, %Error{type: :execution_error}} =
+             DuckDB.materialization_statements(plan, %Capabilities{}, [])
+  end
+
+  test "catalog-qualified view materialization statements include schema setup and target" do
+    plan = %WritePlan{
+      materialization: :view,
+      target: %Relation{catalog: "raw", schema: "sales", name: "products", type: :view},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true
+    }
+
+    assert {:ok, statements} = DuckDB.materialization_statements(plan, %Capabilities{}, [])
+    sql = Enum.map(statements, &IO.iodata_to_binary/1)
+
+    assert Enum.any?(sql, &(&1 == ~s(CREATE SCHEMA IF NOT EXISTS "raw"."sales")))
+
+    assert Enum.any?(
+             sql,
+             &String.starts_with?(
+               &1,
+               ~s(CREATE OR REPLACE VIEW "raw"."sales"."products")
+             )
+           )
+  end
+
+  test "catalog-qualified appender rows return unsupported capability" do
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "raw", schema: "sales", name: "bulk_products", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true,
+      options: %{appender_rows: [[1], [2]]}
+    }
+
+    assert {:error,
+            %Error{
+              type: :unsupported_capability,
+              operation: :materialize,
+              message:
+                "DuckDB appender materialization does not support catalog-qualified targets"
+            }} =
+             DuckDB.materialize(conn, plan, [])
+
+    refute Enum.any?(events(), fn
+             {:appender_open, _conn_ref, _appender_ref} -> true
+             _ -> false
+           end)
+  end
+
+  test "catalog-qualified relation and columns introspection filter catalog and schema" do
+    ref = %RelationRef{catalog: "raw", schema: "sales", name: "products"}
+
+    assert {:ok, relation_query} = DuckDB.introspection_query(:relation, ref, [])
+    relation_sql = IO.iodata_to_binary(relation_query)
+
+    assert relation_sql =~ "table_schema = 'sales'"
+    assert relation_sql =~ "table_catalog = 'raw'"
+    assert relation_sql =~ "table_name = 'products'"
+
+    assert {:ok, columns_query} = DuckDB.introspection_query(:columns, ref, [])
+    columns_sql = IO.iodata_to_binary(columns_query)
+
+    assert columns_sql =~ "table_schema = 'sales'"
+    assert columns_sql =~ "table_catalog = 'raw'"
+    assert columns_sql =~ "table_name = 'products'"
+
+    assert {:ok, list_query} = DuckDB.introspection_query(:list_relations, ref, [])
+    list_sql = IO.iodata_to_binary(list_query)
+
+    assert list_sql =~ "table_schema = 'sales'"
+    assert list_sql =~ "table_catalog = 'raw'"
   end
 
   test "conflict failures normalize as retryable" do

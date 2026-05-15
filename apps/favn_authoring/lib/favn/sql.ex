@@ -27,11 +27,11 @@ defmodule Favn.SQL do
         use Favn.SQL
 
         defsql orders_in_window(start_at, end_at) do
-          ~SQL"select * from raw.orders where inserted_at >= @start_at and inserted_at < @end_at"
+          ~SQL"select * from raw.sales.orders where inserted_at >= @start_at and inserted_at < @end_at"
         end
       end
 
-      defmodule MyApp.Warehouse.Mart.OrderSummary do
+      defmodule MyApp.Lakehouse.Mart.Sales.OrderSummary do
         use MyApp.SQL.Reporting
         use Favn.SQLAsset
 

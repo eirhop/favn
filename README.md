@@ -71,7 +71,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local runtime workflow support for authoring, safe landed-data inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
-- DuckDB connection bootstrap for DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckLake attach, and catalog selection
+- DuckDB connection bootstrap for DuckDB catalog files and DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckDB attach, DuckLake attach, and catalog selection
 - an ADBC-backed DuckDB SQL adapter with bounded query results and explicit external-output expectations for large data
 
 ## Core Concepts
@@ -161,15 +161,19 @@ workaround only. It is not the intended consumer dependency model.
 ### 2. Define an asset
 
 ```elixir
-defmodule MyApp.Warehouse do
-  use Favn.Namespace, relation: [connection: :warehouse]
+defmodule MyDataPlatform.Lakehouse do
+  use Favn.Namespace, relation: [connection: :important_lakehouse]
 end
 
-defmodule MyApp.Warehouse.Raw do
+defmodule MyDataPlatform.Lakehouse.Raw do
   use Favn.Namespace, relation: [catalog: "raw"]
 end
 
-defmodule MyApp.Warehouse.Raw.Orders do
+defmodule MyDataPlatform.Lakehouse.Raw.Sales do
+  use Favn.Namespace, relation: [schema: "sales"]
+end
+
+defmodule MyDataPlatform.Lakehouse.Raw.Sales.Orders do
   @moduledoc """
   Raw commerce orders as received from the source platform.
 
@@ -193,14 +197,17 @@ end
 ```
 
 Namespace defaults are inherited from parent modules. The recommended default is
-`warehouse.ex` for the connection namespace, `warehouse/raw.ex` or
-`warehouse/mart.ex` for layer catalogs, and leaf files for assets. `@relation
-true` is the normal leaf-module path, while `@relation [name: "..."]` overrides
-only the relation name. SQL asset namespace inheritance is finalized during
-explicit asset/manifest compilation, so parent namespace modules do not need to
-compile before child SQL asset modules in the same parallel compiler batch.
-Use your own layer names, such as bronze/silver/gold or raw/intermediate/mart,
-and use schemas instead of catalogs if that is your platform convention.
+`connections/important_lakehouse.ex` for server/session/auth configuration,
+`lakehouse.ex` for the connection namespace, `lakehouse/raw.ex` or
+`lakehouse/mart.ex` for lakehouse phase catalogs, `lakehouse/raw/sales.ex` for a
+segment/domain schema, and leaf files for assets. `@relation true` is the normal
+leaf-module path, while `@relation [name: "..."]` overrides only the relation
+name. SQL asset namespace inheritance is finalized during explicit asset/manifest
+compilation, so parent namespace modules do not need to compile before child SQL
+asset modules in the same parallel compiler batch. Use your own phase names,
+such as bronze/silver/gold or raw/intermediate/mart, but keep the distinction:
+connection is server/session/auth, catalog is the lakehouse phase, schema is the
+segment/domain, and table/view is the asset name.
 Keep asset-specific logic near the asset; move code to `integrations/` or `sql/`
 only when it is transport-specific or genuinely reusable.
 
@@ -240,11 +247,15 @@ orders asset followed by SQL transformations.
 ### 3. Define a downstream SQL asset
 
 ```elixir
-defmodule MyApp.Warehouse.Mart do
+defmodule MyDataPlatform.Lakehouse.Mart do
   use Favn.Namespace, relation: [catalog: "mart"]
 end
 
-defmodule MyApp.Warehouse.Mart.OrderSummary do
+defmodule MyDataPlatform.Lakehouse.Mart.Sales do
+  use Favn.Namespace, relation: [schema: "sales"]
+end
+
+defmodule MyDataPlatform.Lakehouse.Mart.Sales.OrderSummary do
   @moduledoc """
   Sales order mart used by business reporting.
 
@@ -255,13 +266,13 @@ defmodule MyApp.Warehouse.Mart.OrderSummary do
   use Favn.SQLAsset
 
   @meta owner: "analytics", category: :sales, tags: [:mart]
-  @depends MyApp.Warehouse.Raw.Orders
+  @depends MyDataPlatform.Lakehouse.Raw.Sales.Orders
   @materialized :view
 
   query do
     ~SQL"""
     select *
-    from raw.orders
+    from raw.sales.orders
     """
   end
 end
@@ -269,10 +280,12 @@ end
 
 Relation-style SQL references are the primary authoring path. Two-part SQL names
 are read as `schema.table`; three-part names are read as
-`catalog.schema.table`. When a reference resolves to an owned asset relation on
-the same connection, Favn infers the dependency automatically. Use `@depends`
-when the dependency is not visible in SQL, cannot be resolved from owned
-relations, or the project intentionally uses catalog-only layer names.
+`catalog.schema.table`. Catalog-qualified SQL asset references and targets must
+also include schema, so `raw.orders` is treated as `schema.table`, not
+`catalog.table`; use `raw.sales.orders` for catalog/schema/table. When a
+reference resolves to an owned asset relation on the same connection, Favn
+infers the dependency automatically. Use `@depends` when the dependency is not
+visible in SQL or cannot be resolved from owned relations.
 DuckDB-backed SQL materialization creates the owned target schema when needed
 before creating the table or view. DuckDB appender materialization treats a
 successful appender close as consuming the handle; if close fails, the handle
@@ -281,17 +294,17 @@ releases it as part of failure cleanup. Runner-side SQL asset materialization
 planning emits the shared `%Favn.SQL.WritePlan{}` adapter contract consumed by
 SQL runtime adapters.
 For longer queries, place the SQL file next to the SQL asset module, for example
-`warehouse/mart/order_summary.ex` plus `warehouse/mart/order_summary.sql`, and
+`lakehouse/mart/sales/order_summary.ex` plus `lakehouse/mart/sales/order_summary.sql`, and
 use `query file: "order_summary.sql"`.
 
 ### 4. Define a pipeline
 
 ```elixir
-defmodule MyApp.Pipelines.DailySales do
+defmodule MyDataPlatform.Pipelines.DailySales do
   use Favn.Pipeline
 
   pipeline :daily_sales do
-    asset MyApp.Warehouse.Mart.OrderSummary
+    asset MyDataPlatform.Lakehouse.Mart.Sales.OrderSummary
     deps :all
     schedule cron: "0 2 * * *", timezone: "Etc/UTC"
     window :daily
@@ -343,7 +356,7 @@ when a project needs tighter control than app-scoped discovery.
 ### 7. Query a configured SQL connection from Elixir
 
 ```elixir
-{:ok, session} = Favn.SQLClient.connect(:warehouse)
+{:ok, session} = Favn.SQLClient.connect(:important_lakehouse)
 {:ok, result} = Favn.SQLClient.query(session, "select 1")
 :ok = Favn.SQLClient.disconnect(session)
 ```
@@ -420,12 +433,13 @@ intentional false positives.
 
 For a fresh standalone Mix consumer project with local path dependencies back to
 this checkout, `mix favn.init --duckdb --sample` generates the first dogfooding
-path: a DuckDB connection module, raw and gold namespace modules, one Elixir raw
-load asset, one SQL business output asset, a `deps(:all)` pipeline, local Favn
-config, and `.env.example` web-login credentials. The task also adds a local
-`favn_duckdb` path dependency when it can recognize the project's `defp deps/0`
-shape. Rerun `mix deps.get`, then use `mix favn.doctor` before starting the
-stack.
+path: a DuckDB connection module under `connections/`, a root lakehouse
+namespace with connection only, raw and mart phase namespaces as catalogs, sales
+segment namespaces as schemas, one Elixir raw load asset, one SQL business
+output asset, a `deps(:all)` pipeline, local Favn config, and `.env.example`.
+The task also adds a local `favn_duckdb` path dependency when it can recognize
+the project's `defp deps/0` shape. Rerun `mix deps.get`, then use
+`mix favn.doctor` before starting the stack.
 
 The generated pipeline is `MyApp.Pipelines.LocalSmoke` for a project whose OTP
 app is `:my_app`:
@@ -443,10 +457,14 @@ read-only preview for manifest-owned SQL relations: columns, row count, and up t
 consumer project:
 
 ```elixir
-{:ok, session} = Favn.SQLClient.connect(:warehouse)
-{:ok, result} = Favn.SQLClient.query(session, "select * from gold.order_summary")
+{:ok, session} = Favn.SQLClient.connect(:important_lakehouse)
+{:ok, result} = Favn.SQLClient.query(session, "select * from mart.sales.order_summary")
 :ok = Favn.SQLClient.disconnect(session)
 ```
+
+The generated sample attaches local DuckDB catalog files for `raw` and `mart`,
+uses `sales` as the schema default under each phase, and materializes relations
+as `raw.sales.orders` and `mart.sales.order_summary`.
 
 `mix favn.dev` starts with the local scheduler disabled by default. This keeps
 one-time local ETL and DuckDB-backed dogfooding on the manual path unless you

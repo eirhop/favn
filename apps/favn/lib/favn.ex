@@ -130,7 +130,7 @@ defmodule Favn do
 
   ## Examples
 
-      {:ok, asset} = Favn.get_asset(MyApp.Warehouse.Raw.Sales.Orders)
+      {:ok, asset} = Favn.get_asset(MyApp.Lakehouse.Raw.Sales.Orders)
       {:ok, asset} = Favn.get_asset({MyApp.Raw.Shopify, :orders})
   """
   @spec get_asset(module() | Favn.Ref.t()) :: {:ok, Favn.Asset.t()} | {:error, term()}
@@ -162,7 +162,7 @@ defmodule Favn do
       {:ok, manifest} = Favn.generate_manifest()
 
       {:ok, manifest} = Favn.generate_manifest(
-        asset_modules: [MyApp.Warehouse.Raw.Orders, MyApp.Warehouse.Mart.OrderSummary],
+        asset_modules: [MyApp.Lakehouse.Raw.Sales.Orders, MyApp.Lakehouse.Mart.Sales.OrderSummary],
         pipeline_modules: [MyApp.Pipelines.DailySales]
       )
   """

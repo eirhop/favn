@@ -2,7 +2,7 @@ defmodule Favn.Source do
   @moduledoc """
   Public DSL for external upstream relations that Favn can reason about but not run.
 
-  Use `Favn.Source` for warehouse objects that participate in lineage and SQL
+  Use `Favn.Source` for lakehouse objects that participate in lineage and SQL
   dependency inference but are not executed as materializing assets.
 
   ## When to use it
@@ -12,9 +12,9 @@ defmodule Favn.Source do
 
   ## Minimal example
 
-      # lib/my_app/warehouse/sources/stripe_charges.ex
-      defmodule MyApp.Warehouse.Sources.StripeCharges do
-        use Favn.Namespace, relation: [connection: :warehouse, catalog: "sources"]
+      # lib/my_app/lakehouse/raw/payments/stripe_charges.ex
+      defmodule MyApp.Lakehouse.Raw.Payments.StripeCharges do
+        use Favn.Namespace, relation: [connection: :important_lakehouse, catalog: "raw", schema: "payments"]
         use Favn.Source
 
         @doc "External raw Stripe charges table"
