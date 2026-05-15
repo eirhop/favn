@@ -6,13 +6,14 @@ defmodule FavnOrchestrator.Projector do
   alias Favn.Run
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
 
   @spec run_event(RunState.t(), atom(), map()) :: RunEvent.t()
   def run_event(%RunState{} = run_state, event_type, data \\ %{}) when is_atom(event_type) do
-    normalized_data = normalize_data(data)
+    normalized_data = data |> normalize_data() |> put_event_asset_step_id(run_state, event_type)
 
     RunEvent.from_map(%{
       run_id: run_state.id,
@@ -116,12 +117,12 @@ defmodule FavnOrchestrator.Projector do
     String.starts_with?(Atom.to_string(event_type), "step_")
   end
 
-  defp project_asset_results(%RunState{result: %{asset_results: results}})
+  defp project_asset_results(%RunState{result: %{asset_results: results}} = run_state)
        when is_list(results) do
     results
     |> Enum.reduce(%{}, fn result, acc ->
       case asset_result_ref(result) do
-        {:ok, ref} -> Map.put(acc, ref, normalize_asset_result(result))
+        {:ok, ref} -> Map.put(acc, ref, normalize_asset_result(run_state, result, ref))
         :error -> acc
       end
     end)
@@ -129,20 +130,49 @@ defmodule FavnOrchestrator.Projector do
 
   defp project_asset_results(_run_state), do: %{}
 
-  defp project_node_results(%RunState{result: %{node_results: results}}, _asset_results)
+  defp project_node_results(
+         %RunState{result: %{node_results: results}} = run_state,
+         _asset_results
+       )
        when is_list(results) do
     results
     |> Enum.reduce(%{}, fn result, acc ->
       case node_result_key(result) do
-        {:ok, node_key} -> Map.put(acc, node_key, normalize_node_result(result))
-        :error -> acc
+        {:ok, node_key} ->
+          Map.put(acc, node_key, normalize_node_result(run_state, result, node_key))
+
+        :error ->
+          acc
       end
     end)
   end
 
-  defp project_node_results(_run_state, asset_results) when is_map(asset_results) do
-    Enum.into(asset_results, %{}, fn {ref, %AssetResult{} = result} -> {{ref, nil}, result} end)
+  defp project_node_results(%RunState{} = run_state, asset_results) when is_map(asset_results) do
+    Enum.into(asset_results, %{}, fn {ref, %AssetResult{} = result} ->
+      node_key = {ref, nil}
+      {node_key, put_asset_step_id(result, run_state, node_key, ref)}
+    end)
   end
+
+  defp put_event_asset_step_id(data, %RunState{} = run_state, event_type)
+       when is_map(data) and is_atom(event_type) do
+    if step_event_type?(event_type) and not present_binary?(Map.get(data, :asset_step_id)) do
+      asset_ref = Map.get(data, :asset_ref) || run_state.asset_ref
+      node_key = Map.get(data, :node_key)
+
+      Map.put(
+        data,
+        :asset_step_id,
+        AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
+      )
+    else
+      data
+    end
+  end
+
+  defp put_event_asset_step_id(data, _run_state, _event_type), do: data
+
+  defp present_binary?(value), do: is_binary(value) and value != ""
 
   defp node_result_key(%NodeResult{node_key: node_key}) when is_tuple(node_key),
     do: {:ok, node_key}
@@ -218,9 +248,11 @@ defmodule FavnOrchestrator.Projector do
   defp asset_result_ref(%{ref: ref}) when is_tuple(ref), do: {:ok, ref}
   defp asset_result_ref(_result), do: :error
 
-  defp normalize_asset_result(%AssetResult{} = result), do: result
+  defp normalize_asset_result(run_state, %AssetResult{} = result, ref) do
+    put_asset_step_id(result, run_state, {ref, nil}, ref)
+  end
 
-  defp normalize_asset_result(%{ref: ref} = result) when is_tuple(ref) do
+  defp normalize_asset_result(run_state, %{ref: ref} = result, _ref) when is_tuple(ref) do
     started_at = Map.get(result, :started_at, DateTime.utc_now())
     finished_at = Map.get(result, :finished_at, started_at)
     status = Map.get(result, :status, :ok)
@@ -246,13 +278,18 @@ defmodule FavnOrchestrator.Projector do
       error: error,
       attempt_count: attempt_count,
       max_attempts: max_attempts,
-      attempts: if(is_list(attempts), do: attempts, else: [])
+      attempts: if(is_list(attempts), do: attempts, else: []),
+      asset_step_id:
+        Map.get(result, :asset_step_id) ||
+          AssetStepIdentity.asset_step_id(run_state.id, {ref, nil}, ref)
     }
   end
 
-  defp normalize_asset_result(_result) do
+  defp normalize_asset_result(run_state, _result, _ref) do
+    ref = {:unknown, :asset}
+
     %AssetResult{
-      ref: {:unknown, :asset},
+      ref: ref,
       stage: 0,
       status: :error,
       started_at: DateTime.utc_now(),
@@ -262,13 +299,16 @@ defmodule FavnOrchestrator.Projector do
       error: :invalid_asset_result,
       attempt_count: 1,
       max_attempts: 1,
-      attempts: []
+      attempts: [],
+      asset_step_id: AssetStepIdentity.asset_step_id(run_state.id, {ref, nil}, ref)
     }
   end
 
-  defp normalize_node_result(%NodeResult{} = result), do: result
+  defp normalize_node_result(run_state, %NodeResult{ref: ref} = result, node_key) do
+    put_node_asset_step_id(result, run_state, node_key, ref)
+  end
 
-  defp normalize_node_result(%{node_key: node_key, ref: ref} = result)
+  defp normalize_node_result(run_state, %{node_key: node_key, ref: ref} = result, _node_key)
        when is_tuple(node_key) and is_tuple(ref) do
     %NodeResult{
       node_key: node_key,
@@ -287,8 +327,37 @@ defmodule FavnOrchestrator.Projector do
       runner_execution_id: Map.get(result, :runner_execution_id),
       meta: Map.get(result, :meta, %{}),
       error: Map.get(result, :error),
-      attempts: Map.get(result, :attempts, [])
+      attempts: Map.get(result, :attempts, []),
+      asset_step_id:
+        Map.get(result, :asset_step_id) ||
+          AssetStepIdentity.asset_step_id(run_state.id, node_key, ref)
     }
+  end
+
+  defp put_asset_step_id(
+         %AssetResult{asset_step_id: asset_step_id} = result,
+         _run_state,
+         _node_key,
+         _ref
+       )
+       when is_binary(asset_step_id) and asset_step_id != "",
+       do: result
+
+  defp put_asset_step_id(%AssetResult{} = result, run_state, node_key, ref) do
+    %{result | asset_step_id: AssetStepIdentity.asset_step_id(run_state.id, node_key, ref)}
+  end
+
+  defp put_node_asset_step_id(
+         %NodeResult{asset_step_id: asset_step_id} = result,
+         _run_state,
+         _node_key,
+         _ref
+       )
+       when is_binary(asset_step_id) and asset_step_id != "",
+       do: result
+
+  defp put_node_asset_step_id(%NodeResult{} = result, run_state, node_key, ref) do
+    %{result | asset_step_id: AssetStepIdentity.asset_step_id(run_state.id, node_key, ref)}
   end
 
   defp public_pipeline(pipeline_context) when is_map(pipeline_context) do

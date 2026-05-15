@@ -31,6 +31,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Scheduler.ManifestEntries
@@ -178,6 +179,9 @@ defmodule FavnOrchestrator do
           required(:explanation) => String.t(),
           required(:reasons) => [asset_freshness_reason()]
         }
+
+  @type run_summary :: RunReadModel.run_summary()
+  @type run_detail :: RunReadModel.run_detail()
 
   @doc """
   Returns redacted operator diagnostics for the orchestrator runtime.
@@ -978,6 +982,32 @@ defmodule FavnOrchestrator do
       {:ok, runs} -> {:ok, Projector.project_runs(runs)}
       {:error, _reason} = error -> error
     end
+  end
+
+  @doc """
+  Lists public run summaries with orchestrator-owned classification.
+  """
+  @spec list_run_summaries(keyword()) :: {:ok, [run_summary()]} | {:error, term()}
+  def list_run_summaries(opts \\ []) when is_list(opts) do
+    RunReadModel.list_run_summaries(opts)
+  end
+
+  @doc """
+  Returns one public run detail with orchestrator-owned classification.
+  """
+  @spec get_run_detail(run_id()) :: {:ok, run_detail()} | {:error, term()}
+  def get_run_detail(run_id) when is_binary(run_id) do
+    RunReadModel.get_run_detail(run_id)
+  end
+
+  @doc """
+  Returns public log-page context for one asset step in a run.
+  """
+  @spec get_asset_step_log_context(run_id(), String.t()) ::
+          {:ok, RunReadModel.asset_step_log_context()} | {:error, term()}
+  def get_asset_step_log_context(run_id, asset_step_id)
+      when is_binary(run_id) and is_binary(asset_step_id) do
+    RunReadModel.get_asset_step_log_context(run_id, asset_step_id)
   end
 
   @doc """

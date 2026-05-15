@@ -3,7 +3,9 @@ defmodule FavnOrchestrator.LogsTest do
 
   alias Favn.Log.Entry
   alias Favn.Log.Filter
+  alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RunnerLogBridge
+  alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
   defmodule RunnerClientLogStub do
@@ -106,6 +108,66 @@ defmodule FavnOrchestrator.LogsTest do
 
     assert Enum.map(page.items, & &1.message) == ["log 5", "log 4"]
     assert page.has_more?
+  end
+
+  test "asset step log context prefers exact asset step logs" do
+    run_id = "run_asset_step_exact"
+    asset_ref = {__MODULE__.ExactAsset, :asset}
+    node_key = {asset_ref, nil}
+    asset_step_id = persisted_step_id(node_key)
+
+    persist_run_with_node_result(run_id, asset_ref, node_key, :running)
+
+    assert {:ok, _} =
+             FavnOrchestrator.emit_logs([
+               %Entry{run_id: run_id, asset_ref: asset_ref, message: "fallback candidate"},
+               %Entry{
+                 run_id: run_id,
+                 asset_step_id: asset_step_id,
+                 asset_ref: asset_ref,
+                 message: "exact step"
+               }
+             ])
+
+    assert {:ok, context} = FavnOrchestrator.get_asset_step_log_context(run_id, asset_step_id)
+
+    assert context.title == "#{inspect(__MODULE__.ExactAsset)}.asset"
+    assert context.status == :running
+    assert context.fallback? == false
+    assert context.note == nil
+    assert context.log_filter == %Filter{run_id: run_id, asset_step_id: asset_step_id}
+
+    assert {:ok, page} = FavnOrchestrator.list_logs(context.log_filter)
+    assert Enum.map(page.items, & &1.message) == ["exact step"]
+  end
+
+  test "asset step log context falls back to asset ref logs when exact step logs are absent" do
+    run_id = "run_asset_step_fallback"
+    asset_ref = {__MODULE__.FallbackAsset, :asset}
+    node_key = {asset_ref, nil}
+    asset_step_id = persisted_step_id(node_key)
+
+    persist_run_with_node_result(run_id, asset_ref, node_key, :ok)
+
+    assert {:ok, _} =
+             FavnOrchestrator.emit_logs([
+               %Entry{run_id: run_id, asset_ref: asset_ref, message: "legacy asset log"},
+               %Entry{
+                 run_id: run_id,
+                 asset_ref: {__MODULE__.OtherAsset, :asset},
+                 message: "other"
+               }
+             ])
+
+    assert {:ok, context} = FavnOrchestrator.get_asset_step_log_context(run_id, asset_step_id)
+
+    assert context.status == :ok
+    assert context.fallback? == true
+    assert context.note =~ "Exact asset-step logs were not found"
+    assert context.log_filter == %Filter{run_id: run_id, asset_ref: asset_ref}
+
+    assert {:ok, page} = FavnOrchestrator.list_logs(context.log_filter)
+    assert Enum.map(page.items, & &1.message) == ["legacy asset log"]
   end
 
   test "runner bridge merges step context so runner logs filter by asset step" do
@@ -295,6 +357,41 @@ defmodule FavnOrchestrator.LogsTest do
   end
 
   defp eventually(fun, 0), do: fun.()
+
+  defp persist_run_with_node_result(run_id, asset_ref, node_key, status) do
+    run =
+      RunState.new(
+        id: run_id,
+        manifest_version_id: "manifest_logs_test",
+        manifest_content_hash: "hash_logs_test",
+        asset_ref: asset_ref,
+        target_refs: [asset_ref]
+      )
+      |> RunState.transition(
+        status: status,
+        result: %{
+          node_results: [
+            %{
+              node_key: node_key,
+              ref: asset_ref,
+              stage: 1,
+              status: status,
+              attempt_count: 1,
+              duration_ms: 120
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+  end
+
+  defp persisted_step_id(key) do
+    key
+    |> :erlang.term_to_binary()
+    |> Base.url_encode64(padding: false)
+    |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
+  end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)

@@ -7,7 +7,6 @@ defmodule FavnView.LogsLiveSupport do
   alias Favn.Log.Filter
   alias FavnView.Components.AssetCataloguePage
   alias FavnView.LogsViewModel
-  alias FavnView.RunStepViewModel
 
   @initial_limit 200
   @fetch_limit 500
@@ -70,9 +69,9 @@ defmodule FavnView.LogsLiveSupport do
   def unsubscribe(_socket), do: :ok
 
   def run_context(run_id) do
-    case FavnOrchestrator.get_run(run_id) do
-      {:ok, run} ->
-        run_context_from_public(run)
+    case FavnOrchestrator.get_run_detail(run_id) do
+      {:ok, %{summary: summary} = detail} ->
+        run_context_from_public(summary, Map.get(detail, :steps, []))
 
       {:error, reason} ->
         %{
@@ -85,24 +84,10 @@ defmodule FavnView.LogsLiveSupport do
   end
 
   def asset_context(run_id, asset_step_id) do
-    run = run_context(run_id)
-
-    result =
-      if run[:found?], do: Enum.find(run.asset_results, &(&1.id == asset_step_id)), else: nil
-
-    %{
-      run: run,
-      result: result,
-      title: (result && result.display_name) || "Asset logs",
-      subtitle: "Run #{LogsViewModel.short_id(run_id)} · Asset step #{asset_step_id}",
-      status: result && result.status,
-      status_tone: (result && result.status_tone) || :neutral,
-      facts: asset_facts(result),
-      note:
-        if(run[:found?] && is_nil(result),
-          do: "Asset step context not found, showing matching logs."
-        )
-    }
+    case FavnOrchestrator.get_asset_step_log_context(run_id, asset_step_id) do
+      {:ok, context} -> asset_context_from_public(context)
+      {:error, _reason} -> missing_asset_context(run_id, asset_step_id)
+    end
   end
 
   def nav_items(active \\ :logs), do: AssetCataloguePage.nav_items(active)
@@ -209,39 +194,78 @@ defmodule FavnView.LogsLiveSupport do
   defp normalize_choice(value) when value in [nil, "", "all"], do: "all"
   defp normalize_choice(value), do: to_string(value)
 
-  defp run_context_from_public(run) do
-    started_at = Map.get(run, :started_at)
-    finished_at = Map.get(run, :finished_at)
-    status = Map.get(run, :status)
-    target = target_label(Map.get(run, :asset_ref), Map.get(run, :target_refs, []))
-    asset_results = RunStepViewModel.from_run(run)
+  defp run_context_from_public(summary, steps) do
+    status = Map.get(summary, :status)
 
     %{
       found?: true,
-      id: run.id,
-      title: target || LogsViewModel.short_id(run.id),
-      subtitle: LogsViewModel.short_id(run.id),
+      id: summary.id,
+      title: target_label(summary) || LogsViewModel.short_id(summary.id),
+      subtitle: LogsViewModel.short_id(summary.id),
       status: LogsViewModel.status_label(status),
       status_tone: LogsViewModel.status_tone(status),
-      started_at: LogsViewModel.timestamp_label(started_at),
-      duration: LogsViewModel.duration_label(started_at, finished_at),
-      asset_results: asset_results
+      started_at: LogsViewModel.timestamp_label(summary.started_at),
+      duration: LogsViewModel.duration_ms_label(summary.duration_ms),
+      asset_results: Enum.map(steps, &step_from_public/1)
     }
   end
 
-  defp asset_facts(nil), do: []
+  defp asset_context_from_public(context) do
+    step = context[:step]
 
-  defp asset_facts(result) do
-    [
-      %{label: "Started", value: result.started_at},
-      %{label: "Duration", value: result.duration},
-      %{label: "Attempt", value: result.attempt || "-"}
-    ]
+    %{
+      run: context[:run],
+      result: step,
+      title: context[:title],
+      subtitle: context[:subtitle],
+      status: step && LogsViewModel.status_label(step.status),
+      status_tone: (step && LogsViewModel.status_tone(step.status)) || :neutral,
+      facts: Enum.map(context[:facts] || [], &fact_from_public/1),
+      log_filter: context[:log_filter],
+      note: context[:note]
+    }
   end
 
-  defp target_label(nil, []), do: nil
-  defp target_label(nil, [target | _rest]), do: LogsViewModel.ref_label(target)
-  defp target_label(target, _targets), do: LogsViewModel.ref_label(target)
+  defp missing_asset_context(run_id, asset_step_id) do
+    %{
+      run: run_context(run_id),
+      result: nil,
+      title: "Asset logs",
+      subtitle: "Run #{LogsViewModel.short_id(run_id)} · Asset step #{asset_step_id}",
+      status: nil,
+      status_tone: :neutral,
+      facts: [],
+      log_filter: %Filter{run_id: run_id, asset_step_id: asset_step_id},
+      note: "Asset step context not found, showing matching logs."
+    }
+  end
+
+  defp step_from_public(step) do
+    %{
+      id: step.id,
+      display_name: LogsViewModel.display_name(step.asset_ref) || step.asset_ref,
+      status: LogsViewModel.status_label(step.status),
+      status_tone: LogsViewModel.status_tone(step.status),
+      started_at: LogsViewModel.timestamp_label(step.started_at),
+      duration: LogsViewModel.duration_ms_label(step.duration_ms),
+      attempt: step.attempt
+    }
+  end
+
+  defp fact_from_public(%{label: "Started", value: value}),
+    do: %{label: "Started", value: LogsViewModel.timestamp_label(value)}
+
+  defp fact_from_public(%{label: "Duration", value: value}),
+    do: %{label: "Duration", value: LogsViewModel.duration_ms_label(value)}
+
+  defp fact_from_public(%{label: label, value: nil}), do: %{label: label, value: "-"}
+  defp fact_from_public(fact), do: fact
+
+  defp target_label(%{target_refs: refs}) when is_list(refs) and refs != [] do
+    refs |> Enum.map(&LogsViewModel.ref_label/1) |> Enum.join(", ")
+  end
+
+  defp target_label(%{asset_ref: target}), do: LogsViewModel.ref_label(target)
 
   defp error_label(:not_found), do: "Run not found"
   defp error_label(reason), do: "Unable to load run: #{inspect(reason)}"
