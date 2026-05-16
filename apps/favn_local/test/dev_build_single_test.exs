@@ -124,6 +124,11 @@ defmodule Favn.Dev.Build.SingleTest do
     refute env_example =~ "FAVN_DEV_"
     assert env_example =~
              "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view:replace-with-32-plus-char-service-token"
+    assert env_example =~ "FAVN_SQLITE_MIGRATION_MODE=auto"
+    assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin"
+    assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD="
+    assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME='Favn Admin'"
+    assert env_example =~ "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin"
     refute start_script =~ "FAVN_DEV_"
     refute stop_script =~ "FAVN_DEV_"
     refute metadata_json =~ "FAVN_DEV_"

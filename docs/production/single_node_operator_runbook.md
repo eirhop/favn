@@ -80,14 +80,23 @@ directories must exist and be writable before startup.
 
 ## Runtime Environment
 
-Create a backend env file from the generated example:
+From the artifact root, create a backend env file from the generated example:
 
 ```bash
 cp env/backend.env.example env/backend.env
 ```
 
 Replace placeholder secrets before starting. The example service token is
-intentionally invalid.
+intentionally invalid, and the first-admin password is intentionally blank.
+
+When running operator shell commands that reference values from `env/backend.env`,
+load that file into the current shell first:
+
+```bash
+set -a
+. env/backend.env
+set +a
+```
 
 Supported backend environment keys are:
 
@@ -120,19 +129,43 @@ Supported backend environment keys are:
 - Any runtime config keys required by authored assets or named SQL connections,
   such as DuckDB database paths and source-system credentials.
 
-For a fresh node, use `FAVN_SQLITE_MIGRATION_MODE=auto` unless the database has
-already been migrated by an operator-controlled process. With `manual`, startup
-requires a schema-ready SQLite database. Favn does not yet ship a separate
-production migration command; track follow-up #350.
+For a fresh node, use this minimum first-start shape unless the database has
+already been migrated by an operator-controlled process:
+
+```bash
+FAVN_STORAGE=sqlite
+FAVN_SQLITE_PATH=/var/lib/favn/control-plane.sqlite3
+FAVN_SQLITE_MIGRATION_MODE=auto
+FAVN_SQLITE_POOL_SIZE=1
+FAVN_RUNNER_MODE=local
+FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
+FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=<replace-with-15-plus-character-password>
+```
+
+With `manual`, startup requires a schema-ready SQLite database. Favn does not yet
+ship a separate production migration command; track follow-up #350.
 
 ## First-Run Bootstrap
 
-Start the backend first, then register and activate the packaged manifest:
+Start the backend from the artifact root:
 
 ```bash
+set -a
+. env/backend.env
+set +a
 bin/start
+```
+
+Then register and activate the packaged manifest from the consumer project root,
+where the `mix favn.bootstrap.single` task is available:
+
+```bash
+artifact_dir=.favn/dist/single/<build_id>
+set -a
+. "$artifact_dir/env/backend.env"
+set +a
 mix favn.bootstrap.single \
-  --manifest runner/manifest.json \
+  --manifest "$artifact_dir/runner/manifest.json" \
   --orchestrator-url http://127.0.0.1:4101 \
   --service-token "$FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN"
 ```
@@ -144,7 +177,60 @@ manifest selection.
 
 The bootstrap workflow uses orchestrator APIs. It does not write SQLite directly.
 
+## First Login And Validation Run
+
+These examples assume the backend env file is loaded into the current operator
+shell.
+
+After bootstrap, verify that the first admin can log in:
+
+```bash
+curl -fsS \
+  -X POST \
+  -H "Authorization: Bearer $FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"$FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME\",\"password\":\"$FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD\"}" \
+  http://127.0.0.1:4101/api/orchestrator/v1/auth/password/sessions
+```
+
+Record the returned `actor.id` and `session_token` in the operator shell:
+
+```bash
+FAVN_ACTOR_ID=<actor-id-from-login-response>
+FAVN_SESSION_TOKEN=<session-token-from-login-response>
+```
+
+Verify the active manifest through the authenticated operator path:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" \
+  -H "x-favn-actor-id: $FAVN_ACTOR_ID" \
+  -H "x-favn-session-token: $FAVN_SESSION_TOKEN" \
+  http://127.0.0.1:4101/api/orchestrator/v1/manifests/active
+```
+
+Submit a narrow validation run only after choosing a real manifest target id from
+the active manifest payload:
+
+```bash
+curl -fsS \
+  -X POST \
+  -H "Authorization: Bearer $FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" \
+  -H "x-favn-actor-id: $FAVN_ACTOR_ID" \
+  -H "x-favn-session-token: $FAVN_SESSION_TOKEN" \
+  -H "Idempotency-Key: first-validation-$(date -u +%Y%m%dT%H%M%SZ)" \
+  -H "Content-Type: application/json" \
+  -d '{"target":{"type":"pipeline","id":"pipeline:Elixir.MyApp.Pipelines.ProductionSmoke"},"manifest_selection":{"mode":"active"}}' \
+  http://127.0.0.1:4101/api/orchestrator/v1/runs
+```
+
+Replace the example pipeline id with a safe target from the deployed manifest.
+
 ## Start, Stop, And Restart
+
+Run these commands from the artifact root. `bin/start` sources `env/backend.env`
+automatically when that file exists.
 
 Start:
 
@@ -188,9 +274,12 @@ Readiness:
 curl -fsS http://127.0.0.1:4101/api/orchestrator/v1/health/ready
 ```
 
-Detailed diagnostics require a configured service token:
+Detailed diagnostics require a configured service token. From the artifact root:
 
 ```bash
+set -a
+. env/backend.env
+set +a
 curl -fsS \
   -H "Authorization: Bearer $FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" \
   http://127.0.0.1:4101/api/orchestrator/v1/diagnostics
@@ -226,7 +315,8 @@ automation and follow-up #351 for DuckDB data-plane backup automation design.
 
 ## SQLite Control-Plane Backup
 
-Use this conservative procedure when the backend can be stopped.
+Use this conservative procedure from the artifact root when the backend can be
+stopped.
 
 1. Record the artifact version/build id and runtime env file used by the node.
 2. Stop the backend:
@@ -238,6 +328,9 @@ bin/stop
 3. Copy the SQLite database and any SQLite sidecar files from the same directory:
 
 ```bash
+set -a
+. env/backend.env
+set +a
 backup_dir=/backups/favn/$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$backup_dir"
 cp "$FAVN_SQLITE_PATH" "$backup_dir/control-plane.sqlite3"
@@ -263,7 +356,7 @@ must preserve SQLite consistency and is outside current Favn automation.
 
 Restore SQLite onto a fresh backend node using the same Favn artifact/release
 version as the backup unless a later migration runbook explicitly supports the
-version change.
+version change. Run these commands from the artifact root.
 
 1. Ensure the backend is stopped on the target node:
 
@@ -276,6 +369,9 @@ bin/stop
 3. Create the SQLite parent directory and restore the database file:
 
 ```bash
+set -a
+. env/backend.env
+set +a
 mkdir -p "$(dirname "$FAVN_SQLITE_PATH")"
 cp /backups/favn/<backup-id>/control-plane.sqlite3 "$FAVN_SQLITE_PATH"
 [ ! -f /backups/favn/<backup-id>/control-plane.sqlite3-wal ] || cp /backups/favn/<backup-id>/control-plane.sqlite3-wal "$FAVN_SQLITE_PATH-wal"
@@ -291,6 +387,9 @@ bin/start
 5. Verify readiness and diagnostics:
 
 ```bash
+set -a
+. env/backend.env
+set +a
 curl -fsS http://127.0.0.1:4101/api/orchestrator/v1/health/ready
 curl -fsS \
   -H "Authorization: Bearer $FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN" \
