@@ -293,6 +293,19 @@ defmodule FavnView.Components.RunDetailPage do
         duration: "1 ms",
         error: "Upstream failed",
         inspectable?: true
+      },
+      %{
+        id: "node-mart-orders-window-2026-06-12",
+        asset_ref: "FavnView.Assets.mart_orders",
+        display_name: "mart_orders",
+        secondary: "window:day:2026-06-12 · Stage 3",
+        status: "Failed",
+        status_tone: :error,
+        started_at: "Jun 12, 2026 14:00:03 UTC",
+        duration: "2.1 s",
+        error: "Warehouse timeout",
+        explanation: "Failed while executing this planned node.",
+        inspectable?: true
       }
     ])
   end

@@ -309,6 +309,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
       "runner_execution_id" => JsonSafe.data(result.runner_execution_id),
+      "asset_step_id" => result.asset_step_id,
       "meta" => JsonSafe.data(result.meta),
       "error" => JsonSafe.error(result.error),
       "attempts" => JsonSafe.data(result.attempts)
@@ -553,7 +554,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       attempt_count: field(result, :attempt_count, 0),
       max_attempts: field(result, :max_attempts, 1),
       attempts: field(result, :attempts, []),
-      next_retry_at: datetime_value_from_dto(field(result, :next_retry_at))
+      next_retry_at: datetime_value_from_dto(field(result, :next_retry_at)),
+      asset_step_id: field(result, :asset_step_id)
     }
   end
 
@@ -574,6 +576,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       max_attempts: field(result, :max_attempts, 1),
       runner_execution_id:
         data_from_dto(field(result, :runner_execution_id), allowed_atom_strings),
+      asset_step_id: field(result, :asset_step_id),
       meta: data_from_dto(field(result, :meta, %{}), allowed_atom_strings),
       error: field(result, :error),
       attempts: data_from_dto(field(result, :attempts, []), allowed_atom_strings)
@@ -936,7 +939,24 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp selector_atoms(_selectors), do: {:ok, []}
 
-  defp selector_atom([_kind, ref]), do: ref_atoms(ref)
+  defp selector_atom([kind, value]) when kind in [:asset, "asset"], do: ref_atoms(value)
+  defp selector_atom([kind, value]) when kind in [:module, "module"], do: module_atom(value)
+
+  defp selector_atom([kind, value]) when kind in [:tag, "tag", :category, "category"],
+    do: manifest_atom(value)
+
+  defp selector_atom(%{"module" => kind, "name" => value})
+       when kind in [:asset, "asset"],
+       do: ref_atoms(value)
+
+  defp selector_atom(%{"module" => kind, "name" => value})
+       when kind in [:module, "module"],
+       do: module_atom(value)
+
+  defp selector_atom(%{"module" => kind, "name" => value})
+       when kind in [:tag, "tag", :category, "category"],
+       do: manifest_atom(value)
+
   defp selector_atom(%{"value" => ref}), do: ref_atoms(ref)
   defp selector_atom(%{"ref" => ref}), do: ref_atoms(ref)
   defp selector_atom(%{"module" => _module, "name" => _name} = ref), do: ref_atoms(ref)

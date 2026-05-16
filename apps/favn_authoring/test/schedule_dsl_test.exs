@@ -6,7 +6,7 @@ defmodule FavnAuthoring.ScheduleDSLTest do
   test "schedule DSL fetch validates modules and missing schedules" do
     assert {:error, :not_schedule_module} = Schedules.fetch(Favn.Window, :daily)
 
-    module_name = Module.concat(__MODULE__, "NoSchedules#{System.unique_integer([:positive])}")
+    module_name = Module.concat(__MODULE__, "NoSchedules#{unique_suffix()}")
 
     Code.compile_string(
       """
@@ -21,7 +21,7 @@ defmodule FavnAuthoring.ScheduleDSLTest do
   end
 
   test "Schedules.fetch/2 loads valid schedule modules before export checks" do
-    module = Module.concat(__MODULE__, "LoadableSchedules#{System.unique_integer([:positive])}")
+    module = Module.concat(__MODULE__, "LoadableSchedules#{unique_suffix()}")
 
     compile_loadable_module!(
       module,
@@ -59,7 +59,7 @@ defmodule FavnAuthoring.ScheduleDSLTest do
     dir =
       Path.join(
         System.tmp_dir!(),
-        "favn_schedule_loadable_modules_#{System.unique_integer([:positive])}"
+        "favn_schedule_loadable_modules_#{unique_suffix()}"
       )
 
     File.mkdir_p!(dir)
@@ -74,5 +74,9 @@ defmodule FavnAuthoring.ScheduleDSLTest do
              Kernel.ParallelCompiler.compile_to_path([file_path], dir, return_diagnostics: true)
 
     assert module in modules
+  end
+
+  defp unique_suffix do
+    "#{System.system_time(:nanosecond)}#{System.unique_integer([:positive, :monotonic])}"
   end
 end

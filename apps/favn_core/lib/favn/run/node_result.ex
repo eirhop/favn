@@ -66,7 +66,8 @@ defmodule Favn.Run.NodeResult do
           runner_execution_id: term() | nil,
           meta: map(),
           error: term() | nil,
-          attempts: [attempt_result()]
+          attempts: [attempt_result()],
+          asset_step_id: String.t() | nil
         }
 
   defstruct [
@@ -86,7 +87,8 @@ defmodule Favn.Run.NodeResult do
     attempt_count: 0,
     max_attempts: 1,
     meta: %{},
-    attempts: []
+    attempts: [],
+    asset_step_id: nil
   ]
 
   @doc """

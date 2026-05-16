@@ -165,44 +165,7 @@ Recommended workflow:
 5. Only then wire or adjust the LiveView.
 
 Do not use Playwright MCP as a replacement for real tests. For important flows,
-add Phoenix/LiveView tests, and only introduce a Playwright E2E suite if the
-project explicitly decides to support browser-level regression tests.
-
-## Playwright MCP Setup
-
-Playwright MCP is used by OpenCode agents for rendered browser interaction.
-
-Requirements:
-
-- Node.js 18+
-- A working browser environment
-
-The MCP itself is launched through OpenCode using:
-
-```bash
-npx -y @playwright/mcp@latest
-```
-
-No project-local Playwright dependency is required for MCP-only usage. If browser
-launch fails, install Playwright browsers/system dependencies locally:
-
-```bash
-npx playwright install --with-deps chromium
-```
-
-On WSL/Linux, this may be required before Playwright MCP can open a browser.
-
-To use Playwright MCP with OpenCode:
-
-1. Start the relevant Phoenix app.
-2. Start OpenCode from the repo root.
-3. Ask the agent to use `playwright` to inspect the rendered UI.
-
-Example:
-
-```text
-Use playwright to open http://127.0.0.1:4173/storybook and inspect the asset card component story. Use tidewave_view if you need runtime/source/log context.
-```
+add Phoenix/LiveView tests
 
 ## Docs
 
@@ -226,14 +189,6 @@ cd apps/favn_view && mix test
 ```
 
 - Use umbrella-level tests only when the change crosses app boundaries, changes shared dependencies/contracts, or the user explicitly requests broader verification.
-
-## Favn LiveView UI Philosophy
-
-When working on `favn_view`, first read:
-
-- https://daisyui.com/llms.txt
-
-Use that as the source of truth for DaisyUI syntax, component classes, theme setup, and current best practices. Do not guess DaisyUI APIs from memory.
 
 ### Design direction
 
@@ -282,10 +237,6 @@ Avoid:
 Read these DaisyUI docs before changing Favn UI foundations or shared components:
 
 - https://daisyui.com/llms.txt
-- https://daisyui.com/docs/themes/
-- https://daisyui.com/docs/layout-and-typography/
-- https://daisyui.com/docs/utilities/
-- https://daisyui.com/docs/base/
 
 Use DaisyUI primitives first.
 

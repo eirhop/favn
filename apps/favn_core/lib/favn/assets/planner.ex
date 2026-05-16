@@ -38,6 +38,7 @@ defmodule Favn.Assets.Planner do
           anchor_window: Anchor.t() | nil,
           anchor_windows: [Anchor.t()],
           anchor_ranges: [backfill_anchor_range()],
+          exact_windows: %{optional(Ref.t()) => [Runtime.t()]},
           graph_index: GraphIndex.t() | nil,
           asset_modules: [module()]
         ]
@@ -48,6 +49,7 @@ defmodule Favn.Assets.Planner do
     anchor_window = Keyword.get(opts, :anchor_window)
     anchor_windows = Keyword.get(opts, :anchor_windows, [])
     anchor_ranges = Keyword.get(opts, :anchor_ranges, [])
+    exact_windows = Keyword.get(opts, :exact_windows, %{})
     graph_index = Keyword.get(opts, :graph_index)
     asset_modules = Keyword.get(opts, :asset_modules)
 
@@ -55,11 +57,12 @@ defmodule Favn.Assets.Planner do
          :ok <- validate_opts(opts),
          :ok <- validate_dependencies_mode(dependencies),
          {:ok, anchors} <- normalize_anchors(anchor_window, anchor_windows, anchor_ranges),
+         :ok <- validate_exact_windows(exact_windows),
          {:ok, index} <- resolve_graph_index(graph_index, asset_modules),
          :ok <- validate_target_refs(index, target_refs),
          {:ok, refs} <- selected_refs(index, target_refs, dependencies),
          {:ok, projected_index} <- projected_index(index, refs),
-         {:ok, graph} <- build_windowed_graph(projected_index, anchors) do
+         {:ok, graph} <- build_windowed_graph(projected_index, anchors, exact_windows) do
       stage_map = build_node_stage_map(graph.nodes, projected_index.topo_rank)
       ref_stage_map = build_ref_stage_map(graph.nodes, stage_map)
 
@@ -102,6 +105,7 @@ defmodule Favn.Assets.Planner do
         :anchor_window,
         :anchor_windows,
         :anchor_ranges,
+        :exact_windows,
         :graph_index,
         :asset_modules
       ])
@@ -123,6 +127,35 @@ defmodule Favn.Assets.Planner do
   end
 
   defp validate_anchor_windows(other), do: {:error, {:invalid_anchor_windows, other}}
+
+  defp validate_exact_windows(exact_windows) when is_map(exact_windows) do
+    Enum.reduce_while(exact_windows, :ok, fn
+      {{module, name}, windows}, _acc
+      when is_atom(module) and is_atom(name) and is_list(windows) ->
+        case validate_runtime_windows(windows) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+
+      {ref, _windows}, _acc ->
+        {:halt, {:error, {:invalid_exact_window_ref, ref}}}
+    end)
+  end
+
+  defp validate_exact_windows(other), do: {:error, {:invalid_exact_windows, other}}
+
+  defp validate_runtime_windows(windows) do
+    Enum.reduce_while(windows, :ok, fn
+      %Runtime{} = runtime, _acc ->
+        case Runtime.validate(runtime) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, {:invalid_exact_window, reason}}}
+        end
+
+      other, _acc ->
+        {:halt, {:error, {:invalid_exact_window, other}}}
+    end)
+  end
 
   defp normalize_anchors(anchor_window, anchor_windows, anchor_ranges) do
     with :ok <- validate_anchor_window(anchor_window),
@@ -205,8 +238,8 @@ defmodule Favn.Assets.Planner do
     end)
   end
 
-  defp build_windowed_graph(index, anchors) do
-    with {:ok, ref_nodes} <- build_ref_nodes_by_ref(index, anchors) do
+  defp build_windowed_graph(index, anchors, exact_windows) do
+    with {:ok, ref_nodes} <- build_ref_nodes_by_ref(index, anchors, exact_windows) do
       {:ok, %{nodes: build_windowed_nodes(index, ref_nodes), ref_nodes: ref_nodes}}
     end
   end
@@ -221,25 +254,37 @@ defmodule Favn.Assets.Planner do
     end)
   end
 
-  defp build_ref_nodes_by_ref(index, anchors) do
+  defp build_ref_nodes_by_ref(index, anchors, exact_windows) do
     Enum.reduce_while(index.topo_order, {:ok, %{}}, fn ref, {:ok, acc} ->
       asset = Map.fetch!(index.assets_by_ref, ref)
 
-      case build_ref_nodes(ref, asset, anchors) do
+      case build_ref_nodes(ref, asset, anchors, Map.get(exact_windows, ref)) do
         {:ok, nodes} -> {:cont, {:ok, Map.put(acc, ref, nodes)}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp build_ref_nodes(ref, asset, []) do
+  defp build_ref_nodes(ref, _asset, _anchors, exact) when is_list(exact) and exact != [] do
+    nodes =
+      exact
+      |> Enum.uniq_by(& &1.key)
+      |> Enum.sort_by(&window_sort_key/1)
+      |> Enum.map(fn runtime_window ->
+        %{ref: ref, node_key: {ref, runtime_window.key}, window: runtime_window}
+      end)
+
+    {:ok, nodes}
+  end
+
+  defp build_ref_nodes(ref, asset, [], _exact) do
     case asset_window_spec(asset) do
       %Spec{required: true} -> {:error, {:required_window_missing, ref}}
       _other -> {:ok, [%{ref: ref, node_key: {ref, nil}, window: nil}]}
     end
   end
 
-  defp build_ref_nodes(ref, asset, anchors) when is_list(anchors) do
+  defp build_ref_nodes(ref, asset, anchors, _exact) when is_list(anchors) do
     case asset_window_spec(asset) do
       nil ->
         {:ok, [%{ref: ref, node_key: {ref, nil}, window: nil}]}

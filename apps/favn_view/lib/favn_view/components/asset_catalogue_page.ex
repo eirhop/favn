@@ -312,9 +312,15 @@ defmodule FavnView.Components.AssetCataloguePage do
   def nav_items(active \\ :assets) do
     [
       %{label: "Assets", icon: "hero-sparkles", href: "/assets", active: active == :assets},
+      %{
+        label: "Pipelines",
+        icon: "hero-queue-list",
+        href: "/pipelines",
+        active: active == :pipelines
+      },
       %{label: "Lineage", icon: "hero-share", href: "#"},
       %{label: "Storage", icon: "hero-circle-stack", href: "#"},
-      %{label: "Runs", icon: "hero-rocket-launch", href: "#", active: active == :runs},
+      %{label: "Runs", icon: "hero-rocket-launch", href: "/runs", active: active == :runs},
       %{label: "Logs", icon: "hero-document-text", href: "/logs", active: active == :logs},
       %{label: "Alerts", icon: "hero-bell", href: "#"},
       %{label: "Settings", icon: "hero-cog-6-tooth", href: "#"}

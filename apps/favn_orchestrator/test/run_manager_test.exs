@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunManagerTest do
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias FavnOrchestrator
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -143,6 +144,25 @@ defmodule FavnOrchestrator.RunManagerTest do
       [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
       {String.to_atom(module), String.to_atom(name)}
     end
+  end
+
+  defmodule RunnerClientSubmitFailureStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(_work, _opts), do: {:error, :submit_failed}
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts), do: {:error, :unexpected_await}
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
   end
 
   defmodule RunnerClientSlowCancelableStub do
@@ -1415,6 +1435,12 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Enum.count(events, &(&1.event_type == :step_retry_scheduled)) >= 2
     assert Enum.count(events, &(&1.event_type == :step_started)) >= 4
     assert Enum.count(events, &(&1.event_type == :step_finished)) >= 2
+
+    retry_events = Enum.filter(events, &(&1.event_type == :step_retry_scheduled))
+
+    assert Enum.all?(retry_events, fn event ->
+             assert_step_identity(run_id, event)
+           end)
   end
 
   test "pipeline stage failure drains and reports independent siblings" do
@@ -1673,6 +1699,53 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Enum.member?(Enum.map(events, & &1.event_type), :step_retry_scheduled)
     assert Enum.count(events, &(&1.event_type == :step_started)) == 2
     assert Enum.map(events, & &1.sequence) == Enum.to_list(1..length(events))
+
+    retry_event = Enum.find(events, &(&1.event_type == :step_retry_scheduled))
+    node_key = {{MyApp.Assets.Gold, :asset}, nil}
+
+    assert event_data(retry_event, :node_key) == [
+             %{"module" => "Elixir.MyApp.Assets.Gold", "name" => "asset"},
+             nil
+           ]
+
+    assert_step_identity(run_id, retry_event, node_key, {MyApp.Assets.Gold, :asset})
+  end
+
+  test "sequential submit failure records canonical step identity" do
+    version = manifest_version("mv_submit_failure_step_identity")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSubmitFailureStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               max_attempts: 1,
+               retry_backoff_ms: 0
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :error
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    failed_event = Enum.find(events, &(&1.event_type == :step_failed))
+    node_key = {{MyApp.Assets.Gold, :asset}, nil}
+
+    assert event_data(failed_event, :node_key) == [
+             %{"module" => "Elixir.MyApp.Assets.Gold", "name" => "asset"},
+             nil
+           ]
+
+    assert_step_identity(run_id, failed_event, node_key, {MyApp.Assets.Gold, :asset})
   end
 
   test "retry transitions broadcast on both run and global topics in storage order" do
@@ -2359,6 +2432,32 @@ defmodule FavnOrchestrator.RunManagerTest do
       timeout -> flunk("expected #{remaining} more pubsub run events for #{run_id}")
     end
   end
+
+  defp assert_step_identity(run_id, event) do
+    node_key = event_data(event, :node_key) |> node_key_from_event_data()
+    asset_ref = event.asset_ref |> ref_from_event_data()
+    assert_step_identity(run_id, event, node_key, asset_ref)
+  end
+
+  defp assert_step_identity(run_id, event, node_key, asset_ref) do
+    assert event_data(event, :asset_step_id) ==
+             AssetStepIdentity.asset_step_id(run_id, node_key, asset_ref)
+  end
+
+  defp event_data(event, key) do
+    Map.get(event.data, key) || Map.get(event.data, Atom.to_string(key))
+  end
+
+  defp node_key_from_event_data([ref, window]), do: {ref_from_event_data(ref), window}
+  defp node_key_from_event_data(value), do: value
+
+  defp ref_from_event_data({module, name} = ref) when is_atom(module) and is_atom(name), do: ref
+
+  defp ref_from_event_data(%{"module" => module, "name" => name}) do
+    {String.to_existing_atom(module), String.to_existing_atom(name)}
+  end
+
+  defp ref_from_event_data(value), do: value
 
   defp stop_agent(pid) when is_pid(pid) do
     if Process.alive?(pid), do: Agent.stop(pid)

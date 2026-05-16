@@ -77,7 +77,7 @@ defmodule Favn.Manifest.GeneratorTest do
              )
 
     assert manifest.schema_version == 1
-    assert manifest.runner_contract_version == 1
+    assert manifest.runner_contract_version == 2
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
     assert length(manifest.schedules) == 1
@@ -194,7 +194,7 @@ defmodule Favn.Manifest.GeneratorTest do
     assert :ok =
              Favn.validate_manifest_compatibility(%{
                schema_version: 1,
-               runner_contract_version: 1
+               runner_contract_version: 2
              })
 
     assert {:ok, version} =

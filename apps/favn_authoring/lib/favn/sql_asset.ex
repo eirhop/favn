@@ -25,13 +25,13 @@ defmodule Favn.SQLAsset do
 
   ## Minimal example
 
-      # lib/my_app/warehouse/mart/fct_orders.ex
-      defmodule MyApp.Warehouse.Mart.FctOrders do
+      # lib/my_app/lakehouse/mart/sales/fct_orders.ex
+      defmodule MyApp.Lakehouse.Mart.Sales.FctOrders do
         @moduledoc \"\"\"
         Order fact mart used for revenue and customer reporting.
 
         One row represents one completed order. Test orders are excluded and
-        order timestamps are grouped by business day in the warehouse timezone.
+        order timestamps are grouped by business day in the lakehouse timezone.
         \"\"\"
 
         use Favn.SQLAsset
@@ -40,13 +40,13 @@ defmodule Favn.SQLAsset do
         @meta owner: "analytics", category: :sales, tags: [:mart]
         @window Favn.Window.daily(lookback: 1)
         @freshness [window_success: true]
-        @depends MyApp.Warehouse.Raw.Orders
+        @depends MyApp.Lakehouse.Raw.Sales.Orders
         @materialized {:incremental, strategy: :delete_insert, window_column: :order_date}
 
         query do
           ~SQL\"""
           select *
-          from raw.orders
+          from raw.sales.orders
           where order_date >= @window_start
             and order_date < @window_end
           \"""
@@ -112,8 +112,10 @@ defmodule Favn.SQLAsset do
   When a relation reference resolves to an owned asset relation in the same
   connection, Favn infers the dependency automatically. Use `@depends` when the
   dependency is not visible in the SQL body, when you need a non-SQL upstream,
-  when the relation cannot be resolved from owned asset metadata, or when the
-  project intentionally uses catalog-only layer names.
+  when the relation cannot be resolved from owned asset metadata. New lakehouse
+  projects should use catalog for the database/phase and schema for the
+  segment/domain; catalog-qualified SQL references require a schema so
+  `raw.sales.orders` is unambiguous.
 
   ## Compiles To
 
@@ -230,7 +232,7 @@ defmodule Favn.SQLAsset do
       query do
         ~SQL\"""
         select *
-        from raw.orders
+        from raw.sales.orders
         \"""
       end
 

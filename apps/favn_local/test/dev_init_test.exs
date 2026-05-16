@@ -15,6 +15,8 @@ defmodule Favn.Dev.InitTest do
       "import Config\nconfig :tzdata, :autoupdate, :disabled\n"
     )
 
+    favn_path = Path.expand("../../favn", __DIR__)
+
     File.write!(
       Path.join(root_dir, "mix.exs"),
       """
@@ -31,7 +33,7 @@ defmodule Favn.Dev.InitTest do
 
         defp deps do
           [
-            {:favn, path: "../favn/apps/favn"}
+            {:favn, path: #{inspect(favn_path)}}
           ]
         end
       end
@@ -49,16 +51,17 @@ defmodule Favn.Dev.InitTest do
     assert {:ok, result} = Init.run(root_dir: root_dir, app: app, duckdb: true, sample: true)
 
     assert result.pipeline_module == "#{base_module(app)}.Pipelines.LocalSmoke"
-    assert "lib/#{Macro.underscore(base_module(app))}/connections/warehouse.ex" in result.created
+    assert "lib/#{Macro.underscore(base_module(app))}/connections/important_lakehouse.ex" in result.created
     assert "config/config.exs" in result.updated
     assert "mix.exs" in result.updated
 
     raw_orders =
       File.read!(
-        Path.join(root_dir, "lib/#{Macro.underscore(base_module(app))}/warehouse/raw/orders.ex")
+        Path.join(root_dir, "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex")
       )
 
     assert raw_orders =~ "use Favn.Asset"
+    assert raw_orders =~ "@compile {:no_warn_undefined, Favn.SQLClient}"
     assert raw_orders =~ "alias Favn.SQLClient"
     assert raw_orders =~ "ctx.asset.relation"
     assert raw_orders =~ ~S|create or replace table #{qualified_relation(relation)}|
@@ -67,13 +70,15 @@ defmodule Favn.Dev.InitTest do
       File.read!(
         Path.join(
           root_dir,
-          "lib/#{Macro.underscore(base_module(app))}/warehouse/gold/order_summary.ex"
+          "lib/#{Macro.underscore(base_module(app))}/lakehouse/mart/sales/order_summary.ex"
         )
       )
 
     assert order_summary =~ "use Favn.SQLAsset"
+    assert order_summary =~ "@depends #{base_module(app)}.Lakehouse.Raw.Sales.Orders"
     assert order_summary =~ "@materialized :table"
-    assert order_summary =~ "from raw.orders"
+    assert order_summary =~ "@relation true"
+    assert order_summary =~ "from #{base_module(app)}.Lakehouse.Raw.Sales.Orders"
 
     pipeline =
       File.read!(
@@ -83,8 +88,15 @@ defmodule Favn.Dev.InitTest do
     assert pipeline =~ "deps(:all)"
 
     config = File.read!(Path.join(root_dir, "config/config.exs"))
-    assert config =~ "asset_modules: ["
-    assert config =~ "connection_modules: ["
+    assert config =~ "discovery: ["
+    assert config =~ "apps: [#{inspect(app)}]"
+    assert config =~ "assets: :all"
+    assert config =~ "pipelines: :all"
+    assert config =~ "schedules: :all"
+    assert config =~ "connections: :all"
+    assert config =~ "important_lakehouse: ["
+    assert config =~ ~S|[type: :duckdb, name: :raw, path: ".favn/data/raw.duckdb"]|
+    assert config =~ ~S|[type: :duckdb, name: :mart, path: ".favn/data/mart.duckdb"]|
     assert config =~ "runner_plugins: ["
     assert config =~ "FavnDuckdb"
 
@@ -104,12 +116,12 @@ defmodule Favn.Dev.InitTest do
     assert "mix.exs" in second.existing
 
     raw_path =
-      Path.join(root_dir, "lib/#{Macro.underscore(base_module(app))}/warehouse/raw/orders.ex")
+      Path.join(root_dir, "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex")
 
     File.write!(raw_path, "# local edit\n")
 
     assert {:ok, third} = Init.run(root_dir: root_dir, app: app, duckdb: true, sample: true)
-    assert "lib/#{Macro.underscore(base_module(app))}/warehouse/raw/orders.ex" in third.skipped
+    assert "lib/#{Macro.underscore(base_module(app))}/lakehouse/raw/sales/orders.ex" in third.skipped
     assert File.read!(raw_path) == "# local edit\n"
   end
 
@@ -121,20 +133,22 @@ defmodule Favn.Dev.InitTest do
     assert {:ok, _result} = Init.run(root_dir: root_dir, app: app, duckdb: true, sample: true)
 
     [
-      "connections/warehouse.ex",
-      "warehouse.ex",
-      "warehouse/raw.ex",
-      "warehouse/raw/orders.ex",
-      "warehouse/gold.ex",
-      "warehouse/gold/order_summary.ex",
+      "connections/important_lakehouse.ex",
+      "lakehouse.ex",
+      "lakehouse/raw.ex",
+      "lakehouse/raw/sales.ex",
+      "lakehouse/raw/sales/orders.ex",
+      "lakehouse/mart.ex",
+      "lakehouse/mart/sales.ex",
+      "lakehouse/mart/sales/order_summary.ex",
       "pipelines/local_smoke.ex"
     ]
     |> Enum.each(fn relative ->
       Code.compile_file(Path.join(lib_root, relative))
     end)
 
-    raw_orders = Module.concat([base, Warehouse, Raw, Orders])
-    order_summary = Module.concat([base, Warehouse, Gold, OrderSummary])
+    raw_orders = Module.concat([base, Lakehouse, Raw, Sales, Orders])
+    order_summary = Module.concat([base, Lakehouse, Mart, Sales, OrderSummary])
     pipeline = Module.concat([base, Pipelines, LocalSmoke])
 
     assert {:ok, manifest} =
@@ -145,6 +159,16 @@ defmodule Favn.Dev.InitTest do
 
     assert length(manifest.assets) == 2
     assert length(manifest.pipelines) == 1
+
+    assert raw = Enum.find(manifest.assets, &(&1.ref == {raw_orders, :asset}))
+    assert raw.relation.connection == :important_lakehouse
+    assert raw.relation.catalog == "raw"
+    assert raw.relation.schema == "sales"
+
+    assert mart = Enum.find(manifest.assets, &(&1.ref == {order_summary, :asset}))
+    assert mart.relation.connection == :important_lakehouse
+    assert mart.relation.catalog == "mart"
+    assert mart.relation.schema == "sales"
 
     assert Enum.any?(manifest.graph.edges, fn edge ->
              edge.from == {raw_orders, :asset} and edge.to == {order_summary, :asset}
@@ -198,10 +222,10 @@ defmodule Favn.Dev.InitTest do
           {:ok, version} = Favn.pin_manifest_version(manifest)
           :ok = FavnRunner.register_manifest(version)
 
-          raw_ref = {#{base}.Warehouse.Raw.Orders, :asset}
-          gold_ref = {#{base}.Warehouse.Gold.OrderSummary, :asset}
+          raw_ref = {#{base}.Lakehouse.Raw.Sales.Orders, :asset}
+          mart_ref = {#{base}.Lakehouse.Mart.Sales.OrderSummary, :asset}
 
-          for ref <- [raw_ref, gold_ref] do
+          for ref <- [raw_ref, mart_ref] do
             run_id =
               ref
               |> elem(0)
@@ -220,11 +244,11 @@ defmodule Favn.Dev.InitTest do
           end
 
           assert {:ok, result} =
-                   Favn.SQLClient.with_connection(:warehouse, [], fn session ->
-                     Favn.SQLClient.query(
-                       session,
-                       "select order_date, order_count, revenue_cents from gold.order_summary order by order_date"
-                     )
+                   Favn.SQLClient.with_connection(:important_lakehouse, [], fn session ->
+                      Favn.SQLClient.query(
+                        session,
+                        "select order_date, order_count, revenue_cents from mart.sales.order_summary order by order_date"
+                      )
                    end)
 
           assert [first, second] = result.rows

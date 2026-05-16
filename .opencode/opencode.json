@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest"],
+      "enabled": true
+    },
+    "tidewave": {
+      "type": "remote",
+      "url": "http://localhost:4173/tidewave/mcp",
+      "enabled": true
+    }
+  }
+}

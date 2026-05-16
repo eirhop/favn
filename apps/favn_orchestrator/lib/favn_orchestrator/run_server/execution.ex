@@ -18,6 +18,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.Manifest.Version
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.Freshness.Decider
   alias FavnOrchestrator.Freshness.Staleness
@@ -293,6 +294,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     node = Map.fetch!(run_state.plan.nodes, node_key)
     now = DateTime.utc_now()
     freshness_key = Map.get(decision, :freshness_key, Favn.Freshness.Key.latest())
+    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, node.ref)
 
     result =
       NodeResult.new(%{
@@ -310,7 +312,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         attempt_count: 0,
         max_attempts: run_state.max_attempts,
         meta: decision_metadata(decision),
-        error: if(status == :blocked, do: decision.reason, else: nil)
+        error: if(status == :blocked, do: decision.reason, else: nil),
+        asset_step_id: asset_step_id
       })
 
     next_run = put_node_result(run_state, result)
@@ -319,6 +322,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     case Persistence.persist_run_step(next_run, event_type, %{
            asset_ref: node.ref,
            node_key: node_key,
+           asset_step_id: asset_step_id,
            stage: stage,
            reason: decision.reason,
            freshness_key: freshness_key
@@ -496,6 +500,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           case Persistence.persist_run_step(failed, :step_failed, %{
                  asset_ref: asset_ref,
                  error: reason,
+                 node_key: Map.get(work.metadata, :node_key),
+                 asset_step_id: Map.get(work.metadata, :asset_step_id),
                  stage: stage,
                  attempt: attempt,
                  max_attempts: current_run.max_attempts
@@ -845,6 +851,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
            asset_ref: asset_ref,
            result_status: result.status,
            error: result.error,
+           node_key: Map.get(entry, :node_key),
+           asset_step_id: Map.get(entry, :asset_step_id),
            stage: stage,
            attempt: attempt,
            max_attempts: run_state.max_attempts
@@ -893,6 +901,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
     case Persistence.persist_run_step(step_state, :step_timed_out, %{
            asset_ref: asset_ref,
            error: :timeout,
+           node_key: Map.get(entry, :node_key),
+           asset_step_id: Map.get(entry, :asset_step_id),
            stage: stage,
            attempt: attempt,
            max_attempts: run_state.max_attempts
@@ -941,6 +951,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
     case Persistence.persist_run_step(step_state, :step_failed, %{
            asset_ref: asset_ref,
            error: reason,
+           node_key: Map.get(entry, :node_key),
+           asset_step_id: Map.get(entry, :asset_step_id),
            stage: stage,
            attempt: attempt,
            max_attempts: run_state.max_attempts
@@ -990,7 +1002,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
         runner_execution_id: execution_id,
         meta: asset_result_meta(asset_result),
         error: asset_result_error(asset_result),
-        attempts: asset_result_attempts(asset_result)
+        attempts: asset_result_attempts(asset_result),
+        asset_step_id:
+          asset_result_asset_step_id(asset_result) ||
+            AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
       })
 
     put_node_result(run_state, result)
@@ -1041,8 +1056,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp asset_result_attempts(%{"attempts" => attempts}) when is_list(attempts), do: attempts
   defp asset_result_attempts(_result), do: []
 
+  defp asset_result_asset_step_id(%AssetResult{asset_step_id: asset_step_id}), do: asset_step_id
+  defp asset_result_asset_step_id(%{asset_step_id: asset_step_id}), do: asset_step_id
+  defp asset_result_asset_step_id(%{"asset_step_id" => asset_step_id}), do: asset_step_id
+  defp asset_result_asset_step_id(_result), do: nil
+
   defp schedule_retry_for_ref(%RunState{} = run_state, node_key, stage, attempt) do
     asset_ref = node_asset_ref(run_state, node_key)
+    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
 
     retrying =
       RunState.transition(run_state,
@@ -1054,6 +1075,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     case Persistence.persist_run_step(retrying, :step_retry_scheduled, %{
            asset_ref: asset_ref,
+           node_key: node_key,
+           asset_step_id: asset_step_id,
            stage: stage,
            attempt: attempt,
            max_attempts: run_state.max_attempts,
@@ -1079,7 +1102,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp stage_work(%RunState{} = run_state, %Version{} = version, node_key, stage, attempt) do
     node = Map.fetch!(run_state.plan.nodes, node_key)
     asset_ref = node.ref
-    asset_step_id = asset_step_id(run_state.id, node_key, asset_ref)
+    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
 
     %RunnerWork{
       run_id: run_state.id,
@@ -1601,7 +1624,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         metadata:
           Map.merge(work_metadata(run_state.metadata), %{
             attempt: attempt,
-            asset_step_id: asset_step_id(run_state.id, {asset_ref, nil}, asset_ref),
+            asset_step_id:
+              AssetStepIdentity.asset_step_id(run_state.id, {asset_ref, nil}, asset_ref),
             max_attempts: max_attempts,
             stage: stage,
             node_key: {asset_ref, nil}
@@ -1620,6 +1644,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         case Persistence.persist_run_step(running_with_execution, :step_started, %{
                asset_ref: asset_ref,
                runner_execution_id: execution_id,
+               node_key: Map.get(work.metadata, :node_key),
+               asset_step_id: Map.get(work.metadata, :asset_step_id),
                stage: stage,
                attempt: attempt,
                max_attempts: max_attempts
@@ -1663,6 +1689,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           case Persistence.persist_run_step(failed, :step_failed, %{
                  asset_ref: asset_ref,
                  error: reason,
+                 node_key: Map.get(work.metadata, :node_key),
+                 asset_step_id: Map.get(work.metadata, :asset_step_id),
                  stage: stage,
                  attempt: attempt,
                  max_attempts: max_attempts
@@ -1722,6 +1750,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
                asset_ref: asset_ref,
                result_status: result.status,
                error: result.error,
+               node_key: Map.get(running_with_execution.metadata, :node_key),
+               asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
                stage: stage,
                attempt: attempt,
                max_attempts: max_attempts
@@ -1761,6 +1791,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         case Persistence.persist_run_step(timeout_state, :step_timed_out, %{
                asset_ref: asset_ref,
                error: :timeout,
+               node_key: Map.get(running_with_execution.metadata, :node_key),
+               asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
                stage: stage,
                attempt: attempt,
                max_attempts: max_attempts
@@ -1798,6 +1830,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         case Persistence.persist_run_step(failed, :step_failed, %{
                asset_ref: asset_ref,
                error: reason,
+               node_key: Map.get(running_with_execution.metadata, :node_key),
+               asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
                stage: stage,
                attempt: attempt,
                max_attempts: max_attempts
@@ -1817,20 +1851,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       {:error, _reason} -> nil
     end
   end
-
-  defp asset_step_id(run_id, node_key, asset_ref) do
-    persisted_key_id(node_key, asset_ref) || safe_id("#{run_id}:#{inspect(asset_ref)}")
-  end
-
-  defp persisted_key_id(nil, _asset_ref), do: nil
-  defp persisted_key_id(key, asset_ref) when is_binary(key) and key != asset_ref, do: safe_id(key)
-
-  defp persisted_key_id(key, _asset_ref) when is_tuple(key),
-    do: key |> :erlang.term_to_binary() |> Base.url_encode64(padding: false) |> safe_id()
-
-  defp persisted_key_id(_key, _asset_ref), do: nil
-
-  defp safe_id(value), do: value |> to_string() |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
 
   defp stop_runner_log_bridge(nil, _runner_client, _execution_id, _runner_opts), do: :ok
 
@@ -1864,6 +1884,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
       Snapshots.cancelled_state(run_state)
     else
       if retryable and attempt < run_state.max_attempts do
+        node_key = Map.get(run_state.metadata, :node_key) || {asset_ref, nil}
+
+        asset_step_id =
+          Map.get(run_state.metadata, :asset_step_id) ||
+            AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
+
         retrying =
           RunState.transition(run_state,
             status: :running,
@@ -1874,6 +1900,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
         case Persistence.persist_run_step(retrying, :step_retry_scheduled, %{
                asset_ref: asset_ref,
+               node_key: node_key,
+               asset_step_id: asset_step_id,
                stage: stage,
                attempt: attempt,
                max_attempts: run_state.max_attempts,

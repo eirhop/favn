@@ -11,6 +11,8 @@ follow-up production modes, not part of the first v1 single-node contract.
 
 The package and user-facing API support boundary for this runtime target is
 documented separately in `docs/production/public_api_boundary.md`.
+The operator procedure for this target is documented in
+`docs/production/single_node_operator_runbook.md`.
 
 ## Current Implementation Status
 
@@ -22,9 +24,9 @@ relocatable runtime closure. Full release packaging, backup automation, and
 production Phoenix web deployment remain follow-up implementation work.
 
 Phase 1 runtime config validation, backend control-plane bootstrap, live
-single-node first-run verification, and SQLite-backed auth/session/audit
-persistence have landed, while full operator runbooks and production web
-hardening remain follow-up implementation work.
+single-node first-run verification, SQLite-backed auth/session/audit
+persistence, and the initial operator runbook have landed, while backup
+automation and production web hardening remain follow-up implementation work.
 
 Follow-up issues must treat this document as the product contract they are
 making real.
@@ -319,6 +321,11 @@ single-node production runtime mode.
 
 SQLite-first production requires backup, migration, and restore guarantees for
 SQLite before Postgres production mode is introduced.
+
+Operator procedures for the current SQLite-first single-node artifact are in
+`docs/production/single_node_operator_runbook.md`. The runbook documents the
+tested stopped-backend backup/restore path and separates SQLite control-plane
+recovery from DuckDB data-plane recovery.
 
 Minimum expectations for the SQLite phase:
 

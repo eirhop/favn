@@ -34,8 +34,12 @@ defmodule FavnView.Components.LogViewer do
       |> assign(:copy_text, LogsViewModel.plain_text(assigns.visible_logs))
 
     ~H"""
-    <section class="mx-auto w-full max-w-6xl" data-testid="log-viewer" data-log-scope={@scope}>
-      <div class="card glass favn-glass-panel overflow-hidden rounded-box border border-primary/20 bg-base-200/35 shadow-2xl">
+    <section
+      class="mx-auto flex min-h-0 w-full max-w-6xl flex-1"
+      data-testid="log-viewer"
+      data-log-scope={@scope}
+    >
+      <div class="card glass favn-glass-panel min-h-0 flex-1 overflow-hidden rounded-box border border-primary/20 bg-base-200/35 shadow-2xl">
         <div class="flex flex-col gap-3 border-b border-base-content/10 p-4 sm:gap-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2 sm:gap-3">
@@ -94,13 +98,13 @@ defmodule FavnView.Components.LogViewer do
           phx-hook="FavnLogViewer"
           data-live-tail={to_string(@live_tail?)}
           data-copy-source="log-copy-text"
-          class="relative border-t border-base-content/10 bg-base-100/55 p-4 sm:p-5"
+          class="relative flex min-h-0 flex-1 flex-col border-t border-base-content/10 bg-base-100/55 p-4 sm:p-5"
         >
           <textarea id="log-copy-text" class="hidden" readonly>{@copy_text}</textarea>
 
           <div
             :if={@status == :loading}
-            class="rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
+            class="flex min-h-[16rem] flex-1 items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
             data-testid="log-loading-state"
           >
             Loading logs...
@@ -108,7 +112,7 @@ defmodule FavnView.Components.LogViewer do
 
           <div
             :if={@status == :error}
-            class="rounded-box border border-error/25 bg-error/5 p-8 text-center text-sm text-error"
+            class="flex min-h-[16rem] flex-1 items-center justify-center rounded-box border border-error/25 bg-error/5 p-8 text-center text-sm text-error"
             data-testid="log-error-state"
           >
             Unable to load logs.
@@ -116,7 +120,7 @@ defmodule FavnView.Components.LogViewer do
 
           <div
             :if={@status != :loading and @status != :error and @visible_logs == []}
-            class="rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
+            class="flex min-h-[16rem] flex-1 flex-col items-center justify-center rounded-box border border-dashed border-base-content/15 p-8 text-center text-sm text-base-content/55"
             data-testid="log-empty-state"
           >
             {@empty_state}
@@ -128,7 +132,7 @@ defmodule FavnView.Components.LogViewer do
           <div
             :if={@status not in [:loading, :error] and @visible_logs != []}
             class={[
-              "max-h-[34rem] overflow-auto rounded-box border border-base-content/10 bg-[#020817]/75 p-4 font-mono text-sm leading-6 shadow-inner",
+              "min-h-[16rem] flex-1 overflow-auto rounded-box border border-base-content/10 bg-[#020817]/75 p-4 font-mono text-sm leading-6 shadow-inner",
               !@wrap? && "whitespace-nowrap"
             ]}
             data-testid="log-terminal-window"
@@ -313,19 +317,29 @@ defmodule FavnView.Components.LogViewer do
   def log_row(assigns) do
     ~H"""
     <article
-      class="grid gap-2 text-base-content/90 sm:grid-cols-[6.5rem_4.5rem_13rem_minmax(0,1fr)]"
+      class="grid gap-2 text-slate-100/90 sm:grid-cols-[6.5rem_4.5rem_13rem_minmax(0,1fr)]"
       data-testid="log-row"
       title={sequence_title(@log)}
     >
-      <time class="text-base-content/55">{@log.timestamp}</time>
+      <time class="text-slate-400">{@log.timestamp}</time>
       <span class={["font-semibold", level_class(@log.level)]}>{@log.level_label}</span>
-      <span class="truncate text-base-content/55">{@log.source_label}</span>
+      <span class="truncate text-slate-400">{@log.source_label}</span>
       <div class="min-w-0">
         <pre class={[
-          "m-0 font-mono text-base-content/90",
+          "m-0 font-mono text-slate-100/90",
           @wrap? && "whitespace-pre-wrap break-words",
           !@wrap? && "whitespace-pre"
         ]}><code>{@log.message}</code></pre>
+        <div :if={@log.details != []} class="mt-2 flex flex-wrap gap-1.5 text-[0.68rem] leading-4">
+          <span
+            :for={detail <- @log.details}
+            class="rounded-full border border-slate-700/80 bg-slate-900/80 px-2 py-0.5 text-slate-300"
+            title={detail.title}
+            data-testid="log-detail-chip"
+          >
+            <span class="text-slate-500">{detail.label}</span> {detail.display}
+          </span>
+        </div>
         <span
           :if={@log.truncated?}
           class="mt-1 inline-flex rounded-full border border-warning/30 px-2 py-0.5 text-[0.65rem] uppercase tracking-[0.16em] text-warning/80"
@@ -340,10 +354,10 @@ defmodule FavnView.Components.LogViewer do
   defp level_label(level), do: level |> Atom.to_string() |> String.upcase()
   defp source_label(source), do: source |> Atom.to_string() |> String.replace("_", ":")
 
-  defp level_class("debug"), do: "text-base-content/45"
-  defp level_class("warning"), do: "text-warning"
-  defp level_class("error"), do: "text-error"
-  defp level_class(_level), do: "text-info"
+  defp level_class("debug"), do: "text-slate-500"
+  defp level_class("warning"), do: "text-amber-300"
+  defp level_class("error"), do: "text-rose-300"
+  defp level_class(_level), do: "text-sky-300"
 
   defp live_badge_class(true),
     do:

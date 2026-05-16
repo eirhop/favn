@@ -78,7 +78,7 @@ defmodule Favn.Connection do
   ## Runtime Environment Values
 
       config :favn,
-        connection_modules: [MyApp.Connections.Warehouse],
+        discovery: [apps: [:my_app], connections: :all],
         connections: [
           warehouse: [
             database: Favn.RuntimeConfig.Ref.env!("WAREHOUSE_DB_PATH"),

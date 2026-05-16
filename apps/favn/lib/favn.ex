@@ -77,9 +77,9 @@ defmodule Favn do
         }
 
   @type manifest_opts :: [
-          asset_modules: [module()],
-          pipeline_modules: [module()],
-          schedule_modules: [module()]
+          asset_modules: [module()] | :all,
+          pipeline_modules: [module()] | :all,
+          schedule_modules: [module()] | :all
         ]
 
   @type run_id :: term()
@@ -95,10 +95,12 @@ defmodule Favn do
   defdelegate asset_module?(module), to: FavnAuthoring
 
   @doc """
-  Compiles and returns all configured asset modules from `config :favn`.
+  Compiles and returns all configured or discovered asset modules from
+  `config :favn`.
 
-  This is the normal entrypoint when the current project already declares its
-  `:asset_modules` in application config.
+  This is the normal entrypoint when the current project declares
+  `:asset_modules` explicitly or opts into app-scoped discovery with
+  `config :favn, discovery: [apps: [:my_app], assets: :all]`.
 
   ## Example
 
@@ -128,7 +130,7 @@ defmodule Favn do
 
   ## Examples
 
-      {:ok, asset} = Favn.get_asset(MyApp.Warehouse.Raw.Sales.Orders)
+      {:ok, asset} = Favn.get_asset(MyApp.Lakehouse.Raw.Sales.Orders)
       {:ok, asset} = Favn.get_asset({MyApp.Raw.Shopify, :orders})
   """
   @spec get_asset(module() | Favn.Ref.t()) :: {:ok, Favn.Asset.t()} | {:error, term()}
@@ -150,12 +152,17 @@ defmodule Favn do
   but do not need build-only metadata such as diagnostics.
 
   If no explicit modules are passed, `Favn` reads `:asset_modules`,
-  `:pipeline_modules`, and `:schedule_modules` from `config :favn`.
+  `:pipeline_modules`, and `:schedule_modules` from `config :favn`. Projects can
+  also opt into release-safe app-scoped discovery with `config :favn, discovery:
+  [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]`.
 
   ## Example
 
+      # With config :favn, discovery: [apps: [:my_app], assets: :all, pipelines: :all, schedules: :all]
+      {:ok, manifest} = Favn.generate_manifest()
+
       {:ok, manifest} = Favn.generate_manifest(
-        asset_modules: [MyApp.Warehouse.Raw.Orders, MyApp.Warehouse.Mart.OrderSummary],
+        asset_modules: [MyApp.Lakehouse.Raw.Sales.Orders, MyApp.Lakehouse.Mart.Sales.OrderSummary],
         pipeline_modules: [MyApp.Pipelines.DailySales]
       )
   """

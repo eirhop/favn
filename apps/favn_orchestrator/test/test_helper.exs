@@ -6,4 +6,4 @@ FavnTestSupport.Fixtures.compile_fixtures!([
 ])
 
 Logger.configure(level: :warning)
-ExUnit.start()
+ExUnit.start(capture_log: true)

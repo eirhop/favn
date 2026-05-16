@@ -6,7 +6,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
   alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.RuntimeLaunch
 
-  test "runner, orchestrator, and web specs target installed runtime roots" do
+  test "runner and operator specs target installed runtime roots" do
     runtime = %{
       "materialized_root" => "/tmp/favn_runtime",
       "runner_root" => "/tmp/favn_runtime",
@@ -31,21 +31,19 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     opts = distribution_opts()
     runner = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
-    web = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+    operator = RuntimeLaunch.operator_spec(runtime, config, opts, node_names, secrets)
 
     assert runner.cwd == runtime["runner_root"]
-    assert orchestrator.cwd == runtime["orchestrator_root"]
-    assert web.cwd == runtime["web_root"]
+    assert operator.cwd == runtime["orchestrator_root"]
     assert "--no-compile" in runner.args
     assert "mix" in runner.args
-    assert "--no-compile" in orchestrator.args
-    assert "mix" in orchestrator.args
-    assert web.exec == (System.find_executable("elixir") || "elixir")
-    assert "mix" in web.args
-    assert "--no-compile" in web.args
-    assert web.env["FAVN_VIEW_PUBLIC_ORIGIN"] == config.web_base_url
-    assert web.env["FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH"] == "1"
+    assert "--no-compile" in operator.args
+    assert "mix" in operator.args
+    assert operator.exec == (System.find_executable("elixir") || "elixir")
+    assert operator.env["FAVN_DEV_STORAGE"] == "sqlite"
+    assert operator.env["FAVN_DEV_SQLITE_PATH"] == Path.expand(config.sqlite_path)
+    assert operator.env["FAVN_VIEW_PUBLIC_ORIGIN"] == config.web_base_url
+    assert operator.env["FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH"] == "1"
   end
 
   test "runtime specs bind local HTTP and distributed Erlang to loopback" do
@@ -73,30 +71,42 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     opts = distribution_opts(root_dir: root_dir)
     runner = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
-    web = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+    operator = RuntimeLaunch.operator_spec(runtime, config, opts, node_names, secrets)
     runner_port = RuntimeLaunch.distribution_port(:runner, opts)
     orchestrator_port = RuntimeLaunch.distribution_port(:orchestrator, opts)
     runner_erl = erl_flag!(runner)
-    orchestrator_erl = erl_flag!(orchestrator)
-    code = eval_code!(orchestrator)
+    operator_erl = erl_flag!(operator)
+    code = eval_code!(operator)
 
     assert runner_erl =~ "inet_dist_use_interface {127,0,1,1}"
     assert runner_erl =~ "inet_dist_listen_min #{runner_port}"
     assert runner_erl =~ "inet_dist_listen_max #{runner_port}"
-    assert orchestrator_erl =~ "inet_dist_use_interface {127,0,1,1}"
-    assert orchestrator_erl =~ "inet_dist_listen_min #{orchestrator_port}"
-    assert orchestrator_erl =~ "inet_dist_listen_max #{orchestrator_port}"
+    assert operator_erl =~ "inet_dist_use_interface {127,0,1,1}"
+    assert operator_erl =~ "inet_dist_listen_min #{orchestrator_port}"
+    assert operator_erl =~ "inet_dist_listen_max #{orchestrator_port}"
     assert runner.env["ERL_EPMD_ADDRESS"] == "127.0.1.1"
-    assert orchestrator.env["ERL_EPMD_ADDRESS"] == "127.0.1.1"
-    assert orchestrator.env["FAVN_ORCHESTRATOR_API_BIND_IP"] == "127.0.0.1"
+    assert operator.env["ERL_EPMD_ADDRESS"] == "127.0.1.1"
+    assert operator.env["FAVN_ORCHESTRATOR_API_BIND_IP"] == "127.0.0.1"
     assert code =~ "bind_ip: api_bind_ip"
-    assert web.env["FAVN_VIEW_PORT"] == "4173"
+    assert operator.env["FAVN_VIEW_PORT"] == "4173"
 
-    web_code = eval_code!(web)
-    assert web_code =~ "endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])"
-    assert web_code =~ "Keyword.merge(endpoint_config"
-    assert web_code =~ "Application.ensure_all_started(:favn_view)"
+    assert code =~ "storage = System.fetch_env!(\"FAVN_DEV_STORAGE\")"
+    assert code =~ "Application.put_env(:favn_orchestrator, :storage_adapter"
+    assert code =~ "Application.ensure_all_started(:favn_storage_sqlite)"
+    assert code =~ "endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])"
+    assert code =~ "Keyword.merge(endpoint_config"
+
+    assert before?(
+             code,
+             "Application.put_env(:favn_orchestrator, :storage_adapter",
+             "Application.ensure_all_started(:favn_orchestrator)"
+           )
+
+    assert before?(
+             code,
+             "Application.ensure_all_started(:favn_orchestrator)",
+             "Application.ensure_all_started(:favn_view)"
+           )
   end
 
   test "orchestrator spec handles memory storage explicitly" do
@@ -117,7 +127,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     }
 
     orchestrator =
-      RuntimeLaunch.orchestrator_spec(runtime, config, distribution_opts(), node_names, secrets)
+      RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
 
     code = eval_code!(orchestrator)
 
@@ -142,7 +152,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     code =
       runtime
-      |> RuntimeLaunch.orchestrator_spec(config, distribution_opts(), node_names, secrets)
+      |> RuntimeLaunch.operator_spec(config, distribution_opts(), node_names, secrets)
       |> eval_code!()
 
     assert before?(
@@ -299,7 +309,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     code =
       runtime
-      |> RuntimeLaunch.orchestrator_spec(config, distribution_opts(), node_names, secrets)
+      |> RuntimeLaunch.operator_spec(config, distribution_opts(), node_names, secrets)
       |> eval_code!()
 
     assert code =~ "validate_runner_node_name!"
@@ -318,7 +328,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
     orchestrator =
-      RuntimeLaunch.orchestrator_spec(runtime, config, distribution_opts(), node_names, secrets)
+      RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
 
     code = eval_code!(orchestrator)
 
@@ -359,17 +369,15 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       )
 
     runner = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
-    orchestrator = RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
-    web = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
+    operator = RuntimeLaunch.operator_spec(runtime, config, opts, node_names, secrets)
 
     assert runner.env["CUSTOM_ENV"] == "from-file"
-    assert orchestrator.env["CUSTOM_ENV"] == "from-file"
-    assert web.env["CUSTOM_ENV"] == "from-file"
+    assert operator.env["CUSTOM_ENV"] == "from-file"
 
     assert runner.env["MIX_ENV"] == "dev"
-    assert orchestrator.env["MIX_ENV"] == "dev"
-    assert orchestrator.env["FAVN_DEV_STORAGE"] == "sqlite"
-    assert web.env["FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN"] == "token"
+    assert operator.env["MIX_ENV"] == "dev"
+    assert operator.env["FAVN_DEV_STORAGE"] == "sqlite"
+    assert operator.env["FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN"] == "token"
   end
 
   test "orchestrator spec enables scheduler when resolved config enables it" do
@@ -383,10 +391,10 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
 
-    orchestrator =
-      RuntimeLaunch.orchestrator_spec(runtime, config, distribution_opts(), node_names, secrets)
+    operator =
+      RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
 
-    assert orchestrator.env["FAVN_DEV_SCHEDULER_ENABLED"] == "1"
+    assert operator.env["FAVN_DEV_SCHEDULER_ENABLED"] == "1"
   end
 
   defp eval_code!(%{args: args}) do

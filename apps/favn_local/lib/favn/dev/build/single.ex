@@ -5,6 +5,7 @@ defmodule Favn.Dev.Build.Single do
 
   alias Favn.Dev.Build.Orchestrator
   alias Favn.Dev.Build.Runner
+  alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.Install
   alias Favn.Dev.Paths
   alias Favn.Dev.State
@@ -40,9 +41,10 @@ defmodule Favn.Dev.Build.Single do
            write_json(
              Path.join(dist_dir, "metadata.json"),
              metadata_json(build_id, assembly, opts)
-           ),
-         :ok <- write_json(Path.join(dist_dir, "config/assembly.json"), assembly),
-         :ok <- write_env_files(dist_dir),
+          ),
+          :ok <- write_json(Path.join(dist_dir, "config/assembly.json"), assembly),
+          :ok <- write_consumer_config(dist_dir, opts),
+          :ok <- write_env_files(dist_dir),
          :ok <- write_scripts(dist_dir, orchestrator),
          :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
@@ -159,6 +161,10 @@ defmodule Favn.Dev.Build.Single do
       "FAVN_ORCHESTRATOR_API_PORT",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES",
       "FAVN_SCHEDULER_ENABLED",
       "FAVN_SCHEDULER_TICK_MS",
       "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES",
@@ -190,13 +196,17 @@ defmodule Favn.Dev.Build.Single do
       "# Copy this file to env/backend.env or set FAVN_ENV_FILE before running bin/start.",
       "FAVN_STORAGE=sqlite",
       "FAVN_SQLITE_PATH=/var/lib/favn/control-plane.sqlite3",
-      "FAVN_SQLITE_MIGRATION_MODE=manual",
+      "FAVN_SQLITE_MIGRATION_MODE=auto",
       "FAVN_SQLITE_BUSY_TIMEOUT_MS=5000",
       "FAVN_SQLITE_POOL_SIZE=1",
       "FAVN_ORCHESTRATOR_API_BIND_HOST=127.0.0.1",
       "FAVN_ORCHESTRATOR_API_PORT=4101",
       "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS=favn_view:replace-with-32-plus-char-service-token",
       "FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN=replace-with-32-plus-char-service-token",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME='Favn Admin'",
+      "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES=admin",
       "FAVN_SCHEDULER_ENABLED=true",
       "FAVN_SCHEDULER_TICK_MS=15000",
       "FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES=1000",
@@ -205,6 +215,11 @@ defmodule Favn.Dev.Build.Single do
     ]
 
     File.write(Path.join(dist_dir, "env/backend.env.example"), Enum.join(backend, "\n"))
+  end
+
+  defp write_consumer_config(dist_dir, opts) do
+    path = Path.join(dist_dir, "config/consumer_favn_config.b64")
+    File.write(path, ConsumerConfigTransport.collect_and_encode(opts) <> "\n")
   end
 
   defp write_scripts(dist_dir, orchestrator) do
@@ -298,6 +313,18 @@ defmodule Favn.Dev.Build.Single do
         |> String.to_charlist()
         |> :code.load_abs()
       end)
+    end
+
+    consumer_config_path = Path.join([artifact_root, "config", "consumer_favn_config.b64"])
+
+    if File.regular?(consumer_config_path) do
+      with {:ok, encoded} <- File.read(consumer_config_path),
+           :ok <- Favn.Dev.ConsumerConfigTransport.apply_encoded(String.trim(encoded)) do
+        :ok
+      else
+        {:error, reason} -> raise "failed to apply packaged consumer Favn config: #{inspect(reason)}"
+        other -> raise "failed to apply packaged consumer Favn config: #{inspect(other)}"
+      end
     end
 
     env = System.get_env()
@@ -472,8 +499,8 @@ defmodule Favn.Dev.Build.Single do
       "adapter, orchestrator API, and scheduler when FAVN_SCHEDULER_ENABLED allows it.",
       "",
       "Copy env/backend.env.example to env/backend.env or set FAVN_ENV_FILE before",
-      "running bin/start. The example service token is intentionally invalid and",
-      "must be replaced with a real secret. Web production startup, Postgres",
+      "running bin/start. The example service token and blank first-admin",
+      "password must be replaced with real secrets. Web production startup, Postgres",
       "production mode, distributed execution, shared SQLite, and HA orchestrators",
       "are not included.",
       ""

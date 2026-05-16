@@ -2,6 +2,16 @@ defmodule Favn.RelationRef do
   @moduledoc """
   Shared canonical relation identity for produced asset ownership and SQL-facing
   relation references.
+
+  Relation identity is intentionally split into four levels:
+
+  - `connection`: named server/session/auth configuration
+  - `catalog`: physical database or lakehouse phase such as raw, intermediate, or mart
+  - `schema`: segment/domain namespace such as sales or finance
+  - `name`: table or view name
+
+  `database` is accepted as an input alias for `catalog`, and `table` is accepted
+  as an input alias for `name`.
   """
 
   @enforce_keys [:name]

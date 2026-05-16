@@ -15,7 +15,7 @@ defmodule FavnView.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: listeners(Mix.env())
     ]
   end
 
@@ -32,6 +32,9 @@ defmodule FavnView.MixProject do
   # Specifies which paths to compile per environment.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  defp listeners(:dev), do: [Phoenix.CodeReloader]
+  defp listeners(_env), do: []
 
   # Specifies your project dependencies.
   #

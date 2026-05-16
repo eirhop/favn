@@ -21,9 +21,13 @@ defmodule FavnView.LogsViewModel do
       source_label: source_label(Map.get(entry, :source, :user_code)),
       run_id: Map.get(entry, :run_id),
       asset_step_id: Map.get(entry, :asset_step_id),
+      asset_ref: ref_label(Map.get(entry, :asset_ref)),
+      runner_execution_id: Map.get(entry, :runner_execution_id),
+      attempt: Map.get(entry, :attempt),
       message: Map.get(entry, :message, "") || "",
       metadata: Map.get(entry, :metadata, %{}) || %{},
       metadata_text: metadata_text(Map.get(entry, :metadata, %{}) || %{}),
+      details: details(entry),
       truncated?: Map.get(entry, :truncated, false) == true
     }
   end
@@ -44,7 +48,7 @@ defmodule FavnView.LogsViewModel do
   def plain_text(entries) when is_list(entries) do
     entries
     |> Enum.map(fn entry ->
-      [entry.timestamp, entry.level_label, entry.source_label, entry.message]
+      [entry.timestamp, entry.level_label, entry.source_label, entry.message, detail_text(entry)]
       |> Enum.reject(&(&1 in [nil, ""]))
       |> Enum.join("  ")
     end)
@@ -172,10 +176,51 @@ defmodule FavnView.LogsViewModel do
   defp search_match?(_entry, ""), do: true
 
   defp search_match?(entry, query) do
-    [entry.message, entry.source_label, entry.level_label, entry.metadata_text]
+    [
+      entry.message,
+      entry.source_label,
+      entry.level_label,
+      entry.metadata_text,
+      detail_text(entry)
+    ]
     |> Enum.join("\n")
     |> String.downcase()
     |> String.contains?(query)
+  end
+
+  defp details(entry) do
+    [
+      {"run", short_id(Map.get(entry, :run_id)), Map.get(entry, :run_id)},
+      {"asset", ref_label(Map.get(entry, :asset_ref)), ref_label(Map.get(entry, :asset_ref))},
+      {"step", Map.get(entry, :asset_step_id), Map.get(entry, :asset_step_id)},
+      {"attempt", attempt_label(Map.get(entry, :attempt)), Map.get(entry, :attempt)},
+      {"runner", short_id(Map.get(entry, :runner_execution_id)),
+       Map.get(entry, :runner_execution_id)},
+      {"producer", producer_label(entry), producer_label(entry)}
+    ]
+    |> Enum.reject(fn {_label, _display, value} -> value in [nil, ""] end)
+    |> Enum.map(fn {label, display, value} ->
+      %{label: label, display: display, title: to_string(value)}
+    end)
+  end
+
+  defp detail_text(%{details: details}) when is_list(details) do
+    details
+    |> Enum.map(fn detail -> "#{detail.label}=#{detail.title}" end)
+    |> Enum.join(" ")
+  end
+
+  defp detail_text(_entry), do: ""
+
+  defp attempt_label(nil), do: nil
+  defp attempt_label(attempt), do: "##{attempt}"
+
+  defp producer_label(entry) do
+    case {Map.get(entry, :producer_id), Map.get(entry, :producer_sequence)} do
+      {nil, _sequence} -> nil
+      {producer_id, nil} -> producer_id
+      {producer_id, sequence} -> "#{producer_id}:#{sequence}"
+    end
   end
 
   defp metadata_text(metadata) when map_size(metadata) == 0, do: ""

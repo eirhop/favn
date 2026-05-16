@@ -24,8 +24,8 @@ defmodule Favn.Asset do
 
   ## Minimal example
 
-      # lib/my_app/warehouse/raw/orders.ex
-      defmodule MyApp.Warehouse.Raw.Orders do
+      # lib/my_app/lakehouse/raw/sales/orders.ex
+      defmodule MyApp.Lakehouse.Raw.Sales.Orders do
         @moduledoc \"\"\"
         Raw commerce orders as received from the source platform.
 
@@ -38,7 +38,7 @@ defmodule Favn.Asset do
 
         @doc "Fetch, normalize, and write raw commerce orders."
         @meta owner: "data-platform", category: :sales, tags: [:raw]
-        @depends MyApp.Warehouse.Raw.Customers
+        @depends MyApp.Lakehouse.Raw.Sales.Customers
         @window Favn.Window.daily()
         @freshness :daily
         @relation true
@@ -120,7 +120,7 @@ defmodule Favn.Asset do
   Keep the source client and SQL landing helper in your own application, not in
   Favn. The asset should coordinate the boundary:
 
-      defmodule MyApp.Warehouse.Raw.SourceItems do
+      defmodule MyApp.Lakehouse.Raw.Sales.SourceItems do
         use Favn.Namespace
         use Favn.Asset
 
@@ -142,7 +142,7 @@ defmodule Favn.Asset do
              %{
                rows_written: length(rows),
                mode: :full_refresh,
-               relation: Enum.join([relation.schema, relation.name], "."),
+                relation: Enum.join([relation.catalog, relation.schema, relation.name], "."),
                loaded_at: DateTime.utc_now(),
                source: %{
                  system: :source_system,

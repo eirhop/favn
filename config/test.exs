@@ -1,5 +1,7 @@
 import Config
 
+config :logger, level: :error
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :favn_view, FavnView.Endpoint,

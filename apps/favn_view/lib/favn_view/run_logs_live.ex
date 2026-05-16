@@ -15,7 +15,7 @@ defmodule FavnView.RunLogsLive do
         filter: %Favn.Log.Filter{run_id: run_id},
         scope: :run,
         nav_items: LogsLiveSupport.nav_items(:runs),
-        title: "Run logs",
+        title: run[:title],
         subtitle: run[:subtitle] || "Run #{run[:title]}",
         status: run[:status],
         status_tone: run[:status_tone] || :neutral,

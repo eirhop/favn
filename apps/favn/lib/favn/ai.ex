@@ -13,11 +13,13 @@ defmodule Favn.AI do
   For project layout, namespace files, and relation hierarchy, read
   `Favn.Namespace` before authoring files. The short default is:
 
-  - `warehouse.ex` owns the warehouse connection namespace.
-  - `warehouse/<layer>.ex` owns each layer namespace.
-  - `warehouse/<layer>/<asset>.ex` owns leaf asset modules.
+  - `connections/important_lakehouse.ex` owns server/session/auth connection config.
+  - `lakehouse.ex` owns the root relation namespace with connection only.
+  - `lakehouse/<phase>.ex` owns each catalog/database phase such as `raw` or `mart`.
+  - `lakehouse/<phase>/<segment>.ex` owns each schema/domain such as `sales`.
+  - `lakehouse/<phase>/<segment>/<asset>.ex` owns leaf asset modules.
   - integration clients, pipelines, triggers, and reusable SQL live outside the
-    warehouse asset tree.
+    lakehouse asset tree.
 
   ## Consumer Dependency Shape
 
@@ -71,15 +73,25 @@ defmodule Favn.AI do
     local operator CLI, read `Favn.Dev.Backfill` and
     `Mix.Tasks.Favn.Backfill`.
   - To define connection contracts, read `Favn.Connection`; if connection
-    values come from environment variables or secrets, also read
+    modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
+    If connection values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
   - To configure DuckDB/DuckLake connection bootstrap for extension loading,
-    Azure credential-chain secrets, DuckLake attach, or ADLS paths, read
-    `Favn.Connection`, `Favn.RuntimeConfig.Ref`, and
-    `Favn.SQL.Adapter.DuckDB`.
+    attached DuckDB catalog files, Azure credential-chain secrets, ADLS
+    `SCOPE`/`CHAIN`, PostgreSQL metadata secrets, DuckLake `META_SECRET` attach,
+    or ADLS paths, read
+    `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQL.Adapter.DuckDB`, and
+    `Favn.Azure.PostgresEntraToken`. If the deployment uses the ADBC DuckDB
+    adapter, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Azure PostgreSQL Entra
+    auth can fetch managed identity or Azure CLI tokens during session bootstrap
+    for DuckLake PostgreSQL metadata catalogs. The PostgreSQL `user` must be the
+    role created for the Entra principal, and token expiry requires reconnect and
+    rebootstrap.
   - To run SQL queries from plain Elixir code using named Favn connections, read
     `Favn.SQLClient`.
-  - To compile a manifest, read `Favn generate_manifest`, then
+  - To compile a manifest, read `Favn generate_manifest`; if the project uses
+    `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
+    schedules: :all]`, also read `Favn.ModuleDiscovery`. Read
     `Favn.Manifest.Generator` if you need internal compilation details.
   - To resolve pipeline targets, read `Favn resolve_pipeline`, then
     `Favn.Pipeline.Resolver` if needed.
@@ -105,6 +117,8 @@ defmodule Favn.AI do
 
   - `Favn.Manifest.Generator`: when you need the exact manifest compilation path
     from modules to `%Favn.Manifest{}`
+  - `Favn.ModuleDiscovery`: when app-scoped `:all` discovery maps compiled OTP
+    application modules to authored assets, pipelines, schedules, or connections
   - `Favn.Pipeline.Resolver`: when you need selector normalization, schedule
     resolution, or the exact `%Favn.Pipeline.Resolution{}` shape
   - `Favn.Assets.Planner`: when you need topological stages, dependency
@@ -132,7 +146,13 @@ defmodule Favn.AI do
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
   - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs the
-    `bootstrap_schema_field/0` helper for DuckLake session setup
+    `bootstrap_schema_field/0` helper for attached DuckDB catalog files,
+    DuckLake session setup, Azure ADLS DuckDB secrets, or PostgreSQL metadata
+    secret wiring
+  - `Favn.SQL.Adapter.DuckDB.ADBC`: when the ADBC DuckDB adapter needs the same
+    DuckLake bootstrap shape with explicit DuckDB driver control
+  - `Favn.Azure.PostgresEntraToken`: when DuckDB bootstrap needs runtime Azure
+    PostgreSQL Entra token acquisition through managed identity or Azure CLI
 
   ## Working Style
 

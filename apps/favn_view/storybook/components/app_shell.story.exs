@@ -11,7 +11,23 @@ defmodule FavnView.Storybook.Components.AppShell do
   def layout, do: :one_column
   def render_source, do: :function
 
-  def container, do: {:iframe, style: "width: 100%; height: 900px; border: 0;"}
+  def container,
+    do: {:iframe, style: "width: 100%; height: 900px; border: 0;", allowfullscreen: true}
+
+  def template do
+    """
+    <div data-theme="favn-dark" class="relative min-h-screen">
+      <button
+        type="button"
+        class="btn btn-primary btn-sm fixed right-4 top-4 z-50 shadow-xl"
+        onclick="document.documentElement.requestFullscreen && document.documentElement.requestFullscreen()"
+      >
+        Fullscreen
+      </button>
+      <.psb-variation/>
+    </div>
+    """
+  end
 
   def variations do
     [

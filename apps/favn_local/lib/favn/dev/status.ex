@@ -52,8 +52,9 @@ defmodule Favn.Dev.Status do
   defp build_running_status(runtime, config, opts) do
     services =
       %{
-        web: service_state(runtime, "web"),
-        orchestrator: service_state(runtime, "orchestrator"),
+        operator: service_state(runtime, "operator"),
+        web: service_state(runtime, "web", "operator"),
+        orchestrator: service_state(runtime, "orchestrator", "operator"),
         runner: service_state(runtime, "runner")
       }
 
@@ -83,7 +84,13 @@ defmodule Favn.Dev.Status do
   end
 
   defp service_state(runtime, key) do
-    case get_in(runtime, ["services", key]) do
+    service_state(runtime, key, nil)
+  end
+
+  defp service_state(runtime, key, fallback_key) do
+    service = get_in(runtime, ["services", key]) || get_in(runtime, ["services", fallback_key])
+
+    case service do
       %{"pid" => pid} = service when is_integer(pid) and pid > 0 ->
         status = if process_alive?(pid), do: :running, else: :dead
 
@@ -103,7 +110,12 @@ defmodule Favn.Dev.Status do
   end
 
   defp summarize_stack_status(services) do
-    statuses = Map.values(services) |> Enum.map(& &1.status)
+    service_keys =
+      if services.operator.status == :unknown,
+        do: [:web, :orchestrator, :runner],
+        else: [:operator, :runner]
+
+    statuses = services |> Map.take(service_keys) |> Map.values() |> Enum.map(& &1.status)
 
     cond do
       Enum.all?(statuses, &(&1 == :running)) -> :running
@@ -121,9 +133,16 @@ defmodule Favn.Dev.Status do
   end
 
   defp internal_control(runtime, services) do
+    orchestrator_service_key =
+      if services.operator.status == :unknown, do: :orchestrator, else: :operator
+
+    orchestrator_runtime_key =
+      if services.operator.status == :unknown, do: "orchestrator", else: "operator"
+
     %{
       runner_node: internal_node(runtime, services, :runner, "runner"),
-      orchestrator_node: internal_node(runtime, services, :orchestrator, "orchestrator"),
+      orchestrator_node:
+        internal_node(runtime, services, orchestrator_service_key, orchestrator_runtime_key),
       control_node: %{
         node_name: get_in(runtime, ["node_names", "control"]),
         distribution_port: get_in(runtime, ["distribution_ports", "control"])
@@ -137,9 +156,11 @@ defmodule Favn.Dev.Status do
     %{
       node_name:
         get_in(runtime, ["services", runtime_key, "node_name"]) ||
+          get_in(runtime, ["services", "operator", "node_name"]) ||
           get_in(runtime, ["node_names", runtime_key]),
       distribution_port:
         get_in(runtime, ["services", runtime_key, "distribution_port"]) ||
+          get_in(runtime, ["services", "operator", "distribution_port"]) ||
           get_in(runtime, ["distribution_ports", runtime_key]),
       status: service.status,
       pid: service.pid
@@ -158,6 +179,7 @@ defmodule Favn.Dev.Status do
     %{
       web: %{status: :unknown, pid: nil, info: %{}},
       orchestrator: %{status: :unknown, pid: nil, info: %{}},
+      operator: %{status: :unknown, pid: nil, info: %{}},
       runner: %{status: :unknown, pid: nil, info: %{}}
     }
   end

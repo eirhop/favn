@@ -68,9 +68,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
 
-    assert_raise Mix.Error, ~r/local stack already running/, fn ->
-      DevTask.run(["--root-dir", root_dir])
-    end
+    capture_io(fn ->
+      assert_raise Mix.Error, ~r/local stack already running/, fn ->
+        DevTask.run(["--root-dir", root_dir])
+      end
+    end)
   end
 
   test "mix favn.dev raises when install is missing", %{root_dir: root_dir} do
@@ -323,9 +325,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert :ok = State.write_runtime(runtime, root_dir: root_dir)
 
     try do
-      assert_raise Mix.Error, ~r/local stack is in a partial\/dead state/, fn ->
-        DevTask.run(["--root-dir", root_dir])
-      end
+      capture_io(fn ->
+        assert_raise Mix.Error, ~r/local stack is in a partial\/dead state/, fn ->
+          DevTask.run(["--root-dir", root_dir])
+        end
+      end)
     after
       _ = DevProcess.stop_pid(info.pid)
       _ = State.clear_runtime(root_dir: root_dir)
@@ -351,8 +355,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         "control" => 45_103
       },
       "services" => %{
-        "web" => %{"pid" => pid},
-        "orchestrator" => %{
+        "operator" => %{
           "pid" => pid,
           "node_name" => "favn_orchestrator_task@localhost",
           "distribution_port" => 45_102
@@ -374,16 +377,17 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     assert output =~ "Favn local dev stack"
     assert output =~ "manifest: mv_task_test"
+    assert output =~ "operator: running pid=#{pid}"
     assert output =~ "local URLs:"
-    assert output =~ "web: running pid=#{pid} url=http://127.0.0.1:4173"
-    assert output =~ "orchestrator API: running pid=#{pid} url=http://127.0.0.1:4101"
+    assert output =~ "web: url=http://127.0.0.1:4173"
+    assert output =~ "orchestrator API: url=http://127.0.0.1:4101"
     assert output =~ "internal control plane:"
 
     assert output =~
              "runner node: running pid=#{pid} node=favn_runner_task@localhost distribution_port=45101"
 
     assert output =~
-             "orchestrator node: running pid=#{pid} node=favn_orchestrator_task@localhost distribution_port=45102"
+             "operator node: running pid=#{pid} node=favn_orchestrator_task@localhost distribution_port=45102"
 
     assert output =~ "control node: node=favn_local_ctl_task@localhost distribution_port=45103"
   end
@@ -742,11 +746,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         web_port: free_port()
       )
 
-      assert_raise Mix.Error,
-                   ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|local Erlang shortname host .* must resolve to a loopback 127\.\* address|port conflict: .* cannot bind port)/,
-                   fn ->
-                     DevTask.run(["--root-dir", root_dir])
-                   end
+      capture_io(fn ->
+        assert_raise Mix.Error,
+                     ~r/(runtime compile failed for runtime_root under --root-dir|local Erlang shortname host is unavailable|local Erlang shortname host .* must resolve to a loopback 127\.\* address|port conflict: .* cannot bind port)/,
+                     fn ->
+                       DevTask.run(["--root-dir", root_dir])
+                     end
+      end)
     after
       case previous_local do
         :__missing__ -> Application.delete_env(:favn, :local)
@@ -883,11 +889,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     try do
       Application.put_env(:favn, :local, orchestrator_port: free_port(), web_port: port)
 
-      assert_raise Mix.Error,
-                   ~r/port conflict: web cannot bind port #{port}; free the port and retry/,
-                   fn ->
-                     DevTask.run(["--root-dir", root_dir])
-                   end
+      capture_io(fn ->
+        assert_raise Mix.Error,
+                     ~r/port conflict: web cannot bind port #{port}; free the port and retry/,
+                     fn ->
+                       DevTask.run(["--root-dir", root_dir])
+                     end
+      end)
     after
       :ok = :gen_tcp.close(socket)
 
@@ -926,9 +934,11 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
         ]
       )
 
-      assert_raise Mix.Error, ~r/postgres unavailable at 127.0.0.1:1/, fn ->
-        DevTask.run(["--root-dir", root_dir])
-      end
+      capture_io(fn ->
+        assert_raise Mix.Error, ~r/postgres unavailable at 127.0.0.1:1/, fn ->
+          DevTask.run(["--root-dir", root_dir])
+        end
+      end)
     after
       case previous_local do
         :__missing__ -> Application.delete_env(:favn, :local)
@@ -976,7 +986,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       path,
       JSON.encode_to_iodata!(%{
         schema_version: 1,
-        runner_contract_version: 1,
+        runner_contract_version: 2,
         assets: [],
         pipelines: [],
         schedules: [],

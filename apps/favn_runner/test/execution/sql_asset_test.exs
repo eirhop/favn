@@ -196,7 +196,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   defp register_inspection_manifest!(ref, relation) do
     manifest = %Manifest{
       schema_version: 1,
-      runner_contract_version: 1,
+      runner_contract_version: 2,
       assets: [
         %Asset{
           ref: ref,
@@ -240,7 +240,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     manifest =
       %Manifest{
         schema_version: 1,
-        runner_contract_version: 1,
+        runner_contract_version: 2,
         assets: [
           %Asset{
             ref: ref,
@@ -300,7 +300,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     manifest =
       %Manifest{
         schema_version: 1,
-        runner_contract_version: 1,
+        runner_contract_version: 2,
         assets: [
           %Asset{
             ref: ref,
@@ -340,7 +340,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     manifest =
       %Manifest{
         schema_version: 1,
-        runner_contract_version: 1,
+        runner_contract_version: 2,
         assets: [
           %Asset{
             ref: ref,

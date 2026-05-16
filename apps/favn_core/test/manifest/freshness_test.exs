@@ -42,7 +42,7 @@ defmodule Favn.Manifest.FreshnessTest do
   test "manifest serialization and rehydration round-trips freshness policies" do
     manifest = %Manifest{
       schema_version: 1,
-      runner_contract_version: 1,
+      runner_contract_version: 2,
       assets: [
         asset(:missing, nil),
         asset(:daily_oslo, %Policy{mode: :calendar_period, kind: :day, timezone: "Europe/Oslo"}),

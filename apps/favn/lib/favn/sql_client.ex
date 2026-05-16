@@ -20,8 +20,8 @@ defmodule Favn.SQLClient do
 
   Before calling `Favn.SQLClient`, configure both:
 
-  - `:connection_modules` with one or more modules implementing
-    `Favn.Connection`
+  - app-scoped discovery with `discovery: [apps: [:my_app], connections: :all]`,
+    or explicit `:connection_modules` with modules implementing `Favn.Connection`
   - `:connections` with runtime values for those named connections
 
   ## Common flow

@@ -88,6 +88,7 @@ defmodule Favn.Dev.Stack do
   def stop(opts \\ []) when is_list(opts) do
     case with_lock(opts, fn -> State.read_runtime(opts) end) do
       {:ok, runtime} ->
+        :ok = mark_runtime_stopping(runtime, opts)
         stop_runtime(runtime, opts)
         stop_known_local_nodes(opts)
         with_lock(opts, fn -> State.clear_runtime(opts) end)
@@ -183,7 +184,7 @@ defmodule Favn.Dev.Stack do
              "materialized_root" => root_dir,
              "orchestrator_root" => root_dir,
              "runner_root" => root_dir,
-              "web_root" => Path.join(root_dir, "apps/favn_view")
+             "web_root" => Path.join(root_dir, "apps/favn_view")
            }}
         else
           {:error, :install_required}
@@ -289,7 +290,8 @@ defmodule Favn.Dev.Stack do
   defp runtime_service_statuses(runtime) do
     services = Map.get(runtime, "services", %{})
 
-    ["web", "orchestrator", "runner"]
+    services
+    |> runtime_service_names()
     |> Enum.map(fn service_name ->
       state =
         case get_in(services, [service_name, "pid"]) do
@@ -302,6 +304,14 @@ defmodule Favn.Dev.Stack do
 
       {service_name, state}
     end)
+  end
+
+  defp runtime_service_names(services) when is_map(services) do
+    if Map.has_key?(services, "operator") do
+      ["operator", "runner"]
+    else
+      ["web", "orchestrator", "runner"]
+    end
   end
 
   defp compile_runtime_apps(runtime, opts) when is_map(runtime) do
@@ -394,21 +404,18 @@ defmodule Favn.Dev.Stack do
 
   defp start_default_services(runtime, config, secrets, node_names, opts) do
     with :ok <-
-            progress_step(opts, "preparing Phoenix assets", fn ->
-              ensure_web_assets(runtime, opts)
-            end) do
+           progress_step(opts, "preparing Phoenix assets", fn ->
+             ensure_web_assets(runtime, opts)
+           end) do
       runner_spec = RuntimeLaunch.runner_spec(runtime, opts, node_names, secrets)
 
-      orchestrator_spec =
-        RuntimeLaunch.orchestrator_spec(runtime, config, opts, node_names, secrets)
+      operator_spec = RuntimeLaunch.operator_spec(runtime, config, opts, node_names, secrets)
 
-      web_spec = RuntimeLaunch.web_spec(runtime, config, opts, secrets)
-
-      start_ordered_services(runner_spec, orchestrator_spec, web_spec, node_names, opts)
+      start_ordered_services(runner_spec, operator_spec, node_names, opts)
     end
   end
 
-  defp start_ordered_services(runner_spec, orchestrator_spec, web_spec, node_names, opts) do
+  defp start_ordered_services(runner_spec, operator_spec, node_names, opts) do
     runner_wait_timeout_ms = Keyword.get(opts, :runner_wait_timeout_ms, 15_000)
     runner_wait_node_name = Keyword.get(opts, :runner_wait_node_name, node_names.runner_full)
 
@@ -418,8 +425,7 @@ defmodule Favn.Dev.Stack do
                progress_step(opts, "waiting for runner node", fn ->
                  wait_runner_node_ready(runner_wait_node_name, runner_wait_timeout_ms)
                end),
-             {:ok, services} <- start_service_specs([orchestrator_spec], services, opts),
-             {:ok, services} <- start_service_specs([web_spec], services, opts) do
+             {:ok, services} <- start_service_specs([operator_spec], services, opts) do
           {:ok, services}
         else
           {:error, _reason} = error ->
@@ -501,7 +507,8 @@ defmodule Favn.Dev.Stack do
         "control" => distribution_ports(opts).control
       },
       "services" =>
-        Map.new(services, fn {name, info} ->
+        services
+        |> Map.new(fn {name, info} ->
           service = %{"pid" => info.pid, "log_path" => info.log_path}
 
           service =
@@ -512,7 +519,7 @@ defmodule Favn.Dev.Stack do
                 |> Map.put("distribution_port", distribution_ports(opts).runner)
                 |> Map.put("generation", 1)
 
-              "orchestrator" ->
+              name when name in ["operator", "orchestrator"] ->
                 service
                 |> Map.put("node_name", node_names.orchestrator_full)
                 |> Map.put("distribution_port", distribution_ports(opts).orchestrator)
@@ -792,9 +799,14 @@ defmodule Favn.Dev.Stack do
 
   defp stack_stopped_externally?(opts) do
     case with_lock(opts, fn -> State.read_runtime(opts) end) do
+      {:ok, %{"stopping" => true}} -> true
       {:error, :not_found} -> true
       _other -> false
     end
+  end
+
+  defp mark_runtime_stopping(runtime, opts) when is_map(runtime) and is_list(opts) do
+    with_lock(opts, fn -> State.write_runtime(Map.put(runtime, "stopping", true), opts) end)
   end
 
   @doc false
@@ -993,24 +1005,39 @@ defmodule Favn.Dev.Stack do
     services = Map.get(runtime, "services", %{})
     _ = cancel_in_flight_runs(runtime, opts)
 
-    Enum.each(["web", "runner", "orchestrator"], fn service_name ->
-      case get_in(services, [service_name, "pid"]) do
-        pid when is_integer(pid) and pid > 0 -> :ok = DevProcess.stop_pid(pid)
-        _ -> :ok
-      end
-    end)
+    stop_services_by_unique_pid(services, ["operator", "web", "runner", "orchestrator"])
 
     wait_runtime_ports_released(runtime, opts)
   end
 
   defp stop_service_map(services) when is_map(services) do
-    Enum.each(["web", "runner", "orchestrator"], fn service_name ->
-      case Map.get(services, service_name) do
-        %{pid: pid} when is_integer(pid) and pid > 0 -> :ok = DevProcess.stop_pid(pid)
-        %{"pid" => pid} when is_integer(pid) and pid > 0 -> :ok = DevProcess.stop_pid(pid)
-        _ -> :ok
+    stop_services_by_unique_pid(services, ["operator", "web", "runner", "orchestrator"])
+  end
+
+  defp stop_services_by_unique_pid(services, service_names) when is_map(services) do
+    service_names
+    |> Enum.reduce(MapSet.new(), fn service_name, stopped_pids ->
+      case get_in(services, [service_name, "pid"]) do
+        pid when is_integer(pid) and pid > 0 ->
+          stop_pid_once(pid, stopped_pids)
+
+        _ ->
+          case Map.get(services, service_name) do
+            %{pid: pid} when is_integer(pid) and pid > 0 -> stop_pid_once(pid, stopped_pids)
+            %{"pid" => pid} when is_integer(pid) and pid > 0 -> stop_pid_once(pid, stopped_pids)
+            _ -> stopped_pids
+          end
       end
     end)
+  end
+
+  defp stop_pid_once(pid, stopped_pids) do
+    if MapSet.member?(stopped_pids, pid) do
+      stopped_pids
+    else
+      :ok = DevProcess.stop_pid(pid)
+      MapSet.put(stopped_pids, pid)
+    end
   end
 
   defp stop_known_local_nodes(opts) do
@@ -1153,26 +1180,24 @@ defmodule Favn.Dev.Stack do
     IO.puts("Favn local dev stack")
     IO.puts("storage: #{config.storage}")
     IO.puts("scheduler: #{if(config.scheduler_enabled, do: "enabled", else: "disabled")}")
-    IO.puts("local URLs:")
-    IO.puts("web: pid=#{services["web"].pid} url=#{config.web_base_url}")
+    operator = services["operator"] || services["orchestrator"] || services["web"]
 
-    IO.puts(
-      "orchestrator API: pid=#{services["orchestrator"].pid} url=#{config.orchestrator_base_url}"
-    )
+    IO.puts("local URLs:")
+    IO.puts("operator: pid=#{operator.pid}")
+    IO.puts("web: url=#{config.web_base_url}")
+
+    IO.puts("orchestrator API: url=#{config.orchestrator_base_url}")
 
     IO.puts("internal control plane:")
     IO.puts("runner node: pid=#{services["runner"].pid} node=#{node_names.runner_full}")
 
-    IO.puts(
-      "orchestrator node: pid=#{services["orchestrator"].pid} node=#{node_names.orchestrator_full}"
-    )
+    IO.puts("operator node: pid=#{operator.pid} node=#{node_names.orchestrator_full}")
 
     IO.puts(
       "control node: node=#{node_names.control_full} distribution_port=#{distribution_ports.control}"
     )
 
-    IO.puts("logs: web=#{services["web"].log_path}")
-    IO.puts("logs: orchestrator=#{services["orchestrator"].log_path}")
+    IO.puts("logs: operator=#{operator.log_path}")
     IO.puts("logs: runner=#{services["runner"].log_path}")
   end
 

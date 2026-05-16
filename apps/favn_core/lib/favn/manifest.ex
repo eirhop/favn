@@ -20,7 +20,7 @@ defmodule Favn.Manifest do
         }
 
   defstruct schema_version: 1,
-            runner_contract_version: 1,
+            runner_contract_version: 2,
             assets: [],
             pipelines: [],
             schedules: [],

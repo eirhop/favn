@@ -70,7 +70,10 @@ defmodule Favn.Dev.StatusTest do
     assert status.user_urls.orchestrator_api == "http://127.0.0.1:4101"
     assert status.internal_control.runner_node.node_name == "favn_runner_test@localhost"
     assert status.internal_control.runner_node.distribution_port == 45_001
-    assert status.internal_control.orchestrator_node.node_name == "favn_orchestrator_test@localhost"
+
+    assert status.internal_control.orchestrator_node.node_name ==
+             "favn_orchestrator_test@localhost"
+
     assert status.internal_control.orchestrator_node.distribution_port == 45_002
     assert status.internal_control.control_node.node_name == "favn_local_ctl_test@localhost"
     assert status.internal_control.control_node.distribution_port == 45_003
@@ -96,5 +99,52 @@ defmodule Favn.Dev.StatusTest do
     assert status.services.web.status == :dead
     assert status.services.orchestrator.status == :dead
     assert status.services.runner.status == :dead
+  end
+
+  test "inspect_stack/1 aliases web and orchestrator to operator runtime service", %{
+    root_dir: root_dir
+  } do
+    pid = :os.getpid() |> List.to_string() |> String.to_integer()
+
+    runtime = %{
+      "storage" => "sqlite",
+      "orchestrator_base_url" => "http://127.0.0.1:4101",
+      "web_base_url" => "http://127.0.0.1:4173",
+      "node_names" => %{
+        "runner" => "favn_runner_test@localhost",
+        "orchestrator" => "favn_orchestrator_test@localhost",
+        "control" => "favn_local_ctl_test@localhost"
+      },
+      "distribution_ports" => %{"runner" => 45_001, "orchestrator" => 45_002},
+      "services" => %{
+        "operator" => %{
+          "pid" => pid,
+          "node_name" => "favn_orchestrator_test@localhost",
+          "distribution_port" => 45_002,
+          "log_path" => "/tmp/operator.log"
+        },
+        "runner" => %{
+          "pid" => pid,
+          "node_name" => "favn_runner_test@localhost",
+          "distribution_port" => 45_001
+        }
+      }
+    }
+
+    assert :ok = State.write_runtime(runtime, root_dir: root_dir)
+
+    status = Status.inspect_stack(root_dir: root_dir)
+
+    assert status.stack_status == :running
+    assert status.services.operator.status == :running
+    assert status.services.web.status == :running
+    assert status.services.web.pid == pid
+    assert status.services.orchestrator.status == :running
+    assert status.services.orchestrator.pid == pid
+
+    assert status.internal_control.orchestrator_node.node_name ==
+             "favn_orchestrator_test@localhost"
+
+    assert status.internal_control.orchestrator_node.distribution_port == 45_002
   end
 end

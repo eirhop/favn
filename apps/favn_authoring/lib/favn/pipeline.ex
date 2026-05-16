@@ -17,7 +17,7 @@ defmodule Favn.Pipeline do
         use Favn.Pipeline
 
         pipeline :daily_sales do
-          asset MyApp.Warehouse.Mart.FctOrders
+          asset MyApp.Lakehouse.Mart.Sales.FctOrders
           deps :all
           schedule cron: "0 2 * * *", timezone: "Etc/UTC"
         end
@@ -71,15 +71,19 @@ defmodule Favn.Pipeline do
 
   ## Expanded Example
 
-      defmodule MyApp.Warehouse do
-        use Favn.Namespace, relation: [connection: :warehouse]
+      defmodule MyApp.Lakehouse do
+        use Favn.Namespace, relation: [connection: :important_lakehouse]
       end
 
-      defmodule MyApp.Warehouse.Raw do
+      defmodule MyApp.Lakehouse.Raw do
         use Favn.Namespace, relation: [catalog: "raw"]
       end
 
-      defmodule MyApp.Warehouse.Raw.Orders do
+      defmodule MyApp.Lakehouse.Raw.Sales do
+        use Favn.Namespace, relation: [schema: "sales"]
+      end
+
+      defmodule MyApp.Lakehouse.Raw.Sales.Orders do
         use Favn.Asset
 
         @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
@@ -87,7 +91,7 @@ defmodule Favn.Pipeline do
         def asset(_ctx), do: :ok
       end
 
-      defmodule MyApp.Warehouse.Raw.OrderLines do
+      defmodule MyApp.Lakehouse.Raw.Sales.OrderLines do
         use Favn.Asset
 
         @meta owner: "data-platform", category: :sales, tags: [:raw, :daily]
@@ -95,21 +99,25 @@ defmodule Favn.Pipeline do
         def asset(_ctx), do: :ok
       end
 
-      defmodule MyApp.Warehouse.Mart do
+      defmodule MyApp.Lakehouse.Mart do
         use Favn.Namespace, relation: [catalog: "mart"]
       end
 
-      defmodule MyApp.Warehouse.Mart.OrderSummary do
+      defmodule MyApp.Lakehouse.Mart.Sales do
+        use Favn.Namespace, relation: [schema: "sales"]
+      end
+
+      defmodule MyApp.Lakehouse.Mart.Sales.OrderSummary do
         use Favn.SQLAsset
 
         @meta owner: "analytics", category: :sales, tags: [:mart, :daily]
-        @depends MyApp.Warehouse.Raw.Orders
+        @depends MyApp.Lakehouse.Raw.Sales.Orders
         @materialized :view
 
         query do
           ~SQL\"""
           select *
-          from raw.orders
+          from raw.sales.orders
           \"""
         end
       end
@@ -119,7 +127,7 @@ defmodule Favn.Pipeline do
 
         pipeline :daily_sales do
           select do
-            module MyApp.Warehouse.Mart
+            module MyApp.Lakehouse.Mart
             tag :daily
             category :sales
           end
@@ -130,7 +138,7 @@ defmodule Favn.Pipeline do
           schedule cron: "0 2 * * *", timezone: "Europe/Oslo", missed: :one
           window :daily
           source :scheduler
-          outputs [:warehouse, :metrics]
+          outputs [:important_lakehouse, :metrics]
         end
       end
 
@@ -382,7 +390,7 @@ defmodule Favn.Pipeline do
   ## Examples
 
       asset {MyApp.Raw.Shopify, :orders}
-      asset MyApp.Warehouse.Mart.FctOrders
+      asset MyApp.Lakehouse.Mart.Sales.FctOrders
   """
   defmacro asset(ref) do
     quote bind_quoted: [ref: ref] do
@@ -405,7 +413,7 @@ defmodule Favn.Pipeline do
 
       assets [
         {MyApp.Raw.Shopify, :orders},
-        MyApp.Warehouse.Mart.FctOrders
+        MyApp.Lakehouse.Mart.Sales.FctOrders
       ]
   """
   defmacro assets(refs) do
@@ -438,7 +446,7 @@ defmodule Favn.Pipeline do
   ## Example
 
       select do
-        module MyApp.Warehouse.Mart
+        module MyApp.Lakehouse.Mart
         tag :daily
         category :sales
       end

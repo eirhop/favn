@@ -92,14 +92,3 @@ Look for:
 
 Do not rely on automated tests alone for UI component changes. Storybook plus
 Playwright visual inspection is required for reusable component edits.
-
-## Testing
-
-When changes are limited to `apps/favn_view`, use app-local verification:
-
-```bash
-cd apps/favn_view && mix format && mix compile --warnings-as-errors && mix test
-```
-
-Use broader umbrella tests only for cross-app/shared-contract changes or when the
-user explicitly requests them.

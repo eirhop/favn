@@ -22,6 +22,7 @@ defmodule Favn.SQLAsset.Renderer do
          {:ok, runtime_inputs} <- normalize_runtime_inputs(definition, opts),
          {:ok, definition_catalog} <- definition_catalog(definition),
          env <- base_env(definition, params, runtime_inputs, definition_catalog),
+         :ok <- validate_target_relation(definition, env),
          {:ok, %Fragment{} = fragment, _env} <- render_nodes(definition.template.nodes, env),
          {:ok, %Params{} = normalized_params} <- normalize_bindings(fragment.bindings) do
       {:ok,
@@ -119,6 +120,10 @@ defmodule Favn.SQLAsset.Renderer do
     %{
       asset_ref: definition.asset.ref,
       root_connection: definition.asset.relation.connection,
+      root_catalog: definition.asset.relation.catalog,
+      root_schema: definition.asset.relation.schema,
+      current_catalog: definition.asset.relation.catalog,
+      current_schema: definition.asset.relation.schema,
       params: params,
       runtime_values: runtime_inputs.runtime_values,
       local_args: %{},
@@ -132,6 +137,25 @@ defmodule Favn.SQLAsset.Renderer do
         Map.get(definition.raw_asset || %{}, :deferred_resolution, :manifest_or_compiled)
     }
   end
+
+  defp validate_target_relation(
+         %Definition{asset: %{relation: %RelationRef{catalog: catalog, schema: nil, name: name}}},
+         env
+       )
+       when is_binary(catalog) do
+    {:error,
+     %Error{
+       type: :invalid_relation,
+       phase: :render,
+       asset_ref: env.asset_ref,
+       file: env.current_file,
+       message:
+         "SQL asset target relations with catalog require schema; target resolved to catalog #{inspect(catalog)} and name #{inspect(name)} without schema",
+       details: %{catalog: catalog, name: name}
+     }}
+  end
+
+  defp validate_target_relation(%Definition{}, _env), do: :ok
 
   defp render_nodes(nodes, env) when is_list(nodes) do
     Enum.reduce_while(nodes, {:ok, %Fragment{}, env}, fn node, {:ok, acc, env_acc} ->
@@ -151,7 +175,11 @@ defmodule Favn.SQLAsset.Renderer do
 
   defp render_node(%Text{sql: sql}, env), do: {:ok, %Fragment{sql: sql}, env}
 
-  defp render_node(%Relation{raw: raw}, env), do: {:ok, %Fragment{sql: raw}, env}
+  defp render_node(%Relation{} = relation, env) do
+    with {:ok, relation_sql} <- plain_relation_to_sql(relation, env) do
+      {:ok, %Fragment{sql: relation_sql}, env}
+    end
+  end
 
   defp render_node(%Placeholder{source: :runtime, name: name, span: span}, env) do
     case Map.fetch(env.runtime_values, name) do
@@ -196,7 +224,8 @@ defmodule Favn.SQLAsset.Renderer do
            |> Map.put(:local_args, local_arg_map(arg_fragments))
            |> Map.put(:stack, [stack_frame(call, definition) | env.stack])
            |> Map.put(:cache, next_env.cache)
-           |> Map.put(:current_file, definition.file),
+           |> Map.put(:current_file, definition.file)
+           |> put_definition_relation_defaults(definition),
          {:ok, %Fragment{} = expanded, callee_env_after} <-
            render_nodes(definition.template.nodes, callee_env) do
       {:ok, expanded, %{env | cache: callee_env_after.cache}}
@@ -221,9 +250,10 @@ defmodule Favn.SQLAsset.Renderer do
   end
 
   defp render_node(%AssetRef{} = asset_ref, env) do
-    with {:ok, relation_ref, next_env} <- resolve_asset_ref(asset_ref, env) do
+    with {:ok, relation_ref, next_env} <- resolve_asset_ref(asset_ref, env),
+         {:ok, relation_sql} <- relation_to_sql(relation_ref, asset_ref, env) do
       fragment = %Fragment{
-        sql: relation_to_sql(relation_ref),
+        sql: relation_sql,
         resolved_asset_refs: [resolved_ref(asset_ref, relation_ref)]
       }
 
@@ -306,6 +336,21 @@ defmodule Favn.SQLAsset.Renderer do
       line: definition.line
     }
   end
+
+  defp put_definition_relation_defaults(env, %SQLDefinition{relation_defaults: defaults})
+       when is_map(defaults) do
+    env
+    |> Map.put(
+      :current_catalog,
+      Map.get(defaults, :catalog) || Map.get(defaults, "catalog") || env.root_catalog
+    )
+    |> Map.put(
+      :current_schema,
+      Map.get(defaults, :schema) || Map.get(defaults, "schema") || env.root_schema
+    )
+  end
+
+  defp put_definition_relation_defaults(env, %SQLDefinition{}), do: env
 
   defp resolve_asset_ref(
          %AssetRef{resolution: :resolved, relation: %RelationRef{} = relation_ref} =
@@ -536,11 +581,76 @@ defmodule Favn.SQLAsset.Renderer do
     }
   end
 
-  defp relation_to_sql(%RelationRef{} = relation_ref) do
-    [relation_ref.catalog, relation_ref.schema, relation_ref.name]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.join(".")
+  defp plain_relation_to_sql(%Relation{segments: [name]}, env) do
+    %RelationRef{catalog: env.current_catalog, schema: env.current_schema, name: name}
+    |> relation_ref_to_sql(env)
   end
+
+  defp plain_relation_to_sql(%Relation{segments: [schema, name]}, env) do
+    %RelationRef{catalog: env.current_catalog, schema: schema, name: name}
+    |> relation_ref_to_sql(env)
+  end
+
+  defp plain_relation_to_sql(%Relation{segments: [catalog, schema, name]}, env) do
+    %RelationRef{catalog: catalog, schema: schema, name: name}
+    |> relation_ref_to_sql(env)
+  end
+
+  defp relation_ref_to_sql(%RelationRef{catalog: nil, schema: nil, name: name}, _env),
+    do: {:ok, name}
+
+  defp relation_ref_to_sql(%RelationRef{catalog: nil, schema: schema, name: name}, _env),
+    do: {:ok, Enum.join([schema, name], ".")}
+
+  defp relation_ref_to_sql(%RelationRef{catalog: catalog, schema: nil, name: name}, env) do
+    {:error,
+     %Error{
+       type: :invalid_relation,
+       phase: :render,
+       asset_ref: env.asset_ref,
+       file: env.current_file,
+       message:
+         "catalog-qualified SQL references require schema; relation resolved to catalog #{inspect(catalog)} and name #{inspect(name)} without schema",
+       stack: env.stack,
+       details: %{catalog: catalog, name: name}
+     }}
+  end
+
+  defp relation_ref_to_sql(%RelationRef{catalog: catalog, schema: schema, name: name}, _env),
+    do: {:ok, Enum.join([catalog, schema, name], ".")}
+
+  defp relation_to_sql(%RelationRef{catalog: nil, schema: nil, name: name}, _asset_ref, _env),
+    do: {:ok, name}
+
+  defp relation_to_sql(%RelationRef{catalog: nil, schema: schema, name: name}, _asset_ref, _env),
+    do: {:ok, Enum.join([schema, name], ".")}
+
+  defp relation_to_sql(
+         %RelationRef{catalog: catalog, schema: nil, name: name} = relation_ref,
+         %AssetRef{module: module, span: span},
+         env
+       ) do
+    {:error,
+     %Error{
+       type: :invalid_relation,
+       phase: :render,
+       asset_ref: env.asset_ref,
+       span: span,
+       line: span.start_line,
+       file: env.current_file,
+       message:
+         "catalog-qualified SQL references require schema; #{inspect(module)} resolved to catalog #{inspect(catalog)} and name #{inspect(name)} without schema",
+       stack: env.stack,
+       details: %{module: module, relation: relation_ref}
+     }}
+  end
+
+  defp relation_to_sql(
+         %RelationRef{catalog: catalog, schema: schema, name: name},
+         _asset_ref,
+         _env
+       ),
+       do: {:ok, Enum.join([catalog, schema, name], ".")}
 
   defp resolved_ref(%AssetRef{} = asset_ref, %RelationRef{} = relation_ref) do
     %{

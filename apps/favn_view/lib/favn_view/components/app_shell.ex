@@ -16,6 +16,7 @@ defmodule FavnView.Components.AppShell do
   attr :back_href, :string, default: nil
   attr :back_label, :string, default: nil
   attr :facts, :list, default: []
+  attr :show_header?, :boolean, default: true
 
   slot :inner_block, required: true
   slot :mode_rail
@@ -26,8 +27,8 @@ defmodule FavnView.Components.AppShell do
       <div class="favn-orbital-grid" aria-hidden="true"></div>
       <IconNav.icon_nav items={@nav_items} />
 
-      <div class="relative z-10 min-h-screen px-5 py-3 md:py-4 md:pl-32 md:pr-8 lg:pr-32">
-        <header class="mx-auto flex max-w-7xl items-center justify-between gap-3">
+      <div class="relative z-10 flex h-screen min-h-0 flex-col px-5 py-3 md:py-4 md:pl-32 md:pr-8 lg:pr-32">
+        <header class="mx-auto flex w-full max-w-7xl shrink-0 items-center justify-between gap-3">
           <div class="flex min-w-0 items-center gap-2">
             <IconNav.mobile_icon_nav items={@nav_items} />
             <a href={~p"/"} class="btn btn-ghost gap-2 px-2 md:hidden" aria-label="Favn home">
@@ -57,8 +58,11 @@ defmodule FavnView.Components.AppShell do
           </div>
         </header>
 
-        <main class="mx-auto flex min-h-[calc(100vh-4rem)] max-w-7xl flex-col justify-start py-4 md:py-6">
-          <section class="mb-4 flex flex-col gap-4 md:mb-5 lg:flex-row lg:items-end lg:justify-between">
+        <main class="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col justify-start overflow-y-auto py-4 md:py-6">
+          <section
+            :if={@show_header?}
+            class="mb-4 flex flex-col gap-4 md:mb-5 lg:flex-row lg:items-end lg:justify-between"
+          >
             <div class="min-w-0">
               <div class="flex flex-col gap-2 sm:flex-row sm:items-center md:gap-3">
                 <h1 class="truncate text-2xl font-light tracking-tight text-base-content sm:text-3xl lg:text-4xl">
