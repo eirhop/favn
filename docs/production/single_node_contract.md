@@ -63,9 +63,9 @@ The supported v1 production topology is one backend node:
   that one backend node.
 - DuckDB-backed execution is in scope for v1 production and must be hardened as
   part of the production promise.
-- The web service may be co-located on the backend host or deployed separately,
-  but it must call the documented orchestrator API boundary and must not bypass
-  the backend through direct storage or BEAM access.
+- The web service runs as a separate OTP app in the same backend BEAM for this
+  production target. It must call the public orchestrator facade and must not
+  bypass the backend through direct storage, scheduler, runner, or repo access.
 
 The first production target is not a split runner pool. There is exactly one
 production backend node writing the SQLite control-plane database.
@@ -93,20 +93,18 @@ active instances against the same SQLite database.
 
 ## Web Deployment Model
 
-`favn_view` is intended to be deployable in either supported placement:
+`favn_view` is intended to run as a separate OTP application in the same backend
+BEAM for this production target.
 
-- Co-located with the backend on the same host.
-- Deployed as a separate web service that reaches the backend over the private
-  orchestrator HTTP API.
+In that placement, web must use the documented app boundary:
 
-In both placements, web must use the documented API boundary:
-
-- Web calls the orchestrator HTTP API, currently under `/api/orchestrator/v1`.
-- Web authenticates service-to-service calls with a configured service token.
+- Web calls the public orchestrator facade in the same BEAM.
+- Web does not use orchestrator service tokens for same-BEAM readiness.
 - Web forwards actor/session context through documented headers only after the
   orchestrator has authenticated the browser session.
 - Web must not connect to the SQLite database, mutate control-plane files, call
-  runner internals directly, or rely on local-dev Distributed Erlang plumbing.
+  scheduler or runner internals directly, or rely on local-dev Distributed
+  Erlang plumbing.
 
 Public browser exposure belongs to `favn_view`. The orchestrator API is private
 backend infrastructure and should be reachable only from trusted web/backend
@@ -272,8 +270,9 @@ At minimum, the production single-node runtime needs:
   positive integer.
 - `FAVN_RUNNER_MODE`, defaulting to `local`; Phase 1 accepts only the local
   single-node runner mode.
-- Production `favn_view` web-to-orchestrator URL, service-token, and public-origin
-  validation are follow-up work for the Phoenix web hardening PR.
+- Production `favn_view` public-origin and same-BEAM orchestrator readiness
+  validation are owned by the Phoenix web hardening PR. Web-to-orchestrator HTTP
+  URL and service-token config are not part of the same-BEAM production target.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
   tooling unless `--service-token` is passed, at least 32 characters, and present
   as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.
@@ -310,9 +309,9 @@ The production path contract is intentionally explicit:
 Ownership is split by app boundary. `favn_orchestrator` validates and applies
 orchestrator API, service-token, SQLite storage, scheduler, and local-runner
 client config before supervised runtime traffic starts. `favn_runner` validates
-runner mode before runner supervision starts. `favn_view` production runtime
-validation is follow-up work. Local-dev-only `FAVN_DEV_*` names are not accepted
-by this production contract.
+runner mode before runner supervision starts. `favn_view` validates web-owned
+public-origin config and same-BEAM readiness timeout config. Local-dev-only
+`FAVN_DEV_*` names are not accepted by this production contract.
 
 Postgres production config validation is explicitly deferred to the later
 Postgres production-mode issue. `FAVN_STORAGE=postgres` is not a valid first
@@ -384,8 +383,8 @@ Required expectations:
 - Diagnostics identify active manifest, storage mode, SQLite path readiness,
   scheduler status, runner availability, recent run failures, and migration
   readiness without leaking secrets.
-- Web readiness must include its ability to reach the orchestrator API through
-  the configured service boundary.
+- Web readiness must include its ability to call orchestrator readiness through
+  the public same-BEAM orchestrator facade.
 - DuckDB diagnostics must identify connection/bootstrap/materialization failures,
   bootstrap step/kind, unsupported allow-list values, and adapter details where
   safe, without exposing secret values.
@@ -403,14 +402,13 @@ active manifest, storage/schema readiness, scheduler, runner, redacted
 data-plane connection summaries, in-flight runs, and recent failed-run
 summaries.
 
-The web service protects `/api/web/v1/health/live` and
-`/api/web/v1/health/ready` with the same hook-level web-session gate as other
-BFF routes. Web liveness is process-only and does not call the orchestrator. Web
-readiness verifies web config and calls orchestrator readiness through the
-configured API boundary with a bounded timeout, returning `503` with redacted
-diagnostics when the web config is invalid, the orchestrator is unreachable,
-times out, or reports not-ready. Unauthenticated health requests return the same
-minimal JSON `401` envelope as other protected BFF routes.
+The web service exposes `/api/web/v1/health/live` and
+`/api/web/v1/health/ready`. Web liveness is process-only and does not call the
+orchestrator. Web readiness verifies web config and calls orchestrator readiness
+through the public same-BEAM facade with a bounded timeout, returning `503` with
+redacted diagnostics when the web config is invalid, the orchestrator readiness
+call times out, or the orchestrator reports not-ready. Browser-session gating for
+operator UI routes is separate from process health endpoints.
 
 ## Explicitly Unsupported In V1
 

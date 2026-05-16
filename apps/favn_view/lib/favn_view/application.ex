@@ -7,19 +7,22 @@ defmodule FavnView.Application do
 
   @impl true
   def start(_type, _args) do
-    start_storybook()
+    with :ok <- FavnView.ProductionRuntimeConfig.apply_from_env_if_configured() do
+      start_storybook()
 
-    children = [
-      FavnView.Telemetry,
-      {Phoenix.PubSub, name: FavnView.PubSub},
-      # Start to serve requests, typically the last entry
-      FavnView.Endpoint
-    ]
+      children = [
+        FavnView.Telemetry,
+        {Phoenix.PubSub, name: FavnView.PubSub},
+        {Task.Supervisor, name: FavnView.ReadinessTaskSupervisor},
+        # Start to serve requests, typically the last entry
+        FavnView.Endpoint
+      ]
 
-    # See https://hexdocs.pm/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: FavnView.Supervisor]
-    Supervisor.start_link(children, opts)
+      # See https://hexdocs.pm/elixir/Supervisor.html
+      # for other strategies and supported options
+      opts = [strategy: :one_for_one, name: FavnView.Supervisor]
+      Supervisor.start_link(children, opts)
+    end
   end
 
   # Tell Phoenix to update the endpoint configuration

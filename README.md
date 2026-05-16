@@ -52,7 +52,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; manifest-persisted freshness policies can skip already-fresh nodes, force selected nodes, block failed dependencies, and dirty downstream nodes only when an upstream actually refreshes
 - run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, and heartbeats from the orchestrator API
 - production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus operation-versioned JSON-safe replay response DTOs
-- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/public-origin config, and the orchestrator exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; the single-node operator runbook documents stopped-backend SQLite control-plane and separate DuckDB data-plane backup/restore procedures, while backup automation and full web production startup remain follow-up; see `docs/production/single_node_contract.md` and `docs/production/single_node_operator_runbook.md`
+- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and same-BEAM web readiness/public-origin config, and the orchestrator exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler state evidence, runner availability, in-flight runs, and recent failed runs; the single-node operator runbook documents stopped-backend SQLite control-plane and separate DuckDB data-plane backup/restore procedures, while backup automation and fuller release packaging remain follow-up; see `docs/production/single_node_contract.md` and `docs/production/single_node_operator_runbook.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
@@ -647,9 +647,10 @@ identities. The orchestrator stores only token hashes from production runtime
 config and records the matched `service_identity` in audit logs, diagnostics, and
 bootstrap auth responses without exposing raw token values.
 
-The Phoenix/LiveView UI lives in `apps/favn_view`. Production web deployment is
-not finalized in this foundational migration PR; the app currently provides only
-a minimal placeholder shell.
+The Phoenix/LiveView UI lives in `apps/favn_view`. For the first production
+target it runs as a separate OTP app in the same BEAM as the backend apps and
+uses the public orchestrator facade for readiness. Web health endpoints are
+available at `/api/web/v1/health/live` and `/api/web/v1/health/ready`.
 
 `mix favn.bootstrap.single` bootstraps the backend control-plane side of the
 single-node shape through orchestrator APIs. Required inputs can be passed as
@@ -691,9 +692,10 @@ HTTP endpoint `GET /api/orchestrator/v1/diagnostics` with service auth and the
 local `mix favn.diagnostics` wrapper. Each check returns `check`, `status`,
 `summary`, `details`, and optional `reason`, and all diagnostics are redacted
 before being returned, logged, or passed to the optional
-`:favn_orchestrator, :metrics_hook` callback. Runner diagnostics include
-redacted data-plane connection summaries when the runner can expose them through
-the adapter boundary.
+`:favn_orchestrator, :metrics_hook` callback. Scheduler diagnostics include
+deterministic state summary evidence without exposing storage rows. Runner
+diagnostics include redacted data-plane connection summaries when the runner can
+expose them through the adapter boundary.
 
 ### favn_local implementation notes
 

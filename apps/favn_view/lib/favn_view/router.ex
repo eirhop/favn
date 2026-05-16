@@ -14,6 +14,13 @@ defmodule FavnView.Router do
     plug :accepts, ["json"]
   end
 
+  scope "/api/web/v1", FavnView do
+    pipe_through :api
+
+    get "/health/live", HealthController, :live
+    get "/health/ready", HealthController, :ready
+  end
+
   scope "/", FavnView do
     pipe_through :browser
 

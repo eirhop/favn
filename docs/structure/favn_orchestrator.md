@@ -16,6 +16,8 @@ Code:
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`
 - HTTP contract schemas for private API JSON-safe DTOs under `apps/favn_orchestrator/priv/http_contract/v1/`
 - Production runtime config, readiness, diagnostics, redaction, and operational event modules under `apps/favn_orchestrator/lib/favn_orchestrator/`
+- Public facade readiness and diagnostics entrypoints on `FavnOrchestrator`, used
+  by same-BEAM web readiness and operator tooling.
 - Command idempotency helpers under `apps/favn_orchestrator/lib/favn_orchestrator/idempotency.ex`
 
 Tests:
@@ -29,7 +31,7 @@ Tests:
 - cross-app runner integration coverage under `apps/favn_orchestrator/test/orchestrator_runner_integration_test.exs`
 - optional adapter contract smoke coverage under `apps/favn_orchestrator/test/integration/`; adapter-specific suites own full adapter coverage
 
-Use when changing run lifecycle, freshness decisions/queries, scheduling, private
-API behavior, SSE/events, auth, command idempotency, bootstrap
-service-token/runner-registration endpoints, backfill orchestration, or storage
-contract semantics.
+Use when changing run lifecycle, freshness decisions/queries, scheduling,
+private API behavior, SSE/events, auth, command idempotency, bootstrap
+service-token/runner-registration endpoints, same-BEAM readiness facade behavior,
+backfill orchestration, or storage contract semantics.
