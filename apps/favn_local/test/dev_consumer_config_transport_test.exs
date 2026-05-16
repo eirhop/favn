@@ -2,6 +2,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
   use ExUnit.Case, async: false
 
   alias Favn.Dev.ConsumerConfigTransport
+  alias Favn.RuntimeConfig.Ref
 
   setup do
     keys = ConsumerConfigTransport.supported_keys()
@@ -36,6 +37,21 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
       runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
       duckdb_in_process_client: [pool: MyApp.DuckPool, enabled: true, note: nil],
       duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
+    ]
+
+    encoded = ConsumerConfigTransport.encode(config)
+
+    assert {:ok, ^config} = ConsumerConfigTransport.decode(encoded)
+  end
+
+  test "roundtrips runtime config refs in nested connection config" do
+    config = [
+      connections: [
+        warehouse: [
+          database: Ref.env!("WAREHOUSE_DB_PATH"),
+          password: Ref.secret_env!("WAREHOUSE_PASSWORD")
+        ]
+      ]
     ]
 
     encoded = ConsumerConfigTransport.encode(config)
