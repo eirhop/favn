@@ -709,6 +709,14 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
     assert list_sql =~ "table_catalog = 'raw'"
   end
 
+  test "catalog-qualified introspection rejects missing schema" do
+    ref = %RelationRef{catalog: "raw", name: "products"}
+
+    assert_raise ArgumentError, ~r/catalog-qualified relations require schema/, fn ->
+      DuckDB.introspection_query(:relation, ref, [])
+    end
+  end
+
   test "conflict failures normalize as retryable" do
     TestSupport.put_mode(:query_mode, :conflict)
     {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)

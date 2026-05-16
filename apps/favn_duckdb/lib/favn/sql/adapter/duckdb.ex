@@ -988,6 +988,12 @@ defmodule Favn.SQL.Adapter.DuckDB do
     ]
   end
 
+  defp relation_schema_filter(%RelationRef{catalog: catalog, schema: nil})
+       when is_binary(catalog) do
+    raise ArgumentError,
+          "catalog-qualified relations require schema; got catalog #{inspect(catalog)} without schema"
+  end
+
   defp relation_schema_filter(%RelationRef{schema: schema}) do
     ["table_schema = ", quote_literal(schema || "main")]
   end

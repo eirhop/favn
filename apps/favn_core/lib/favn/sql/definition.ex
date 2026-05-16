@@ -39,7 +39,8 @@ defmodule Favn.SQL.Definition do
     :file,
     :line,
     :declared_file,
-    :declared_line
+    :declared_line,
+    relation_defaults: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -53,7 +54,8 @@ defmodule Favn.SQL.Definition do
           file: String.t(),
           line: pos_integer(),
           declared_file: String.t(),
-          declared_line: pos_integer()
+          declared_line: pos_integer(),
+          relation_defaults: map()
         }
 
   @spec key(t()) :: {atom(), non_neg_integer()}

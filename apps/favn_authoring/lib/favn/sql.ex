@@ -57,6 +57,7 @@ defmodule Favn.SQL do
   """
 
   alias Favn.DSL.Compiler, as: DSLCompiler
+  alias Favn.Namespace
   alias Favn.SQL.Definition
   alias Favn.SQL.Definition.Param
   alias Favn.SQL.Source
@@ -284,7 +285,8 @@ defmodule Favn.SQL do
           file: raw.sql_file,
           line: raw.sql_line,
           declared_file: raw.file,
-          declared_line: raw.line
+          declared_line: raw.line,
+          relation_defaults: Namespace.resolve_relation(module)
         }
       end)
 

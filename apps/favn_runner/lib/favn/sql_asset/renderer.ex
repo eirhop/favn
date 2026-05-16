@@ -122,6 +122,8 @@ defmodule Favn.SQLAsset.Renderer do
       root_connection: definition.asset.relation.connection,
       root_catalog: definition.asset.relation.catalog,
       root_schema: definition.asset.relation.schema,
+      current_catalog: definition.asset.relation.catalog,
+      current_schema: definition.asset.relation.schema,
       params: params,
       runtime_values: runtime_inputs.runtime_values,
       local_args: %{},
@@ -222,7 +224,8 @@ defmodule Favn.SQLAsset.Renderer do
            |> Map.put(:local_args, local_arg_map(arg_fragments))
            |> Map.put(:stack, [stack_frame(call, definition) | env.stack])
            |> Map.put(:cache, next_env.cache)
-           |> Map.put(:current_file, definition.file),
+           |> Map.put(:current_file, definition.file)
+           |> put_definition_relation_defaults(definition),
          {:ok, %Fragment{} = expanded, callee_env_after} <-
            render_nodes(definition.template.nodes, callee_env) do
       {:ok, expanded, %{env | cache: callee_env_after.cache}}
@@ -333,6 +336,21 @@ defmodule Favn.SQLAsset.Renderer do
       line: definition.line
     }
   end
+
+  defp put_definition_relation_defaults(env, %SQLDefinition{relation_defaults: defaults})
+       when is_map(defaults) do
+    env
+    |> Map.put(
+      :current_catalog,
+      Map.get(defaults, :catalog) || Map.get(defaults, "catalog") || env.root_catalog
+    )
+    |> Map.put(
+      :current_schema,
+      Map.get(defaults, :schema) || Map.get(defaults, "schema") || env.root_schema
+    )
+  end
+
+  defp put_definition_relation_defaults(env, %SQLDefinition{}), do: env
 
   defp resolve_asset_ref(
          %AssetRef{resolution: :resolved, relation: %RelationRef{} = relation_ref} =
@@ -564,12 +582,12 @@ defmodule Favn.SQLAsset.Renderer do
   end
 
   defp plain_relation_to_sql(%Relation{segments: [name]}, env) do
-    %RelationRef{catalog: env.root_catalog, schema: env.root_schema, name: name}
+    %RelationRef{catalog: env.current_catalog, schema: env.current_schema, name: name}
     |> relation_ref_to_sql(env)
   end
 
   defp plain_relation_to_sql(%Relation{segments: [schema, name]}, env) do
-    %RelationRef{catalog: env.root_catalog, schema: schema, name: name}
+    %RelationRef{catalog: env.current_catalog, schema: schema, name: name}
     |> relation_ref_to_sql(env)
   end
 
