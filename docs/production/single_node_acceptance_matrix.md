@@ -40,8 +40,9 @@ feature testing.
 
 | Item | Classification | Disposition |
 | --- | --- | --- |
-| SQLite backup/restore operator procedure | product-critical | Follow-up #346 and operator runbook #259 |
-| DuckDB data-plane backup/restore procedure | product-critical | Follow-up #347 |
+| SQLite backup/restore operator procedure | product-critical | Covered by `docs/production/single_node_operator_runbook.md`; automation follow-up #350 |
+| DuckDB data-plane backup/restore procedure | product-critical | Covered by `docs/production/single_node_operator_runbook.md`; automation/design follow-up #351 |
+| Focused auth/session/audit and idempotency restore evidence | product-critical | Follow-up #349; runbook avoids overclaiming current restore coverage |
 | Browser smoke | nice-to-have | Follow-up #345 after backend acceptance is stable |
 | favn_view production readiness hardening | product-critical | Follow-up #343 |
 | Deterministic scheduler state diagnostics over HTTP | refactor-enabling | Follow-up #342 if current diagnostics plus focused storage tests are insufficient |
@@ -58,3 +59,8 @@ from `favn_local` tests.
 Runtime state must live outside `dist_dir`. The artifact directory is immutable
 after build; acceptance tests use fresh `runtime_home`, SQLite, DuckDB, API port,
 and auth/session state for each test.
+
+The #262 acceptance suite proves restart survival and runtime-path separation. It
+does not prove Favn-owned backup automation; the operator runbook's current
+golden path is stopped-backend backup/restore using SQLite- and DuckDB-safe
+external procedures.
