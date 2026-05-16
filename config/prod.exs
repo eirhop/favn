@@ -18,3 +18,5 @@ config :favn_view, FavnView.Endpoint,
       hosts: ["localhost", "127.0.0.1"]
     ]
   ]
+
+config :favn_view, production_runtime_config: true

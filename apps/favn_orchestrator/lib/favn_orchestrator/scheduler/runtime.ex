@@ -132,10 +132,71 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
         count_entries(state.entries, fn entry -> not entry.schedule.active end),
       in_flight_schedule_count: Enum.count(states, &is_binary(Map.get(&1, :in_flight_run_id))),
       queued_schedule_count: Enum.count(states, &(not is_nil(Map.get(&1, :queued_due_at)))),
+      state_summary: scheduler_state_summary(state),
       tick_ms: state.tick_ms,
       auto_tick?: state.auto_tick?
     }
   end
+
+  defp scheduler_state_summary(state) do
+    entries =
+      state.entries
+      |> Map.values()
+      |> Enum.map(&scheduler_state_entry(&1, Map.get(state.states, &1.module), state.version))
+      |> Enum.sort_by(&{to_string(&1.schedule_id), &1.id})
+
+    %{
+      state_count: map_size(state.states),
+      evaluated_count: count_states(state.states, &present?(&1.last_evaluated_at)),
+      due_cursor_count: count_states(state.states, &present?(&1.last_due_at)),
+      submitted_cursor_count: count_states(state.states, &present?(&1.last_submitted_due_at)),
+      in_flight_count: count_states(state.states, &is_binary(&1.in_flight_run_id)),
+      queued_count: count_states(state.states, &present?(&1.queued_due_at)),
+      updated_count: count_states(state.states, &present?(&1.updated_at)),
+      entries: entries,
+      truncated?: false
+    }
+  end
+
+  defp scheduler_state_entry(entry, state, version) do
+    schedule_id = entry.schedule.name
+
+    %{
+      id: scheduler_state_entry_id(version, schedule_id, entry.schedule_fingerprint),
+      schedule_id: schedule_id,
+      active?: entry.schedule.active == true,
+      evaluated?: present?(field(state, :last_evaluated_at)),
+      due?: present?(field(state, :last_due_at)),
+      submitted?: present?(field(state, :last_submitted_due_at)),
+      in_flight?: is_binary(field(state, :in_flight_run_id)),
+      queued?: present?(field(state, :queued_due_at)),
+      updated?: present?(field(state, :updated_at))
+    }
+  end
+
+  defp scheduler_state_entry_id(version, schedule_id, schedule_fingerprint) do
+    source = [manifest_version_id(version), to_string(schedule_id), schedule_fingerprint || ""]
+
+    digest =
+      :sha256
+      |> :crypto.hash(Enum.join(source, ":"))
+      |> Base.url_encode64(padding: false)
+      |> binary_part(0, 16)
+
+    "scheduler_state:" <> digest
+  end
+
+  defp count_states(states, fun) when is_map(states) and is_function(fun, 1) do
+    states
+    |> Map.values()
+    |> Enum.count(fun)
+  end
+
+  defp present?(nil), do: false
+  defp present?(_value), do: true
+
+  defp field(nil, _key), do: nil
+  defp field(state, key) when is_map(state), do: Map.get(state, key)
 
   defp emit_scheduler_loaded(state) do
     OperationalEvents.emit(:scheduler_loaded, %{entry_count: map_size(state.entries)}, %{

@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.API.RouterTest do
   alias FavnOrchestrator.Idempotency
   alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -205,6 +206,43 @@ defmodule FavnOrchestrator.API.RouterTest do
 
     assert Enum.any?(checks, &(&1["check"] == "storage_readiness" and &1["status"] == "ok"))
     assert Enum.any?(checks, &(&1["check"] == "active_manifest" and &1["status"] == "ok"))
+    refute response.resp_body =~ "test-service-token"
+  end
+
+  test "diagnostics endpoint exposes deterministic scheduler state evidence" do
+    previous_scheduler = Application.get_env(:favn_orchestrator, :scheduler)
+    on_exit(fn -> restore_env(:favn_orchestrator, :scheduler, previous_scheduler) end)
+
+    version = schedule_manifest_version("mv_http_scheduler_diagnostics")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    running_name = Module.concat(__MODULE__, HttpDiagnosticsScheduler)
+    Application.put_env(:favn_orchestrator, :scheduler, enabled: true, name: running_name)
+    start_supervised!({SchedulerRuntime, name: running_name, tick_ms: 60_000, auto_tick?: false})
+
+    response =
+      conn(:get, "/api/orchestrator/v1/diagnostics")
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> Router.call(@opts)
+
+    assert response.status == 200
+    assert %{"data" => %{"checks" => checks}} = Jason.decode!(response.resp_body)
+
+    scheduler = Enum.find(checks, &(&1["check"] == "scheduler"))
+    assert scheduler["status"] == "ok"
+
+    assert %{
+             "entry_count" => 1,
+             "state_summary" => %{
+               "state_count" => 1,
+               "entries" => [%{"schedule_id" => "daily"} = entry]
+             }
+           } = scheduler["details"]
+
+    assert entry["due?"] == false
+    assert entry["in_flight?"] == false
+    refute response.resp_body =~ "MyApp.Pipelines"
     refute response.resp_body =~ "test-service-token"
   end
 

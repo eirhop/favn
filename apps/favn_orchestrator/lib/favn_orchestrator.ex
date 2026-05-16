@@ -111,6 +111,18 @@ defmodule FavnOrchestrator do
   def diagnostics(opts \\ []) when is_list(opts), do: Diagnostics.report(opts)
 
   @doc """
+  Returns orchestrator process liveness diagnostics.
+  """
+  @spec liveness() :: map()
+  def liveness, do: FavnOrchestrator.Readiness.liveness()
+
+  @doc """
+  Returns orchestrator readiness diagnostics through the public orchestrator facade.
+  """
+  @spec readiness() :: map()
+  def readiness, do: FavnOrchestrator.Readiness.readiness()
+
+  @doc """
   Registers one manifest version in orchestrator storage.
   """
   @spec register_manifest(Version.t()) :: :ok | {:error, term()}

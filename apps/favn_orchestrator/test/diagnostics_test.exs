@@ -5,7 +5,11 @@ defmodule FavnOrchestrator.DiagnosticsTest do
 
   alias Favn.Contracts.RunnerClient
   alias Favn.Manifest
+  alias Favn.Manifest.Pipeline
+  alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
+  alias Favn.Scheduler.State
+  alias Favn.Window.Policy
   alias FavnOrchestrator.Diagnostics
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.RunState
@@ -257,6 +261,62 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     assert scheduler.details.manifest_version_id == "mv_diagnostics_scheduler"
   end
 
+  test "reports deterministic scheduler state evidence without runtime module names" do
+    version = schedule_manifest_version("mv_diagnostics_scheduler_state")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    running_name = Module.concat(__MODULE__, RunningSchedulerState)
+    Application.put_env(:favn_orchestrator, :scheduler, enabled: true, name: running_name)
+    start_supervised!({SchedulerRuntime, name: running_name, tick_ms: 60_000, auto_tick?: false})
+
+    [entry] = SchedulerRuntime.scheduled(running_name)
+    now = ~U[2026-05-16 12:00:00Z]
+
+    assert :ok =
+             Storage.put_scheduler_state(
+               {entry.module, entry.schedule.name},
+               %State{
+                 pipeline_module: entry.module,
+                 schedule_id: entry.schedule.name,
+                 schedule_fingerprint: entry.schedule_fingerprint,
+                 last_evaluated_at: now,
+                 last_due_at: now,
+                 last_submitted_due_at: now,
+                 in_flight_run_id: "run_in_flight_scheduler_state",
+                 queued_due_at: now,
+                 updated_at: now,
+                 version: 1
+               }
+             )
+
+    assert :ok = SchedulerRuntime.reload(running_name)
+
+    scheduler = check(Diagnostics.report().checks, :scheduler)
+    summary = scheduler.details.state_summary
+
+    assert summary.state_count == 1
+    assert summary.evaluated_count == 1
+    assert summary.due_cursor_count == 1
+    assert summary.submitted_cursor_count == 1
+    assert summary.in_flight_count == 1
+    assert summary.queued_count == 1
+    assert summary.updated_count == 1
+    assert summary[:truncated?] == false
+
+    assert [entry_summary] = summary.entries
+    assert entry_summary.schedule_id == :daily
+    assert entry_summary[:active?] == true
+    assert entry_summary[:evaluated?] == true
+    assert entry_summary[:due?] == true
+    assert entry_summary[:submitted?] == true
+    assert entry_summary[:in_flight?] == true
+    assert entry_summary[:queued?] == true
+    assert entry_summary[:updated?] == true
+    refute Map.has_key?(entry_summary, :pipeline_module)
+    refute inspect(scheduler) =~ "MyApp.Pipelines"
+  end
+
   test "summarizes in-flight and recent failed runs without raw error payloads", %{
     memory_server: memory_server
   } do
@@ -360,6 +420,47 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           ref: {MyApp.Assets.Diagnostics, :asset},
           module: MyApp.Assets.Diagnostics,
           name: :asset
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp schedule_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.DiagnosticsDaily, :asset},
+          module: MyApp.Assets.DiagnosticsDaily,
+          name: :asset
+        }
+      ],
+      schedules: [
+        %Schedule{
+          module: MyApp.Schedules,
+          name: :daily,
+          ref: {MyApp.Schedules, :daily},
+          cron: "0 * * * *",
+          timezone: "Etc/UTC",
+          missed: :skip,
+          overlap: :forbid,
+          active: true
+        }
+      ],
+      pipelines: [
+        %Pipeline{
+          module: MyApp.Pipelines.DiagnosticsDaily,
+          name: :diagnostics_daily,
+          selectors: [{:asset, {MyApp.Assets.DiagnosticsDaily, :asset}}],
+          deps: :all,
+          schedule: {:ref, {MyApp.Schedules, :daily}},
+          window: Policy.new!(:day),
+          source: :dsl,
+          outputs: [:asset],
+          config: %{},
+          metadata: %{}
         }
       ]
     }

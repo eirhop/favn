@@ -15,7 +15,6 @@ defmodule FavnOrchestrator.API.Router do
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.Idempotency
-  alias FavnOrchestrator.Readiness
   alias FavnOrchestrator.RunEvent
 
   @read_model_status_filters %{
@@ -48,11 +47,11 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   get "/api/orchestrator/v1/health/live" do
-    data(conn, 200, DTO.normalize(Readiness.liveness()))
+    data(conn, 200, DTO.normalize(FavnOrchestrator.liveness()))
   end
 
   get "/api/orchestrator/v1/health/ready" do
-    readiness = Readiness.readiness()
+    readiness = FavnOrchestrator.readiness()
     status = if readiness.status == :ready, do: 200, else: 503
 
     data(conn, status, DTO.normalize(readiness))
