@@ -107,6 +107,10 @@ defmodule Favn.Dev.Build.SingleTest do
     assert "FAVN_STORAGE" in required_env
     assert "FAVN_SQLITE_PATH" in required_env
     assert "FAVN_ORCHESTRATOR_API_SERVICE_TOKENS" in required_env
+    assert "FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME" in required_env
+    assert "FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD" in required_env
+    assert "FAVN_ORCHESTRATOR_BOOTSTRAP_DISPLAY_NAME" in required_env
+    assert "FAVN_ORCHESTRATOR_BOOTSTRAP_ROLES" in required_env
     assert "FAVN_RUNNER_MODE" in required_env
     refute Enum.any?(required_env, &String.starts_with?(&1, "FAVN_DEV_"))
 
