@@ -734,7 +734,7 @@ defmodule FavnView.PageLiveTest do
     refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
   end
 
-  test "run detail only merges by asset when asset refs are unique", %{conn: conn} do
+  test "terminal run detail suppresses stale event rows for duplicate asset refs", %{conn: conn} do
     ref = {__MODULE__.Assets, :stg_payments}
 
     assert :ok = Storage.put_run(same_asset_node_results_run_state())
@@ -772,10 +772,10 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/runs/run_same_asset_nodes")
     html = render(view)
 
-    assert asset_result_row_count(html) == 4
+    assert asset_result_row_count(html) == 2
     assert html =~ "window:day:2026-06-12"
     assert html =~ "window:day:2026-06-13"
-    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
+    refute has_element?(view, ~s([data-testid="run-asset-result-row"]), "Running")
   end
 
   test "run detail renders retrying step event before results persist", %{conn: conn} do
@@ -1535,11 +1535,10 @@ defmodule FavnView.PageLiveTest do
   end
 
   defp asset_step_id(run_id, name) do
-    {:ok, run} = FavnOrchestrator.get_run(run_id)
+    {:ok, detail} = FavnOrchestrator.get_run_detail(run_id)
 
-    run
-    |> FavnView.RunStepViewModel.from_run()
-    |> Enum.find(&(Map.get(&1, :display_name) == Atom.to_string(name)))
+    detail.steps
+    |> Enum.find(&String.ends_with?(&1.asset_ref, ".#{name}"))
     |> Map.fetch!(:id)
   end
 

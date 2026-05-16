@@ -12,7 +12,8 @@ defmodule FavnView.AssetRunLogsLive do
 
     socket =
       LogsLiveSupport.mount_logs(socket, %{
-        filter: %Favn.Log.Filter{run_id: run_id, asset_step_id: asset_step_id},
+        filter:
+          context.log_filter || %Favn.Log.Filter{run_id: run_id, asset_step_id: asset_step_id},
         scope: :asset,
         nav_items: LogsLiveSupport.nav_items(:runs),
         title: context.title,

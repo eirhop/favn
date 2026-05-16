@@ -4,7 +4,9 @@ defmodule FavnOrchestrator.ProjectorTest do
   alias Favn.Run
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
+  alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
 
   test "projects public run with terminal asset results keyed by ref" do
@@ -78,7 +80,17 @@ defmodule FavnOrchestrator.ProjectorTest do
     assert run.submit_kind == :pipeline
     assert map_size(run.asset_results) == 2
     assert run.asset_results[{MyApp.Assets.Raw, :asset}].status == :ok
+
+    raw_ref = {MyApp.Assets.Raw, :asset}
+
+    assert run.asset_results[{MyApp.Assets.Raw, :asset}].asset_step_id ==
+             AssetStepIdentity.asset_step_id(run.id, {raw_ref, nil}, raw_ref)
+
     assert run.node_results[{{MyApp.Assets.Raw, :asset}, nil}].status == :ok
+
+    assert run.node_results[{{MyApp.Assets.Raw, :asset}, nil}].asset_step_id ==
+             run.asset_results[{MyApp.Assets.Raw, :asset}].asset_step_id
+
     assert run.pipeline[:submit_ref] == MyApp.Pipelines.Daily
     assert run.pipeline_context == %{id: :daily}
   end
@@ -153,8 +165,43 @@ defmodule FavnOrchestrator.ProjectorTest do
       )
 
     assert %Run{} = run = Projector.project_run(run_state)
-    assert run.asset_results == %{{MyApp.Assets.Raw, :asset} => asset_result}
-    assert run.node_results == %{node_key => node_result}
+
+    expected_asset_step_id =
+      AssetStepIdentity.asset_step_id(run_state.id, node_key, {MyApp.Assets.Raw, :asset})
+
+    assert run.asset_results[{MyApp.Assets.Raw, :asset}].status == asset_result.status
+    assert run.node_results[node_key].status == node_result.status
+    assert run.node_results[node_key].asset_step_id == expected_asset_step_id
     refute Map.has_key?(run.node_results, {{MyApp.Assets.Raw, :asset}, nil})
+  end
+
+  test "canonical asset step identity is stable and projected into step events" do
+    node_key = {{MyApp.Assets.Raw, :asset}, %{window: "2026-05-08"}}
+    ref = {MyApp.Assets.Raw, :asset}
+
+    expected_id = Base.url_encode64(:erlang.term_to_binary(node_key), padding: false)
+
+    assert AssetStepIdentity.asset_step_id("run_a", node_key, ref) == expected_id
+    assert AssetStepIdentity.asset_step_id("run_b", node_key, ref) == expected_id
+
+    run_state =
+      RunState.new(
+        id: "run_step_event_identity",
+        manifest_version_id: "mv_step_event_identity",
+        manifest_content_hash: "hash_step_event_identity",
+        asset_ref: ref
+      )
+
+    assert %RunEvent{} =
+             event =
+             Projector.run_event(run_state, :step_started, %{
+               asset_ref: ref,
+               node_key: node_key,
+               stage: 0
+             })
+
+    assert event.entity == :step
+    assert event.asset_ref == ref
+    assert event.data.asset_step_id == expected_id
   end
 end

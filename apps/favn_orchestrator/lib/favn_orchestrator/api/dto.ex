@@ -171,7 +171,8 @@ defmodule FavnOrchestrator.API.DTO do
       attempt_count: result.attempt_count,
       max_attempts: result.max_attempts,
       attempts: normalize(result.attempts),
-      next_retry_at: datetime(result.next_retry_at)
+      next_retry_at: datetime(result.next_retry_at),
+      asset_step_id: result.asset_step_id
     }
   end
 

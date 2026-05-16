@@ -38,7 +38,8 @@ defmodule Favn.Run.AssetResult do
           attempt_count: non_neg_integer(),
           max_attempts: pos_integer(),
           attempts: [attempt_result()],
-          next_retry_at: DateTime.t() | nil
+          next_retry_at: DateTime.t() | nil,
+          asset_step_id: String.t() | nil
         }
 
   defstruct [
@@ -53,6 +54,7 @@ defmodule Favn.Run.AssetResult do
     attempt_count: 0,
     max_attempts: 1,
     attempts: [],
-    next_retry_at: nil
+    next_retry_at: nil,
+    asset_step_id: nil
   ]
 end
