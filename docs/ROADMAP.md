@@ -24,7 +24,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 ### 2. Make Deployment Outputs Real
 
 - Turn `build.single` from a verified project-local backend launcher into a self-contained release artifact, turn `build.web` and `build.orchestrator` from metadata outputs into genuinely runnable, supportable deployment artifacts, and align all deployment outputs with the documented production operator path.
-- Extend the SQLite-first single-node deployment path beyond the implemented artifact startup, bootstrap, and first-run runtime-flow verification into an operator runbook before split-topology production work.
+- Turn the SQLite-first single-node operator runbook into stronger automation by adding Favn-owned backup, migration, and verification commands before split-topology production work.
 - Keep `build.runner` aligned with the same production deployment contract.
 
 ### 3. Harden Auth, Sessions, Audit, And Service Trust
@@ -44,8 +44,8 @@ Based on the current feature audit, the main path to a stable production `v1` is
 
 ### 5. Close Storage And Persistence Gaps
 
-- Extend the new orchestrator production readiness surface into operator-facing migration commands/runbooks and coordinate clearly with separate DuckDB data-plane backups for the single-node production contract.
-- Add documented backup/restore procedures and verification for the SQLite control plane and the separate DuckDB/plugin data plane.
+- Extend the new orchestrator production readiness surface into operator-facing migration commands and keep the runbook aligned with separate DuckDB data-plane backups for the single-node production contract.
+- Add Favn-owned backup/restore automation and focused verification beyond the documented stopped-backend SQLite control-plane and separate DuckDB/plugin data-plane procedures.
 - Audit remaining generic `PayloadCodec` persistence outside run snapshots/events/scheduler-state, SQLite auth state, idempotency replay responses, backfill read models, and asset freshness state, then replace each remaining durable storage area with explicit JSON-safe DTO records where the database boundary still stores reconstructed BEAM terms.
 - Move Postgres live verification into the next production mode after SQLite single-node readiness, not the first `v1` gate.
 

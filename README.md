@@ -52,7 +52,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - stage-parallel pipeline runs drain each submitted stage before failing later work, so independent sibling assets are reported even when one sibling fails; manifest-persisted freshness policies can skip already-fresh nodes, force selected nodes, block failed dependencies, and dirty downstream nodes only when an upstream actually refreshes
 - run live updates expose documented global and run-scoped SSE streams with persisted cursors, Last-Event-ID replay, retry hints, and heartbeats from the orchestrator API
 - production mutating orchestrator command APIs require `Idempotency-Key` for run submit/rerun/cancel, manifest activation, backfill submit, and backfill-window rerun; duplicate retries replay the original logical result, conflicting input returns `409`, and SQLite persists only key/request fingerprints plus operation-versioned JSON-safe replay response DTOs
-- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/public-origin config, and the orchestrator now exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; backup automation, full web production startup, and the operator runbook remain follow-up; see `docs/production/single_node_contract.md`
+- the first `v1` production target is documented as a single backend node with SQLite control-plane persistence on durable attached storage and runner-owned DuckDB data-plane execution; Phase 1 runtime config validation covers SQLite storage, orchestrator API/service auth, scheduler, local runner mode, and web-to-orchestrator/public-origin config, and the orchestrator exposes service-authenticated operator diagnostics for storage/schema readiness, active manifest, scheduler, runner availability, in-flight runs, and recent failed runs; the single-node operator runbook documents stopped-backend SQLite control-plane and separate DuckDB data-plane backup/restore procedures, while backup automation and full web production startup remain follow-up; see `docs/production/single_node_contract.md` and `docs/production/single_node_operator_runbook.md`
 - local documentation lookup is available through `mix favn.read_doc ModuleName` and `mix favn.read_doc ModuleName function_name`
 - initial packaging tooling now includes `mix favn.build.runner` for project-local runner artifact output under `.favn/dist/runner/<build_id>/`
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
@@ -747,6 +747,8 @@ manifest/JSON-shaped unless Favn explicitly supports that key.
 - `docs/production/public_api_boundary.md` defines the intended package and
   stable public API boundary for `v1`
 - `docs/production/single_node_contract.md` defines the first `v1` production deployment contract
+- `docs/production/single_node_operator_runbook.md` documents the SQLite-first
+  single-node operator path
 - `docs/structure/` maps current ownership, code layout, and test layout by app
 - `examples/basic-workflow-tutorial` is the first end-to-end tutorial project
 
