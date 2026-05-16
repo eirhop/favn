@@ -161,7 +161,14 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     schedule_id = entry.schedule.name
 
     %{
-      id: scheduler_state_entry_id(version, entry.id, schedule_id, entry.schedule_fingerprint),
+      id:
+        scheduler_state_entry_id(
+          version,
+          entry.module,
+          entry.id,
+          schedule_id,
+          entry.schedule_fingerprint
+        ),
       schedule_id: schedule_id,
       active?: entry.schedule.active == true,
       evaluated?: present?(field(state, :last_evaluated_at)),
@@ -173,9 +180,16 @@ defmodule FavnOrchestrator.Scheduler.Runtime do
     }
   end
 
-  defp scheduler_state_entry_id(version, entry_id, schedule_id, schedule_fingerprint) do
+  defp scheduler_state_entry_id(
+         version,
+         entry_module,
+         entry_id,
+         schedule_id,
+         schedule_fingerprint
+       ) do
     source = [
       manifest_version_id(version),
+      inspect(entry_module),
       to_string(entry_id),
       to_string(schedule_id),
       schedule_fingerprint || ""

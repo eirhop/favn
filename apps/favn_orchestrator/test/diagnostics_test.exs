@@ -336,6 +336,27 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     refute inspect(scheduler) =~ "MyApp.Pipelines"
   end
 
+  test "scheduler state evidence ids stay distinct for same-named pipelines sharing a schedule" do
+    version =
+      same_named_shared_schedule_manifest_version("mv_diagnostics_scheduler_same_name_ids")
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    running_name = Module.concat(__MODULE__, SameNamedSharedScheduleRuntime)
+    Application.put_env(:favn_orchestrator, :scheduler, enabled: true, name: running_name)
+    start_supervised!({SchedulerRuntime, name: running_name, tick_ms: 60_000, auto_tick?: false})
+
+    scheduler = check(Diagnostics.report().checks, :scheduler)
+    entries = scheduler.details.state_summary.entries
+    ids = Enum.map(entries, & &1.id)
+
+    assert length(entries) == 2
+    assert length(Enum.uniq(ids)) == 2
+    assert Enum.all?(entries, &(&1.schedule_id == :daily))
+    refute inspect(scheduler) =~ "MyApp.Pipelines"
+  end
+
   test "summarizes in-flight and recent failed runs without raw error payloads", %{
     memory_server: memory_server
   } do
@@ -531,6 +552,64 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           module: MyApp.Pipelines.DiagnosticsDailyB,
           name: :diagnostics_daily_b,
           selectors: [{:asset, {MyApp.Assets.DiagnosticsDailyB, :asset}}],
+          deps: :all,
+          schedule: {:ref, {MyApp.Schedules, :daily}},
+          window: Policy.new!(:day),
+          source: :dsl,
+          outputs: [:asset],
+          config: %{},
+          metadata: %{}
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp same_named_shared_schedule_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.DiagnosticsSameNamedDailyA, :asset},
+          module: MyApp.Assets.DiagnosticsSameNamedDailyA,
+          name: :asset
+        },
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.DiagnosticsSameNamedDailyB, :asset},
+          module: MyApp.Assets.DiagnosticsSameNamedDailyB,
+          name: :asset
+        }
+      ],
+      schedules: [
+        %Schedule{
+          module: MyApp.Schedules,
+          name: :daily,
+          ref: {MyApp.Schedules, :daily},
+          cron: "0 * * * *",
+          timezone: "Etc/UTC",
+          missed: :skip,
+          overlap: :forbid,
+          active: true
+        }
+      ],
+      pipelines: [
+        %Pipeline{
+          module: MyApp.Pipelines.DiagnosticsSameNamedDailyA,
+          name: :diagnostics_daily,
+          selectors: [{:asset, {MyApp.Assets.DiagnosticsSameNamedDailyA, :asset}}],
+          deps: :all,
+          schedule: {:ref, {MyApp.Schedules, :daily}},
+          window: Policy.new!(:day),
+          source: :dsl,
+          outputs: [:asset],
+          config: %{},
+          metadata: %{}
+        },
+        %Pipeline{
+          module: MyApp.Pipelines.DiagnosticsSameNamedDailyB,
+          name: :diagnostics_daily,
+          selectors: [{:asset, {MyApp.Assets.DiagnosticsSameNamedDailyB, :asset}}],
           deps: :all,
           schedule: {:ref, {MyApp.Schedules, :daily}},
           window: Policy.new!(:day),
