@@ -226,6 +226,28 @@ defmodule Favn.Dev.ConsumerConfigTransport do
         with :ok <- validate_collection_size(items), do: decode_list(items, depth - 1)
       end
 
+      defp decode_value(
+             %{
+               "$type" => "runtime_config_ref",
+               "provider" => provider,
+               "key" => key,
+               "secret" => secret?,
+               "required" => required?
+             },
+             depth
+           )
+           when is_binary(key) and is_boolean(secret?) and is_boolean(required?) do
+        with {:ok, decoded_provider} <- decode_value(provider, depth - 1) do
+          {:ok,
+           %Favn.RuntimeConfig.Ref{
+             provider: decoded_provider,
+             key: key,
+             secret?: secret?,
+             required?: required?
+           }}
+        end
+      end
+
       defp decode_value(%{"$type" => "map", "entries" => entries}, depth) when is_list(entries) do
         with :ok <- validate_collection_size(entries) do
           entries
@@ -314,6 +336,16 @@ defmodule Favn.Dev.ConsumerConfigTransport do
 
   defp encode_value(value) when is_list(value) do
     %{"$type" => "list", "items" => Enum.map(value, &encode_value/1)}
+  end
+
+  defp encode_value(%Favn.RuntimeConfig.Ref{} = value) do
+    %{
+      "$type" => "runtime_config_ref",
+      "provider" => encode_value(value.provider),
+      "key" => value.key,
+      "secret" => value.secret?,
+      "required" => value.required?
+    }
   end
 
   defp encode_value(value) when is_map(value) do
@@ -417,6 +449,28 @@ defmodule Favn.Dev.ConsumerConfigTransport do
 
   defp decode_value(%{"$type" => "list", "items" => items}, depth) when is_list(items) do
     with :ok <- validate_collection_size(items), do: decode_list(items, depth - 1)
+  end
+
+  defp decode_value(
+         %{
+           "$type" => "runtime_config_ref",
+           "provider" => provider,
+           "key" => key,
+           "secret" => secret?,
+           "required" => required?
+         },
+         depth
+       )
+       when is_binary(key) and is_boolean(secret?) and is_boolean(required?) do
+    with {:ok, decoded_provider} <- decode_value(provider, depth - 1) do
+      {:ok,
+       %Favn.RuntimeConfig.Ref{
+         provider: decoded_provider,
+         key: key,
+         secret?: secret?,
+         required?: required?
+       }}
+    end
   end
 
   defp decode_value(%{"$type" => "map", "entries" => entries}, depth) when is_list(entries) do

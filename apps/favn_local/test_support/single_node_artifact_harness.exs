@@ -3,30 +3,11 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
 
   import ExUnit.Assertions
 
-  @repo_root Path.expand("../../..", __DIR__)
   @shared_artifact_key {__MODULE__, :shared_fixture_artifact}
-  @shared_artifact_prefix "favn_single_node_acceptance"
+  @shared_artifact_prefix "favn_issue262_acceptance"
 
-  def fixture_project!(prefix \\ "favn_single_node_artifact") do
-    project_dir =
-      Path.join(
-        System.tmp_dir!(),
-        "#{prefix}_#{System.unique_integer([:positive])}"
-      )
-
-    lib_dir = Path.join(project_dir, "lib/favn_single_node_fixture")
-    config_dir = Path.join(project_dir, "config")
-
-    File.mkdir_p!(lib_dir)
-    File.mkdir_p!(config_dir)
-
-    File.write!(Path.join(project_dir, "mix.exs"), mix_exs())
-    File.write!(Path.join(config_dir, "config.exs"), config_exs())
-    File.write!(Path.join(lib_dir, "ping.ex"), ping_asset_ex())
-    File.write!(Path.join(project_dir, "mix.lock"), "%{}\n")
-
-    project_dir
-  end
+  def fixture_project!(prefix \\ "favn_issue262_canonical"),
+    do: Favn.Local.CanonicalSampleProject.create!(prefix)
 
   def build_fixture_artifact!(prefix \\ "favn_single_node_artifact") do
     project_dir = fixture_project!(prefix)
@@ -370,52 +351,4 @@ defmodule Favn.Local.SingleNodeArtifactHarness do
     end
   end
 
-  defp mix_exs do
-    """
-    defmodule FavnSingleNodeFixture.MixProject do
-      use Mix.Project
-
-      def project do
-        [
-          app: :favn_single_node_fixture,
-          version: "0.1.0",
-          elixir: "~> 1.19",
-          start_permanent: Mix.env() == :prod,
-          deps: deps()
-        ]
-      end
-
-      def application do
-        [extra_applications: [:logger]]
-      end
-
-      defp deps do
-        [
-          {:favn, path: #{inspect(Path.join(@repo_root, "apps/favn"))}}
-        ]
-      end
-    end
-    """
-  end
-
-  defp config_exs do
-    """
-    import Config
-
-    config :favn,
-      asset_modules: [FavnSingleNodeFixture.Ping],
-      pipeline_modules: [],
-      schedule_modules: []
-    """
-  end
-
-  defp ping_asset_ex do
-    """
-    defmodule FavnSingleNodeFixture.Ping do
-      use Favn.Asset
-
-      def asset(_ctx), do: :ok
-    end
-    """
-  end
 end

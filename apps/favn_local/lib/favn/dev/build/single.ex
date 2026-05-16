@@ -5,6 +5,7 @@ defmodule Favn.Dev.Build.Single do
 
   alias Favn.Dev.Build.Orchestrator
   alias Favn.Dev.Build.Runner
+  alias Favn.Dev.ConsumerConfigTransport
   alias Favn.Dev.Install
   alias Favn.Dev.Paths
   alias Favn.Dev.State
@@ -40,9 +41,10 @@ defmodule Favn.Dev.Build.Single do
            write_json(
              Path.join(dist_dir, "metadata.json"),
              metadata_json(build_id, assembly, opts)
-           ),
-         :ok <- write_json(Path.join(dist_dir, "config/assembly.json"), assembly),
-         :ok <- write_env_files(dist_dir),
+          ),
+          :ok <- write_json(Path.join(dist_dir, "config/assembly.json"), assembly),
+          :ok <- write_consumer_config(dist_dir, opts),
+          :ok <- write_env_files(dist_dir),
          :ok <- write_scripts(dist_dir, orchestrator),
          :ok <- write_operator_notes(dist_dir) do
       {:ok, %{build_id: build_id, build_dir: build_dir, dist_dir: dist_dir}}
@@ -207,6 +209,11 @@ defmodule Favn.Dev.Build.Single do
     File.write(Path.join(dist_dir, "env/backend.env.example"), Enum.join(backend, "\n"))
   end
 
+  defp write_consumer_config(dist_dir, opts) do
+    path = Path.join(dist_dir, "config/consumer_favn_config.b64")
+    File.write(path, ConsumerConfigTransport.collect_and_encode(opts) <> "\n")
+  end
+
   defp write_scripts(dist_dir, orchestrator) do
     with {:ok, source_root} <- bundled_source_root(orchestrator.dist_dir) do
       [
@@ -298,6 +305,18 @@ defmodule Favn.Dev.Build.Single do
         |> String.to_charlist()
         |> :code.load_abs()
       end)
+    end
+
+    consumer_config_path = Path.join([artifact_root, "config", "consumer_favn_config.b64"])
+
+    if File.regular?(consumer_config_path) do
+      with {:ok, encoded} <- File.read(consumer_config_path),
+           :ok <- Favn.Dev.ConsumerConfigTransport.apply_encoded(String.trim(encoded)) do
+        :ok
+      else
+        {:error, reason} -> raise "failed to apply packaged consumer Favn config: #{inspect(reason)}"
+        other -> raise "failed to apply packaged consumer Favn config: #{inspect(other)}"
+      end
     end
 
     env = System.get_env()
