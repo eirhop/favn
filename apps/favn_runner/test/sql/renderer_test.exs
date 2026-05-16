@@ -108,7 +108,7 @@ defmodule FavnRunner.SQLRendererTest do
       reusable_sql_definition(
         :orders,
         [:ignored],
-        "SELECT * FROM orders",
+        "(SELECT * FROM orders) AS scoped_orders",
         %{catalog: "raw", schema: "sales"}
       )
 
@@ -125,7 +125,7 @@ defmodule FavnRunner.SQLRendererTest do
       )
 
     assert {:ok, rendered} = Renderer.render(definition, params: %{country: "NO"})
-    assert rendered.sql == "SELECT * FROM SELECT * FROM raw.sales.orders"
+    assert rendered.sql == "SELECT * FROM (SELECT * FROM raw.sales.orders) AS scoped_orders"
   end
 
   defp definition(

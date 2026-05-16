@@ -206,7 +206,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
 
     manifest = %Manifest{
       schema_version: 1,
-      runner_contract_version: 1,
+      runner_contract_version: 2,
       assets: assets,
       pipelines: [],
       schedules: [],

@@ -4,7 +4,7 @@ defmodule Favn.Manifest.Compatibility do
   """
 
   @current_schema_version 1
-  @current_runner_contract_version 1
+  @current_runner_contract_version 2
 
   @type error ::
           {:invalid_manifest_input, term()}
