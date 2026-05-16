@@ -4,9 +4,12 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Adapter.DuckDB.ADBC
+  alias Favn.SQL.Capabilities
   alias Favn.SQL.Adapter.DuckDB.ADBC.Client.ADBC, as: ADBCClient
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
+  alias Favn.SQL.Relation
+  alias Favn.SQL.WritePlan
   alias FavnDuckdbADBC.TestSupport
 
   defmodule FakeClient do
@@ -237,6 +240,97 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
              _event ->
                false
            end)
+  end
+
+  test "catalog-qualified materialization statements include schema setup and target" do
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "raw", schema: "sales", name: "products", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true
+    }
+
+    assert {:ok, statements} = ADBC.materialization_statements(plan, %Capabilities{}, [])
+    sql = Enum.map(statements, &IO.iodata_to_binary/1)
+
+    assert Enum.any?(sql, &(&1 == ~s(CREATE SCHEMA IF NOT EXISTS "raw"."sales")))
+
+    assert Enum.any?(
+             sql,
+             &String.starts_with?(&1, ~s(CREATE OR REPLACE TABLE "raw"."sales"."products"))
+           )
+  end
+
+  test "catalog-qualified materialization statements reject missing schema" do
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "raw", name: "products", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true
+    }
+
+    assert {:error, %Error{type: :execution_error}} =
+             ADBC.materialization_statements(plan, %Capabilities{}, [])
+  end
+
+  test "catalog-qualified bulk insert rows return unsupported capability" do
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+
+    plan = %WritePlan{
+      materialization: :table,
+      target: %Relation{catalog: "raw", schema: "sales", name: "bulk_products", type: :table},
+      select_sql: "SELECT 1 AS id",
+      replace_existing?: true,
+      options: %{appender_rows: [%{"id" => 1}]}
+    }
+
+    assert {:error,
+            %Error{
+              type: :unsupported_capability,
+              operation: :materialize,
+              message:
+                "DuckDB ADBC bulk insert materialization does not support catalog-qualified targets"
+            }} = ADBC.materialize(conn, plan, [])
+  end
+
+  test "catalog-qualified relation and columns introspection filter catalog and schema" do
+    ref = %RelationRef{catalog: "raw", schema: "sales", name: "products"}
+
+    assert {:ok, relation_query} = ADBC.introspection_query(:relation, ref, [])
+    relation_sql = IO.iodata_to_binary(relation_query)
+
+    assert relation_sql =~ "table_schema = 'sales'"
+    assert relation_sql =~ "table_catalog = 'raw'"
+    assert relation_sql =~ "table_name = 'products'"
+
+    assert {:ok, columns_query} = ADBC.introspection_query(:columns, ref, [])
+    columns_sql = IO.iodata_to_binary(columns_query)
+
+    assert columns_sql =~ "table_schema = 'sales'"
+    assert columns_sql =~ "table_catalog = 'raw'"
+    assert columns_sql =~ "table_name = 'products'"
+
+    assert {:ok, list_query} = ADBC.introspection_query(:list_relations, ref, [])
+    list_sql = IO.iodata_to_binary(list_query)
+
+    assert list_sql =~ "table_schema = 'sales'"
+    assert list_sql =~ "table_catalog = 'raw'"
+  end
+
+  test "catalog-qualified introspection rejects missing schema" do
+    ref = %RelationRef{catalog: "raw", name: "products"}
+
+    assert_raise ArgumentError, ~r/catalog-qualified relations require schema/, fn ->
+      ADBC.introspection_query(:relation, ref, [])
+    end
+  end
+
+  test "row_count rejects catalog-qualified relation without schema" do
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+
+    assert_raise ArgumentError, ~r/catalog-qualified relations require schema/, fn ->
+      ADBC.row_count(conn, %RelationRef{catalog: "raw", name: "orders"}, [])
+    end
   end
 
   test "production local-file storage rejects memory database before opening DuckDB" do

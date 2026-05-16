@@ -986,7 +986,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       path,
       JSON.encode_to_iodata!(%{
         schema_version: 1,
-        runner_contract_version: 1,
+        runner_contract_version: 2,
         assets: [],
         pipelines: [],
         schedules: [],

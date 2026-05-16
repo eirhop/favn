@@ -228,6 +228,18 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
            ]
   end
 
+  test "runs multiple DuckDB catalog attach statements" do
+    resolved = duckdb_catalogs_resolved()
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    assert :ok = DuckDB.bootstrap(conn, resolved, [])
+
+    assert statements() == [
+             ~s(ATTACH '.favn/data/raw.duckdb' AS "raw"),
+             ~s(ATTACH '.favn/data/mart.duckdb' AS "mart")
+           ]
+  end
+
   test "runs DuckLake bootstrap with ADLS and PostgreSQL secrets" do
     resolved = ducklake_postgres_resolved()
     {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
@@ -551,6 +563,24 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
         ]
       },
       secret_fields: [:duckdb_bootstrap]
+    }
+  end
+
+  defp duckdb_catalogs_resolved do
+    %Resolved{
+      name: :important_lakehouse,
+      adapter: DuckDB,
+      module: __MODULE__,
+      config: %{
+        database: ":memory:",
+        duckdb_bootstrap: [
+          attach: [
+            [type: :duckdb, name: :raw, path: ".favn/data/raw.duckdb"],
+            [type: :duckdb, name: :mart, path: ".favn/data/mart.duckdb"]
+          ]
+        ]
+      },
+      secret_fields: []
     }
   end
 

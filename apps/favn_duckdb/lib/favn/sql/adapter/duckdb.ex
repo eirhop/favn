@@ -370,6 +370,14 @@ defmodule Favn.SQL.Adapter.DuckDB do
     {:ok, "SELECT schema_name AS schema FROM information_schema.schemata ORDER BY schema_name"}
   end
 
+  def introspection_query(:list_relations, %RelationRef{} = ref, _opts) do
+    {:ok,
+     [
+       relation_introspection_base(ref),
+       " ORDER BY table_catalog, table_schema, table_name"
+     ]}
+  end
+
   def introspection_query(:list_relations, schema, _opts) do
     base =
       if is_binary(schema) do
@@ -392,8 +400,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
        "SELECT column_name, ordinal_position, data_type, is_nullable, column_default ",
        "FROM information_schema.columns WHERE table_name = ",
        quote_literal(ref.name),
-       " AND table_schema = ",
-       quote_literal(ref.schema || "main"),
+       " AND ",
+       relation_schema_filter(ref),
+       relation_catalog_filter(ref),
        " ORDER BY ordinal_position"
      ]}
   end
@@ -563,10 +572,27 @@ defmodule Favn.SQL.Adapter.DuckDB do
   def materialize(%Conn{} = conn, %WritePlan{} = plan, opts) do
     rows = appender_rows(plan, opts)
 
-    if plan.materialization == :table and rows != [] do
-      appender_materialize(conn, plan, rows)
-    else
-      run_plan_materialization(conn, plan, opts)
+    cond do
+      plan.materialization == :table and rows != [] and is_binary(plan.target.catalog) ->
+        {:error,
+         %Error{
+           type: :unsupported_capability,
+           message: "DuckDB appender materialization does not support catalog-qualified targets",
+           retryable?: false,
+           operation: :materialize,
+           connection: conn.connection,
+           details: %{
+             catalog: plan.target.catalog,
+             schema: plan.target.schema,
+             name: plan.target.name
+           }
+         }}
+
+      plan.materialization == :table and rows != [] ->
+        appender_materialize(conn, plan, rows)
+
+      true ->
+        run_plan_materialization(conn, plan, opts)
     end
   end
 
@@ -676,6 +702,12 @@ defmodule Favn.SQL.Adapter.DuckDB do
     empty_plan = %WritePlan{plan | select_sql: ["SELECT * FROM (", plan.select_sql, ") LIMIT 0"]}
 
     create_table_statement(target, empty_plan)
+  end
+
+  defp schema_setup_statements(%WritePlan{target: %Relation{catalog: catalog, schema: schema}})
+       when is_binary(catalog) and catalog != "" and is_binary(schema) and
+              schema not in ["", "main"] do
+    [["CREATE SCHEMA IF NOT EXISTS ", quote_ident(catalog), ".", quote_ident(schema)]]
   end
 
   defp schema_setup_statements(%WritePlan{target: %Relation{schema: schema}})
@@ -948,14 +980,29 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp relation_introspection_base(%RelationRef{} = ref) do
-    schema = ref.schema || "main"
-
     [
       "SELECT table_catalog, table_schema, table_name, table_type FROM information_schema.tables",
-      " WHERE table_schema = ",
-      quote_literal(schema)
+      " WHERE ",
+      relation_schema_filter(ref),
+      relation_catalog_filter(ref)
     ]
   end
+
+  defp relation_schema_filter(%RelationRef{catalog: catalog, schema: nil})
+       when is_binary(catalog) do
+    raise ArgumentError,
+          "catalog-qualified relations require schema; got catalog #{inspect(catalog)} without schema"
+  end
+
+  defp relation_schema_filter(%RelationRef{schema: schema}) do
+    ["table_schema = ", quote_literal(schema || "main")]
+  end
+
+  defp relation_catalog_filter(%RelationRef{catalog: catalog}) when is_binary(catalog) do
+    [" AND table_catalog = ", quote_literal(catalog)]
+  end
+
+  defp relation_catalog_filter(%RelationRef{}), do: []
 
   defp row_to_relation(row) do
     %Relation{
@@ -1000,10 +1047,19 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   defp normalize_integer(_), do: nil
 
-  defp qualified_relation(%Relation{schema: nil, name: name}), do: quote_ident(name)
+  defp qualified_relation(%Relation{catalog: nil, schema: nil, name: name}), do: quote_ident(name)
 
-  defp qualified_relation(%Relation{schema: schema, name: name}),
+  defp qualified_relation(%Relation{catalog: nil, schema: schema, name: name}),
     do: [quote_ident(schema), ".", quote_ident(name)]
+
+  defp qualified_relation(%Relation{catalog: catalog, schema: nil, name: name})
+       when is_binary(catalog) do
+    raise ArgumentError,
+          "catalog-qualified relations require schema; got catalog #{inspect(catalog)} and name #{inspect(name)} without schema"
+  end
+
+  defp qualified_relation(%Relation{catalog: catalog, schema: schema, name: name}),
+    do: [quote_ident(catalog), ".", quote_ident(schema), ".", quote_ident(name)]
 
   defp qualified_relation_ref(%RelationRef{catalog: nil, schema: nil, name: name}) do
     quote_ident(name)
@@ -1013,8 +1069,10 @@ defmodule Favn.SQL.Adapter.DuckDB do
     [quote_ident(schema), ".", quote_ident(name)]
   end
 
-  defp qualified_relation_ref(%RelationRef{catalog: catalog, schema: nil, name: name}) do
-    [quote_ident(catalog), ".", quote_ident(name)]
+  defp qualified_relation_ref(%RelationRef{catalog: catalog, schema: nil, name: name})
+       when is_binary(catalog) do
+    raise ArgumentError,
+          "catalog-qualified relations require schema; got catalog #{inspect(catalog)} and name #{inspect(name)} without schema"
   end
 
   defp qualified_relation_ref(%RelationRef{catalog: catalog, schema: schema, name: name}) do

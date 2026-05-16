@@ -44,7 +44,7 @@ defmodule Favn.Dev.OrchestratorClientTest do
 
     manifest = %{
       schema_version: 1,
-      runner_contract_version: 1,
+      runner_contract_version: 2,
       assets: [],
       pipelines: [],
       schedules: [],

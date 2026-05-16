@@ -325,11 +325,36 @@ defmodule Favn.Manifest.Rehydrate do
       file: field_value(value, :file),
       line: field_value(value, :line),
       declared_file: field_value(value, :declared_file),
-      declared_line: field_value(value, :declared_line)
+      declared_line: field_value(value, :declared_line),
+      relation_defaults: build_relation_defaults(field_value(value, :relation_defaults, %{}))
     }
   end
 
   defp build_sql_definition(other), do: other
+
+  defp build_relation_defaults(value) when is_map(value) do
+    value
+    |> Enum.reduce(%{}, fn {key, child}, acc ->
+      case relation_default_key(key) do
+        nil -> acc
+        canonical -> Map.put(acc, canonical, relation_default_value(child))
+      end
+    end)
+  end
+
+  defp build_relation_defaults(_other), do: %{}
+
+  defp relation_default_key(:connection), do: :connection
+  defp relation_default_key("connection"), do: :connection
+  defp relation_default_key(:catalog), do: :catalog
+  defp relation_default_key("catalog"), do: :catalog
+  defp relation_default_key(:schema), do: :schema
+  defp relation_default_key("schema"), do: :schema
+  defp relation_default_key(_key), do: nil
+
+  defp relation_default_value(value) when is_binary(value), do: value
+  defp relation_default_value(value) when is_atom(value), do: value
+  defp relation_default_value(value), do: value
 
   defp build_sql_params(values) when is_list(values), do: Enum.map(values, &build_sql_param/1)
   defp build_sql_params(_other), do: []

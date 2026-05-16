@@ -21,8 +21,8 @@ defmodule Favn.MultiAsset do
 
   ## Minimal example
 
-      # lib/my_app/warehouse/raw/shopify.ex
-      defmodule MyApp.Warehouse.Raw.Shopify do
+      # lib/my_app/lakehouse/raw/sales/shopify.ex
+      defmodule MyApp.Lakehouse.Raw.Sales.Shopify do
         @moduledoc \"\"\"
         Raw Shopify resources used as source-shaped commerce inputs.
 

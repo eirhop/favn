@@ -8,55 +8,63 @@ defmodule Favn.Namespace do
 
   ## When to use it
 
-  Use this module when many assets share the same warehouse connection or layer
-  catalog and you want those values derived from module nesting instead of
-  repeated in every asset.
+  Use this module when many assets share the same warehouse connection, catalog,
+  or schema and you want those values inherited from explicit namespace modules
+  instead of repeated in every asset.
 
-  The recommended default is one namespace module per file:
+  The recommended lakehouse convention is one namespace module per level:
 
-  - `warehouse.ex` sets the connection-level namespace.
-  - `warehouse/raw.ex` and `warehouse/mart.ex` set example layer catalogs.
-  - leaf modules under those folders define assets.
+  - `lakehouse.ex` sets the connection only. The connection is the server/session/auth boundary.
+  - `lakehouse/raw.ex` and `lakehouse/mart.ex` set phase catalogs.
+  - `lakehouse/raw/sales.ex` and similar modules set segment/domain schemas.
+  - leaf modules under those folders define assets and infer table/view names.
 
-  Use the layer names your platform uses, such as bronze/silver/gold,
-  raw/intermediate/mart, raw/mart, or domain-specific names. If your backend or
-  team models layers as schemas instead of catalogs, use schemas consistently
-  instead.
+  Use `catalog` for physical databases or lakehouse phases such as
+  raw/intermediate/mart. Use `schema` for domains or segments such as sales and
+  finance. Do not use catalog and schema interchangeably in new projects.
 
   ## Recommended project shape
 
       lib/my_app/
-        warehouse.ex
-        warehouse/raw.ex
-        warehouse/raw/orders.ex
-        warehouse/mart.ex
-        warehouse/mart/order_summary.ex
-        warehouse/mart/order_summary.sql
+        connections/important_lakehouse.ex
+        lakehouse.ex
+        lakehouse/raw.ex
+        lakehouse/raw/sales.ex
+        lakehouse/raw/sales/orders.ex
+        lakehouse/mart.ex
+        lakehouse/mart/sales.ex
+        lakehouse/mart/sales/order_summary.ex
+        lakehouse/mart/sales/order_summary.sql
         integrations/shopify.ex
         pipelines/daily_sales.ex
         triggers/schedules.ex
         sql/calendar.ex
 
-  The warehouse tree should mirror namespaces and assets. Keep integration
-  clients, pipelines, triggers, and reusable SQL outside `warehouse/` unless the
+  The lakehouse tree should mirror namespaces and assets. Keep connection
+  providers, integration clients, pipelines, triggers, and reusable SQL outside `lakehouse/` unless the
   project has a stronger documented convention. Keep asset-specific logic near
   the asset; move code away from the asset only when it is transport-specific or
   genuinely reused by multiple assets.
 
   ## Example
 
-      # lib/my_app/warehouse.ex
-      defmodule MyApp.Warehouse do
-        use Favn.Namespace, relation: [connection: :warehouse]
+      # lib/my_app/lakehouse.ex
+      defmodule MyApp.Lakehouse do
+        use Favn.Namespace, relation: [connection: :important_lakehouse]
       end
 
-      # lib/my_app/warehouse/raw.ex
-      defmodule MyApp.Warehouse.Raw do
+      # lib/my_app/lakehouse/raw.ex
+      defmodule MyApp.Lakehouse.Raw do
         use Favn.Namespace, relation: [catalog: "raw"]
       end
 
-      # lib/my_app/warehouse/raw/orders.ex
-      defmodule MyApp.Warehouse.Raw.Orders do
+      # lib/my_app/lakehouse/raw/sales.ex
+      defmodule MyApp.Lakehouse.Raw.Sales do
+        use Favn.Namespace, relation: [schema: "sales"]
+      end
+
+      # lib/my_app/lakehouse/raw/sales/orders.ex
+      defmodule MyApp.Lakehouse.Raw.Sales.Orders do
         use Favn.Asset
 
         @relation true
@@ -67,15 +75,15 @@ defmodule Favn.Namespace do
 
   `use Favn.Namespace` accepts:
 
-  - `relation: [connection: ...]` for a root warehouse namespace
-  - `relation: [catalog: ...]` for layer namespaces such as raw or mart
+  - `relation: [connection: ...]` for a root lakehouse namespace
+  - `relation: [catalog: ...]` for database or phase namespaces such as raw or mart
+  - `relation: [schema: ...]` for segment/domain namespaces such as sales or finance
 
   Supported relation keys:
 
   - `connection`: atom
   - `catalog`: string or atom
-
-  `schema` is also accepted for teams or engines that model layers as schemas.
+  - `schema`: string or atom
 
   Only `relation:` is supported at the top level.
 

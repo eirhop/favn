@@ -68,7 +68,7 @@ defmodule Favn.Dev.Build.Orchestrator do
     })
     |> Map.put("compatibility", %{
       "orchestrator_api_version" => "v1",
-      "runner_contract_version" => 1,
+      "runner_contract_version" => 2,
       "supported_storage_modes" => ["memory", "sqlite", "postgres"]
     })
     |> Map.put("required_env", [

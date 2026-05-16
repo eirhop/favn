@@ -134,7 +134,7 @@ defmodule FavnRunner.ServerTest do
 
     %Manifest{
       schema_version: 1,
-      runner_contract_version: 1,
+      runner_contract_version: 2,
       assets: [
         %Asset{
           ref: ref,

@@ -277,16 +277,46 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp materialize_step(step, _opts), do: {:ok, step}
 
-  defp normalize_attach(nil), do: {:ok, nil}
+  defp normalize_attach(nil), do: {:ok, []}
+  defp normalize_attach([]), do: {:ok, []}
+
+  defp normalize_attach(config) when is_list(config) and not is_map(config) do
+    if Keyword.keyword?(config) do
+      with {:ok, attach} <- normalize_single_attach(config), do: {:ok, [attach]}
+    else
+      config
+      |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+        case normalize_single_attach(entry) do
+          {:ok, attach} -> {:cont, {:ok, [attach | acc]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, attach} -> {:ok, Enum.reverse(attach)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
 
   defp normalize_attach(config) do
+    with {:ok, attach} <- normalize_single_attach(config), do: {:ok, [attach]}
+  end
+
+  defp normalize_single_attach(config) do
     with {:ok, attach} <- normalize_keyword_config(config, :attach),
          {:ok, name} <- normalize_identifier(Keyword.get(attach, :name)),
-         {:ok, metadata} <- normalize_attach_metadata(Keyword.get(attach, :metadata)),
-         {:ok, data_path} <- fetch_present_value(attach, :data_path) do
-      case Keyword.get(attach, :type) do
+         type <- Keyword.get(attach, :type) do
+      case type do
+        :duckdb ->
+          with {:ok, path} <- fetch_present_value(attach, :path) do
+            {:ok, %{name: name, type: :duckdb, path: path}}
+          end
+
         :ducklake ->
-          {:ok, %{name: name, type: :ducklake, metadata: metadata, data_path: data_path}}
+          with {:ok, metadata} <- normalize_attach_metadata(Keyword.get(attach, :metadata)),
+               {:ok, data_path} <- fetch_present_value(attach, :data_path) do
+            {:ok, %{name: name, type: :ducklake, metadata: metadata, data_path: data_path}}
+          end
 
         other ->
           {:error, {:unsupported_attach_type, other}}
@@ -371,9 +401,17 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp normalize_postgres_sslmode(value), do: {:error, {:invalid_postgres_sslmode, value}}
 
-  defp inherit_attach_metadata_options(nil, _secrets), do: {:ok, nil}
+  defp inherit_attach_metadata_options([], _secrets), do: {:ok, []}
 
-  defp inherit_attach_metadata_options(
+  defp inherit_attach_metadata_options(attach, secrets) when is_list(attach) do
+    {:ok,
+     Enum.map(attach, fn entry ->
+       {:ok, inherited} = inherit_single_attach_metadata_options(entry, secrets)
+       inherited
+     end)}
+  end
+
+  defp inherit_single_attach_metadata_options(
          %{metadata: {:postgres_secret, secret, metadata_options}} = attach,
          secrets
        ) do
@@ -386,7 +424,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
      %{attach | metadata: {:postgres_secret, secret, Map.merge(secret_options, metadata_options)}}}
   end
 
-  defp inherit_attach_metadata_options(attach, _secrets), do: {:ok, attach}
+  defp inherit_single_attach_metadata_options(attach, _secrets), do: {:ok, attach}
 
   defp normalize_attach_metadata(metadata) when is_binary(metadata) and metadata != "",
     do: {:ok, {:dsn, metadata}}
@@ -446,7 +484,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
       extension_steps(:load, extensions.load) ++
       setting_steps(settings) ++
       Enum.map(secrets, &secret_step/1) ++
-      attach_steps(attach) ++
+      Enum.flat_map(attach, &attach_steps/1) ++
       use_steps(use_catalog)
   end
 
@@ -587,6 +625,20 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   end
 
   defp attach_steps(nil), do: []
+
+  defp attach_steps(%{name: name, type: :duckdb, path: path}) do
+    statement = ["ATTACH ", quote_literal(path), " AS ", quote_ident(name)]
+
+    [
+      %{
+        id: step_id(:attach, name),
+        kind: :duckdb_attach,
+        statement: statement,
+        safe_statement: statement,
+        sensitive_values: []
+      }
+    ]
+  end
 
   defp attach_steps(%{
          name: name,
