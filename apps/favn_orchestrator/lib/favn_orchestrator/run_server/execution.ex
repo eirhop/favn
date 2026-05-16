@@ -1063,6 +1063,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp schedule_retry_for_ref(%RunState{} = run_state, node_key, stage, attempt) do
     asset_ref = node_asset_ref(run_state, node_key)
+    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
 
     retrying =
       RunState.transition(run_state,
@@ -1074,6 +1075,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     case Persistence.persist_run_step(retrying, :step_retry_scheduled, %{
            asset_ref: asset_ref,
+           node_key: node_key,
+           asset_step_id: asset_step_id,
            stage: stage,
            attempt: attempt,
            max_attempts: run_state.max_attempts,
@@ -1686,6 +1689,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           case Persistence.persist_run_step(failed, :step_failed, %{
                  asset_ref: asset_ref,
                  error: reason,
+                 node_key: Map.get(work.metadata, :node_key),
+                 asset_step_id: Map.get(work.metadata, :asset_step_id),
                  stage: stage,
                  attempt: attempt,
                  max_attempts: max_attempts
@@ -1879,6 +1884,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
       Snapshots.cancelled_state(run_state)
     else
       if retryable and attempt < run_state.max_attempts do
+        node_key = Map.get(run_state.metadata, :node_key) || {asset_ref, nil}
+
+        asset_step_id =
+          Map.get(run_state.metadata, :asset_step_id) ||
+            AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
+
         retrying =
           RunState.transition(run_state,
             status: :running,
@@ -1889,6 +1900,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
         case Persistence.persist_run_step(retrying, :step_retry_scheduled, %{
                asset_ref: asset_ref,
+               node_key: node_key,
+               asset_step_id: asset_step_id,
                stage: stage,
                attempt: attempt,
                max_attempts: run_state.max_attempts,

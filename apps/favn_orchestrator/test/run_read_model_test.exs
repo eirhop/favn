@@ -3,6 +3,8 @@ defmodule FavnOrchestrator.RunReadModelTest do
 
   alias Favn.Window.Anchor
   alias Favn.Window.Key, as: WindowKey
+  alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -94,6 +96,60 @@ defmodule FavnOrchestrator.RunReadModelTest do
              timed_out: 0,
              completed: 2
            }
+  end
+
+  test "run detail preserves explicit persisted asset step ids" do
+    ref = {MyApp.Assets.Gold, :asset}
+    started_at = ~U[2026-05-01 00:00:00Z]
+    finished_at = DateTime.add(started_at, 1, :second)
+
+    asset_run =
+      run("asset_with_persisted_step_id", submit_kind: :manual)
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          asset_results: [
+            %AssetResult{
+              ref: ref,
+              stage: 0,
+              status: :ok,
+              started_at: started_at,
+              finished_at: finished_at,
+              duration_ms: 1_000,
+              asset_step_id: "persisted-asset-step"
+            }
+          ]
+        }
+      )
+
+    node_run =
+      run("node_with_persisted_step_id", submit_kind: :pipeline)
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {ref, "window:day:2026-05-01"},
+              ref: ref,
+              stage: 0,
+              status: :ok,
+              started_at: started_at,
+              finished_at: finished_at,
+              duration_ms: 1_000,
+              asset_step_id: "persisted-node-step"
+            })
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(asset_run)
+    assert :ok = Storage.put_run(node_run)
+
+    assert {:ok, asset_detail} = FavnOrchestrator.get_run_detail(asset_run.id)
+    assert [%{id: "persisted-asset-step"}] = asset_detail.steps
+
+    assert {:ok, node_detail} = FavnOrchestrator.get_run_detail(node_run.id)
+    assert [%{id: "persisted-node-step"}] = node_detail.steps
   end
 
   defp run(run_id, opts) do

@@ -366,7 +366,8 @@ defmodule FavnOrchestrator.RunReadModel do
     asset_ref = public_ref(canonical_asset_ref)
 
     step_id =
-      Map.get(result, :id) || Map.get(result, "id") || Map.get(result, :step_id) ||
+      Map.get(result, :asset_step_id) || Map.get(result, "asset_step_id") ||
+        Map.get(result, :id) || Map.get(result, "id") || Map.get(result, :step_id) ||
         Map.get(result, "step_id") ||
         AssetStepIdentity.asset_step_id(run_id, node_key, canonical_asset_ref)
 
