@@ -13,6 +13,7 @@ defmodule FavnView.Application do
       children = [
         FavnView.Telemetry,
         {Phoenix.PubSub, name: FavnView.PubSub},
+        {Task.Supervisor, name: FavnView.ReadinessTaskSupervisor},
         # Start to serve requests, typically the last entry
         FavnView.Endpoint
       ]

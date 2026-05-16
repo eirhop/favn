@@ -36,6 +36,14 @@ defmodule FavnView.WebReadinessTest do
     end
   end
 
+  defmodule RaisingOrchestrator do
+    def readiness, do: raise("boom token=secret")
+  end
+
+  defmodule ExitingOrchestrator do
+    def readiness, do: exit({:boom, token: "secret"})
+  end
+
   setup do
     keys = [
       :orchestrator_facade,
@@ -118,6 +126,36 @@ defmodule FavnView.WebReadinessTest do
            end)
   end
 
+  test "web readiness reports raised orchestrator checks without crashing request", %{conn: conn} do
+    Application.put_env(:favn_view, :orchestrator_facade, RaisingOrchestrator)
+
+    response = get(conn, ~p"/api/web/v1/health/ready")
+
+    assert %{"data" => %{"status" => "not_ready", "checks" => checks}} =
+             json_response(response, 503)
+
+    assert Enum.any?(checks, fn check ->
+             check["name"] == "orchestrator" and check["status"] == "error"
+           end)
+
+    refute response.resp_body =~ "token=secret"
+  end
+
+  test "web readiness reports exited orchestrator checks without crashing request", %{conn: conn} do
+    Application.put_env(:favn_view, :orchestrator_facade, ExitingOrchestrator)
+
+    response = get(conn, ~p"/api/web/v1/health/ready")
+
+    assert %{"data" => %{"status" => "not_ready", "checks" => checks}} =
+             json_response(response, 503)
+
+    assert Enum.any?(checks, fn check ->
+             check["name"] == "orchestrator" and check["status"] == "error"
+           end)
+
+    refute response.resp_body =~ "secret"
+  end
+
   test "production runtime config validates public origin and timeout" do
     assert {:ok, config} =
              ProductionRuntimeConfig.validate(%{
@@ -136,6 +174,23 @@ defmodule FavnView.WebReadinessTest do
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "0"
              })
+  end
+
+  test "production runtime config wires public origin into endpoint config" do
+    previous_endpoint = Application.get_env(:favn_view, FavnView.Endpoint)
+    on_exit(fn -> Application.put_env(:favn_view, FavnView.Endpoint, previous_endpoint) end)
+
+    assert :ok =
+             ProductionRuntimeConfig.apply_from_env(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "250"
+             })
+
+    endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint)
+    assert Keyword.fetch!(endpoint_config, :url)[:scheme] == "https"
+    assert Keyword.fetch!(endpoint_config, :url)[:host] == "favn.example.com"
+    assert Keyword.fetch!(endpoint_config, :url)[:port] == 443
+    assert Keyword.fetch!(endpoint_config, :check_origin) == ["https://favn.example.com"]
   end
 
   test "web readiness code uses only the public orchestrator facade" do

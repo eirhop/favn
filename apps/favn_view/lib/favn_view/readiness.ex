@@ -86,21 +86,27 @@ defmodule FavnView.Readiness do
 
     timeout_ms = Keyword.get(opts, :timeout_ms, ProductionRuntimeConfig.configured_timeout_ms())
 
-    task = Task.async(fn -> orchestrator.readiness() end)
+    task =
+      Task.Supervisor.async_nolink(FavnView.ReadinessTaskSupervisor, fn ->
+        safe_orchestrator_readiness(orchestrator)
+      end)
 
     case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, %{status: :ready} = readiness} ->
+      {:ok, {:ok, %{status: :ready} = readiness}} ->
         ok(:orchestrator, %{boundary: :same_beam_facade, upstream: upstream_summary(readiness)})
 
-      {:ok, %{status: :not_ready} = readiness} ->
+      {:ok, {:ok, %{status: :not_ready} = readiness}} ->
         error(:orchestrator, %{
           kind: :orchestrator_not_ready,
           boundary: :same_beam_facade,
           upstream: upstream_summary(readiness)
         })
 
-      {:ok, other} ->
+      {:ok, {:ok, other}} ->
         error(:orchestrator, %{kind: :invalid_orchestrator_readiness, details: redact(other)})
+
+      {:ok, {:error, reason}} ->
+        error(:orchestrator, reason)
 
       {:exit, reason} ->
         error(:orchestrator, %{kind: :exited, reason: redact_untrusted(reason)})
@@ -121,6 +127,19 @@ defmodule FavnView.Readiness do
 
     kind, reason ->
       error(:orchestrator, %{kind: kind, reason: redact_untrusted(reason)})
+  end
+
+  defp safe_orchestrator_readiness(orchestrator) do
+    {:ok, orchestrator.readiness()}
+  rescue
+    exception ->
+      {:error, %{kind: :raised, exception: exception.__struct__}}
+  catch
+    :exit, reason ->
+      {:error, %{kind: :exited, reason: redact_untrusted(reason)}}
+
+    kind, reason ->
+      {:error, %{kind: kind, reason: redact_untrusted(reason)}}
   end
 
   defp upstream_summary(readiness) do

@@ -34,6 +34,7 @@ defmodule FavnView.ProductionRuntimeConfig do
     case validate(env) do
       {:ok, config} ->
         Application.put_env(:favn_view, :public_origin, config.public_origin)
+        configure_endpoint(config)
 
         Application.put_env(
           :favn_view,
@@ -152,4 +153,33 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   defp redact({:missing_env, name}), do: {:missing_env, name}
   defp redact({:invalid_env, name, expected}), do: {:invalid_env, name, expected}
+
+  defp configure_endpoint(%{public_origin: nil}), do: :ok
+
+  defp configure_endpoint(%{public_origin: origin}) when is_binary(origin) do
+    endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])
+
+    Application.put_env(
+      :favn_view,
+      FavnView.Endpoint,
+      endpoint_config
+      |> Keyword.put(:url, endpoint_url(origin))
+      |> Keyword.put(:check_origin, [origin])
+    )
+
+    :ok
+  end
+
+  defp endpoint_url(origin) do
+    uri = URI.parse(origin)
+
+    [
+      scheme: uri.scheme,
+      host: uri.host,
+      port: uri.port || default_port(uri.scheme)
+    ]
+  end
+
+  defp default_port("https"), do: 443
+  defp default_port("http"), do: 80
 end

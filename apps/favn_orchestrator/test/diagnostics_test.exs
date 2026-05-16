@@ -302,7 +302,7 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     assert summary.in_flight_count == 1
     assert summary.queued_count == 1
     assert summary.updated_count == 1
-    assert summary[:truncated?] == false
+    refute Map.has_key?(summary, :truncated?)
 
     assert [entry_summary] = summary.entries
     assert entry_summary.schedule_id == :daily
@@ -314,6 +314,25 @@ defmodule FavnOrchestrator.DiagnosticsTest do
     assert entry_summary[:queued?] == true
     assert entry_summary[:updated?] == true
     refute Map.has_key?(entry_summary, :pipeline_module)
+    refute inspect(scheduler) =~ "MyApp.Pipelines"
+  end
+
+  test "scheduler state evidence uses distinct opaque ids for pipelines sharing a schedule" do
+    version = shared_schedule_manifest_version("mv_diagnostics_scheduler_distinct_ids")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    running_name = Module.concat(__MODULE__, SharedScheduleRuntime)
+    Application.put_env(:favn_orchestrator, :scheduler, enabled: true, name: running_name)
+    start_supervised!({SchedulerRuntime, name: running_name, tick_ms: 60_000, auto_tick?: false})
+
+    scheduler = check(Diagnostics.report().checks, :scheduler)
+    entries = scheduler.details.state_summary.entries
+    ids = Enum.map(entries, & &1.id)
+
+    assert length(entries) == 2
+    assert length(Enum.uniq(ids)) == 2
+    assert Enum.all?(entries, &(&1.schedule_id == :daily))
     refute inspect(scheduler) =~ "MyApp.Pipelines"
   end
 
@@ -454,6 +473,64 @@ defmodule FavnOrchestrator.DiagnosticsTest do
           module: MyApp.Pipelines.DiagnosticsDaily,
           name: :diagnostics_daily,
           selectors: [{:asset, {MyApp.Assets.DiagnosticsDaily, :asset}}],
+          deps: :all,
+          schedule: {:ref, {MyApp.Schedules, :daily}},
+          window: Policy.new!(:day),
+          source: :dsl,
+          outputs: [:asset],
+          config: %{},
+          metadata: %{}
+        }
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp shared_schedule_manifest_version(manifest_version_id) do
+    manifest = %Manifest{
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.DiagnosticsDailyA, :asset},
+          module: MyApp.Assets.DiagnosticsDailyA,
+          name: :asset
+        },
+        %Favn.Manifest.Asset{
+          ref: {MyApp.Assets.DiagnosticsDailyB, :asset},
+          module: MyApp.Assets.DiagnosticsDailyB,
+          name: :asset
+        }
+      ],
+      schedules: [
+        %Schedule{
+          module: MyApp.Schedules,
+          name: :daily,
+          ref: {MyApp.Schedules, :daily},
+          cron: "0 * * * *",
+          timezone: "Etc/UTC",
+          missed: :skip,
+          overlap: :forbid,
+          active: true
+        }
+      ],
+      pipelines: [
+        %Pipeline{
+          module: MyApp.Pipelines.DiagnosticsDailyA,
+          name: :diagnostics_daily_a,
+          selectors: [{:asset, {MyApp.Assets.DiagnosticsDailyA, :asset}}],
+          deps: :all,
+          schedule: {:ref, {MyApp.Schedules, :daily}},
+          window: Policy.new!(:day),
+          source: :dsl,
+          outputs: [:asset],
+          config: %{},
+          metadata: %{}
+        },
+        %Pipeline{
+          module: MyApp.Pipelines.DiagnosticsDailyB,
+          name: :diagnostics_daily_b,
+          selectors: [{:asset, {MyApp.Assets.DiagnosticsDailyB, :asset}}],
           deps: :all,
           schedule: {:ref, {MyApp.Schedules, :daily}},
           window: Policy.new!(:day),
