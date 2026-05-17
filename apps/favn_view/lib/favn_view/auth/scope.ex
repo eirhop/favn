@@ -2,9 +2,9 @@ defmodule FavnView.Auth.Scope do
   @moduledoc """
   Sanitized operator authentication scope for browser and LiveView assigns.
 
-  The Phoenix session stores only the opaque orchestrator session token. This
-  scope is reconstructed through the public orchestrator facade and deliberately
-  excludes raw tokens, token hashes, passwords, and service credential material.
+  The Phoenix session stores only a random browser session id. This scope is
+  reconstructed through the public orchestrator facade and deliberately excludes
+  raw tokens, token hashes, passwords, and service credential material.
   """
 
   @type actor :: %{

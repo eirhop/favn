@@ -12,9 +12,10 @@ Ownership rules:
   `apps/favn_view/lib/favn_view/production_runtime_config.ex` own web health,
   readiness, and web-owned production config validation.
 - `apps/favn_view/lib/favn_view/auth.ex` and
-  `apps/favn_view/lib/favn_view/auth/scope.ex` own browser auth glue, Phoenix
-  session handling, LiveView `on_mount` auth, and sanitized view-local scope
-  assignment. Durable auth state remains in `favn_orchestrator`.
+  `apps/favn_view/lib/favn_view/auth/*.ex` own browser auth glue, Phoenix
+  session handling, the volatile server-side browser-session token mapping,
+  LiveView `on_mount` auth, and sanitized view-local scope assignment. Durable
+  auth state remains in `favn_orchestrator`.
 - `apps/favn_view/assets/` contains the standard Phoenix-generated asset setup.
 - `apps/favn_view/storybook/` contains PhoenixStorybook stories for reusable
   UI component states.

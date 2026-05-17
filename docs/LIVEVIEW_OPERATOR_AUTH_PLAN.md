@@ -2,7 +2,7 @@
 
 ## Executive Recommendation
 
-Add a boring Phoenix LiveView auth boundary in `favn_view` that stores only the orchestrator session token and `live_socket_id` in the Phoenix session, resolves a `%FavnView.Auth.Scope{}` through public `FavnOrchestrator` facade calls, protects all operator LiveViews with a named `live_session` and `on_mount`, and performs server-side role checks before every mutating `handle_event`.
+Add a boring Phoenix LiveView auth boundary in `favn_view` that stores only a random browser session id and `live_socket_id` in the Phoenix session, keeps the raw orchestrator session token server-side, resolves a `%FavnView.Auth.Scope{}` through public `FavnOrchestrator` facade calls, protects all operator LiveViews with a named `live_session` and `on_mount`, and performs server-side role checks before every mutating `handle_event`.
 
 Proposed PR title: `Protect LiveView operator routes with orchestrator-backed auth`
 
@@ -81,9 +81,11 @@ Add public same-BEAM facade functions to `FavnOrchestrator` instead of calling `
 
 Phoenix session should store only:
 
-- `:operator_session_token`, the opaque orchestrator session token
-- `:live_socket_id`, for example `"operator_sessions:#{session.id}"`
+- `:operator_browser_session_id`, a random id for the server-side browser session mapping
+- `:live_socket_id`, for example `"operator_browser_sessions:#{browser_session_id}"`
 - optional `:operator_return_to`, only for safe local paths during redirects
+
+The raw orchestrator session token should stay server-side in a volatile browser-session mapping for the current single-BEAM production target. It must not be stored in the signed Phoenix cookie session because signed cookies are client-readable unless encrypted.
 
 `conn.assigns` and `socket.assigns` should store:
 
@@ -93,7 +95,7 @@ Phoenix session should store only:
 
 LiveView reconnect and revocation should use `live_socket_id`:
 
-- login puts `:live_socket_id` into the Phoenix session as `"operator_sessions:#{session.id}"`
+- login puts `:live_socket_id` into the Phoenix session as `"operator_browser_sessions:#{browser_session_id}"`
 - logout revokes the orchestrator session, broadcasts `"disconnect"` to that topic, clears the browser session, and redirects to `/login`
 - external session revocation should broadcast the same topic when possible
 - if a socket reconnects with a revoked/expired token, `on_mount` must halt and redirect to `/login`
@@ -143,11 +145,11 @@ The login form should be a plain Phoenix controller-backed form with fields:
 
 Failed login must use a generic message such as `Invalid username or password`, preserve the username field only if useful, clear the password field, return 401 or render with an error status, and avoid user enumeration details.
 
-Successful login should call the public orchestrator facade, renew the Phoenix session, put only `:operator_session_token` and `:live_socket_id`, optionally write safe `return_to`, and redirect to the intended local path or `/assets` with a concise flash.
+Successful login should call the public orchestrator facade, put the raw orchestrator session token into the server-side browser-session mapping, renew the Phoenix session, put only `:operator_browser_session_id` and `:live_socket_id`, optionally write safe `return_to`, and redirect to the intended local path or `/assets` with a concise flash.
 
 Logout should introspect or read the current scope, revoke the orchestrator session through the public facade, best-effort broadcast `disconnect` to the `live_socket_id`, clear the Phoenix session, and redirect to `/login` with a generic signed-out flash.
 
-Session revocation elsewhere should invalidate reconnects through orchestrator introspection. If the revoking path knows the session id, it should also broadcast disconnect to `operator_sessions:<session_id>`.
+Session revocation elsewhere should invalidate reconnects through orchestrator introspection. If the revoking path knows the browser session id, it should also broadcast disconnect to `operator_browser_sessions:<browser_session_id>`.
 
 Redaction rules:
 

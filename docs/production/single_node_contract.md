@@ -103,9 +103,10 @@ In that placement, web must use the documented app boundary:
 - Web authenticates browser operators through public orchestrator facade calls;
   durable actors, credentials, sessions, roles, and audit state remain
   orchestrator-owned.
-- Web stores only the opaque orchestrator session token and LiveView socket topic
-  in the Phoenix session cookie. Actor and role data are reconstructed by session
-  introspection in the plug and LiveView mount layers.
+- Web stores only a random browser session id and LiveView socket topic in the
+  Phoenix session cookie. The raw orchestrator session token stays in a
+  server-side volatile browser-session mapping, and actor/role data are
+  reconstructed by session introspection in the plug and LiveView mount layers.
 - Web must not connect to the SQLite database, mutate control-plane files, call
   scheduler or runner internals directly, or rely on local-dev Distributed
   Erlang plumbing.

@@ -184,8 +184,9 @@ shell.
 
 For browser operators, open `favn_view` at the configured
 `FAVN_VIEW_PUBLIC_ORIGIN` and sign in at `/login` with the bootstrap operator
-credentials. The Phoenix browser session stores only the opaque orchestrator
-session token and LiveView socket topic; actors, roles, password hashes, audit
+credentials. The Phoenix browser session stores only a random browser session id
+and LiveView socket topic; the raw orchestrator session token
+stays server-side in the web process. Actors, roles, password hashes, audit
 entries, and session revocation state remain orchestrator-owned. `/logout`
 revokes the current orchestrator session, clears the browser session, and
 disconnects existing LiveView sockets for that session. Web health and readiness

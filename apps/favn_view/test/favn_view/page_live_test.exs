@@ -12,6 +12,7 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
+  alias FavnView.Auth.BrowserSessionStore
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.AssetFreshnessState
@@ -22,6 +23,7 @@ defmodule FavnView.PageLiveTest do
   setup %{conn: conn} do
     ensure_auth_store_started()
     :ok = AuthStore.reset()
+    :ok = BrowserSessionStore.reset()
     Memory.reset()
 
     version = manifest_version()

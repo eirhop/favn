@@ -3,10 +3,12 @@ defmodule FavnView.OperatorAuthTest do
 
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnView.Auth.BrowserSessionStore
 
   setup do
     ensure_auth_store_started()
     :ok = AuthStore.reset()
+    :ok = BrowserSessionStore.reset()
 
     :ok
   end
@@ -25,11 +27,14 @@ defmodule FavnView.OperatorAuthTest do
       })
 
     assert redirected_to(conn) == "/pipelines"
-    assert is_binary(get_session(conn, :operator_session_token))
-    assert String.starts_with?(get_session(conn, :live_socket_id), "operator_sessions:")
+    assert is_binary(get_session(conn, :operator_browser_session_id))
+    assert get_session(conn, :operator_session_token) == nil
+    assert String.starts_with?(get_session(conn, :live_socket_id), "operator_browser_sessions:")
   end
 
-  test "authenticated pages do not render raw browser auth session material", %{conn: conn} do
+  test "authenticated pages do not store or render raw browser auth session material", %{
+    conn: conn
+  } do
     assert {:ok, _actor} =
              Auth.create_actor("operator", "operator-password-long", "Operator", [:operator])
 
@@ -38,12 +43,16 @@ defmodule FavnView.OperatorAuthTest do
         "operator" => %{"username" => "operator", "password" => "operator-password-long"}
       })
 
-    token = get_session(conn, :operator_session_token)
+    browser_session_id = get_session(conn, :operator_browser_session_id)
     live_socket_id = get_session(conn, :live_socket_id)
+    assert {:ok, browser_session} = BrowserSessionStore.fetch(browser_session_id)
+    token = browser_session.operator_session_token
+    refute get_session(conn, :operator_session_token) == token
 
     html = conn |> recycle() |> get(~p"/assets") |> html_response(200)
 
     refute html =~ token
+    refute html =~ browser_session_id
     refute html =~ live_socket_id
   end
 
@@ -90,8 +99,10 @@ defmodule FavnView.OperatorAuthTest do
         "operator" => %{"username" => "operator", "password" => "operator-password-long"}
       })
 
-    token = get_session(conn, :operator_session_token)
+    browser_session_id = get_session(conn, :operator_browser_session_id)
     live_socket_id = get_session(conn, :live_socket_id)
+    assert {:ok, browser_session} = BrowserSessionStore.fetch(browser_session_id)
+    token = browser_session.operator_session_token
     assert {:ok, _session, _actor} = FavnOrchestrator.introspect_operator_session(token)
 
     Phoenix.PubSub.subscribe(FavnView.PubSub, live_socket_id)
@@ -99,8 +110,10 @@ defmodule FavnView.OperatorAuthTest do
     conn = conn |> recycle() |> delete(~p"/logout")
 
     assert redirected_to(conn) == "/login"
+    assert get_session(conn, :operator_browser_session_id) == nil
     assert get_session(conn, :operator_session_token) == nil
     assert get_session(conn, :live_socket_id) == nil
+    assert {:error, :not_found} = BrowserSessionStore.fetch(browser_session_id)
     assert {:error, :invalid_session} = FavnOrchestrator.introspect_operator_session(token)
     assert_receive %Phoenix.Socket.Broadcast{topic: ^live_socket_id, event: "disconnect"}
   end
@@ -109,6 +122,7 @@ defmodule FavnView.OperatorAuthTest do
     files = [
       Path.expand("../../lib/favn_view/auth.ex", __DIR__),
       Path.expand("../../lib/favn_view/auth/scope.ex", __DIR__),
+      Path.expand("../../lib/favn_view/auth/browser_session_store.ex", __DIR__),
       Path.expand("../../lib/favn_view/controllers/operator_session_controller.ex", __DIR__)
     ]
 

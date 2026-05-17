@@ -3,17 +3,19 @@ defmodule FavnView.Auth do
   Browser and LiveView authentication boundary for operator sessions.
 
   This module talks to the orchestrator only through the public
-  `FavnOrchestrator` facade and stores only the raw session token plus
-  LiveView socket topic in the Phoenix session.
+  `FavnOrchestrator` facade. Because Phoenix cookie sessions are signed but
+  client-readable, the raw orchestrator bearer token is stored only in the
+  server-side browser session store.
   """
 
   import Phoenix.Controller
   import Plug.Conn
 
   alias FavnView.Auth.Scope
+  alias FavnView.Auth.BrowserSessionStore
   alias FavnView.Endpoint
 
-  @session_key :operator_session_token
+  @session_key :operator_browser_session_id
   @live_socket_key :live_socket_id
 
   @doc """
@@ -30,6 +32,7 @@ defmodule FavnView.Auth do
 
       {:error, :invalid_session} ->
         conn
+        |> delete_browser_session_mapping()
         |> delete_session(@session_key)
         |> delete_session(@live_socket_key)
         |> assign(:current_scope, nil)
@@ -76,13 +79,12 @@ defmodule FavnView.Auth do
   """
   @spec log_in_operator(Plug.Conn.t(), map(), String.t() | nil) :: Plug.Conn.t()
   def log_in_operator(conn, session, return_to) when is_map(session) do
-    token = Map.fetch!(session, :token)
-    session_id = Map.fetch!(session, :id)
+    {:ok, browser_session} = BrowserSessionStore.put(session)
 
     conn
     |> renew_session()
-    |> put_session(@session_key, token)
-    |> put_session(@live_socket_key, live_socket_id(session_id))
+    |> put_session(@session_key, browser_session.id)
+    |> put_session(@live_socket_key, browser_session.live_socket_id)
     |> put_flash(:info, "Signed in")
     |> Phoenix.Controller.redirect(to: safe_return_to(return_to) || "/assets")
   end
@@ -93,6 +95,7 @@ defmodule FavnView.Auth do
   @spec log_out_operator(Plug.Conn.t()) :: Plug.Conn.t()
   def log_out_operator(conn) do
     scope = conn.assigns[:current_scope]
+    browser_session_id = get_session(conn, @session_key)
     live_socket_id = get_session(conn, @live_socket_key)
 
     case scope do
@@ -102,6 +105,10 @@ defmodule FavnView.Auth do
 
     if is_binary(live_socket_id) do
       Endpoint.broadcast(live_socket_id, "disconnect", %{})
+    end
+
+    if is_binary(browser_session_id) do
+      BrowserSessionStore.delete(browser_session_id)
     end
 
     conn
@@ -116,7 +123,7 @@ defmodule FavnView.Auth do
   @spec on_mount(atom(), map(), map(), Phoenix.LiveView.Socket.t()) ::
           {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
   def on_mount(:require_authenticated_operator, _params, session, socket) do
-    with {:ok, token} <- fetch_session_token(session),
+    with {:ok, token} <- fetch_operator_session_token(session),
          {:ok, orchestrator_session, actor} <- FavnOrchestrator.introspect_operator_session(token) do
       scope = Scope.new(actor, orchestrator_session)
 
@@ -132,7 +139,9 @@ defmodule FavnView.Auth do
         {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
       end
     else
-      _error -> {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
+      _error ->
+        delete_browser_session_mapping(session)
+        {:halt, Phoenix.LiveView.redirect(socket, to: "/login")}
     end
   end
 
@@ -154,29 +163,65 @@ defmodule FavnView.Auth do
   def safe_return_to(_return_to), do: nil
 
   @doc """
-  Returns the LiveView socket topic for an operator session id.
+  Returns the LiveView socket topic for a browser session id.
   """
   @spec live_socket_id(String.t()) :: String.t()
-  def live_socket_id(session_id) when is_binary(session_id), do: "operator_sessions:#{session_id}"
+  def live_socket_id(browser_session_id) when is_binary(browser_session_id),
+    do: BrowserSessionStore.live_socket_id(browser_session_id)
 
   defp scope_from_session(conn) do
-    with {:ok, token} <- fetch_session_token(conn),
+    with {:ok, token} <- fetch_operator_session_token(conn),
          {:ok, session, actor} <- FavnOrchestrator.introspect_operator_session(token) do
       {:ok, Scope.new(actor, session)}
     end
   end
 
-  defp fetch_session_token(%Plug.Conn{} = conn) do
+  defp fetch_operator_session_token(%Plug.Conn{} = conn) do
     case get_session(conn, @session_key) do
-      token when is_binary(token) and token != "" -> {:ok, token}
-      _other -> {:error, :missing_session}
+      browser_session_id when is_binary(browser_session_id) and browser_session_id != "" ->
+        fetch_operator_session_token(browser_session_id)
+
+      _other ->
+        {:error, :missing_session}
     end
   end
 
-  defp fetch_session_token(session) when is_map(session) do
+  defp fetch_operator_session_token(session) when is_map(session) do
     case Map.get(session, Atom.to_string(@session_key)) || Map.get(session, @session_key) do
-      token when is_binary(token) and token != "" -> {:ok, token}
-      _other -> {:error, :missing_session}
+      browser_session_id when is_binary(browser_session_id) and browser_session_id != "" ->
+        fetch_operator_session_token(browser_session_id)
+
+      _other ->
+        {:error, :missing_session}
+    end
+  end
+
+  defp fetch_operator_session_token(browser_session_id) when is_binary(browser_session_id) do
+    case BrowserSessionStore.fetch(browser_session_id) do
+      {:ok, browser_session} -> {:ok, browser_session.operator_session_token}
+      {:error, _reason} -> {:error, :invalid_session}
+    end
+  end
+
+  defp delete_browser_session_mapping(%Plug.Conn{} = conn) do
+    case get_session(conn, @session_key) do
+      browser_session_id when is_binary(browser_session_id) ->
+        BrowserSessionStore.delete(browser_session_id)
+
+      _other ->
+        :ok
+    end
+
+    conn
+  end
+
+  defp delete_browser_session_mapping(session) when is_map(session) do
+    case Map.get(session, Atom.to_string(@session_key)) || Map.get(session, @session_key) do
+      browser_session_id when is_binary(browser_session_id) ->
+        BrowserSessionStore.delete(browser_session_id)
+
+      _other ->
+        :ok
     end
   end
 
