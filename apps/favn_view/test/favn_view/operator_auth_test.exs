@@ -80,6 +80,16 @@ defmodule FavnView.OperatorAuthTest do
     assert redirected_to(conn) == "/login?return_to=%2Fassets"
   end
 
+  test "anonymous auth cleanup deletes legacy raw-token cookie key", %{conn: conn} do
+    conn =
+      conn
+      |> Plug.Test.init_test_session(operator_session_token: "legacy-token")
+      |> get(~p"/assets")
+
+    assert redirected_to(conn) == "/login?return_to=%2Fassets"
+    assert get_session(conn, :operator_session_token) == nil
+  end
+
   test "health and readiness stay public", %{conn: conn} do
     assert conn |> get(~p"/api/web/v1/health/live") |> json_response(200)
 

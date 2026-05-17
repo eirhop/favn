@@ -16,6 +16,7 @@ defmodule FavnView.Auth do
   alias FavnView.Endpoint
 
   @session_key :operator_browser_session_id
+  @legacy_token_session_key :operator_session_token
   @live_socket_key :live_socket_id
 
   @doc """
@@ -28,12 +29,15 @@ defmodule FavnView.Auth do
         assign(conn, :current_scope, scope)
 
       {:error, :missing_session} ->
-        assign(conn, :current_scope, nil)
+        conn
+        |> delete_session(@legacy_token_session_key)
+        |> assign(:current_scope, nil)
 
       {:error, :invalid_session} ->
         conn
         |> delete_browser_session_mapping()
         |> delete_session(@session_key)
+        |> delete_session(@legacy_token_session_key)
         |> delete_session(@live_socket_key)
         |> assign(:current_scope, nil)
     end

@@ -50,13 +50,16 @@ defmodule FavnView.WebReadinessTest do
       :orchestrator_readiness_timeout_ms,
       :production_runtime_diagnostics,
       :public_origin,
-      :production_runtime_config
+      :production_runtime_config,
+      :require_secure_cookies,
+      :session_cookie_options
     ]
 
     previous = Map.new(keys, &{&1, Application.get_env(:favn_view, &1)})
 
     Application.delete_env(:favn_view, :production_runtime_diagnostics)
     Application.delete_env(:favn_view, :public_origin)
+    Application.delete_env(:favn_view, :require_secure_cookies)
     Application.put_env(:favn_view, :orchestrator_facade, ReadyOrchestrator)
     Application.put_env(:favn_view, :orchestrator_readiness_timeout_ms, 50)
     Application.put_env(:favn_view, :production_runtime_config, false)
@@ -167,7 +170,26 @@ defmodule FavnView.WebReadinessTest do
     assert config.orchestrator_readiness_timeout_ms == 250
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "http://favn.example.com"
+             })
+
+    assert {:ok, %{public_origin: "http://localhost:4173"}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "http://localhost:4173"
+             })
+
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
              ProductionRuntimeConfig.validate(%{"FAVN_VIEW_PUBLIC_ORIGIN" => "not a url"})
+
+    for origin <- [
+          "https://favn.example.com/path",
+          "https://favn.example.com?debug=true",
+          "https://favn.example.com#frag"
+        ] do
+      assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
+               ProductionRuntimeConfig.validate(%{"FAVN_VIEW_PUBLIC_ORIGIN" => origin})
+    end
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS", _}}} =
              ProductionRuntimeConfig.validate(%{
@@ -191,6 +213,45 @@ defmodule FavnView.WebReadinessTest do
     assert Keyword.fetch!(endpoint_config, :url)[:host] == "favn.example.com"
     assert Keyword.fetch!(endpoint_config, :url)[:port] == 443
     assert Keyword.fetch!(endpoint_config, :check_origin) == ["https://favn.example.com"]
+  end
+
+  test "production runtime config requires hardened session cookie options when enabled" do
+    secure_options =
+      FavnView.Endpoint.session_options()
+      |> Keyword.put(:secure, true)
+      |> Keyword.put(:http_only, true)
+      |> Keyword.put(:same_site, "Lax")
+      |> Keyword.put(:encryption_salt, "test-encryption-salt")
+
+    Application.put_env(:favn_view, :require_secure_cookies, true)
+    Application.put_env(:favn_view, :session_cookie_options, secure_options)
+
+    assert {:ok, _config} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com"
+             })
+
+    Application.put_env(
+      :favn_view,
+      :session_cookie_options,
+      Keyword.put(secure_options, :secure, false)
+    )
+
+    assert {:error, %{error: {:invalid_session_cookie, :secure_required}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com"
+             })
+
+    Application.put_env(
+      :favn_view,
+      :session_cookie_options,
+      Keyword.delete(secure_options, :encryption_salt)
+    )
+
+    assert {:error, %{error: {:invalid_session_cookie, :encryption_salt_required}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com"
+             })
   end
 
   test "web readiness code uses only the public orchestrator facade" do

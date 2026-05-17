@@ -56,7 +56,8 @@ defmodule FavnView.ProductionRuntimeConfig do
   @spec validate(map()) :: {:ok, config()} | {:error, map()}
   def validate(env \\ System.get_env()) when is_map(env) do
     with {:ok, public_origin} <- public_origin(env),
-         {:ok, timeout_ms} <- timeout_ms(env) do
+         {:ok, timeout_ms} <- timeout_ms(env),
+         :ok <- secure_cookie_config() do
       {:ok,
        %{
          public_origin: public_origin,
@@ -117,10 +118,59 @@ defmodule FavnView.ProductionRuntimeConfig do
     case URI.parse(origin) do
       %URI{scheme: scheme, host: host, path: path, query: nil, fragment: nil}
       when scheme in ["http", "https"] and is_binary(host) and path in [nil, ""] ->
-        {:ok, origin}
+        validate_public_origin_scheme(scheme, host, origin)
 
       _other ->
-        {:error, {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", "absolute http(s) origin"}}
+        {:error,
+         {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN",
+          "absolute https origin or localhost http origin"}}
+    end
+  end
+
+  defp validate_public_origin_scheme("https", _host, origin), do: {:ok, origin}
+
+  defp validate_public_origin_scheme("http", host, origin) do
+    if localhost?(host) do
+      {:ok, origin}
+    else
+      {:error,
+       {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", "absolute https origin or localhost http origin"}}
+    end
+  end
+
+  defp localhost?(host), do: host in ["localhost", "127.0.0.1", "::1"]
+
+  @doc """
+  Validates browser session cookie options required for production.
+  """
+  @spec validate_session_cookie_options(keyword()) :: :ok | {:error, term()}
+  def validate_session_cookie_options(options) when is_list(options) do
+    cond do
+      Keyword.get(options, :secure) != true ->
+        {:error, {:invalid_session_cookie, :secure_required}}
+
+      Keyword.get(options, :http_only) != true ->
+        {:error, {:invalid_session_cookie, :http_only_required}}
+
+      Keyword.get(options, :same_site) != "Lax" ->
+        {:error, {:invalid_session_cookie, :same_site_lax_required}}
+
+      not is_binary(Keyword.get(options, :encryption_salt)) ->
+        {:error, {:invalid_session_cookie, :encryption_salt_required}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp secure_cookie_config do
+    if Application.get_env(:favn_view, :require_secure_cookies, false) do
+      case Application.fetch_env(:favn_view, :session_cookie_options) do
+        {:ok, options} -> validate_session_cookie_options(options)
+        :error -> {:error, {:invalid_session_cookie, :missing_options}}
+      end
+    else
+      :ok
     end
   end
 
@@ -153,6 +203,7 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   defp redact({:missing_env, name}), do: {:missing_env, name}
   defp redact({:invalid_env, name, expected}), do: {:invalid_env, name, expected}
+  defp redact({:invalid_session_cookie, reason}), do: {:invalid_session_cookie, reason}
 
   defp configure_endpoint(%{public_origin: nil}), do: :ok
 

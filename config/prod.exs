@@ -20,3 +20,15 @@ config :favn_view, FavnView.Endpoint,
   ]
 
 config :favn_view, production_runtime_config: true
+
+config :favn_view,
+  require_secure_cookies: true,
+  session_cookie_options: [
+    store: :cookie,
+    key: "_favn_view_key",
+    signing_salt: "zqy+dPTK",
+    encryption_salt: "favn-view-session-v1",
+    same_site: "Lax",
+    http_only: true,
+    secure: true
+  ]

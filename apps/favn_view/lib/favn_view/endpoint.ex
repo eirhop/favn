@@ -1,15 +1,14 @@
 defmodule FavnView.Endpoint do
   use Phoenix.Endpoint, otp_app: :favn_view
 
-  # The session will be stored in the cookie and signed,
-  # this means its contents can be read but not tampered with.
-  # Set :encryption_salt if you would also like to encrypt it.
-  @session_options [
-    store: :cookie,
-    key: "_favn_view_key",
-    signing_salt: "zqy+dPTK",
-    same_site: "Lax"
-  ]
+  # The session is cookie-backed. It intentionally stores only a random browser
+  # session id and LiveView socket topic; the raw orchestrator token stays
+  # server-side. Cookies are HTTP-only and encrypted, and production config must
+  # set `secure: true`.
+  @session_options Application.compile_env!(:favn_view, :session_cookie_options)
+
+  @doc false
+  def session_options, do: @session_options
 
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],

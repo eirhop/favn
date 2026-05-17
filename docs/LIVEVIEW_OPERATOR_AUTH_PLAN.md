@@ -12,7 +12,7 @@ This is production-critical. The current LiveView browser surface exposes operat
 
 `apps/favn_view/lib/favn_view/router.ex` defines the standard browser pipeline: `accepts ["html"]`, `fetch_session`, `fetch_live_flash`, `put_root_layout`, `protect_from_forgery`, and `put_secure_browser_headers`.
 
-`apps/favn_view/lib/favn_view/endpoint.ex` uses a signed cookie session with key `_favn_view_key`, signing salt, and `same_site: "Lax"`. The LiveView socket receives session data through `connect_info: [session: @session_options]`. The cookie is signed but not encrypted, so it must not store actor details, roles, credentials, or diagnostics.
+`apps/favn_view/lib/favn_view/endpoint.ex` uses a cookie session with key `_favn_view_key`, signing salt, encryption salt, explicit `http_only: true`, `same_site: "Lax"`, and production `secure: true`. The LiveView socket receives session data through `connect_info: [session: @session_options]`. The cookie must not store actor details, roles, credentials, raw tokens, or diagnostics.
 
 Unauthenticated health/readiness routes exist and must remain public:
 
