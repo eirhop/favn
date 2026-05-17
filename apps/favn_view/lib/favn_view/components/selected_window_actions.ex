@@ -24,6 +24,7 @@ defmodule FavnView.Components.SelectedWindowActions do
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
+  attr :can_submit_runs?, :boolean, default: false
 
   def selected_window_actions(assigns) do
     ~H"""
@@ -59,7 +60,8 @@ defmodule FavnView.Components.SelectedWindowActions do
           class="btn btn-primary btn-soft btn-sm"
           phx-click="open_run_config"
           disabled={
-            !@can_run_asset? || (@selected_window && !@selected_window.run_enabled?) ||
+            !@can_submit_runs? || !@can_run_asset? ||
+              (@selected_window && !@selected_window.run_enabled?) ||
               @submitting_window_run?
           }
           data-testid="run-selected-window"
@@ -76,6 +78,7 @@ defmodule FavnView.Components.SelectedWindowActions do
         active_timeline={@active_timeline}
         run_config={@run_config}
         submitting_window_run?={@submitting_window_run?}
+        can_submit_runs?={@can_submit_runs?}
       />
     </div>
     """
@@ -86,6 +89,7 @@ defmodule FavnView.Components.SelectedWindowActions do
   attr :active_timeline, :atom, default: :refresh
   attr :run_config, :map, required: true
   attr :submitting_window_run?, :boolean, default: false
+  attr :can_submit_runs?, :boolean, default: false
 
   def run_config_panel(assigns) do
     ~H"""
@@ -242,7 +246,7 @@ defmodule FavnView.Components.SelectedWindowActions do
           <button
             type="submit"
             class="btn btn-primary btn-sm"
-            disabled={@submitting_window_run?}
+            disabled={!@can_submit_runs? || @submitting_window_run?}
             phx-disable-with="Submitting..."
             data-testid="submit-run-config"
           >

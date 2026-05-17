@@ -1,6 +1,8 @@
 defmodule FavnView.Router do
   use FavnView, :router
 
+  import FavnView.Auth
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -22,18 +24,31 @@ defmodule FavnView.Router do
   end
 
   scope "/", FavnView do
-    pipe_through :browser
+    pipe_through [:browser, :fetch_current_scope, :redirect_if_operator_authenticated]
 
-    live "/", PageLive, :home
-    live "/assets", AssetCatalogueLive, :index
-    live "/assets/:asset_id", AssetDetailLive, :show
-    live "/pipelines", PipelinesLive, :index
-    live "/pipelines/:pipeline_id", PipelineDetailLive, :show
-    live "/logs", LogsLive, :index
-    live "/runs", RunsListLive, :index
-    live "/runs/:run_id", RunDetailLive, :show
-    live "/runs/:run_id/logs", RunLogsLive, :show
-    live "/runs/:run_id/assets/:asset_step_id/logs", AssetRunLogsLive, :show
+    get "/login", OperatorSessionController, :new
+    post "/login", OperatorSessionController, :create
+  end
+
+  scope "/", FavnView do
+    pipe_through [:browser, :fetch_current_scope, :require_operator_authenticated]
+
+    delete "/logout", OperatorSessionController, :delete
+    post "/logout", OperatorSessionController, :delete
+
+    live_session :operator,
+      on_mount: [{FavnView.Auth, :require_authenticated_operator}] do
+      live "/", PageLive, :home
+      live "/assets", AssetCatalogueLive, :index
+      live "/assets/:asset_id", AssetDetailLive, :show
+      live "/pipelines", PipelinesLive, :index
+      live "/pipelines/:pipeline_id", PipelineDetailLive, :show
+      live "/logs", LogsLive, :index
+      live "/runs", RunsListLive, :index
+      live "/runs/:run_id", RunDetailLive, :show
+      live "/runs/:run_id/logs", RunLogsLive, :show
+      live "/runs/:run_id/assets/:asset_step_id/logs", AssetRunLogsLive, :show
+    end
   end
 
   # Other scopes may use custom stacks.

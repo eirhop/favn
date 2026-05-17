@@ -9,6 +9,8 @@ defmodule FavnOrchestrator.Auth.Store do
 
   @min_password_length 15
   @max_password_length 1_024
+  @default_login_failure_limit 5
+  @default_login_backoff_seconds 60
 
   @type actor :: %{
           required(:id) => String.t(),
@@ -74,9 +76,11 @@ defmodule FavnOrchestrator.Auth.Store do
 
   @spec authenticate_password(String.t(), String.t()) ::
           {:ok, actor()} | {:error, :invalid_credentials}
-  def authenticate_password(username, password)
-      when is_binary(username) and is_binary(password) do
-    GenServer.call(__MODULE__, {:authenticate_password, username, password})
+  @spec authenticate_password(String.t(), String.t(), keyword() | map()) ::
+          {:ok, actor()} | {:error, :invalid_credentials}
+  def authenticate_password(username, password, opts \\ [])
+      when is_binary(username) and is_binary(password) and (is_list(opts) or is_map(opts)) do
+    GenServer.call(__MODULE__, {:authenticate_password, username, password, opts})
   end
 
   @spec issue_session(String.t(), keyword()) :: {:ok, session()} | {:error, term()}
@@ -106,7 +110,7 @@ defmodule FavnOrchestrator.Auth.Store do
   end
 
   @impl true
-  def init(_state), do: {:ok, %{}}
+  def init(_state), do: {:ok, %{login_attempts: %{}}}
 
   @impl true
   def handle_call(:reset, _from, state) do
@@ -118,7 +122,7 @@ defmodule FavnOrchestrator.Auth.Store do
         :ok
     end
 
-    {:reply, :ok, state}
+    {:reply, :ok, Map.put(state, :login_attempts, %{})}
   end
 
   def handle_call({:create_actor, username, password, display_name, roles}, _from, state) do
@@ -204,16 +208,24 @@ defmodule FavnOrchestrator.Auth.Store do
     {:reply, normalize_actor_result(Storage.get_auth_actor(actor_id)), state}
   end
 
-  def handle_call({:authenticate_password, username, password}, _from, state) do
+  def handle_call({:authenticate_password, username, password, opts}, _from, state) do
     normalized_username = String.trim(username)
+    key = login_attempt_key(normalized_username, opts)
 
-    reply =
-      case Storage.get_auth_actor_by_username(normalized_username) do
-        {:ok, actor} ->
-          authenticate_existing_actor(actor, password)
+    {reply, state} =
+      if login_backoff_active?(state, key) do
+        {dummy_password_verify(), state}
+      else
+        reply =
+          case Storage.get_auth_actor_by_username(normalized_username) do
+            {:ok, actor} ->
+              authenticate_existing_actor(actor, password)
 
-        {:error, _reason} ->
-          dummy_password_verify()
+            {:error, _reason} ->
+              dummy_password_verify()
+          end
+
+        {reply, update_login_attempts(state, key, reply)}
       end
 
     {:reply, reply, state}
@@ -287,6 +299,63 @@ defmodule FavnOrchestrator.Auth.Store do
 
   defp normalize_actor_result({:ok, actor}), do: {:ok, actor}
   defp normalize_actor_result({:error, _reason}), do: {:error, :actor_not_found}
+
+  defp login_attempt_key(username, opts) do
+    remote_identity =
+      case opts do
+        opts when is_list(opts) ->
+          Keyword.get(opts, :remote_identity)
+
+        opts when is_map(opts) ->
+          Map.get(opts, :remote_identity) || Map.get(opts, "remote_identity")
+      end
+
+    {username, normalize_remote_identity(remote_identity)}
+  end
+
+  defp normalize_remote_identity(nil), do: nil
+
+  defp normalize_remote_identity(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_remote_identity(value), do: inspect(value)
+
+  defp login_backoff_active?(state, key) do
+    with %{blocked_until: %DateTime{} = blocked_until} <- Map.get(login_attempts(state), key) do
+      DateTime.compare(blocked_until, DateTime.utc_now()) == :gt
+    else
+      _other -> false
+    end
+  end
+
+  defp update_login_attempts(state, key, {:ok, _actor}) do
+    Map.put(state, :login_attempts, Map.delete(login_attempts(state), key))
+  end
+
+  defp update_login_attempts(state, key, {:error, _reason}) do
+    attempts = Map.get(login_attempts(state), key, %{failures: 0, blocked_until: nil})
+    failures = attempts.failures + 1
+
+    attempts =
+      if failures >= login_failure_limit() do
+        %{
+          failures: failures,
+          blocked_until: DateTime.add(DateTime.utc_now(), login_backoff_seconds(), :second)
+        }
+      else
+        %{attempts | failures: failures}
+      end
+
+    Map.put(state, :login_attempts, Map.put(login_attempts(state), key, attempts))
+  end
+
+  defp login_attempts(state), do: Map.get(state, :login_attempts, %{})
 
   defp unwrap_list({:ok, values}), do: values
   defp unwrap_list({:error, _reason}), do: []
@@ -403,5 +472,21 @@ defmodule FavnOrchestrator.Auth.Store do
 
   defp default_session_ttl_seconds do
     Application.get_env(:favn_orchestrator, :auth_session_ttl_seconds, 43_200)
+  end
+
+  defp login_failure_limit do
+    Application.get_env(
+      :favn_orchestrator,
+      :auth_login_failure_limit,
+      @default_login_failure_limit
+    )
+  end
+
+  defp login_backoff_seconds do
+    Application.get_env(
+      :favn_orchestrator,
+      :auth_login_backoff_seconds,
+      @default_login_backoff_seconds
+    )
   end
 end

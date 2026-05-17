@@ -182,6 +182,15 @@ The bootstrap workflow uses orchestrator APIs. It does not write SQLite directly
 These examples assume the backend env file is loaded into the current operator
 shell.
 
+For browser operators, open `favn_view` at the configured
+`FAVN_VIEW_PUBLIC_ORIGIN` and sign in at `/login` with the bootstrap operator
+credentials. The Phoenix browser session stores only the opaque orchestrator
+session token and LiveView socket topic; actors, roles, password hashes, audit
+entries, and session revocation state remain orchestrator-owned. `/logout`
+revokes the current orchestrator session, clears the browser session, and
+disconnects existing LiveView sockets for that session. Web health and readiness
+routes remain unauthenticated.
+
 After bootstrap, verify that the first admin can log in:
 
 ```bash

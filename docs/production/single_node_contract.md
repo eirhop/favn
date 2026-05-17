@@ -100,8 +100,12 @@ In that placement, web must use the documented app boundary:
 
 - Web calls the public orchestrator facade in the same BEAM.
 - Web does not use orchestrator service tokens for same-BEAM readiness.
-- Web forwards actor/session context through documented headers only after the
-  orchestrator has authenticated the browser session.
+- Web authenticates browser operators through public orchestrator facade calls;
+  durable actors, credentials, sessions, roles, and audit state remain
+  orchestrator-owned.
+- Web stores only the opaque orchestrator session token and LiveView socket topic
+  in the Phoenix session cookie. Actor and role data are reconstructed by session
+  introspection in the plug and LiveView mount layers.
 - Web must not connect to the SQLite database, mutate control-plane files, call
   scheduler or runner internals directly, or rely on local-dev Distributed
   Erlang plumbing.
@@ -408,7 +412,9 @@ orchestrator. Web readiness verifies web config and calls orchestrator readiness
 through the public same-BEAM facade with a bounded timeout, returning `503` with
 redacted diagnostics when the web config is invalid, the orchestrator readiness
 call times out, or the orchestrator reports not-ready. Browser-session gating for
-operator UI routes is separate from process health endpoints.
+operator UI routes is separate from process health endpoints: `/login` and
+`/logout` are browser routes, operator LiveViews are protected by plug auth plus
+LiveView `on_mount`, and mutating LiveView events must enforce roles server-side.
 
 ## Explicitly Unsupported In V1
 
@@ -423,8 +429,8 @@ The first v1 single-node production contract explicitly does not support:
 - Split control-plane writes across orchestrator instances.
 - Scheduler leadership election or cross-node scheduler coordination.
 - Production deployment that depends on local-dev `mix favn.dev` service wrappers.
-- Release packaging, backup scripts, auth/session persistence, web hardening, or
-  full operator runbooks being considered complete by this document alone.
+- Release packaging, backup scripts, actor/admin UI, actor-wide session lockout,
+  or full operator runbooks being considered complete by this document alone.
 
 These are unsupported unless a later production contract explicitly supersedes
 this document.

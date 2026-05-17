@@ -8,6 +8,7 @@ defmodule FavnView.AssetDetailLive do
   alias FavnView.Components.AssetDetailPage
   alias FavnView.Components.AppShell
   alias FavnView.Components.GlassPanel
+  alias FavnView.Auth.Scope
 
   @valid_modes ~w(timeline runs lineage docs code details)
 
@@ -96,6 +97,10 @@ defmodule FavnView.AssetDetailLive do
     %{asset: asset, selected_window: selected_window} = socket.assigns
 
     cond do
+      !socket.assigns.can_submit_runs? ->
+        {:noreply,
+         assign(socket, :selected_window_error, "Operator role required to submit runs.")}
+
       is_nil(asset) or !asset.can_run_asset? ->
         {:noreply, assign(socket, :selected_window_error, "This asset cannot be run.")}
 
@@ -127,6 +132,13 @@ defmodule FavnView.AssetDetailLive do
     run_config = run_config_from_params(params, socket.assigns.run_config)
 
     cond do
+      !socket.assigns.can_submit_runs? ->
+        {:noreply,
+         assign(socket,
+           run_config: run_config,
+           selected_window_error: "Operator role required to submit runs."
+         )}
+
       is_nil(asset) or !asset.can_run_asset? ->
         {:noreply, assign(socket, :selected_window_error, "This asset cannot be run.")}
 
@@ -162,7 +174,8 @@ defmodule FavnView.AssetDetailLive do
         submitted_run_id: nil
       )
 
-    case FavnOrchestrator.submit_asset_run_for_manifest(
+    case FavnOrchestrator.submit_operator_asset_run(
+           actor_context(socket),
            asset.manifest_version_id,
            asset.target_id,
            %{selection: timeline_selection(selected_window, run_config), config: Map.new(opts)}
@@ -211,6 +224,7 @@ defmodule FavnView.AssetDetailLive do
       submitting_window_run?={@submitting_window_run?}
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
+      can_submit_runs?={@can_submit_runs?}
     />
 
     <AppShell.app_shell
@@ -241,6 +255,11 @@ defmodule FavnView.AssetDetailLive do
       {:ok, detail} -> asset_from_detail(detail)
       {:error, _reason} -> nil
     end
+  end
+
+  defp actor_context(socket) do
+    %Scope{} = scope = socket.assigns.current_scope
+    %{actor: scope.actor, session: scope.session}
   end
 
   defp asset_from_detail(detail) do
@@ -535,6 +554,8 @@ defmodule FavnView.AssetDetailLive do
   defp submit_error_label({:invalid_dependencies_mode, _value}), do: "Dependency mode is invalid."
 
   defp submit_error_label({:invalid_refresh_policy, _value}), do: "Refresh behavior is invalid."
+
+  defp submit_error_label(:forbidden), do: "Operator role required to submit runs."
 
   defp submit_error_label(_reason), do: "Could not submit run."
 end

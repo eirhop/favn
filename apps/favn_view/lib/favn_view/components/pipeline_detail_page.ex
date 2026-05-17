@@ -16,6 +16,7 @@ defmodule FavnView.Components.PipelineDetailPage do
   attr :run_error, :string, default: nil
   attr :backfill_error, :string, default: nil
   attr :backfill_config, :map, required: true
+  attr :can_submit_runs?, :boolean, default: false
 
   def pipeline_detail_page(assigns) do
     ~H"""
@@ -33,6 +34,7 @@ defmodule FavnView.Components.PipelineDetailPage do
           run_error={@run_error}
           backfill_error={@backfill_error}
           backfill_config={@backfill_config}
+          can_submit_runs?={@can_submit_runs?}
         />
         <.history_panel pipeline={@pipeline} />
       </div>
@@ -99,6 +101,7 @@ defmodule FavnView.Components.PipelineDetailPage do
   attr :run_error, :string, default: nil
   attr :backfill_error, :string, default: nil
   attr :backfill_config, :map, required: true
+  attr :can_submit_runs?, :boolean, default: false
 
   def actions_panel(assigns) do
     ~H"""
@@ -113,12 +116,19 @@ defmodule FavnView.Components.PipelineDetailPage do
             <button
               type="submit"
               class="btn btn-primary"
-              disabled={!@pipeline.can_run_without_window?}
+              disabled={!@can_submit_runs? || !@pipeline.can_run_without_window?}
               data-testid="run-pipeline-button"
             >
               <.icon name="hero-play" class="size-4" /> Run pipeline
             </button>
           </form>
+          <p
+            :if={!@can_submit_runs?}
+            class="mt-3 text-sm text-base-content/60"
+            data-testid="pipeline-operator-required-help"
+          >
+            Operator role required to submit runs.
+          </p>
           <p
             :if={!@pipeline.can_run_without_window?}
             class="mt-3 text-sm text-base-content/60"
@@ -149,7 +159,7 @@ defmodule FavnView.Components.PipelineDetailPage do
                 value={@backfill_config.from}
                 class="input input-sm favn-surface-control"
                 placeholder={backfill_placeholder(@backfill_config.kind)}
-                disabled={!@pipeline.can_backfill?}
+                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               />
             </label>
             <label class="form-control">
@@ -159,7 +169,7 @@ defmodule FavnView.Components.PipelineDetailPage do
                 value={@backfill_config.to}
                 class="input input-sm favn-surface-control"
                 placeholder={backfill_placeholder(@backfill_config.kind)}
-                disabled={!@pipeline.can_backfill?}
+                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               />
             </label>
             <label class="form-control">
@@ -167,7 +177,7 @@ defmodule FavnView.Components.PipelineDetailPage do
               <select
                 name="backfill[kind]"
                 class="select select-sm favn-surface-control"
-                disabled={!@pipeline.can_backfill?}
+                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               >
                 <option
                   :for={kind <- ~w(month day hour year)}
@@ -181,7 +191,7 @@ defmodule FavnView.Components.PipelineDetailPage do
             <button
               type="submit"
               class="btn btn-primary btn-soft self-end"
-              disabled={!@pipeline.can_backfill?}
+              disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
               data-testid="submit-backfill-button"
             >
               Backfill

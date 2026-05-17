@@ -1,0 +1,50 @@
+<div class="favn-shell-bg min-h-screen text-base-content">
+  <div class="favn-orbital-grid" aria-hidden="true"></div>
+  <main class="relative z-10 flex min-h-screen items-center justify-center px-5 py-10">
+    <section class="w-full max-w-md rounded-box border border-base-content/10 bg-base-100/75 p-8 shadow-2xl shadow-primary/10 backdrop-blur-xl">
+      <p class="text-xs uppercase tracking-[0.25em] text-base-content/45">Favn Operator</p>
+      <h1 class="mt-3 text-3xl font-light tracking-tight">Sign in</h1>
+      <p class="mt-2 text-sm text-base-content/60">
+        Use your operator credentials to access the LiveView control plane.
+      </p>
+
+      <p
+        :if={Phoenix.Flash.get(@flash, :error)}
+        class="mt-5 rounded-box border border-error/30 bg-error/10 p-3 text-sm text-error"
+      >
+        {Phoenix.Flash.get(@flash, :error)}
+      </p>
+
+      <.form
+        :let={f}
+        for={%{}}
+        as={:operator}
+        action={~p"/login"}
+        method="post"
+        class="mt-8 space-y-4"
+      >
+        <input :if={@return_to} type="hidden" name="operator[return_to]" value={@return_to} />
+
+        <label class="form-control">
+          <span class="label-text text-xs">Username</span>
+          <.input field={f[:username]} value={@username} autocomplete="username" required />
+        </label>
+
+        <label class="form-control">
+          <span class="label-text text-xs">Password</span>
+          <.input
+            field={f[:password]}
+            type="password"
+            value=""
+            autocomplete="current-password"
+            required
+          />
+        </label>
+
+        <button class="btn btn-primary w-full" type="submit" data-testid="operator-login-submit">
+          Sign in
+        </button>
+      </.form>
+    </section>
+  </main>
+</div>

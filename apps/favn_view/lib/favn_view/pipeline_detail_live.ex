@@ -9,6 +9,7 @@ defmodule FavnView.PipelineDetailLive do
   alias FavnView.Components.PipelineDetailPage
   alias FavnView.Components.PipelinesPage
   alias FavnView.LogsViewModel
+  alias FavnView.Auth.Scope
 
   @valid_modes ~w(runs assets more)
 
@@ -49,7 +50,8 @@ defmodule FavnView.PipelineDetailLive do
   def handle_event("run_pipeline", _params, socket) do
     pipeline = socket.assigns.pipeline
 
-    case FavnOrchestrator.submit_pipeline_run_for_manifest(
+    case FavnOrchestrator.submit_operator_pipeline_run(
+           actor_context(socket),
            pipeline.manifest_version_id,
            pipeline.id,
            %{}
@@ -83,7 +85,8 @@ defmodule FavnView.PipelineDetailLive do
 
     with true <- pipeline.can_backfill?,
          {:ok, run_id} <-
-           FavnOrchestrator.submit_pipeline_backfill_for_manifest(
+           FavnOrchestrator.submit_operator_pipeline_backfill(
+             actor_context(socket),
              pipeline.manifest_version_id,
              pipeline.id,
              %{range: config}
@@ -122,6 +125,7 @@ defmodule FavnView.PipelineDetailLive do
       run_error={@run_error}
       backfill_error={@backfill_error}
       backfill_config={@backfill_config}
+      can_submit_runs?={@can_submit_runs?}
     />
 
     <AppShell.app_shell
@@ -152,6 +156,11 @@ defmodule FavnView.PipelineDetailLive do
       {:ok, detail} -> pipeline_from_detail(detail)
       {:error, _reason} -> nil
     end
+  end
+
+  defp actor_context(socket) do
+    %Scope{} = scope = socket.assigns.current_scope
+    %{actor: scope.actor, session: scope.session}
   end
 
   defp pipeline_from_detail(detail) do
@@ -355,6 +364,7 @@ defmodule FavnView.PipelineDetailLive do
   defp submit_error_label({:missing_window_request, kind}),
     do: "This #{kind} pipeline requires an explicit window request."
 
+  defp submit_error_label(:forbidden), do: "Operator role required to submit runs."
   defp submit_error_label(:not_found), do: "Pipeline not found."
   defp submit_error_label(reason), do: "Submit failed: #{inspect(reason)}"
 
