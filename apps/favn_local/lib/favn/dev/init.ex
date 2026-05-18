@@ -425,18 +425,20 @@ defmodule Favn.Dev.Init do
       query do
         ~SQL"""
         select
-          date '2026-01-01' as order_date,
+          first_order.order_date,
           2 as order_count,
-          20500 as revenue_cents
-        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])}
-        where order_id = 1
+          first_order.amount_cents + second_order.amount_cents as revenue_cents
+        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])} as first_order
+        join #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])} as second_order
+          on second_order.order_id = 2
+        where first_order.order_id = 1
         union all
         select
-          date '2026-01-02' as order_date,
+          orders.order_date,
           1 as order_count,
-          1575 as revenue_cents
-        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])}
-        where order_id = 3
+          orders.amount_cents as revenue_cents
+        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])} as orders
+        where orders.order_id = 3
         order by order_date
         """
       end
