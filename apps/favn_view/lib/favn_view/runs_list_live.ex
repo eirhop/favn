@@ -20,8 +20,10 @@ defmodule FavnView.RunsListLive do
         active_mode: :list,
         loading: false,
         error: error,
+        run_events_live?: false,
         nav_items: RunsListPage.nav_items(:runs)
       )
+      |> maybe_subscribe_runs()
       |> maybe_schedule_refresh()
 
     {:ok, socket}
@@ -29,6 +31,11 @@ defmodule FavnView.RunsListLive do
 
   @impl true
   def handle_info(:refresh_runs, socket) do
+    {runs, error} = load_runs()
+    {:noreply, socket |> assign(runs: runs, error: error) |> maybe_schedule_refresh()}
+  end
+
+  def handle_info({:favn_run_event, _event}, socket) do
     {runs, error} = load_runs()
     {:noreply, socket |> assign(runs: runs, error: error) |> maybe_schedule_refresh()}
   end
@@ -53,6 +60,15 @@ defmodule FavnView.RunsListLive do
     """
   end
 
+  @impl true
+  def terminate(_reason, socket) do
+    if socket.assigns[:run_events_live?] do
+      FavnOrchestrator.unsubscribe_runs()
+    end
+
+    :ok
+  end
+
   defp load_runs do
     case FavnOrchestrator.list_run_summaries(limit: 100) do
       {:ok, runs} -> {Enum.map(runs, &run_from_public/1), nil}
@@ -69,6 +85,17 @@ defmodule FavnView.RunsListLive do
   end
 
   defp maybe_schedule_refresh(socket), do: socket
+
+  defp maybe_subscribe_runs(socket) do
+    if connected?(socket) do
+      case FavnOrchestrator.subscribe_runs() do
+        :ok -> assign(socket, :run_events_live?, true)
+        {:error, _reason} -> socket
+      end
+    else
+      socket
+    end
+  end
 
   defp run_from_public(run) do
     targets = targets(Map.get(run, :target_refs, []), Map.get(run, :asset_ref))

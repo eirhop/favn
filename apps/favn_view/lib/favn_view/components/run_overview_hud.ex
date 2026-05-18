@@ -12,6 +12,8 @@ defmodule FavnView.Components.RunOverviewHud do
   def run_overview_hud(assigns) do
     ~H"""
     <GlassPanel.glass_panel
+      id="run-overview-panel"
+      phx-hook="FavnClipboard"
       class="mx-auto w-full max-w-6xl p-5 sm:p-6 lg:p-7"
       data-testid="run-overview-panel"
       data-run-active={to_string(@run.active?)}
@@ -33,9 +35,21 @@ defmodule FavnView.Components.RunOverviewHud do
           class="rounded-box border border-error/25 bg-error/10 p-4 text-sm text-base-content/80"
           data-testid="run-failure-summary"
         >
+          <div class="flex items-start justify-between gap-3">
+            <p class="font-medium text-error">Failure details</p>
+            <button
+              :if={@run.failure_summary.error}
+              type="button"
+              class="btn btn-error btn-soft btn-xs rounded-box"
+              data-copy-text={@run.failure_summary.error}
+              data-testid="run-error-copy-button"
+            >
+              <.icon name="hero-clipboard-document" class="size-4" /> Copy
+            </button>
+          </div>
           <p
             :if={@run.failure_summary.count > 0 && @run.failure_summary.total > 0}
-            class="font-medium text-error"
+            class="mt-2 font-medium text-error"
           >
             {@run.failure_summary.count} of {@run.failure_summary.total} assets failed.
           </p>
@@ -87,12 +101,9 @@ defmodule FavnView.Components.RunOverviewHud do
   def asset_result_row(assigns) do
     ~H"""
     <.link
-      :if={@asset.inspectable?}
+      :if={@asset.inspectable? && !@asset.error}
       navigate={~p"/runs/#{@run_id}/assets/#{@asset.id}/logs"}
-      class={[
-        "group grid gap-3 rounded-box border bg-base-content/[0.025] p-4 transition hover:border-primary/35 hover:bg-primary/[0.045] hover:shadow-lg hover:shadow-primary/10 lg:grid-cols-[1fr_10rem_8rem_10rem_2rem] lg:items-center no-underline",
-        row_border_class(@asset.status_tone)
-      ]}
+      class={row_class(@asset, :link)}
       data-testid="run-asset-result-row"
       data-run-id={@run_id}
       data-asset-step-id={@asset.id}
@@ -101,11 +112,35 @@ defmodule FavnView.Components.RunOverviewHud do
     </.link>
 
     <div
+      :if={@asset.inspectable? && @asset.error}
+      class={row_class(@asset, :static)}
+      data-testid="run-asset-result-row"
+      data-run-id={@run_id}
+      data-asset-step-id={@asset.id}
+    >
+      <.asset_result_row_content asset={@asset} />
+      <div class="flex flex-wrap gap-2 lg:col-span-5 lg:col-start-1">
+        <button
+          type="button"
+          class="btn btn-error btn-soft btn-xs rounded-box"
+          data-copy-text={@asset.error}
+          data-testid="asset-error-copy-button"
+        >
+          <.icon name="hero-clipboard-document" class="size-4" /> Copy error
+        </button>
+        <.link
+          navigate={~p"/runs/#{@run_id}/assets/#{@asset.id}/logs"}
+          class="btn btn-ghost btn-xs rounded-box"
+          data-testid="asset-logs-link"
+        >
+          View logs
+        </.link>
+      </div>
+    </div>
+
+    <div
       :if={!@asset.inspectable?}
-      class={[
-        "group grid gap-3 rounded-box border bg-base-content/[0.025] p-4 transition lg:grid-cols-[1fr_10rem_8rem_10rem_2rem] lg:items-center",
-        row_border_class(@asset.status_tone)
-      ]}
+      class={row_class(@asset, :static)}
       data-testid="run-asset-result-row"
       data-run-id={@run_id}
       data-asset-step-id={@asset.id}
@@ -182,4 +217,18 @@ defmodule FavnView.Components.RunOverviewHud do
 
   defp row_border_class(:error), do: "border-error/40 shadow-error/10 shadow-lg"
   defp row_border_class(_tone), do: "border-base-content/10"
+
+  defp row_class(asset, :link) do
+    [
+      "group grid gap-3 rounded-box border bg-base-content/[0.025] p-4 transition hover:border-primary/35 hover:bg-primary/[0.045] hover:shadow-lg hover:shadow-primary/10 lg:grid-cols-[1fr_10rem_8rem_10rem_2rem] lg:items-center no-underline",
+      row_border_class(asset.status_tone)
+    ]
+  end
+
+  defp row_class(asset, :static) do
+    [
+      "group grid gap-3 rounded-box border bg-base-content/[0.025] p-4 transition lg:grid-cols-[1fr_10rem_8rem_10rem_2rem] lg:items-center",
+      row_border_class(asset.status_tone)
+    ]
+  end
 end
