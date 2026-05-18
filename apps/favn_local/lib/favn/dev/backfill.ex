@@ -26,15 +26,17 @@ defmodule Favn.Dev.Backfill do
           from: String.t(),
           to: String.t(),
           kind: String.t() | atom(),
+          window: String.t(),
+          dry_run: boolean(),
           timezone: String.t(),
           coverage_baseline_id: String.t(),
           wait: boolean(),
           max_attempts: pos_integer(),
-           retry_backoff_ms: non_neg_integer(),
-           timeout_ms: pos_integer(),
-           wait_timeout_ms: pos_integer(),
-           run_timeout_ms: pos_integer(),
-           poll_interval_ms: pos_integer(),
+          retry_backoff_ms: non_neg_integer(),
+          timeout_ms: pos_integer(),
+          wait_timeout_ms: pos_integer(),
+          run_timeout_ms: pos_integer(),
+          poll_interval_ms: pos_integer(),
           metadata: map()
         ]
 
@@ -45,32 +47,80 @@ defmodule Favn.Dev.Backfill do
       when (is_atom(pipeline_module) or is_binary(pipeline_module)) and is_list(opts) do
     with :ok <- validate_opts(opts),
          {:ok, range} <- build_range(opts),
-         {:ok, base_url, credentials, session_context} <- session(opts),
-         {:ok, active_manifest} <-
-           OrchestratorClient.active_manifest(
+         {:ok, base_url, credentials, session_context} <- session(opts) do
+      case maybe_submit_or_plan(
+             pipeline_module,
+             range,
              base_url,
-             credentials.service_token,
-             session_context
-           ),
-         {:ok, target} <- Run.resolve_pipeline_target(active_manifest, pipeline_module),
-         {:ok, payload} <- build_submit_payload(target, range, opts),
-         {:ok, run} <-
-           OrchestratorClient.submit_backfill(
-             base_url,
-             credentials.service_token,
+             credentials,
              session_context,
-             payload
-           ),
-         {:ok, final_run} <-
-           maybe_wait(run, base_url, credentials.service_token, session_context, opts),
-         :ok <- ensure_success(final_run, Keyword.get(opts, :wait, true)) do
-      {:ok, final_run}
+             opts
+           ) do
+        {:error, reason} -> {:error, unwrap_submit_error(reason)}
+        result -> result
+      end
     else
       {:error, reason} -> {:error, unwrap_submit_error(reason)}
     end
   end
 
   def submit_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
+
+  defp maybe_submit_or_plan(pipeline_module, range, base_url, credentials, session_context, opts) do
+    if Keyword.get(opts, :dry_run, false) do
+      with {:ok, payload} <- build_plan_payload(pipeline_module, range, opts) do
+        OrchestratorClient.plan_backfill(
+          base_url,
+          credentials.service_token,
+          session_context,
+          payload
+        )
+      end
+    else
+      with {:ok, active_manifest} <-
+             OrchestratorClient.active_manifest(
+               base_url,
+               credentials.service_token,
+               session_context
+             ),
+           {:ok, target} <- Run.resolve_pipeline_target(active_manifest, pipeline_module),
+           {:ok, payload} <- build_submit_payload(target, range, opts),
+           {:ok, run} <-
+             OrchestratorClient.submit_backfill(
+               base_url,
+               credentials.service_token,
+               session_context,
+               payload
+             ),
+           {:ok, final_run} <-
+             maybe_wait(run, base_url, credentials.service_token, session_context, opts),
+           :ok <- ensure_success(final_run, Keyword.get(opts, :wait, true)) do
+        {:ok, final_run}
+      end
+    end
+  end
+
+  @spec plan_pipeline(module() | String.t(), submit_opts()) :: {:ok, map()} | {:error, term()}
+  def plan_pipeline(pipeline_module, opts \\ [])
+
+  def plan_pipeline(pipeline_module, opts)
+      when (is_atom(pipeline_module) or is_binary(pipeline_module)) and is_list(opts) do
+    with :ok <- validate_opts(opts),
+         {:ok, range} <- build_range(opts),
+         {:ok, base_url, credentials, session_context} <- session(opts),
+         {:ok, payload} <- build_plan_payload(pipeline_module, range, opts) do
+      OrchestratorClient.plan_backfill(
+        base_url,
+        credentials.service_token,
+        session_context,
+        payload
+      )
+    else
+      {:error, reason} -> {:error, unwrap_submit_error(reason)}
+    end
+  end
+
+  def plan_pipeline(_pipeline_module, _opts), do: {:error, :invalid_pipeline}
 
   @spec list_windows(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_windows(backfill_run_id, opts \\ [])
@@ -161,24 +211,71 @@ defmodule Favn.Dev.Backfill do
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
      |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
-      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
+     |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end
 
   def build_submit_payload(_target, _range, _opts), do: {:error, :invalid_pipeline_target}
 
   @doc false
+  @spec build_plan_payload(module() | String.t(), map(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def build_plan_payload(pipeline_module, range, opts)
+      when (is_atom(pipeline_module) or is_binary(pipeline_module)) and is_map(range) and
+             is_list(opts) do
+    payload = %{
+      target: %{type: "pipeline", module: module_name(pipeline_module)},
+      manifest_selection: %{mode: "active"},
+      range: range
+    }
+
+    {:ok,
+     payload
+     |> maybe_put(:coverage_baseline_id, Keyword.get(opts, :coverage_baseline_id))
+     |> maybe_put(:metadata, Keyword.get(opts, :metadata))
+     |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
+     |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
+     |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
+  end
+
+  def build_plan_payload(_pipeline_module, _range, _opts), do: {:error, :invalid_pipeline}
+
+  @doc false
   @spec build_range(keyword()) :: {:ok, map()} | {:error, term()}
   def build_range(opts) when is_list(opts) do
-    with {:ok, from} <- required_string(opts, :from),
+    with {:ok, opts} <- expand_window_opt(opts),
+         {:ok, from} <- required_string(opts, :from),
          {:ok, to} <- required_string(opts, :to),
-         {:ok, kind} <- required_value(opts, :kind) do
+         {:ok, kind} <- required_value(opts, :kind),
+         kind <- to_string(kind),
+         from <- normalize_range_value(kind, from),
+         to <- normalize_range_value(kind, to) do
       {:ok,
        %{
          from: from,
          to: to,
-         kind: to_string(kind),
+         kind: kind,
          timezone: Keyword.get(opts, :timezone, "Etc/UTC")
        }}
+    end
+  end
+
+  defp expand_window_opt(opts) do
+    case Keyword.get(opts, :window) do
+      nil -> {:ok, opts}
+      "" -> {:error, {:invalid_window_range, ""}}
+      window when is_binary(window) -> parse_window_range(window, opts)
+      value -> {:error, {:invalid_window_range, value}}
+    end
+  end
+
+  defp parse_window_range(window, opts) do
+    case String.split(window, [":", ".."], parts: 3) do
+      [kind, from, to] when kind != "" and from != "" and to != "" ->
+        {:ok,
+         opts |> Keyword.put(:kind, kind) |> Keyword.put(:from, from) |> Keyword.put(:to, to)}
+
+      _other ->
+        {:error, {:invalid_window_range, window}}
     end
   end
 
@@ -263,7 +360,27 @@ defmodule Favn.Dev.Backfill do
   defp maybe_put(payload, _key, ""), do: payload
   defp maybe_put(payload, key, value), do: Map.put(payload, key, value)
 
-  defp run_timeout_ms(opts), do: Keyword.get(opts, :run_timeout_ms, Keyword.get(opts, :timeout_ms))
+  defp normalize_range_value(kind, value) when kind in ["month", "monthly"] do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> date |> Date.to_iso8601() |> binary_part(0, 7)
+      {:error, _reason} -> value
+    end
+  end
+
+  defp normalize_range_value(kind, value) when kind in ["year", "yearly"] do
+    case Date.from_iso8601(value) do
+      {:ok, date} -> date |> Date.to_iso8601() |> binary_part(0, 4)
+      {:error, _reason} -> value
+    end
+  end
+
+  defp normalize_range_value(_kind, value), do: value
+
+  defp module_name(value) when is_atom(value), do: Atom.to_string(value)
+  defp module_name(value) when is_binary(value), do: value
+
+  defp run_timeout_ms(opts),
+    do: Keyword.get(opts, :run_timeout_ms, Keyword.get(opts, :timeout_ms))
 
   defp maybe_wait(run, base_url, service_token, session_context, opts) do
     case {Keyword.get(opts, :wait, true), run} do
@@ -273,6 +390,7 @@ defmodule Favn.Dev.Backfill do
       {true, %{"id" => run_id}} when is_binary(run_id) and run_id != "" ->
         timeout_ms =
           Keyword.get(opts, :wait_timeout_ms, Keyword.get(opts, :timeout_ms, @default_timeout_ms))
+
         poll_interval_ms = Keyword.get(opts, :poll_interval_ms, @default_poll_interval_ms)
         deadline = System.monotonic_time(:millisecond) + timeout_ms
 
@@ -335,17 +453,25 @@ defmodule Favn.Dev.Backfill do
 
   defp ensure_success(run, true) do
     case run_status(run) do
-      "ok" -> :ok
-      "partial" -> {:error, {:run_failed, "backfill parent run finished with status partial", run}}
-      status when status in ["error", "cancelled", "timed_out"] -> {:error, {:run_failed, run}}
-      _other -> :ok
+      "ok" ->
+        :ok
+
+      "partial" ->
+        {:error, {:run_failed, "backfill parent run finished with status partial", run}}
+
+      status when status in ["error", "cancelled", "timed_out"] ->
+        {:error, {:run_failed, run}}
+
+      _other ->
+        :ok
     end
   end
 
   defp terminal_status?(run), do: run_status(run) in @terminal_statuses
   defp run_status(run), do: Map.get(run, "status") || Map.get(run, :status)
 
-  defp unwrap_submit_error(%{operation: :submit_backfill, reason: {:http_error, 422, payload}}) do
+  defp unwrap_submit_error(%{operation: operation, reason: {:http_error, 422, payload}})
+       when operation in [:submit_backfill, :plan_backfill] do
     case get_in(payload, ["error", "message"]) do
       message when is_binary(message) and message != "" ->
         {:orchestrator_validation_failed, message}

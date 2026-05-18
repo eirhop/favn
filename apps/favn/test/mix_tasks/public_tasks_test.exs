@@ -21,6 +21,7 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Reload, as: ReloadTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
   alias Mix.Tasks.Favn.Run, as: RunTask
+  alias Mix.Tasks.Favn.Runs, as: RunsTask
   alias Mix.Tasks.Favn.Status, as: StatusTask
   alias Mix.Tasks.Favn.Stop, as: StopTask
 
@@ -120,7 +121,6 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       {DiagnosticsTask, "favn.diagnostics"},
       {DevTask, "favn.dev"},
       {InstallTask, "favn.install"},
-      {LogsTask, "favn.logs"},
       {ReloadTask, "favn.reload"},
       {ResetTask, "favn.reset"},
       {StatusTask, "favn.status"},
@@ -135,6 +135,10 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       assert_raise Mix.Error, ~r/unexpected argument for mix #{Regex.escape(task_name)}/, fn ->
         task.run(["extra"])
       end
+    end
+
+    assert_raise Mix.Error, ~r/invalid option for mix favn.logs/, fn ->
+      LogsTask.run(["--bad-option"])
     end
   end
 
@@ -523,11 +527,32 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert Keyword.fetch!(opts, :timezone) == "Etc/UTC"
     assert Keyword.fetch!(opts, :coverage_baseline_id) == "baseline_1"
     assert Keyword.fetch!(opts, :wait) == false
+
+    assert {:ok, {:submit, "Example.Pipeline", opts}} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--window",
+               "month:2025-05..2026-05",
+               "--dry-run"
+             ])
+
+    assert Keyword.fetch!(opts, :window) == "month:2025-05..2026-05"
+    assert Keyword.fetch!(opts, :dry_run) == true
+    assert Keyword.fetch!(opts, :timezone) == "Etc/UTC"
   end
 
   test "mix favn.backfill validates submit arguments" do
     assert {:error, message} = BackfillTask.parse_args(["submit", "Example.Pipeline"])
     assert message =~ "missing required option(s): --from, --to, --kind"
+
+    assert {:ok, {:submit, "Example.Pipeline", _opts}} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--window",
+               "day:2026-01-01..2026-01-02"
+             ])
 
     assert {:error, message} =
              BackfillTask.parse_args([
@@ -788,6 +813,26 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert output =~ "hello"
+  end
+
+  test "mix favn.logs accepts a run id for event output" do
+    assert {:ok, {:run_events, "run_1", opts}} = LogsTask.parse_args(["run_1", "--tail", "10"])
+    assert Keyword.fetch!(opts, :tail) == 10
+
+    assert {:error, message} = LogsTask.parse_args(["run_1", "--follow"])
+    assert message =~ "RUN_ID cannot be combined"
+  end
+
+  test "mix favn.runs parses list and show subcommands" do
+    assert {:ok, {:list, opts}} =
+             RunsTask.parse_args(["list", "--status", "error", "--limit", "5"])
+
+    assert Keyword.fetch!(opts, :status) == "error"
+    assert Keyword.fetch!(opts, :limit) == 5
+
+    assert {:ok, {:show, "run_1", []}} = RunsTask.parse_args(["show", "run_1"])
+    assert {:error, message} = RunsTask.parse_args([])
+    assert message =~ "missing subcommand"
   end
 
   test "mix favn.reset removes .favn when stack is not running", %{root_dir: root_dir} do

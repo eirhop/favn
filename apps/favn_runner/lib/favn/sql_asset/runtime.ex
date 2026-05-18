@@ -171,14 +171,14 @@ defmodule Favn.SQLAsset.Runtime do
   defp explain_statement(sql, false), do: "EXPLAIN #{trim_sql(sql)}"
 
   defp query_render(%Render{} = rendered, statement, phase, opts) do
-    with_session(rendered.connection, opts, fn session ->
+    with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
       SQLClient.query(session, statement, params: adapter_params(rendered.params))
     end)
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
 
   defp materialize_render(%Definition{} = definition, %Render{} = rendered, opts) do
-    with_session(rendered.connection, opts, fn session ->
+    with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
       with {:ok, write_plan} <- MaterializationPlanner.build(session, definition, rendered),
            {:ok, result} <-
              SQLClient.materialize(session, write_plan, params: adapter_params(rendered.params)) do
@@ -235,18 +235,20 @@ defmodule Favn.SQLAsset.Runtime do
     Keyword.put(opts, :runtime, Map.put(runtime_map, :window, runtime_window))
   end
 
-  defp with_session(connection, opts, fun) when is_function(fun, 1) do
+  defp with_session(connection, opts, required_catalogs, fun) when is_function(fun, 1) do
     timeout_opts =
       case Keyword.get(opts, :timeout_ms) do
         timeout when is_integer(timeout) and timeout > 0 -> [timeout_ms: timeout]
         _ -> []
       end
 
+    connect_opts =
+      timeout_opts
+      |> Keyword.put(:registry_name, @runner_registry)
+      |> maybe_put_required_catalogs(required_catalogs)
+
     with {:ok, session} <-
-           SQLClient.connect(
-             connection,
-             Keyword.put(timeout_opts, :registry_name, @runner_registry)
-           ) do
+           SQLClient.connect(connection, connect_opts) do
       try do
         fun.(session)
       after
@@ -256,6 +258,31 @@ defmodule Favn.SQLAsset.Runtime do
   rescue
     error -> {:error, error}
   end
+
+  defp required_catalogs(%Render{} = rendered) do
+    catalogs =
+      [rendered.relation | resolved_relations(rendered.resolved_asset_refs)]
+      |> Enum.flat_map(&relation_catalog/1)
+      |> Enum.uniq()
+
+    if catalogs == [], do: nil, else: catalogs
+  end
+
+  defp resolved_relations(refs) when is_list(refs) do
+    Enum.map(refs, fn ref -> Map.get(ref, :relation) || Map.get(ref, "relation") end)
+  end
+
+  defp resolved_relations(_refs), do: []
+
+  defp relation_catalog(%RelationRef{catalog: catalog}) when is_binary(catalog) and catalog != "",
+    do: [catalog]
+
+  defp relation_catalog(_relation), do: []
+
+  defp maybe_put_required_catalogs(opts, nil), do: opts
+
+  defp maybe_put_required_catalogs(opts, catalogs),
+    do: Keyword.put(opts, :required_catalogs, catalogs)
 
   defp map_sql_result_error({:ok, result}, _asset_ref, _phase), do: {:ok, result}
 

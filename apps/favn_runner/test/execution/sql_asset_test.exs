@@ -14,13 +14,43 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.SQL.Template
 
   setup do
+    previous_test_pid = Application.get_env(:favn_runner, :execution_sql_asset_test_pid)
+    Application.put_env(:favn_runner, :execution_sql_asset_test_pid, self())
+
     on_exit(fn ->
+      restore_env(:execution_sql_asset_test_pid, previous_test_pid)
       Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
     end)
 
     reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeExecutionAdapter)
 
     :ok
+  end
+
+  test "manifest execution scopes SQL sessions to rendered target catalog" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+
+    relation =
+      RelationRef.new!(%{
+        connection: :runner_sql_runtime,
+        catalog: "raw",
+        schema: "mercatus",
+        name: "manifest_sql_asset"
+      })
+
+    version = register_sql_manifest!(ref, relation)
+
+    work = %RunnerWork{
+      run_id: "run_sql_catalog_scope",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: ref
+    }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :ok
+    assert_received {:connect_opts, :runner_sql_runtime, opts}
+    assert Keyword.fetch!(opts, :required_catalogs) == ["raw"]
   end
 
   test "executes manifest-pinned sql asset through declared runner SQL runtime" do
@@ -225,8 +255,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version
   end
 
-  defp register_sql_manifest!(ref) do
-    relation = RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset"})
+  defp register_sql_manifest!(ref, relation \\ nil) do
+    relation =
+      relation || RelationRef.new!(%{connection: :runner_sql_runtime, name: "manifest_sql_asset"})
 
     template =
       Template.compile!("SELECT 1 AS id",
@@ -383,6 +414,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         registry_name: FavnRunner.ConnectionRegistry
       )
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:favn_runner, key)
+  defp restore_env(key, value), do: Application.put_env(:favn_runner, key, value)
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.SQLAsset do
@@ -399,7 +433,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter do
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Error
 
-  def connect(%Resolved{}, _opts), do: {:ok, :conn}
+  def connect(%Resolved{} = resolved, opts) do
+    if pid = Application.get_env(:favn_runner, :execution_sql_asset_test_pid) do
+      send(pid, {:connect_opts, resolved.name, opts})
+    end
+
+    {:ok, :conn}
+  end
+
   def disconnect(:conn, _opts), do: :ok
   def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
 
@@ -420,7 +461,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Result
 
-  def connect(%Resolved{}, _opts), do: {:ok, :conn}
+  def connect(%Resolved{} = resolved, opts) do
+    if pid = Application.get_env(:favn_runner, :execution_sql_asset_test_pid) do
+      send(pid, {:connect_opts, resolved.name, opts})
+    end
+
+    {:ok, :conn}
+  end
+
   def disconnect(:conn, _opts), do: :ok
   def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
 
