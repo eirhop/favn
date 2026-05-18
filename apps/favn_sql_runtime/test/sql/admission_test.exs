@@ -365,9 +365,9 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       session(tracker, %ConcurrencyPolicy{limit: 1, scope: {:db, :fallback}, applies_to: :writes})
 
     raw = Task.async(fn -> Client.materialize(session, write_plan("raw"), []) end)
-    mart = Task.async(fn -> Client.materialize(session, write_plan("mart"), []) end)
-
     assert_receive {:materialize_started, "raw", raw_pid}, 500
+
+    mart = Task.async(fn -> Client.materialize(session, write_plan("mart"), []) end)
     refute_receive {:materialize_started, "mart", _pid}, 50
     assert Agent.get(tracker, & &1.max_active) == 1
 
