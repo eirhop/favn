@@ -81,6 +81,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:runner_execution_id) => String.t() | nil,
           required(:event_seq) => pos_integer(),
           required(:steps) => [step_summary()],
+          required(:backfill_failures) => [map()],
           required(:events) => [RunEvent.t()]
         }
 
@@ -114,10 +115,11 @@ defmodule FavnOrchestrator.RunReadModel do
     with {:ok, %RunState{} = run} <- Storage.get_run(run_id),
          {:ok, events} <- Storage.list_run_events(run_id) do
       events = Enum.map(events, &RunEvent.from_map/1)
+      public_run = with_public_status(run)
 
       {:ok,
        %{
-         summary: summary(run),
+         summary: summary(public_run),
          params: run.params,
          trigger: run.trigger,
          metadata: run.metadata,
@@ -125,7 +127,8 @@ defmodule FavnOrchestrator.RunReadModel do
          error: run.error,
          runner_execution_id: run.runner_execution_id,
          event_seq: run.event_seq,
-         steps: step_summaries(run, events),
+         steps: step_summaries(public_run, events),
+         backfill_failures: backfill_failures(run),
          events: events
        }}
     end
@@ -150,6 +153,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @spec summary(RunState.t()) :: run_summary()
   def summary(%RunState{} = run) do
+    run = with_public_status(run)
     role = classify(run)
     progress = progress(run, role)
     window = window(run, role)
@@ -175,6 +179,32 @@ defmodule FavnOrchestrator.RunReadModel do
       duration_ms: duration_ms(run)
     }
   end
+
+  defp with_public_status(%RunState{} = run) do
+    %{run | status: public_status(run)}
+  end
+
+  defp public_status(%RunState{submit_kind: :pipeline, status: :ok} = run) do
+    if incomplete_pipeline_success?(run), do: :running, else: :ok
+  end
+
+  defp public_status(%RunState{status: status}), do: status
+
+  defp incomplete_pipeline_success?(%RunState{} = run) do
+    expected = expected_step_count(run)
+
+    expected > 0 and terminal_step_count(persisted_steps(run)) < expected
+  end
+
+  defp expected_step_count(%RunState{plan: %Favn.Plan{nodes: nodes}})
+       when is_map(nodes) and map_size(nodes) > 0,
+       do: map_size(nodes)
+
+  defp expected_step_count(%RunState{target_refs: refs}) when is_list(refs), do: length(refs)
+  defp expected_step_count(_run), do: 0
+
+  defp terminal_step_count(steps) when is_list(steps),
+    do: Enum.count(steps, &terminal_status?(&1.status))
 
   defp classify(%RunState{submit_kind: :rerun}), do: :rerun
 
@@ -241,6 +271,85 @@ defmodule FavnOrchestrator.RunReadModel do
         error
     end
   end
+
+  defp backfill_failures(%RunState{} = run) do
+    case classify(run) do
+      :backfill_parent ->
+        case list_all_backfill_windows(run.id) do
+          {:ok, windows} ->
+            windows
+            |> Enum.filter(&failed_backfill_window?/1)
+            |> Enum.map(&backfill_failure/1)
+
+          {:error, _reason} ->
+            []
+        end
+
+      _role ->
+        []
+    end
+  end
+
+  defp failed_backfill_window?(%BackfillWindow{status: status}),
+    do: status in [:error, :timed_out, :cancelled]
+
+  defp backfill_failure(%BackfillWindow{} = window) do
+    child_context = child_failure_context(window)
+    error = child_context.error || window_error(window)
+
+    %{
+      child_run_id: window.latest_attempt_run_id || window.child_run_id,
+      status: window.status,
+      window: backfill_window(window),
+      asset_ref: child_context.asset_ref,
+      error: error,
+      attempt_count: window.attempt_count,
+      started_at: window.started_at,
+      finished_at: window.finished_at,
+      duration_ms: duration_ms(window.started_at, window.finished_at)
+    }
+  end
+
+  defp child_failure_context(%BackfillWindow{} = window) do
+    case window.latest_attempt_run_id || window.child_run_id do
+      run_id when is_binary(run_id) ->
+        with {:ok, %RunState{} = child} <- Storage.get_run(run_id),
+             {:ok, events} <- Storage.list_run_events(run_id) do
+          child_failure_context(child, Enum.map(events, &RunEvent.from_map/1))
+        else
+          _other -> %{asset_ref: nil, error: nil}
+        end
+
+      _other ->
+        %{asset_ref: nil, error: nil}
+    end
+  end
+
+  defp child_failure_context(%RunState{} = child, events) do
+    failed_step =
+      child
+      |> step_summaries(events)
+      |> Enum.find(&(failure_step_status?(&1.status) and not is_nil(&1.error)))
+
+    %{
+      asset_ref: failed_step && failed_step.asset_ref,
+      error: (failed_step && failed_step.error) || child.error
+    }
+  end
+
+  defp failure_step_status?(status),
+    do: status in [:error, :timed_out, :blocked, "error", "timed_out", "blocked"]
+
+  defp window_error(%BackfillWindow{last_error: last_error}) when not is_nil(last_error),
+    do: last_error
+
+  defp window_error(%BackfillWindow{errors: errors}) when is_list(errors), do: List.last(errors)
+  defp window_error(_window), do: nil
+
+  defp duration_ms(%DateTime{} = started_at, %DateTime{} = finished_at),
+    do: DateTime.diff(finished_at, started_at, :millisecond)
+
+  defp duration_ms(_started_at, _finished_at), do: nil
 
   defp step_summaries(%RunState{} = run, events) do
     persisted_steps = persisted_steps(run)
@@ -674,7 +783,23 @@ defmodule FavnOrchestrator.RunReadModel do
   defp has_node_results?(_run), do: false
 
   defp terminal_status?(status),
-    do: status in [:ok, :partial, :error, :blocked, :cancelled, :timed_out, :skipped_fresh]
+    do:
+      status in [
+        :ok,
+        :partial,
+        :error,
+        :blocked,
+        :cancelled,
+        :timed_out,
+        :skipped_fresh,
+        "ok",
+        "partial",
+        "error",
+        "blocked",
+        "cancelled",
+        "timed_out",
+        "skipped_fresh"
+      ]
 
   defp unit_label(:assets, 1), do: "asset"
   defp unit_label(:assets, _total), do: "assets"

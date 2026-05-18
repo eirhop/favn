@@ -330,6 +330,128 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert step.explanation == "Failed while executing this asset."
   end
 
+  test "pipeline success remains active while persisted step results are incomplete" do
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    silver_ref = {MyApp.Assets.Silver, :asset}
+    started_at = ~U[2026-05-01 00:00:00Z]
+
+    run =
+      run("pipeline_success_gap", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [gold_ref, silver_ref])
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {gold_ref, nil},
+              ref: gold_ref,
+              stage: 0,
+              status: :ok,
+              started_at: started_at,
+              finished_at: DateTime.add(started_at, 1, :second),
+              duration_ms: 1_000,
+              asset_step_id: "gold-step"
+            })
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: run.event_seq + 1,
+               event_type: :step_started,
+               occurred_at: DateTime.add(started_at, 2, :second),
+               status: :running,
+               asset_ref: silver_ref,
+               stage: 0,
+               data: %{asset_step_id: "silver-step"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert detail.summary.status == :running
+    assert detail.summary.finished_at == nil
+
+    steps_by_ref = Map.new(detail.steps, &{&1.asset_ref, &1})
+    assert steps_by_ref["MyApp.Assets.Gold.asset"].status == :ok
+    assert steps_by_ref["MyApp.Assets.Silver.asset"].status == :running
+  end
+
+  test "backfill parent detail includes failed child window context" do
+    parent =
+      run("backfill_parent_failure", submit_kind: :backfill_pipeline)
+      |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
+
+    failed_ref = {MyApp.Assets.Inventory, :inventory_by_day}
+    started_at = ~U[2026-05-01 00:00:00Z]
+    finished_at = DateTime.add(started_at, 2, :second)
+    anchor = anchor(started_at)
+
+    child =
+      run("backfill_child_failure",
+        submit_kind: :pipeline,
+        parent_run_id: parent.id,
+        root_run_id: parent.id,
+        lineage_depth: 1,
+        trigger: %{
+          kind: :backfill,
+          backfill_run_id: parent.id,
+          pipeline_module: MyApp.Pipelines.Daily,
+          window_key: window_key(anchor)
+        },
+        metadata: %{pipeline_submit_ref: MyApp.Pipelines.Daily}
+      )
+      |> Map.put(:target_refs, [failed_ref])
+      |> RunState.transition(
+        status: :error,
+        error: :failed,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {failed_ref, window_key(anchor)},
+              ref: failed_ref,
+              stage: 0,
+              status: :error,
+              started_at: started_at,
+              finished_at: finished_at,
+              duration_ms: 2_000,
+              error: %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"},
+              asset_step_id: "failed-inventory-step"
+            })
+          ]
+        }
+      )
+
+    window =
+      parent.id
+      |> backfill_window(anchor, :error)
+      |> Map.merge(%{
+        child_run_id: child.id,
+        latest_attempt_run_id: child.id,
+        attempt_count: 1,
+        last_error: :failed,
+        started_at: started_at,
+        finished_at: finished_at,
+        updated_at: finished_at
+      })
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+    assert :ok = Storage.put_backfill_window(window)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(parent.id)
+
+    assert [failure] = detail.backfill_failures
+    assert failure.child_run_id == child.id
+    assert failure.asset_ref == "MyApp.Assets.Inventory.inventory_by_day"
+    assert failure.window.key == window_key(anchor)
+    assert failure.duration_ms == 2_000
+    assert failure.error == %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"}
+  end
+
   defp run(run_id, opts) do
     RunState.new(
       id: run_id,
