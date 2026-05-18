@@ -811,6 +811,22 @@ defmodule FavnOrchestrator do
   def submit_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
 
   @doc """
+  Plans one pipeline backfill without persisting a parent run or submitting child runs.
+
+  The returned DTO contains the selected manifest, target, resolved range bounds,
+  and concrete window keys that a later submit would use.
+  """
+  @spec plan_pipeline_backfill(module(), keyword()) :: {:ok, map()} | {:error, term()}
+  def plan_pipeline_backfill(pipeline_module, opts \\ [])
+
+  def plan_pipeline_backfill(pipeline_module, opts)
+      when is_atom(pipeline_module) and is_list(opts) do
+    BackfillManager.plan_pipeline_backfill(pipeline_module, opts)
+  end
+
+  def plan_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
+
+  @doc """
   Submits one pipeline backfill by manifest-scoped target id.
 
   Thin callers may pass plain map input with `:range` containing `:from`, `:to`,
@@ -826,6 +842,24 @@ defmodule FavnOrchestrator do
          {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
          {:ok, opts} <- normalize_pipeline_backfill_submit_opts(opts) do
       submit_pipeline_backfill(
+        pipeline_module,
+        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      )
+    end
+  end
+
+  @doc """
+  Plans one pipeline backfill by manifest-scoped target id.
+  """
+  @spec plan_pipeline_backfill_for_manifest(String.t(), String.t(), keyword() | map()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts \\ [])
+      when is_binary(manifest_version_id) and is_binary(target_id) and
+             (is_list(opts) or is_map(opts)) do
+    with {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
+         {:ok, opts} <- normalize_pipeline_backfill_submit_opts(opts) do
+      plan_pipeline_backfill(
         pipeline_module,
         Keyword.put(opts, :manifest_version_id, manifest_version_id)
       )

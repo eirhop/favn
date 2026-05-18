@@ -417,7 +417,9 @@ defmodule FavnOrchestrator.RunReadModel do
       window: nil,
       duration_ms: nil,
       started_at:
-        events |> Enum.find(&(&1.event_type == :step_started)) |> then(&(&1 && &1.occurred_at)),
+        events
+        |> Enum.find(&step_event_type?(&1, "step_started"))
+        |> then(&(&1 && &1.occurred_at)),
       attempt: Map.get(data, :attempt) || Map.get(data, "attempt"),
       error: Map.get(data, :error) || Map.get(data, "error"),
       output: nil,
@@ -514,13 +516,20 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp step_event?(%RunEvent{event_type: event_type}) when is_atom(event_type),
-    do: event_type |> Atom.to_string() |> String.starts_with?("step_")
-
-  defp step_event?(%RunEvent{event_type: event_type}) when is_binary(event_type),
-    do: String.starts_with?(event_type, "step_")
+  defp step_event?(%RunEvent{event_type: event_type}) do
+    event_type
+    |> event_type_name()
+    |> String.starts_with?("step_")
+  end
 
   defp step_event?(_event), do: false
+
+  defp step_event_type?(%RunEvent{event_type: event_type}, expected),
+    do: event_type_name(event_type) == expected
+
+  defp event_type_name(event_type) when is_atom(event_type), do: Atom.to_string(event_type)
+  defp event_type_name(event_type) when is_binary(event_type), do: event_type
+  defp event_type_name(_event_type), do: ""
 
   defp event_step_id(run_id, %RunEvent{} = event) do
     data = event.data || %{}
@@ -529,24 +538,42 @@ defmodule FavnOrchestrator.RunReadModel do
       safe_id("#{run_id}:#{public_ref(event.asset_ref)}")
   end
 
-  defp event_step_status(:step_started, _status), do: :running
-  defp event_step_status(:step_finished, _status), do: :ok
-  defp event_step_status(:step_failed, _status), do: :error
-  defp event_step_status(:step_timed_out, _status), do: :timed_out
-  defp event_step_status(:step_cancelled, _status), do: :cancelled
-  defp event_step_status(:step_retry_scheduled, _status), do: :retrying
-  defp event_step_status(:step_skipped_fresh, _status), do: :skipped_fresh
-  defp event_step_status(:step_blocked, _status), do: :blocked
-  defp event_step_status(_event_type, status), do: status
+  defp event_step_status(event_type, status) do
+    case event_type_name(event_type) do
+      "step_started" -> :running
+      "step_finished" -> :ok
+      "step_failed" -> :error
+      "step_timed_out" -> :timed_out
+      "step_cancelled" -> :cancelled
+      "step_retry_scheduled" -> :retrying
+      "step_skipped_fresh" -> :skipped_fresh
+      "step_blocked" -> :blocked
+      _other -> status_name(status)
+    end
+  end
 
-  defp event_step_explanation(:step_started),
-    do: "Execution has started; waiting for runner result."
+  defp status_name(nil), do: nil
+  defp status_name(status) when is_atom(status), do: status
+  defp status_name("running"), do: :running
+  defp status_name("ok"), do: :ok
+  defp status_name("partial"), do: :partial
+  defp status_name("error"), do: :error
+  defp status_name("timed_out"), do: :timed_out
+  defp status_name("cancelled"), do: :cancelled
+  defp status_name("retrying"), do: :retrying
+  defp status_name("skipped_fresh"), do: :skipped_fresh
+  defp status_name("blocked"), do: :blocked
+  defp status_name(status), do: status
 
-  defp event_step_explanation(:step_retry_scheduled),
-    do: "Retry has been scheduled for this asset."
-
-  defp event_step_explanation(:step_finished), do: "Execution finished successfully."
-  defp event_step_explanation(_event_type), do: nil
+  defp event_step_explanation(event_type) do
+    case event_type_name(event_type) do
+      "step_started" -> "Execution has started; waiting for runner result."
+      "step_retry_scheduled" -> "Retry has been scheduled for this asset."
+      "step_finished" -> "Execution finished successfully."
+      "step_failed" -> "Failed while executing this asset."
+      _event_type -> nil
+    end
+  end
 
   defp step_explanation(status) when status in [:pending, "pending"],
     do: "Asset has not started yet for this run."

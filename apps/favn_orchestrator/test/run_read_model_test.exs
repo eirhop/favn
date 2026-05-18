@@ -269,29 +269,65 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert steps_by_id["cascade-step"].explanation =~ "draining in-flight work"
   end
 
-  test "run detail accepts binary step event types" do
-    ref = {MyApp.Assets.Gold, :asset}
-    run = run("binary_step_events", submit_kind: :pipeline)
+  test "run detail ignores string run event types when building step summaries" do
+    run =
+      run("string_run_event_type", submit_kind: :manual)
+      |> RunState.transition(status: :ok)
 
     assert :ok = Storage.put_run(run)
 
     assert :ok =
              Storage.append_run_event(run.id, %{
-               run_id: run.id,
                sequence: 1,
-               event_type: "step_started",
-               occurred_at: DateTime.utc_now(),
-               status: :running,
-               data: %{
-                 asset_ref: ref,
-                 asset_step_id: "binary-step",
-                 stage: 0,
-                 attempt: 1
-               }
+               event_type: "run_started",
+               occurred_at: ~U[2026-05-01 00:00:00Z],
+               status: "running"
              })
 
     assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
-    assert [%{id: "binary-step", status: :running}] = detail.steps
+
+    assert detail.steps == []
+    assert [%{event_type: "run_started"}] = detail.events
+  end
+
+  test "run detail builds step summaries from string step event types" do
+    run = run("string_step_event_type", submit_kind: :manual)
+    started_at = ~U[2026-05-01 00:00:00Z]
+    failed_at = DateTime.add(started_at, 1, :second)
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               sequence: 1,
+               event_type: "step_started",
+               occurred_at: started_at,
+               status: "running",
+               asset_ref: {MyApp.Assets.Gold, :asset},
+               stage: 0,
+               data: %{asset_step_id: "string-step"}
+             })
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               sequence: 2,
+               event_type: "step_failed",
+               occurred_at: failed_at,
+               status: "error",
+               asset_ref: {MyApp.Assets.Gold, :asset},
+               stage: 0,
+               data: %{asset_step_id: "string-step", error: "boom"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert [step] = detail.steps
+    assert step.id == "string-step"
+    assert step.status == :error
+    assert step.stage == 0
+    assert step.started_at == started_at
+    assert step.error == "boom"
+    assert step.explanation == "Failed while executing this asset."
   end
 
   defp run(run_id, opts) do

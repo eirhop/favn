@@ -24,7 +24,7 @@ defmodule Favn.SQL.Client do
     {resolution_opts, adapter_opts} = split_connect_opts(opts)
 
     with {:ok, %Resolved{} = resolved} <- fetch_connection(connection, resolution_opts),
-          {:ok, concurrency_policies} <- ConcurrencyPolicy.resolve(resolved) do
+         {:ok, concurrency_policies} <- ConcurrencyPolicy.resolve(resolved) do
       connect_with_admission(resolved, concurrency_policies, adapter_opts)
     end
   rescue
@@ -235,7 +235,7 @@ defmodule Favn.SQL.Client do
   end
 
   defp connect_with_admission(%Resolved{} = resolved, concurrency_policies, adapter_opts) do
-    case Admission.acquire_session(concurrency_policies) do
+    case Admission.acquire_session(concurrency_policies, adapter_opts) do
       {:error, %Error{}} = error ->
         error
 
@@ -254,7 +254,12 @@ defmodule Favn.SQL.Client do
     end
   end
 
-  defp connect_and_build_session(%Resolved{} = resolved, adapter_opts, concurrency_policies, lease) do
+  defp connect_and_build_session(
+         %Resolved{} = resolved,
+         adapter_opts,
+         concurrency_policies,
+         lease
+       ) do
     case resolved.adapter.connect(resolved, adapter_opts) do
       {:ok, conn} ->
         bootstrap_and_build_session(resolved, adapter_opts, concurrency_policies, lease, conn)
@@ -309,10 +314,10 @@ defmodule Favn.SQL.Client do
            resolved: resolved,
            conn: conn,
            capabilities: capabilities,
-            concurrency_policy: singular_policy(concurrency_policies),
-            concurrency_policies: policy_container(concurrency_policies),
-            admission_lease: lease
-          }}
+           concurrency_policy: singular_policy(concurrency_policies),
+           concurrency_policies: policy_container(concurrency_policies),
+           admission_lease: lease
+         }}
 
       {:error, _reason} = error ->
         disconnect_after_connect_error(resolved.adapter, conn, lease, error)

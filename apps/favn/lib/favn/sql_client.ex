@@ -76,12 +76,18 @@ defmodule Favn.SQLClient do
   `opts` are forwarded to the underlying SQL adapter. Common adapter options
   include timeout-related values.
 
+  DuckDB-backed connections also accept `required_catalogs: [catalog]` when the
+  caller knows which catalog-qualified relations are needed. That lets DuckDB and
+  DuckLake bootstrap attach only those catalogs and lets catalog-level admission
+  protect bootstrap work before the session is opened.
+
   Public callers should only pass adapter-facing options here. Internal runtime
   routing controls such as `:registry_name` are not accepted by this facade.
 
   ## Example
 
       {:ok, session} = Favn.SQLClient.connect(:warehouse)
+      {:ok, raw_session} = Favn.SQLClient.connect(:warehouse, required_catalogs: ["raw"])
   """
   @spec connect(connection_name(), opts()) :: {:ok, session()} | {:error, term()}
   def connect(connection, opts \\ [])

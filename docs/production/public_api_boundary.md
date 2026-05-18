@@ -61,8 +61,9 @@ The stable `v1` API should focus on the parts users build authored projects on:
   columns, with-connection, and disconnect functions against named connections
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
   `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
-  `mix favn.reload`, `mix favn.status`, `mix favn.logs`, `mix favn.stop`,
-  `mix favn.reset`, and `mix favn.read_doc`
+  `mix favn.runs`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`,
+  `mix favn.inspect`, `mix favn.query`, `mix favn.stop`, `mix favn.reset`, and
+  `mix favn.read_doc`
 
 Packaging commands such as `mix favn.build.runner`, `mix favn.build.web`,
 `mix favn.build.orchestrator`, and `mix favn.build.single` are public command

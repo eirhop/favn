@@ -67,7 +67,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
 
   @spec run(DuckDB.Conn.t(), Resolved.t(), keyword()) :: :ok | {:error, Error.t()}
   def run(%DuckDB.Conn{} = conn, %Resolved{} = resolved, opts) do
-    with {:ok, steps} <- build_steps(resolved) do
+    with {:ok, steps} <- build_steps(resolved, opts) do
       execute_steps(conn, resolved, steps, opts)
     end
   end
@@ -76,7 +76,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
   def build_steps(%Resolved{} = resolved), do: build_steps(resolved, [])
 
   @spec build_steps(Resolved.t(), keyword()) :: {:ok, [step()]} | {:error, Error.t()}
-  def build_steps(%Resolved{} = resolved, _opts) do
+  def build_steps(%Resolved{} = resolved, opts) do
     config = resolved.config || %{}
 
     with :ok <- reject_old_runtime_keys(resolved, config) do
@@ -91,14 +91,18 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
           config
           |> normalize_config()
           |> case do
-            {:ok, normalized} -> build_normalized_steps(normalized)
+            {:ok, normalized} -> build_normalized_steps(normalized, opts)
             {:error, reason} -> {:error, config_error(resolved, reason)}
           end
       end
     end
   end
 
-  defp build_normalized_steps(normalized), do: {:ok, steps(normalized)}
+  defp build_normalized_steps(normalized, opts) do
+    scoped = scope_catalogs(normalized, Keyword.get(opts, :required_catalogs))
+
+    {:ok, steps(scoped)}
+  end
 
   defp execute_steps(_conn, _resolved, [], _opts), do: :ok
 
@@ -541,6 +545,48 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     else
       {:error, {:unknown_use_catalog, use_catalog}}
     end
+  end
+
+  defp scope_catalogs(normalized, nil), do: normalized
+
+  defp scope_catalogs(
+         %{attach: attach, secrets: secrets, use: use_catalog} = normalized,
+         required_catalogs
+       ) do
+    required = MapSet.new(List.wrap(required_catalogs), &to_string/1)
+    attach = Enum.filter(attach, &MapSet.member?(required, &1.name))
+    secrets = filter_scoped_secrets(secrets, attach)
+
+    use_catalog =
+      if use_catalog && Enum.any?(attach, &(&1.name == use_catalog)) do
+        use_catalog
+      end
+
+    %{normalized | attach: attach, secrets: secrets, use: use_catalog}
+  end
+
+  defp filter_scoped_secrets(secrets, attach) do
+    meta_secret_names = MapSet.new(attach, &Map.get(&1, :meta_secret))
+
+    Enum.filter(secrets, fn
+      %{type: :postgres, name: name} ->
+        MapSet.member?(meta_secret_names, name)
+
+      %{type: :azure, scope: nil} ->
+        attach != []
+
+      %{type: :azure, scope: scope} when is_binary(scope) ->
+        Enum.any?(attach, fn
+          %{data_path: data_path} when is_binary(data_path) ->
+            String.starts_with?(data_path, scope)
+
+          _attach ->
+            false
+        end)
+
+      _secret ->
+        false
+    end)
   end
 
   defp normalize_keyword_config(nil, _context), do: {:ok, []}
