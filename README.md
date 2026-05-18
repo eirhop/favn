@@ -416,6 +416,12 @@ is exclusive to its checkout owner process; the shared SQL client rejects
 non-owner operations and disconnect attempts. Existing catalog/write concurrency
 still bounds active work and new session/bootstrap, so enabling pooling does not
 increase write concurrency.
+If `required_catalogs` is omitted for a connection with configured catalog
+policies, Favn treats bootstrap as all-catalog bootstrap and acquires every
+configured catalog permit before opening the adapter session.
+Elixir assets executed by the runner inherit their owned relation catalog as the
+default SQLClient scope when they open that same relation connection without
+passing `required_catalogs` explicitly.
 
 Raw SQL execute/materialize/transaction paths do not return sessions to the idle
 pool after mutation unless Favn has explicitly proven the operation pool-safe

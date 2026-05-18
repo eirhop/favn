@@ -8,8 +8,10 @@ defmodule FavnRunner.Worker do
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
+  alias Favn.RelationRef
   alias Favn.Run.AssetResult
   alias Favn.Run.Context
+  alias Favn.SQL.Client, as: SQLClient
   alias Favn.RuntimeConfig.Redactor, as: RuntimeConfigRedactor
   alias Favn.SQLAsset.Runtime, as: SQLAssetRuntime
   alias FavnRunner.ContextBuilder
@@ -132,9 +134,36 @@ defmodule FavnRunner.Worker do
          }}
 
       true ->
-        invoke_asset(asset.module, entrypoint, context)
+        with_asset_sql_scope(asset, fn -> invoke_asset(asset.module, entrypoint, context) end)
     end
   end
+
+  defp with_asset_sql_scope(%Asset{relation: relation}, fun) when is_function(fun, 0) do
+    case sql_scope(relation) do
+      {connection, catalogs} ->
+        SQLClient.with_default_required_catalogs(connection, catalogs, fun)
+
+      nil ->
+        fun.()
+    end
+  end
+
+  defp sql_scope(%RelationRef{connection: connection, catalog: catalog})
+       when is_atom(connection) do
+    case catalog_name(catalog) do
+      nil -> nil
+      catalog -> {connection, [catalog]}
+    end
+  end
+
+  defp sql_scope(_relation), do: nil
+
+  defp catalog_name(catalog) when is_binary(catalog) and catalog != "", do: catalog
+
+  defp catalog_name(catalog) when is_atom(catalog) and not is_nil(catalog),
+    do: Atom.to_string(catalog)
+
+  defp catalog_name(_catalog), do: nil
 
   defp redact_execution_result({:ok, meta}, %Asset{} = asset, %Context{} = context) do
     {:ok, RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.config)}

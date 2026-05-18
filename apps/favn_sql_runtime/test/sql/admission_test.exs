@@ -122,8 +122,9 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
   end
 
   defmodule CatalogConnectAdapter do
-    def connect(resolved, _opts) do
+    def connect(resolved, opts) do
       tracker = Map.fetch!(resolved.config, :tracker)
+      Agent.update(tracker, &Map.update(&1, :connect_opts, [opts], fn existing -> [opts | existing] end))
       bump_session(tracker, 1)
       {:ok, %{tracker: tracker}}
     end
@@ -451,6 +452,43 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert Agent.get(tracker, & &1.max_sessions) == 2
   end
 
+  test "serializes unscoped catalog bootstrap across configured catalog policies", %{
+    tracker: tracker
+  } do
+    registry_name = :admission_unscoped_catalog_connect_registry
+    start_registry(registry_name, CatalogConnectAdapter, tracker)
+
+    first =
+      Task.async(fn ->
+        {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
+        Process.sleep(50)
+        :ok = Client.disconnect(session)
+      end)
+
+    second =
+      Task.async(fn ->
+        {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
+        :ok = Client.disconnect(session)
+      end)
+
+    Task.await_many([first, second], 1_000)
+    assert Agent.get(tracker, & &1.max_sessions) == 1
+  end
+
+  test "process default required catalogs scope SQL client connect", %{tracker: tracker} do
+    registry_name = :admission_default_required_catalog_registry
+    start_registry(registry_name, CatalogConnectAdapter, tracker)
+
+    assert {:ok, session} =
+             Client.with_default_required_catalogs(:warehouse, ["raw"], fn ->
+               Client.connect(:warehouse, registry_name: registry_name)
+             end)
+
+    assert :ok = Client.disconnect(session)
+
+    assert [[required_catalogs: ["raw"]]] = Agent.get(tracker, &Map.fetch!(&1, :connect_opts))
+  end
+
   test "returns an admission timeout when connect waits too long", %{tracker: tracker} do
     registry_name = :admission_connect_timeout_registry
     start_registry(registry_name, TrackingAdapter, tracker, %{admission_timeout_ms: 10})
@@ -511,6 +549,18 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     send(holder, :release_real_holder)
     assert {:held, ^scope, _owner} = eventually_acquire(policy)
     Admission.release_session({:held, scope, self()})
+  end
+
+  test "shared admission scopes keep the strictest observed limit" do
+    scope = {:ducklake_postgres_metadata, :shared_limit}
+
+    assert :ok = Limiter.acquire(scope, 10, 10)
+    assert {:error, :admission_timeout} = Task.async(fn -> Limiter.acquire(scope, 1, 10) end) |> Task.await()
+    assert :ok = Limiter.release(scope, self())
+
+    assert :ok = Limiter.acquire(scope, 1, 10)
+    assert {:error, :admission_timeout} = Task.async(fn -> Limiter.acquire(scope, 10, 10) end) |> Task.await()
+    assert :ok = Limiter.release(scope, self())
   end
 
   test "out-of-order nested session disconnect keeps permit held", %{tracker: tracker} do

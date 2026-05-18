@@ -282,6 +282,18 @@ defmodule Favn.SQLAsset.Runtime do
   defp relation_catalog(%RelationRef{catalog: catalog}) when is_binary(catalog) and catalog != "",
     do: [catalog]
 
+  defp relation_catalog(%RelationRef{catalog: catalog})
+       when is_atom(catalog) and not is_nil(catalog),
+       do: [Atom.to_string(catalog)]
+
+  defp relation_catalog(%{} = relation) do
+    case Map.get(relation, :catalog) || Map.get(relation, "catalog") do
+      catalog when is_binary(catalog) and catalog != "" -> [catalog]
+      catalog when is_atom(catalog) and not is_nil(catalog) -> [Atom.to_string(catalog)]
+      _catalog -> []
+    end
+  end
+
   defp relation_catalog(_relation), do: []
 
   defp maybe_put_required_catalogs(opts, nil), do: opts

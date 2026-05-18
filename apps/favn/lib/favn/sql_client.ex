@@ -79,7 +79,10 @@ defmodule Favn.SQLClient do
   DuckDB-backed connections also accept `required_catalogs: [catalog]` when the
   caller knows which catalog-qualified relations are needed. That lets DuckDB and
   DuckLake bootstrap attach only those catalogs and lets catalog-level admission
-  protect bootstrap work before the session is opened.
+  protect bootstrap work before the session is opened. Elixir assets executed by
+  the Favn runner inherit their owned relation catalog as a default scope when
+  they open that same relation connection without an explicit `:required_catalogs`
+  option.
 
   Public callers should only pass adapter-facing options here. Internal runtime
   routing controls such as `:registry_name` are not accepted by this facade.
