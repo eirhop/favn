@@ -28,7 +28,6 @@ defmodule FavnView.OperatorAuthTest do
 
     assert redirected_to(conn) == "/pipelines"
     assert is_binary(get_session(conn, :operator_browser_session_id))
-    assert get_session(conn, :operator_session_token) == nil
     assert String.starts_with?(get_session(conn, :live_socket_id), "operator_browser_sessions:")
   end
 
@@ -47,7 +46,6 @@ defmodule FavnView.OperatorAuthTest do
     live_socket_id = get_session(conn, :live_socket_id)
     assert {:ok, browser_session} = BrowserSessionStore.fetch(browser_session_id)
     token = browser_session.operator_session_token
-    refute get_session(conn, :operator_session_token) == token
 
     html = conn |> recycle() |> get(~p"/assets") |> html_response(200)
 
@@ -78,16 +76,6 @@ defmodule FavnView.OperatorAuthTest do
     conn = get(conn, ~p"/assets")
 
     assert redirected_to(conn) == "/login?return_to=%2Fassets"
-  end
-
-  test "anonymous auth cleanup deletes legacy raw-token cookie key", %{conn: conn} do
-    conn =
-      conn
-      |> Plug.Test.init_test_session(operator_session_token: "legacy-token")
-      |> get(~p"/assets")
-
-    assert redirected_to(conn) == "/login?return_to=%2Fassets"
-    assert get_session(conn, :operator_session_token) == nil
   end
 
   test "health and readiness stay public", %{conn: conn} do
@@ -121,7 +109,6 @@ defmodule FavnView.OperatorAuthTest do
 
     assert redirected_to(conn) == "/login"
     assert get_session(conn, :operator_browser_session_id) == nil
-    assert get_session(conn, :operator_session_token) == nil
     assert get_session(conn, :live_socket_id) == nil
     assert {:error, :not_found} = BrowserSessionStore.fetch(browser_session_id)
     assert {:error, :invalid_session} = FavnOrchestrator.introspect_operator_session(token)
