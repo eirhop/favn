@@ -90,6 +90,10 @@ defmodule Favn.SQL.Retry.Classification do
         {:unsafe_unknown_commit_state, :unknown_commit_state, false,
          "Do not retry automatically; inspect transaction outcome before continuing."}
 
+      adapter_capacity?(error) ->
+        {:capacity, :adapter_capacity, true,
+         "Retry with capacity backoff or reduce concurrent SQL metadata connections."}
+
       capacity_sqlstate?(sqlstate) ->
         {:capacity, :metadata_store_connection_exhausted, true,
          "Retry with capacity backoff or reduce concurrent SQL metadata connections."}
@@ -128,6 +132,10 @@ defmodule Favn.SQL.Retry.Classification do
       transaction_stage == :commit or
       String.contains?(message, "unknown commit") or
       String.contains?(message, "outcome is unknown")
+  end
+
+  defp adapter_capacity?(%Error{} = error) do
+    Map.get(error.details || %{}, :classification) == :capacity
   end
 
   defp capacity_sqlstate?("53300"), do: true

@@ -30,6 +30,19 @@ defmodule FavnSQLRuntime.SQLRetryTest do
       assert classification.reason == :pgbouncer_pool_exhausted
     end
 
+    test "honors adapter capacity classification before transient fallback" do
+      classification =
+        Classification.classify(
+          error(retryable?: true, details: %{classification: :capacity}),
+          phase: :session_bootstrap
+        )
+
+      assert classification.class == :capacity
+      assert classification.reason == :adapter_capacity
+      assert classification.retryable?
+      assert classification.safe_phase?
+    end
+
     test "treats connection timeout as transient unless capacity is explicit" do
       classification =
         Classification.classify(
@@ -139,6 +152,30 @@ defmodule FavnSQLRuntime.SQLRetryTest do
       assert failed.details.retry.delays_ms == [250, 500]
       assert failed.details.retry.classification.class == :capacity
       assert failed.details.retry.classification.reason == :metadata_store_connection_exhausted
+    end
+
+    test "adapter-classified capacity errors use capacity backoff" do
+      parent = self()
+
+      {:error, failed} =
+        Retry.run(
+          fn -> {:error, error(retryable?: true, details: %{classification: :capacity})} end,
+          phase: :session_bootstrap,
+          policy: [
+            max_attempts: 2,
+            base_delay_ms: 10,
+            capacity_base_delay_ms: 300,
+            capacity_max_delay_ms: 1_000,
+            jitter: 0.0
+          ],
+          sleep_fun: fn delay -> send(parent, {:delay, delay}) end,
+          random_fun: fn -> 0.5 end
+        )
+
+      assert_received {:delay, 300}
+      assert failed.details.retry.classification.class == :capacity
+      assert failed.details.retry.classification.reason == :adapter_capacity
+      assert failed.details.retry.delays_ms == [300]
     end
 
     test "read-only callers can opt into retry with an explicit safe phase" do

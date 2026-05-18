@@ -2,6 +2,7 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
   use ExUnit.Case, async: true
 
   alias Favn.Connection.Resolved
+  alias Favn.SQL.Admission.Limiter
   alias Favn.SQL.{Capabilities, PoolConfig, PoolKey, Session, SessionPool}
 
   defmodule FakeAdapter do
@@ -129,6 +130,60 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert eventually(fn -> Agent.get(context.tracker, & &1.disconnects) == 2 end)
   end
 
+  test "supervisor shutdown closes sessions and releases admission leases", context do
+    pool_name = Module.concat(__MODULE__, "SupervisorPool#{System.unique_integer([:positive])}")
+    {:ok, supervisor} = Supervisor.start_link([{SessionPool, name: pool_name}], strategy: :one_for_one)
+    key = pool_key(:supervisor_shutdown)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 2, idle_timeout_ms: 60_000}
+    scope = {:test_scope, make_ref()}
+
+    assert :ok = Limiter.acquire(scope, 1, 50)
+
+    idle = checked_out_session(context.tracker, key, config)
+    active = checked_out_session(context.tracker, key, config, self(), {:held, scope, self()})
+
+    assert :ok = SessionPool.track_checkout(idle, name: pool_name)
+    assert :ok = SessionPool.checkin(idle, :ok, name: pool_name)
+    assert :ok = SessionPool.track_checkout(active, name: pool_name)
+
+    Supervisor.stop(supervisor)
+
+    assert eventually(fn -> Agent.get(context.tracker, & &1.disconnects) == 2 end)
+    assert :ok = Limiter.acquire(scope, 1, 50)
+    Limiter.release(scope)
+  end
+
+  test "creator death clears the single-flight gate and releases a waiter", context do
+    key = pool_key(:creator_down)
+    parent = self()
+
+    creator =
+      spawn(fn ->
+        result = SessionPool.checkout_or_create(key, name: context.pool_name)
+        send(parent, {:creator_result, result})
+
+        receive do
+          :finish -> SessionPool.creation_finished(key, name: context.pool_name)
+        end
+      end)
+
+    assert_receive {:creator_result, :create}
+
+    waiter =
+      Task.async(fn ->
+        SessionPool.checkout_or_create(key, name: context.pool_name)
+      end)
+
+    assert eventually(fn -> SessionPool.diagnostics(name: context.pool_name).waiters == 1 end)
+    Process.exit(creator, :kill)
+
+    assert :create = Task.await(waiter)
+    assert %{creating: 1, waiters: 0} = SessionPool.diagnostics(name: context.pool_name)
+
+    SessionPool.creation_finished(key, name: context.pool_name)
+    assert eventually(fn -> match?(%{creating: 0, waiters: 0}, SessionPool.diagnostics(name: context.pool_name)) end)
+  end
+
   test "pool keys hash stable inputs and sort required catalogs" do
     resolved = resolved(:stable, %{database: "secret.duckdb"})
 
@@ -143,18 +198,19 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     refute String.contains?(hash, "secret")
   end
 
-  defp checked_out_session(tracker, key, config, owner \\ self()) do
+  defp checked_out_session(tracker, key, config, owner \\ self(), lease \\ nil) do
     tracker
-    |> session()
+    |> session(lease)
     |> SessionPool.attach_checkout(key, config, owner)
   end
 
-  defp session(tracker) do
+  defp session(tracker, lease) do
     %Session{
       adapter: FakeAdapter,
       resolved: resolved(:warehouse, %{tracker: tracker}),
       conn: %{tracker: tracker},
-      capabilities: %Capabilities{}
+      capabilities: %Capabilities{},
+      admission_lease: lease
     }
   end
 

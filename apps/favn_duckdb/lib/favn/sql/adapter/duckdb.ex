@@ -12,6 +12,18 @@ defmodule Favn.SQL.Adapter.DuckDB do
   Bulk ingestion paths should prefer the DuckDB Appender path for substantial
   insert workloads instead of repeated prepared inserts.
 
+  DuckDB sessions are poolable and therefore use Favn's runner-local SQL session
+  pool by default. Disable per connection with `pool: [enabled: false]`, or tune
+  local idle retention with:
+
+      pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]
+
+  Pooling is local to one runner BEAM, checked-out sessions are exclusive, and
+  reuse is keyed by connection/config, required catalog set, and adapter
+  fingerprint. It does not increase catalog/write concurrency or replace
+  DuckLake metadata capacity controls such as conservative `write_concurrency`,
+  PgBouncer, or scaling the PostgreSQL metadata database.
+
   ## Consumer setup
 
   This adapter is exposed through the public `:favn_duckdb` package/plugin. Add

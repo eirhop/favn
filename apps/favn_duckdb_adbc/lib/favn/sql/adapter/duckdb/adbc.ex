@@ -9,6 +9,18 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   result sets should be written by DuckDB itself to explicit external paths with
   SQL such as `COPY (...) TO ...`.
 
+  DuckDB ADBC sessions are poolable and therefore use Favn's runner-local SQL
+  session pool by default. Disable per connection with `pool: [enabled: false]`,
+  or tune local idle retention with:
+
+      pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]
+
+  Pooling is local to one runner BEAM, checked-out sessions are exclusive, and
+  reuse is keyed by connection/config, required catalog set, and adapter
+  fingerprint. It does not increase catalog/write concurrency or replace
+  DuckLake metadata capacity controls such as conservative `write_concurrency`,
+  PgBouncer, or scaling the PostgreSQL metadata database.
+
   ## DuckDB ADBC driver installation
 
   Production hosts must have a DuckDB ADBC-capable `libduckdb` installed or use

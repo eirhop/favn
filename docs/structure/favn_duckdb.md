@@ -21,9 +21,11 @@ specs. Update test support when the DuckDB client boundary or shared adapter tes
 instrumentation changes.
 
 DuckDB connection config is adapter-owned. The public runtime shape uses
-`open: [...]` for the session database, optional connection-level `pool: [...]`
-for runner-local warm session reuse, and `duckdb: [...]` for extension load,
-settings, secrets, keyed attaches, and optional catalog selection. Pool reuse is
-safe only for matching connection/config hash, required catalog set, and adapter
-fingerprint; checked-out sessions are exclusive to one asset execution. Pooling
-must not bypass catalog/write admission or retry unknown-outcome writes.
+`open: [...]` for the session database, default-on connection-level pooling for
+runner-local warm session reuse, and `duckdb: [...]` for extension load, settings,
+secrets, keyed attaches, and optional catalog selection. Disable pooling with
+`pool: [enabled: false]`; tune it with `pool: [enabled: true,
+max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pool reuse is safe only for
+matching connection/config hash, required catalog set, and adapter fingerprint;
+checked-out sessions are exclusive to one asset execution. Pooling must not
+bypass catalog/write admission or retry unknown-outcome writes.

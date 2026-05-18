@@ -5,6 +5,16 @@ defmodule Favn.SQL.Adapter do
   This is the contract implemented by SQL backend plugins such as DuckDB. It is
   not the end-user SQL asset DSL and should not be treated as an ordinary stable
   authoring API.
+
+  Adapters that implement `poolable?/2`, `pool_fingerprint/2`,
+  `validate_session/2`, and `reset_session/3` opt into Favn's runner-local SQL
+  session pool. Pooling is default-on for poolable adapters unless the connection
+  sets `pool: [enabled: false]`. Adapter lifecycle callbacks must make warm reuse
+  safe for read-only paths; write/materialization/raw execution paths are
+  discarded by the shared client unless explicitly proven pool-safe internally.
+  `classify_error/2` may return `details.classification: :capacity` through
+  normalized errors so shared retry logic uses capacity backoff. Unknown outcome
+  or commit-state errors must remain non-retryable.
   """
 
   alias Favn.Connection.Resolved

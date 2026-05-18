@@ -1,6 +1,19 @@
 defmodule Favn.SQL.Client do
   @moduledoc """
   Shared SQL runtime client for named Favn connections.
+
+  DuckDB/ADBC connections use runner-local pooling by default when the adapter is
+  poolable. Disable per connection with `pool: [enabled: false]`, or tune with
+  `pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`.
+
+  The pool is local to one runner BEAM and does not increase catalog/write
+  concurrency. Checked-out sessions are exclusive, and reuse requires matching
+  connection identity/config, required catalog set, and adapter fingerprint.
+  Automatic retries are limited to session creation/bootstrap and read-only
+  inspection/query paths; writes, materialization, transactions, and unknown
+  outcome failures are not blindly retried. Raw execute/materialize/transaction
+  paths discard pooled sessions after mutation unless explicitly marked
+  internally as pool-safe.
   """
 
   alias Favn.Connection.Loader
@@ -20,7 +33,6 @@ defmodule Favn.SQL.Client do
   alias Favn.SQL.WritePlan
 
   @resolution_opt_keys [:registry_name]
-  @pool_discard_key {__MODULE__, :pool_discard_reasons}
 
   @type operation_result :: {:ok, term()} | {:error, term()}
 
@@ -43,11 +55,9 @@ defmodule Favn.SQL.Client do
   def connect(connection, _opts), do: {:error, invalid_connection_error(connection)}
 
   @spec disconnect(Session.t()) :: :ok
-  def disconnect(%Session{pool_checkout: %Checkout{} = checkout} = session) do
-    discard_reason = pop_pool_discard_reason(checkout.token)
-    status = if is_nil(discard_reason), do: :ok, else: {:discard, discard_reason}
+  def disconnect(%Session{pool_checkout: %Checkout{}} = session) do
     session = release_checkout_admission(session)
-    SessionPool.checkin(session, status)
+    SessionPool.checkin(session, :ok)
   rescue
     _error -> :ok
   catch
@@ -616,7 +626,7 @@ defmodule Favn.SQL.Client do
 
   defp maybe_mark_pooled_session_success(%Session{pool_checkout: %Checkout{} = checkout}, operation, opts) do
     if discard_pooled_session_after_success?(operation, opts) do
-      put_pool_discard_reason(checkout.token, %{operation: operation, status: :success})
+      SessionPool.mark_discard(checkout.token, %{operation: operation, status: :success})
     end
 
     :ok
@@ -667,7 +677,7 @@ defmodule Favn.SQL.Client do
          %Error{} = error
        ) do
     if discard_pooled_session?(operation, payload, error) do
-      put_pool_discard_reason(checkout.token, discard_reason(operation, error))
+      SessionPool.mark_discard(checkout.token, discard_reason(operation, error))
     end
 
     :ok
@@ -697,23 +707,6 @@ defmodule Favn.SQL.Client do
       type: error.type,
       classification: Map.get(error.details || %{}, :classification)
     }
-  end
-
-  defp put_pool_discard_reason(token, reason) do
-    Process.put(@pool_discard_key, Map.put(pool_discard_reasons(), token, reason))
-  end
-
-  defp pop_pool_discard_reason(token) do
-    {reason, reasons} = Map.pop(pool_discard_reasons(), token)
-    Process.put(@pool_discard_key, reasons)
-    reason
-  end
-
-  defp pool_discard_reasons do
-    case Process.get(@pool_discard_key, %{}) do
-      reasons when is_map(reasons) -> reasons
-      _ -> %{}
-    end
   end
 
   defp invalid_connection_error(connection) do

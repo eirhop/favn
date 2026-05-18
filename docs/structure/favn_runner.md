@@ -33,8 +33,9 @@ timeouts, manifest registration/resolution, plugin config, SQL asset execution,
 SQL asset materialization planning, runner production config validation, or
 runner-owned inspection.
 
-DuckDB/ADBC session pooling, when enabled by connection config, is runner-local
-and per BEAM. A pooled SQL session may be checked out by only one asset execution
-at a time, and the runner must still honor existing catalog/write concurrency for
-active work and new session/bootstrap. The pool does not coordinate across
-runner nodes or solve distributed DuckLake metadata pressure.
+DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
+with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL
+session may be checked out by only one asset execution at a time, and the runner
+must still honor existing catalog/write concurrency for active work and new
+session/bootstrap. The pool does not coordinate across runner nodes or solve
+distributed DuckLake metadata pressure.

@@ -377,8 +377,14 @@ file-backed `open.database` for local debugging. Configure DuckDB session setup
 under `duckdb: [...]`: extension `load`, typed settings, secrets, keyed catalog
 `attach`, and optional `use`.
 
-DuckDB connections may also opt into runner-local warm session reuse with
-connection-level `pool` config:
+DuckDB and DuckDB ADBC connections use runner-local warm session reuse by default
+when the adapter is poolable. Disable it per connection with:
+
+```elixir
+pool: [enabled: false]
+```
+
+Optional local idle-retention tuning is connection-level `pool` config:
 
 ```elixir
 config :favn,
@@ -409,6 +415,10 @@ required catalog set, and adapter fingerprint match. A checked-out pooled sessio
 is exclusive to one asset execution at a time. Existing catalog/write concurrency
 still bounds active work and new session/bootstrap, so enabling pooling does not
 increase write concurrency.
+
+Raw SQL execute/materialize/transaction paths do not return sessions to the idle
+pool after mutation unless Favn has explicitly proven the operation pool-safe
+internally. Read-only inspection/query paths may reuse warm sessions.
 
 Attached catalogs can be DuckLake catalogs or DuckDB files. Favn relation names
 map directly to DuckDB three-part names: a relation with `catalog: "raw"`,

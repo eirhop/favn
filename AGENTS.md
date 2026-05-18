@@ -24,6 +24,14 @@ persistence modules, repos, compiler internals, or plugin internals directly.
 - Prefer small, explicit modules and public boundary functions with moduledocs, docs, and typespecs.
 - Use shared fixtures and test helpers from `apps/favn_test_support` when available.
 
+## SQL Session Pooling
+
+- DuckDB/ADBC SQL session pooling is default-on for poolable adapters; disable per connection with `pool: [enabled: false]`.
+- Pooling is runner-local to one BEAM, not distributed, and must not increase catalog/write concurrency.
+- Pool reuse is keyed by connection identity/config, required catalog set, and adapter fingerprint; checked-out sessions are exclusive.
+- Safe retries are only for session creation/bootstrap and read-only inspection/query paths. Do not blindly retry writes, materialization, transactions, or unknown-outcome failures.
+- Raw execute/materialize/transaction paths must not return sessions to the idle pool after mutation unless explicitly proven pool-safe internally.
+
 ## Tidewave MCP Usage
 
 This repo has Tidewave MCP servers configured:

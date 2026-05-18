@@ -19,13 +19,15 @@ session lifecycle, transaction behavior, adapter bootstrap, read-only relation
 inspection, write-plan adapter contracts, or SQL admission and concurrency policy
 behavior.
 
-Optional SQL session pooling is connection-level config but runtime-local
-behavior. For DuckDB/ADBC, `pool: [enabled: true, max_idle_per_key: 1,
-idle_timeout_ms: 300_000]` keeps warm sessions only inside the current runner
-BEAM. Pool reuse must be keyed by connection identity/config hash, required
-catalog set, and adapter fingerprint. Checked-out sessions remain exclusive to
-one asset execution at a time; the pool is not a distributed coordinator and does
-not increase configured write/catalog concurrency.
+SQL session pooling is default-on for poolable DuckDB/ADBC adapters and can be
+disabled with `pool: [enabled: false]`. Optional tuning is connection-level:
+`pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling
+keeps warm sessions only inside the current runner BEAM. Pool reuse must be keyed
+by connection identity/config hash, required catalog set, and adapter fingerprint.
+Checked-out sessions remain exclusive to one asset execution at a time; the pool
+is not a distributed coordinator and does not increase configured write/catalog
+concurrency. Raw execute/materialize/transaction paths discard pooled sessions
+after mutation unless explicitly proven pool-safe internally.
 
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits

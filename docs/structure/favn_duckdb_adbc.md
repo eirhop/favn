@@ -21,8 +21,9 @@ integration, or plugin child specs. Update test support when the ADBC client
 boundary or shared adapter test instrumentation changes.
 
 The ADBC adapter owns DuckDB config parsing, bootstrap SQL generation, driver
-preflight diagnostics, and optional runner-local session pooling for ADBC-backed
-sessions. `pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`
+preflight diagnostics, and default-on runner-local session pooling for ADBC-backed
+sessions. Disable pooling with `pool: [enabled: false]`; tune it with
+`pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling
 reuses only warm sessions whose connection/config hash, required catalog set, and
 adapter fingerprint match. Checked-out sessions are exclusive to one asset
 execution, and pooling must not increase catalog/write concurrency or retry

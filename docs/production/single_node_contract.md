@@ -177,12 +177,13 @@ Production DuckDB behavior covers or must preserve:
   local files default to single-admitted SQL sessions against the same database
   path unless the connection explicitly configures another safe policy. Admission
   timeouts are retryable structured SQL errors with the blocked scope and timeout.
-- Optional runner-local DuckDB/ADBC session pooling through connection-level
-  `pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling
-  reuses warm sessions inside one runner BEAM when the connection/config hash,
-  required catalog set, and adapter fingerprint match. Checked-out sessions are
-  exclusive to one asset execution, and catalog/write concurrency still bounds
-  active work and new session/bootstrap.
+- Default-on runner-local DuckDB/ADBC session pooling for poolable adapters.
+  Disable with `pool: [enabled: false]`; tune with `pool: [enabled: true,
+  max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling reuses warm sessions
+  inside one runner BEAM when the connection/config hash, required catalog set,
+  and adapter fingerprint match. Checked-out sessions are exclusive to one asset
+  execution, and catalog/write concurrency still bounds active work and new
+  session/bootstrap.
 - Pooling is not distributed across runner nodes and does not by itself solve
   multi-runner DuckLake metadata pressure. Low-tier Azure PostgreSQL metadata
   catalogs should still use conservative DuckLake catalog `write_concurrency` and

@@ -25,9 +25,9 @@ or attached DuckDB files.
   relations as `catalog.schema.name`.
 - SQL assets execute through `Favn.SQLAsset.Runtime`, which opens a SQL session
   per asset execution through `Favn.SQL.Client.connect/2`, materializes, and
-  disconnects unless optional runner-local pooling keeps a compatible warm
-  session idle for reuse. Checked-out sessions remain exclusive to one asset
-  execution at a time.
+  disconnects unless default-on runner-local pooling for poolable DuckDB/ADBC
+  adapters keeps a compatible warm session idle for reuse. Checked-out sessions
+  remain exclusive to one asset execution at a time.
 - DuckDB bootstrap is currently adapter-owned under `:duckdb_bootstrap` and runs
   per session after `adapter.connect/2` succeeds.
 - DuckDB bootstrap currently supports one attached catalog shape, but the attach
@@ -147,16 +147,23 @@ Adapter-owned schema fields should replace the current consumer-visible
 combination of `%{key: :database, ...}` and `bootstrap_schema_field/0`. A single
 helper is better because `open` and `duckdb` must be validated together.
 
-`pool` is optional connection-level runtime config, not nested DuckDB bootstrap
-SQL. It controls local reuse of warm sessions after a successful connect and
-bootstrap. The first supported shape is intentionally small:
+`pool` is connection-level runtime config, not nested DuckDB bootstrap SQL. It
+controls local reuse of warm sessions after a successful connect and bootstrap.
+Pooling is enabled by default for poolable DuckDB/ADBC adapters. Disable with:
+
+```elixir
+pool: [enabled: false]
+```
+
+The supported tuning shape is intentionally small:
 
 ```elixir
 pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]
 ```
 
 Pooling is runner-local/per-BEAM. It is not a distributed pool and does not
-coordinate across runner nodes.
+coordinate across runner nodes, increase catalog/write concurrency, or make raw
+write/materialization failures safe to retry.
 
 `duckdb.load` should be the first public shape. Do not keep public `install` in
 the redesign unless dogfooding proves it is necessary. Extension installation is
@@ -177,7 +184,7 @@ Connection definition modules should contain static contract metadata:
 Runtime config should contain deployment-specific DuckDB session setup:
 
 - session database under `open.database`
-- optional runner-local session reuse under connection-level `pool`
+- default-on runner-local session reuse under connection-level `pool`
 - extension loads under `duckdb.load`
 - settings under `duckdb.settings`
 - secrets under `duckdb.secrets`
@@ -464,9 +471,10 @@ Attached DuckDB file catalogs should still serialize writes through
 catalog-level admission because independent sessions can contend on the same
 file lock.
 
-Optional pooling changes session lifecycle cost, not concurrency semantics. A
-pool may keep successfully bootstrapped sessions warm after use, but a checked-out
-session is still exclusive to one asset execution. Existing catalog/write
+Default-on pooling for poolable DuckDB/ADBC adapters changes session lifecycle
+cost, not concurrency semantics. A pool may keep successfully bootstrapped
+sessions warm after use, but a checked-out session is still exclusive to one asset
+execution. Disable with `pool: [enabled: false]`. Existing catalog/write
 concurrency must bound both active work and new session/bootstrap. Pooling must
 not allow more concurrent writes than the configured catalog policy.
 
@@ -522,7 +530,8 @@ Update these docs when implementing:
 - `docs/structure/favn_duckdb_adbc.md`: same for ADBC, including Entra token
   support.
 - `docs/structure/favn_sql_runtime.md`: document catalog-level SQL admission
-  scope, policy lookup, optional runner-local pooling, and safe retry boundaries.
+  scope, policy lookup, default-on runner-local pooling, and safe retry
+  boundaries.
 - `Favn.Connection` moduledoc: remove old `database` and `duckdb_bootstrap`
   guidance and show the connection definition helper.
 - DuckDB adapter moduledocs: include the raw/int/mart example and a manual SQL
@@ -577,7 +586,7 @@ shape, bootstrap, catalog admission, session pooling, and retry semantics are
 tightly coupled. The PR should still keep changes layered internally:
 
 1. Add adapter-owned DuckDB config structs and normalization, including `open`,
-   optional `pool`, `duckdb`, old-key rejection, and recursive runtime-ref
+   connection-level `pool`, `duckdb`, old-key rejection, and recursive runtime-ref
    redaction.
 2. Add `config_schema_fields/0` to both DuckDB adapters and update connect paths
    to read `open.database`.
@@ -600,7 +609,7 @@ tightly coupled. The PR should still keep changes layered internally:
 10. Add `mix favn.doctor` relation catalog validation through an adapter callback,
     not DuckDB-specific branching in doctor.
 11. Update docs and generated local init examples from `database` and
-    `duckdb_bootstrap` to `open` and `duckdb`, and document optional `pool`.
+    `duckdb_bootstrap` to `open` and `duckdb`, and document default-on `pool`.
 12. Run focused tests during implementation, then run `mix format`,
     `mix compile --warnings-as-errors`, and `mix test` before merge.
 
@@ -618,10 +627,11 @@ tightly coupled. The PR should still keep changes layered internally:
 - Extension `INSTALL` is intentionally omitted from the new public shape. If local
   dogfooding requires it, add it explicitly rather than reviving the old
   `extensions: [install: ..., load: ...]` nesting.
-- Bootstrap cost may increase because each worker opens and bootstraps its own
-  session when pooling is disabled or no compatible idle session exists. Pooling
-  can reduce this cost inside one runner BEAM, but correctness still comes from
-  exclusive checkout and catalog admission, not from shared mutable sessions.
+- Bootstrap cost may increase when pooling is disabled with `pool: [enabled:
+  false]` or no compatible idle session exists. Pooling can reduce this cost
+  inside one runner BEAM, but correctness still comes from exclusive checkout,
+  catalog admission, and default discard of raw execute/materialize/transaction
+  mutation paths, not from shared mutable sessions.
 - Pooling reduces local bootstrap churn but can hide backend metadata pressure in
   one BEAM while other runners still create their own sessions. Do not document it
   as a distributed DuckLake scaling solution.

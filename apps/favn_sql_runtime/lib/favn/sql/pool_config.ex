@@ -2,8 +2,19 @@ defmodule Favn.SQL.PoolConfig do
   @moduledoc """
   Normalized runtime configuration for local SQL session pooling.
 
-  Pooling is local to the current BEAM. It does not coordinate checked-out or
-  idle sessions across nodes.
+  Pooling is enabled by default for adapters that report they are poolable, such
+  as the DuckDB and DuckDB ADBC adapters. Disable it per connection with:
+
+      pool: [enabled: false]
+
+  Optional tuning keeps the default enabled behavior explicit:
+
+      pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]
+
+  Pooling is local to the current runner BEAM. It does not coordinate
+  checked-out or idle sessions across nodes, does not increase catalog/write
+  concurrency, and reuses sessions only for matching connection/config,
+  required catalog set, and adapter fingerprint inputs.
   """
 
   alias Favn.SQL.Error

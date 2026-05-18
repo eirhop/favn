@@ -5,6 +5,12 @@ defmodule Favn.SQL.SessionPool do
   The pool is intentionally per-BEAM only. Checked-out sessions are exclusive:
   an idle session is removed from the pool when checked out and can only be
   checked back in by the process recorded in its checkout metadata.
+
+  Pooling is enabled by default for poolable adapters, but this process does not
+  coordinate across runner nodes and does not raise catalog/write concurrency.
+  Unsafe write/materialization/raw execution paths mark sessions for discard so
+  mutated state is not returned to the idle pool unless the caller has explicitly
+  proven the operation pool-safe.
   """
 
   use GenServer
@@ -16,6 +22,7 @@ defmodule Favn.SQL.SessionPool do
   @type diagnostics :: %{
           active: non_neg_integer(),
           idle: non_neg_integer(),
+          creating: non_neg_integer(),
           waiters: non_neg_integer(),
           keys: [%{hash: binary(), idle: non_neg_integer(), active: non_neg_integer()}]
         }
@@ -23,9 +30,11 @@ defmodule Favn.SQL.SessionPool do
   defstruct idle: %{},
             active: %{},
             monitors: %{},
-            creating: MapSet.new(),
+            creating: %{},
+            creator_monitors: %{},
             waiters: %{},
-            waiter_monitors: %{}
+            waiter_monitors: %{},
+            discard_reasons: %{}
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -91,6 +100,23 @@ defmodule Favn.SQL.SessionPool do
   end
 
   @doc """
+  Marks a checked-out pooled session to be discarded on checkin.
+
+  The mark is stored in the pool rather than the caller process, so accidental
+  cross-process use cannot return a mutated session to idle storage.
+  """
+  @spec mark_discard(Session.t() | reference(), term(), keyword()) :: :ok
+  def mark_discard(session_or_token, reason, opts \\ [])
+
+  def mark_discard(%Session{pool_checkout: %Checkout{token: token}}, reason, opts) do
+    mark_discard(token, reason, opts)
+  end
+
+  def mark_discard(token, reason, opts) when is_reference(token) do
+    GenServer.call(pool_name(opts), {:mark_discard, token, reason})
+  end
+
+  @doc """
   Checks a session back into the pool or discards it.
   """
   @spec checkin(Session.t(), status(), keyword()) :: :ok
@@ -115,7 +141,10 @@ defmodule Favn.SQL.SessionPool do
   end
 
   @impl true
-  def init(%__MODULE__{} = state), do: {:ok, state}
+  def init(%__MODULE__{} = state) do
+    Process.flag(:trap_exit, true)
+    {:ok, state}
+  end
 
   @impl true
   def handle_call({:checkout, %PoolKey{} = key, owner}, _from, %__MODULE__{} = state) do
@@ -186,24 +215,33 @@ defmodule Favn.SQL.SessionPool do
         {caller, _ref},
         %__MODULE__{} = state
       ) do
+    {discard_reason, discard_reasons} = Map.pop(state.discard_reasons, checkout.token)
+
     case Map.pop(state.active, checkout.token) do
       {nil, active} ->
         close_session(session)
-        {:reply, :ok, %__MODULE__{state | active: active}}
+        {:reply, :ok, %__MODULE__{state | active: active, discard_reasons: discard_reasons}}
 
       {%{owner: owner} = entry, active} ->
         {monitors, session} = release_active_monitor(state.monitors, entry, session)
+        state = %__MODULE__{state | active: active, monitors: monitors, discard_reasons: discard_reasons}
 
-        if owner == caller do
+        cond do
+          not is_nil(discard_reason) ->
+            close_session(session, discard_reason)
+            {:reply, :ok, state}
+
+          owner == caller ->
           {:reply, :ok,
            return_to_idle(
-             %__MODULE__{state | active: active, monitors: monitors},
-             session,
-             checkout
+              state,
+              session,
+              checkout
            )}
-        else
+
+          true ->
           close_session(session)
-          {:reply, :ok, %__MODULE__{state | active: active, monitors: monitors}}
+          {:reply, :ok, state}
         end
     end
   end
@@ -218,7 +256,13 @@ defmodule Favn.SQL.SessionPool do
     monitors = if entry, do: Map.delete(state.monitors, entry.monitor), else: state.monitors
     if entry, do: Process.demonitor(entry.monitor, [:flush])
     close_session(session, reason)
-    {:reply, :ok, %__MODULE__{state | active: active, monitors: monitors}}
+    {:reply, :ok,
+     %__MODULE__{
+       state
+       | active: active,
+         monitors: monitors,
+         discard_reasons: Map.delete(state.discard_reasons, checkout.token)
+     }}
   end
 
   def handle_call({:checkin, %Session{} = session, _status}, _from, %__MODULE__{} = state) do
@@ -228,6 +272,11 @@ defmodule Favn.SQL.SessionPool do
 
   def handle_call(:diagnostics, _from, %__MODULE__{} = state) do
     {:reply, build_diagnostics(state), state}
+  end
+
+  def handle_call({:mark_discard, token, reason}, _from, %__MODULE__{} = state)
+      when is_reference(token) do
+    {:reply, :ok, %__MODULE__{state | discard_reasons: Map.put(state.discard_reasons, token, reason)}}
   end
 
   @impl true
@@ -241,7 +290,27 @@ defmodule Favn.SQL.SessionPool do
       {nil, monitors} ->
         case Map.pop(state.waiter_monitors, monitor) do
           {nil, waiter_monitors} ->
-            {:noreply, %__MODULE__{state | monitors: monitors, waiter_monitors: waiter_monitors}}
+            case Map.pop(state.creator_monitors, monitor) do
+              {nil, creator_monitors} ->
+                {:noreply,
+                 %__MODULE__{
+                   state
+                   | monitors: monitors,
+                     waiter_monitors: waiter_monitors,
+                     creator_monitors: creator_monitors
+                 }}
+
+              {hash, creator_monitors} ->
+                {:noreply,
+                 %__MODULE__{
+                   state
+                   | monitors: monitors,
+                     waiter_monitors: waiter_monitors,
+                     creator_monitors: creator_monitors,
+                     creating: Map.delete(state.creating, hash)
+                 }
+                 |> drain_waiters(hash)}
+            end
 
           {hash, waiter_monitors} ->
             {:noreply,
@@ -256,7 +325,14 @@ defmodule Favn.SQL.SessionPool do
       {token, monitors} ->
         {entry, active} = Map.pop(state.active, token)
         if entry, do: close_session(entry.session, reason)
-        {:noreply, %__MODULE__{state | monitors: monitors, active: active}}
+
+        {:noreply,
+         %__MODULE__{
+           state
+           | monitors: monitors,
+             active: active,
+             discard_reasons: Map.delete(state.discard_reasons, token)
+         }}
     end
   end
 
@@ -318,7 +394,7 @@ defmodule Favn.SQL.SessionPool do
   end
 
   defp reserve_or_wait(%__MODULE__{} = state, %PoolKey{hash: hash} = key, owner, from) do
-    if MapSet.member?(state.creating, hash) do
+    if Map.has_key?(state.creating, hash) do
       monitor = Process.monitor(owner)
 
       waiter = %{
@@ -337,12 +413,34 @@ defmodule Favn.SQL.SessionPool do
        }}
     else
       emit_pool_checkout(:miss, hash, 0)
-      {:reply, :create, %__MODULE__{state | creating: MapSet.put(state.creating, hash)}}
+      {:reply, :create, reserve_creator(state, key, owner)}
     end
   end
 
-  defp finish_creation(%__MODULE__{creating: creating} = state, %PoolKey{hash: hash}) do
-    %__MODULE__{state | creating: MapSet.delete(creating, hash)}
+  defp reserve_creator(%__MODULE__{} = state, %PoolKey{hash: hash} = key, owner) do
+    monitor = Process.monitor(owner)
+
+    %__MODULE__{
+      state
+      | creating: Map.put(state.creating, hash, %{key: key, owner: owner, monitor: monitor}),
+        creator_monitors: Map.put(state.creator_monitors, monitor, hash)
+    }
+  end
+
+  defp finish_creation(%__MODULE__{} = state, %PoolKey{hash: hash}) do
+    case Map.pop(state.creating, hash) do
+      {nil, creating} ->
+        %__MODULE__{state | creating: creating}
+
+      {%{monitor: monitor}, creating} ->
+        Process.demonitor(monitor, [:flush])
+
+        %__MODULE__{
+          state
+          | creating: creating,
+            creator_monitors: Map.delete(state.creator_monitors, monitor)
+        }
+    end
   end
 
   defp drain_waiters(%__MODULE__{} = state, hash) do
@@ -369,7 +467,7 @@ defmodule Favn.SQL.SessionPool do
             |> drain_waiters(hash)
 
           {nil, _idle} ->
-            if MapSet.member?(state.creating, hash) do
+            if Map.has_key?(state.creating, hash) do
               state
             else
               {{:value, waiter}, queue} = :queue.out(queue)
@@ -378,9 +476,8 @@ defmodule Favn.SQL.SessionPool do
               emit_pool_checkout(:miss, hash, wait_ms)
 
               %__MODULE__{
-                state
-                | creating: MapSet.put(state.creating, hash),
-                  waiters: put_waiters(state.waiters, hash, queue),
+                reserve_creator(state, waiter.key, waiter.owner)
+                | waiters: put_waiters(state.waiters, hash, queue),
                   waiter_monitors: waiter_monitors
               }
             end
@@ -512,6 +609,7 @@ defmodule Favn.SQL.SessionPool do
     %{
       active: map_size(state.active),
       idle: Enum.sum(Map.values(idle_counts)),
+      creating: map_size(state.creating),
       waiters:
         state.waiters
         |> Map.values()

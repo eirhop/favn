@@ -62,8 +62,13 @@ defmodule Favn.SQL.Admission do
   def acquire_session(_policy, _opts), do: nil
 
   @spec release_session(term()) :: :ok
-  def release_session({_kind, scope, owner}) when owner == self() do
-    release_held_scope(scope)
+  def release_session({_kind, scope, owner}) do
+    if owner == self() do
+      release_held_scope(scope)
+    else
+      Limiter.release(scope, owner)
+    end
+
     :ok
   end
 

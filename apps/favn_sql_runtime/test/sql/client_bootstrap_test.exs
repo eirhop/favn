@@ -471,6 +471,28 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     assert {:disconnect, executed_conn} in events()
   end
 
+  test "cross-process mutation marks owner checkout for discard", %{registry_name: registry_name} do
+    pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+    start_registry(registry_name, AdapterWithPool, %{pool: pool})
+
+    assert {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
+    mutated_conn = session.conn
+
+    task =
+      Task.async(fn ->
+        Client.execute(session, "CREATE TEMP TABLE cross_process AS SELECT 1", [])
+      end)
+
+    assert {:ok, %Result{}} = Task.await(task)
+    Client.disconnect(session)
+
+    assert {:ok, next} = Client.connect(:warehouse, registry_name: registry_name)
+    refute next.conn == mutated_conn
+    Client.disconnect(next)
+
+    assert {:disconnect, mutated_conn} in events()
+  end
+
   test "concurrent same-key misses serialize session creation", %{registry_name: registry_name} do
     pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
     start_registry(registry_name, AdapterWithPool, %{pool: pool})
