@@ -43,11 +43,11 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   ## DuckLake bootstrap
 
-  This adapter supports the same `:duckdb_bootstrap` shape as
-  `Favn.SQL.Adapter.DuckDB`, including extension loading, Azure ADLS
-  `credential_chain` secrets with validated `:chain` and trailing-slash `:scope`,
-  PostgreSQL DuckDB secrets, DuckLake attach through `META_SECRET`, and the
-  existing metadata DSN fallback.
+  This adapter supports the same `open: [database: ...]` and `duckdb: [...]`
+  runtime config shape as `Favn.SQL.Adapter.DuckDB`, including extension loading,
+  Azure ADLS `credential_chain` secrets with validated `:chain` and optional
+  trailing-slash `:scope`, PostgreSQL DuckDB secrets, and DuckLake attach through
+  `META_SECRET`.
 
   PostgreSQL secrets accept either `:password` or Azure PostgreSQL Entra `:auth`,
   not both. Azure auth supports managed identity and Azure CLI dogfooding:
@@ -101,14 +101,15 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   @impl true
   @spec connect(Resolved.t(), opts()) :: {:ok, Conn.t()} | {:error, Error.t()}
-  def connect(%Resolved{config: config} = resolved, opts) do
+  def connect(%Resolved{} = resolved, opts) do
     client = resolve_client(opts)
     client_opts = Keyword.get(opts, :duckdb_adbc, [])
     max_rows = max_rows(opts)
     max_result_bytes = max_result_bytes(opts)
 
     with :ok <- validate_production_storage(resolved),
-         {:ok, db_ref} <- client.open(Map.get(config || %{}, :database), client_opts),
+         {:ok, database} <- Bootstrap.database(resolved),
+         {:ok, db_ref} <- client.open(database, client_opts),
          {:ok, conn_ref} <- create_connection(client, db_ref) do
       {:ok,
        %Conn{
@@ -143,9 +144,18 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   @spec bootstrap_schema_field() :: Favn.Connection.Definition.field()
   @doc """
-  Returns the connection schema field for DuckDB bootstrap runtime config.
+  Returns the legacy single schema field for `duckdb: [...]` runtime config.
+
+  Prefer `config_schema_fields/0` so `open` and `duckdb` are validated together.
   """
+  @deprecated "Use config_schema_fields/0 so open and duckdb config are validated together"
   def bootstrap_schema_field, do: Bootstrap.schema_field()
+
+  @spec config_schema_fields() :: [Favn.Connection.Definition.field()]
+  @doc """
+  Returns DuckDB runtime config schema fields for `open: [...]` and `duckdb: [...]`.
+  """
+  def config_schema_fields, do: Bootstrap.config_schema_fields()
 
   @spec production_storage_schema_fields() :: [Favn.Connection.Definition.field()]
   @doc """
@@ -289,6 +299,20 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   @impl true
   @spec default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
+  def default_concurrency_policy(%Resolved{config: %{open: %{database: database}}})
+      when is_binary(database) and database not in [":memory:", ""] do
+    %ConcurrencyPolicy{
+      limit: 1,
+      scope: {:duckdb_adbc_database, Path.expand(database)},
+      applies_to: :all
+    }
+  end
+
+  def default_concurrency_policy(%Resolved{} = resolved = %Resolved{config: %{open: open}})
+      when is_list(open) do
+    default_concurrency_policy(%Resolved{resolved | config: %{open: Map.new(open)}})
+  end
+
   def default_concurrency_policy(%Resolved{config: %{database: database}})
       when is_binary(database) and database not in [":memory:", ""] do
     %ConcurrencyPolicy{
@@ -301,6 +325,102 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   def default_concurrency_policy(%Resolved{} = resolved) do
     %ConcurrencyPolicy{ConcurrencyPolicy.single_writer(resolved) | applies_to: :all}
   end
+
+  @impl true
+  @spec concurrency_policies(Resolved.t()) :: {:ok, [ConcurrencyPolicy.t()]} | {:error, Error.t()}
+  def concurrency_policies(%Resolved{} = resolved) do
+    case catalog_write_policies(resolved) do
+      [] ->
+        {:ok, [default_concurrency_policy(resolved)]}
+
+      catalog_policies ->
+        default = %ConcurrencyPolicy{ConcurrencyPolicy.single_writer(resolved) | applies_to: :writes}
+        {:ok, [default | catalog_policies]}
+    end
+  end
+
+  defp catalog_write_policies(%Resolved{} = resolved) do
+    resolved
+    |> duckdb_attach_config()
+    |> Enum.map(fn {catalog, attach_config} ->
+      ConcurrencyPolicy.catalog(resolved, catalog, catalog_write_concurrency(attach_config))
+    end)
+  end
+
+  defp duckdb_attach_config(%Resolved{config: %{duckdb: duckdb}}) when is_map(duckdb),
+    do: normalize_attach_entries(Map.get(duckdb, :attach, []))
+
+  defp duckdb_attach_config(%Resolved{config: %{duckdb: duckdb}}) when is_list(duckdb),
+    do: normalize_attach_entries(Keyword.get(duckdb, :attach, []))
+
+  defp duckdb_attach_config(_resolved), do: []
+
+  defp normalize_attach_entries(entries) when is_map(entries) do
+    Enum.map(entries, fn {catalog, config} -> {to_string(catalog), config} end)
+  end
+
+  defp normalize_attach_entries(entries) when is_list(entries) do
+    if Keyword.keyword?(entries) do
+      Enum.map(entries, fn {catalog, config} -> {to_string(catalog), config} end)
+    else
+      []
+    end
+  end
+
+  defp normalize_attach_entries(_entries), do: []
+
+  @impl true
+  @spec configured_catalogs(Resolved.t()) :: {:ok, [String.t()]}
+  def configured_catalogs(%Resolved{} = resolved) do
+    catalogs =
+      resolved
+      |> duckdb_attach_config()
+      |> Enum.map(fn {catalog, _config} -> catalog end)
+
+    {:ok, catalogs}
+  end
+
+  @impl true
+  @spec default_catalog(Resolved.t()) :: {:ok, String.t() | nil}
+  def default_catalog(%Resolved{} = resolved), do: {:ok, duckdb_use_catalog(resolved)}
+
+  defp duckdb_use_catalog(%Resolved{config: %{duckdb: duckdb}}) when is_map(duckdb) do
+    duckdb |> Map.get(:use) |> normalize_catalog_name()
+  end
+
+  defp duckdb_use_catalog(%Resolved{config: %{duckdb: duckdb}}) when is_list(duckdb) do
+    duckdb |> Keyword.get(:use) |> normalize_catalog_name()
+  end
+
+  defp duckdb_use_catalog(_resolved), do: nil
+
+  defp normalize_catalog_name(nil), do: nil
+  defp normalize_catalog_name(catalog) when is_atom(catalog), do: Atom.to_string(catalog)
+  defp normalize_catalog_name(catalog) when is_binary(catalog), do: catalog
+  defp normalize_catalog_name(_catalog), do: nil
+
+  defp catalog_write_concurrency(config) when is_map(config) do
+    config
+    |> Map.get(:write_concurrency, default_catalog_write_concurrency(Map.get(config, :type)))
+    |> normalize_catalog_write_concurrency()
+  end
+
+  defp catalog_write_concurrency(config) when is_list(config) do
+    config
+    |> Keyword.get(:write_concurrency, default_catalog_write_concurrency(Keyword.get(config, :type)))
+    |> normalize_catalog_write_concurrency()
+  end
+
+  defp catalog_write_concurrency(_config), do: 1
+
+  defp default_catalog_write_concurrency(:ducklake), do: :unlimited
+  defp default_catalog_write_concurrency("ducklake"), do: :unlimited
+  defp default_catalog_write_concurrency(_type), do: 1
+
+  defp normalize_catalog_write_concurrency(:unlimited), do: :unlimited
+  defp normalize_catalog_write_concurrency(:single), do: 1
+  defp normalize_catalog_write_concurrency(value) when is_integer(value) and value > 0, do: value
+  defp normalize_catalog_write_concurrency(_value), do: 1
 
   @impl true
   @spec execute(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
@@ -1024,13 +1144,17 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     if Map.get(config, @production_key, false) do
       with :ok <- validate_storage_mode(config, resolved) do
         if local_file_storage?(config),
-          do: validate_local_file_database(Map.get(config, :database), resolved),
+          do: validate_local_file_database(open_database(config), resolved),
           else: :ok
       end
     else
       :ok
     end
   end
+
+  defp open_database(%{open: %{database: database}}), do: database
+  defp open_database(%{open: open}) when is_list(open), do: Keyword.get(open, :database)
+  defp open_database(config), do: Map.get(config, :database)
 
   defp validate_storage_mode(config, resolved) do
     storage = Map.get(config, @storage_key, @local_file_storage)

@@ -241,12 +241,12 @@ defmodule FavnRunner.WorkerTest do
   end
 
   test "worker exposes multi-asset config ergonomically after manifest JSON roundtrip" do
-    previous_username = System.get_env("FAVN_TEST_MERCATUS_USERNAME")
-    previous_password = System.get_env("FAVN_TEST_MERCATUS_PASSWORD")
+    previous_username = System.get_env("FAVN_TEST_SOURCE_API_USERNAME")
+    previous_password = System.get_env("FAVN_TEST_SOURCE_API_PASSWORD")
 
     try do
-      System.put_env("FAVN_TEST_MERCATUS_USERNAME", "merchant")
-      System.put_env("FAVN_TEST_MERCATUS_PASSWORD", "merchant-secret")
+      System.put_env("FAVN_TEST_SOURCE_API_USERNAME", "source-user")
+      System.put_env("FAVN_TEST_SOURCE_API_PASSWORD", "source-secret")
 
       result =
         run_single_asset(FavnRunner.WorkerTest.MultiAssetConfigAsset,
@@ -259,9 +259,9 @@ defmodule FavnRunner.WorkerTest do
             }
           },
           runtime_config: %{
-            mercatus: %{
-              username: Ref.env!("FAVN_TEST_MERCATUS_USERNAME"),
-              password: Ref.secret_env!("FAVN_TEST_MERCATUS_PASSWORD")
+            source_api: %{
+              username: Ref.env!("FAVN_TEST_SOURCE_API_USERNAME"),
+              password: Ref.secret_env!("FAVN_TEST_SOURCE_API_PASSWORD")
             }
           }
         )
@@ -273,11 +273,11 @@ defmodule FavnRunner.WorkerTest do
       assert asset_result.meta.path == "/orders"
       assert asset_result.meta.param_status == "ok"
       assert asset_result.meta.param_status_atom == nil
-      assert asset_result.meta.username == "merchant"
+      assert asset_result.meta.username == "source-user"
       assert asset_result.meta.password_seen? == true
     after
-      restore_env("FAVN_TEST_MERCATUS_USERNAME", previous_username)
-      restore_env("FAVN_TEST_MERCATUS_PASSWORD", previous_password)
+      restore_env("FAVN_TEST_SOURCE_API_USERNAME", previous_username)
+      restore_env("FAVN_TEST_SOURCE_API_PASSWORD", previous_password)
     end
   end
 
@@ -449,8 +449,8 @@ defmodule FavnRunner.WorkerTest.MultiAssetConfigAsset do
        path: ctx.asset.config.rest.path,
        param_status: ctx.asset.config.rest.params["status"],
        param_status_atom: Map.get(ctx.asset.config.rest.params, :status),
-       username: ctx.config.mercatus.username,
-       password_seen?: ctx.config.mercatus.password == "merchant-secret"
+       username: ctx.config.source_api.username,
+       password_seen?: ctx.config.source_api.password == "source-secret"
      }}
   end
 end

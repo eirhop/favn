@@ -268,11 +268,11 @@ defmodule FavnView.Components.PipelineDetailPage do
 
   def sample_pipeline do
     %{
-      id: "pipeline:Elixir.SeiDp.Pipelines.MercatusRawFullRefresh",
+      id: "pipeline:Elixir.Example.Pipelines.SourceRawFullRefresh",
       manifest_version_id: "mv_sample",
-      name: "mercatus_raw_full_refresh",
-      label: "SeiDp.Pipelines.MercatusRawFullRefresh",
-      selected_assets: ["mercatus_raw", "mercatus_monthly"],
+      name: "source_raw_full_refresh",
+      label: "Example.Pipelines.SourceRawFullRefresh",
+      selected_assets: ["source_raw", "source_monthly"],
       asset_count: 2,
       dependencies: :all,
       dependencies_label: "Include deps",
@@ -285,8 +285,8 @@ defmodule FavnView.Components.PipelineDetailPage do
       runtime_label: "34.5 s",
       runs: [
         %{
-          id: "run_mercatus_full_refresh",
-          short_id: "run_merc...fresh",
+          id: "run_source_full_refresh",
+          short_id: "run_source...fresh",
           status: :healthy,
           kind_label: "Pipeline",
           window_label: "-",

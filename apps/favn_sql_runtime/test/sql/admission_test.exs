@@ -3,7 +3,7 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
-  alias Favn.SQL.{Admission, Client, ConcurrencyPolicy, Result, Session}
+  alias Favn.SQL.{Admission, Client, ConcurrencyPolicies, ConcurrencyPolicy, Result, Session}
   alias Favn.SQL.Admission.Limiter
 
   defmodule TrackingAdapter do
@@ -51,6 +51,24 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       bump_active(tracker, -1)
 
       {:ok, [%Favn.SQL.Column{name: "id", position: 1, data_type: "INTEGER"}]}
+    end
+
+    def materialize(conn, write_plan, _opts) do
+      tracker = Map.fetch!(conn, :tracker)
+      catalog = write_plan.target.catalog
+
+      bump_active(tracker, 1)
+      send(Map.get(conn, :parent), {:materialize_started, catalog, self()})
+
+      receive do
+        :release_materialize -> :ok
+      after
+        50 -> :ok
+      end
+
+      bump_active(tracker, -1)
+
+      {:ok, %Result{kind: :execute, command: "materialize", rows: [], columns: []}}
     end
 
     defp bump_active(tracker, delta) do
@@ -262,6 +280,70 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert Agent.get(tracker, & &1.max_active) == 1
   end
 
+  test "allows materialization writes to different catalog scopes concurrently", %{tracker: tracker} do
+    session = catalog_session(tracker, [catalog_policy("raw", 1), catalog_policy("mart", 1)])
+
+    raw = Task.async(fn -> Client.materialize(session, write_plan("raw"), []) end)
+    mart = Task.async(fn -> Client.materialize(session, write_plan("mart"), []) end)
+
+    assert_receive {:materialize_started, "raw", raw_pid}, 500
+    assert_receive {:materialize_started, "mart", mart_pid}, 500
+    assert Agent.get(tracker, & &1.max_active) == 2
+
+    send(raw_pid, :release_materialize)
+    send(mart_pid, :release_materialize)
+
+    assert Enum.all?(Task.await_many([raw, mart], 1_000), &match?({:ok, %Result{}}, &1))
+  end
+
+  test "catalog admission timeout is isolated to that catalog", %{tracker: tracker} do
+    session =
+      catalog_session(tracker, [
+        %ConcurrencyPolicy{catalog_policy("raw", 1) | admission_timeout_ms: 10},
+        catalog_policy("mart", 1)
+      ])
+
+    raw_holder = Task.async(fn -> Client.materialize(session, write_plan("raw"), []) end)
+    assert_receive {:materialize_started, "raw", raw_pid}, 500
+
+    assert {:error,
+            %Favn.SQL.Error{
+              type: :admission_timeout,
+              operation: :materialize,
+              retryable?: true,
+              details: %{scope: {:warehouse, "raw"}, timeout_ms: 10}
+            }} = Client.materialize(session, write_plan("raw"), [])
+
+    mart = Task.async(fn -> Client.materialize(session, write_plan("mart"), []) end)
+    assert_receive {:materialize_started, "mart", mart_pid}, 500
+
+    send(mart_pid, :release_materialize)
+    assert {:ok, %Result{}} = Task.await(mart, 1_000)
+
+    send(raw_pid, :release_materialize)
+    assert {:ok, %Result{}} = Task.await(raw_holder, 1_000)
+  end
+
+  test "connection-level policies still serialize materialization without catalog policies", %{
+    tracker: tracker
+  } do
+    session = session(tracker, %ConcurrencyPolicy{limit: 1, scope: {:db, :fallback}, applies_to: :writes})
+
+    raw = Task.async(fn -> Client.materialize(session, write_plan("raw"), []) end)
+    mart = Task.async(fn -> Client.materialize(session, write_plan("mart"), []) end)
+
+    assert_receive {:materialize_started, "raw", raw_pid}, 500
+    refute_receive {:materialize_started, "mart", _pid}, 50
+    assert Agent.get(tracker, & &1.max_active) == 1
+
+    send(raw_pid, :release_materialize)
+    assert_receive {:materialize_started, "mart", mart_pid}, 500
+    send(mart_pid, :release_materialize)
+
+    assert Enum.all?(Task.await_many([raw, mart], 1_000), &match?({:ok, %Result{}}, &1))
+    assert Agent.get(tracker, & &1.max_active) == 1
+  end
+
   test "holds admitted local-file sessions until disconnect", %{tracker: tracker} do
     registry_name = :admission_session_registry
 
@@ -372,10 +454,42 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         module: __MODULE__,
         config: %{}
       },
-      conn: %{tracker: tracker},
+      conn: %{tracker: tracker, parent: self()},
       capabilities: %Favn.SQL.Capabilities{},
       concurrency_policy: policy
     }
+  end
+
+  defp catalog_session(tracker, policies) do
+    %Session{
+      adapter: TrackingAdapter,
+      resolved: %Resolved{
+        name: :warehouse,
+        adapter: TrackingAdapter,
+        module: __MODULE__,
+        config: %{}
+      },
+      conn: %{tracker: tracker, parent: self()},
+      capabilities: %Favn.SQL.Capabilities{},
+      concurrency_policies: ConcurrencyPolicies.new(ConcurrencyPolicy.unlimited(resolved()), policies)
+    }
+  end
+
+  defp catalog_policy(catalog, limit) do
+    ConcurrencyPolicy.catalog(resolved(), catalog, limit)
+  end
+
+  defp write_plan(catalog) do
+    %Favn.SQL.WritePlan{
+      connection: :warehouse,
+      materialization: :table,
+      target: %Favn.SQL.Relation{catalog: catalog, schema: "main", name: "events", type: :table},
+      select_sql: "select 1"
+    }
+  end
+
+  defp resolved do
+    %Resolved{name: :warehouse, adapter: TrackingAdapter, module: __MODULE__, config: %{}}
   end
 
   defp start_registry(registry_name, adapter, tracker, config \\ %{}) do

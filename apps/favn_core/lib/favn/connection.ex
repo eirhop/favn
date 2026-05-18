@@ -21,7 +21,7 @@ defmodule Favn.Connection do
             name: :warehouse,
             adapter: MyApp.WarehouseAdapter,
             config_schema: [
-              %{key: :database, required: true, type: :path}
+              %{key: :url, required: true, type: :string}
             ]
           }
         end
@@ -52,10 +52,11 @@ defmodule Favn.Connection do
   Favn also reserves `:write_concurrency` as runtime connection config for SQL
   admission control. Use `write_concurrency: 1` or `:single` for single-writer
   backends, and `write_concurrency: :unlimited` for backends that safely support
-  parallel writes.
+  parallel writes. DuckDB uses per-attached-catalog `write_concurrency` under
+  `duckdb.attach.<catalog>` instead of this connection-level key.
 
-  DuckDB connections that need DuckLake session setup can include the DuckDB-owned
-  bootstrap schema field:
+  DuckDB connections can use adapter-owned schema fields for the DuckDB session
+  database and bootstrap SQL:
 
   `Favn.SQL.Adapter.DuckDB` is provided by the public `:favn_duckdb`
   adapter/plugin dependency. Consumers should add `:favn_duckdb` for DuckDB
@@ -64,16 +65,14 @@ defmodule Favn.Connection do
       %Favn.Connection.Definition{
         name: :warehouse,
         adapter: Favn.SQL.Adapter.DuckDB,
-        config_schema: [
-          %{key: :database, required: true, type: :path},
-          Favn.SQL.Adapter.DuckDB.bootstrap_schema_field()
-        ]
+        config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
       }
 
-  Runtime config can then provide `:duckdb_bootstrap` for extension install/load,
-  Azure credential-chain secret creation, DuckLake attach, and catalog selection.
-  `Favn.RuntimeConfig.Ref.secret_env!/1` values inside nested bootstrap config are
-  resolved before adapter connection and redacted from diagnostics.
+  Runtime config then uses `open: [database: ...]` for the DuckDB session database
+  and `duckdb: [...]` for extension loads, settings, secrets, attached catalogs,
+  and optional `USE`. `Favn.RuntimeConfig.Ref.secret_env!/1` values inside nested
+  DuckDB config are resolved before adapter connection and redacted from
+  diagnostics.
 
   ## Runtime Environment Values
 
@@ -81,7 +80,7 @@ defmodule Favn.Connection do
         discovery: [apps: [:my_app], connections: :all],
         connections: [
           warehouse: [
-            database: Favn.RuntimeConfig.Ref.env!("WAREHOUSE_DB_PATH"),
+            open: [database: Favn.RuntimeConfig.Ref.env!("WAREHOUSE_DB_PATH")],
             password: Favn.RuntimeConfig.Ref.secret_env!("WAREHOUSE_PASSWORD")
           ]
         ]

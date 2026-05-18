@@ -188,7 +188,7 @@ Production DuckDB behavior covers or must preserve:
 - Separate-process DuckDB execution as the recommended production placement when
   using the implemented DuckDB plugin modes, so DuckDB handles live in a
   supervised worker process instead of the asset worker process.
-- Bootstrap extension install/load accepts any valid DuckDB extension identifier;
+- Bootstrap extension load accepts any valid DuckDB extension identifier;
   malformed identifiers are rejected during bootstrap config validation.
 - Clear diagnostics for connection, bootstrap, extension, materialization,
   appender, cancellation, timeout, and crash failures, with secret values

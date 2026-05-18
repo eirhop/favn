@@ -76,10 +76,11 @@ defmodule Favn.AI do
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
-  - To configure DuckDB/DuckLake connection bootstrap for extension loading,
-    attached DuckDB catalog files, Azure credential-chain secrets, ADLS
-    `SCOPE`/`CHAIN`, PostgreSQL metadata secrets, DuckLake `META_SECRET` attach,
-    or ADLS paths, read
+  - To configure DuckDB/DuckLake connection bootstrap with `open: [...]` and
+    `duckdb: [...]`, attached DuckDB/DuckLake catalogs, Azure credential-chain
+    secrets, optional ADLS `SCOPE`, credential `CHAIN`, PostgreSQL metadata
+    secrets, DuckLake `META_SECRET` attach, catalog-level write concurrency, or
+    ADLS paths, read
     `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQL.Adapter.DuckDB`, and
     `Favn.Azure.PostgresEntraToken`. If the deployment uses the ADBC DuckDB
     adapter, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Azure PostgreSQL Entra
@@ -145,12 +146,12 @@ defmodule Favn.AI do
     metadata
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
-  - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs the
-    `bootstrap_schema_field/0` helper for attached DuckDB catalog files,
-    DuckLake session setup, Azure ADLS DuckDB secrets, or PostgreSQL metadata
-    secret wiring
+  - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs
+    `config_schema_fields/0`, `open: [database: ...]`, keyed `duckdb.attach`
+    catalogs, DuckLake session setup, Azure ADLS DuckDB secrets, PostgreSQL
+    metadata secret wiring, or catalog-level write admission
   - `Favn.SQL.Adapter.DuckDB.ADBC`: when the ADBC DuckDB adapter needs the same
-    DuckLake bootstrap shape with explicit DuckDB driver control
+    DuckDB/DuckLake config shape with explicit DuckDB driver control
   - `Favn.Azure.PostgresEntraToken`: when DuckDB bootstrap needs runtime Azure
     PostgreSQL Entra token acquisition through managed identity or Azure CLI
 

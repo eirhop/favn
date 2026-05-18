@@ -230,13 +230,11 @@ defmodule Favn.Dev.Init do
       ],
       connections: [
         important_lakehouse: [
-          database: ".favn/data/local_smoke.duckdb",
-          write_concurrency: 1,
-          duckdb_bootstrap: [
-            extensions: [install: [:core_functions], load: [:core_functions]],
+          open: [database: ".favn/data/local_smoke.duckdb"],
+          duckdb: [
             attach: [
-              [type: :duckdb, name: :raw, path: ".favn/data/raw.duckdb"],
-              [type: :duckdb, name: :mart, path: ".favn/data/mart.duckdb"]
+              raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
+              mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
             ]
           ]
         ]
@@ -266,20 +264,17 @@ defmodule Favn.Dev.Init do
           adapter: Favn.SQL.Adapter.DuckDB,
           doc: "Local DuckDB lakehouse session for Favn smoke runs",
           metadata: %{scope: :local_smoke},
-          config_schema: [
-            %{key: :database, required: true, type: :path},
-            duckdb_bootstrap_schema_field()
-          ]
+          config_schema: duckdb_config_schema_fields()
         }
       end
 
-      defp duckdb_bootstrap_schema_field do
+      defp duckdb_config_schema_fields do
         adapter = Module.concat([Favn.SQL.Adapter, DuckDB])
 
-        if Code.ensure_loaded?(adapter) and function_exported?(adapter, :bootstrap_schema_field, 0) do
-          apply(adapter, :bootstrap_schema_field, [])
+        if Code.ensure_loaded?(adapter) and function_exported?(adapter, :config_schema_fields, 0) do
+          apply(adapter, :config_schema_fields, [])
         else
-          %{key: :duckdb_bootstrap, type: {:custom, fn _value -> :ok end}}
+          [%{key: :open, required: true, type: {:custom, fn _value -> :ok end}}]
         end
       end
     end
@@ -430,11 +425,20 @@ defmodule Favn.Dev.Init do
       query do
         ~SQL"""
         select
-          order_date,
-          count(*) as order_count,
-          sum(amount_cents) as revenue_cents
-        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])}
-        group by order_date
+          first_order.order_date,
+          2 as order_count,
+          first_order.amount_cents + second_order.amount_cents as revenue_cents
+        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])} as first_order
+        join #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])} as second_order
+          on second_order.order_id = 2
+        where first_order.order_id = 1
+        union all
+        select
+          orders.order_date,
+          1 as order_count,
+          orders.amount_cents as revenue_cents
+        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])} as orders
+        where orders.order_id = 3
         order by order_date
         """
       end

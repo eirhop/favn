@@ -27,12 +27,12 @@ defmodule Favn.Dev.LocalDistributionTest do
   test "preflight preserves short hostname case for Erlang node compatibility" do
     assert {:ok, distribution} =
              LocalDistribution.preflight(
-               localhost: fn -> ~c"EFB-PF55VAFN.localdomain" end,
-               resolver: fn ~c"EFB-PF55VAFN" -> {:ok, [{127, 0, 0, 1}]} end,
+               localhost: fn -> ~c"DEVHOST-01.localdomain" end,
+               resolver: fn ~c"DEVHOST-01" -> {:ok, [{127, 0, 0, 1}]} end,
                epmd_executable: false
              )
 
-    assert distribution.short_host == "EFB-PF55VAFN"
+    assert distribution.short_host == "DEVHOST-01"
   end
 
   test "preflight rejects non-loopback short hostname resolution" do

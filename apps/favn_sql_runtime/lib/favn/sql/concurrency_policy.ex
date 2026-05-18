@@ -5,31 +5,26 @@ defmodule Favn.SQL.ConcurrencyPolicy do
   alias Favn.SQL.Error
 
   @enforce_keys [:limit, :scope, :applies_to]
-  defstruct [:limit, :scope, :applies_to, :connection, admission_timeout_ms: :infinity]
+  defstruct [:limit, :scope, :applies_to, :connection, :target, admission_timeout_ms: :infinity]
 
   @type limit :: pos_integer() | :unlimited
   @type applies_to :: :all | :writes
   @type admission_timeout_ms :: pos_integer() | :infinity
   @type t :: %__MODULE__{
           limit: limit(),
-          scope: term(),
-          applies_to: applies_to(),
-          connection: atom() | nil,
-          admission_timeout_ms: admission_timeout_ms()
-        }
+           scope: term(),
+           applies_to: applies_to(),
+           connection: atom() | nil,
+           target: Favn.SQL.ConcurrencyPolicies.target() | nil,
+           admission_timeout_ms: admission_timeout_ms()
+         }
 
-  @spec resolve(Resolved.t()) :: {:ok, t()} | {:error, Error.t()}
+  @spec resolve(Resolved.t()) :: {:ok, t() | Favn.SQL.ConcurrencyPolicies.t()} | {:error, Error.t()}
   def resolve(%Resolved{} = resolved) do
-    with {:ok, policy} <- default_policy(resolved),
+    with {:ok, policies} <- adapter_policies(resolved),
          {:ok, limit} <- configured_limit(resolved),
          {:ok, admission_timeout_ms} <- configured_admission_timeout(resolved) do
-      {:ok,
-       %{
-         policy
-         | limit: limit || policy.limit,
-           connection: resolved.name,
-           admission_timeout_ms: admission_timeout_ms || policy.admission_timeout_ms
-       }}
+      {:ok, apply_configured_overrides(policies, resolved, limit, admission_timeout_ms)}
     end
   end
 
@@ -39,7 +34,8 @@ defmodule Favn.SQL.ConcurrencyPolicy do
       limit: :unlimited,
       scope: {:connection, resolved.name},
       applies_to: :writes,
-      connection: resolved.name
+      connection: resolved.name,
+      target: :default
     }
   end
 
@@ -49,25 +45,111 @@ defmodule Favn.SQL.ConcurrencyPolicy do
       limit: 1,
       scope: {:connection, resolved.name},
       applies_to: :writes,
-      connection: resolved.name
+      connection: resolved.name,
+      target: :default
     }
   end
 
-  defp default_policy(%Resolved{adapter: adapter} = resolved) do
+  @spec catalog(Resolved.t(), binary(), limit()) :: t()
+  def catalog(%Resolved{} = resolved, catalog, limit) when is_binary(catalog) do
+    %__MODULE__{
+      limit: limit,
+      scope: {resolved.name, catalog},
+      applies_to: :writes,
+      connection: resolved.name,
+      target: {:catalog, catalog}
+    }
+  end
+
+  defp adapter_policies(%Resolved{adapter: adapter} = resolved) do
     case Code.ensure_loaded(adapter) do
       {:module, ^adapter} ->
-        if function_exported?(adapter, :default_concurrency_policy, 1) do
-          case adapter.default_concurrency_policy(resolved) do
-            %__MODULE__{} = policy -> {:ok, policy}
-            other -> invalid_policy_error(resolved, other)
-          end
-        else
-          {:ok, unlimited(resolved)}
+        cond do
+          function_exported?(adapter, :concurrency_policies, 1) ->
+            resolve_adapter_policies(resolved, adapter)
+
+          function_exported?(adapter, :default_concurrency_policy, 1) ->
+            case adapter.default_concurrency_policy(resolved) do
+              %__MODULE__{} = policy -> {:ok, normalize_policy(policy, resolved, :default)}
+              other -> invalid_policy_error(resolved, other)
+            end
+
+          true ->
+            {:ok, unlimited(resolved)}
         end
 
       {:error, reason} ->
         adapter_load_error(resolved, adapter, reason)
     end
+  end
+
+  defp resolve_adapter_policies(resolved, adapter) do
+    case adapter.concurrency_policies(resolved) do
+      {:ok, policies} when is_list(policies) ->
+        build_policy_container(resolved, policies)
+
+      {:error, %Error{}} = error ->
+        error
+
+      other ->
+        invalid_policy_error(resolved, other)
+    end
+  end
+
+  defp build_policy_container(resolved, policies) do
+    with {:ok, normalized} <- normalize_policy_list(resolved, policies) do
+      default = Enum.find(normalized, &(Map.get(&1, :target) == :default)) || unlimited(resolved)
+
+      catalog = Enum.reject(normalized, &(Map.get(&1, :target) == :default))
+      {:ok, Favn.SQL.ConcurrencyPolicies.new(default, catalog)}
+    end
+  end
+
+  defp normalize_policy_list(resolved, policies) do
+    policies
+    |> Enum.reduce_while({:ok, []}, fn
+      %__MODULE__{} = policy, {:ok, acc} ->
+        {:cont, {:ok, [normalize_policy(policy, resolved, policy.target || :default) | acc]}}
+
+      other, _acc ->
+        {:halt, invalid_policy_error(resolved, other)}
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      error -> error
+    end
+  end
+
+  defp normalize_policy(%__MODULE__{} = policy, %Resolved{} = resolved, target) do
+    %{policy | connection: policy.connection || resolved.name, target: target}
+  end
+
+  defp apply_configured_overrides(%Favn.SQL.ConcurrencyPolicies{} = policies, resolved, limit, timeout) do
+    %Favn.SQL.ConcurrencyPolicies{
+      policies
+      | default: apply_configured_overrides(policies.default, resolved, limit, timeout),
+        catalog: Map.new(policies.catalog, fn {key, policy} -> {key, apply_timeout(policy, resolved, timeout)} end)
+    }
+  end
+
+  defp apply_configured_overrides(%__MODULE__{} = policy, resolved, limit, timeout) do
+    %{
+      policy
+      | limit: limit || policy.limit,
+        connection: policy.connection || resolved.name,
+        target: policy.target || :default,
+        admission_timeout_ms: timeout || policy.admission_timeout_ms
+    }
+  end
+
+  defp apply_configured_overrides(nil, _resolved, _limit, _timeout), do: nil
+
+  defp apply_timeout(%__MODULE__{} = policy, resolved, timeout) do
+    %{
+      policy
+      | connection: policy.connection || resolved.name,
+        admission_timeout_ms: timeout || policy.admission_timeout_ms
+    }
   end
 
   defp adapter_load_error(resolved, adapter, reason) do

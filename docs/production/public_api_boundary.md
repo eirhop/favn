@@ -23,8 +23,8 @@ execution with explicit shared-library/driver control:
 
 - DuckDB-backed SQL asset materialization
 - DuckDB named connections used through `Favn.SQLClient`
-- DuckDB bootstrap features such as extension install/load, DuckLake attach, and
-  catalog selection
+- DuckDB bootstrap features such as extension load, keyed DuckLake/DuckDB
+  attaches, catalog selection, and catalog-level write admission
 
 Both DuckDB plugins are supported optional dependencies. Do not add internal
 runtime apps directly for either path.
