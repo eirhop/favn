@@ -67,7 +67,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   @spec run(ADBC.Conn.t(), Resolved.t(), keyword()) :: :ok | {:error, Error.t()}
   def run(%ADBC.Conn{} = conn, %Resolved{} = resolved, opts) do
-    with {:ok, steps} <- build_steps(resolved) do
+    with {:ok, steps} <- build_steps(resolved, opts) do
       execute_steps(conn, resolved, steps, opts)
     end
   end
@@ -88,14 +88,18 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
     end
   end
 
-  defp build_configured_steps(%Resolved{} = resolved, config, _opts) do
+  defp build_configured_steps(%Resolved{} = resolved, config, opts) do
     case normalize_config(config) do
-      {:ok, normalized} -> build_normalized_steps(normalized)
+      {:ok, normalized} -> build_normalized_steps(normalized, opts)
       {:error, reason} -> {:error, config_error(resolved, reason)}
     end
   end
 
-  defp build_normalized_steps(normalized), do: {:ok, steps(normalized)}
+  defp build_normalized_steps(normalized, opts) do
+    scoped = scope_catalogs(normalized, Keyword.get(opts, :required_catalogs))
+
+    {:ok, steps(scoped)}
+  end
 
   defp execute_steps(_conn, _resolved, [], _opts), do: :ok
 
@@ -120,10 +124,17 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   defp normalize_open(open) do
     with {:ok, open} <- normalize_keyword_config(open, :open) do
       case Keyword.fetch(open, :database) do
-        {:ok, ":memory:"} -> {:ok, %{database: ":memory:"}}
-        {:ok, database} when is_binary(database) and database != "" -> {:ok, %{database: database}}
-        {:ok, _database} -> {:error, {:invalid_open_database, :expected_memory_or_non_empty_path}}
-        :error -> {:error, {:missing_open_field, :database}}
+        {:ok, ":memory:"} ->
+          {:ok, %{database: ":memory:"}}
+
+        {:ok, database} when is_binary(database) and database != "" ->
+          {:ok, %{database: database}}
+
+        {:ok, _database} ->
+          {:error, {:invalid_open_database, :expected_memory_or_non_empty_path}}
+
+        :error ->
+          {:error, {:missing_open_field, :database}}
       end
     end
   end
@@ -138,8 +149,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
          :ok <- validate_attach_secrets(attach, secrets),
          {:ok, use_catalog} <- normalize_optional_identifier(Keyword.get(normalized, :use)),
          :ok <- validate_use_catalog(use_catalog, attach) do
-      {:ok,
-       %{load: load, settings: settings, secrets: secrets, attach: attach, use: use_catalog}}
+      {:ok, %{load: load, settings: settings, secrets: secrets, attach: attach, use: use_catalog}}
     end
   end
 
@@ -242,9 +252,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
              {:ok, port} <- normalize_postgres_port(Keyword.get(secret, :port), name),
              {:ok, database} <- fetch_secret_value(secret, name, :database),
              {:ok, user} <- fetch_secret_value(secret, name, :user),
-              {:ok, password} <- normalize_postgres_password(secret, name),
-              {:ok, auth} <- normalize_postgres_auth(Keyword.get(secret, :auth), name),
-              {:ok, sslmode} <- normalize_postgres_sslmode(Keyword.get(secret, :sslmode)) do
+             {:ok, password} <- normalize_postgres_password(secret, name),
+             {:ok, auth} <- normalize_postgres_auth(Keyword.get(secret, :auth), name),
+             {:ok, sslmode} <- normalize_postgres_sslmode(Keyword.get(secret, :sslmode)) do
           if password && auth do
             {:error, {:conflicting_secret_fields, name, [:password, :auth]}}
           else
@@ -278,7 +288,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
     with {:ok, auth} <- normalize_keyword_config(auth, {:postgres_auth, name}) do
       case {Keyword.get(auth, :type), Keyword.get(auth, :provider)} do
         {:azure_postgres_entra, :managed_identity} ->
-          with {:ok, endpoint} <- normalize_managed_identity_endpoint(Keyword.get(auth, :endpoint, :auto)) do
+          with {:ok, endpoint} <-
+                 normalize_managed_identity_endpoint(Keyword.get(auth, :endpoint, :auto)) do
             {:ok,
              [
                type: :azure_postgres_entra,
@@ -299,13 +310,15 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp normalize_postgres_auth(_auth, name), do: {:error, {:invalid_secret_field, name, :auth}}
 
-  defp normalize_managed_identity_endpoint(endpoint) when endpoint in [:auto, :imds, :azure_app_service],
-    do: {:ok, endpoint}
+  defp normalize_managed_identity_endpoint(endpoint)
+       when endpoint in [:auto, :imds, :azure_app_service],
+       do: {:ok, endpoint}
 
   defp normalize_managed_identity_endpoint(endpoint),
     do: {:error, {:invalid_managed_identity_endpoint, endpoint}}
 
-  defp materialize_step(%{postgres_secret: secret, postgres_auth: auth}, opts) when is_list(auth) do
+  defp materialize_step(%{postgres_secret: secret, postgres_auth: auth}, opts)
+       when is_list(auth) do
     token_opts =
       case Keyword.get(opts, :azure_token_provider_module) do
         nil -> []
@@ -351,7 +364,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
       case type do
         :duckdb ->
           with {:ok, path} <- fetch_present_value(attach, :path),
-               {:ok, write_concurrency} <- normalize_write_concurrency(Keyword.get(attach, :write_concurrency, 1)) do
+               {:ok, write_concurrency} <-
+                 normalize_write_concurrency(Keyword.get(attach, :write_concurrency, 1)) do
             {:ok, %{name: name, type: :duckdb, path: path, write_concurrency: write_concurrency}}
           end
 
@@ -498,6 +512,48 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
       else: {:error, {:unknown_use_catalog, use_catalog}}
   end
 
+  defp scope_catalogs(normalized, nil), do: normalized
+
+  defp scope_catalogs(
+         %{attach: attach, secrets: secrets, use: use_catalog} = normalized,
+         required_catalogs
+       ) do
+    required = MapSet.new(List.wrap(required_catalogs), &to_string/1)
+    attach = Enum.filter(attach, &MapSet.member?(required, &1.name))
+    secrets = filter_scoped_secrets(secrets, attach)
+
+    use_catalog =
+      if use_catalog && Enum.any?(attach, &(&1.name == use_catalog)) do
+        use_catalog
+      end
+
+    %{normalized | attach: attach, secrets: secrets, use: use_catalog}
+  end
+
+  defp filter_scoped_secrets(secrets, attach) do
+    meta_secret_names = MapSet.new(attach, &Map.get(&1, :meta_secret))
+
+    Enum.filter(secrets, fn
+      %{type: :postgres, name: name} ->
+        MapSet.member?(meta_secret_names, name)
+
+      %{type: :azure, scope: nil} ->
+        attach != []
+
+      %{type: :azure, scope: scope} when is_binary(scope) ->
+        Enum.any?(attach, fn
+          %{data_path: data_path} when is_binary(data_path) ->
+            String.starts_with?(data_path, scope)
+
+          _attach ->
+            false
+        end)
+
+      _secret ->
+        false
+    end)
+  end
+
   defp normalize_keyword_config(nil, _context), do: {:ok, []}
 
   defp normalize_keyword_config(config, _context) when is_map(config) do
@@ -526,7 +582,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
          secrets: secrets,
          attach: attach,
          use: use_catalog
-        }) do
+       }) do
     extension_steps(:load, load) ++
       setting_steps(settings) ++
       Enum.map(secrets, &secret_step/1) ++
@@ -611,29 +667,41 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
     }
   end
 
-  defp secret_step(%{
-         name: name,
-         type: :postgres,
-         host: host,
-         port: port,
-         database: database,
-         user: user,
-         password: password,
-         auth: auth,
-         sslmode: _sslmode
-       } = secret) do
+  defp secret_step(
+         %{
+           name: name,
+           type: :postgres,
+           host: host,
+           port: port,
+           database: database,
+           user: user,
+           password: password,
+           auth: auth,
+           sslmode: _sslmode
+         } = secret
+       ) do
     step = postgres_secret_step(secret, password, auth)
 
     if is_list(auth) do
       step
-      |> Map.put(:postgres_secret, %{name: name, host: host, port: port, database: database, user: user})
+      |> Map.put(:postgres_secret, %{
+        name: name,
+        host: host,
+        port: port,
+        database: database,
+        user: user
+      })
       |> Map.put(:postgres_auth, auth)
     else
       step
     end
   end
 
-  defp postgres_secret_step(%{name: name, host: host, port: port, database: database, user: user}, password, auth) do
+  defp postgres_secret_step(
+         %{name: name, host: host, port: port, database: database, user: user},
+         password,
+         auth
+       ) do
     options = [
       "TYPE postgres",
       ["HOST ", quote_literal(host)],
@@ -653,7 +721,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
     ]
 
     safe_options =
-      safe_options ++ if(password || auth, do: [["PASSWORD ", quote_literal(:redacted)]], else: [])
+      safe_options ++
+        if(password || auth, do: [["PASSWORD ", quote_literal(:redacted)]], else: [])
 
     %{
       id: step_id(:create_secret, name),
@@ -688,12 +757,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp attach_steps(
          %{
-          name: name,
-          type: :ducklake,
-          metadata: metadata,
-          meta_secret: secret,
-          data_path: data_path
-        },
+           name: name,
+           type: :ducklake,
+           metadata: metadata,
+           meta_secret: secret,
+           data_path: data_path
+         },
          secrets
        ) do
     metadata = metadata_with_postgres_secret_options(metadata, secret, secrets)
@@ -792,8 +861,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
     old_keys = [:database, :duckdb_bootstrap, :write_concurrency]
 
     case Enum.find(old_keys, &Map.has_key?(config, &1)) do
-      nil -> :ok
-      key -> {:error, config_error(resolved, {:unsupported_duckdb_connection_key, key, @old_config_message})}
+      nil ->
+        :ok
+
+      key ->
+        {:error,
+         config_error(resolved, {:unsupported_duckdb_connection_key, key, @old_config_message})}
     end
   end
 

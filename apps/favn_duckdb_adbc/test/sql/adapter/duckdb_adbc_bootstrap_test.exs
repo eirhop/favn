@@ -63,7 +63,10 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
   end
 
   test "config schema fields accept open and duckdb config" do
-    assert [%{key: :open, type: {:custom, open_validator}}, %{key: :duckdb, type: {:custom, validator}} | _] =
+    assert [
+             %{key: :open, type: {:custom, open_validator}},
+             %{key: :duckdb, type: {:custom, validator}} | _
+           ] =
              ADBC.config_schema_fields()
 
     assert :ok = open_validator.(database: ":memory:")
@@ -126,6 +129,42 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
            ]
   end
 
+  test "required_catalogs filters planned DuckDB catalog attach steps" do
+    assert {:ok, steps} =
+             Bootstrap.build_steps(duckdb_catalogs_resolved(), required_catalogs: ["raw"])
+
+    assert planned_statements(steps) == [~s(ATTACH '.favn/data/raw.duckdb' AS "raw")]
+  end
+
+  test "nil required_catalogs preserves all planned DuckDB catalog attach steps" do
+    assert {:ok, steps} =
+             Bootstrap.build_steps(duckdb_catalogs_resolved(), required_catalogs: nil)
+
+    assert planned_statements(steps) == [
+             ~s(ATTACH '.favn/data/raw.duckdb' AS "raw"),
+             ~s(ATTACH '.favn/data/mart.duckdb' AS "mart")
+           ]
+  end
+
+  test "required_catalogs skips planned USE when configured catalog is filtered out" do
+    resolved = duckdb_catalogs_resolved(use: :mart)
+
+    assert {:ok, steps} = Bootstrap.build_steps(resolved, required_catalogs: [:raw])
+
+    assert planned_statements(steps) == [~s(ATTACH '.favn/data/raw.duckdb' AS "raw")]
+  end
+
+  test "required_catalogs filters DuckLake secrets when catalog is filtered out" do
+    assert {:ok, steps} =
+             Bootstrap.build_steps(ducklake_postgres_resolved(), required_catalogs: [:raw])
+
+    assert planned_statements(steps) == [
+             "LOAD ducklake",
+             "LOAD postgres",
+             "LOAD azure"
+           ]
+  end
+
   test "runs DuckLake bootstrap with ADLS and PostgreSQL secrets" do
     resolved = ducklake_postgres_resolved()
     {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
@@ -173,13 +212,14 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
              "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'entra-token')",
              "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
              ~s(USE "lakehouse_lake")
-            ]
+           ]
   end
 
   test "builds Azure PostgreSQL Entra bootstrap steps without fetching token" do
     resolved = ducklake_postgres_entra_resolved()
 
-    assert {:ok, steps} = Bootstrap.build_steps(resolved, azure_token_provider_module: FakeTokenProvider)
+    assert {:ok, steps} =
+             Bootstrap.build_steps(resolved, azure_token_provider_module: FakeTokenProvider)
 
     create_secret = Enum.find(steps, &(&1.id == "create_secret_lakehouse_meta"))
 
@@ -368,19 +408,25 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
     }
   end
 
-  defp duckdb_catalogs_resolved do
+  defp duckdb_catalogs_resolved(opts \\ []) do
+    use_catalog = Keyword.get(opts, :use)
+
+    duckdb = [
+      attach: [
+        raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
+        mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
+      ]
+    ]
+
+    duckdb = duckdb ++ if(use_catalog, do: [use: use_catalog], else: [])
+
     %Resolved{
       name: :important_lakehouse,
       adapter: ADBC,
       module: __MODULE__,
       config: %{
         open: [database: ":memory:"],
-        duckdb: [
-          attach: [
-            raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
-            mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
-          ]
-        ]
+        duckdb: duckdb
       },
       secret_fields: []
     }
@@ -443,5 +489,9 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
       {:execute, sql, []} -> [sql]
       _event -> []
     end)
+  end
+
+  defp planned_statements(steps) do
+    Enum.map(steps, &IO.iodata_to_binary(&1.statement))
   end
 end

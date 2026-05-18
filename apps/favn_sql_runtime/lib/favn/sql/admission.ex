@@ -29,10 +29,23 @@ defmodule Favn.SQL.Admission do
 
   def with_permit(%Session{}, _operation, _payload, fun) when is_function(fun, 0), do: fun.()
 
-  @spec acquire_session(ConcurrencyPolicy.t() | ConcurrencyPolicies.t() | nil) :: term()
-  def acquire_session(%ConcurrencyPolicies{default: default}), do: acquire_session(default)
+  @spec acquire_session(ConcurrencyPolicy.t() | ConcurrencyPolicies.t() | nil, keyword()) ::
+          term()
+  def acquire_session(policy, opts \\ [])
 
-  def acquire_session(%ConcurrencyPolicy{scope: scope} = policy) do
+  def acquire_session(%ConcurrencyPolicies{} = policies, opts) when is_list(opts) do
+    case required_catalogs(opts) do
+      [] ->
+        acquire_session(policies.default, opts)
+
+      catalogs ->
+        policies
+        |> catalog_connect_policies(catalogs)
+        |> acquire_session_policies(:connect)
+    end
+  end
+
+  def acquire_session(%ConcurrencyPolicy{scope: scope} = policy, _opts) do
     cond do
       not permit_required?(policy, :connect, nil) ->
         nil
@@ -46,7 +59,7 @@ defmodule Favn.SQL.Admission do
     end
   end
 
-  def acquire_session(_policy), do: nil
+  def acquire_session(_policy, _opts), do: nil
 
   @spec release_session(term()) :: :ok
   def release_session({_kind, scope, owner}) when owner == self() do
@@ -54,9 +67,68 @@ defmodule Favn.SQL.Admission do
     :ok
   end
 
+  def release_session(leases) when is_list(leases) do
+    Enum.each(Enum.reverse(leases), &release_session/1)
+    :ok
+  end
+
   def release_session(_lease), do: :ok
 
-  defp policy_for(%Session{concurrency_policies: %ConcurrencyPolicies{} = policies}, operation, payload) do
+  defp required_catalogs(opts) do
+    opts
+    |> Keyword.get(:required_catalogs)
+    |> List.wrap()
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
+  defp catalog_connect_policies(%ConcurrencyPolicies{} = policies, catalogs) do
+    catalogs
+    |> Enum.map(&ConcurrencyPolicies.catalog_policy(policies, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq_by(& &1.scope)
+    |> Enum.sort_by(&inspect(&1.scope))
+  end
+
+  defp acquire_session_policies([], _operation), do: nil
+
+  defp acquire_session_policies(policies, operation) do
+    Enum.reduce_while(policies, [], fn policy, leases ->
+      case acquire_catalog_connect_lease(policy, operation) do
+        {:error, %Error{}} = error ->
+          release_session(leases)
+          {:halt, error}
+
+        nil ->
+          {:cont, leases}
+
+        lease ->
+          {:cont, [lease | leases]}
+      end
+    end)
+    |> case do
+      {:error, %Error{}} = error -> error
+      leases when is_list(leases) -> Enum.reverse(leases)
+    end
+  end
+
+  defp acquire_catalog_connect_lease(%ConcurrencyPolicy{limit: :unlimited}, _operation), do: nil
+
+  defp acquire_catalog_connect_lease(%ConcurrencyPolicy{scope: scope} = policy, operation) do
+    if already_holding?(scope) do
+      increment_held(scope)
+      {:borrowed, scope, self()}
+    else
+      acquire_lease(policy, operation)
+    end
+  end
+
+  defp policy_for(
+         %Session{concurrency_policies: %ConcurrencyPolicies{} = policies},
+         operation,
+         payload
+       ) do
     case catalog_target(operation, payload) do
       {_connection, catalog} when is_binary(catalog) ->
         ConcurrencyPolicies.catalog_policy(policies, catalog) || policies.default
@@ -66,18 +138,26 @@ defmodule Favn.SQL.Admission do
     end
   end
 
-  defp policy_for(%Session{concurrency_policy: %ConcurrencyPolicy{} = policy}, _operation, _payload) do
+  defp policy_for(
+         %Session{concurrency_policy: %ConcurrencyPolicy{} = policy},
+         _operation,
+         _payload
+       ) do
     policy
   end
 
   defp policy_for(%Session{}, _operation, _payload), do: nil
 
-  defp catalog_target(:materialize, %WritePlan{connection: connection, target: %{catalog: catalog}})
+  defp catalog_target(:materialize, %WritePlan{
+         connection: connection,
+         target: %{catalog: catalog}
+       })
        when is_atom(connection) and is_binary(catalog),
        do: {connection, catalog}
 
-  defp catalog_target(:materialize, %WritePlan{target: %{catalog: catalog}}) when is_binary(catalog),
-    do: {nil, catalog}
+  defp catalog_target(:materialize, %WritePlan{target: %{catalog: catalog}})
+       when is_binary(catalog),
+       do: {nil, catalog}
 
   defp catalog_target(_operation, _payload), do: nil
 

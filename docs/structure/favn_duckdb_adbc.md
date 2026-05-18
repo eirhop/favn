@@ -15,6 +15,7 @@ Tests:
 - `apps/favn_duckdb_adbc/test/support/` for app-local ADBC fake clients,
   process-local event recording, and test-only client modes
 
-Use when changing the DuckDB ADBC adapter, result bounds, bootstrap
-diagnostics, ADBC client integration, or plugin child specs. Update test support
-when the ADBC client boundary or shared adapter test instrumentation changes.
+Use when changing the DuckDB ADBC adapter, result bounds, bootstrap diagnostics,
+scoped catalog attach behavior through `required_catalogs`, ADBC client
+integration, or plugin child specs. Update test support when the ADBC client
+boundary or shared adapter test instrumentation changes.

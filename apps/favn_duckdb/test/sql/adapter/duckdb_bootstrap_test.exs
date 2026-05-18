@@ -257,6 +257,42 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
            ]
   end
 
+  test "required_catalogs filters planned DuckDB catalog attach steps" do
+    assert {:ok, steps} =
+             Bootstrap.build_steps(duckdb_catalogs_resolved(), required_catalogs: ["raw"])
+
+    assert planned_statements(steps) == [~s(ATTACH '.favn/data/raw.duckdb' AS "raw")]
+  end
+
+  test "nil required_catalogs preserves all planned DuckDB catalog attach steps" do
+    assert {:ok, steps} =
+             Bootstrap.build_steps(duckdb_catalogs_resolved(), required_catalogs: nil)
+
+    assert planned_statements(steps) == [
+             ~s(ATTACH '.favn/data/raw.duckdb' AS "raw"),
+             ~s(ATTACH '.favn/data/mart.duckdb' AS "mart")
+           ]
+  end
+
+  test "required_catalogs skips planned USE when configured catalog is filtered out" do
+    resolved = duckdb_catalogs_resolved(use: :mart)
+
+    assert {:ok, steps} = Bootstrap.build_steps(resolved, required_catalogs: [:raw])
+
+    assert planned_statements(steps) == [~s(ATTACH '.favn/data/raw.duckdb' AS "raw")]
+  end
+
+  test "required_catalogs filters DuckLake secrets when catalog is filtered out" do
+    assert {:ok, steps} =
+             Bootstrap.build_steps(ducklake_postgres_resolved(), required_catalogs: [:raw])
+
+    assert planned_statements(steps) == [
+             "LOAD ducklake",
+             "LOAD postgres",
+             "LOAD azure"
+           ]
+  end
+
   test "runs DuckLake bootstrap with ADLS and PostgreSQL secrets" do
     resolved = ducklake_postgres_resolved()
     {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
@@ -596,19 +632,25 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
     }
   end
 
-  defp duckdb_catalogs_resolved do
+  defp duckdb_catalogs_resolved(opts \\ []) do
+    use_catalog = Keyword.get(opts, :use)
+
+    duckdb = [
+      attach: [
+        raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
+        mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
+      ]
+    ]
+
+    duckdb = duckdb ++ if(use_catalog, do: [use: use_catalog], else: [])
+
     %Resolved{
       name: :important_lakehouse,
       adapter: DuckDB,
       module: __MODULE__,
       config: %{
         open: [database: ":memory:"],
-        duckdb: [
-          attach: [
-            raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
-            mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
-          ]
-        ]
+        duckdb: duckdb
       },
       secret_fields: []
     }
@@ -676,5 +718,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBBootstrapTest do
       {:query, sql, []} -> [sql]
       _event -> []
     end)
+  end
+
+  defp planned_statements(steps) do
+    Enum.map(steps, &IO.iodata_to_binary(&1.statement))
   end
 end

@@ -17,10 +17,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Doctor, as: DoctorTask
   alias Mix.Tasks.Favn.Init, as: InitTask
   alias Mix.Tasks.Favn.Install, as: InstallTask
+  alias Mix.Tasks.Favn.Inspect, as: InspectTask
   alias Mix.Tasks.Favn.Logs, as: LogsTask
+  alias Mix.Tasks.Favn.Query, as: QueryTask
   alias Mix.Tasks.Favn.Reload, as: ReloadTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
   alias Mix.Tasks.Favn.Run, as: RunTask
+  alias Mix.Tasks.Favn.Runs, as: RunsTask
   alias Mix.Tasks.Favn.Status, as: StatusTask
   alias Mix.Tasks.Favn.Stop, as: StopTask
 
@@ -120,7 +123,6 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       {DiagnosticsTask, "favn.diagnostics"},
       {DevTask, "favn.dev"},
       {InstallTask, "favn.install"},
-      {LogsTask, "favn.logs"},
       {ReloadTask, "favn.reload"},
       {ResetTask, "favn.reset"},
       {StatusTask, "favn.status"},
@@ -135,6 +137,10 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       assert_raise Mix.Error, ~r/unexpected argument for mix #{Regex.escape(task_name)}/, fn ->
         task.run(["extra"])
       end
+    end
+
+    assert_raise Mix.Error, ~r/invalid option for mix favn.logs/, fn ->
+      LogsTask.run(["--bad-option"])
     end
   end
 
@@ -523,11 +529,44 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert Keyword.fetch!(opts, :timezone) == "Etc/UTC"
     assert Keyword.fetch!(opts, :coverage_baseline_id) == "baseline_1"
     assert Keyword.fetch!(opts, :wait) == false
+
+    assert {:ok, {:submit, "Example.Pipeline", opts}} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--window",
+               "month:2025-05..2026-05",
+               "--dry-run"
+             ])
+
+    assert Keyword.fetch!(opts, :window) == "month:2025-05..2026-05"
+    assert Keyword.fetch!(opts, :dry_run) == true
+    assert Keyword.fetch!(opts, :timezone) == "Etc/UTC"
   end
 
   test "mix favn.backfill validates submit arguments" do
     assert {:error, message} = BackfillTask.parse_args(["submit", "Example.Pipeline"])
     assert message =~ "missing required option(s): --from, --to, --kind"
+
+    assert {:ok, {:submit, "Example.Pipeline", _opts}} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--window",
+               "day:2026-01-01..2026-01-02"
+             ])
+
+    assert {:error, message} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
+               "--window",
+               "month:2025-05..2026-05",
+               "--from",
+               "2025-05-01"
+             ])
+
+    assert message == "--window cannot be combined with --from, --to, or --kind"
 
     assert {:error, message} =
              BackfillTask.parse_args([
@@ -788,6 +827,56 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
       end)
 
     assert output =~ "hello"
+  end
+
+  test "mix favn.logs accepts a run id for event output" do
+    assert {:ok, {:run_events, "run_1", opts}} = LogsTask.parse_args(["run_1", "--tail", "10"])
+    assert Keyword.fetch!(opts, :tail) == 10
+
+    assert {:error, message} = LogsTask.parse_args(["run_1", "--follow"])
+    assert message =~ "RUN_ID cannot be combined"
+  end
+
+  test "mix favn.runs parses list and show subcommands" do
+    assert {:ok, {:list, opts}} =
+             RunsTask.parse_args(["list", "--status", "error", "--limit", "5"])
+
+    assert Keyword.fetch!(opts, :status) == "error"
+    assert Keyword.fetch!(opts, :limit) == 5
+
+    assert {:ok, {:show, "run_1", []}} = RunsTask.parse_args(["show", "run_1"])
+    assert {:error, message} = RunsTask.parse_args([])
+    assert message =~ "missing subcommand"
+  end
+
+  test "mix favn.inspect parses relation and partition inspection commands" do
+    assert {:ok, {"relation", "raw.sales.orders", opts}} =
+             InspectTask.parse_args(["relation", "raw.sales.orders", "--connection", "warehouse"])
+
+    assert Keyword.fetch!(opts, :connection) == "warehouse"
+
+    assert {:ok, {"partitions", "raw.sales.orders", []}} =
+             InspectTask.parse_args(["partitions", "raw.sales.orders"])
+
+    assert {:error, usage_message} = InspectTask.parse_args(["relation"])
+    assert usage_message =~ "usage: mix favn.inspect relation RELATION"
+
+    assert {:error, invalid_message} = InspectTask.parse_args(["relation", "--bad-option"])
+    assert invalid_message == "invalid option for mix favn.inspect relation"
+  end
+
+  test "mix favn.query parses SQL query arguments" do
+    assert {:ok, {"select 1", opts}} =
+             QueryTask.parse_args(["select 1", "--connection", "warehouse", "--limit", "5"])
+
+    assert Keyword.fetch!(opts, :connection) == "warehouse"
+    assert Keyword.fetch!(opts, :limit) == 5
+
+    assert {:error, usage_message} = QueryTask.parse_args([])
+    assert usage_message =~ "usage: mix favn.query"
+
+    assert {:error, invalid_message} = QueryTask.parse_args(["select 1", "--bad-option"])
+    assert invalid_message == "invalid option for mix favn.query"
   end
 
   test "mix favn.reset removes .favn when stack is not running", %{root_dir: root_dir} do

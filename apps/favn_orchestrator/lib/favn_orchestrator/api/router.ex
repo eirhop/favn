@@ -511,9 +511,13 @@ defmodule FavnOrchestrator.API.Router do
   get "/api/orchestrator/v1/runs" do
     with :ok <- ensure_service_auth(conn),
          {:ok, _session, _actor} <- ensure_actor_context(conn, :viewer),
-         {:ok, runs} <- FavnOrchestrator.list_runs(limit: 100) do
+         {:ok, filters} <- run_filters(conn.params),
+         {:ok, runs} <- FavnOrchestrator.list_runs(filters) do
       data(conn, 200, %{items: Enum.map(runs, &DTO.run_summary/1)})
     else
+      {:error, :invalid_filter} ->
+        error(conn, 422, "validation_failed", "Invalid run query filters")
+
       {:error, :forbidden} ->
         error(conn, 403, "forbidden", "Actor does not have access")
 
@@ -819,6 +823,42 @@ defmodule FavnOrchestrator.API.Router do
 
       {:error, :unauthenticated} ->
         error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+    end
+  end
+
+  post "/api/orchestrator/v1/backfills/plan" do
+    with :ok <- ensure_service_auth(conn),
+         {:ok, _session, _actor} <- ensure_actor_context(conn, :operator),
+         {:ok, params} <- fetch_json_body(conn),
+         {:ok, plan} <- plan_backfill_from_request(params) do
+      data(conn, 200, %{plan: DTO.normalize(plan)})
+    else
+      {:error, :invalid_target} ->
+        error(conn, 422, "validation_failed", "Invalid backfill target request")
+
+      {:error, :invalid_manifest_selection} ->
+        error(conn, 422, "validation_failed", "Invalid manifest selection")
+
+      {:error, :invalid_backfill_range_request} ->
+        error(conn, 422, "validation_failed", "Invalid backfill range request")
+
+      {:error, reason} when is_tuple(reason) ->
+        range_error(conn, reason)
+
+      {:error, :active_manifest_not_set} ->
+        error(conn, 404, "not_found", "Active manifest is not set")
+
+      {:error, :forbidden} ->
+        error(conn, 403, "forbidden", "Actor does not have access")
+
+      {:error, :service_unauthorized} ->
+        error(conn, 401, "service_unauthorized", "Invalid service credentials")
+
+      {:error, :unauthenticated} ->
+        error(conn, 401, "unauthenticated", "Missing or invalid actor context")
+
+      {:error, _reason} ->
+        error(conn, 400, "bad_request", "Request failed")
     end
   end
 
@@ -1787,6 +1827,34 @@ defmodule FavnOrchestrator.API.Router do
     end
   end
 
+  defp plan_backfill_from_request(params) do
+    with :ok <- reject_backfill_lookback_params(params),
+         {:ok, target} <- fetch_target(params),
+         {:ok, manifest_version_id} <- select_manifest_version(params),
+         {:ok, range_request} <- fetch_backfill_range_request(params) do
+      plan_backfill_target(
+        manifest_version_id,
+        target,
+        backfill_submit_opts(params, range_request)
+      )
+    end
+  end
+
+  defp plan_backfill_target(manifest_version_id, %{type: "pipeline", id: target_id}, opts) do
+    FavnOrchestrator.plan_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts)
+  end
+
+  defp plan_backfill_target(
+         manifest_version_id,
+         %{type: "pipeline", module: pipeline_module},
+         opts
+       ) do
+    opts = Keyword.put(opts, :manifest_version_id, manifest_version_id)
+    FavnOrchestrator.plan_pipeline_backfill(pipeline_module, opts)
+  end
+
+  defp plan_backfill_target(_manifest_version_id, _target, _opts), do: {:error, :invalid_target}
+
   defp fetch_backfill_range_request(params) when is_map(params) do
     case Map.get(params, "range") || Map.get(params, "range_request") do
       %{} = range -> {:ok, range}
@@ -1965,11 +2033,22 @@ defmodule FavnOrchestrator.API.Router do
 
   defp fetch_target(params) when is_map(params) do
     with %{} = target <- Map.get(params, "target"),
-         {:ok, type} <- fetch_required_string(target, "type"),
-         {:ok, id} <- fetch_required_string(target, "id") do
-      case type in ["asset", "pipeline"] do
-        true -> {:ok, %{type: type, id: id}}
-        false -> {:error, :invalid_target}
+         {:ok, type} <- fetch_required_string(target, "type") do
+      cond do
+        type in ["asset", "pipeline"] and is_binary(Map.get(target, "id")) and
+            Map.get(target, "id") != "" ->
+          {:ok, %{type: type, id: Map.get(target, "id")}}
+
+        type == "pipeline" and is_binary(Map.get(target, "module")) and
+            Map.get(target, "module") != "" ->
+          case allowed_manifest_pipeline_module(Map.get(target, "module")) do
+            {:ok, module} -> {:ok, %{type: type, module: module}}
+            {:error, :invalid_manifest_pipeline_module} -> {:error, :invalid_target}
+            {:error, _reason} = error -> error
+          end
+
+        true ->
+          {:error, :invalid_target}
       end
     else
       _ -> {:error, :invalid_target}
@@ -1996,6 +2075,16 @@ defmodule FavnOrchestrator.API.Router do
     []
     |> maybe_put_int_opt(:after_sequence, Map.get(params, "after_sequence"))
     |> maybe_put_int_opt(:limit, Map.get(params, "limit"))
+  end
+
+  defp run_filters(params) when is_map(params) do
+    with {:ok, limit} <- pagination_int(Map.get(params, "limit", "100"), 1, 500),
+         {:ok, opts} <- maybe_put_status_filter([limit: limit], Map.get(params, "status")) do
+      {:ok, opts}
+    else
+      {:error, :invalid_pagination} -> {:error, :invalid_filter}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp maybe_put_int_opt(opts, _key, nil), do: opts
@@ -2204,6 +2293,13 @@ defmodule FavnOrchestrator.API.Router do
     |> send_resp(status, body)
   end
 
+  defp range_error(conn, reason) do
+    case backfill_range_error(reason) do
+      {:ok, message, details} -> error(conn, 422, "validation_failed", message, details)
+      :error -> error(conn, 400, "bad_request", "Request failed")
+    end
+  end
+
   defp command_window_policy_error(reason) do
     case window_policy_error(reason) do
       {:ok, message, details} -> {:error, 422, "validation_failed", message, details}
@@ -2265,6 +2361,10 @@ defmodule FavnOrchestrator.API.Router do
 
   defp backfill_range_error({:invalid_window_policy_kind, kind}) do
     {:ok, "Invalid backfill window kind", %{kind: inspect(kind)}}
+  end
+
+  defp backfill_range_error({:invalid_window_value, kind, value}) do
+    {:ok, "Invalid #{kind} window value", %{kind: atom_name(kind), value: value}}
   end
 
   defp backfill_range_error({:invalid_timezone, timezone}) do

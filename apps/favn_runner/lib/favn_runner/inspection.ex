@@ -20,7 +20,10 @@ defmodule FavnRunner.Inspection do
     with {:ok, sample_limit} <- normalize_sample_limit(request.sample_limit, include),
          {:ok, asset, relation_ref} <- resolve_relation(request, version),
          {:ok, session} <-
-           Client.connect(relation_ref.connection, registry_name: @runner_registry) do
+           Client.connect(
+             relation_ref.connection,
+             connect_opts(relation_ref)
+           ) do
       try do
         {:ok, inspect_with_session(asset, relation_ref, session, include, sample_limit)}
       after
@@ -57,6 +60,12 @@ defmodule FavnRunner.Inspection do
   rescue
     ArgumentError -> {:error, :invalid_relation}
   end
+
+  defp connect_opts(%RelationRef{catalog: catalog}) when is_binary(catalog) and catalog != "" do
+    [registry_name: @runner_registry, required_catalogs: [catalog]]
+  end
+
+  defp connect_opts(%RelationRef{}), do: [registry_name: @runner_registry]
 
   defp inspect_with_session(asset, relation_ref, session, include, sample_limit) do
     %RelationInspectionResult{

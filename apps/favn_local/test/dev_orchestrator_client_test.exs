@@ -279,6 +279,46 @@ defmodule Favn.Dev.OrchestratorClientTest do
                     "/api/orchestrator/v1/assets/window-states?asset_ref_module=MyApp.Asset&asset_ref_name=asset"}
   end
 
+  test "list_runs/4 parses runs and encodes filters" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"items":[{"id":"run_1","status":"error"}]}}), 200,
+        parent: parent
+      )
+
+    assert {:ok, [%{"id" => "run_1", "status" => "error"}]} =
+             OrchestratorClient.list_runs(
+               base_url,
+               "token",
+               %{"local_dev_context" => "trusted"},
+               status: "error",
+               limit: 5
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/runs?status=error&limit=5"}
+  end
+
+  test "list_run_events/5 parses run event responses" do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(~s({"data":{"items":[{"sequence":1,"event_type":"run_started"}]}}), 200,
+        parent: parent
+      )
+
+    assert {:ok, [%{"sequence" => 1, "event_type" => "run_started"}]} =
+             OrchestratorClient.list_run_events(
+               base_url,
+               "token",
+               %{"local_dev_context" => "trusted"},
+               "run_1",
+               limit: 20
+             )
+
+    assert_receive {:request_path, "/api/orchestrator/v1/runs/run_1/events?limit=20"}
+  end
+
   defp start_server(body, status, opts \\ []) when is_binary(body) and is_integer(status) do
     parent = Keyword.get(opts, :parent)
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])

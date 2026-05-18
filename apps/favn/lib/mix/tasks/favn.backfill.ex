@@ -7,15 +7,18 @@ defmodule Mix.Tasks.Favn.Backfill do
   Submits and inspects operational backfills in the running local Favn dev stack.
 
       mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
+      mix favn.backfill submit MyApp.Pipelines.Daily --window month:2025-05..2026-05 --dry-run
       mix favn.backfill windows RUN_ID
       mix favn.backfill coverage-baselines
       mix favn.backfill asset-window-states
       mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01
       mix favn.backfill repair --pipeline-module MyApp.Pipelines.Daily --apply
 
-  The local CLI submit path currently accepts explicit `--from`/`--to`/`--kind`
-  ranges only. By default `submit` waits for the parent backfill run to finish.
-  Use `--no-wait` to return after submission. Use `--wait-timeout-ms` for local
+  The local CLI submit path accepts explicit `--from`/`--to`/`--kind` ranges or
+  compact `--window kind:FROM..TO` syntax for `hour`, `day`, `month`, and `year`
+  windows. Use `--dry-run` to print the resolved windows without creating runs.
+  By default `submit` waits for the parent backfill run to finish. Use
+  `--no-wait` to return after submission. Use `--wait-timeout-ms` for local
   polling and `--run-timeout-ms` for child run execution timeout.
   """
 
@@ -26,6 +29,8 @@ defmodule Mix.Tasks.Favn.Backfill do
     from: :string,
     to: :string,
     kind: :string,
+    window: :string,
+    dry_run: :boolean,
     timezone: :string,
     coverage_baseline_id: :string,
     wait: :boolean,
@@ -103,21 +108,25 @@ defmodule Mix.Tasks.Favn.Backfill do
   def parse_args(["submit" | args]) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: @submit_switches)
 
-    case {invalid, rest, missing_submit_opts(opts)} do
-      {[], [pipeline_module], []} ->
-        {:ok, {:submit, pipeline_module, with_default_timezone(opts)}}
+    cond do
+      invalid != [] ->
+        {:error, "invalid option for mix favn.backfill submit"}
 
-      {[], [_pipeline_module], missing} ->
-        {:error, "missing required option(s): #{join_options(missing)}"}
-
-      {[], [], _missing} ->
+      rest == [] ->
         {:error, "missing pipeline module; usage: #{submit_usage()}"}
 
-      {[], _many, _missing} ->
+      length(rest) > 1 ->
         {:error, "expected one pipeline module; usage: #{submit_usage()}"}
 
-      {_invalid, _rest, _missing} ->
-        {:error, "invalid option for mix favn.backfill submit"}
+      mixed_submit_range_flags?(opts) ->
+        {:error, "--window cannot be combined with --from, --to, or --kind"}
+
+      missing_submit_opts(opts) != [] ->
+        {:error, "missing required option(s): #{join_options(missing_submit_opts(opts))}"}
+
+      true ->
+        [pipeline_module] = rest
+        {:ok, {:submit, pipeline_module, with_default_timezone(opts)}}
     end
   end
 
@@ -180,8 +189,12 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp submit(pipeline_module, opts) do
     case Dev.submit_backfill(pipeline_module, opts) do
-      {:ok, run} ->
-        print_run("Submitted pipeline backfill", run)
+      {:ok, run_or_plan} ->
+        if Keyword.get(opts, :dry_run, false) do
+          print_plan("Backfill dry run", run_or_plan)
+        else
+          print_run("Submitted pipeline backfill", run_or_plan)
+        end
 
       {:error, {:run_failed, run}} ->
         print_run("Submitted pipeline backfill", run)
@@ -277,9 +290,18 @@ defmodule Mix.Tasks.Favn.Backfill do
   end
 
   defp missing_submit_opts(opts) do
-    [:from, :to, :kind]
-    |> Enum.reject(fn key -> Keyword.get(opts, key) not in [nil, ""] end)
-    |> Enum.map(&option_name/1)
+    if Keyword.get(opts, :window) not in [nil, ""] do
+      []
+    else
+      [:from, :to, :kind]
+      |> Enum.reject(fn key -> Keyword.get(opts, key) not in [nil, ""] end)
+      |> Enum.map(&option_name/1)
+    end
+  end
+
+  defp mixed_submit_range_flags?(opts) do
+    Keyword.get(opts, :window) not in [nil, ""] and
+      Enum.any?([:from, :to, :kind], &(Keyword.get(opts, &1) not in [nil, ""]))
   end
 
   defp with_default_timezone(opts), do: Keyword.put_new(opts, :timezone, "Etc/UTC")
@@ -306,6 +328,12 @@ defmodule Mix.Tasks.Favn.Backfill do
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"
 
+  defp error_message({:invalid_window_range, _value}),
+    do: "--window must use KIND:FROM..TO syntax, for example month:2025-05..2026-05"
+
+  defp error_message(:mixed_window_range_options),
+    do: "--window cannot be combined with --from, --to, or --kind"
+
   defp error_message({:orchestrator_validation_failed, message}), do: message
   defp error_message(reason), do: "backfill failed: #{inspect(reason)}"
 
@@ -331,6 +359,22 @@ defmodule Mix.Tasks.Favn.Backfill do
     if Map.get(pagination, "has_more") do
       IO.puts("next page: pass --offset #{Map.fetch!(pagination, "next_offset")}")
     end
+  end
+
+  defp print_plan(title, plan) when is_map(plan) do
+    IO.puts(title)
+    IO.puts("manifest: #{plan["manifest_version_id"] || "unknown"}")
+    IO.puts("target: #{plan["target_id"] || "unknown"}")
+    IO.puts("pipeline: #{plan["pipeline_module"] || "unknown"}")
+    IO.puts("kind: #{plan["kind"] || "unknown"}")
+    IO.puts("timezone: #{plan["timezone"] || "unknown"}")
+    IO.puts("windows: #{plan["window_count"] || 0}")
+    IO.puts("range_start_at: #{plan["range_start_at"] || "unknown"}")
+    IO.puts("range_end_at: #{plan["range_end_at"] || "unknown"}")
+
+    plan
+    |> Map.get("window_keys", [])
+    |> Enum.each(&IO.puts("window: #{&1}"))
   end
 
   defp print_repair_report(report) when is_map(report) do
@@ -371,6 +415,6 @@ defmodule Mix.Tasks.Favn.Backfill do
   end
 
   defp submit_usage do
-    "mix favn.backfill submit MyApp.Pipelines.Daily --from YYYY-MM-DD --to YYYY-MM-DD --kind day"
+    "mix favn.backfill submit MyApp.Pipelines.Daily --from YYYY-MM-DD --to YYYY-MM-DD --kind day | --window day:YYYY-MM-DD..YYYY-MM-DD"
   end
 end
