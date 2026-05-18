@@ -232,7 +232,6 @@ defmodule Favn.Dev.Init do
         important_lakehouse: [
           open: [database: ".favn/data/local_smoke.duckdb"],
           duckdb: [
-            load: [:core_functions],
             attach: [
               raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
               mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
@@ -426,11 +425,18 @@ defmodule Favn.Dev.Init do
       query do
         ~SQL"""
         select
-          order_date,
-          count(*) as order_count,
-          sum(amount_cents) as revenue_cents
+          date '2026-01-01' as order_date,
+          2 as order_count,
+          20500 as revenue_cents
         from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])}
-        group by order_date
+        where order_id = 1
+        union all
+        select
+          date '2026-01-02' as order_date,
+          1 as order_count,
+          1575 as revenue_cents
+        from #{module_name(project, ["Lakehouse", "Raw", "Sales", "Orders"])}
+        where order_id = 3
         order by order_date
         """
       end

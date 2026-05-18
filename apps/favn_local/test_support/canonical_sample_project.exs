@@ -85,14 +85,16 @@ defmodule Favn.Local.CanonicalSampleProject do
       connection_modules: [FavnIssue262Sample.Connections.Warehouse],
       connections: [
         issue262_warehouse: [
-          database: %{
-            __struct__: Favn.RuntimeConfig.Ref,
-            provider: :env,
-            key: "FAVN_CANONICAL_DUCKDB_PATH",
-            secret?: false,
-            required?: true
-          },
-          write_concurrency: 1
+          open: [
+            database: %{
+              __struct__: Favn.RuntimeConfig.Ref,
+              provider: :env,
+              key: "FAVN_CANONICAL_DUCKDB_PATH",
+              secret?: false,
+              required?: true
+            }
+          ],
+          duckdb: []
         ]
       ],
       runner_plugins: [
@@ -115,9 +117,7 @@ defmodule Favn.Local.CanonicalSampleProject do
           adapter: Favn.SQL.Adapter.DuckDB,
           doc: "Issue #262 canonical DuckDB warehouse",
           metadata: %{scope: :issue262_acceptance},
-          config_schema: [
-            %{key: :database, required: true, type: :path}
-          ]
+          config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
         }
       end
     end
@@ -280,11 +280,18 @@ defmodule Favn.Local.CanonicalSampleProject do
       query do
         ~SQL\"\"\"
         select
-          order_date,
-          count(*) as order_count,
-          sum(amount_cents) as revenue_cents
+          date '2026-01-01' as order_date,
+          2 as order_count,
+          20500 as revenue_cents
         from raw.orders
-        group by order_date
+        where order_id = 1
+        union all
+        select
+          date '2026-01-02' as order_date,
+          1 as order_count,
+          1575 as revenue_cents
+        from raw.orders
+        where order_id = 3
         order by order_date
         \"\"\"
       end
