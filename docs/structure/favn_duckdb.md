@@ -19,3 +19,11 @@ generation, bootstrap diagnostics, scoped catalog attach behavior through
 `required_catalogs`, runtime placement, worker lifecycle, or DuckDB plugin child
 specs. Update test support when the DuckDB client boundary or shared adapter test
 instrumentation changes.
+
+DuckDB connection config is adapter-owned. The public runtime shape uses
+`open: [...]` for the session database, optional connection-level `pool: [...]`
+for runner-local warm session reuse, and `duckdb: [...]` for extension load,
+settings, secrets, keyed attaches, and optional catalog selection. Pool reuse is
+safe only for matching connection/config hash, required catalog set, and adapter
+fingerprint; checked-out sessions are exclusive to one asset execution. Pooling
+must not bypass catalog/write admission or retry unknown-outcome writes.

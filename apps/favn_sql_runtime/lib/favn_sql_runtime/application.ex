@@ -5,7 +5,7 @@ defmodule FavnSQLRuntime.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [Favn.SQL.Admission.Limiter]
+    children = [Favn.SQL.Admission.Limiter, Favn.SQL.SessionPool]
     Supervisor.start_link(children, strategy: :one_for_one, name: FavnSQLRuntime.Supervisor)
   end
 end

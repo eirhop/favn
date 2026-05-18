@@ -172,7 +172,10 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp query_render(%Render{} = rendered, statement, phase, opts) do
     with_session(rendered.connection, opts, required_catalogs(rendered), fn session ->
-      SQLClient.query(session, statement, params: adapter_params(rendered.params))
+      SQLClient.query(session, statement,
+        params: adapter_params(rendered.params),
+        read_only?: true
+      )
     end)
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
@@ -300,7 +303,7 @@ defmodule Favn.SQLAsset.Runtime do
        phase: phase,
        asset_ref: asset_ref,
        message: safe_error.message || "SQL execution failed",
-       details: %{connection: safe_error.connection, operation: safe_error.operation},
+       details: sql_error_details(safe_error, phase),
        cause: safe_error
      }}
   end
@@ -326,6 +329,34 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp adapter_params(%Params{} = params), do: Params.to_adapter_params(params)
+
+  defp sql_error_details(%SQLError{} = error, phase) do
+    classification = Map.get(error.details || %{}, :classification)
+
+    %{
+      connection: error.connection,
+      operation: error.operation,
+      retryable?: error.retryable? == true,
+      classification: classification,
+      asset_retryable?: sql_asset_retryable?(phase, error, classification)
+    }
+  end
+
+  defp sql_asset_retryable?(phase, %SQLError{} = error, classification) do
+    cond do
+      classification in [:unknown_commit_state, :unknown_outcome_timeout] ->
+        false
+
+      phase in [:preview, :explain] ->
+        error.retryable? == true
+
+      error.operation in [:connect, :bootstrap] ->
+        error.retryable? != false
+
+      true ->
+        false
+    end
+  end
 
   defp manifest_definition(
          %Asset{type: :sql, sql_execution: %SQLExecution{} = payload} = asset,

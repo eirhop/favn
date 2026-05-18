@@ -3,6 +3,52 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.ErrorMapper do
 
   alias Favn.SQL.Error
 
+  @capacity_reason_atoms [
+    :capacity,
+    :capacity_exceeded,
+    :metadata_capacity,
+    :resource_exhausted,
+    :too_many_connections,
+    :too_many_requests
+  ]
+
+  @capacity_reason_fragments [
+    "capacity",
+    "metadata capacity",
+    "resource exhausted",
+    "too many connections",
+    "too many requests",
+    "rate limit",
+    "rate-limit",
+    "throttl",
+    "out of memory",
+    "no space left"
+  ]
+
+  @spec classify(term(), keyword()) :: Favn.SQL.Adapter.error_classification()
+  def classify(%Error{} = error, _opts) do
+    classification =
+      get_in(error.details || %{}, [:classification]) || classification(error.operation, error)
+
+    %{
+      classification: classification,
+      retryable?: error.retryable? == true,
+      capacity?: classification == :capacity,
+      unknown_outcome?: classification == :unknown_outcome_timeout
+    }
+  end
+
+  def classify(reason, _opts) do
+    classification = classification(:query, reason)
+
+    %{
+      classification: classification,
+      retryable?: retryable_reason?(reason),
+      capacity?: classification == :capacity,
+      unknown_outcome?: classification == :unknown_outcome_timeout
+    }
+  end
+
   @spec normalize(atom(), atom() | nil, term()) :: Error.t()
   def normalize(operation, connection, reason) do
     %Error{
@@ -48,6 +94,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.ErrorMapper do
   end
 
   defp classification(:connect, :invalid_database), do: :invalid_config
+  defp classification(_operation, :worker_call_timeout), do: :unknown_outcome_timeout
   defp classification(:connect, _reason), do: :connection
   defp classification(:ping, _reason), do: :connection
 
@@ -59,10 +106,18 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.ErrorMapper do
   defp classification(_operation, {:result_byte_limit_exceeded, _bytes, _limit}),
     do: :bounded_result
 
+  defp classification(_operation, reason) when reason in @capacity_reason_atoms, do: :capacity
+  defp classification(_operation, {:error, reason}), do: classification(:query, reason)
   defp classification(_operation, reason) when reason in [:busy, :locked], do: :conflict
 
   defp classification(_operation, reason) when is_binary(reason) do
-    if String.contains?(String.downcase(reason), "conflict"), do: :conflict, else: :execution
+    downcased = String.downcase(reason)
+
+    cond do
+      capacity_reason_text?(downcased) -> :capacity
+      String.contains?(downcased, "conflict") -> :conflict
+      true -> :execution
+    end
   end
 
   defp classification(_operation, %_{} = exception), do: exception.__struct__
@@ -85,17 +140,28 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.ErrorMapper do
     "DuckDB ADBC result is #{bytes} bytes after conversion, exceeding the configured limit of #{limit}; write large results to an explicit external path with DuckDB SQL"
   end
 
+  defp error_message(:worker_call_timeout),
+    do: "DuckDB ADBC call timed out; operation outcome is unknown"
+
   defp error_message(reason) when is_binary(reason), do: reason
   defp error_message(%{message: message}) when is_binary(message), do: message
   defp error_message(%_{} = exception), do: Exception.message(exception)
   defp error_message({:error, message}) when is_binary(message), do: message
   defp error_message(_reason), do: "DuckDB ADBC operation failed"
 
+  defp retryable_reason?(:worker_call_timeout), do: false
+  defp retryable_reason?(reason) when reason in @capacity_reason_atoms, do: true
   defp retryable_reason?(reason) when reason in [:busy, :locked], do: true
   defp retryable_reason?({:error, reason}), do: retryable_reason?(reason)
 
-  defp retryable_reason?(reason) when is_binary(reason),
-    do: String.contains?(String.downcase(reason), "conflict")
+  defp retryable_reason?(reason) when is_binary(reason) do
+    downcased = String.downcase(reason)
+    capacity_reason_text?(downcased) or String.contains?(downcased, "conflict")
+  end
 
   defp retryable_reason?(_reason), do: false
+
+  defp capacity_reason_text?(downcased_reason) do
+    Enum.any?(@capacity_reason_fragments, &String.contains?(downcased_reason, &1))
+  end
 end

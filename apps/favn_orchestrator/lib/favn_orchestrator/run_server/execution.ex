@@ -995,6 +995,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     cleared = clear_inflight_execution(run_state, execution_id)
     step_status = map_runner_status(result.status)
     {event_type, retryable?} = step_outcome(step_status)
+    retryable? = retryable? and runner_result_retryable?(result)
 
     step_state =
       RunState.transition(cleared,
@@ -1902,6 +1903,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           )
 
         {event_type, retryable?} = step_outcome(step_finished.status)
+        retryable? = retryable? and runner_result_retryable?(result)
 
         case Persistence.persist_run_step(step_finished, event_type, %{
                asset_ref: asset_ref,
@@ -2104,6 +2106,29 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp step_outcome(:timed_out), do: {:step_timed_out, true}
   defp step_outcome(:error), do: {:step_failed, true}
   defp step_outcome(_other), do: {:step_failed, true}
+
+  defp runner_result_retryable?(%RunnerResult{error: error, asset_results: asset_results}) do
+    structured_retryable?(error) and Enum.all?(asset_results || [], &asset_result_retryable?/1)
+  end
+
+  defp runner_result_retryable?(_result), do: true
+
+  defp asset_result_retryable?(%AssetResult{error: error}), do: structured_retryable?(error)
+  defp asset_result_retryable?(%{error: error}), do: structured_retryable?(error)
+  defp asset_result_retryable?(%{"error" => error}), do: structured_retryable?(error)
+  defp asset_result_retryable?(_result), do: true
+
+  defp structured_retryable?(%{details: details}) when is_map(details),
+    do: retryable_detail?(Map.get(details, :asset_retryable?))
+
+  defp structured_retryable?(%{"details" => details}) when is_map(details),
+    do: retryable_detail?(Map.get(details, "asset_retryable?"))
+
+  defp structured_retryable?(_error), do: true
+
+  defp retryable_detail?(false), do: false
+  defp retryable_detail?("false"), do: false
+  defp retryable_detail?(_other), do: true
 
   defp normalize_results(results) when is_list(results),
     do: Enum.map(results, &sanitize_asset_result/1)

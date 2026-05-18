@@ -5,8 +5,9 @@ defmodule Favn.Connection.Validator do
   alias Favn.Connection.Error
   alias Favn.Connection.Resolved
   alias Favn.RuntimeConfig.Resolver, as: RuntimeConfigResolver
+  alias Favn.SQL.PoolConfig
 
-  @reserved_runtime_keys [:write_concurrency, :admission_timeout_ms]
+  @reserved_runtime_keys [:write_concurrency, :admission_timeout_ms, :pool]
 
   @spec validate_definition(Definition.t()) :: :ok | {:error, [Error.t()]}
   def validate_definition(%Definition{} = definition) do
@@ -47,7 +48,8 @@ defmodule Favn.Connection.Validator do
     merged = Map.merge(defaults, runtime_values)
 
     with [] <- maybe_add_unknown_keys_error([], definition, unknown),
-         {:ok, resolved_values} <- resolve_runtime_refs(definition, merged) do
+         {:ok, resolved_values} <- resolve_runtime_refs(definition, merged),
+         {:ok, resolved_values} <- normalize_reserved_runtime_config(definition, resolved_values) do
       errors =
         []
         |> validate_required(definition, resolved_values)
@@ -90,6 +92,26 @@ defmodule Favn.Connection.Validator do
       module: definition.module,
       connection: definition.name,
       details: %{key: key, provider: error.provider, env: error.key, secret?: error.secret?},
+      message: error.message
+    }
+  end
+
+  defp normalize_reserved_runtime_config(definition, values) do
+    case PoolConfig.parse(Map.get(values, :pool)) do
+      {:ok, pool_config} ->
+        {:ok, Map.put(values, :pool, pool_config)}
+
+      {:error, error} ->
+        {:error, [pool_config_error(definition, error)]}
+    end
+  end
+
+  defp pool_config_error(definition, error) do
+    %Error{
+      type: :invalid_type,
+      module: definition.module,
+      connection: definition.name,
+      details: Map.put(error.details, :key, :pool),
       message: error.message
     }
   end

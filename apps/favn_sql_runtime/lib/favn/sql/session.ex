@@ -3,6 +3,7 @@ defmodule Favn.SQL.Session do
 
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Capabilities, ConcurrencyPolicies, ConcurrencyPolicy}
+  alias Favn.SQL.SessionPool.Checkout
 
   @enforce_keys [:adapter, :resolved, :conn, :capabilities]
   defstruct [
@@ -12,7 +13,8 @@ defmodule Favn.SQL.Session do
     :capabilities,
     :concurrency_policy,
     :concurrency_policies,
-    :admission_lease
+    :admission_lease,
+    :pool_checkout
   ]
 
   @type t :: %__MODULE__{
@@ -22,6 +24,7 @@ defmodule Favn.SQL.Session do
           capabilities: Capabilities.t(),
           concurrency_policy: ConcurrencyPolicy.t() | nil,
           concurrency_policies: ConcurrencyPolicies.t() | nil,
-          admission_lease: term()
+          admission_lease: term(),
+          pool_checkout: Checkout.t() | nil
         }
 end

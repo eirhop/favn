@@ -177,6 +177,19 @@ Production DuckDB behavior covers or must preserve:
   local files default to single-admitted SQL sessions against the same database
   path unless the connection explicitly configures another safe policy. Admission
   timeouts are retryable structured SQL errors with the blocked scope and timeout.
+- Optional runner-local DuckDB/ADBC session pooling through connection-level
+  `pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling
+  reuses warm sessions inside one runner BEAM when the connection/config hash,
+  required catalog set, and adapter fingerprint match. Checked-out sessions are
+  exclusive to one asset execution, and catalog/write concurrency still bounds
+  active work and new session/bootstrap.
+- Pooling is not distributed across runner nodes and does not by itself solve
+  multi-runner DuckLake metadata pressure. Low-tier Azure PostgreSQL metadata
+  catalogs should still use conservative DuckLake catalog `write_concurrency` and
+  consider PgBouncer or metadata database scaling when pressure appears.
+- Safe retries for DuckDB are bounded around session creation/bootstrap and
+  read-only inspection/query. Favn must not blindly retry SQL writes, and unknown
+  commit state must be surfaced rather than retried.
 - Bounded normal query results returned to Elixir by row count and converted
   result byte size. Large outputs must be written by explicit DuckDB SQL such as
   `COPY (...) TO '/path/file.parquet' (FORMAT parquet)` rather than hidden

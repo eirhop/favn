@@ -37,13 +37,21 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     def query(_conn_ref, sql, params) do
       result_ref = make_ref()
       TestSupport.record({:query, result_ref, sql, params})
-      {:ok, result_ref}
+
+      case TestSupport.mode(:query_mode, :ok) do
+        :metadata_capacity -> {:error, "DuckLake metadata capacity exceeded; retry later"}
+        :ok -> {:ok, result_ref}
+      end
     end
 
     @impl true
     def execute(_conn_ref, sql, params) do
       TestSupport.record({:execute, sql, params})
-      {:ok, 2}
+
+      case TestSupport.mode(:execute_mode, :ok) do
+        :error -> {:error, :execute_failed}
+        :ok -> {:ok, 2}
+      end
     end
 
     @impl true
@@ -77,6 +85,17 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
       end
     end
 
+    @impl true
+    def rollback(conn_ref) do
+      TestSupport.record({:rollback, conn_ref})
+
+      case TestSupport.mode(:rollback_mode, :ok) do
+        :ok -> :ok
+        :no_active_transaction -> {:error, "TransactionContext Error: no active transaction"}
+        :error -> {:error, :rollback_failed}
+      end
+    end
+
     defp row(result_ref) do
       sql = result_sql(result_ref)
 
@@ -104,8 +123,11 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   setup do
     TestSupport.start_events()
     TestSupport.put_mode(:open_mode, :ok)
+    TestSupport.put_mode(:query_mode, :ok)
+    TestSupport.put_mode(:execute_mode, :ok)
     TestSupport.put_mode(:columns_mode, :ok)
     TestSupport.put_mode(:fetch_mode, :ok)
+    TestSupport.put_mode(:rollback_mode, :ok)
 
     on_exit(fn -> TestSupport.reset() end)
 
@@ -216,6 +238,74 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
               status: :unavailable,
               preflight: %{stage: :connect, error_type: :connection_error}
             }} = ADBC.diagnostics(resolved(), duckdb_adbc_client: FakeClient)
+  end
+
+  test "pool lifecycle hooks validate, reset rollback, and restore configured USE" do
+    resolved = %Resolved{
+      resolved()
+      | config: %{
+          open: [database: ":memory:"],
+          duckdb: [attach: [lake: [type: :ducklake]], use: :lake]
+        }
+    }
+
+    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
+
+    assert ADBC.poolable?(resolved, [])
+
+    assert %{adapter: ADBC, client: FakeClient, driver: "/opt/duckdb/libduckdb.so"} =
+             ADBC.pool_fingerprint(resolved,
+               duckdb_adbc_client: FakeClient,
+               duckdb_adbc: [driver: "/opt/duckdb/libduckdb.so"]
+             )
+
+    assert :ok = ADBC.validate_session(conn, [])
+    assert :ok = ADBC.reset_session(conn, resolved, required_catalogs: [:lake])
+
+    assert Enum.any?(events(), fn
+             {:rollback, _conn_ref} -> true
+             _event -> false
+           end)
+
+    assert Enum.any?(events(), fn
+             {:execute, "USE \"lake\"", []} -> true
+             _event -> false
+           end)
+  end
+
+  test "pool reset tolerates no-active-transaction rollback and skips USE outside required catalogs" do
+    TestSupport.put_mode(:rollback_mode, :no_active_transaction)
+
+    resolved = %Resolved{
+      resolved()
+      | config: %{
+          open: [database: ":memory:"],
+          duckdb: [attach: [lake: [type: :ducklake]], use: :lake]
+        }
+    }
+
+    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
+
+    assert :ok = ADBC.reset_session(conn, resolved, required_catalogs: [:main])
+
+    refute Enum.any?(events(), fn
+             {:execute, "USE \"lake\"", []} -> true
+             _event -> false
+           end)
+  end
+
+  test "metadata capacity errors classify as retryable capacity" do
+    TestSupport.put_mode(:query_mode, :metadata_capacity)
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+
+    assert {:error,
+            %Error{
+              retryable?: true,
+              details: %{classification: :capacity}
+            }} = ADBC.query(conn, "SELECT 1", [])
+
+    assert %{classification: :capacity, retryable?: true, capacity?: true} =
+             ADBC.classify_error("DuckLake metadata capacity exceeded; retry later", [])
   end
 
   test "ducklake storage stays conservative by default" do
