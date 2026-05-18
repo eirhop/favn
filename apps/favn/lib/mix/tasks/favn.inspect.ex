@@ -17,18 +17,26 @@ defmodule Mix.Tasks.Favn.Inspect do
   @switches [connection: :string]
 
   @impl Mix.Task
-  def run([command | rest]) when command in ["relation", "partitions"] do
-    {opts, args, invalid} = OptionParser.parse(rest, strict: @switches)
-
-    case {invalid, args} do
-      {[], [relation]} -> run_command(command, relation, opts)
-      {[], _other} -> Mix.raise("usage: mix favn.inspect #{command} RELATION [--connection NAME]")
-      {_invalid, _args} -> Mix.raise("invalid option for mix favn.inspect #{command}")
+  def run(args) do
+    case parse_args(args) do
+      {:ok, {command, relation, opts}} -> run_command(command, relation, opts)
+      {:error, message} -> Mix.raise(message)
     end
   end
 
-  def run(_args) do
-    Mix.raise("usage: mix favn.inspect relation RELATION | mix favn.inspect partitions RELATION")
+  @doc false
+  def parse_args([command | rest]) when command in ["relation", "partitions"] do
+    {opts, args, invalid} = OptionParser.parse(rest, strict: @switches)
+
+    case {invalid, args} do
+      {[], [relation]} -> {:ok, {command, relation, opts}}
+      {[], _other} -> {:error, "usage: mix favn.inspect #{command} RELATION [--connection NAME]"}
+      {_invalid, _args} -> {:error, "invalid option for mix favn.inspect #{command}"}
+    end
+  end
+
+  def parse_args(_args) do
+    {:error, "usage: mix favn.inspect relation RELATION | mix favn.inspect partitions RELATION"}
   end
 
   defp run_command("relation", relation, opts) do

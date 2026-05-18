@@ -108,21 +108,25 @@ defmodule Mix.Tasks.Favn.Backfill do
   def parse_args(["submit" | args]) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: @submit_switches)
 
-    case {invalid, rest, missing_submit_opts(opts)} do
-      {[], [pipeline_module], []} ->
-        {:ok, {:submit, pipeline_module, with_default_timezone(opts)}}
+    cond do
+      invalid != [] ->
+        {:error, "invalid option for mix favn.backfill submit"}
 
-      {[], [_pipeline_module], missing} ->
-        {:error, "missing required option(s): #{join_options(missing)}"}
-
-      {[], [], _missing} ->
+      rest == [] ->
         {:error, "missing pipeline module; usage: #{submit_usage()}"}
 
-      {[], _many, _missing} ->
+      length(rest) > 1 ->
         {:error, "expected one pipeline module; usage: #{submit_usage()}"}
 
-      {_invalid, _rest, _missing} ->
-        {:error, "invalid option for mix favn.backfill submit"}
+      mixed_submit_range_flags?(opts) ->
+        {:error, "--window cannot be combined with --from, --to, or --kind"}
+
+      missing_submit_opts(opts) != [] ->
+        {:error, "missing required option(s): #{join_options(missing_submit_opts(opts))}"}
+
+      true ->
+        [pipeline_module] = rest
+        {:ok, {:submit, pipeline_module, with_default_timezone(opts)}}
     end
   end
 
@@ -295,6 +299,11 @@ defmodule Mix.Tasks.Favn.Backfill do
     end
   end
 
+  defp mixed_submit_range_flags?(opts) do
+    Keyword.get(opts, :window) not in [nil, ""] and
+      Enum.any?([:from, :to, :kind], &(Keyword.get(opts, &1) not in [nil, ""]))
+  end
+
   defp with_default_timezone(opts), do: Keyword.put_new(opts, :timezone, "Etc/UTC")
 
   defp error_message(:stack_not_running), do: "stack not running; use mix favn.dev"
@@ -321,6 +330,9 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp error_message({:invalid_window_range, _value}),
     do: "--window must use KIND:FROM..TO syntax, for example month:2025-05..2026-05"
+
+  defp error_message(:mixed_window_range_options),
+    do: "--window cannot be combined with --from, --to, or --kind"
 
   defp error_message({:orchestrator_validation_failed, message}), do: message
   defp error_message(reason), do: "backfill failed: #{inspect(reason)}"

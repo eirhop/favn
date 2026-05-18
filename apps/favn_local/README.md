@@ -279,8 +279,9 @@ is out of sync.
 - `mix favn.inspect relation RELATION` and `mix favn.inspect partitions RELATION`
   inspect configured SQL relations; pass `--connection NAME` when multiple Favn
   SQL connections are configured
-- `mix favn.query "select ..."` runs read-only SQL by default; pass
-  `--allow-write` only for deliberate local mutation
+- `mix favn.query "select ..."` uses a best-effort read-only guardrail by
+  default; this is not a SQL sandbox or security boundary. Pass `--allow-write`
+  only for deliberate local mutation
 - `mix favn.reset` removes `.favn/` after verifying no managed services are
   still running
 

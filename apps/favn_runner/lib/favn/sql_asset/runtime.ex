@@ -260,6 +260,8 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp required_catalogs(%Render{} = rendered) do
+    # Catalog scope comes from manifest-declared relation ownership and resolved
+    # Favn asset references, not by parsing arbitrary SQL text.
     catalogs =
       [rendered.relation | resolved_relations(rendered.resolved_asset_refs)]
       |> Enum.flat_map(&relation_catalog/1)

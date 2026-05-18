@@ -8,9 +8,10 @@ defmodule Mix.Tasks.Favn.Query do
 
       mix favn.query "select * from raw.mercatus.inventory_by_day"
 
-  Queries are read-only by default. Pass `--allow-write` for deliberate local
-  mutation and `--connection NAME` when more than one SQL connection is
-  configured.
+  Queries use a best-effort read-only guardrail by default. This prevents common
+  accidental mutations before connecting, but it is not a SQL sandbox or security
+  boundary. Pass `--allow-write` for deliberate local mutation and `--connection
+  NAME` when more than one SQL connection is configured.
   """
 
   alias Favn.Dev
@@ -19,19 +20,26 @@ defmodule Mix.Tasks.Favn.Query do
 
   @impl Mix.Task
   def run(args) do
+    case parse_args(args) do
+      {:ok, {sql, opts}} -> run_query(sql, opts)
+      {:error, message} -> Mix.raise(message)
+    end
+  end
+
+  @doc false
+  def parse_args(args) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: @switches)
 
     case {invalid, rest} do
       {[], [sql]} ->
-        run_query(sql, opts)
+        {:ok, {sql, opts}}
 
       {[], _other} ->
-        Mix.raise(
-          "usage: mix favn.query \"select ...\" [--connection NAME] [--limit N] [--allow-write]"
-        )
+        {:error,
+         "usage: mix favn.query \"select ...\" [--connection NAME] [--limit N] [--allow-write]"}
 
       {_invalid, _rest} ->
-        Mix.raise("invalid option for mix favn.query")
+        {:error, "invalid option for mix favn.query"}
     end
   end
 

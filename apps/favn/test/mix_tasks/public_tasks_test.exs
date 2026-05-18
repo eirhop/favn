@@ -17,7 +17,9 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Doctor, as: DoctorTask
   alias Mix.Tasks.Favn.Init, as: InitTask
   alias Mix.Tasks.Favn.Install, as: InstallTask
+  alias Mix.Tasks.Favn.Inspect, as: InspectTask
   alias Mix.Tasks.Favn.Logs, as: LogsTask
+  alias Mix.Tasks.Favn.Query, as: QueryTask
   alias Mix.Tasks.Favn.Reload, as: ReloadTask
   alias Mix.Tasks.Favn.Reset, as: ResetTask
   alias Mix.Tasks.Favn.Run, as: RunTask
@@ -558,6 +560,18 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
              BackfillTask.parse_args([
                "submit",
                "Example.Pipeline",
+               "--window",
+               "month:2025-05..2026-05",
+               "--from",
+               "2025-05-01"
+             ])
+
+    assert message == "--window cannot be combined with --from, --to, or --kind"
+
+    assert {:error, message} =
+             BackfillTask.parse_args([
+               "submit",
+               "Example.Pipeline",
                "--from",
                "2026-04-01",
                "--to",
@@ -833,6 +847,36 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert {:ok, {:show, "run_1", []}} = RunsTask.parse_args(["show", "run_1"])
     assert {:error, message} = RunsTask.parse_args([])
     assert message =~ "missing subcommand"
+  end
+
+  test "mix favn.inspect parses relation and partition inspection commands" do
+    assert {:ok, {"relation", "raw.sales.orders", opts}} =
+             InspectTask.parse_args(["relation", "raw.sales.orders", "--connection", "warehouse"])
+
+    assert Keyword.fetch!(opts, :connection) == "warehouse"
+
+    assert {:ok, {"partitions", "raw.sales.orders", []}} =
+             InspectTask.parse_args(["partitions", "raw.sales.orders"])
+
+    assert {:error, usage_message} = InspectTask.parse_args(["relation"])
+    assert usage_message =~ "usage: mix favn.inspect relation RELATION"
+
+    assert {:error, invalid_message} = InspectTask.parse_args(["relation", "--bad-option"])
+    assert invalid_message == "invalid option for mix favn.inspect relation"
+  end
+
+  test "mix favn.query parses SQL query arguments" do
+    assert {:ok, {"select 1", opts}} =
+             QueryTask.parse_args(["select 1", "--connection", "warehouse", "--limit", "5"])
+
+    assert Keyword.fetch!(opts, :connection) == "warehouse"
+    assert Keyword.fetch!(opts, :limit) == 5
+
+    assert {:error, usage_message} = QueryTask.parse_args([])
+    assert usage_message =~ "usage: mix favn.query"
+
+    assert {:error, invalid_message} = QueryTask.parse_args(["select 1", "--bad-option"])
+    assert invalid_message == "invalid option for mix favn.query"
   end
 
   test "mix favn.reset removes .favn when stack is not running", %{root_dir: root_dir} do

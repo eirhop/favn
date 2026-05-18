@@ -130,6 +130,13 @@ defmodule Favn.SQLAsset do
   inputs such as window bounds and explicit `params` are resolved during render
   and execution, not inside user-authored Elixir code.
 
+  During runtime execution, Favn scopes DuckDB/DuckLake session bootstrap from
+  the rendered target relation and rendered Favn asset references. This lets the
+  runner attach only the catalogs declared by the SQL asset target and its
+  resolved Favn dependencies. Ad-hoc SQL references to undeclared catalogs are
+  intentionally not used for catalog bootstrap; declare dependencies or relation
+  ownership when a SQL asset needs Favn to prepare a catalog.
+
   ## Common Mistakes
 
   - defining more than one query

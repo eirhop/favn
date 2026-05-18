@@ -252,7 +252,8 @@ defmodule Favn.Dev.Backfill do
   @doc false
   @spec build_range(keyword()) :: {:ok, map()} | {:error, term()}
   def build_range(opts) when is_list(opts) do
-    with {:ok, opts} <- expand_window_opt(opts),
+    with :ok <- reject_mixed_window_opts(opts),
+         {:ok, opts} <- expand_window_opt(opts),
          {:ok, from} <- required_string(opts, :from),
          {:ok, to} <- required_string(opts, :to),
          {:ok, kind} <- required_value(opts, :kind),
@@ -266,6 +267,15 @@ defmodule Favn.Dev.Backfill do
          kind: kind,
          timezone: Keyword.get(opts, :timezone, "Etc/UTC")
        }}
+    end
+  end
+
+  defp reject_mixed_window_opts(opts) do
+    if Keyword.get(opts, :window) not in [nil, ""] and
+         Enum.any?([:from, :to, :kind], &(Keyword.get(opts, &1) not in [nil, ""])) do
+      {:error, :mixed_window_range_options}
+    else
+      :ok
     end
   end
 

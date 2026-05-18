@@ -27,3 +27,6 @@ DuckDB/DuckLake attach work is serialized before a session opens. Raw
 to infer write catalogs; callers that issue manual raw writes must handle any
 needed serialization until the client contract grows an explicit target catalog
 option.
+
+Local `mix favn.query` read-only validation is a best-effort operator guardrail,
+not a SQL sandbox or security boundary.

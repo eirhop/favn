@@ -91,6 +91,9 @@ defmodule Favn.Dev.BackfillTest do
     assert {:ok, %{from: "2025-05", to: "2026-05", kind: "month", timezone: "Etc/UTC"}} =
              Backfill.build_range(window: "month:2025-05..2026-05")
 
+    assert {:error, :mixed_window_range_options} =
+             Backfill.build_range(window: "month:2025-05..2026-05", from: "2025-05-01")
+
     assert {:error, {:invalid_window_range, "month:2025-05"}} =
              Backfill.build_range(window: "month:2025-05")
   end
