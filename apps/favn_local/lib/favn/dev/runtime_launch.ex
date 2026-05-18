@@ -239,6 +239,7 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_VIEW_PORT" => Integer.to_string(config.web_port),
           "FAVN_VIEW_ORCHESTRATOR_BASE_URL" => config.orchestrator_base_url,
           "FAVN_VIEW_PUBLIC_ORIGIN" => config.web_base_url,
+          "FAVN_VIEW_SECRET_KEY_BASE" => secrets["web_session_secret"],
           "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
           "FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH" => "1"
         })

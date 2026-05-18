@@ -275,9 +275,16 @@ At minimum, the production single-node runtime needs:
   positive integer.
 - `FAVN_RUNNER_MODE`, defaulting to `local`; Phase 1 accepts only the local
   single-node runner mode.
-- Production `favn_view` public-origin and same-BEAM orchestrator readiness
-  validation are owned by the Phoenix web hardening PR. Web-to-orchestrator HTTP
-  URL and service-token config are not part of the same-BEAM production target.
+- `FAVN_VIEW_PUBLIC_ORIGIN`, required for production `favn_view`, as an absolute
+  browser-facing origin. Non-localhost origins must use `https`; `http` is
+  accepted only for localhost.
+- `FAVN_VIEW_SECRET_KEY_BASE`, required for production `favn_view`, at least 64
+  characters. It must be generated outside Git, for example with
+  `mix phx.gen.secret`, and supplied through the runtime secret-management path.
+- `FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS`, defaulting to `1000`, as a
+  positive integer timeout for same-BEAM orchestrator readiness checks. Web-to-
+  orchestrator HTTP URL and service-token config are not part of the same-BEAM
+  production target.
 - `FAVN_BOOTSTRAP_ORCHESTRATOR_SERVICE_TOKEN`, required by first-run bootstrap
   tooling unless `--service-token` is passed, at least 32 characters, and present
   as the token value of one `FAVN_ORCHESTRATOR_API_SERVICE_TOKENS` entry.
@@ -315,8 +322,8 @@ Ownership is split by app boundary. `favn_orchestrator` validates and applies
 orchestrator API, service-token, SQLite storage, scheduler, and local-runner
 client config before supervised runtime traffic starts. `favn_runner` validates
 runner mode before runner supervision starts. `favn_view` validates web-owned
-public-origin config and same-BEAM readiness timeout config. Local-dev-only
-`FAVN_DEV_*` names are not accepted by this production contract.
+public-origin, Phoenix secret-key-base, and same-BEAM readiness timeout config.
+Local-dev-only `FAVN_DEV_*` names are not accepted by this production contract.
 
 Postgres production config validation is explicitly deferred to the later
 Postgres production-mode issue. `FAVN_STORAGE=postgres` is not a valid first

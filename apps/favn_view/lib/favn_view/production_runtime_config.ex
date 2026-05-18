@@ -11,7 +11,8 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   @type config :: %{
           public_origin: String.t() | nil,
-          orchestrator_readiness_timeout_ms: pos_integer()
+          orchestrator_readiness_timeout_ms: pos_integer(),
+          secret_key_base: String.t()
         }
 
   @doc """
@@ -42,6 +43,8 @@ defmodule FavnView.ProductionRuntimeConfig do
           config.orchestrator_readiness_timeout_ms
         )
 
+        put_endpoint_secret_key_base(config.secret_key_base)
+
         Application.put_env(:favn_view, :production_runtime_diagnostics, diagnostics(config))
         :ok
 
@@ -57,11 +60,13 @@ defmodule FavnView.ProductionRuntimeConfig do
   def validate(env \\ System.get_env()) when is_map(env) do
     with {:ok, public_origin} <- public_origin(env),
          {:ok, timeout_ms} <- timeout_ms(env),
+         {:ok, secret_key_base} <- secret_key_base(env),
          :ok <- secure_cookie_config() do
       {:ok,
        %{
          public_origin: public_origin,
-         orchestrator_readiness_timeout_ms: timeout_ms
+         orchestrator_readiness_timeout_ms: timeout_ms,
+         secret_key_base: secret_key_base
        }}
     else
       {:error, reason} -> {:error, %{status: :invalid, error: redact(reason)}}
@@ -90,6 +95,7 @@ defmodule FavnView.ProductionRuntimeConfig do
   def configured?(env) when is_map(env) do
     Application.get_env(:favn_view, :production_runtime_config, false) == true or
       Map.has_key?(env, "FAVN_VIEW_PUBLIC_ORIGIN") or
+      Map.has_key?(env, "FAVN_VIEW_SECRET_KEY_BASE") or
       Map.has_key?(env, "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS")
   end
 
@@ -183,6 +189,21 @@ defmodule FavnView.ProductionRuntimeConfig do
     end
   end
 
+  defp secret_key_base(env) do
+    case fetch(env, "FAVN_VIEW_SECRET_KEY_BASE") do
+      {:ok, value} -> validate_secret_key_base(value)
+      :error -> {:error, {:missing_env, "FAVN_VIEW_SECRET_KEY_BASE"}}
+    end
+  end
+
+  defp validate_secret_key_base(value) do
+    if String.length(value) >= 64 do
+      {:ok, value}
+    else
+      {:error, {:invalid_secret_env, "FAVN_VIEW_SECRET_KEY_BASE", "at least 64 characters"}}
+    end
+  end
+
   defp positive_int(name, value) do
     case Integer.parse(value) do
       {int, ""} when int > 0 -> {:ok, int}
@@ -203,6 +224,7 @@ defmodule FavnView.ProductionRuntimeConfig do
 
   defp redact({:missing_env, name}), do: {:missing_env, name}
   defp redact({:invalid_env, name, expected}), do: {:invalid_env, name, expected}
+  defp redact({:invalid_secret_env, name, expected}), do: {:invalid_secret_env, name, expected}
   defp redact({:invalid_session_cookie, reason}), do: {:invalid_session_cookie, reason}
 
   defp configure_endpoint(%{public_origin: nil}), do: :ok
@@ -216,6 +238,18 @@ defmodule FavnView.ProductionRuntimeConfig do
       endpoint_config
       |> Keyword.put(:url, endpoint_url(origin))
       |> Keyword.put(:check_origin, [origin])
+    )
+
+    :ok
+  end
+
+  defp put_endpoint_secret_key_base(secret_key_base) do
+    endpoint_config = Application.get_env(:favn_view, FavnView.Endpoint, [])
+
+    Application.put_env(
+      :favn_view,
+      FavnView.Endpoint,
+      Keyword.put(endpoint_config, :secret_key_base, secret_key_base)
     )
 
     :ok
