@@ -476,7 +476,9 @@ cost, not concurrency semantics. A pool may keep successfully bootstrapped
 sessions warm after use, but a checked-out session is still exclusive to one asset
 execution. Disable with `pool: [enabled: false]`. Existing catalog/write
 concurrency must bound both active work and new session/bootstrap. Pooling must
-not allow more concurrent writes than the configured catalog policy.
+not allow more concurrent writes than the configured catalog policy. The SQL
+client must enforce checkout ownership so copied session structs cannot operate
+on or disconnect a pooled session from another process.
 
 Pool reuse keys must include all inputs that can affect session safety:
 
@@ -511,7 +513,8 @@ Pooling can reduce repeated DuckDB session/bootstrap cost inside one runner, but
 DuckLake metadata writes still hit the configured PostgreSQL metadata service.
 Low-tier Azure PostgreSQL deployments should use conservative DuckLake catalog
 `write_concurrency` values, monitor connection and lock pressure, and consider
-PgBouncer or scaling the metadata database. Pooling is not a replacement for
+PgBouncer or scaling the metadata database. Pooling and single-flight creation
+reduce repeated attach/bootstrap pressure but are not a replacement for
 metadata-tier capacity planning, especially with multiple runner BEAMs.
 
 ## Documentation Plan

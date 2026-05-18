@@ -196,6 +196,11 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     def pool_fingerprint(%Resolved{}, _opts), do: :test_pool_adapter
 
     @impl true
+    def concurrency_policies(%Resolved{} = resolved) do
+      {:ok, [Favn.SQL.ConcurrencyPolicy.catalog(resolved, "raw", 1)]}
+    end
+
+    @impl true
     def validate_session(conn, _opts) do
       record({:validate, conn})
       :ok
@@ -231,6 +236,12 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
              details: %{classification: :unknown_commit_state}
            }}
       end
+    end
+
+    @impl true
+    def transaction(conn, fun, _opts) do
+      record({:transaction, conn})
+      fun.(conn)
     end
 
     @impl true
@@ -471,26 +482,90 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     assert {:disconnect, executed_conn} in events()
   end
 
-  test "cross-process mutation marks owner checkout for discard", %{registry_name: registry_name} do
+  test "non-owner process cannot run pooled session operations", %{registry_name: registry_name} do
     pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
     start_registry(registry_name, AdapterWithPool, %{pool: pool})
 
     assert {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
-    mutated_conn = session.conn
+    conn = session.conn
 
-    task =
-      Task.async(fn ->
-        Client.execute(session, "CREATE TEMP TABLE cross_process AS SELECT 1", [])
-      end)
+    operations = [
+      fn -> Client.query(session, "SELECT 1", read_only?: true) end,
+      fn -> Client.execute(session, "CREATE TEMP TABLE cross_process AS SELECT 1", []) end,
+      fn -> Client.materialize(session, write_plan(), []) end,
+      fn -> Client.transaction(session, fn _tx -> {:ok, :ran} end, []) end
+    ]
 
-    assert {:ok, %Result{}} = Task.await(task)
+    results =
+      operations
+      |> Enum.map(fn operation -> Task.async(operation) end)
+      |> Task.await_many()
+
+    assert Enum.all?(results, &match?({:error, %Error{type: :invalid_checkout_owner}}, &1))
+    refute Enum.any?(events(), &match?({:query, ^conn, _statement}, &1))
+    refute Enum.any?(events(), &match?({:execute, ^conn, _statement}, &1))
+    refute Enum.any?(events(), &match?({:materialize, ^conn}, &1))
+    refute Enum.any?(events(), &match?({:transaction, ^conn}, &1))
+
     Client.disconnect(session)
 
     assert {:ok, next} = Client.connect(:warehouse, registry_name: registry_name)
-    refute next.conn == mutated_conn
+    refute next.conn == conn
     Client.disconnect(next)
 
-    assert {:disconnect, mutated_conn} in events()
+    assert {:disconnect, conn} in events()
+  end
+
+  test "non-owner disconnect does not return session to idle or release admission", %{
+    registry_name: registry_name
+  } do
+    pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+
+    start_registry(registry_name, AdapterWithPool, %{
+      pool: pool,
+      write_concurrency: 1,
+      admission_timeout_ms: 10
+    })
+
+    connect_opts = [registry_name: registry_name, required_catalogs: ["raw"]]
+
+    assert {:ok, session} = Client.connect(:warehouse, connect_opts)
+    conn = session.conn
+
+    non_owner_disconnect = Task.async(fn -> Client.disconnect(session) end)
+    assert {:error, %Error{type: :invalid_checkout_owner, operation: :disconnect}} = Task.await(non_owner_disconnect)
+
+    blocked = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
+    assert {:ok, {:error, %Error{type: :admission_timeout}}} = Task.yield(blocked, 1_000)
+    refute Enum.any?(events(), &match?({:validate, ^conn}, &1))
+
+    assert :ok = Client.disconnect(session)
+
+    assert {:ok, next} = Client.connect(:warehouse, connect_opts)
+    refute next.conn == conn
+    Client.disconnect(next)
+  end
+
+  test "concurrent non-owner calls cannot share a checked-out pooled session", %{
+    registry_name: registry_name
+  } do
+    pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+    start_registry(registry_name, AdapterWithPool, %{pool: pool})
+
+    assert {:ok, session} = Client.connect(:warehouse, registry_name: registry_name)
+    conn = session.conn
+
+    first = Task.async(fn -> Client.query(session, "SELECT 1", read_only?: true) end)
+    second = Task.async(fn -> Client.query(session, "SELECT 2", read_only?: true) end)
+
+    assert [
+             {:error, %Error{type: :invalid_checkout_owner}},
+             {:error, %Error{type: :invalid_checkout_owner}}
+           ] = Task.await_many([first, second])
+
+    refute Enum.any?(events(), &match?({:query, ^conn, _statement}, &1))
+
+    Client.disconnect(session)
   end
 
   test "concurrent same-key misses serialize session creation", %{registry_name: registry_name} do

@@ -412,7 +412,8 @@ config :favn,
 Pooling is local to one runner BEAM and is not distributed across runner nodes.
 It reuses warm DuckDB/ADBC sessions only when the connection/config hash,
 required catalog set, and adapter fingerprint match. A checked-out pooled session
-is exclusive to one asset execution at a time. Existing catalog/write concurrency
+is exclusive to its checkout owner process; the shared SQL client rejects
+non-owner operations and disconnect attempts. Existing catalog/write concurrency
 still bounds active work and new session/bootstrap, so enabling pooling does not
 increase write concurrency.
 
@@ -441,11 +442,12 @@ inspection/query paths. Favn does not blindly retry SQL writes, and operations
 reported with unknown commit state are not retried.
 
 Low-tier Azure PostgreSQL metadata catalogs can still become the bottleneck for
-DuckLake. Configure conservative DuckLake catalog `write_concurrency` values and
-consider PgBouncer or scaling the metadata database when metadata connection or
-lock pressure appears. Runner-local pooling reduces repeated bootstrap cost in a
-single BEAM but does not solve multi-runner distributed metadata pressure by
-itself.
+DuckLake. Configure finite, conservative DuckLake catalog `write_concurrency`
+values and consider PgBouncer or scaling the metadata database when metadata
+connection or lock pressure appears. Runner-local pooling and single-flight
+creation reduce repeated attach/bootstrap pressure in a single BEAM, but they do
+not replace catalog write admission and do not solve multi-runner distributed
+metadata pressure by themselves.
 
 Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module

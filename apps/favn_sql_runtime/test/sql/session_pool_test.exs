@@ -170,17 +170,22 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert_receive {:creator_result, :create}
 
     waiter =
-      Task.async(fn ->
-        SessionPool.checkout_or_create(key, name: context.pool_name)
+      spawn(fn ->
+        result = SessionPool.checkout_or_create(key, name: context.pool_name)
+        send(parent, {:waiter_result, result})
+
+        receive do
+          :finish -> SessionPool.creation_finished(key, name: context.pool_name)
+        end
       end)
 
     assert eventually(fn -> SessionPool.diagnostics(name: context.pool_name).waiters == 1 end)
     Process.exit(creator, :kill)
 
-    assert :create = Task.await(waiter)
+    assert_receive {:waiter_result, :create}, 500
     assert %{creating: 1, waiters: 0} = SessionPool.diagnostics(name: context.pool_name)
 
-    SessionPool.creation_finished(key, name: context.pool_name)
+    send(waiter, :finish)
     assert eventually(fn -> match?(%{creating: 0, waiters: 0}, SessionPool.diagnostics(name: context.pool_name)) end)
   end
 

@@ -8,7 +8,10 @@ defmodule Favn.SQL.Client do
 
   The pool is local to one runner BEAM and does not increase catalog/write
   concurrency. Checked-out sessions are exclusive, and reuse requires matching
-  connection identity/config, required catalog set, and adapter fingerprint.
+  connection identity/config, required catalog set, and adapter fingerprint. A
+  pooled session is process-affine: only the checkout owner may run operations or
+  disconnect it; non-owner use returns `:invalid_checkout_owner` and marks the
+  checkout for discard.
   Automatic retries are limited to session creation/bootstrap and read-only
   inspection/query paths; writes, materialization, transactions, and unknown
   outcome failures are not blindly retried. Raw execute/materialize/transaction
@@ -54,10 +57,17 @@ defmodule Favn.SQL.Client do
 
   def connect(connection, _opts), do: {:error, invalid_connection_error(connection)}
 
-  @spec disconnect(Session.t()) :: :ok
-  def disconnect(%Session{pool_checkout: %Checkout{}} = session) do
-    session = release_checkout_admission(session)
-    SessionPool.checkin(session, :ok)
+  @spec disconnect(Session.t()) :: :ok | {:error, Error.t()}
+  def disconnect(%Session{pool_checkout: %Checkout{} = checkout} = session) do
+    case checkout_owner_error(session, :disconnect) do
+      nil ->
+        session = release_checkout_admission(session)
+        SessionPool.checkin(session, :ok)
+
+      %Error{} = error ->
+        SessionPool.mark_discard(checkout.token, discard_reason(:disconnect, error))
+        {:error, error}
+    end
   rescue
     _error -> :ok
   catch
@@ -610,6 +620,18 @@ defmodule Favn.SQL.Client do
 
   defp run_session_operation(%Session{} = session, operation, payload, opts, fun)
        when is_function(fun, 0) do
+    case checkout_owner_error(session, operation) do
+      nil ->
+        run_owned_session_operation(session, operation, payload, opts, fun)
+
+      %Error{} = error ->
+        maybe_mark_pooled_session_discard(session, operation, payload, error)
+        {:error, error}
+    end
+  end
+
+  defp run_owned_session_operation(%Session{} = session, operation, payload, opts, fun)
+       when is_function(fun, 0) do
     case fun.() do
       {:ok, _value} = result ->
         maybe_mark_pooled_session_success(session, operation, opts)
@@ -685,7 +707,20 @@ defmodule Favn.SQL.Client do
 
   defp maybe_mark_pooled_session_discard(_session, _operation, _payload, _error), do: :ok
 
+  defp checkout_owner_error(%Session{pool_checkout: %Checkout{owner: owner}}, operation)
+       when owner != self() do
+    %Error{
+      type: :invalid_checkout_owner,
+      message: "pooled SQL session is checked out by another process",
+      operation: operation,
+      details: %{owner: inspect(owner), caller: inspect(self())}
+    }
+  end
+
+  defp checkout_owner_error(%Session{}, _operation), do: nil
+
   defp discard_pooled_session?(_operation, _payload, %Error{type: :admission_timeout}), do: false
+  defp discard_pooled_session?(_operation, _payload, %Error{type: :invalid_checkout_owner}), do: true
   defp discard_pooled_session?(_operation, _payload, %Error{type: :connection_error}), do: true
 
   defp discard_pooled_session?(operation, _payload, %Error{} = error)

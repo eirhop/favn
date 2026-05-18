@@ -37,5 +37,8 @@ DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
 with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL
 session may be checked out by only one asset execution at a time, and the runner
 must still honor existing catalog/write concurrency for active work and new
-session/bootstrap. The pool does not coordinate across runner nodes or solve
-distributed DuckLake metadata pressure.
+session/bootstrap. SQL client operations are process-affine to the checkout
+owner. The pool and same-key single-flight creation do not coordinate across
+runner nodes, do not increase catalog/write concurrency, and do not replace
+finite DuckLake catalog `write_concurrency`, especially on low-tier Azure
+PostgreSQL metadata stores.

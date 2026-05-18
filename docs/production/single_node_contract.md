@@ -182,12 +182,14 @@ Production DuckDB behavior covers or must preserve:
   max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pooling reuses warm sessions
   inside one runner BEAM when the connection/config hash, required catalog set,
   and adapter fingerprint match. Checked-out sessions are exclusive to one asset
-  execution, and catalog/write concurrency still bounds active work and new
-  session/bootstrap.
+  execution and owner process, and catalog/write concurrency still bounds active
+  work and new session/bootstrap.
 - Pooling is not distributed across runner nodes and does not by itself solve
   multi-runner DuckLake metadata pressure. Low-tier Azure PostgreSQL metadata
-  catalogs should still use conservative DuckLake catalog `write_concurrency` and
-  consider PgBouncer or metadata database scaling when pressure appears.
+  catalogs should still use finite, conservative DuckLake catalog
+  `write_concurrency` and consider PgBouncer or metadata database scaling when
+  pressure appears; pooling and single-flight creation reduce attach/bootstrap
+  pressure but do not replace metadata-tier capacity planning.
 - Safe retries for DuckDB are bounded around session creation/bootstrap and
   read-only inspection/query. Favn must not blindly retry SQL writes, and unknown
   commit state must be surfaced rather than retried.

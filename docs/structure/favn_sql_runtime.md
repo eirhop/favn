@@ -26,8 +26,10 @@ keeps warm sessions only inside the current runner BEAM. Pool reuse must be keye
 by connection identity/config hash, required catalog set, and adapter fingerprint.
 Checked-out sessions remain exclusive to one asset execution at a time; the pool
 is not a distributed coordinator and does not increase configured write/catalog
-concurrency. Raw execute/materialize/transaction paths discard pooled sessions
-after mutation unless explicitly proven pool-safe internally.
+concurrency. The SQL client enforces checkout ownership, so copied session structs
+cannot be operated on or disconnected by non-owner processes. Raw
+execute/materialize/transaction paths discard pooled sessions after mutation
+unless explicitly proven pool-safe internally.
 
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits

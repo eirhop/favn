@@ -4,7 +4,8 @@ defmodule Favn.SQL.SessionPool do
 
   The pool is intentionally per-BEAM only. Checked-out sessions are exclusive:
   an idle session is removed from the pool when checked out and can only be
-  checked back in by the process recorded in its checkout metadata.
+  operated on or checked back in by the process recorded in its checkout
+  metadata. The shared SQL client rejects non-owner use.
 
   Pooling is enabled by default for poolable adapters, but this process does not
   coordinate across runner nodes and does not raise catalog/write concurrency.
@@ -276,7 +277,14 @@ defmodule Favn.SQL.SessionPool do
 
   def handle_call({:mark_discard, token, reason}, _from, %__MODULE__{} = state)
       when is_reference(token) do
-    {:reply, :ok, %__MODULE__{state | discard_reasons: Map.put(state.discard_reasons, token, reason)}}
+    discard_reasons =
+      if Map.has_key?(state.active, token) do
+        Map.put(state.discard_reasons, token, reason)
+      else
+        state.discard_reasons
+      end
+
+    {:reply, :ok, %__MODULE__{state | discard_reasons: discard_reasons}}
   end
 
   @impl true

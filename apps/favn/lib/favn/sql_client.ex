@@ -123,7 +123,7 @@ defmodule Favn.SQLClient do
   This function is safe to call in cleanup paths and returns `:ok` even when the
   adapter disconnect path raises.
   """
-  @spec disconnect(session()) :: :ok
+  @spec disconnect(session()) :: :ok | {:error, Favn.SQL.Error.t()}
   defdelegate disconnect(session), to: Client
 
   @doc """
