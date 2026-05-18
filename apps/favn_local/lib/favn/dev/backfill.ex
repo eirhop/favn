@@ -1,6 +1,16 @@
 defmodule Favn.Dev.Backfill do
   @moduledoc """
   Local operational-backfill workflow for a running `mix favn.dev` stack.
+
+  This module backs `mix favn.backfill`. It submits operational backfills,
+  dry-runs backfill plans, reads backfill-window projections, reruns failed
+  windows, and repairs derived backfill read models through the private local
+  orchestrator HTTP boundary.
+
+  Submit options accept explicit `:from`, `:to`, and `:kind` values or compact
+  `:window` ranges such as `"month:2025-05..2026-05"`. Month and year inputs may
+  be provided as full dates; they are normalized to the anchor value expected by
+  the orchestrator.
   """
 
   alias Favn.Dev.Config

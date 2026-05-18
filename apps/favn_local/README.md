@@ -13,8 +13,11 @@ for Favn.
 - local stack lifecycle implementation (`dev`, `stop`, `status`, `reload`)
 - local project bootstrap and validation (`init`, `doctor`)
 - install/reset/log tooling (`install`, `reset`, `logs`)
+- local run investigation (`runs`, `logs RUN_ID`)
+- local SQL data inspection and read-only querying (`inspect`, `query`)
+- local operational-backfill submission, planning, inspection, rerun, and repair
 - project-local packaging flows (`build.runner`, `build.web`,
-  `build.orchestrator`, `build.single`)
+  `build.orchestrator`, `build.single`, `bootstrap.single`)
 - project-local filesystem state under `.favn/`
 
 `favn_local` does not define public authoring APIs. Authoring and manifest
@@ -31,7 +34,11 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 - `mix favn.status`
 - `mix favn.run`
 - `mix favn.backfill`
+- `mix favn.runs`
 - `mix favn.logs`
+- `mix favn.inspect`
+- `mix favn.query`
+- `mix favn.diagnostics`
 - `mix favn.reload`
 - `mix favn.stop`
 - `mix favn.reset`
@@ -39,6 +46,7 @@ These tasks are exposed by `apps/favn` and implemented by `favn_local`:
 - `mix favn.build.web`
 - `mix favn.build.orchestrator`
 - `mix favn.build.single`
+- `mix favn.bootstrap.single`
 
 `mix favn.backfill` is a local operator convenience over the private
 orchestrator backfill HTTP endpoints. It is not a stable external API contract.
@@ -69,7 +77,14 @@ mix favn.status
 mix favn.run MyApp.Pipelines.Daily
 mix favn.run MyApp.Pipelines.Monthly --window month:2026-03 --timezone Europe/Oslo
 mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
+mix favn.backfill submit MyApp.Pipelines.Monthly --window month:2025-05..2026-05 --dry-run
 mix favn.backfill windows RUN_ID
+mix favn.runs list --status error --limit 20
+mix favn.runs show RUN_ID
+mix favn.logs RUN_ID
+mix favn.inspect relation raw.sales.orders
+mix favn.inspect partitions raw.sales.orders
+mix favn.query "select count(*) from raw.sales.orders"
 mix favn.logs --service runner --tail 200
 mix favn.reload
 mix favn.stop
@@ -254,10 +269,18 @@ Manifest registration probes the live runner node for a compatible
 with an explicit contract error instead of raw `:undef` when the runtime root
 is out of sync.
 
-### Logs and reset
+### Operator inspection, logs, and reset
 
 - `mix favn.logs` reads files under `.favn/logs/` (supports service filter,
   tail, and follow)
+- `mix favn.logs RUN_ID` reads persisted run events from the local orchestrator
+- `mix favn.runs list` and `mix favn.runs show RUN_ID` inspect persisted run
+  summaries/details through the local orchestrator API
+- `mix favn.inspect relation RELATION` and `mix favn.inspect partitions RELATION`
+  inspect configured SQL relations; pass `--connection NAME` when multiple Favn
+  SQL connections are configured
+- `mix favn.query "select ..."` runs read-only SQL by default; pass
+  `--allow-write` only for deliberate local mutation
 - `mix favn.reset` removes `.favn/` after verifying no managed services are
   still running
 

@@ -1,6 +1,9 @@
 defmodule Favn.Dev.Runs do
   @moduledoc """
   Local run inspection helpers for a running `mix favn.dev` stack.
+
+  This module backs `mix favn.runs list`, `mix favn.runs show RUN_ID`, and the
+  run-event mode of `mix favn.logs RUN_ID`.
   """
 
   alias Favn.Dev.Config

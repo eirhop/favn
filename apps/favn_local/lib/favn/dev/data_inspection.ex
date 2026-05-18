@@ -2,9 +2,10 @@ defmodule Favn.Dev.DataInspection do
   @moduledoc """
   Lightweight local SQL data inspection helpers.
 
-  The helpers resolve configured local Favn connections, parse simple relation
-  strings into `Favn.RelationRef`, and execute read-only inspection through
-  `Favn.SQL.Client`.
+  The helpers back `mix favn.inspect relation`, `mix favn.inspect partitions`,
+  and `mix favn.query`. They resolve configured local Favn connections, parse
+  simple relation strings into `Favn.RelationRef`, and execute read-only
+  inspection through `Favn.SQL.Client`.
   """
 
   alias Favn.Connection.Loader

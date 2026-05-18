@@ -45,7 +45,7 @@ until separately documented as stable. Refs:
 
 Implemented boundary outcomes:
 
-- The local lifecycle, packaging, and bootstrap command surface is implemented: `mix favn.install`, `mix favn.dev`, `mix favn.stop`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`, `mix favn.reset`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, `mix favn.build.single`, `mix favn.bootstrap.single`, and `mix favn.read_doc`.
+- The local lifecycle, operator-inspection, packaging, and bootstrap command surface is implemented: `mix favn.install`, `mix favn.init`, `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.stop`, `mix favn.reset`, `mix favn.build.web`, `mix favn.build.orchestrator`, `mix favn.build.runner`, `mix favn.build.single`, `mix favn.bootstrap.single`, and `mix favn.read_doc`.
 - Legacy same-BEAM app paths are removed from supported runtime flows: `apps/favn_legacy` is gone from the umbrella.
 - Stable storage adapter entrypoints are restored as `Favn.Storage.Adapter.SQLite` and `Favn.Storage.Adapter.Postgres`.
 - SQL adapters now persist run snapshots, run events, scheduler state, and operational-backfill read models as explicit JSON-safe storage DTO records instead of BEAM term payloads.

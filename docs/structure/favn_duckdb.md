@@ -15,6 +15,7 @@ Tests:
   process-local event recording, and test-only client modes
 
 Use when changing DuckDB adapter queries/materialization, safe inspection query
-generation, bootstrap diagnostics, runtime placement, worker lifecycle, or DuckDB
-plugin child specs. Update test support when the DuckDB client boundary or shared
-adapter test instrumentation changes.
+generation, bootstrap diagnostics, scoped catalog attach behavior through
+`required_catalogs`, runtime placement, worker lifecycle, or DuckDB plugin child
+specs. Update test support when the DuckDB client boundary or shared adapter test
+instrumentation changes.
