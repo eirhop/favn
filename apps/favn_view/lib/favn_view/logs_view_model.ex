@@ -48,7 +48,14 @@ defmodule FavnView.LogsViewModel do
   def plain_text(entries) when is_list(entries) do
     entries
     |> Enum.map(fn entry ->
-      [entry.timestamp, entry.level_label, entry.source_label, entry.message, detail_text(entry)]
+      [
+        entry.timestamp,
+        entry.level_label,
+        entry.source_label,
+        entry.message,
+        detail_text(entry),
+        metadata_copy_text(entry)
+      ]
       |> Enum.reject(&(&1 in [nil, ""]))
       |> Enum.join("  ")
     end)
@@ -138,10 +145,11 @@ defmodule FavnView.LogsViewModel do
 
   def display_name(_asset_ref), do: nil
 
-  def ref_label({module, name}), do: "#{inspect(module)}.#{name}"
-  def ref_label(%{"module" => module, "name" => name}), do: "#{module}.#{name}"
-  def ref_label(ref) when is_atom(ref), do: Atom.to_string(ref)
-  def ref_label(ref) when is_binary(ref), do: ref
+  def ref_label({module, name}), do: "#{module_label(module)}.#{name}"
+  def ref_label(%{module: module, name: name}), do: "#{module_label(module)}.#{name}"
+  def ref_label(%{"module" => module, "name" => name}), do: "#{module_label(module)}.#{name}"
+  def ref_label(ref) when is_atom(ref), do: ref |> Atom.to_string() |> strip_elixir_prefix()
+  def ref_label(ref) when is_binary(ref), do: strip_elixir_prefix(ref)
   def ref_label(nil), do: nil
   def ref_label(ref), do: inspect(ref)
 
@@ -211,6 +219,18 @@ defmodule FavnView.LogsViewModel do
   end
 
   defp detail_text(_entry), do: ""
+
+  defp metadata_copy_text(%{metadata_text: ""}), do: ""
+  defp metadata_copy_text(%{metadata_text: metadata_text}), do: "metadata=" <> metadata_text
+  defp metadata_copy_text(_entry), do: ""
+
+  defp module_label(module) when is_atom(module),
+    do: module |> Atom.to_string() |> strip_elixir_prefix()
+
+  defp module_label(module), do: module |> to_string() |> strip_elixir_prefix()
+
+  defp strip_elixir_prefix("Elixir." <> module), do: module
+  defp strip_elixir_prefix(module), do: module
 
   defp attempt_label(nil), do: nil
   defp attempt_label(attempt), do: "##{attempt}"

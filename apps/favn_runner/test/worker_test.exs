@@ -54,6 +54,11 @@ defmodule FavnRunner.WorkerTest do
     assert_receive {:runner_result, "rx_worker_test", %RunnerResult{} = result}, 2_000
     assert result.status == :error
     assert [%{status: :error}] = result.asset_results
+
+    assert_receive {:runner_log_entry, "rx_worker_test", %{level: :error, metadata: metadata}},
+                   2_000
+
+    assert metadata.error.message == "boom"
   end
 
   test "worker normalizes throw and exit failure kinds" do

@@ -520,12 +520,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp await_stage_entries(entries, timeout_ms, runner_client, runner_opts) do
-    entries
-    |> start_await_tasks(timeout_ms, runner_client, runner_opts)
-    |> collect_await_tasks(await_deadline(timeout_ms), [])
-  end
-
   defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
     parent = self()
 
@@ -575,48 +569,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp await_deadline(timeout_ms),
     do: System.monotonic_time(:millisecond) + timeout_ms + @await_task_timeout_buffer_ms
 
-  defp collect_await_tasks(%{replies: replies}, _deadline, acc) when map_size(replies) == 0,
-    do: Enum.reverse(acc)
-
-  defp collect_await_tasks(%{replies: replies, monitors: monitors}, deadline, acc) do
-    receive_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 0)
-
-    receive do
-      {reply_ref, result} when is_map_key(replies, reply_ref) ->
-        {%{monitor_ref: monitor_ref, entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
-        Process.demonitor(monitor_ref, [:flush])
-
-        next_pending_tasks = %{
-          replies: next_replies,
-          monitors: Map.delete(monitors, monitor_ref)
-        }
-
-        collect_await_tasks(next_pending_tasks, deadline, [{entry, result} | acc])
-
-      {:DOWN, monitor_ref, :process, _pid, reason} when is_map_key(monitors, monitor_ref) ->
-        {reply_ref, next_monitors} = Map.pop!(monitors, monitor_ref)
-        {%{entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
-
-        next_pending_tasks = %{replies: next_replies, monitors: next_monitors}
-
-        collect_await_tasks(next_pending_tasks, deadline, [
-          {entry, await_exit_to_error(reason)} | acc
-        ])
-    after
-      receive_timeout_ms ->
-        timed_out =
-          Enum.map(replies, fn {reply_ref, %{pid: pid, monitor_ref: monitor_ref, entry: entry}} ->
-            Process.exit(pid, :kill)
-            Process.demonitor(monitor_ref, [:flush])
-            flush_await_reply(reply_ref)
-
-            {entry, {:error, :timeout}}
-          end)
-
-        Enum.reverse(acc) ++ timed_out
-    end
-  end
-
   defp flush_await_reply(reply_ref) do
     receive do
       {^reply_ref, _result} -> :ok
@@ -641,66 +593,264 @@ defmodule FavnOrchestrator.RunServer.Execution do
     pending_ids = pending_execution_ids(entries)
 
     entries
-    |> await_stage_entries(run_state.timeout_ms, runner_client, runner_opts)
-    |> Enum.reduce_while({:ok, run_state, acc_results, [], nil, pending_ids}, fn {entry,
-                                                                                  await_result},
-                                                                                 {:ok,
-                                                                                  current_run,
-                                                                                  current_results,
-                                                                                  retry_refs,
-                                                                                  terminal_failure,
-                                                                                  pending_ids} ->
-      if Persistence.externally_cancelled?(current_run.id) do
-        cancelled =
-          cancel_execution_ids(
-            current_run,
-            inflight_ids_from_metadata(current_run),
-            %{kind: :external_cancel},
-            runner_client,
-            runner_opts
-          )
+    |> start_await_tasks(run_state.timeout_ms, runner_client, runner_opts)
+    |> collect_stage_attempt_results(
+      await_deadline(run_state.timeout_ms),
+      {:ok, run_state, acc_results, [], nil, pending_ids},
+      stage,
+      attempt,
+      runner_client,
+      runner_opts
+    )
+  end
 
-        {:halt,
-         {:error, Snapshots.cancelled_terminal(cancelled, current_results), current_results}}
-      else
-        {next_run, outcome, step_results} =
-          process_one_stage_attempt_result(
-            current_run,
-            entry,
-            await_result,
-            stage,
-            attempt,
-            runner_client,
-            runner_opts
-          )
+  defp collect_stage_attempt_results(
+         %{replies: replies},
+         _deadline,
+         state,
+         _stage,
+         _attempt,
+         _runner_client,
+         _runner_opts
+       )
+       when map_size(replies) == 0 do
+    finalize_stage_attempt_state(state)
+  end
 
-        next_results = current_results ++ step_results
-        next_pending_ids = MapSet.delete(pending_ids, entry.execution_id)
+  defp collect_stage_attempt_results(
+         %{replies: replies, monitors: monitors} = pending_tasks,
+         deadline,
+         state,
+         stage,
+         attempt,
+         runner_client,
+         runner_opts
+       ) do
+    receive_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 0)
 
-        reduce_stage_attempt_outcome(
-          outcome,
-          %{
-            run: next_run,
-            results: next_results,
-            retry_refs: retry_refs,
-            terminal_failure: terminal_failure,
-            pending_ids: next_pending_ids
-          },
-          %{entry: entry, stage: stage, attempt: attempt}
+    receive do
+      {reply_ref, result} when is_map_key(replies, reply_ref) ->
+        {%{monitor_ref: monitor_ref, entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
+        Process.demonitor(monitor_ref, [:flush])
+
+        next_pending_tasks = %{
+          replies: next_replies,
+          monitors: Map.delete(monitors, monitor_ref)
+        }
+
+        handle_stage_attempt_result(
+          next_pending_tasks,
+          deadline,
+          state,
+          {entry, result},
+          stage,
+          attempt,
+          runner_client,
+          runner_opts
         )
-      end
-    end)
-    |> case do
-      {:ok, next_run, next_results, retry_refs, nil, _pending_ids} ->
-        {:ok, next_run, next_results, retry_refs}
 
-      {:ok, next_run, next_results, _retry_refs, terminal_failure, _pending_ids} ->
-        failed_run = failed_stage_terminal_state(next_run, terminal_failure)
-        {:error, failed_run, next_results}
+      {:DOWN, monitor_ref, :process, _pid, reason} when is_map_key(monitors, monitor_ref) ->
+        {reply_ref, next_monitors} = Map.pop!(monitors, monitor_ref)
+        {%{entry: entry}, next_replies} = Map.pop!(replies, reply_ref)
 
-      {:error, failed_run, next_results} ->
-        {:error, failed_run, next_results}
+        next_pending_tasks = %{replies: next_replies, monitors: next_monitors}
+
+        handle_stage_attempt_result(
+          next_pending_tasks,
+          deadline,
+          state,
+          {entry, await_exit_to_error(reason)},
+          stage,
+          attempt,
+          runner_client,
+          runner_opts
+        )
+    after
+      receive_timeout_ms ->
+        pending_tasks
+        |> timeout_pending_await_tasks()
+        |> process_stage_attempt_result_list(
+          %{replies: %{}, monitors: %{}},
+          deadline,
+          state,
+          stage,
+          attempt,
+          runner_client,
+          runner_opts
+        )
     end
+  end
+
+  defp handle_stage_attempt_result(
+         pending_tasks,
+         deadline,
+         state,
+         {entry, await_result},
+         stage,
+         attempt,
+         runner_client,
+         runner_opts
+       ) do
+    case process_stage_attempt_result(
+           state,
+           entry,
+           await_result,
+           stage,
+           attempt,
+           runner_client,
+           runner_opts
+         ) do
+      {:cont, next_state} ->
+        collect_stage_attempt_results(
+          pending_tasks,
+          deadline,
+          next_state,
+          stage,
+          attempt,
+          runner_client,
+          runner_opts
+        )
+
+      {:halt, result} ->
+        stop_pending_await_tasks(pending_tasks)
+        result
+    end
+  end
+
+  defp process_stage_attempt_result_list(
+         [],
+         pending_tasks,
+         deadline,
+         state,
+         stage,
+         attempt,
+         runner_client,
+         runner_opts
+       ) do
+    collect_stage_attempt_results(
+      pending_tasks,
+      deadline,
+      state,
+      stage,
+      attempt,
+      runner_client,
+      runner_opts
+    )
+  end
+
+  defp process_stage_attempt_result_list(
+         [{entry, await_result} | rest],
+         pending_tasks,
+         deadline,
+         state,
+         stage,
+         attempt,
+         runner_client,
+         runner_opts
+       ) do
+    case process_stage_attempt_result(
+           state,
+           entry,
+           await_result,
+           stage,
+           attempt,
+           runner_client,
+           runner_opts
+         ) do
+      {:cont, next_state} ->
+        process_stage_attempt_result_list(
+          rest,
+          pending_tasks,
+          deadline,
+          next_state,
+          stage,
+          attempt,
+          runner_client,
+          runner_opts
+        )
+
+      {:halt, result} ->
+        stop_pending_await_tasks(pending_tasks)
+        result
+    end
+  end
+
+  defp process_stage_attempt_result(
+         {:ok, current_run, current_results, retry_refs, terminal_failure, pending_ids},
+         entry,
+         await_result,
+         stage,
+         attempt,
+         runner_client,
+         runner_opts
+       ) do
+    if Persistence.externally_cancelled?(current_run.id) do
+      cancelled =
+        cancel_execution_ids(
+          current_run,
+          inflight_ids_from_metadata(current_run),
+          %{kind: :external_cancel},
+          runner_client,
+          runner_opts
+        )
+
+      {:halt, {:error, Snapshots.cancelled_terminal(cancelled, current_results), current_results}}
+    else
+      {next_run, outcome, step_results} =
+        process_one_stage_attempt_result(
+          current_run,
+          entry,
+          await_result,
+          stage,
+          attempt,
+          runner_client,
+          runner_opts
+        )
+
+      next_results = current_results ++ step_results
+      next_pending_ids = MapSet.delete(pending_ids, entry.execution_id)
+
+      reduce_stage_attempt_outcome(
+        outcome,
+        %{
+          run: next_run,
+          results: next_results,
+          retry_refs: retry_refs,
+          terminal_failure: terminal_failure,
+          pending_ids: next_pending_ids
+        },
+        %{entry: entry, stage: stage, attempt: attempt}
+      )
+    end
+  end
+
+  defp finalize_stage_attempt_state({:ok, next_run, next_results, retry_refs, nil, _pending_ids}) do
+    {:ok, next_run, next_results, retry_refs}
+  end
+
+  defp finalize_stage_attempt_state(
+         {:ok, next_run, next_results, _retry_refs, terminal_failure, _pending_ids}
+       ) do
+    failed_run = failed_stage_terminal_state(next_run, terminal_failure)
+    {:error, failed_run, next_results}
+  end
+
+  defp timeout_pending_await_tasks(%{replies: replies}) do
+    Enum.map(replies, fn {reply_ref, %{pid: pid, monitor_ref: monitor_ref, entry: entry}} ->
+      Process.exit(pid, :kill)
+      Process.demonitor(monitor_ref, [:flush])
+      flush_await_reply(reply_ref)
+
+      {entry, {:error, :timeout}}
+    end)
+  end
+
+  defp stop_pending_await_tasks(%{replies: replies}) do
+    Enum.each(replies, fn {reply_ref, %{pid: pid, monitor_ref: monitor_ref}} ->
+      Process.exit(pid, :kill)
+      Process.demonitor(monitor_ref, [:flush])
+      flush_await_reply(reply_ref)
+    end)
   end
 
   defp reduce_stage_attempt_outcome(
@@ -784,21 +934,28 @@ defmodule FavnOrchestrator.RunServer.Execution do
     if MapSet.size(pending_ids) == 0 do
       {:ok, run_state, terminal_failure}
     else
+      pending_execution_ids = MapSet.to_list(pending_ids)
+
       metadata =
         Map.put(run_state.metadata, :stage_draining_after_failure, %{
           stage: stage,
           attempt: attempt,
           failed_asset_ref: entry.asset_ref,
-          pending_execution_ids: MapSet.to_list(pending_ids)
+          pending_execution_ids: pending_execution_ids
         })
 
-      draining = RunState.transition(run_state, metadata: metadata)
+      draining =
+        RunState.transition(run_state,
+          status: :running,
+          runner_execution_id: List.first(pending_execution_ids),
+          metadata: metadata
+        )
 
       case Persistence.persist_run_step(draining, :stage_draining_after_failure, %{
              stage: stage,
              attempt: attempt,
              failed_asset_ref: entry.asset_ref,
-             pending_execution_ids: MapSet.to_list(pending_ids)
+             pending_execution_ids: pending_execution_ids
            }) do
         :ok -> {:ok, draining, terminal_failure}
         {:error, :external_cancel} -> {:error, Snapshots.cancelled_snapshot(draining)}
