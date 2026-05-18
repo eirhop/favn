@@ -62,15 +62,22 @@ defmodule Favn.SQL.Admission do
   def acquire_session(_policy, _opts), do: nil
 
   @spec release_session(term()) :: :ok
-  def release_session({_kind, scope, owner}) do
-    if owner == self() do
-      release_held_scope(scope)
-    else
-      Limiter.release(scope, owner)
-    end
-
+  def release_session({:held, scope, owner}) when owner == self() do
+    release_held_scope(scope)
     :ok
   end
+
+  def release_session({:held, scope, owner}) do
+    Limiter.release(scope, owner)
+    :ok
+  end
+
+  def release_session({:borrowed, scope, owner}) when owner == self() do
+    release_held_scope(scope)
+    :ok
+  end
+
+  def release_session({:borrowed, _scope, _owner}), do: :ok
 
   def release_session(leases) when is_list(leases) do
     Enum.each(Enum.reverse(leases), &release_session/1)
