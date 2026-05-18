@@ -152,6 +152,184 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert [%{id: "persisted-node-step"}] = node_detail.steps
   end
 
+  test "run detail deduplicates Elixir-prefixed public refs" do
+    active_run =
+      run("elixir_prefixed_ref", submit_kind: :pipeline)
+      |> RunState.transition(
+        status: :running,
+        result: %{
+          asset_results: [
+            %{
+              ref: "Elixir.MyApp.Assets.Gold.asset",
+              status: :running,
+              asset_step_id: "live-prefixed-step"
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(active_run)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(active_run.id)
+    assert [%{asset_ref: "MyApp.Assets.Gold.asset", id: "live-prefixed-step"}] = detail.steps
+  end
+
+  test "run detail marks post-root in-flight failures as cascade failures" do
+    root_ref = {MyApp.Assets.Gold, :asset}
+    cascade_ref = {MyApp.Assets.Silver, :asset}
+
+    run =
+      run("cascade_failures", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [root_ref, cascade_ref])
+
+    assert :ok = Storage.put_run(run)
+
+    events = [
+      %{
+        run_id: run.id,
+        sequence: 1,
+        event_type: :step_started,
+        occurred_at: DateTime.add(DateTime.utc_now(), -4, :second),
+        status: :running,
+        data: %{
+          asset_ref: root_ref,
+          asset_step_id: "root-step",
+          runner_execution_id: "rx_root",
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: run.id,
+        sequence: 2,
+        event_type: :step_started,
+        occurred_at: DateTime.add(DateTime.utc_now(), -4, :second),
+        status: :running,
+        data: %{
+          asset_ref: cascade_ref,
+          asset_step_id: "cascade-step",
+          runner_execution_id: "rx_cascade",
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: run.id,
+        sequence: 3,
+        event_type: :step_failed,
+        occurred_at: DateTime.add(DateTime.utc_now(), -3, :second),
+        status: :error,
+        data: %{
+          asset_ref: root_ref,
+          asset_step_id: "root-step",
+          error: %{message: "Postgres pool exhausted"},
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: run.id,
+        sequence: 4,
+        event_type: :stage_draining_after_failure,
+        occurred_at: DateTime.add(DateTime.utc_now(), -2, :second),
+        status: :error,
+        data: %{
+          failed_asset_ref: root_ref,
+          pending_execution_ids: ["rx_cascade"],
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: run.id,
+        sequence: 5,
+        event_type: :step_failed,
+        occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+        status: :error,
+        data: %{
+          asset_ref: cascade_ref,
+          asset_step_id: "cascade-step",
+          error: %{message: "query failed after pool exhaustion"},
+          stage: 0,
+          attempt: 1
+        }
+      }
+    ]
+
+    Enum.each(events, fn event ->
+      assert :ok = Storage.append_run_event(run.id, event)
+    end)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+    steps_by_id = Map.new(detail.steps, &{&1.id, &1})
+
+    assert steps_by_id["root-step"].failure_role == :primary
+    assert steps_by_id["cascade-step"].failure_role == :cascade
+    assert steps_by_id["cascade-step"].root_failure_asset_ref == "MyApp.Assets.Gold.asset"
+    assert steps_by_id["cascade-step"].explanation =~ "draining in-flight work"
+  end
+
+  test "run detail ignores string run event types when building step summaries" do
+    run =
+      run("string_run_event_type", submit_kind: :manual)
+      |> RunState.transition(status: :ok)
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               sequence: 1,
+               event_type: "run_started",
+               occurred_at: ~U[2026-05-01 00:00:00Z],
+               status: "running"
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert detail.steps == []
+    assert [%{event_type: "run_started"}] = detail.events
+  end
+
+  test "run detail builds step summaries from string step event types" do
+    run = run("string_step_event_type", submit_kind: :manual)
+    started_at = ~U[2026-05-01 00:00:00Z]
+    failed_at = DateTime.add(started_at, 1, :second)
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               sequence: 1,
+               event_type: "step_started",
+               occurred_at: started_at,
+               status: "running",
+               asset_ref: {MyApp.Assets.Gold, :asset},
+               stage: 0,
+               data: %{asset_step_id: "string-step"}
+             })
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               sequence: 2,
+               event_type: "step_failed",
+               occurred_at: failed_at,
+               status: "error",
+               asset_ref: {MyApp.Assets.Gold, :asset},
+               stage: 0,
+               data: %{asset_step_id: "string-step", error: "boom"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert [step] = detail.steps
+    assert step.id == "string-step"
+    assert step.status == :error
+    assert step.stage == 0
+    assert step.started_at == started_at
+    assert step.error == "boom"
+    assert step.explanation == "Failed while executing this asset."
+  end
+
   defp run(run_id, opts) do
     RunState.new(
       id: run_id,

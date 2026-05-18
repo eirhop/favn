@@ -26,10 +26,26 @@ import {hooks as colocatedHooks} from "phoenix-colocated/favn_view"
 import topbar from "../vendor/topbar"
 
 const Hooks = {
+  FavnClipboard: {
+    mounted() {
+      this.el.addEventListener("click", event => {
+        const button = event.target.closest("[data-copy-text]")
+        if (!button) return
+
+        navigator.clipboard?.writeText(button.dataset.copyText || "")
+      })
+    }
+  },
   FavnLogViewer: {
     mounted() {
       this.scrollToBottom()
       this.el.addEventListener("click", event => {
+        const textButton = event.target.closest("[data-copy-text]")
+        if (textButton) {
+          navigator.clipboard?.writeText(textButton.dataset.copyText || "")
+          return
+        }
+
         const button = event.target.closest("[data-copy-logs]")
         if (!button) return
 

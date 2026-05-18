@@ -16,6 +16,7 @@ defmodule FavnView.PageLiveTest do
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -705,6 +706,35 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="false"]))
   end
 
+  test "run detail reloads from live run events", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="true"]))
+
+    {:ok, active_run} = Storage.get_run("run_empty_running")
+
+    terminal_run =
+      RunState.transition(active_run,
+        status: :ok,
+        result: %{asset_results: terminal_asset_results(:stg_payments)}
+      )
+
+    event = %{
+      run_id: terminal_run.id,
+      sequence: 3,
+      event_type: :run_finished,
+      occurred_at: DateTime.utc_now(),
+      status: :ok,
+      data: %{message: "Run finished"}
+    }
+
+    assert :ok = Storage.persist_run_transition(terminal_run, event)
+    send(view.pid, {:favn_run_event, RunEvent.from_map(event)})
+
+    assert render(view) =~ "Succeeded"
+    assert has_element?(view, ~s([data-testid="run-overview-panel"][data-run-active="false"]))
+  end
+
   test "terminal run does not render as refreshing", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
@@ -910,6 +940,94 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Failed")
     assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Warehouse timeout")
+    assert has_element?(view, ~s([data-testid="asset-error-copy-button"]), "Copy error")
+  end
+
+  test "run detail marks drain failures separately from root failures", %{conn: conn} do
+    root_ref = {__MODULE__.Assets, :stg_payments}
+    cascade_ref = {__MODULE__.Assets, :customer_orders_daily}
+
+    events = [
+      %{
+        run_id: "run_empty_running",
+        sequence: 3,
+        event_type: :step_started,
+        occurred_at: DateTime.add(DateTime.utc_now(), -4, :second),
+        status: :running,
+        data: %{
+          asset_ref: root_ref,
+          asset_step_id: "root-step",
+          runner_execution_id: "rx_root",
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: "run_empty_running",
+        sequence: 4,
+        event_type: :step_started,
+        occurred_at: DateTime.add(DateTime.utc_now(), -4, :second),
+        status: :running,
+        data: %{
+          asset_ref: cascade_ref,
+          asset_step_id: "cascade-step",
+          runner_execution_id: "rx_cascade",
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: "run_empty_running",
+        sequence: 5,
+        event_type: :step_failed,
+        occurred_at: DateTime.add(DateTime.utc_now(), -3, :second),
+        status: :error,
+        data: %{
+          asset_ref: root_ref,
+          asset_step_id: "root-step",
+          error: %{message: "Postgres pool exhausted"},
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: "run_empty_running",
+        sequence: 6,
+        event_type: :stage_draining_after_failure,
+        occurred_at: DateTime.add(DateTime.utc_now(), -2, :second),
+        status: :error,
+        data: %{
+          failed_asset_ref: root_ref,
+          pending_execution_ids: ["rx_cascade"],
+          stage: 0,
+          attempt: 1
+        }
+      },
+      %{
+        run_id: "run_empty_running",
+        sequence: 7,
+        event_type: :step_failed,
+        occurred_at: DateTime.add(DateTime.utc_now(), -1, :second),
+        status: :error,
+        data: %{
+          asset_ref: cascade_ref,
+          asset_step_id: "cascade-step",
+          error: %{message: "query failed after pool exhaustion"},
+          stage: 0,
+          attempt: 1
+        }
+      }
+    ]
+
+    Enum.each(events, fn event ->
+      assert :ok = Storage.append_run_event("run_empty_running", event)
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Failed")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Cascade failed")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "draining in-flight work")
   end
 
   test "failed run surfaces failed asset and error in overview", %{conn: conn} do
@@ -1066,6 +1184,22 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="log-detail-chip"]), "asset")
     assert has_element?(view, ~s([data-testid="log-detail-chip"]), "customer_orders_daily")
     assert has_element?(view, ~s([data-testid="log-detail-chip"]), "#2")
+  end
+
+  test "error logs expose full details and copy action", %{conn: conn} do
+    seed_log!("asset execution failed",
+      run_id: "run_customer_orders_daily",
+      asset_step_id: "customer-step",
+      asset_ref: {__MODULE__.Assets, :customer_orders_daily},
+      level: :error,
+      metadata: %{error: %{message: "Warehouse timeout", reason: "connection failed"}}
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/logs")
+
+    assert has_element?(view, ~s([data-testid="log-row"]), "asset execution failed")
+    assert has_element?(view, ~s([data-testid="log-details-panel"]), "Warehouse timeout")
+    assert has_element?(view, ~s([data-testid="log-error-copy-button"]), "Copy")
   end
 
   test "level source and search filters affect rendered logs", %{conn: conn} do

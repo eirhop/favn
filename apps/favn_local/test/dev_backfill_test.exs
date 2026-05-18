@@ -61,7 +61,9 @@ defmodule Favn.Dev.BackfillTest do
 
     write_running_state(root_dir, base_url)
 
-    assert {:error, {:run_failed, "backfill parent run finished with status partial", %{"id" => "backfill_1"}}} =
+    assert {:error,
+            {:run_failed, "backfill parent run finished with status partial",
+             %{"id" => "backfill_1"}}} =
              Backfill.submit_pipeline(MyApp.Pipeline,
                root_dir: root_dir,
                from: "2026-01-01",
@@ -75,6 +77,41 @@ defmodule Favn.Dev.BackfillTest do
              Backfill.build_range(from: "2026-01-01", to: "2026-01-02", kind: :day)
 
     assert {:error, {:missing_option, :from}} = Backfill.build_range(to: "2026-01-02", kind: :day)
+  end
+
+  test "build_range/1 normalizes date input for coarse ranges" do
+    assert {:ok, %{from: "2025-05", to: "2026-06", kind: "month"}} =
+             Backfill.build_range(from: "2025-05-01", to: "2026-06-01", kind: :month)
+
+    assert {:ok, %{from: "2025", to: "2026", kind: "year"}} =
+             Backfill.build_range(from: "2025-01-01", to: "2026-01-01", kind: "year")
+  end
+
+  test "build_range/1 parses compact window ranges" do
+    assert {:ok, %{from: "2025-05", to: "2026-05", kind: "month", timezone: "Etc/UTC"}} =
+             Backfill.build_range(window: "month:2025-05..2026-05")
+
+    assert {:error, :mixed_window_range_options} =
+             Backfill.build_range(window: "month:2025-05..2026-05", from: "2025-05-01")
+
+    assert {:error, {:invalid_window_range, "month:2025-05"}} =
+             Backfill.build_range(window: "month:2025-05")
+  end
+
+  test "build_plan_payload/3 builds active-manifest module planning payload" do
+    assert {:ok, payload} =
+             Backfill.build_plan_payload(
+               MyApp.Pipeline,
+               %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"},
+               coverage_baseline_id: "baseline_1"
+             )
+
+    assert payload == %{
+             target: %{type: "pipeline", module: "Elixir.MyApp.Pipeline"},
+             manifest_selection: %{mode: "active"},
+             range: %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"},
+             coverage_baseline_id: "baseline_1"
+           }
   end
 
   test "submit_pipeline/2 resolves active manifest target and posts backfill", %{
@@ -117,6 +154,45 @@ defmodule Favn.Dev.BackfillTest do
              "kind" => "day",
              "timezone" => "Europe/Oslo"
            }
+  end
+
+  test "submit_pipeline/2 dry-run plans without fetching active manifest or submitting", %{
+    root_dir: root_dir
+  } do
+    parent = self()
+
+    {:ok, base_url, _server} =
+      start_server(
+        [
+          {200,
+           ~s({"data":{"plan":{"manifest_version_id":"mv_1","target_id":"pipeline:Elixir.MyApp.Pipeline","pipeline_module":"Elixir.MyApp.Pipeline","kind":"day","timezone":"Etc/UTC","window_count":2,"window_keys":["day:2026-01-01:Etc/UTC","day:2026-01-02:Etc/UTC"],"range_start_at":"2026-01-01T00:00:00Z","range_end_at":"2026-01-03T00:00:00Z"}}})}
+        ],
+        parent: parent
+      )
+
+    write_running_state(root_dir, base_url)
+
+    assert {:ok, %{"window_count" => 2}} =
+             Backfill.submit_pipeline(MyApp.Pipeline,
+               root_dir: root_dir,
+               window: "day:2026-01-01..2026-01-02",
+               dry_run: true
+             )
+
+    assert_receive {:request, %{path: "/api/orchestrator/v1/backfills/plan", body: body}}
+    decoded = JSON.decode!(body)
+
+    assert decoded["target"] == %{"type" => "pipeline", "module" => "Elixir.MyApp.Pipeline"}
+
+    assert decoded["range"] == %{
+             "from" => "2026-01-01",
+             "to" => "2026-01-02",
+             "kind" => "day",
+             "timezone" => "Etc/UTC"
+           }
+
+    refute_receive {:request, %{path: "/api/orchestrator/v1/manifests/active"}}, 50
+    refute_receive {:request, %{path: "/api/orchestrator/v1/backfills"}}, 50
   end
 
   test "list and rerun workflows parse orchestrator responses", %{root_dir: root_dir} do

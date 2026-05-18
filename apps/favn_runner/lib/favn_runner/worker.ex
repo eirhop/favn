@@ -95,7 +95,9 @@ defmodule FavnRunner.Worker do
           error: error
         })
 
-        emit_log(server, execution_id, work, asset, 2, :error, "asset execution failed")
+        emit_log(server, execution_id, work, asset, 2, :error, "asset execution failed", %{
+          error: error
+        })
 
         build_runner_result(
           work,
@@ -242,9 +244,13 @@ defmodule FavnRunner.Worker do
          %Asset{} = asset,
          sequence,
          level,
-         message
+         message,
+         extra_metadata \\ %{}
        ) do
     producer_id = "runner:" <> execution_id
+
+    metadata =
+      work.metadata |> Map.put(:runner_execution_id, execution_id) |> Map.merge(extra_metadata)
 
     LogSink.emit(server, execution_id, %{
       source: :runner,
@@ -256,7 +262,7 @@ defmodule FavnRunner.Worker do
       asset_ref: asset.ref,
       runner_execution_id: execution_id,
       attempt: Map.get(work.metadata, :attempt),
-      metadata: Map.put(work.metadata, :runner_execution_id, execution_id),
+      metadata: metadata,
       occurred_at: DateTime.utc_now(),
       producer_id: producer_id,
       producer_sequence: sequence

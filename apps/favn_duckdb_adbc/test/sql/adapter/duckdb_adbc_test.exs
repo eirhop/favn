@@ -221,7 +221,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   test "ducklake storage stays conservative by default" do
     resolved = %Resolved{
       resolved()
-      | config: %{database: "/tmp/favn-adbc.duckdb", duckdb_storage: :ducklake}
+      | config: %{open: [database: "/tmp/favn-adbc.duckdb"], duckdb_storage: :ducklake}
     }
 
     assert %ConcurrencyPolicy{limit: 1, applies_to: :all, scope: {:duckdb_adbc_database, _path}} =
@@ -334,7 +334,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   end
 
   test "production local-file storage rejects memory database before opening DuckDB" do
-    resolved = %Resolved{resolved() | config: %{database: ":memory:", production?: true}}
+    resolved = %Resolved{resolved() | config: %{open: [database: ":memory:"], production?: true}}
 
     assert {:error,
             %Error{
@@ -355,7 +355,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
       name: :warehouse,
       adapter: ADBC,
       module: __MODULE__,
-      config: %{database: ":memory:"}
+      config: %{open: [database: ":memory:"]}
     }
   end
 

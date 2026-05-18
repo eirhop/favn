@@ -24,12 +24,14 @@ defmodule Favn.Dev do
   ## Entry Points
 
   - `install/1`: prepare local tooling inputs and snapshots
+  - `inspect_relation/2`, `inspect_partitions/2`, `query/2`: inspect local SQL data
   - `init/1`: generate a local DuckDB sample project scaffold
   - `doctor/1`: validate local project setup before running
   - `dev/1`: start a local runner process plus one operator process for orchestrator and web
   - `status/1`: inspect current stack state
   - `diagnostics/1`: fetch service-authenticated operator diagnostics
   - `reload/1`: rebuild and republish the manifest
+  - `list_runs/1`, `get_run/2`, `list_run_events/2`: inspect local runs through HTTP APIs
   - `build_runner/1`, `build_web/1`, `build_orchestrator/1`, `build_single/1`:
     project-local packaging flows
   - `bootstrap_single/1`: API-driven single-node backend bootstrap
@@ -45,6 +47,7 @@ defmodule Favn.Dev do
   alias Favn.Dev.Build.Single, as: SingleBuild
   alias Favn.Dev.Build.Web, as: WebBuild
   alias Favn.Dev.Diagnostics
+  alias Favn.Dev.DataInspection
   alias Favn.Dev.Doctor
   alias Favn.Dev.Init
   alias Favn.Dev.Install
@@ -52,6 +55,7 @@ defmodule Favn.Dev do
   alias Favn.Dev.Reload
   alias Favn.Dev.Reset
   alias Favn.Dev.Run
+  alias Favn.Dev.Runs
   alias Favn.Dev.Stack
   alias Favn.Dev.Status
 
@@ -75,6 +79,27 @@ defmodule Favn.Dev do
   """
   @spec install(lifecycle_opts()) :: {:ok, :installed | :already_installed} | {:error, term()}
   def install(opts \\ []) when is_list(opts), do: Install.run(opts)
+
+  @doc """
+  Inspects a configured local SQL relation.
+  """
+  @spec inspect_relation(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def inspect_relation(relation, opts \\ []) when is_binary(relation) and is_list(opts),
+    do: DataInspection.inspect_relation(relation, opts)
+
+  @doc """
+  Inspects partition-like metadata for a configured local SQL relation.
+  """
+  @spec inspect_partitions(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def inspect_partitions(relation, opts \\ []) when is_binary(relation) and is_list(opts),
+    do: DataInspection.inspect_partitions(relation, opts)
+
+  @doc """
+  Runs a local SQL query through the configured SQL runtime client.
+  """
+  @spec query(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def query(sql, opts \\ []) when is_binary(sql) and is_list(opts),
+    do: DataInspection.query(sql, opts)
 
   @doc false
   @spec ensure_install_ready(lifecycle_opts()) :: :ok | {:error, term()}
@@ -149,11 +174,38 @@ defmodule Favn.Dev do
     do: Run.pipeline(pipeline_module, opts)
 
   @doc """
+  Lists persisted runs from the running local stack.
+  """
+  @spec list_runs(keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_runs(opts \\ []) when is_list(opts), do: Runs.list(opts)
+
+  @doc """
+  Fetches one persisted run from the running local stack.
+  """
+  @spec get_run(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def get_run(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
+    do: Runs.get(run_id, opts)
+
+  @doc """
+  Lists persisted run events from the running local stack.
+  """
+  @spec list_run_events(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts),
+    do: Runs.events(run_id, opts)
+
+  @doc """
   Submits a pipeline operational backfill to the running local stack.
   """
   @spec submit_backfill(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def submit_backfill(pipeline_module, opts \\ []) when is_list(opts),
     do: Backfill.submit_pipeline(pipeline_module, opts)
+
+  @doc """
+  Plans a pipeline operational backfill without creating runs.
+  """
+  @spec plan_backfill(module() | String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def plan_backfill(pipeline_module, opts \\ []) when is_list(opts),
+    do: Backfill.plan_pipeline(pipeline_module, opts)
 
   @doc """
   Lists child window rows for a backfill parent run.

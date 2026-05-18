@@ -325,11 +325,23 @@ defmodule FavnView.Components.LogViewer do
       <span class={["font-semibold", level_class(@log.level)]}>{@log.level_label}</span>
       <span class="truncate text-slate-400">{@log.source_label}</span>
       <div class="min-w-0">
-        <pre class={[
-          "m-0 font-mono text-slate-100/90",
-          @wrap? && "whitespace-pre-wrap break-words",
-          !@wrap? && "whitespace-pre"
-        ]}><code>{@log.message}</code></pre>
+        <div class="flex gap-2">
+          <pre class={[
+            "m-0 min-w-0 flex-1 font-mono text-slate-100/90",
+            @wrap? && "whitespace-pre-wrap break-words",
+            !@wrap? && "whitespace-pre"
+          ]}><code>{@log.message}</code></pre>
+          <button
+            :if={@log.level == "error"}
+            type="button"
+            class="btn btn-error btn-soft btn-xs shrink-0 rounded-box"
+            data-copy-text={log_copy_text(@log)}
+            data-testid="log-error-copy-button"
+            aria-label="Copy error log"
+          >
+            <.icon name="hero-clipboard-document" class="size-4" /> Copy
+          </button>
+        </div>
         <div :if={@log.details != []} class="mt-2 flex flex-wrap gap-1.5 text-[0.68rem] leading-4">
           <span
             :for={detail <- @log.details}
@@ -340,6 +352,23 @@ defmodule FavnView.Components.LogViewer do
             <span class="text-slate-500">{detail.label}</span> {detail.display}
           </span>
         </div>
+        <details
+          :if={@log.details != [] or @log.metadata_text != ""}
+          class="mt-2 rounded-box border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-xs text-slate-300"
+          data-testid="log-details-panel"
+        >
+          <summary class="cursor-pointer text-slate-400">All details</summary>
+          <dl :if={@log.details != []} class="mt-2 grid gap-1.5 sm:grid-cols-[7rem_minmax(0,1fr)]">
+            <div :for={detail <- @log.details} class="contents">
+              <dt class="text-slate-500">{detail.label}</dt>
+              <dd class="break-all text-slate-200">{detail.title}</dd>
+            </div>
+          </dl>
+          <div :if={@log.metadata_text != ""} class="mt-3">
+            <p class="text-slate-500">metadata</p>
+            <pre class="mt-1 whitespace-pre-wrap break-words text-slate-200"><code>{@log.metadata_text}</code></pre>
+          </div>
+        </details>
         <span
           :if={@log.truncated?}
           class="mt-1 inline-flex rounded-full border border-warning/30 px-2 py-0.5 text-[0.65rem] uppercase tracking-[0.16em] text-warning/80"
@@ -368,4 +397,22 @@ defmodule FavnView.Components.LogViewer do
 
   defp sequence_title(%{global_sequence: nil}), do: nil
   defp sequence_title(%{global_sequence: sequence}), do: "global sequence #{sequence}"
+
+  defp log_copy_text(log) do
+    [log.message, detail_copy_text(log), metadata_copy_text(log)]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join("\n")
+  end
+
+  defp detail_copy_text(%{details: details}) when is_list(details) do
+    details
+    |> Enum.map(fn detail -> "#{detail.label}=#{detail.title}" end)
+    |> Enum.join(" ")
+  end
+
+  defp detail_copy_text(_log), do: ""
+
+  defp metadata_copy_text(%{metadata_text: ""}), do: ""
+  defp metadata_copy_text(%{metadata_text: metadata_text}), do: "metadata=" <> metadata_text
+  defp metadata_copy_text(_log), do: ""
 end

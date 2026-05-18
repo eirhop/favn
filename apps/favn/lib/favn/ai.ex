@@ -64,9 +64,10 @@ defmodule Favn.AI do
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
     details.
-  - To work with operational backfill ranges, read
-    `Favn.Backfill.RangeRequest` and `Favn.Backfill.RangeResolver`. If you are
-    wiring orchestrator-side submission or projection, then read `FavnOrchestrator`,
+  - To work with operational backfill ranges, dry-run planning, or compact
+    `--window kind:FROM..TO` input, read `Favn.Backfill.RangeRequest` and
+    `Favn.Backfill.RangeResolver`. If you are wiring orchestrator-side
+    submission, planning, or projection, then read `FavnOrchestrator`,
     `FavnOrchestrator.BackfillManager`, and the internal modules under
     `FavnOrchestrator.Backfill.*`. If you are changing the private service HTTP
     surface for backfills, also read `FavnOrchestrator.API.Router`. For the
@@ -76,10 +77,12 @@ defmodule Favn.AI do
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
     `Favn.RuntimeConfig.Ref`.
-  - To configure DuckDB/DuckLake connection bootstrap for extension loading,
-    attached DuckDB catalog files, Azure credential-chain secrets, ADLS
-    `SCOPE`/`CHAIN`, PostgreSQL metadata secrets, DuckLake `META_SECRET` attach,
-    or ADLS paths, read
+  - To configure DuckDB/DuckLake connection bootstrap with `open: [...]` and
+    `duckdb: [...]`, attached DuckDB/DuckLake catalogs, scoped
+    `:required_catalogs` attach behavior, Azure credential-chain secrets,
+    optional ADLS `SCOPE`, credential `CHAIN`, PostgreSQL metadata secrets,
+    DuckLake `META_SECRET` attach, catalog-level bootstrap/write concurrency, or
+    ADLS paths, read
     `Favn.Connection`, `Favn.RuntimeConfig.Ref`, `Favn.SQL.Adapter.DuckDB`, and
     `Favn.Azure.PostgresEntraToken`. If the deployment uses the ADBC DuckDB
     adapter, also read `Favn.SQL.Adapter.DuckDB.ADBC`. Azure PostgreSQL Entra
@@ -97,12 +100,18 @@ defmodule Favn.AI do
     `Favn.Pipeline.Resolver` if needed.
   - To plan execution order, read `Favn plan_asset_run`, then
     `Favn.Assets.Planner` if needed.
+  - To inspect local runs, run events, relation metadata, relation partitions, or
+    ad hoc read-only SQL, read `Favn.Dev.Runs`, `Favn.Dev.DataInspection`,
+    `Mix.Tasks.Favn.Runs`, `Mix.Tasks.Favn.Logs`, `Mix.Tasks.Favn.Inspect`, and
+    `Mix.Tasks.Favn.Query`.
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
-    The public local command surface is `mix favn.install`, `mix favn.dev`,
-    `mix favn.run`, `mix favn.status`, `mix favn.logs`, `mix favn.reload`,
-    `mix favn.stop`, `mix favn.reset`, `mix favn.backfill`,
-    `mix favn.build.runner`, `mix favn.build.web`,
-    `mix favn.build.orchestrator`, `mix favn.build.single`, and
+    The public local command surface is `mix favn.install`, `mix favn.init`,
+    `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
+    `mix favn.runs`, `mix favn.status`, `mix favn.logs`, `mix favn.inspect`,
+    `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
+    `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
+    `mix favn.build.web`, `mix favn.build.orchestrator`,
+    `mix favn.build.single`, `mix favn.bootstrap.single`, and
     `mix favn.read_doc`.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
@@ -145,12 +154,12 @@ defmodule Favn.AI do
     metadata
   - `Favn.RuntimeConfig.Ref`: when you need the manifest-safe representation of
     required environment values and secret environment values
-  - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs the
-    `bootstrap_schema_field/0` helper for attached DuckDB catalog files,
-    DuckLake session setup, Azure ADLS DuckDB secrets, or PostgreSQL metadata
-    secret wiring
+  - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs
+    `config_schema_fields/0`, `open: [database: ...]`, keyed `duckdb.attach`
+    catalogs, DuckLake session setup, Azure ADLS DuckDB secrets, PostgreSQL
+    metadata secret wiring, or catalog-level write admission
   - `Favn.SQL.Adapter.DuckDB.ADBC`: when the ADBC DuckDB adapter needs the same
-    DuckLake bootstrap shape with explicit DuckDB driver control
+    DuckDB/DuckLake config shape with explicit DuckDB driver control
   - `Favn.Azure.PostgresEntraToken`: when DuckDB bootstrap needs runtime Azure
     PostgreSQL Entra token acquisition through managed identity or Azure CLI
 
@@ -183,9 +192,12 @@ defmodule Favn.AI do
     `FavnOrchestrator.Backfill.*` only for internal control-plane persistence,
     projection, and parent/child orchestration work.
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
-    lifecycle, local pipeline submission, docs lookup, or packaging, not asset
-    authoring. Read `Favn.Dev.Backfill` for the local `mix favn.backfill`
-    workflow over the private orchestrator backfill endpoints.
+    lifecycle, local pipeline submission, local run investigation, local SQL
+    inspection/querying, docs lookup, or packaging, not asset authoring. Read
+    `Favn.Dev.Backfill` for the local `mix favn.backfill` workflow over the
+    private orchestrator backfill endpoints. Read `Favn.Dev.Runs` for
+    `mix favn.runs` and `mix favn.logs RUN_ID`. Read
+    `Favn.Dev.DataInspection` for `mix favn.inspect` and `mix favn.query`.
 
   ## Related docs outside BEAM docs
 
@@ -195,7 +207,7 @@ defmodule Favn.AI do
   - `examples/basic-workflow-tutorial`: standalone consumer-style tutorial with
     the canonical source-system raw landing example in
     `FavnReferenceWorkload.Warehouse.Raw.Orders`
-  - `docs/lib_structure.md`: ownership and folder map
+  - `docs/structure/README.md`: ownership and folder map
   - `examples/basic-workflow-tutorial`: larger consumer-style example with its
     own layer convention
   """

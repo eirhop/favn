@@ -27,6 +27,7 @@ defmodule Favn.Dev.Doctor do
       safe_check("connection_modules loaded", fn -> modules_check(:connection_modules) end),
       safe_check("runner plugins loaded", fn -> runner_plugins_check() end),
       safe_check("connection runtime", fn -> connection_runtime_check() end),
+      safe_check("relation catalogs", fn -> relation_catalogs_check() end),
       safe_check("manifest", fn -> manifest_check() end)
     ]
 
@@ -196,6 +197,257 @@ defmodule Favn.Dev.Doctor do
       {:error, reason} ->
         error("manifest", "generation failed: #{inspect(reason)}")
     end
+  end
+
+  defp relation_catalogs_check do
+    with {:manifest, {:ok, manifest}} <- {:manifest, FavnAuthoring.generate_manifest()},
+         requirements <- relation_catalog_requirements(manifest.assets),
+         {:ok, connections} <- resolve_catalog_connections(requirements),
+         :ok <- validate_relation_catalogs(requirements, connections) do
+      ok("relation catalogs", relation_catalogs_ok_message(requirements, connections))
+    else
+      {:manifest, {:error, reason}} ->
+        error("relation catalogs", "manifest generation failed: #{inspect(redact(reason))}")
+
+      {:error, {:connections, errors}} ->
+        error("relation catalogs", "connection resolution failed: #{format_connection_errors(errors)}")
+
+      {:error, messages} when is_list(messages) ->
+        error("relation catalogs", Enum.join(messages, "; "))
+    end
+  end
+
+  defp relation_catalog_requirements(assets) do
+    assets
+    |> Enum.flat_map(&asset_relation_requirement/1)
+    |> Enum.group_by(& &1.connection, & &1.catalog)
+    |> Map.new(fn {connection, catalogs} -> {connection, catalogs |> Enum.uniq() |> Enum.sort()} end)
+  end
+
+  defp asset_relation_requirement(asset) do
+    relation = Map.get(asset, :relation)
+    connection = relation_field(relation, :connection)
+    catalog = relation_field(relation, :catalog)
+
+    if is_atom(connection) and (is_binary(catalog) or is_nil(catalog)) do
+      [%{connection: connection, catalog: catalog}]
+    else
+      []
+    end
+  end
+
+  defp relation_field(nil, _field), do: nil
+  defp relation_field(relation, field) when is_map(relation), do: Map.get(relation, field)
+  defp relation_field(_relation, _field), do: nil
+
+  defp resolve_catalog_connections(requirements) when map_size(requirements) == 0, do: {:ok, %{}}
+
+  defp resolve_catalog_connections(requirements) do
+    requirements
+    |> Map.keys()
+    |> Favn.Connection.Loader.resolve_required()
+    |> case do
+      {:ok, connections} -> {:ok, connections}
+      {:error, errors} -> {:error, {:connections, errors}}
+    end
+  end
+
+  defp validate_relation_catalogs(requirements, connections) do
+    messages =
+      Enum.flat_map(requirements, fn {connection_name, catalogs} ->
+        resolved = Map.fetch!(connections, connection_name)
+        adapter = resolved.adapter
+
+        if function_exported?(adapter, :configured_catalogs, 1) do
+          validate_adapter_catalogs(resolved, catalogs)
+        else
+          []
+        end
+      end)
+
+    if messages == [], do: :ok, else: {:error, messages}
+  end
+
+  defp validate_adapter_catalogs(resolved, required_catalogs) do
+    case resolved.adapter.configured_catalogs(resolved) do
+      {:ok, configured_catalogs} ->
+        configured = normalize_catalog_set(configured_catalogs)
+        {catalogless?, qualified_catalogs} = split_required_catalogs(required_catalogs)
+        missing = Enum.reject(qualified_catalogs, &MapSet.member?(configured, &1))
+
+        missing_catalog_messages(resolved, missing) ++
+          catalogless_relation_messages(resolved, configured, catalogless?)
+
+      {:error, reason} ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} could not report configured catalogs: #{inspect(redact_reason(reason))}"
+        ]
+
+      other ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} returned invalid configured_catalogs/1 result #{inspect(redact_reason(other))}"
+        ]
+    end
+  rescue
+    error ->
+      [
+        "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} raised during configured_catalogs/1: #{inspect(error.__struct__)}"
+      ]
+  catch
+    kind, reason ->
+      [
+        "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} failed configured_catalogs/1: #{kind} #{inspect(redact_reason(reason))}"
+      ]
+  end
+
+  defp split_required_catalogs(required_catalogs) do
+    {catalogless, qualified} = Enum.split_with(required_catalogs, &is_nil/1)
+    {catalogless != [], qualified}
+  end
+
+  defp missing_catalog_messages(_resolved, []), do: []
+
+  defp missing_catalog_messages(resolved, missing) do
+    [
+      "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} is missing configured catalog(s) #{inspect(missing)}"
+    ]
+  end
+
+  defp catalogless_relation_messages(_resolved, _configured, false), do: []
+
+  defp catalogless_relation_messages(resolved, configured, true) do
+    case adapter_default_catalog(resolved) do
+      {:ok, catalog} when is_binary(catalog) ->
+        if MapSet.member?(configured, catalog) do
+          []
+        else
+          [
+            "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} default catalog #{inspect(catalog)} is not attached"
+          ]
+        end
+
+      {:ok, nil} ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} has catalogless asset relation(s); configure relation.catalog or a default attached catalog"
+        ]
+
+      {:error, reason} ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} could not report default catalog: #{inspect(redact_reason(reason))}"
+        ]
+
+      other ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} returned invalid default_catalog/1 result #{inspect(redact_reason(other))}"
+        ]
+    end
+  end
+
+  defp adapter_default_catalog(resolved) do
+    if function_exported?(resolved.adapter, :default_catalog, 1) do
+      case resolved.adapter.default_catalog(resolved) do
+        {:ok, catalog} when is_binary(catalog) -> {:ok, catalog}
+        {:ok, catalog} when is_atom(catalog) -> {:ok, Atom.to_string(catalog)}
+        {:ok, nil} -> {:ok, nil}
+        other -> other
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp normalize_catalog_set(%MapSet{} = catalogs) do
+    catalogs
+    |> Enum.flat_map(&normalize_catalog/1)
+    |> MapSet.new()
+  end
+
+  defp normalize_catalog_set(catalogs) when is_list(catalogs) do
+    catalogs
+    |> Enum.flat_map(&normalize_catalog/1)
+    |> MapSet.new()
+  end
+
+  defp normalize_catalog_set(catalogs) when is_map(catalogs) do
+    catalogs
+    |> Map.keys()
+    |> Enum.flat_map(&normalize_catalog/1)
+    |> MapSet.new()
+  end
+
+  defp normalize_catalog_set(catalog), do: MapSet.new(normalize_catalog(catalog))
+
+  defp normalize_catalog(catalog) when is_binary(catalog), do: [catalog]
+  defp normalize_catalog(catalog) when is_atom(catalog), do: [Atom.to_string(catalog)]
+  defp normalize_catalog(_catalog), do: []
+
+  defp relation_catalogs_ok_message(requirements, _connections) when map_size(requirements) == 0 do
+    "no catalog-qualified asset relations found"
+  end
+
+  defp relation_catalogs_ok_message(requirements, connections) do
+    checked =
+      requirements
+      |> Map.keys()
+      |> Enum.count(fn name ->
+        resolved = Map.fetch!(connections, name)
+        function_exported?(resolved.adapter, :configured_catalogs, 1)
+      end)
+
+    skipped = map_size(requirements) - checked
+
+    "validated #{checked} connection(s), skipped #{skipped} adapter(s) without configured_catalogs/1"
+  end
+
+  defp format_connection_errors(errors) when is_list(errors) do
+    errors
+    |> Enum.map(fn error ->
+      message = Map.get(error, :message, inspect(redact(error)))
+      connection = Map.get(error, :connection)
+
+      if connection do
+        "#{inspect(connection)}: #{message}"
+      else
+        message
+      end
+    end)
+    |> Enum.join("; ")
+  end
+
+  defp format_connection_errors(error), do: format_connection_errors([error])
+
+  defp redact_reason(reason) when is_atom(reason), do: reason
+  defp redact_reason(reason) when is_binary(reason), do: :redacted
+  defp redact_reason(reason), do: redact(reason)
+
+  defp redact(value) when is_map(value) do
+    Map.new(value, fn {key, child} -> {key, redact_value(key, child)} end)
+  end
+
+  defp redact(value) when is_list(value), do: Enum.map(value, &redact/1)
+
+  defp redact(value) when is_tuple(value) do
+    value |> Tuple.to_list() |> Enum.map(&redact/1) |> List.to_tuple()
+  end
+
+  defp redact(value), do: value
+
+  defp redact_value(key, _value) when key in [:password, :secret, :token, :key, :authorization],
+    do: "[REDACTED]"
+
+  defp redact_value(key, value) when is_atom(key) do
+    if key |> Atom.to_string() |> sensitive_key?(), do: "[REDACTED]", else: redact(value)
+  end
+
+  defp redact_value(key, value) when is_binary(key) do
+    if sensitive_key?(key), do: "[REDACTED]", else: redact(value)
+  end
+
+  defp redact_value(_key, value), do: redact(value)
+
+  defp sensitive_key?(key) when is_binary(key) do
+    key = String.downcase(key)
+    String.contains?(key, "secret") or String.contains?(key, "password") or String.contains?(key, "token")
   end
 
   defp plugin_module({module, _opts}) when is_atom(module), do: module

@@ -45,7 +45,9 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:attempt) => non_neg_integer() | nil,
           required(:error) => term(),
           required(:output) => term(),
-          required(:explanation) => String.t() | nil
+          required(:explanation) => String.t() | nil,
+          required(:failure_role) => :primary | :cascade | nil,
+          required(:root_failure_asset_ref) => String.t() | nil
         }
 
   @type run_summary :: %{
@@ -247,6 +249,7 @@ defmodule FavnOrchestrator.RunReadModel do
     persisted_steps
     |> merge_event_steps(event_steps, run)
     |> append_waiting_steps(run, event_steps)
+    |> mark_cascade_failures(events)
     |> Enum.sort_by(&{&1.stage || 999_999, &1.asset_ref})
   end
 
@@ -342,7 +345,9 @@ defmodule FavnOrchestrator.RunReadModel do
       attempt: nil,
       error: nil,
       output: nil,
-      explanation: "Asset has not started yet for this run."
+      explanation: "Asset has not started yet for this run.",
+      failure_role: nil,
+      root_failure_asset_ref: nil
     }
   end
 
@@ -392,7 +397,9 @@ defmodule FavnOrchestrator.RunReadModel do
         Map.get(meta, :output) || Map.get(meta, "output") || Map.get(meta, :outputs) ||
           Map.get(meta, "outputs") || Map.get(meta, :materialization) ||
           Map.get(meta, "materialization"),
-      explanation: step_explanation(Map.get(result, :status) || Map.get(result, "status"))
+      explanation: step_explanation(Map.get(result, :status) || Map.get(result, "status")),
+      failure_role: nil,
+      root_failure_asset_ref: nil
     }
   end
 
@@ -410,12 +417,92 @@ defmodule FavnOrchestrator.RunReadModel do
       window: nil,
       duration_ms: nil,
       started_at:
-        events |> Enum.find(&(&1.event_type == :step_started)) |> then(&(&1 && &1.occurred_at)),
+        events
+        |> Enum.find(&step_event_type?(&1, "step_started"))
+        |> then(&(&1 && &1.occurred_at)),
       attempt: Map.get(data, :attempt) || Map.get(data, "attempt"),
       error: Map.get(data, :error) || Map.get(data, "error"),
       output: nil,
-      explanation: event_step_explanation(latest.event_type)
+      explanation: event_step_explanation(latest.event_type),
+      failure_role: nil,
+      root_failure_asset_ref: nil
     }
+  end
+
+  defp mark_cascade_failures(steps, events) do
+    cascade = cascade_failure_context(events)
+
+    Enum.map(steps, fn step ->
+      cond do
+        terminal_failure_status?(step.status) and Map.has_key?(cascade.by_step_id, step.id) ->
+          root_failure_asset_ref = Map.fetch!(cascade.by_step_id, step.id)
+
+          step
+          |> Map.put(:failure_role, :cascade)
+          |> Map.put(:root_failure_asset_ref, root_failure_asset_ref)
+          |> Map.put(:explanation, cascade_failure_explanation(root_failure_asset_ref))
+
+        terminal_failure_status?(step.status) ->
+          Map.put(step, :failure_role, :primary)
+
+        true ->
+          step
+      end
+    end)
+  end
+
+  defp cascade_failure_context(events) do
+    started_by_runner_execution_id = started_step_ids_by_runner_execution_id(events)
+
+    by_step_id =
+      events
+      |> Enum.filter(&event_type?(&1, :stage_draining_after_failure))
+      |> Enum.reduce(%{}, fn event, acc ->
+        data = event.data || %{}
+
+        root_failure_asset_ref =
+          public_ref(Map.get(data, :failed_asset_ref) || Map.get(data, "failed_asset_ref"))
+
+        data
+        |> Map.get(:pending_execution_ids, Map.get(data, "pending_execution_ids", []))
+        |> List.wrap()
+        |> Enum.reduce(acc, fn execution_id, step_acc ->
+          case Map.get(started_by_runner_execution_id, execution_id) do
+            nil -> step_acc
+            step_id -> Map.put(step_acc, step_id, root_failure_asset_ref)
+          end
+        end)
+      end)
+
+    %{by_step_id: by_step_id}
+  end
+
+  defp started_step_ids_by_runner_execution_id(events) do
+    events
+    |> Enum.filter(&event_type?(&1, :step_started))
+    |> Map.new(fn event ->
+      data = event.data || %{}
+
+      runner_execution_id =
+        Map.get(data, :runner_execution_id) || Map.get(data, "runner_execution_id")
+
+      {runner_execution_id, event_step_id(event.run_id, event)}
+    end)
+    |> Map.delete(nil)
+  end
+
+  defp event_type?(%RunEvent{event_type: event_type}, expected) when is_atom(event_type),
+    do: event_type == expected
+
+  defp event_type?(%RunEvent{event_type: event_type}, expected) when is_binary(event_type),
+    do: event_type == Atom.to_string(expected)
+
+  defp event_type?(_event, _expected), do: false
+
+  defp terminal_failure_status?(status), do: status in [:error, :timed_out, "error", "timed_out"]
+
+  defp cascade_failure_explanation(root_failure_asset_ref) do
+    "Failed while draining in-flight work after root failure in #{root_failure_asset_ref}."
   end
 
   defp result_values(results) when is_map(results), do: Map.values(results)
@@ -429,8 +516,20 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp step_event?(%RunEvent{event_type: event_type}),
-    do: event_type |> Atom.to_string() |> String.starts_with?("step_")
+  defp step_event?(%RunEvent{event_type: event_type}) do
+    event_type
+    |> event_type_name()
+    |> String.starts_with?("step_")
+  end
+
+  defp step_event?(_event), do: false
+
+  defp step_event_type?(%RunEvent{event_type: event_type}, expected),
+    do: event_type_name(event_type) == expected
+
+  defp event_type_name(event_type) when is_atom(event_type), do: Atom.to_string(event_type)
+  defp event_type_name(event_type) when is_binary(event_type), do: event_type
+  defp event_type_name(_event_type), do: ""
 
   defp event_step_id(run_id, %RunEvent{} = event) do
     data = event.data || %{}
@@ -439,24 +538,42 @@ defmodule FavnOrchestrator.RunReadModel do
       safe_id("#{run_id}:#{public_ref(event.asset_ref)}")
   end
 
-  defp event_step_status(:step_started, _status), do: :running
-  defp event_step_status(:step_finished, _status), do: :ok
-  defp event_step_status(:step_failed, _status), do: :error
-  defp event_step_status(:step_timed_out, _status), do: :timed_out
-  defp event_step_status(:step_cancelled, _status), do: :cancelled
-  defp event_step_status(:step_retry_scheduled, _status), do: :retrying
-  defp event_step_status(:step_skipped_fresh, _status), do: :skipped_fresh
-  defp event_step_status(:step_blocked, _status), do: :blocked
-  defp event_step_status(_event_type, status), do: status
+  defp event_step_status(event_type, status) do
+    case event_type_name(event_type) do
+      "step_started" -> :running
+      "step_finished" -> :ok
+      "step_failed" -> :error
+      "step_timed_out" -> :timed_out
+      "step_cancelled" -> :cancelled
+      "step_retry_scheduled" -> :retrying
+      "step_skipped_fresh" -> :skipped_fresh
+      "step_blocked" -> :blocked
+      _other -> status_name(status)
+    end
+  end
 
-  defp event_step_explanation(:step_started),
-    do: "Execution has started; waiting for runner result."
+  defp status_name(nil), do: nil
+  defp status_name(status) when is_atom(status), do: status
+  defp status_name("running"), do: :running
+  defp status_name("ok"), do: :ok
+  defp status_name("partial"), do: :partial
+  defp status_name("error"), do: :error
+  defp status_name("timed_out"), do: :timed_out
+  defp status_name("cancelled"), do: :cancelled
+  defp status_name("retrying"), do: :retrying
+  defp status_name("skipped_fresh"), do: :skipped_fresh
+  defp status_name("blocked"), do: :blocked
+  defp status_name(status), do: status
 
-  defp event_step_explanation(:step_retry_scheduled),
-    do: "Retry has been scheduled for this asset."
-
-  defp event_step_explanation(:step_finished), do: "Execution finished successfully."
-  defp event_step_explanation(_event_type), do: nil
+  defp event_step_explanation(event_type) do
+    case event_type_name(event_type) do
+      "step_started" -> "Execution has started; waiting for runner result."
+      "step_retry_scheduled" -> "Retry has been scheduled for this asset."
+      "step_finished" -> "Execution finished successfully."
+      "step_failed" -> "Failed while executing this asset."
+      _event_type -> nil
+    end
+  end
 
   defp step_explanation(status) when status in [:pending, "pending"],
     do: "Asset has not started yet for this run."
@@ -675,13 +792,21 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp public_window(_window), do: nil
 
-  defp public_ref({module, name}), do: "#{inspect(module)}.#{name}"
-  defp public_ref(%{module: module, name: name}), do: "#{module}.#{name}"
-  defp public_ref(%{"module" => module, "name" => name}), do: "#{module}.#{name}"
-  defp public_ref(ref) when is_atom(ref), do: Atom.to_string(ref)
-  defp public_ref(ref) when is_binary(ref), do: ref
+  defp public_ref({module, name}), do: "#{module_label(module)}.#{name}"
+  defp public_ref(%{module: module, name: name}), do: "#{module_label(module)}.#{name}"
+  defp public_ref(%{"module" => module, "name" => name}), do: "#{module_label(module)}.#{name}"
+  defp public_ref(ref) when is_atom(ref), do: ref |> Atom.to_string() |> strip_elixir_prefix()
+  defp public_ref(ref) when is_binary(ref), do: strip_elixir_prefix(ref)
   defp public_ref(nil), do: "Unknown asset"
   defp public_ref(ref), do: inspect(ref)
+
+  defp module_label(module) when is_atom(module),
+    do: module |> Atom.to_string() |> strip_elixir_prefix()
+
+  defp module_label(module), do: module |> to_string() |> strip_elixir_prefix()
+
+  defp strip_elixir_prefix("Elixir." <> module), do: module
+  defp strip_elixir_prefix(module), do: module
 
   defp safe_id(value), do: value |> to_string() |> String.replace(~r/[^A-Za-z0-9_-]+/, "-")
 

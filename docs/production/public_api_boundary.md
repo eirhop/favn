@@ -23,8 +23,8 @@ execution with explicit shared-library/driver control:
 
 - DuckDB-backed SQL asset materialization
 - DuckDB named connections used through `Favn.SQLClient`
-- DuckDB bootstrap features such as extension install/load, DuckLake attach, and
-  catalog selection
+- DuckDB bootstrap features such as extension load, keyed DuckLake/DuckDB
+  attaches, catalog selection, and catalog-level write admission
 
 Both DuckDB plugins are supported optional dependencies. Do not add internal
 runtime apps directly for either path.
@@ -61,8 +61,9 @@ The stable `v1` API should focus on the parts users build authored projects on:
   columns, with-connection, and disconnect functions against named connections
 - supported local commands: `mix favn.init`, `mix favn.doctor`,
   `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
-  `mix favn.reload`, `mix favn.status`, `mix favn.logs`, `mix favn.stop`,
-  `mix favn.reset`, and `mix favn.read_doc`
+  `mix favn.runs`, `mix favn.reload`, `mix favn.status`, `mix favn.logs`,
+  `mix favn.inspect`, `mix favn.query`, `mix favn.stop`, `mix favn.reset`, and
+  `mix favn.read_doc`
 
 Packaging commands such as `mix favn.build.runner`, `mix favn.build.web`,
 `mix favn.build.orchestrator`, and `mix favn.build.single` are public command

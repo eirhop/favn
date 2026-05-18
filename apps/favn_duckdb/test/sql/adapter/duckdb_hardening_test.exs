@@ -727,7 +727,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "local file databases default to single admitted SQL operation" do
-    resolved = %Resolved{resolved() | config: %{database: "tmp/tutorial.duckdb"}}
+    resolved = %Resolved{resolved() | config: %{open: [database: "tmp/tutorial.duckdb"]}}
 
     assert %ConcurrencyPolicy{
              limit: 1,
@@ -739,7 +739,10 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
   end
 
   test "DuckLake mode defaults to unlimited SQL write concurrency" do
-    resolved = %Resolved{resolved() | config: %{database: "tmp/tutorial.duckdb", mode: :ducklake}}
+    resolved = %Resolved{
+      resolved()
+      | config: %{open: [database: "tmp/tutorial.duckdb"], mode: :ducklake}
+    }
 
     assert %ConcurrencyPolicy{limit: :unlimited, applies_to: :writes} =
              DuckDB.default_concurrency_policy(resolved)
@@ -752,7 +755,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
         "favn_duckdb_admission_#{System.unique_integer([:positive])}.duckdb"
       )
 
-    resolved = %Resolved{resolved() | config: %{database: path}}
+    resolved = %Resolved{resolved() | config: %{open: [database: path]}}
 
     {:ok, session_a} = open_session(resolved)
     {:ok, session_b} = open_session(resolved)
@@ -779,7 +782,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
   test "table materialization creates missing target schema" do
     path = tmp_duckdb_path("schema_table")
-    resolved = %Resolved{resolved() | config: %{database: path}}
+    resolved = %Resolved{resolved() | config: %{open: [database: path]}}
     {:ok, session} = open_session(resolved)
 
     on_exit(fn ->
@@ -820,7 +823,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
   test "view materialization creates missing target schema" do
     path = tmp_duckdb_path("schema_view")
-    resolved = %Resolved{resolved() | config: %{database: path}}
+    resolved = %Resolved{resolved() | config: %{open: [database: path]}}
     {:ok, session} = open_session(resolved)
 
     on_exit(fn ->
@@ -884,7 +887,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
   test "appender materialization creates missing target schema before opening appender" do
     path = tmp_duckdb_path("schema_appender")
-    resolved = %Resolved{resolved() | config: %{database: path}}
+    resolved = %Resolved{resolved() | config: %{open: [database: path]}}
     {:ok, session} = open_session(resolved)
 
     on_exit(fn ->
@@ -912,13 +915,21 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
       name: :duckdb_runtime,
       adapter: DuckDB,
       module: __MODULE__,
-      config: %{database: ":memory:"}
+      config: %{open: [database: ":memory:"]}
     }
   end
 
   defp production_resolved(config) do
-    %Resolved{resolved() | config: Map.merge(%{production?: true}, config)}
+    %Resolved{resolved() | config: Map.merge(%{production?: true}, duckdb_config(config))}
   end
+
+  defp duckdb_config(%{database: database} = config) do
+    config
+    |> Map.delete(:database)
+    |> Map.put(:open, database: database)
+  end
+
+  defp duckdb_config(config), do: config
 
   defp open_session(%Resolved{} = resolved) do
     with {:ok, conn} <- DuckDB.connect(resolved, []),
@@ -930,7 +941,10 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
          resolved: resolved,
          conn: conn,
          capabilities: capabilities,
-         concurrency_policy: concurrency_policy
+         concurrency_policy:
+           if(match?(%Favn.SQL.ConcurrencyPolicy{}, concurrency_policy), do: concurrency_policy),
+         concurrency_policies:
+           if(match?(%Favn.SQL.ConcurrencyPolicies{}, concurrency_policy), do: concurrency_policy)
        }}
     end
   end

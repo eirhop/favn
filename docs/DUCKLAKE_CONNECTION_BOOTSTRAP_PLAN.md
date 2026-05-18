@@ -2,6 +2,10 @@
 
 Planning issue: <https://github.com/eirhop/favn/issues/170>
 
+Status: superseded by `docs/DUCKDB_DUCKLAKE_CONNECTION_REDESIGN_PLAN.md`, which
+replaces the earlier `database`/`duckdb_bootstrap` shape with `open`/`duckdb`,
+multiple keyed attached catalogs, and catalog-level write admission.
+
 ## Goal
 
 Add first-class DuckDB connection bootstrap support so a consumer project can configure one named SQL connection, start the local Favn stack, and run SQLClient or SQL assets against an attached DuckLake catalog backed by Azure Data Lake Storage and a PostgreSQL metadata catalog.

@@ -1,9 +1,9 @@
 # favn_local
 
 Purpose: implementation behind local developer tooling, local stack lifecycle,
-install/reset/logs/status/diagnostics/reload/run/backfill flows, single-node bootstrap, and
-packaging commands, including the project-local backend-only SQLite
-`build.single` launcher.
+install/reset/logs/status/diagnostics/reload/run/backfill flows, local run and
+SQL data inspection, single-node bootstrap, and packaging commands, including
+the project-local backend-only SQLite `build.single` launcher.
 
 Code:
 - `apps/favn_local/lib/favn/dev.ex`
@@ -55,4 +55,5 @@ Single-node artifact invariant:
 
 Use when changing `mix favn.*` local behavior, local runtime state, local HTTP
 client behavior, consumer config transport, install/runtime workspaces,
-single-node bootstrap, operator diagnostics, or local packaging outputs.
+single-node bootstrap, operator diagnostics, local run/data inspection, or local
+packaging outputs.

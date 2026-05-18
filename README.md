@@ -43,7 +43,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
   deployments that need explicit DuckDB shared-library/driver control
 - storage, orchestrator, runner, local tooling, and web apps are internal runtime
   or product components, not ordinary user dependencies
-- local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
+- local development tooling is available today through `mix favn.init`, `mix favn.doctor`, `mix favn.install`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`, `mix favn.runs`, `mix favn.logs`, `mix favn.inspect`, `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`, `mix favn.status`, and `mix favn.stop`
 - local development startup uses HTTP-level orchestrator readiness checks, validated Distributed Erlang node/cookie inputs, explicit service wrapper pid/log-write failures, structured local API failure diagnostics, and normalized runner RPC dispatch failures at the orchestrator boundary
 - the old SvelteKit frontend has been removed; local dev now starts a single operator process that runs orchestrator plus the thin Phoenix/LiveView `apps/favn_view` shell on the standard local web port, `http://127.0.0.1:4173`
 - local development registers one pinned manifest version across runner and orchestrator so scheduled runs execute against the same manifest identity
@@ -58,7 +58,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - split-target packaging now also includes `mix favn.build.web` and `mix favn.build.orchestrator` with honest metadata-oriented outputs under `.favn/dist/web/<build_id>/` and `.favn/dist/orchestrator/<build_id>/`
 - single-node packaging now includes `mix favn.build.single` with a verified project-local backend-only SQLite launcher under `.favn/dist/single/<build_id>/`; it still depends on the installed runtime source root and is not a self-contained or relocatable release artifact (see `OPERATOR_NOTES.md` in each artifact)
 - backend bootstrap tooling now includes `mix favn.bootstrap.single`, which verifies an orchestrator service token through `/api/orchestrator/v1/bootstrap/service-token`, validates a manifest JSON file, registers and activates the manifest by default, asks the orchestrator to register that persisted manifest with the local runner, and reports service-auth active-manifest verification status; it does not make browser login/session/audit durable
-- operational backfill foundations are implemented in the control plane for resolving ranges, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; child pipeline backfills default to `refresh: :missing`, and operational backfill does not accept lookback-policy input until concrete runtime semantics exist
+- operational backfill foundations are implemented in the control plane for resolving ranges, dry-running plans, submitting parent/child pipeline backfills, tracking per-window state, exposing private orchestrator HTTP reads/commands, and driving those endpoints from `mix favn.backfill` in local dev; child pipeline backfills default to `refresh: :missing`, and operational backfill does not accept lookback-policy input until concrete runtime semantics exist
 - operational backfill read-model storage is derived projection state; the closeout migration to JSON-safe DTO storage rebuilds the durable backfill read-model tables, and operators can repopulate them with `mix favn.backfill repair --apply` from authoritative run snapshots/events when needed
 
 ## What Favn Gives You
@@ -71,7 +71,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local runtime workflow support for authoring, safe landed-data inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
-- DuckDB connection bootstrap for DuckDB catalog files and DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckDB attach, DuckLake attach, and catalog selection
+- DuckDB connection bootstrap for DuckDB catalog files and DuckLake sessions, including extension load, Azure credential-chain secrets, keyed DuckDB/DuckLake attaches, catalog selection, and catalog-level write admission
 - an ADBC-backed DuckDB SQL adapter with bounded query results and explicit external-output expectations for large data
 
 ## Core Concepts
@@ -370,29 +370,37 @@ Connection runtime values can also use `Favn.RuntimeConfig.Ref.env!/1` and
 `Favn.RuntimeConfig.Ref.secret_env!/1` when values should be resolved from the
 runner environment just before adapter connection.
 
-DuckDB local-file connections are serialized by default inside the SQL runtime so
-local sessions and materializations do not run unsafe concurrent catalog writes
-against the same database file. Backends that support parallel writes can opt out
-with `write_concurrency: :unlimited` in their runtime connection config, while
-local DuckDB files can keep the default or set `write_concurrency: 1` explicitly.
-Production local DuckDB database paths should be explicit, durable attached-storage
-paths owned by the runner/plugin data plane. Add
-`Favn.SQL.Adapter.DuckDB.production_storage_schema_fields/0` to production DuckDB
-connection schemas to reject `:memory:`, relative paths, missing parents, and
-unwritable parents before opening DuckDB. SQLite control-plane backups do not
-include those DuckDB files.
+DuckDB runtime config separates the opened DuckDB session database from attached
+persistent catalogs. Use `open: [database: ":memory:"]` for production-style
+DuckLake sessions where persistence lives in attached DuckLake catalogs, or use a
+file-backed `open.database` for local debugging. Configure DuckDB session setup
+under `duckdb: [...]`: extension `load`, typed settings, secrets, keyed catalog
+`attach`, and optional `use`.
 
-DuckDB connections can also declare `duckdb_bootstrap` runtime config when a
-session needs setup before SQLClient or SQL asset execution. This is the
-recommended path for local DuckLake dogfooding with Azure Data Lake Storage and a
-PostgreSQL metadata catalog. Add `Favn.SQL.Adapter.DuckDB.bootstrap_schema_field/0`
-to the connection module schema, then configure extension install/load, Azure
-credential-chain secret creation, DuckLake attach, and `USE` under the named
-connection. Bootstrap extension names can be any valid DuckDB extension
-identifier, and typed session settings such as
-`settings: [azure_transport_option_type: :curl]` run after extension load and
-before secrets or attach. Secret runtime refs are resolved on the runner side and
-redacted from diagnostics. DuckDB worker unavailability,
+Attached catalogs can be DuckLake catalogs or DuckDB files. Favn relation names
+map directly to DuckDB three-part names: a relation with `catalog: "raw"`,
+`schema: "sales"`, and `name: "orders"` renders as `raw.sales.orders`, so SQL
+assets can read from `raw` or `int` and write modeled outputs into `mart` within
+one DuckDB connection. DuckDB file catalogs default to `write_concurrency: 1`,
+while DuckLake catalogs default to `:unlimited` unless configured otherwise.
+Write admission is keyed by `{connection, catalog}` so a single-writer `mart`
+file catalog does not block independent DuckLake writes.
+
+Catalog-level write admission is guaranteed for Favn SQL asset materialization,
+where the target relation carries an explicit catalog. Raw
+`Favn.SQLClient.execute/3` and `Favn.SQLClient.query/3` calls cannot reliably
+infer the write catalog from arbitrary SQL today; use asset materialization for
+protected writes or serialize manual raw SQL at the caller until a future
+explicit `catalog:` option exists.
+
+Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
+`Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module
+schemas. Add `production_storage_schema_fields/0` when production local-file
+session databases should reject `:memory:`, relative paths, missing parents, and
+unwritable parents before opening DuckDB. SQLite control-plane backups do not
+include DuckDB data-plane files or DuckLake object storage. Secret runtime refs
+inside nested DuckDB config are resolved on the runner side and redacted from
+diagnostics. DuckDB worker unavailability,
 worker-call timeouts, bootstrap failures, materialization failures, and appender
 failures are normalized into structured SQL errors suitable for logs, API/UI
 payloads, and run diagnostics without exposing configured secrets. Worker-call
@@ -411,8 +419,14 @@ mix favn.install
 mix favn.dev
 mix favn.run MyApp.Pipelines.DailySales --window day:2026-04-27 --timezone Europe/Oslo
 mix favn.backfill submit MyApp.Pipelines.DailySales --from 2026-04-01 --to 2026-04-07 --kind day
+mix favn.backfill submit MyApp.Pipelines.DailySales --window month:2025-05..2026-05 --dry-run
 mix favn.backfill windows RUN_ID --limit 100 --offset 0
 mix favn.backfill repair --pipeline-module MyApp.Pipelines.DailySales --apply
+mix favn.runs list --status error --limit 20
+mix favn.runs show RUN_ID
+mix favn.logs RUN_ID
+mix favn.inspect relation raw.mercatus.reporting_baseline_inventory_by_day
+mix favn.query "select count(*) from raw.mercatus.reporting_baseline_inventory_by_day"
 mix favn.logs
 mix favn.status
 mix favn.reload
@@ -551,8 +565,11 @@ orchestrator. The older `--timeout-ms` flag remains an alias for both when the
 more specific flags are not provided.
 
 `mix favn.backfill` exposes the local operational-backfill workflow for running
-local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges,
-`windows RUN_ID` to inspect child windows, `coverage-baselines` and
+local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges
+or compact `--window kind:FROM..TO` ranges such as
+`--window month:2025-05..2026-05`. Add `--dry-run` to ask the orchestrator to
+resolve and print the concrete windows without creating parent or child runs.
+`windows RUN_ID` inspects child windows; `coverage-baselines` and
 `asset-window-states` to inspect projected backfill state, and `rerun-window
 RUN_ID --window-key KEY` for failed window reruns. Use `repair` to dry-run or,
 with `--apply`, rebuild derived coverage-baseline, backfill-window, and latest
@@ -574,6 +591,35 @@ pipeline or asset filters, and print a next-page hint when more rows are availab
 For `submit`, `--wait-timeout-ms` controls local CLI polling only, while
 `--run-timeout-ms` controls the child run execution timeout sent to the
 orchestrator.
+
+For repetitive endpoint-style `Favn.MultiAsset` pipelines, prefer a monthly
+dry-run before submitting a longer operational backfill:
+
+```bash
+mix favn.backfill submit MyApp.Pipelines.MercatusInventoryByDayBackfill \
+  --window month:2025-05..2026-05 \
+  --dry-run
+
+mix favn.backfill submit MyApp.Pipelines.MercatusInventoryByDayBackfill \
+  --window month:2025-05..2026-05 \
+  --wait-timeout-ms 900000 \
+  --run-timeout-ms 300000
+```
+
+`mix favn.runs list`, `mix favn.runs show RUN_ID`, and `mix favn.logs RUN_ID`
+provide lightweight run investigation through the orchestrator HTTP boundary.
+`mix favn.status` includes active-run counts and recent failed run ids when the
+local stack is running. `mix favn.inspect relation RELATION`,
+`mix favn.inspect partitions RELATION`, and `mix favn.query "select ..."`
+provide local SQL inspection without ad-hoc `mix run -e` snippets. `mix
+favn.query` uses a best-effort read-only guardrail by default; it is not a SQL
+sandbox or security boundary. Pass `--connection NAME` when multiple SQL
+connections are configured.
+
+DuckDB and DuckDB ADBC bootstrap now accept run-scoped catalog requirements.
+SQL asset execution and relation inspection pass the rendered relation catalogs
+to the SQL runtime so raw-only work does not eagerly attach unrelated DuckLake
+catalogs such as `mart`.
 
 The local runner receives only the explicitly supported consumer `:favn` config
 needed for local execution: `:discovery`, `:connection_modules`, `:connections`,

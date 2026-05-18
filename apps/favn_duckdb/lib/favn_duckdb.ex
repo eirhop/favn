@@ -3,8 +3,8 @@ defmodule FavnDuckdb do
   DuckDB execution plugin for `favn_runner`.
 
   Use `Favn.SQL.Adapter.DuckDB` as the adapter in `Favn.Connection` definitions.
-  That module also exposes `bootstrap_schema_field/0` for DuckDB/DuckLake
-  connection bootstrap configuration.
+  That module also exposes `config_schema_fields/0` for DuckDB/DuckLake runtime
+  connection configuration.
   """
 
   @behaviour FavnRunner.Plugin

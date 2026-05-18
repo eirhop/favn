@@ -401,9 +401,9 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
       defmodule #{inspect(assets)} do
         use Favn.MultiAsset
 
-        source_config :mercatus,
-          username: env!("MERCATUS_USERNAME"),
-          password: secret_env!("MERCATUS_PASSWORD")
+        source_config :source_api,
+          username: env!("SOURCE_API_USERNAME"),
+          password: secret_env!("SOURCE_API_PASSWORD")
 
         asset :orders do
           rest do
@@ -428,9 +428,9 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
 
     for asset <- compiled_assets do
       assert asset.runtime_config == %{
-               mercatus: %{
-                 username: Ref.env!("MERCATUS_USERNAME"),
-                 password: Ref.secret_env!("MERCATUS_PASSWORD")
+               source_api: %{
+                 username: Ref.env!("SOURCE_API_USERNAME"),
+                 password: Ref.secret_env!("SOURCE_API_PASSWORD")
                }
              }
 

@@ -20,9 +20,12 @@ defmodule FavnView.RunDetailLive do
       assign(socket,
         run_id: run_id,
         run: run,
+        run_event_sequence: latest_event_sequence(run),
+        run_events_live?: false,
         active_mode: :overview,
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
+      |> maybe_subscribe_run()
       |> maybe_schedule_refresh()
 
     {:ok, socket}
@@ -31,8 +34,29 @@ defmodule FavnView.RunDetailLive do
   @impl true
   def handle_info(:refresh_run, socket) do
     run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
-    {:noreply, socket |> assign(:run, run) |> maybe_schedule_refresh()}
+
+    {:noreply,
+     socket
+     |> assign(:run, run)
+     |> assign(:run_event_sequence, latest_event_sequence(run, socket.assigns.run_event_sequence))
+     |> maybe_schedule_refresh()}
   end
+
+  def handle_info(
+        {:favn_run_event, %{run_id: run_id} = event},
+        %{assigns: %{run_id: run_id}} = socket
+      ) do
+    socket =
+      if fresh_run_event?(event, socket.assigns.run_event_sequence) do
+        reload_run_from_event(socket, Map.get(event, :sequence))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:favn_run_event, _event}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("set_mode", %{"mode" => mode}, socket) when mode in @valid_modes do
@@ -51,6 +75,15 @@ defmodule FavnView.RunDetailLive do
       active_mode={@active_mode}
     />
     """
+  end
+
+  @impl true
+  def terminate(_reason, socket) do
+    if socket.assigns[:run_events_live?] do
+      FavnOrchestrator.unsubscribe_run(socket.assigns.run_id)
+    end
+
+    :ok
   end
 
   defp load_run(run_id, existing_back_asset_href \\ nil) do
@@ -106,20 +139,74 @@ defmodule FavnView.RunDetailLive do
 
   defp maybe_schedule_refresh(socket), do: socket
 
+  defp maybe_subscribe_run(socket) do
+    if connected?(socket) do
+      case FavnOrchestrator.subscribe_run(socket.assigns.run_id) do
+        :ok ->
+          socket
+          |> assign(:run_events_live?, true)
+          |> replay_run_event_gap()
+
+        {:error, _reason} ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp replay_run_event_gap(socket) do
+    after_sequence = socket.assigns.run_event_sequence || 0
+
+    case FavnOrchestrator.list_run_stream_events(socket.assigns.run_id,
+           after_sequence: after_sequence,
+           limit: 200
+         ) do
+      {:ok, []} ->
+        socket
+
+      {:ok, events} ->
+        latest_sequence =
+          events |> Enum.map(&Map.get(&1, :sequence)) |> Enum.max(fn -> after_sequence end)
+
+        reload_run_from_event(socket, latest_sequence)
+
+      {:error, _reason} ->
+        socket
+    end
+  end
+
+  defp reload_run_from_event(socket, event_sequence) do
+    run = load_run(socket.assigns.run_id, socket.assigns.run[:back_asset_href])
+
+    socket
+    |> assign(:run, run)
+    |> assign(:run_event_sequence, latest_event_sequence(run, event_sequence))
+    |> maybe_schedule_refresh()
+  end
+
+  defp fresh_run_event?(%{sequence: sequence}, latest_sequence) when is_integer(sequence) do
+    is_nil(latest_sequence) or sequence > latest_sequence
+  end
+
+  defp fresh_run_event?(_event, _latest_sequence), do: true
+
   defp step_from_public(step) do
     %{
       id: step.id,
       asset_ref: step.asset_ref,
       display_name: LogsViewModel.display_name(step.asset_ref) || step.asset_ref,
       secondary: step_secondary(step),
-      status: step_status_label(step.status),
+      status: step_status_label(step.status, Map.get(step, :failure_role)),
       raw_status: step.status,
-      status_tone: LogsViewModel.status_tone(step.status),
+      status_tone: step_status_tone(step.status, Map.get(step, :failure_role)),
       duration: LogsViewModel.duration_ms_label(step.duration_ms),
       started_at: LogsViewModel.timestamp_label(step.started_at),
       attempt: step.attempt,
       error: error_summary(step.error),
       explanation: step.explanation,
+      failure_role: Map.get(step, :failure_role),
+      root_failure_asset_ref: Map.get(step, :root_failure_asset_ref),
       output: step.output,
       inspectable?: true
     }
@@ -241,14 +328,29 @@ defmodule FavnView.RunDetailLive do
 
   defp latest_event_summary([]), do: nil
   defp latest_event_summary(events), do: events |> List.last() |> Map.get(:summary)
+  defp latest_event_sequence(run, fallback \\ nil)
+
+  defp latest_event_sequence(%{events: events}, fallback) when is_list(events) do
+    events
+    |> Enum.map(&Map.get(&1, :sequence))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> fallback end)
+  end
+
+  defp latest_event_sequence(_run, fallback), do: fallback
+
   defp active_status?(status), do: status in @active_statuses
   defp subtitle(parts), do: parts |> Enum.reject(&is_nil/1) |> Enum.join(" · ")
   defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)
   defp short_id(id) when is_binary(id), do: id
   defp short_id(_id), do: "unknown"
-  defp step_status_label(status) when status in [:pending, "pending"], do: "Waiting"
-  defp step_status_label(status) when status in [:ok, "ok"], do: "Ran"
-  defp step_status_label(status), do: LogsViewModel.status_label(status)
+  defp step_status_label(_status, :cascade), do: "Cascade failed"
+  defp step_status_label(status, _role) when status in [:pending, "pending"], do: "Waiting"
+  defp step_status_label(status, _role) when status in [:ok, "ok"], do: "Ran"
+  defp step_status_label(status, _role), do: LogsViewModel.status_label(status)
+
+  defp step_status_tone(_status, :cascade), do: :warning
+  defp step_status_tone(status, _role), do: LogsViewModel.status_tone(status)
 
   defp event_summary(event),
     do:
@@ -262,7 +364,9 @@ defmodule FavnView.RunDetailLive do
   defp label(value), do: value |> to_string() |> String.replace("_", " ") |> String.capitalize()
   defp error_summary(nil), do: nil
   defp error_summary(%{message: message}) when is_binary(message), do: message
+  defp error_summary(%{"message" => message}) when is_binary(message), do: message
   defp error_summary(%{reason: reason}), do: error_summary(reason)
+  defp error_summary(%{"reason" => reason}), do: error_summary(reason)
   defp error_summary(reason) when is_binary(reason), do: reason
   defp error_summary(reason) when is_atom(reason), do: label(reason)
   defp error_summary(reason), do: inspect(reason, limit: 5, printable_limit: 200)

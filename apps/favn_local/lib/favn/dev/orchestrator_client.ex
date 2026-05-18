@@ -213,6 +213,25 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
+  @spec plan_backfill(String.t(), String.t(), session_context(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def plan_backfill(base_url, service_token, session_context, payload)
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_map(payload) do
+    url = base_url <> "/api/orchestrator/v1/backfills/plan"
+
+    case request_post(:plan_backfill, url, service_token, payload, session_context) do
+      {:ok, %{"data" => %{"plan" => plan}}} when is_map(plan) ->
+        {:ok, plan}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:plan_backfill, :post, url, :invalid_response)}
+    end
+  end
+
   @spec list_backfill_windows(String.t(), String.t(), session_context(), String.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def list_backfill_windows(
@@ -302,6 +321,25 @@ defmodule Favn.Dev.OrchestratorClient do
     end
   end
 
+  @spec list_runs(String.t(), String.t(), session_context(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_runs(base_url, service_token, session_context, filters \\ [])
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_list(filters) do
+    url = base_url <> "/api/orchestrator/v1/runs" <> query_string(filters)
+
+    case request_get(:list_runs, url, service_token, session_context) do
+      {:ok, %{"data" => %{"items" => runs}}} when is_list(runs) ->
+        {:ok, runs}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:list_runs, :get, url, :invalid_response)}
+    end
+  end
+
   @spec get_run(String.t(), String.t(), session_context(), String.t()) ::
           {:ok, map()} | {:error, term()}
   def get_run(base_url, service_token, session_context, run_id)
@@ -318,6 +356,27 @@ defmodule Favn.Dev.OrchestratorClient do
 
       _other ->
         {:error, operation_error(:get_run, :get, url, :invalid_response)}
+    end
+  end
+
+  @spec list_run_events(String.t(), String.t(), session_context(), String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_run_events(base_url, service_token, session_context, run_id, filters \\ [])
+      when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
+             is_binary(run_id) and is_list(filters) do
+    url =
+      base_url <>
+        "/api/orchestrator/v1/runs/#{URI.encode(run_id)}/events" <> query_string(filters)
+
+    case request_get(:list_run_events, url, service_token, session_context) do
+      {:ok, %{"data" => %{"items" => events}}} when is_list(events) ->
+        {:ok, events}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, operation_error(:list_run_events, :get, url, :invalid_response)}
     end
   end
 

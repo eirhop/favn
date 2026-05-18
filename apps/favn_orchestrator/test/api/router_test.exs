@@ -1575,6 +1575,90 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert Enum.all?(windows, &(&1["pipeline_module"] == "Elixir.MyApp.Pipelines.DailyOrders"))
   end
 
+  test "plans pipeline backfill without creating runs" do
+    version = schedule_manifest_version("mv_backfill_plan_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills/plan", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2026-01-01",
+          "to" => "2026-01-02",
+          "kind" => "day",
+          "timezone" => "Etc/UTC"
+        }
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+
+    assert response.status == 200
+
+    assert %{
+             "data" => %{
+               "plan" => %{
+                 "manifest_version_id" => "mv_backfill_plan_http",
+                 "target_id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders",
+                 "pipeline_module" => "Elixir.MyApp.Pipelines.DailyOrders",
+                 "kind" => "day",
+                 "timezone" => "Etc/UTC",
+                 "window_count" => 2,
+                 "window_keys" => [
+                   "day:Etc/UTC:2026-01-01T00:00:00.000000Z",
+                   "day:Etc/UTC:2026-01-02T00:00:00.000000Z"
+                 ]
+               }
+             }
+           } = Jason.decode!(response.resp_body)
+
+    assert {:ok, runs} = Storage.list_runs()
+    refute Enum.any?(runs, &(&1.submit_kind == :backfill_pipeline))
+  end
+
+  test "backfill plan endpoint reports invalid range syntax with validation details" do
+    version = schedule_manifest_version("mv_backfill_plan_invalid_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills/plan", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2026-01-01",
+          "to" => "2026-02-01",
+          "kind" => "month",
+          "timezone" => "Etc/UTC"
+        }
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Invalid month window value",
+               "details" => %{"kind" => "month", "value" => "2026-01-01"}
+             }
+           } = Jason.decode!(response.resp_body)
+  end
+
   test "backfill submit duplicate does not create another backfill" do
     version = schedule_manifest_version("mv_backfill_idempotency_http")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1655,6 +1739,43 @@ defmodule FavnOrchestrator.API.RouterTest do
            } = Jason.decode!(response.resp_body)
 
     assert requested > 500
+  end
+
+  test "backfill submit endpoint reports invalid range window values clearly" do
+    version = schedule_manifest_version("mv_backfill_invalid_window_value_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills", %{
+        "target" => %{"type" => "pipeline", "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
+        "manifest_selection" => %{
+          "mode" => "version",
+          "manifest_version_id" => version.manifest_version_id
+        },
+        "range" => %{
+          "from" => "2026-01-01",
+          "to" => "2026-02-01",
+          "kind" => "month",
+          "timezone" => "Etc/UTC"
+        }
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-invalid-window-value-http")
+      |> Router.call(@opts)
+
+    assert response.status == 422
+
+    assert %{
+             "error" => %{
+               "code" => "validation_failed",
+               "message" => "Invalid month window value",
+               "details" => %{"kind" => "month", "value" => "2026-01-01"}
+             }
+           } = Jason.decode!(response.resp_body)
   end
 
   for option <- ["lookback", "lookback_policy"] do

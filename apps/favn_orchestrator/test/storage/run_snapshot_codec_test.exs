@@ -136,7 +136,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
         metadata: %{
           pipeline_context: %{
             id: "pipeline_1",
-            name: "mercatus_raw_full_refresh",
+            name: "source_raw_full_refresh",
             run_kind: :pipeline,
             resolved_refs: [{__MODULE__.TaggedAsset, :tag}],
             deps: :none
@@ -478,14 +478,14 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
           ref: {__MODULE__.TaggedAsset, :tag},
           module: __MODULE__.TaggedAsset,
           name: :tag,
-          metadata: %{tags: [:mercatus_full_refresh]}
+          metadata: %{tags: [:source_full_refresh]}
         }
       ],
       pipelines: [
         %Pipeline{
           module: __MODULE__.TaggedPipeline,
-          name: :mercatus_raw_full_refresh,
-          selectors: [{:tag, :mercatus_full_refresh}],
+          name: :source_raw_full_refresh,
+          selectors: [{:tag, :source_full_refresh}],
           deps: :none
         }
       ]

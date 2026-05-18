@@ -77,6 +77,31 @@ defmodule FavnOrchestrator.BackfillManager do
 
   def submit_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
 
+  @doc """
+  Resolves a pipeline backfill request without persisting or submitting runs.
+  """
+  @spec plan_pipeline_backfill(module(), keyword()) :: {:ok, map()} | {:error, term()}
+  def plan_pipeline_backfill(pipeline_module, opts \\ [])
+
+  def plan_pipeline_backfill(pipeline_module, opts)
+      when is_atom(pipeline_module) and is_list(opts) do
+    range_request = Keyword.get(opts, :range_request)
+
+    with :ok <- reject_unsupported_lookback(opts),
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
+         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
+         {:ok, index} <- Index.build_from_version(version),
+         {:ok, pipeline} <- fetch_pipeline_by_module(index, pipeline_module),
+         {:ok, range_request} <-
+           maybe_validate_coverage_baseline(range_request, pipeline_module, opts),
+         {:ok, range} <- RangeResolver.resolve(range_request),
+         :ok <- validate_window_count(range, opts) do
+      {:ok, plan_summary(version, pipeline, range)}
+    end
+  end
+
+  def plan_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
+
   defp resolve_parent_pipeline(index, %Pipeline{} = pipeline, range) do
     first_anchor = List.first(range.anchors)
 
@@ -533,6 +558,23 @@ defmodule FavnOrchestrator.BackfillManager do
   defp backfill_range_summary(range) do
     Map.take(range, [:kind, :timezone, :range_start_at, :range_end_at, :requested_count])
   end
+
+  defp plan_summary(version, %Pipeline{} = pipeline, range) do
+    %{
+      manifest_version_id: version.manifest_version_id,
+      target_id: target_id_for_pipeline(pipeline.module),
+      pipeline_module: pipeline.module,
+      kind: range.kind,
+      timezone: range.timezone,
+      window_count: range.requested_count,
+      window_keys: encoded_window_keys(range.anchors),
+      range_start_at: range.range_start_at,
+      range_end_at: range.range_end_at
+    }
+  end
+
+  defp target_id_for_pipeline(module) when is_atom(module),
+    do: "pipeline:" <> Atom.to_string(module)
 
   defp encoded_window_keys(anchors), do: Enum.map(anchors, &WindowKey.encode(&1.key))
 
