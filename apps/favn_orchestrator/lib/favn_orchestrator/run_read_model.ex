@@ -514,8 +514,13 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp step_event?(%RunEvent{event_type: event_type}),
+  defp step_event?(%RunEvent{event_type: event_type}) when is_atom(event_type),
     do: event_type |> Atom.to_string() |> String.starts_with?("step_")
+
+  defp step_event?(%RunEvent{event_type: event_type}) when is_binary(event_type),
+    do: String.starts_with?(event_type, "step_")
+
+  defp step_event?(_event), do: false
 
   defp event_step_id(run_id, %RunEvent{} = event) do
     data = event.data || %{}

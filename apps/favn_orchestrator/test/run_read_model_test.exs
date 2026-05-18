@@ -269,6 +269,31 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert steps_by_id["cascade-step"].explanation =~ "draining in-flight work"
   end
 
+  test "run detail accepts binary step event types" do
+    ref = {MyApp.Assets.Gold, :asset}
+    run = run("binary_step_events", submit_kind: :pipeline)
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: 1,
+               event_type: "step_started",
+               occurred_at: DateTime.utc_now(),
+               status: :running,
+               data: %{
+                 asset_ref: ref,
+                 asset_step_id: "binary-step",
+                 stage: 0,
+                 attempt: 1
+               }
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+    assert [%{id: "binary-step", status: :running}] = detail.steps
+  end
+
   defp run(run_id, opts) do
     RunState.new(
       id: run_id,
