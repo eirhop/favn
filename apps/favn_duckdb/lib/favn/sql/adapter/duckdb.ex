@@ -3,7 +3,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
   DuckDB implementation of `Favn.SQL.Adapter` backed by `duckdbex`.
 
   Most functions in this module are internal runtime adapter callbacks. The
-  supported authoring helpers are `bootstrap_schema_field/0` and
+  supported authoring helpers are `config_schema_fields/0` and
   `production_storage_schema_fields/0`, which can be used in a
   `Favn.Connection.Definition` when a DuckDB connection needs session setup or
   production storage validation before `Favn.SQLClient` or `Favn.SQLAsset`
@@ -31,10 +31,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
           %Favn.Connection.Definition{
             name: :warehouse,
             adapter: Favn.SQL.Adapter.DuckDB,
-            config_schema: [
-              %{key: :database, required: true, type: :path},
-              Favn.SQL.Adapter.DuckDB.bootstrap_schema_field()
-            ]
+            config_schema: Favn.SQL.Adapter.DuckDB.config_schema_fields()
           }
         end
       end
@@ -42,13 +39,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
       config :favn,
         connections: [
           warehouse: [
-            database: ":memory:",
-            write_concurrency: :unlimited,
-            duckdb_bootstrap: [
-              extensions: [
-                install: [:ducklake, :postgres, :azure],
-                load: [:ducklake, :postgres, :azure]
-              ],
+            open: [database: ":memory:"],
+            duckdb: [
+              load: [:ducklake, :postgres, :azure],
               secrets: [
                 azure_adls: [
                   type: :azure,
@@ -57,7 +50,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
                   chain: [:cli, :env],
                   scope: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_DATA_SCOPE")
                 ],
-                oceanos_meta: [
+                lakehouse_meta: [
                   type: :postgres,
                   host: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_POSTGRES_HOST"),
                   port: 5432,
@@ -73,10 +66,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
                 ]
               ],
               attach: [
-                name: :lake,
-                type: :ducklake,
-                metadata: [type: :postgres, secret: :oceanos_meta],
-                data_path: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_DATA_PATH")
+                lake: [
+                  type: :ducklake,
+                  metadata: "ducklake:postgres:",
+                  meta_secret: :lakehouse_meta,
+                  data_path: Favn.RuntimeConfig.Ref.env!("DUCKLAKE_DATA_PATH"),
+                  write_concurrency: :unlimited
+                ]
               ],
               use: :lake
             ]
@@ -88,9 +84,9 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   ## Supported DuckLake bootstrap secrets
 
-  DuckDB bootstrap is intentionally DuckDB-specific. It can install/load
-  extensions, create temporary DuckDB secrets, attach a DuckLake catalog, and set
-  the active catalog with `USE`.
+  DuckDB bootstrap is intentionally DuckDB-specific. It can load extensions,
+  create temporary DuckDB secrets, attach DuckDB/DuckLake catalogs, and set the
+  active catalog with `USE`.
 
   Azure ADLS secrets support DuckDB's `credential_chain` provider with optional
   `:chain` and `:scope` fields. Chain values must be one or more of `:cli`,
@@ -98,11 +94,8 @@ defmodule Favn.SQL.Adapter.DuckDB do
   as DuckDB's semicolon-separated `CHAIN` value. Scoped Azure secrets must use a
   trailing slash, for example `abfss://container@account.dfs.core.windows.net/path/`.
 
-  PostgreSQL metadata catalog credentials can be supplied as DuckDB Postgres
-  secrets and then referenced from DuckLake attach metadata with
-  `metadata: [type: :postgres, secret: :secret_name]`. The optional `:sslmode`
-  value is passed through the DuckLake/Postgres metadata path because DuckDB's
-  Postgres secret type does not accept `SSLMODE` as a secret parameter.
+  PostgreSQL metadata catalog credentials are supplied as DuckDB Postgres secrets
+  and then referenced from DuckLake attach config with `meta_secret: :secret_name`.
 
   PostgreSQL secrets accept either `:password` or Azure PostgreSQL Entra `:auth`,
   not both. Azure auth supports managed identity and Azure CLI dogfooding:
@@ -124,11 +117,6 @@ defmodule Favn.SQL.Adapter.DuckDB do
   Tokens are fetched during DuckDB bootstrap immediately before the temporary
   `CREATE SECRET` statement, injected as `PASSWORD`, never cached or persisted,
   and require reconnect/rebootstrap after expiry.
-
-  Existing `metadata: Favn.RuntimeConfig.Ref.secret_env!("DUCKLAKE_POSTGRES_DSN")`
-  attach configuration remains supported as a fallback, but storing PostgreSQL
-  credentials in DuckDB secrets is preferred because connection-string failures
-  can expose raw credentials in lower-level errors.
 
   Generated bootstrap SQL uses temporary DuckDB secrets (`CREATE SECRET`) only.
   """
@@ -163,11 +151,12 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   @impl true
   @spec connect(Resolved.t(), opts()) :: {:ok, Conn.t()} | {:error, Error.t()}
-  def connect(%Resolved{config: config} = resolved, opts) do
+  def connect(%Resolved{} = resolved, opts) do
     client = resolve_client(opts)
 
     with :ok <- validate_production_storage(resolved),
-         {:ok, db_ref} <- client.open(Map.get(config, :database)),
+         {:ok, database} <- Bootstrap.database(resolved),
+         {:ok, db_ref} <- client.open(database),
          {:ok, conn_ref} <- create_connection(client, db_ref) do
       {:ok, %Conn{db_ref: db_ref, conn_ref: conn_ref, connection: resolved.name, client: client}}
     else
@@ -194,20 +183,25 @@ defmodule Favn.SQL.Adapter.DuckDB do
 
   @spec bootstrap_schema_field() :: Favn.Connection.Definition.field()
   @doc """
-  Returns the connection schema field for DuckDB bootstrap runtime config.
+  Returns the legacy single schema field for `duckdb: [...]` runtime config.
 
-  Add this field to a `Favn.Connection.Definition.config_schema` when the named
-  DuckDB connection should accept `:duckdb_bootstrap` runtime config.
+  Prefer `config_schema_fields/0` so `open` and `duckdb` are validated together.
   """
   def bootstrap_schema_field, do: Bootstrap.schema_field()
+
+  @spec config_schema_fields() :: [Favn.Connection.Definition.field()]
+  @doc """
+  Returns DuckDB runtime config schema fields for `open: [...]` and `duckdb: [...]`.
+  """
+  def config_schema_fields, do: Bootstrap.config_schema_fields()
 
   @spec production_storage_schema_fields() :: [Favn.Connection.Definition.field()]
   @doc """
   Returns connection schema fields for DuckDB production storage validation.
 
   Production DuckDB connections default to durable local-file storage and must
-  use an explicit absolute `:database` path whose parent directory already exists
-  and is writable. Set `:duckdb_storage` to `:external`, `:ephemeral`, or
+  use an explicit absolute `open.database` path whose parent directory already
+  exists and is writable. Set `:duckdb_storage` to `:external`, `:ephemeral`, or
   `:ducklake` for production connections that intentionally do not use local-file
   durable storage.
   """
@@ -293,6 +287,20 @@ defmodule Favn.SQL.Adapter.DuckDB do
     ConcurrencyPolicy.unlimited(resolved)
   end
 
+  def default_concurrency_policy(%Resolved{config: %{open: %{database: database}}})
+      when is_binary(database) and database not in [":memory:", ""] do
+    %ConcurrencyPolicy{
+      limit: 1,
+      scope: {:duckdb_database, Path.expand(database)},
+      applies_to: :all
+    }
+  end
+
+  def default_concurrency_policy(%Resolved{} = resolved = %Resolved{config: %{open: open}})
+      when is_list(open) do
+    default_concurrency_policy(%Resolved{resolved | config: %{open: Map.new(open)}})
+  end
+
   def default_concurrency_policy(%Resolved{config: %{database: database}})
       when is_binary(database) and database not in [":memory:", ""] do
     %ConcurrencyPolicy{
@@ -305,6 +313,90 @@ defmodule Favn.SQL.Adapter.DuckDB do
   def default_concurrency_policy(%Resolved{} = resolved) do
     %ConcurrencyPolicy{ConcurrencyPolicy.single_writer(resolved) | applies_to: :all}
   end
+
+  @impl true
+  @spec concurrency_policies(Resolved.t()) :: {:ok, [ConcurrencyPolicy.t()]} | {:error, Error.t()}
+  def concurrency_policies(%Resolved{} = resolved) do
+    case catalog_write_policies(resolved) do
+      [] ->
+        {:ok, [default_concurrency_policy(resolved)]}
+
+      catalog_policies ->
+        default = %ConcurrencyPolicy{
+          ConcurrencyPolicy.single_writer(resolved)
+          | applies_to: :writes
+        }
+
+        {:ok, [default | catalog_policies]}
+    end
+  end
+
+  defp catalog_write_policies(%Resolved{} = resolved) do
+    resolved
+    |> duckdb_attach_config()
+    |> Enum.map(fn {catalog, attach_config} ->
+      ConcurrencyPolicy.catalog(resolved, catalog, catalog_write_concurrency(attach_config))
+    end)
+  end
+
+  defp duckdb_attach_config(%Resolved{config: %{duckdb: duckdb}}) when is_map(duckdb),
+    do: normalize_attach_entries(Map.get(duckdb, :attach, []))
+
+  defp duckdb_attach_config(%Resolved{config: %{duckdb: duckdb}}) when is_list(duckdb),
+    do: normalize_attach_entries(Keyword.get(duckdb, :attach, []))
+
+  defp duckdb_attach_config(_resolved), do: []
+
+  defp normalize_attach_entries(entries) when is_map(entries) do
+    Enum.map(entries, fn {catalog, config} -> {to_string(catalog), config} end)
+  end
+
+  defp normalize_attach_entries(entries) when is_list(entries) do
+    if Keyword.keyword?(entries) do
+      Enum.map(entries, fn {catalog, config} -> {to_string(catalog), config} end)
+    else
+      []
+    end
+  end
+
+  defp normalize_attach_entries(_entries), do: []
+
+  @impl true
+  @spec configured_catalogs(Resolved.t()) :: {:ok, [String.t()]}
+  def configured_catalogs(%Resolved{} = resolved) do
+    catalogs =
+      resolved
+      |> duckdb_attach_config()
+      |> Enum.map(fn {catalog, _config} -> catalog end)
+
+    {:ok, catalogs}
+  end
+
+  defp catalog_write_concurrency(config) when is_map(config) do
+    config
+    |> Map.get(:write_concurrency, default_catalog_write_concurrency(Map.get(config, :type)))
+    |> normalize_catalog_write_concurrency()
+  end
+
+  defp catalog_write_concurrency(config) when is_list(config) do
+    config
+    |> Keyword.get(
+      :write_concurrency,
+      default_catalog_write_concurrency(Keyword.get(config, :type))
+    )
+    |> normalize_catalog_write_concurrency()
+  end
+
+  defp catalog_write_concurrency(_config), do: 1
+
+  defp default_catalog_write_concurrency(:ducklake), do: :unlimited
+  defp default_catalog_write_concurrency("ducklake"), do: :unlimited
+  defp default_catalog_write_concurrency(_type), do: 1
+
+  defp normalize_catalog_write_concurrency(:unlimited), do: :unlimited
+  defp normalize_catalog_write_concurrency(:single), do: 1
+  defp normalize_catalog_write_concurrency(value) when is_integer(value) and value > 0, do: value
+  defp normalize_catalog_write_concurrency(_value), do: 1
 
   @impl true
   @spec execute(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
@@ -1102,7 +1194,7 @@ defmodule Favn.SQL.Adapter.DuckDB do
       with :ok <- validate_storage_mode(config, resolved) do
         if local_file_storage?(config) do
           config
-          |> Map.get(:database)
+          |> open_database()
           |> validate_local_file_database(resolved)
         else
           :ok
@@ -1112,6 +1204,10 @@ defmodule Favn.SQL.Adapter.DuckDB do
       :ok
     end
   end
+
+  defp open_database(%{open: %{database: database}}), do: database
+  defp open_database(%{open: open}) when is_list(open), do: Keyword.get(open, :database)
+  defp open_database(config), do: Map.get(config, :database)
 
   defp validate_storage_mode(config, resolved) do
     storage = Map.get(config, @storage_key, @local_file_storage)

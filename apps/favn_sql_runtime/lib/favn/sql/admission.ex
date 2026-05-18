@@ -2,7 +2,7 @@ defmodule Favn.SQL.Admission do
   @moduledoc false
 
   alias Favn.SQL.Admission.Limiter
-  alias Favn.SQL.{ConcurrencyPolicy, Error, Session}
+  alias Favn.SQL.{ConcurrencyPolicies, ConcurrencyPolicy, Error, Session, WritePlan}
 
   @permit_key {__MODULE__, :permits}
   @write_prefixes ~w(
@@ -12,12 +12,14 @@ defmodule Favn.SQL.Admission do
 
   @spec with_permit(Session.t(), atom(), iodata() | term(), (-> term())) :: term()
   def with_permit(
-        %Session{concurrency_policy: %ConcurrencyPolicy{} = policy},
+        %Session{} = session,
         operation,
         payload,
         fun
       )
       when is_function(fun, 0) do
+    policy = policy_for(session, operation, payload)
+
     if permit_required?(policy, operation, payload) do
       acquire_and_run(policy, operation, fun)
     else
@@ -27,7 +29,9 @@ defmodule Favn.SQL.Admission do
 
   def with_permit(%Session{}, _operation, _payload, fun) when is_function(fun, 0), do: fun.()
 
-  @spec acquire_session(ConcurrencyPolicy.t() | nil) :: term()
+  @spec acquire_session(ConcurrencyPolicy.t() | ConcurrencyPolicies.t() | nil) :: term()
+  def acquire_session(%ConcurrencyPolicies{default: default}), do: acquire_session(default)
+
   def acquire_session(%ConcurrencyPolicy{scope: scope} = policy) do
     cond do
       not permit_required?(policy, :connect, nil) ->
@@ -52,8 +56,34 @@ defmodule Favn.SQL.Admission do
 
   def release_session(_lease), do: :ok
 
+  defp policy_for(%Session{concurrency_policies: %ConcurrencyPolicies{} = policies}, operation, payload) do
+    case catalog_target(operation, payload) do
+      {_connection, catalog} when is_binary(catalog) ->
+        ConcurrencyPolicies.catalog_policy(policies, catalog) || policies.default
+
+      _target ->
+        policies.default
+    end
+  end
+
+  defp policy_for(%Session{concurrency_policy: %ConcurrencyPolicy{} = policy}, _operation, _payload) do
+    policy
+  end
+
+  defp policy_for(%Session{}, _operation, _payload), do: nil
+
+  defp catalog_target(:materialize, %WritePlan{connection: connection, target: %{catalog: catalog}})
+       when is_atom(connection) and is_binary(catalog),
+       do: {connection, catalog}
+
+  defp catalog_target(:materialize, %WritePlan{target: %{catalog: catalog}}) when is_binary(catalog),
+    do: {nil, catalog}
+
+  defp catalog_target(_operation, _payload), do: nil
+
   defp permit_required?(%ConcurrencyPolicy{limit: :unlimited}, _operation, _payload), do: false
   defp permit_required?(%ConcurrencyPolicy{applies_to: :all}, _operation, _payload), do: true
+  defp permit_required?(nil, _operation, _payload), do: false
 
   defp permit_required?(%ConcurrencyPolicy{applies_to: :writes}, operation, payload) do
     operation in [:execute, :materialize, :transaction] or write_query?(operation, payload)

@@ -143,12 +143,12 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
           %{
             type: :missing_env,
             provider: :env,
-            env: "MERCATUS_TOKEN",
-            key: "MERCATUS_TOKEN",
-            scope: :mercatus,
+            env: "SOURCE_API_TOKEN",
+            key: "SOURCE_API_TOKEN",
+            scope: :source_api,
             field: :token,
             secret?: true,
-            message: "missing_env MERCATUS_TOKEN"
+            message: "missing_env SOURCE_API_TOKEN"
           }
         ]
       }
@@ -164,12 +164,12 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
                  %{
                    "type" => "missing_env",
                    "provider" => "env",
-                   "env" => "MERCATUS_TOKEN",
-                   "key" => "MERCATUS_TOKEN",
-                   "scope" => "mercatus",
+                   "env" => "SOURCE_API_TOKEN",
+                   "key" => "SOURCE_API_TOKEN",
+                   "scope" => "source_api",
                    "field" => "token",
                    "secret?" => true,
-                   "message" => "missing_env MERCATUS_TOKEN"
+                   "message" => "missing_env SOURCE_API_TOKEN"
                  }
                ]
              }

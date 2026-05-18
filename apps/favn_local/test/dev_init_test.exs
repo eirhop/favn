@@ -95,8 +95,8 @@ defmodule Favn.Dev.InitTest do
     assert config =~ "schedules: :all"
     assert config =~ "connections: :all"
     assert config =~ "important_lakehouse: ["
-    assert config =~ ~S|[type: :duckdb, name: :raw, path: ".favn/data/raw.duckdb"]|
-    assert config =~ ~S|[type: :duckdb, name: :mart, path: ".favn/data/mart.duckdb"]|
+    assert config =~ ~S|raw: [type: :duckdb, path: ".favn/data/raw.duckdb"]|
+    assert config =~ ~S|mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]|
     assert config =~ "runner_plugins: ["
     assert config =~ "FavnDuckdb"
 

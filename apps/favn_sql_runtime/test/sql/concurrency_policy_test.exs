@@ -11,6 +11,17 @@ defmodule FavnSQLRuntime.SQLConcurrencyPolicyTest do
     end
   end
 
+  defmodule AdapterWithCatalogPolicies do
+    def concurrency_policies(%Resolved{} = resolved) do
+      {:ok,
+       [
+         ConcurrencyPolicy.unlimited(resolved),
+         ConcurrencyPolicy.catalog(resolved, "raw", :unlimited),
+         ConcurrencyPolicy.catalog(resolved, "mart", 1)
+       ]}
+    end
+  end
+
   test "loads adapter before checking default concurrency policy callback" do
     resolved = %Resolved{
       name: :warehouse,
@@ -38,7 +49,25 @@ defmodule FavnSQLRuntime.SQLConcurrencyPolicyTest do
     }
 
     assert {:ok, %ConcurrencyPolicy{admission_timeout_ms: 25}} =
-             ConcurrencyPolicy.resolve(resolved)
+              ConcurrencyPolicy.resolve(resolved)
+  end
+
+  test "loads adapter-provided catalog concurrency policies" do
+    resolved = %Resolved{
+      name: :warehouse,
+      adapter: AdapterWithCatalogPolicies,
+      module: __MODULE__,
+      config: %{admission_timeout_ms: 25}
+    }
+
+    assert {:ok,
+            %Favn.SQL.ConcurrencyPolicies{
+              default: %ConcurrencyPolicy{limit: :unlimited, target: :default},
+              catalog: %{
+                "raw" => %ConcurrencyPolicy{limit: :unlimited, scope: {:warehouse, "raw"}},
+                "mart" => %ConcurrencyPolicy{limit: 1, scope: {:warehouse, "mart"}}
+              }
+            }} = ConcurrencyPolicy.resolve(resolved)
   end
 
   test "returns a config error for invalid admission timeout" do

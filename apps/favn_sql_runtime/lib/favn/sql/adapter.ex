@@ -25,7 +25,12 @@ defmodule Favn.SQL.Adapter do
 
   @callback diagnostics(Resolved.t(), opts()) :: {:ok, map()} | {:error, term()}
 
+  @callback configured_catalogs(Resolved.t()) :: {:ok, [atom() | String.t()]} | {:error, term()}
+
   @callback default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
+
+  @callback concurrency_policies(Resolved.t()) ::
+              {:ok, [ConcurrencyPolicy.t()]} | {:error, Error.t()}
 
   @callback execute(conn(), statement(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   @callback query(conn(), statement(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
@@ -59,6 +64,7 @@ defmodule Favn.SQL.Adapter do
     ping: 2,
     bootstrap: 3,
     diagnostics: 2,
+    configured_catalogs: 1,
     schema_exists?: 3,
     relation: 3,
     list_schemas: 2,
@@ -68,6 +74,7 @@ defmodule Favn.SQL.Adapter do
     sample: 3,
     table_metadata: 3,
     default_concurrency_policy: 1,
+    concurrency_policies: 1,
     transaction: 3,
     materialize: 3
   ]

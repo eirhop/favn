@@ -71,7 +71,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 - local runtime workflow support for authoring, safe landed-data inspection, and orchestration
 - SQL-aware asset authoring with reusable SQL definitions and relation references
 - public SQL client access for named Favn connections via `Favn.SQLClient`
-- DuckDB connection bootstrap for DuckDB catalog files and DuckLake sessions, including extension install/load, Azure credential-chain secrets, DuckDB attach, DuckLake attach, and catalog selection
+- DuckDB connection bootstrap for DuckDB catalog files and DuckLake sessions, including extension load, Azure credential-chain secrets, keyed DuckDB/DuckLake attaches, catalog selection, and catalog-level write admission
 - an ADBC-backed DuckDB SQL adapter with bounded query results and explicit external-output expectations for large data
 
 ## Core Concepts
@@ -370,29 +370,30 @@ Connection runtime values can also use `Favn.RuntimeConfig.Ref.env!/1` and
 `Favn.RuntimeConfig.Ref.secret_env!/1` when values should be resolved from the
 runner environment just before adapter connection.
 
-DuckDB local-file connections are serialized by default inside the SQL runtime so
-local sessions and materializations do not run unsafe concurrent catalog writes
-against the same database file. Backends that support parallel writes can opt out
-with `write_concurrency: :unlimited` in their runtime connection config, while
-local DuckDB files can keep the default or set `write_concurrency: 1` explicitly.
-Production local DuckDB database paths should be explicit, durable attached-storage
-paths owned by the runner/plugin data plane. Add
-`Favn.SQL.Adapter.DuckDB.production_storage_schema_fields/0` to production DuckDB
-connection schemas to reject `:memory:`, relative paths, missing parents, and
-unwritable parents before opening DuckDB. SQLite control-plane backups do not
-include those DuckDB files.
+DuckDB runtime config separates the opened DuckDB session database from attached
+persistent catalogs. Use `open: [database: ":memory:"]` for production-style
+DuckLake sessions where persistence lives in attached DuckLake catalogs, or use a
+file-backed `open.database` for local debugging. Configure DuckDB session setup
+under `duckdb: [...]`: extension `load`, typed settings, secrets, keyed catalog
+`attach`, and optional `use`.
 
-DuckDB connections can also declare `duckdb_bootstrap` runtime config when a
-session needs setup before SQLClient or SQL asset execution. This is the
-recommended path for local DuckLake dogfooding with Azure Data Lake Storage and a
-PostgreSQL metadata catalog. Add `Favn.SQL.Adapter.DuckDB.bootstrap_schema_field/0`
-to the connection module schema, then configure extension install/load, Azure
-credential-chain secret creation, DuckLake attach, and `USE` under the named
-connection. Bootstrap extension names can be any valid DuckDB extension
-identifier, and typed session settings such as
-`settings: [azure_transport_option_type: :curl]` run after extension load and
-before secrets or attach. Secret runtime refs are resolved on the runner side and
-redacted from diagnostics. DuckDB worker unavailability,
+Attached catalogs can be DuckLake catalogs or DuckDB files. Favn relation names
+map directly to DuckDB three-part names: a relation with `catalog: "raw"`,
+`schema: "sales"`, and `name: "orders"` renders as `raw.sales.orders`, so SQL
+assets can read from `raw` or `int` and write modeled outputs into `mart` within
+one DuckDB connection. DuckDB file catalogs default to `write_concurrency: 1`,
+while DuckLake catalogs default to `:unlimited` unless configured otherwise.
+Write admission is keyed by `{connection, catalog}` so a single-writer `mart`
+file catalog does not block independent DuckLake writes.
+
+Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
+`Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module
+schemas. Add `production_storage_schema_fields/0` when production local-file
+session databases should reject `:memory:`, relative paths, missing parents, and
+unwritable parents before opening DuckDB. SQLite control-plane backups do not
+include DuckDB data-plane files or DuckLake object storage. Secret runtime refs
+inside nested DuckDB config are resolved on the runner side and redacted from
+diagnostics. DuckDB worker unavailability,
 worker-call timeouts, bootstrap failures, materialization failures, and appender
 failures are normalized into structured SQL errors suitable for logs, API/UI
 payloads, and run diagnostics without exposing configured secrets. Worker-call

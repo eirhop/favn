@@ -230,13 +230,12 @@ defmodule Favn.Dev.Init do
       ],
       connections: [
         important_lakehouse: [
-          database: ".favn/data/local_smoke.duckdb",
-          write_concurrency: 1,
-          duckdb_bootstrap: [
-            extensions: [install: [:core_functions], load: [:core_functions]],
+          open: [database: ".favn/data/local_smoke.duckdb"],
+          duckdb: [
+            load: [:core_functions],
             attach: [
-              [type: :duckdb, name: :raw, path: ".favn/data/raw.duckdb"],
-              [type: :duckdb, name: :mart, path: ".favn/data/mart.duckdb"]
+              raw: [type: :duckdb, path: ".favn/data/raw.duckdb"],
+              mart: [type: :duckdb, path: ".favn/data/mart.duckdb"]
             ]
           ]
         ]
@@ -266,20 +265,17 @@ defmodule Favn.Dev.Init do
           adapter: Favn.SQL.Adapter.DuckDB,
           doc: "Local DuckDB lakehouse session for Favn smoke runs",
           metadata: %{scope: :local_smoke},
-          config_schema: [
-            %{key: :database, required: true, type: :path},
-            duckdb_bootstrap_schema_field()
-          ]
+          config_schema: duckdb_config_schema_fields()
         }
       end
 
-      defp duckdb_bootstrap_schema_field do
+      defp duckdb_config_schema_fields do
         adapter = Module.concat([Favn.SQL.Adapter, DuckDB])
 
-        if Code.ensure_loaded?(adapter) and function_exported?(adapter, :bootstrap_schema_field, 0) do
-          apply(adapter, :bootstrap_schema_field, [])
+        if Code.ensure_loaded?(adapter) and function_exported?(adapter, :config_schema_fields, 0) do
+          apply(adapter, :config_schema_fields, [])
         else
-          %{key: :duckdb_bootstrap, type: {:custom, fn _value -> :ok end}}
+          [%{key: :open, required: true, type: {:custom, fn _value -> :ok end}}]
         end
       end
     end
