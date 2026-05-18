@@ -25,7 +25,9 @@ or attached DuckDB files.
   relations as `catalog.schema.name`.
 - SQL assets execute through `Favn.SQLAsset.Runtime`, which opens a SQL session
   per asset execution through `Favn.SQL.Client.connect/2`, materializes, and
-  disconnects. This is already the right model for concurrent DuckLake workers.
+  disconnects unless default-on runner-local pooling for poolable DuckDB/ADBC
+  adapters keeps a compatible warm session idle for reuse. Checked-out sessions
+  remain exclusive to one asset execution at a time.
 - DuckDB bootstrap is currently adapter-owned under `:duckdb_bootstrap` and runs
   per session after `adapter.connect/2` succeeds.
 - DuckDB bootstrap currently supports one attached catalog shape, but the attach
@@ -48,6 +50,12 @@ config :favn,
     lakehouse: [
       open: [
         database: ":memory:"
+      ],
+
+      pool: [
+        enabled: true,
+        max_idle_per_key: 1,
+        idle_timeout_ms: 300_000
       ],
 
       duckdb: [
@@ -139,6 +147,24 @@ Adapter-owned schema fields should replace the current consumer-visible
 combination of `%{key: :database, ...}` and `bootstrap_schema_field/0`. A single
 helper is better because `open` and `duckdb` must be validated together.
 
+`pool` is connection-level runtime config, not nested DuckDB bootstrap SQL. It
+controls local reuse of warm sessions after a successful connect and bootstrap.
+Pooling is enabled by default for poolable DuckDB/ADBC adapters. Disable with:
+
+```elixir
+pool: [enabled: false]
+```
+
+The supported tuning shape is intentionally small:
+
+```elixir
+pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]
+```
+
+Pooling is runner-local/per-BEAM. It is not a distributed pool and does not
+coordinate across runner nodes, increase catalog/write concurrency, or make raw
+write/materialization failures safe to retry.
+
 `duckdb.load` should be the first public shape. Do not keep public `install` in
 the redesign unless dogfooding proves it is necessary. Extension installation is
 an operational concern and mutates the DuckDB extension directory; the runtime
@@ -158,6 +184,7 @@ Connection definition modules should contain static contract metadata:
 Runtime config should contain deployment-specific DuckDB session setup:
 
 - session database under `open.database`
+- default-on runner-local session reuse under connection-level `pool`
 - extension loads under `duckdb.load`
 - settings under `duckdb.settings`
 - secrets under `duckdb.secrets`
@@ -182,6 +209,7 @@ DuckDB adapters use them:
 - `Favn.SQL.Adapter.DuckDB.Config.Secret`
 - `Favn.SQL.Adapter.DuckDB.Config.Attach`
 - `Favn.SQL.Adapter.DuckDB.Config.WriteConcurrency`
+- `Favn.SQL.Adapter.DuckDB.Config.Pool`
 - `Favn.SQL.Adapter.DuckDB.Bootstrap.SQL`
 - `Favn.SQL.Adapter.DuckDB.Bootstrap.Step`
 
@@ -190,6 +218,7 @@ Suggested structs:
 ```elixir
 %Favn.SQL.Adapter.DuckDB.Config{
   open: %Open{database: ":memory:"},
+  pool: %Pool{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000},
   bootstrap: %Bootstrap{
     load: ["ducklake", "postgres", "azure", "json"],
     settings: [%Setting{name: "azure_transport_option_type", value: "curl"}],
@@ -305,6 +334,10 @@ Required validations:
 - DuckLake attaches default to `write_concurrency: :unlimited`, documented as the
   scalable default but still configurable if a deployment discovers metadata or
   storage contention.
+- `pool.enabled` is a boolean. `pool.max_idle_per_key` and
+  `pool.idle_timeout_ms` are positive integers when pooling is enabled.
+- Pool config belongs at the connection level; reject `duckdb.pool` so bootstrap
+  SQL remains separate from session lifecycle policy.
 - Secrets and sensitive paths are redacted in diagnostics and bootstrap errors.
 
 Azure `SCOPE` guidance:
@@ -438,6 +471,52 @@ Attached DuckDB file catalogs should still serialize writes through
 catalog-level admission because independent sessions can contend on the same
 file lock.
 
+Default-on pooling for poolable DuckDB/ADBC adapters changes session lifecycle
+cost, not concurrency semantics. A pool may keep successfully bootstrapped
+sessions warm after use, but a checked-out session is still exclusive to one asset
+execution. Disable with `pool: [enabled: false]`. Existing catalog/write
+concurrency must bound both active work and new session/bootstrap. Pooling must
+not allow more concurrent writes than the configured catalog policy. The SQL
+client must enforce checkout ownership so copied session structs cannot operate
+on or disconnect a pooled session from another process.
+
+Pool reuse keys must include all inputs that can affect session safety:
+
+- connection identity
+- normalized connection/config hash after runtime refs are resolved
+- required catalog set used for scoped bootstrap
+- adapter fingerprint, including adapter module and implementation version or
+  equivalent compatibility marker
+
+The pool is local to one runner BEAM. It does not solve multi-runner distributed
+DuckLake metadata pressure by itself.
+
+## Safe Retry Boundaries
+
+Retries must be bounded and operation-aware:
+
+- Safe to retry with small bounded attempts: session creation, DuckDB bootstrap
+  before handing the session to an execution, and read-only inspection/query
+  operations whose adapter path is known to be read-only.
+- Not safe to retry blindly: SQL writes, materialization writes, appender writes,
+  `COPY`, DDL, or any operation whose commit state is unknown.
+- Unknown commit state must be surfaced as an unknown-outcome failure rather than
+  retried.
+
+This rule matters most for separate-process DuckDB workers and ADBC calls where a
+timeout or worker-call failure may mean the DuckDB operation is still running or
+has already committed.
+
+## Azure PostgreSQL DuckLake Metadata Guidance
+
+Pooling can reduce repeated DuckDB session/bootstrap cost inside one runner, but
+DuckLake metadata writes still hit the configured PostgreSQL metadata service.
+Low-tier Azure PostgreSQL deployments should use conservative DuckLake catalog
+`write_concurrency` values, monitor connection and lock pressure, and consider
+PgBouncer or scaling the metadata database. Pooling and single-flight creation
+reduce repeated attach/bootstrap pressure but are not a replacement for
+metadata-tier capacity planning, especially with multiple runner BEAMs.
+
 ## Documentation Plan
 
 Update these docs when implementing:
@@ -445,7 +524,8 @@ Update these docs when implementing:
 - `README.md`: replace the single-catalog bootstrap example with the new
   `open`/`duckdb` shape and call out `":memory:"` for DuckLake.
 - `docs/FEATURES.md`: describe DuckDB session database versus attached persistent
-  catalogs and catalog-level write admission.
+  catalogs, catalog-level write admission, runner-local pooling, and retry
+  boundaries.
 - `docs/ROADMAP.md`: update the DuckLake bootstrap item to point at multi-catalog
   DuckDB runtime config.
 - `docs/structure/favn_duckdb.md`: document ownership of config parsing,
@@ -453,7 +533,8 @@ Update these docs when implementing:
 - `docs/structure/favn_duckdb_adbc.md`: same for ADBC, including Entra token
   support.
 - `docs/structure/favn_sql_runtime.md`: document catalog-level SQL admission
-  scope and policy lookup.
+  scope, policy lookup, default-on runner-local pooling, and safe retry
+  boundaries.
 - `Favn.Connection` moduledoc: remove old `database` and `duckdb_bootstrap`
   guidance and show the connection definition helper.
 - DuckDB adapter moduledocs: include the raw/int/mart example and a manual SQL
@@ -503,38 +584,37 @@ layer concerns.
 
 ## Implementation Plan And PR Slices
 
-1. Add adapter-owned DuckDB config structs and normalization.
-2. Add `config_schema_fields/0` to both DuckDB adapters and reject old keys with a
-   clear validation error.
-3. Update DuckDB connect paths to read `open.database` instead of top-level
-   `database`.
-4. Rewrite bootstrap step generation to consume normalized `duckdb` config and
+The current implementation is being carried as one cohesive PR because config
+shape, bootstrap, catalog admission, session pooling, and retry semantics are
+tightly coupled. The PR should still keep changes layered internally:
+
+1. Add adapter-owned DuckDB config structs and normalization, including `open`,
+   connection-level `pool`, `duckdb`, old-key rejection, and recursive runtime-ref
+   redaction.
+2. Add `config_schema_fields/0` to both DuckDB adapters and update connect paths
+   to read `open.database`.
+3. Rewrite bootstrap step generation to consume normalized `duckdb` config and
    support multiple keyed attaches.
-5. Preserve and port Azure credential-chain and PostgreSQL Entra token secret
-   materialization into the new secret structs.
-6. Add adapter callbacks for configured catalogs and catalog concurrency policies.
-7. Refactor `Favn.SQL.ConcurrencyPolicy`, `Favn.SQL.Session`, and
+4. Preserve Azure credential-chain and PostgreSQL Entra token secret
+   materialization in the new secret structs.
+5. Add adapter callbacks for configured catalogs and catalog concurrency policies.
+6. Refactor `Favn.SQL.ConcurrencyPolicy`, `Favn.SQL.Session`, and
    `Favn.SQL.Admission` so write operations acquire permits by
-   `{connection_name, catalog_name}`.
-8. Update `Favn.SQLAsset.Runtime` and materialization planning only as needed to
+   `{connection_name, catalog_name}` and bootstrap honors required catalogs.
+7. Add runner-local session pooling keyed by connection/config hash, required
+   catalog set, and adapter fingerprint, with exclusive checkout semantics and
+   idle eviction.
+8. Add bounded, operation-aware retries only for session creation/bootstrap and
+   read-only inspection/query; surface unknown commit state without retry.
+9. Update `Favn.SQLAsset.Runtime` and materialization planning only as needed to
    expose the target catalog to admission; the renderer already emits
    three-part names.
-9. Add `mix favn.doctor` relation catalog validation through an adapter callback,
-   not DuckDB-specific branching in doctor.
-10. Update docs and generated local init examples from `database` and
-    `duckdb_bootstrap` to `open` and `duckdb`.
-11. Run focused tests after each slice, then run `mix format`,
+10. Add `mix favn.doctor` relation catalog validation through an adapter callback,
+    not DuckDB-specific branching in doctor.
+11. Update docs and generated local init examples from `database` and
+    `duckdb_bootstrap` to `open` and `duckdb`, and document default-on `pool`.
+12. Run focused tests during implementation, then run `mix format`,
     `mix compile --warnings-as-errors`, and `mix test` before merge.
-
-Recommended PR grouping:
-
-- PR 1: DuckDB config structs, validation, old-key rejection, docs for new shape.
-- PR 2: Bootstrap SQL generation and multi-attach execution for both DuckDB
-  adapters.
-- PR 3: Catalog-level SQL admission policy and runtime tests.
-- PR 4: Doctor relation catalog validation and docs/examples cleanup.
-- PR 5: Optional dogfooding hardening for real DuckLake/Azure/Postgres configs,
-  gated behind acceptance or slow tags if automated.
 
 ## Risks And Open Questions
 
@@ -550,8 +630,17 @@ Recommended PR grouping:
 - Extension `INSTALL` is intentionally omitted from the new public shape. If local
   dogfooding requires it, add it explicitly rather than reviving the old
   `extensions: [install: ..., load: ...]` nesting.
-- Bootstrap cost may increase because each worker opens and bootstraps its own
-  session. This is acceptable for correctness; optimize later only if measured.
+- Bootstrap cost may increase when pooling is disabled with `pool: [enabled:
+  false]` or no compatible idle session exists. Pooling can reduce this cost
+  inside one runner BEAM, but correctness still comes from exclusive checkout,
+  catalog admission, and default discard of raw execute/materialize/transaction
+  mutation paths, not from shared mutable sessions.
+- Pooling reduces local bootstrap churn but can hide backend metadata pressure in
+  one BEAM while other runners still create their own sessions. Do not document it
+  as a distributed DuckLake scaling solution.
+- Low-tier Azure PostgreSQL metadata catalogs may need conservative DuckLake
+  `write_concurrency`, PgBouncer, or database scaling even when pooling is
+  enabled.
 - Runtime config refs and redaction must continue to work recursively inside the
   new nested `duckdb` shape. Any diagnostic output should use normalized safe
   statements and `Favn.RuntimeConfig.Redactor` rather than inspecting raw config.

@@ -120,10 +120,13 @@ defmodule Favn.SQLClient do
 
   Use this when you explicitly manage session lifecycle with `connect/2`.
 
-  This function is safe to call in cleanup paths and returns `:ok` even when the
-  adapter disconnect path raises.
+  This function is safe to call from the session owner in cleanup paths and
+  returns `:ok` even when the adapter disconnect path raises. Pooled sessions are
+  process-affine; calling `disconnect/1` from a non-owner process returns
+  `{:error, %Favn.SQL.Error{type: :invalid_checkout_owner}}` and leaves cleanup
+  to the owner or pool monitor.
   """
-  @spec disconnect(session()) :: :ok
+  @spec disconnect(session()) :: :ok | {:error, Favn.SQL.Error.t()}
   defdelegate disconnect(session), to: Client
 
   @doc """

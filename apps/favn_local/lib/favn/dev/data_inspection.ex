@@ -104,7 +104,7 @@ defmodule Favn.Dev.DataInspection do
          {:ok, connection} <- resolve_connection(Keyword.get(opts, :connection)),
          {:ok, session} <- client.connect(connection) do
       result =
-        case client.query(session, sql, []) do
+        case client.query(session, sql, read_only?: not Keyword.get(opts, :allow_write, false)) do
           {:ok, %Result{} = sql_result} ->
             {:ok,
              %{

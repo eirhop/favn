@@ -12,6 +12,18 @@ defmodule Favn.SQL.Adapter.DuckDB do
   Bulk ingestion paths should prefer the DuckDB Appender path for substantial
   insert workloads instead of repeated prepared inserts.
 
+  DuckDB sessions are poolable and therefore use Favn's runner-local SQL session
+  pool by default. Disable per connection with `pool: [enabled: false]`, or tune
+  local idle retention with:
+
+      pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]
+
+  Pooling is local to one runner BEAM, checked-out sessions are exclusive, and
+  reuse is keyed by connection/config, required catalog set, and adapter
+  fingerprint. It does not increase catalog/write concurrency or replace
+  DuckLake metadata capacity controls such as conservative `write_concurrency`,
+  PgBouncer, or scaling the PostgreSQL metadata database.
+
   ## Consumer setup
 
   This adapter is exposed through the public `:favn_duckdb` package/plugin. Add
@@ -224,6 +236,38 @@ defmodule Favn.SQL.Adapter.DuckDB do
     _ = safe_release(conn, conn.db_ref)
     :ok
   end
+
+  @impl true
+  @spec poolable?(Resolved.t(), opts()) :: true
+  def poolable?(%Resolved{}, _opts), do: true
+
+  @impl true
+  @spec pool_fingerprint(Resolved.t(), opts()) :: map()
+  def pool_fingerprint(%Resolved{}, opts) do
+    %{
+      adapter: __MODULE__,
+      client: resolve_client(opts),
+      duckdbex: application_vsn(:duckdbex),
+      runtime: FavnDuckdb.Runtime.execution_mode()
+    }
+  end
+
+  @impl true
+  @spec validate_session(Conn.t(), opts()) :: :ok | {:error, Error.t()}
+  def validate_session(%Conn{} = conn, opts), do: ping(conn, opts)
+
+  @impl true
+  @spec reset_session(Conn.t(), Resolved.t(), opts()) :: :ok | {:error, Error.t()}
+  def reset_session(%Conn{} = conn, %Resolved{} = resolved, opts) do
+    with :ok <- rollback_for_pool_reset(conn),
+         :ok <- restore_use_catalog(conn, resolved, opts) do
+      :ok
+    end
+  end
+
+  @impl true
+  @spec classify_error(term(), opts()) :: Favn.SQL.Adapter.error_classification()
+  def classify_error(reason, opts), do: ErrorMapper.classify(reason, opts)
 
   @impl true
   @spec capabilities(Resolved.t(), opts()) :: {:ok, Capabilities.t()}
@@ -913,6 +957,59 @@ defmodule Favn.SQL.Adapter.DuckDB do
     error -> {:error, error}
   end
 
+  defp rollback_for_pool_reset(%Conn{} = conn) do
+    case tx_rollback(conn) do
+      :ok -> :ok
+      {:error, reason} -> handle_pool_reset_rollback_error(conn, reason)
+    end
+  end
+
+  defp handle_pool_reset_rollback_error(%Conn{} = conn, reason) do
+    if no_active_transaction?(reason) do
+      :ok
+    else
+      {:error, normalize_error(:reset_session, conn.connection, reason)}
+    end
+  end
+
+  defp restore_use_catalog(%Conn{} = conn, %Resolved{} = resolved, opts) do
+    use_catalog = duckdb_use_catalog(resolved)
+
+    cond do
+      is_nil(use_catalog) ->
+        :ok
+
+      catalog_required?(use_catalog, Keyword.get(opts, :required_catalogs)) ->
+        case execute(conn, ["USE ", quote_ident(use_catalog)], []) do
+          {:ok, _result} -> :ok
+          {:error, %Error{} = error} -> {:error, %Error{error | operation: :reset_session}}
+        end
+
+      true ->
+        :ok
+    end
+  end
+
+  defp catalog_required?(_catalog, nil), do: true
+  defp catalog_required?(_catalog, :all), do: true
+
+  defp catalog_required?(catalog, catalogs) when is_list(catalogs) do
+    catalog in Enum.map(catalogs, &to_string/1)
+  end
+
+  defp catalog_required?(_catalog, _catalogs), do: false
+
+  defp no_active_transaction?(reason) when is_binary(reason) do
+    reason = String.downcase(reason)
+
+    String.contains?(reason, "no active transaction") or
+      String.contains?(reason, "no transaction") or
+      String.contains?(reason, "not in a transaction")
+  end
+
+  defp no_active_transaction?({:error, reason}), do: no_active_transaction?(reason)
+  defp no_active_transaction?(_reason), do: false
+
   defp run_transaction(%Conn{} = conn, fun) do
     case fun.(conn) do
       {:ok, value} ->
@@ -1357,6 +1454,13 @@ defmodule Favn.SQL.Adapter.DuckDB do
     candidate = Keyword.get(opts, :duckdb_client, Client.default())
 
     if is_atom(candidate), do: candidate, else: Client.default()
+  end
+
+  defp application_vsn(app) do
+    case Application.spec(app, :vsn) do
+      nil -> nil
+      vsn -> List.to_string(vsn)
+    end
   end
 
   defp materialize_error(%Error{} = error, %Conn{} = conn) do

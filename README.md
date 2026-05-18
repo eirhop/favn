@@ -377,6 +377,50 @@ file-backed `open.database` for local debugging. Configure DuckDB session setup
 under `duckdb: [...]`: extension `load`, typed settings, secrets, keyed catalog
 `attach`, and optional `use`.
 
+DuckDB and DuckDB ADBC connections use runner-local warm session reuse by default
+when the adapter is poolable. Disable it per connection with:
+
+```elixir
+pool: [enabled: false]
+```
+
+Optional local idle-retention tuning is connection-level `pool` config:
+
+```elixir
+config :favn,
+  connections: [
+    important_lakehouse: [
+      open: [database: ":memory:"],
+      pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000],
+      duckdb: [
+        load: [:ducklake, :postgres, :azure],
+        attach: [
+          raw: [
+            type: :ducklake,
+            metadata: "ducklake:postgres:",
+            meta_secret: :raw_meta,
+            data_path: "abfss://lakehouse.dfs.core.windows.net/raw/",
+            write_concurrency: 1
+          ]
+        ],
+        use: :raw
+      ]
+    ]
+  ]
+```
+
+Pooling is local to one runner BEAM and is not distributed across runner nodes.
+It reuses warm DuckDB/ADBC sessions only when the connection/config hash,
+required catalog set, and adapter fingerprint match. A checked-out pooled session
+is exclusive to its checkout owner process; the shared SQL client rejects
+non-owner operations and disconnect attempts. Existing catalog/write concurrency
+still bounds active work and new session/bootstrap, so enabling pooling does not
+increase write concurrency.
+
+Raw SQL execute/materialize/transaction paths do not return sessions to the idle
+pool after mutation unless Favn has explicitly proven the operation pool-safe
+internally. Read-only inspection/query paths may reuse warm sessions.
+
 Attached catalogs can be DuckLake catalogs or DuckDB files. Favn relation names
 map directly to DuckDB three-part names: a relation with `catalog: "raw"`,
 `schema: "sales"`, and `name: "orders"` renders as `raw.sales.orders`, so SQL
@@ -392,6 +436,18 @@ where the target relation carries an explicit catalog. Raw
 infer the write catalog from arbitrary SQL today; use asset materialization for
 protected writes or serialize manual raw SQL at the caller until a future
 explicit `catalog:` option exists.
+
+Safe retries are bounded around DuckDB session creation/bootstrap and read-only
+inspection/query paths. Favn does not blindly retry SQL writes, and operations
+reported with unknown commit state are not retried.
+
+Low-tier Azure PostgreSQL metadata catalogs can still become the bottleneck for
+DuckLake. Configure finite, conservative DuckLake catalog `write_concurrency`
+values and consider PgBouncer or scaling the metadata database when metadata
+connection or lock pressure appears. Runner-local pooling and single-flight
+creation reduce repeated attach/bootstrap pressure in a single BEAM, but they do
+not replace catalog write admission and do not solve multi-runner distributed
+metadata pressure by themselves.
 
 Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module

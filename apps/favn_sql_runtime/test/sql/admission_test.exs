@@ -485,6 +485,34 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert :ok = Client.disconnect(session_a)
   end
 
+  test "cross-process borrowed lease release does not release the real holder" do
+    scope = {:db, :borrowed_cross_process}
+    policy = %ConcurrencyPolicy{limit: 1, scope: scope, applies_to: :all, admission_timeout_ms: 10}
+    parent = self()
+
+    holder =
+      spawn(fn ->
+        assert {:held, ^scope, _owner} = Admission.acquire_session(policy)
+        assert {:borrowed, ^scope, _owner} = borrowed = Admission.acquire_session(policy)
+        send(parent, {:borrowed, borrowed})
+
+        receive do
+          :release_real_holder -> Admission.release_session({:held, scope, self()})
+        end
+      end)
+
+    assert_receive {:borrowed, borrowed}, 500
+
+    releaser = Task.async(fn -> Admission.release_session(borrowed) end)
+    assert :ok = Task.await(releaser)
+
+    assert {:error, %Favn.SQL.Error{type: :admission_timeout}} = Admission.acquire_session(policy)
+
+    send(holder, :release_real_holder)
+    assert {:held, ^scope, _owner} = eventually_acquire(policy)
+    Admission.release_session({:held, scope, self()})
+  end
+
   test "out-of-order nested session disconnect keeps permit held", %{tracker: tracker} do
     registry_name = :admission_out_of_order_session_registry
     start_registry(registry_name, TrackingAdapter, tracker)
@@ -607,4 +635,19 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
   catch
     :exit, _reason -> :ok
   end
+
+  defp eventually_acquire(policy, attempts \\ 20)
+
+  defp eventually_acquire(policy, attempts) when attempts > 0 do
+    case Admission.acquire_session(policy) do
+      {:error, %Favn.SQL.Error{type: :admission_timeout}} ->
+        Process.sleep(10)
+        eventually_acquire(policy, attempts - 1)
+
+      lease ->
+        lease
+    end
+  end
+
+  defp eventually_acquire(_policy, 0), do: flunk("expected admission lease")
 end

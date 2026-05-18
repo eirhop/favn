@@ -19,10 +19,10 @@ defmodule Favn.SQL.Admission.Limiter do
     GenServer.call(__MODULE__, {:acquire, scope, limit, timeout_ms}, :infinity)
   end
 
-  @spec release(scope()) :: :ok
-  def release(scope) do
+  @spec release(scope(), pid()) :: :ok
+  def release(scope, pid \\ self()) do
     if Process.whereis(__MODULE__) do
-      GenServer.cast(__MODULE__, {:release, scope, self()})
+      GenServer.cast(__MODULE__, {:release, scope, pid})
     end
 
     :ok

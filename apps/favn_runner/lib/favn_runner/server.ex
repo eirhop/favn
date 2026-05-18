@@ -11,6 +11,7 @@ defmodule FavnRunner.Server do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.SQL.SessionPool
   alias FavnRunner.Inspection
   alias FavnRunner.ManifestResolver
   alias FavnRunner.ManifestStore
@@ -467,7 +468,8 @@ defmodule FavnRunner.Server do
         %{
           status: :ok,
           connection_count: length(connections),
-          connections: Enum.map(connections, &connection_diagnostics/1)
+          connections: Enum.map(connections, &connection_diagnostics/1),
+          session_pool: SessionPool.diagnostics()
         }
     end
   rescue

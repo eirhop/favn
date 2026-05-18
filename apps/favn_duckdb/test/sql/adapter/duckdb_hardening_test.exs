@@ -54,6 +54,9 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
         {:conflict, true} ->
           {:error, "Transaction conflict: cannot update a table that has been altered!"}
 
+        {:metadata_capacity, _write?} ->
+          {:error, "DuckLake metadata capacity exceeded; retry later"}
+
         _ ->
           result_ref = make_ref()
           TestSupport.record({:result_ref, result_ref, sql})
@@ -124,6 +127,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
 
       case TestSupport.mode(:rollback_mode, :ok) do
         :ok -> :ok
+        :no_active_transaction -> {:error, "TransactionContext Error: no active transaction"}
         :error -> {:error, :rollback_failed}
       end
     end
@@ -389,6 +393,72 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
                 reason: ":worker_call_timeout"
               }
             }} = DuckDB.query(conn, "SELECT 1", [])
+  end
+
+  test "pool lifecycle hooks validate, reset rollback, and restore configured USE" do
+    resolved = %Resolved{
+      resolved()
+      | config: %{
+          open: [database: ":memory:"],
+          duckdb: [attach: [lake: [type: :ducklake]], use: :lake]
+        }
+    }
+
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    assert DuckDB.poolable?(resolved, [])
+
+    assert %{adapter: DuckDB, client: FakeClient} =
+             DuckDB.pool_fingerprint(resolved, duckdb_client: FakeClient)
+
+    assert :ok = DuckDB.validate_session(conn, [])
+    assert :ok = DuckDB.reset_session(conn, resolved, required_catalogs: [:lake])
+
+    assert Enum.any?(events(), fn
+             {:rollback, _conn_ref} -> true
+             _event -> false
+           end)
+
+    assert Enum.any?(events(), fn
+             {:query, _conn_ref, "USE \"lake\""} -> true
+             _event -> false
+           end)
+  end
+
+  test "pool reset tolerates no-active-transaction rollback and skips USE outside required catalogs" do
+    TestSupport.put_mode(:rollback_mode, :no_active_transaction)
+
+    resolved = %Resolved{
+      resolved()
+      | config: %{
+          open: [database: ":memory:"],
+          duckdb: [attach: [lake: [type: :ducklake]], use: :lake]
+        }
+    }
+
+    {:ok, conn} = DuckDB.connect(resolved, duckdb_client: FakeClient)
+
+    assert :ok = DuckDB.reset_session(conn, resolved, required_catalogs: [:main])
+
+    refute Enum.any?(events(), fn
+             {:query, _conn_ref, "USE \"lake\""} -> true
+             _event -> false
+           end)
+  end
+
+  test "metadata capacity errors classify as retryable capacity" do
+    TestSupport.put_mode(:query_mode, :metadata_capacity)
+
+    {:ok, conn} = DuckDB.connect(resolved(), duckdb_client: FakeClient)
+
+    assert {:error,
+            %Error{
+              retryable?: true,
+              details: %{classification: :capacity}
+            }} = DuckDB.query(conn, "SELECT 1", [])
+
+    assert %{classification: :capacity, retryable?: true, capacity?: true} =
+             DuckDB.classify_error("DuckLake metadata capacity exceeded; retry later", [])
   end
 
   test "production local-file storage rejects missing database before opening DuckDB" do

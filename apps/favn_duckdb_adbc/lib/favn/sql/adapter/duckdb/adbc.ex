@@ -9,6 +9,18 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   result sets should be written by DuckDB itself to explicit external paths with
   SQL such as `COPY (...) TO ...`.
 
+  DuckDB ADBC sessions are poolable and therefore use Favn's runner-local SQL
+  session pool by default. Disable per connection with `pool: [enabled: false]`,
+  or tune local idle retention with:
+
+      pool: [enabled: true, max_idle_per_key: 1, idle_timeout_ms: 300_000]
+
+  Pooling is local to one runner BEAM, checked-out sessions are exclusive, and
+  reuse is keyed by connection/config, required catalog set, and adapter
+  fingerprint. It does not increase catalog/write concurrency or replace
+  DuckLake metadata capacity controls such as conservative `write_concurrency`,
+  PgBouncer, or scaling the PostgreSQL metadata database.
+
   ## DuckDB ADBC driver installation
 
   Production hosts must have a DuckDB ADBC-capable `libduckdb` installed or use
@@ -181,6 +193,41 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   @impl true
+  @spec poolable?(Resolved.t(), opts()) :: true
+  def poolable?(%Resolved{}, _opts), do: true
+
+  @impl true
+  @spec pool_fingerprint(Resolved.t(), opts()) :: map()
+  def pool_fingerprint(%Resolved{}, opts) do
+    driver_opts = Keyword.merge(FavnDuckdbADBC.Runtime.driver_opts(), duckdb_adbc_opts(opts))
+
+    %{
+      adapter: __MODULE__,
+      client: resolve_client(opts),
+      adbc: application_vsn(:adbc),
+      driver: Keyword.get(driver_opts, :driver, :duckdb),
+      entrypoint: Keyword.get(driver_opts, :entrypoint)
+    }
+  end
+
+  @impl true
+  @spec validate_session(Conn.t(), opts()) :: :ok | {:error, Error.t()}
+  def validate_session(%Conn{} = conn, opts), do: ping(conn, opts)
+
+  @impl true
+  @spec reset_session(Conn.t(), Resolved.t(), opts()) :: :ok | {:error, Error.t()}
+  def reset_session(%Conn{} = conn, %Resolved{} = resolved, opts) do
+    with :ok <- rollback_for_pool_reset(conn),
+         :ok <- restore_use_catalog(conn, resolved, opts) do
+      :ok
+    end
+  end
+
+  @impl true
+  @spec classify_error(term(), opts()) :: Favn.SQL.Adapter.error_classification()
+  def classify_error(reason, opts), do: ErrorMapper.classify(reason, opts)
+
+  @impl true
   @spec capabilities(Resolved.t(), opts()) :: {:ok, Capabilities.t()}
   def capabilities(%Resolved{}, _opts) do
     {:ok,
@@ -334,7 +381,11 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
         {:ok, [default_concurrency_policy(resolved)]}
 
       catalog_policies ->
-        default = %ConcurrencyPolicy{ConcurrencyPolicy.single_writer(resolved) | applies_to: :writes}
+        default = %ConcurrencyPolicy{
+          ConcurrencyPolicy.single_writer(resolved)
+          | applies_to: :writes
+        }
+
         {:ok, [default | catalog_policies]}
     end
   end
@@ -407,7 +458,10 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   defp catalog_write_concurrency(config) when is_list(config) do
     config
-    |> Keyword.get(:write_concurrency, default_catalog_write_concurrency(Keyword.get(config, :type)))
+    |> Keyword.get(
+      :write_concurrency,
+      default_catalog_write_concurrency(Keyword.get(config, :type))
+    )
     |> normalize_catalog_write_concurrency()
   end
 
@@ -534,7 +588,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
        relation_schema_filter(ref),
        relation_catalog_filter(ref),
        " ORDER BY ordinal_position"
-      ]}
+     ]}
   end
 
   def introspection_query(_kind, _payload, _opts) do
@@ -694,11 +748,16 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
         {:error,
          %Error{
            type: :unsupported_capability,
-           message: "DuckDB ADBC bulk insert materialization does not support catalog-qualified targets",
+           message:
+             "DuckDB ADBC bulk insert materialization does not support catalog-qualified targets",
            retryable?: false,
            operation: :materialize,
            connection: conn.connection,
-           details: %{catalog: plan.target.catalog, schema: plan.target.schema, name: plan.target.name}
+           details: %{
+             catalog: plan.target.catalog,
+             schema: plan.target.schema,
+             name: plan.target.name
+           }
          }}
 
       plan.materialization == :table and rows != [] ->
@@ -893,6 +952,61 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   defp tx_rollback(%Conn{conn_ref: conn_ref, client: client}), do: client.rollback(conn_ref)
+
+  defp rollback_for_pool_reset(%Conn{} = conn) do
+    case tx_rollback(conn) do
+      :ok -> :ok
+      {:error, reason} -> handle_pool_reset_rollback_error(conn, reason)
+    end
+  rescue
+    error -> handle_pool_reset_rollback_error(conn, error)
+  end
+
+  defp handle_pool_reset_rollback_error(%Conn{} = conn, reason) do
+    if no_active_transaction?(reason) do
+      :ok
+    else
+      {:error, normalize_error(:reset_session, conn.connection, reason)}
+    end
+  end
+
+  defp restore_use_catalog(%Conn{} = conn, %Resolved{} = resolved, opts) do
+    use_catalog = duckdb_use_catalog(resolved)
+
+    cond do
+      is_nil(use_catalog) ->
+        :ok
+
+      catalog_required?(use_catalog, Keyword.get(opts, :required_catalogs)) ->
+        case execute(conn, ["USE ", quote_ident(use_catalog)], []) do
+          {:ok, _result} -> :ok
+          {:error, %Error{} = error} -> {:error, %Error{error | operation: :reset_session}}
+        end
+
+      true ->
+        :ok
+    end
+  end
+
+  defp catalog_required?(_catalog, nil), do: true
+  defp catalog_required?(_catalog, :all), do: true
+
+  defp catalog_required?(catalog, catalogs) when is_list(catalogs) do
+    catalog in Enum.map(catalogs, &to_string/1)
+  end
+
+  defp catalog_required?(_catalog, _catalogs), do: false
+
+  defp no_active_transaction?(reason) when is_binary(reason) do
+    reason = String.downcase(reason)
+
+    String.contains?(reason, "no active transaction") or
+      String.contains?(reason, "no transaction") or
+      String.contains?(reason, "not in a transaction")
+  end
+
+  defp no_active_transaction?({:error, reason}), do: no_active_transaction?(reason)
+  defp no_active_transaction?(_reason), do: false
 
   defp run_transaction(%Conn{} = conn, fun) do
     case fun.(conn) do
@@ -1283,6 +1397,20 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   defp resolve_client(opts) do
     candidate = Keyword.get(opts, :duckdb_adbc_client, Client.default())
     if is_atom(candidate), do: candidate, else: Client.default()
+  end
+
+  defp duckdb_adbc_opts(opts) do
+    case Keyword.get(opts, :duckdb_adbc, []) do
+      values when is_list(values) -> values
+      _other -> []
+    end
+  end
+
+  defp application_vsn(app) do
+    case Application.spec(app, :vsn) do
+      nil -> nil
+      vsn -> List.to_string(vsn)
+    end
   end
 
   defp max_rows(opts) do

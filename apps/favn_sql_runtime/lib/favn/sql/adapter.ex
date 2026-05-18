@@ -5,6 +5,16 @@ defmodule Favn.SQL.Adapter do
   This is the contract implemented by SQL backend plugins such as DuckDB. It is
   not the end-user SQL asset DSL and should not be treated as an ordinary stable
   authoring API.
+
+  Adapters that implement `poolable?/2`, `pool_fingerprint/2`,
+  `validate_session/2`, and `reset_session/3` opt into Favn's runner-local SQL
+  session pool. Pooling is default-on for poolable adapters unless the connection
+  sets `pool: [enabled: false]`. Adapter lifecycle callbacks must make warm reuse
+  safe for read-only paths; write/materialization/raw execution paths are
+  discarded by the shared client unless explicitly proven pool-safe internally.
+  `classify_error/2` may return `details.classification: :capacity` through
+  normalized errors so shared retry logic uses capacity backoff. Unknown outcome
+  or commit-state errors must remain non-retryable.
   """
 
   alias Favn.Connection.Resolved
@@ -14,12 +24,24 @@ defmodule Favn.SQL.Adapter do
   @type conn :: term()
   @type statement :: iodata()
   @type opts :: keyword()
+  @type error_classification :: %{
+          required(:classification) => atom(),
+          optional(:retryable?) => boolean(),
+          optional(:capacity?) => boolean(),
+          optional(:unknown_outcome?) => boolean()
+        }
   @type introspection_kind ::
           :schema_exists | :relation | :list_schemas | :list_relations | :columns
 
   @callback connect(Resolved.t(), opts()) :: {:ok, conn()} | {:error, Error.t()}
   @callback bootstrap(conn(), Resolved.t(), opts()) :: :ok | {:error, Error.t()}
   @callback disconnect(conn(), opts()) :: :ok | {:error, Error.t()}
+
+  @callback poolable?(Resolved.t(), opts()) :: boolean()
+  @callback pool_fingerprint(Resolved.t(), opts()) :: term()
+  @callback validate_session(conn(), opts()) :: :ok | {:error, Error.t()}
+  @callback reset_session(conn(), Resolved.t(), opts()) :: :ok | {:error, Error.t()}
+  @callback classify_error(term(), opts()) :: error_classification()
 
   @callback capabilities(Resolved.t(), opts()) :: {:ok, Capabilities.t()} | {:error, Error.t()}
 
@@ -64,6 +86,11 @@ defmodule Favn.SQL.Adapter do
 
   @optional_callbacks [
     ping: 2,
+    poolable?: 2,
+    pool_fingerprint: 2,
+    validate_session: 2,
+    reset_session: 3,
+    classify_error: 2,
     bootstrap: 3,
     diagnostics: 2,
     configured_catalogs: 1,
