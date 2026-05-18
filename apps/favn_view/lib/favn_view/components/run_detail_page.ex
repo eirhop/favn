@@ -211,6 +211,7 @@ defmodule FavnView.Components.RunDetailPage do
       current_activity: sample_current_activity(status),
       failure_summary: sample_failure_summary(status),
       backfill_failures: [],
+      backfill_failure_count: 0,
       asset_empty_message: sample_asset_empty_message(status),
       outputs: [],
       context: sample_context(),

@@ -48,7 +48,19 @@ defmodule FavnView.Components.RunOverviewHud do
             </button>
           </div>
           <p
-            :if={@run.failure_summary.count > 0 && @run.failure_summary.total > 0}
+            :if={@run.failure_summary.kind == :backfill && @run.failure_summary.count > 0}
+            class="mt-2 font-medium text-error"
+          >
+            {@run.failure_summary.count} backfill {if(@run.failure_summary.count == 1,
+              do: "window",
+              else: "windows"
+            )} failed.
+          </p>
+          <p
+            :if={
+              @run.failure_summary.kind != :backfill && @run.failure_summary.count > 0 &&
+                @run.failure_summary.total > 0
+            }
             class="mt-2 font-medium text-error"
           >
             {@run.failure_summary.count} of {@run.failure_summary.total} assets failed.
@@ -70,7 +82,11 @@ defmodule FavnView.Components.RunOverviewHud do
             <div>
               <p class="font-medium text-error">Failed backfill window</p>
               <p class="mt-1 text-base-content/60">
-                Open the failed child run for the actionable execution context.
+                Showing {length(@run.backfill_failures)} of {@run.backfill_failure_count} failed {if(
+                  @run.backfill_failure_count == 1,
+                  do: "window",
+                  else: "windows"
+                )}. Open a child run for the actionable execution context.
               </p>
             </div>
           </div>

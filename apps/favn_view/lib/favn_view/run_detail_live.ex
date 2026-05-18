@@ -103,7 +103,10 @@ defmodule FavnView.RunDetailLive do
     backfill_failures =
       Enum.map(Map.get(detail, :backfill_failures, []), &backfill_failure_from_public/1)
 
-    failure_summary = failure_summary(status, steps, events, backfill_failures)
+    backfill_failure_count = Map.get(detail, :backfill_failure_count, length(backfill_failures))
+
+    failure_summary =
+      failure_summary(status, steps, events, backfill_failures, backfill_failure_count)
 
     %{
       found?: true,
@@ -128,6 +131,7 @@ defmodule FavnView.RunDetailLive do
       current_activity: current_activity(status, steps, events),
       failure_summary: failure_summary,
       backfill_failures: backfill_failures,
+      backfill_failure_count: backfill_failure_count,
       asset_empty_message: asset_empty_message(status, failure_summary),
       outputs: outputs(steps),
       context: context_items(summary, target, window),
@@ -304,23 +308,25 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  defp failure_summary(status, _steps, _events, [failure | _rest])
+  defp failure_summary(status, _steps, _events, [failure | _rest], backfill_failure_count)
        when status in [:partial, :error, :timed_out] do
     %{
-      count: 1,
-      total: 1,
+      kind: :backfill,
+      count: backfill_failure_count,
+      total: backfill_failure_count,
       asset: failure.asset_ref,
       error: failure.error
     }
   end
 
-  defp failure_summary(status, steps, events, _backfill_failures)
+  defp failure_summary(status, steps, events, _backfill_failures, _backfill_failure_count)
        when status in [:partial, :error, :timed_out] do
     failed = Enum.filter(steps, &(&1.status_tone == :error))
     first = List.first(failed)
     latest_error = Enum.find(Enum.reverse(events), &(&1.status_tone == :error))
 
     %{
+      kind: :assets,
       count: length(failed),
       total: length(steps),
       asset: first && first.asset_ref,
@@ -328,7 +334,8 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
-  defp failure_summary(_status, _steps, _events, _backfill_failures), do: nil
+  defp failure_summary(_status, _steps, _events, _backfill_failures, _backfill_failure_count),
+    do: nil
 
   defp current_activity(status, steps, events) when status in [:pending, :running] do
     running = Enum.find(steps, &(&1.status == "Running"))

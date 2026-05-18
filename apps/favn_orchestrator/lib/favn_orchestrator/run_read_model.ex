@@ -16,6 +16,8 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
 
+  @backfill_failure_detail_limit 10
+
   @type run_role :: :asset | :pipeline | :backfill_parent | :backfill_child | :rerun
 
   @type window_summary :: %{
@@ -71,6 +73,18 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:duration_ms) => non_neg_integer() | nil
         }
 
+  @type backfill_failure :: %{
+          required(:child_run_id) => String.t() | nil,
+          required(:status) => BackfillWindow.status(),
+          required(:window) => window_summary(),
+          required(:asset_ref) => String.t() | nil,
+          required(:error) => term(),
+          required(:attempt_count) => non_neg_integer(),
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:duration_ms) => non_neg_integer() | nil
+        }
+
   @type run_detail :: %{
           required(:summary) => run_summary(),
           required(:params) => map(),
@@ -81,7 +95,8 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:runner_execution_id) => String.t() | nil,
           required(:event_seq) => pos_integer(),
           required(:steps) => [step_summary()],
-          required(:backfill_failures) => [map()],
+          required(:backfill_failures) => [backfill_failure()],
+          required(:backfill_failure_count) => non_neg_integer(),
           required(:events) => [RunEvent.t()]
         }
 
@@ -116,10 +131,12 @@ defmodule FavnOrchestrator.RunReadModel do
          {:ok, events} <- Storage.list_run_events(run_id) do
       events = Enum.map(events, &RunEvent.from_map/1)
       public_run = with_public_status(run)
+      backfill_windows = detail_backfill_windows(run)
+      {backfill_failures, backfill_failure_count} = backfill_failures(run, backfill_windows)
 
       {:ok,
        %{
-         summary: summary(public_run),
+         summary: summary(public_run, backfill_windows),
          params: run.params,
          trigger: run.trigger,
          metadata: run.metadata,
@@ -127,8 +144,9 @@ defmodule FavnOrchestrator.RunReadModel do
          error: run.error,
          runner_execution_id: run.runner_execution_id,
          event_seq: run.event_seq,
-         steps: step_summaries(public_run, events),
-         backfill_failures: backfill_failures(run),
+         steps: step_summaries(run, events),
+         backfill_failures: backfill_failures,
+         backfill_failure_count: backfill_failure_count,
          events: events
        }}
     end
@@ -153,9 +171,13 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @spec summary(RunState.t()) :: run_summary()
   def summary(%RunState{} = run) do
+    summary(run, nil)
+  end
+
+  defp summary(%RunState{} = run, backfill_windows) do
     run = with_public_status(run)
     role = classify(run)
-    progress = progress(run, role)
+    progress = progress(run, role, backfill_windows)
     window = window(run, role)
 
     %{
@@ -191,10 +213,22 @@ defmodule FavnOrchestrator.RunReadModel do
   defp public_status(%RunState{status: status}), do: status
 
   defp incomplete_pipeline_success?(%RunState{} = run) do
+    incomplete_step_results?(run, persisted_steps(run))
+  end
+
+  defp incomplete_step_results?(%RunState{} = run, persisted_steps) do
     expected = expected_step_count(run)
 
-    expected > 0 and terminal_step_count(persisted_steps(run)) < expected
+    pipeline_like_run?(run) and expected > 0 and terminal_step_count(persisted_steps) < expected
   end
+
+  defp pipeline_like_run?(%RunState{submit_kind: :pipeline}), do: true
+
+  defp pipeline_like_run?(%RunState{submit_kind: :rerun, metadata: metadata})
+       when is_map(metadata),
+       do: Map.get(metadata, :replay_submit_kind) == :pipeline
+
+  defp pipeline_like_run?(_run), do: false
 
   defp expected_step_count(%RunState{plan: %Favn.Plan{nodes: nodes}})
        when is_map(nodes) and map_size(nodes) > 0,
@@ -218,7 +252,7 @@ defmodule FavnOrchestrator.RunReadModel do
   defp classify(%RunState{submit_kind: :pipeline}), do: :pipeline
   defp classify(%RunState{}), do: :asset
 
-  defp progress(%RunState{} = run, :backfill_parent) do
+  defp progress(%RunState{} = run, :backfill_parent, nil) do
     case list_all_backfill_windows(run.id) do
       {:ok, []} -> nil
       {:ok, windows} -> window_progress(windows)
@@ -226,7 +260,13 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp progress(%RunState{} = run, role) do
+  defp progress(%RunState{}, :backfill_parent, []), do: nil
+
+  defp progress(%RunState{}, :backfill_parent, windows) when is_list(windows) do
+    window_progress(windows)
+  end
+
+  defp progress(%RunState{} = run, role, _backfill_windows) do
     steps = persisted_steps(run)
     total = max(length(steps), length(run.target_refs || []))
 
@@ -272,22 +312,41 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp backfill_failures(%RunState{} = run) do
+  defp detail_backfill_windows(%RunState{} = run) do
     case classify(run) do
       :backfill_parent ->
         case list_all_backfill_windows(run.id) do
-          {:ok, windows} ->
-            windows
-            |> Enum.filter(&failed_backfill_window?/1)
-            |> Enum.map(&backfill_failure/1)
-
-          {:error, _reason} ->
-            []
+          {:ok, windows} -> windows
+          {:error, _reason} -> nil
         end
 
       _role ->
-        []
+        nil
     end
+  end
+
+  defp backfill_failures(%RunState{} = run, nil) do
+    case classify(run) do
+      :backfill_parent ->
+        case list_all_backfill_windows(run.id) do
+          {:ok, windows} -> backfill_failures(run, windows)
+          {:error, _reason} -> {[], 0}
+        end
+
+      _role ->
+        {[], 0}
+    end
+  end
+
+  defp backfill_failures(%RunState{}, windows) when is_list(windows) do
+    failed = Enum.filter(windows, &failed_backfill_window?/1)
+
+    failures =
+      failed
+      |> Enum.take(@backfill_failure_detail_limit)
+      |> Enum.map(&backfill_failure/1)
+
+    {failures, length(failed)}
   end
 
   defp failed_backfill_window?(%BackfillWindow{status: status}),
@@ -354,10 +413,11 @@ defmodule FavnOrchestrator.RunReadModel do
   defp step_summaries(%RunState{} = run, events) do
     persisted_steps = persisted_steps(run)
     event_steps = event_steps(run, events)
+    settling? = incomplete_step_results?(run, persisted_steps)
 
     persisted_steps
-    |> merge_event_steps(event_steps, run)
-    |> append_waiting_steps(run, event_steps)
+    |> merge_event_steps(event_steps, run, settling?)
+    |> append_waiting_steps(run, event_steps, settling?)
     |> mark_cascade_failures(events)
     |> Enum.sort_by(&{&1.stage || 999_999, &1.asset_ref})
   end
@@ -381,13 +441,13 @@ defmodule FavnOrchestrator.RunReadModel do
     |> Enum.map(fn {_id, grouped} -> event_step_summary(run.id, grouped) end)
   end
 
-  defp merge_event_steps(persisted_steps, _event_steps, %RunState{status: status})
+  defp merge_event_steps(persisted_steps, _event_steps, %RunState{status: status}, false)
        when persisted_steps != [] and status in [:ok, :partial, :error, :cancelled, :timed_out],
        do: persisted_steps
 
-  defp merge_event_steps([], event_steps, _run), do: event_steps
+  defp merge_event_steps([], event_steps, _run, _settling?), do: event_steps
 
-  defp merge_event_steps(persisted_steps, event_steps, _run) do
+  defp merge_event_steps(persisted_steps, event_steps, _run, _settling?) do
     event_steps_by_id = Map.new(event_steps, &{&1.id, &1})
     unique_asset_refs = unique_asset_refs(persisted_steps, event_steps)
 
@@ -422,8 +482,8 @@ defmodule FavnOrchestrator.RunReadModel do
     merged_persisted_steps ++ new_event_steps
   end
 
-  defp append_waiting_steps(steps, %RunState{status: status} = run, event_steps)
-       when status in [:pending, :running] do
+  defp append_waiting_steps(steps, %RunState{status: status} = run, event_steps, settling?)
+       when status in [:pending, :running] or settling? do
     known_refs =
       (Enum.map(steps, & &1.asset_ref) ++ Enum.map(event_steps, & &1.asset_ref))
       |> Enum.reject(&is_nil/1)
@@ -439,7 +499,7 @@ defmodule FavnOrchestrator.RunReadModel do
     steps ++ waiting_steps
   end
 
-  defp append_waiting_steps(steps, _run, _event_steps), do: steps
+  defp append_waiting_steps(steps, _run, _event_steps, _settling?), do: steps
 
   defp waiting_step(run_id, asset_ref) do
     %{

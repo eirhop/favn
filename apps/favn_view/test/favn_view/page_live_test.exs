@@ -1159,7 +1159,9 @@ defmodule FavnView.PageLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
 
+    assert has_element?(view, ~s([data-testid="run-failure-summary"]), "1 backfill window failed")
     assert has_element?(view, ~s([data-testid="backfill-failure-list"]), "Failed backfill window")
+    assert has_element?(view, ~s([data-testid="backfill-failure-list"]), "Showing 1 of 1")
     assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "inventory_by_day")
 
     assert has_element?(

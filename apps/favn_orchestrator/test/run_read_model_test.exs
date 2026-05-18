@@ -380,6 +380,59 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert steps_by_ref["MyApp.Assets.Silver.asset"].status == :running
   end
 
+  test "failed pipeline keeps failure status while filling incomplete step rows" do
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    silver_ref = {MyApp.Assets.Silver, :asset}
+    bronze_ref = {MyApp.Assets.Bronze, :asset}
+    started_at = ~U[2026-05-01 00:00:00Z]
+
+    run =
+      run("pipeline_failed_gap", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [gold_ref, silver_ref, bronze_ref])
+      |> RunState.transition(
+        status: :error,
+        error: :failed,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {gold_ref, nil},
+              ref: gold_ref,
+              stage: 0,
+              status: :error,
+              started_at: started_at,
+              finished_at: DateTime.add(started_at, 1, :second),
+              duration_ms: 1_000,
+              error: %{message: "warehouse unavailable"},
+              asset_step_id: "gold-step"
+            })
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: run.event_seq + 1,
+               event_type: :step_started,
+               occurred_at: DateTime.add(started_at, 2, :second),
+               status: :running,
+               asset_ref: silver_ref,
+               stage: 0,
+               data: %{asset_step_id: "silver-step"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert detail.summary.status == :error
+
+    steps_by_ref = Map.new(detail.steps, &{&1.asset_ref, &1})
+    assert steps_by_ref["MyApp.Assets.Gold.asset"].status == :error
+    assert steps_by_ref["MyApp.Assets.Silver.asset"].status == :running
+    assert steps_by_ref["MyApp.Assets.Bronze.asset"].status == :pending
+  end
+
   test "backfill parent detail includes failed child window context" do
     parent =
       run("backfill_parent_failure", submit_kind: :backfill_pipeline)
@@ -450,6 +503,31 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert failure.window.key == window_key(anchor)
     assert failure.duration_ms == 2_000
     assert failure.error == %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"}
+  end
+
+  test "backfill parent detail caps enriched failed window context" do
+    parent =
+      run("backfill_parent_many_failures", submit_kind: :backfill_pipeline)
+      |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
+
+    assert :ok = Storage.put_run(parent)
+
+    for day <- 1..12 do
+      anchor = anchor(DateTime.add(~U[2026-05-01 00:00:00Z], (day - 1) * 86_400, :second))
+
+      window =
+        parent.id
+        |> backfill_window(anchor, :error)
+        |> Map.put(:last_error, {:failed_window, day})
+
+      assert :ok = Storage.put_backfill_window(window)
+    end
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(parent.id)
+
+    assert detail.backfill_failure_count == 12
+    assert length(detail.backfill_failures) == 10
+    assert detail.summary.progress.counts.failed == 12
   end
 
   defp run(run_id, opts) do
