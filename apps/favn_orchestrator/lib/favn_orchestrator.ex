@@ -20,6 +20,7 @@ defmodule FavnOrchestrator do
   alias Favn.Window.Runtime, as: RuntimeWindow
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Backfill.Repair, as: BackfillRepair
   alias FavnOrchestrator.BackfillManager
   alias FavnOrchestrator.Diagnostics
@@ -40,6 +41,12 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Storage
 
   @type run_id :: String.t()
+  @type operator_actor :: Auth.actor()
+  @type operator_session :: Auth.session()
+  @type operator_actor_context :: %{
+          required(:actor) => operator_actor(),
+          required(:session) => operator_session()
+        }
   @type manifest_summary :: %{
           required(:manifest_version_id) => String.t(),
           required(:content_hash) => String.t(),
@@ -200,6 +207,56 @@ defmodule FavnOrchestrator do
   """
   @spec readiness() :: map()
   def readiness, do: FavnOrchestrator.Readiness.readiness()
+
+  @doc """
+  Authenticates an operator browser user with username and password.
+
+  Returns a session containing the one-time raw session token for caller storage.
+  All auth failures, including login backoff, disabled actors, missing users, and
+  invalid passwords, are returned as `{:error, :invalid_credentials}`.
+  """
+  @spec operator_password_login(String.t(), String.t()) ::
+          {:ok, operator_session(), operator_actor()} | {:error, :invalid_credentials}
+  @spec operator_password_login(String.t(), String.t(), keyword() | map()) ::
+          {:ok, operator_session(), operator_actor()} | {:error, :invalid_credentials}
+  def operator_password_login(username, password, opts \\ [])
+      when is_binary(username) and is_binary(password) and (is_list(opts) or is_map(opts)) do
+    case Auth.password_login(username, password, opts) do
+      {:ok, session, actor} -> {:ok, session, actor}
+      {:error, _reason} -> {:error, :invalid_credentials}
+    end
+  end
+
+  @doc """
+  Resolves an operator session token into the persisted session and actor.
+
+  Invalid, expired, revoked, or actor-disabled sessions are normalized to
+  `{:error, :invalid_session}` for browser-facing auth glue.
+  """
+  @spec introspect_operator_session(String.t()) ::
+          {:ok, operator_session(), operator_actor()} | {:error, :invalid_session}
+  def introspect_operator_session(session_token) when is_binary(session_token) do
+    case Auth.introspect_session(session_token) do
+      {:ok, session, actor} -> {:ok, session, actor}
+      {:error, _reason} -> {:error, :invalid_session}
+    end
+  end
+
+  @doc """
+  Revokes an operator session by session id.
+  """
+  @spec revoke_operator_session(String.t()) :: :ok | {:error, term()}
+  def revoke_operator_session(session_id) when is_binary(session_id) do
+    Auth.revoke_session(session_id)
+  end
+
+  @doc """
+  Returns whether an operator actor has at least the required role.
+  """
+  @spec operator_has_role?(operator_actor(), :viewer | :operator | :admin) :: boolean()
+  def operator_has_role?(actor, role) when role in [:viewer, :operator, :admin] do
+    Auth.has_role?(actor, role)
+  end
 
   @doc """
   Registers one manifest version in orchestrator storage.
@@ -460,6 +517,38 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Submits one asset run for an authenticated operator actor context.
+
+  This is the same-BEAM browser boundary for LiveView operator actions. Missing
+  or incomplete actor/session context returns `{:error, :unauthenticated}`;
+  authenticated actors without the operator role return `{:error, :forbidden}`.
+
+  TODO: add a narrow audit event for accepted LiveView operator commands once the
+  audit shape for same-BEAM browser actions is finalized.
+  """
+  @spec submit_operator_asset_run(
+          operator_actor_context(),
+          String.t(),
+          String.t()
+        ) :: {:ok, run_id()} | {:error, term()}
+  @spec submit_operator_asset_run(
+          operator_actor_context(),
+          String.t(),
+          String.t(),
+          keyword() | map()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_operator_asset_run(
+        actor_context,
+        manifest_version_id,
+        target_id,
+        opts_or_request \\ []
+      ) do
+    with :ok <- require_operator_context(actor_context) do
+      submit_asset_run_for_manifest(manifest_version_id, target_id, opts_or_request)
+    end
+  end
+
+  @doc """
   Submits a manifest-pinned asset run for one stable asset detail window id.
   """
   @spec submit_asset_window_run(String.t(), String.t(), String.t(), keyword()) ::
@@ -695,6 +784,33 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Submits one pipeline run for an authenticated operator actor context.
+
+  This is the same-BEAM browser boundary for LiveView operator actions. Missing
+  or incomplete actor/session context returns `{:error, :unauthenticated}`;
+  authenticated actors without the operator role return `{:error, :forbidden}`.
+
+  TODO: add a narrow audit event for accepted LiveView operator commands once the
+  audit shape for same-BEAM browser actions is finalized.
+  """
+  @spec submit_operator_pipeline_run(
+          operator_actor_context(),
+          String.t(),
+          String.t()
+        ) :: {:ok, run_id()} | {:error, term()}
+  @spec submit_operator_pipeline_run(
+          operator_actor_context(),
+          String.t(),
+          String.t(),
+          keyword() | map()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_operator_pipeline_run(actor_context, manifest_version_id, target_id, opts \\ []) do
+    with :ok <- require_operator_context(actor_context) do
+      submit_pipeline_run_for_manifest(manifest_version_id, target_id, opts)
+    end
+  end
+
+  @doc """
   Sets the active manifest version used by default for new runs.
   """
   @spec activate_manifest(String.t()) :: :ok | {:error, term()}
@@ -867,6 +983,33 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Submits one pipeline backfill for an authenticated operator actor context.
+
+  This is the same-BEAM browser boundary for LiveView operator actions. Missing
+  or incomplete actor/session context returns `{:error, :unauthenticated}`;
+  authenticated actors without the operator role return `{:error, :forbidden}`.
+
+  TODO: add a narrow audit event for accepted LiveView operator commands once the
+  audit shape for same-BEAM browser actions is finalized.
+  """
+  @spec submit_operator_pipeline_backfill(
+          operator_actor_context(),
+          String.t(),
+          String.t()
+        ) :: {:ok, run_id()} | {:error, term()}
+  @spec submit_operator_pipeline_backfill(
+          operator_actor_context(),
+          String.t(),
+          String.t(),
+          keyword() | map()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_operator_pipeline_backfill(actor_context, manifest_version_id, target_id, opts \\ []) do
+    with :ok <- require_operator_context(actor_context) do
+      submit_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts)
+    end
+  end
+
+  @doc """
   Lists normalized backfill-window ledger rows.
   """
   @spec list_backfill_windows(keyword()) ::
@@ -1007,6 +1150,78 @@ defmodule FavnOrchestrator do
        do: :ok
 
   defp ensure_window_rerunnable(_window), do: {:error, :backfill_window_not_rerunnable}
+
+  defp require_operator_context(actor_context) when is_map(actor_context) do
+    with {:ok, actor} <- actor_context_object(actor_context, :actor),
+         {:ok, session} <- actor_context_object(actor_context, :session),
+         {:ok, persisted_actor, persisted_session} <- load_operator_context(actor, session),
+         :ok <- ensure_operator_session_context(persisted_actor, persisted_session) do
+      if Auth.has_role?(persisted_actor, :operator), do: :ok, else: {:error, :forbidden}
+    else
+      {:error, :missing_context} -> {:error, :unauthenticated}
+      {:error, :invalid_session} -> {:error, :unauthenticated}
+    end
+  end
+
+  defp require_operator_context(_actor_context), do: {:error, :unauthenticated}
+
+  defp actor_context_object(actor_context, key) do
+    case Map.get(actor_context, key) || Map.get(actor_context, Atom.to_string(key)) do
+      %{id: id} = object when is_binary(id) and id != "" -> {:ok, object}
+      %{"id" => id} = object when is_binary(id) and id != "" -> {:ok, object}
+      _object -> {:error, :missing_context}
+    end
+  end
+
+  defp load_operator_context(actor, session) do
+    actor_id = context_id(actor)
+    session_id = context_id(session)
+
+    with true <- is_binary(actor_id) and actor_id != "",
+         true <- is_binary(session_id) and session_id != "",
+         {:ok, persisted_session} <- Storage.get_auth_session(session_id),
+         true <- context_actor_id(persisted_session) == actor_id,
+         {:ok, persisted_actor} <- Storage.get_auth_actor(actor_id) do
+      {:ok, persisted_actor, Map.drop(persisted_session, [:token_hash])}
+    else
+      _error -> {:error, :invalid_session}
+    end
+  end
+
+  defp context_id(%{id: id}), do: id
+  defp context_id(%{"id" => id}), do: id
+  defp context_id(_context), do: nil
+
+  defp context_actor_id(%{actor_id: actor_id}), do: actor_id
+  defp context_actor_id(%{"actor_id" => actor_id}), do: actor_id
+  defp context_actor_id(_context), do: nil
+
+  defp ensure_operator_session_context(actor, session) do
+    actor_id = Map.get(actor, :id) || Map.get(actor, "id")
+    session_actor_id = Map.get(session, :actor_id) || Map.get(session, "actor_id")
+    revoked_at = Map.get(session, :revoked_at) || Map.get(session, "revoked_at")
+    expires_at = Map.get(session, :expires_at) || Map.get(session, "expires_at")
+
+    cond do
+      (Map.get(actor, :status) || Map.get(actor, "status")) not in [:active, "active"] ->
+        {:error, :invalid_session}
+
+      actor_id != session_actor_id ->
+        {:error, :invalid_session}
+
+      not is_nil(revoked_at) ->
+        {:error, :invalid_session}
+
+      not match?(%DateTime{}, expires_at) ->
+        {:error, :invalid_session}
+
+      match?(%DateTime{}, expires_at) and DateTime.compare(expires_at, DateTime.utc_now()) == :lt ->
+        {:error, :invalid_session}
+
+      true ->
+        :ok
+    end
+  end
 
   @doc """
   Returns one persisted run snapshot.

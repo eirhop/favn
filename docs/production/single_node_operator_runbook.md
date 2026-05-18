@@ -122,6 +122,12 @@ Supported backend environment keys are:
 - `FAVN_SCHEDULER_TICK_MS`, integer at least `100`, default `15000`.
 - `FAVN_SCHEDULER_MAX_MISSED_ALL_OCCURRENCES`, positive integer, default `1000`.
 - `FAVN_RUNNER_MODE=local`.
+- `FAVN_VIEW_PUBLIC_ORIGIN`, the browser-facing absolute origin for `favn_view`.
+  Production origins must use `https`; `http` is accepted only for localhost.
+- `FAVN_VIEW_SECRET_KEY_BASE`, the Phoenix endpoint signing/encryption secret.
+  Generate a unique value with `mix phx.gen.secret` or an equivalent secret
+  generator and keep it in secret management, not Git. It must be at least 64
+  characters.
 - `FAVN_SINGLE_NODE_HOME`, optional runtime home override.
 - `FAVN_ENV_FILE`, optional path to an env file loaded by `bin/start`.
 - `FAVN_STARTUP_TIMEOUT_SECONDS`, optional startup readiness timeout.
@@ -138,6 +144,8 @@ FAVN_SQLITE_PATH=/var/lib/favn/control-plane.sqlite3
 FAVN_SQLITE_MIGRATION_MODE=auto
 FAVN_SQLITE_POOL_SIZE=1
 FAVN_RUNNER_MODE=local
+FAVN_VIEW_PUBLIC_ORIGIN=https://favn.example.com
+FAVN_VIEW_SECRET_KEY_BASE=<replace-with-mix-phx-gen-secret-output>
 FAVN_ORCHESTRATOR_BOOTSTRAP_USERNAME=admin
 FAVN_ORCHESTRATOR_BOOTSTRAP_PASSWORD=<replace-with-15-plus-character-password>
 ```
@@ -181,6 +189,16 @@ The bootstrap workflow uses orchestrator APIs. It does not write SQLite directly
 
 These examples assume the backend env file is loaded into the current operator
 shell.
+
+For browser operators, open `favn_view` at the configured
+`FAVN_VIEW_PUBLIC_ORIGIN` and sign in at `/login` with the bootstrap operator
+credentials. The Phoenix browser session stores only a random browser session id
+and LiveView socket topic; the raw orchestrator session token
+stays server-side in the web process. Actors, roles, password hashes, audit
+entries, and session revocation state remain orchestrator-owned. `/logout`
+revokes the current orchestrator session, clears the browser session, and
+disconnects existing LiveView sockets for that session. Web health and readiness
+routes remain unauthenticated.
 
 After bootstrap, verify that the first admin can log in:
 

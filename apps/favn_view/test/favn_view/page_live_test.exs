@@ -12,13 +12,19 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
+  alias FavnView.Auth.BrowserSessionStore
+  alias FavnOrchestrator.Auth
+  alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
-  setup do
+  setup %{conn: conn} do
+    ensure_auth_store_started()
+    :ok = AuthStore.reset()
+    :ok = BrowserSessionStore.reset()
     Memory.reset()
 
     version = manifest_version()
@@ -48,7 +54,7 @@ defmodule FavnView.PageLiveTest do
     seed_run_events!("run_customer_orders_daily")
     seed_run_events!("run_failed_empty", :error)
 
-    :ok
+    {:ok, conn: authenticate_conn(conn)}
   end
 
   test "redirects home to the asset catalogue", %{conn: conn} do
@@ -150,6 +156,18 @@ defmodule FavnView.PageLiveTest do
     assert run.metadata.pipeline_submit_ref == __MODULE__.Pipelines.FullRefresh
   end
 
+  test "viewer cannot submit a pipeline run with a forged LiveView event", %{conn: _conn} do
+    conn = authenticate_conn(build_conn(), :viewer)
+    {:ok, view, _html} = live(conn, pipeline_detail_path("full_refresh"))
+
+    html =
+      view
+      |> element(~s([data-testid="run-pipeline-form"]))
+      |> render_submit()
+
+    assert html =~ "Operator role required"
+  end
+
   test "pipeline detail disables backfill for non-windowed pipelines", %{conn: conn} do
     {:ok, view, _html} = live(conn, pipeline_detail_path("full_refresh"))
 
@@ -184,6 +202,25 @@ defmodule FavnView.PageLiveTest do
     assert run.submit_kind == :backfill_pipeline
     assert run.metadata.backfill.kind == :day
     assert run.metadata.backfill.timezone == "Europe/Oslo"
+  end
+
+  test "viewer cannot submit a pipeline backfill with a forged LiveView event", %{conn: _conn} do
+    conn = authenticate_conn(build_conn(), :viewer)
+    {:ok, view, _html} = live(conn, pipeline_detail_path())
+
+    html =
+      view
+      |> element(~s([data-testid="pipeline-backfill-form"]))
+      |> render_submit(%{
+        "backfill" => %{
+          "from" => "2026-01-01",
+          "to" => "2026-01-02",
+          "kind" => "day",
+          "timezone" => "Europe/Oslo"
+        }
+      })
+
+    assert html =~ "Operator role required"
   end
 
   test "runs list refreshes active runs", %{conn: conn} do
@@ -232,7 +269,7 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/assets")
 
     view
-    |> element("form")
+    |> element(~s(form[phx-change="filter_assets"]))
     |> render_change(%{
       "filters" => %{"search" => "payments", "connection" => "s3", "catalogue" => "finance"}
     })
@@ -245,7 +282,7 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/assets")
 
     view
-    |> element("form")
+    |> element(~s(form[phx-change="filter_assets"]))
     |> render_change(%{
       "filters" => %{"search" => "not_real", "connection" => "all", "catalogue" => "all"}
     })
@@ -430,6 +467,15 @@ defmodule FavnView.PageLiveTest do
 
     assert html =~ "run_"
     assert has_element?(run_view, ~s([data-testid="run-overview-panel"]))
+  end
+
+  test "viewer cannot submit an asset run with a forged LiveView event", %{conn: _conn} do
+    conn = authenticate_conn(build_conn(), :viewer)
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    html = render_submit(view, "run_selected_window", %{"run_config" => %{}})
+
+    assert html =~ "Operator role required"
   end
 
   test "run selected window submits missing refresh config", %{conn: conn} do
@@ -1163,7 +1209,7 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, _html} = live(conn, ~p"/logs")
 
     view
-    |> element("form")
+    |> element(~s(form[phx-change="filter_logs"]))
     |> render_change(%{
       "filters" => %{"search" => "warehouse", "level" => "warning", "source" => "adapter"}
     })
@@ -1221,6 +1267,11 @@ defmodule FavnView.PageLiveTest do
       source = File.read!(file)
       refute source =~ "Storage.Adapter"
       refute source =~ "FavnOrchestrator.Storage"
+      refute source =~ "FavnOrchestrator.Auth"
+      refute source =~ "Auth.Store"
+      refute source =~ "service_token"
+      refute source =~ "Scheduler.Runtime"
+      refute source =~ "RunnerClient"
     end
   end
 
@@ -1283,6 +1334,26 @@ defmodule FavnView.PageLiveTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: "mv_view_assets")
     version
+  end
+
+  defp authenticate_conn(conn, role \\ :operator) do
+    username = "#{role}-#{System.unique_integer([:positive])}"
+
+    assert {:ok, _actor} =
+             Auth.create_actor(username, "operator-password-long", "Test Operator", [role])
+
+    conn
+    |> post(~p"/login", %{
+      "operator" => %{"username" => username, "password" => "operator-password-long"}
+    })
+    |> recycle()
+  end
+
+  defp ensure_auth_store_started do
+    case Process.whereis(AuthStore) do
+      nil -> start_supervised!({AuthStore, []})
+      _pid -> :ok
+    end
   end
 
   defp asset(name, connection, catalog, type, opts \\ []) do

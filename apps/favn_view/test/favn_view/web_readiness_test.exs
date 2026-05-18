@@ -4,6 +4,8 @@ defmodule FavnView.WebReadinessTest do
   alias FavnView.ProductionRuntimeConfig
   alias FavnView.Readiness
 
+  @secret_key_base String.duplicate("a", 64)
+
   defmodule ReadyOrchestrator do
     def readiness do
       %{
@@ -50,13 +52,16 @@ defmodule FavnView.WebReadinessTest do
       :orchestrator_readiness_timeout_ms,
       :production_runtime_diagnostics,
       :public_origin,
-      :production_runtime_config
+      :production_runtime_config,
+      :require_secure_cookies,
+      :session_cookie_options
     ]
 
     previous = Map.new(keys, &{&1, Application.get_env(:favn_view, &1)})
 
     Application.delete_env(:favn_view, :production_runtime_diagnostics)
     Application.delete_env(:favn_view, :public_origin)
+    Application.delete_env(:favn_view, :require_secure_cookies)
     Application.put_env(:favn_view, :orchestrator_facade, ReadyOrchestrator)
     Application.put_env(:favn_view, :orchestrator_readiness_timeout_ms, 50)
     Application.put_env(:favn_view, :production_runtime_config, false)
@@ -160,6 +165,7 @@ defmodule FavnView.WebReadinessTest do
     assert {:ok, config} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "250"
              })
 
@@ -167,11 +173,50 @@ defmodule FavnView.WebReadinessTest do
     assert config.orchestrator_readiness_timeout_ms == 250
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
-             ProductionRuntimeConfig.validate(%{"FAVN_VIEW_PUBLIC_ORIGIN" => "not a url"})
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "http://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+             })
+
+    assert {:ok, %{public_origin: "http://localhost:4173"}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "http://localhost:4173",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+             })
+
+    assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "not a url",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+             })
+
+    for origin <- [
+          "https://favn.example.com/path",
+          "https://favn.example.com?debug=true",
+          "https://favn.example.com#frag"
+        ] do
+      assert {:error, %{error: {:invalid_env, "FAVN_VIEW_PUBLIC_ORIGIN", _expected}}} =
+               ProductionRuntimeConfig.validate(%{
+                 "FAVN_VIEW_PUBLIC_ORIGIN" => origin,
+                 "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+               })
+    end
+
+    assert {:error, %{error: {:missing_env, "FAVN_VIEW_SECRET_KEY_BASE"}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com"
+             })
+
+    assert {:error, %{error: {:invalid_secret_env, "FAVN_VIEW_SECRET_KEY_BASE", _}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => "too-short"
+             })
 
     assert {:error, %{error: {:invalid_env, "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS", _}}} =
              ProductionRuntimeConfig.validate(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "0"
              })
   end
@@ -183,6 +228,7 @@ defmodule FavnView.WebReadinessTest do
     assert :ok =
              ProductionRuntimeConfig.apply_from_env(%{
                "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base,
                "FAVN_VIEW_ORCHESTRATOR_READINESS_TIMEOUT_MS" => "250"
              })
 
@@ -191,6 +237,57 @@ defmodule FavnView.WebReadinessTest do
     assert Keyword.fetch!(endpoint_config, :url)[:host] == "favn.example.com"
     assert Keyword.fetch!(endpoint_config, :url)[:port] == 443
     assert Keyword.fetch!(endpoint_config, :check_origin) == ["https://favn.example.com"]
+    assert Keyword.fetch!(endpoint_config, :secret_key_base) == @secret_key_base
+  end
+
+  test "production runtime config requires hardened session cookie options when enabled" do
+    secure_options =
+      FavnView.Endpoint.session_options()
+      |> Keyword.put(:secure, true)
+      |> Keyword.put(:http_only, true)
+      |> Keyword.put(:same_site, "Lax")
+      |> Keyword.put(:encryption_salt, "test-encryption-salt")
+
+    Application.put_env(:favn_view, :require_secure_cookies, true)
+    Application.put_env(:favn_view, :session_cookie_options, secure_options)
+
+    assert {:ok, _config} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+             })
+
+    Application.put_env(
+      :favn_view,
+      :session_cookie_options,
+      Keyword.put(secure_options, :secure, false)
+    )
+
+    assert {:error, %{error: {:invalid_session_cookie, :secure_required}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+             })
+
+    Application.put_env(
+      :favn_view,
+      :session_cookie_options,
+      Keyword.delete(secure_options, :encryption_salt)
+    )
+
+    assert {:error, %{error: {:invalid_session_cookie, :encryption_salt_required}}} =
+             ProductionRuntimeConfig.validate(%{
+               "FAVN_VIEW_PUBLIC_ORIGIN" => "https://favn.example.com",
+               "FAVN_VIEW_SECRET_KEY_BASE" => @secret_key_base
+             })
+  end
+
+  test "production config files do not commit a production secret key base" do
+    prod_config = File.read!(Path.expand("../../../../config/prod.exs", __DIR__))
+
+    refute prod_config =~ "secret_key_base"
+    assert File.read!(Path.expand("../../../../config/dev.exs", __DIR__)) =~ "secret_key_base"
+    assert File.read!(Path.expand("../../../../config/test.exs", __DIR__)) =~ "secret_key_base"
   end
 
   test "web readiness code uses only the public orchestrator facade" do

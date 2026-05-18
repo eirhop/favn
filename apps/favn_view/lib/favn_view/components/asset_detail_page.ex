@@ -35,6 +35,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
+  attr :can_submit_runs?, :boolean, default: false
 
   def asset_detail_page(assigns) do
     assigns = assign(assigns, :refresh_timeline, assigns.refresh_timeline || assigns.timeline)
@@ -67,6 +68,7 @@ defmodule FavnView.Components.AssetDetailPage do
         submitting_window_run?={@submitting_window_run?}
         selected_window_error={@selected_window_error}
         submitted_run_id={@submitted_run_id}
+        can_submit_runs?={@can_submit_runs?}
       />
 
       <:mode_rail>
@@ -96,6 +98,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
+  attr :can_submit_runs?, :boolean, default: false
 
   def central_view(assigns) do
     ~H"""
@@ -120,6 +123,7 @@ defmodule FavnView.Components.AssetDetailPage do
       submitting_window_run?={@submitting_window_run?}
       selected_window_error={@selected_window_error}
       submitted_run_id={@submitted_run_id}
+      can_submit_runs?={@can_submit_runs?}
     />
 
     <.placeholder_panel :if={@active_mode == :runs} title="Runs coming soon" />
@@ -149,6 +153,7 @@ defmodule FavnView.Components.AssetDetailPage do
   attr :submitting_window_run?, :boolean, default: false
   attr :selected_window_error, :string, default: nil
   attr :submitted_run_id, :string, default: nil
+  attr :can_submit_runs?, :boolean, default: false
 
   def window_timeline_panel(assigns) do
     assigns = assign(assigns, :timeline, active_timeline(assigns))
@@ -247,6 +252,7 @@ defmodule FavnView.Components.AssetDetailPage do
           submitting_window_run?={@submitting_window_run?}
           selected_window_error={@selected_window_error}
           submitted_run_id={@submitted_run_id}
+          can_submit_runs?={@can_submit_runs?}
         />
       </div>
     </GlassPanel.glass_panel>

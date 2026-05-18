@@ -55,6 +55,17 @@ defmodule FavnView.Components.AppShell do
               <.icon name="hero-magnifying-glass" class="size-5" />
             </button>
             <ThemeToggle.theme_toggle />
+            <form action={~p"/logout"} method="post">
+              <input type="hidden" name="_method" value="delete" />
+              <input type="hidden" name="_csrf_token" value={get_csrf_token()} />
+              <button
+                type="submit"
+                class="btn btn-ghost btn-square favn-icon-button"
+                aria-label="Sign out"
+              >
+                <.icon name="hero-arrow-right-on-rectangle" class="size-5" />
+              </button>
+            </form>
           </div>
         </header>
 

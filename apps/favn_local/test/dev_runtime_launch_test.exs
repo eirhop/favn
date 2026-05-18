@@ -26,7 +26,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => "secret"
+      "web_session_secret" => String.duplicate("s", 64)
     }
 
     opts = distribution_opts()
@@ -43,6 +43,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert operator.env["FAVN_DEV_STORAGE"] == "sqlite"
     assert operator.env["FAVN_DEV_SQLITE_PATH"] == Path.expand(config.sqlite_path)
     assert operator.env["FAVN_VIEW_PUBLIC_ORIGIN"] == config.web_base_url
+    assert operator.env["FAVN_VIEW_SECRET_KEY_BASE"] == String.duplicate("s", 64)
     assert operator.env["FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH"] == "1"
   end
 
@@ -66,7 +67,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => "secret"
+      "web_session_secret" => String.duplicate("s", 64)
     }
 
     opts = distribution_opts(root_dir: root_dir)
@@ -123,7 +124,8 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     secrets = %{
       "rpc_cookie" => "cookie",
-      "service_token" => "token"
+      "service_token" => "token",
+      "web_session_secret" => String.duplicate("s", 64)
     }
 
     orchestrator =
@@ -148,7 +150,11 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       orchestrator_short: "favn_orchestrator_test"
     }
 
-    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token",
+      "web_session_secret" => String.duplicate("s", 64)
+    }
 
     code =
       runtime
@@ -305,7 +311,11 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       orchestrator_short: "favn_orchestrator_test"
     }
 
-    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token",
+      "web_session_secret" => String.duplicate("s", 64)
+    }
 
     code =
       runtime
@@ -325,7 +335,11 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       orchestrator_short: "favn_orchestrator_test"
     }
 
-    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token",
+      "web_session_secret" => String.duplicate("s", 64)
+    }
 
     orchestrator =
       RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
@@ -355,7 +369,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     secrets = %{
       "rpc_cookie" => "cookie",
       "service_token" => "token",
-      "web_session_secret" => "secret"
+      "web_session_secret" => String.duplicate("s", 64)
     }
 
     opts =
@@ -389,7 +403,11 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       orchestrator_short: "favn_orchestrator_test"
     }
 
-    secrets = %{"rpc_cookie" => "cookie", "service_token" => "token"}
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token",
+      "web_session_secret" => String.duplicate("s", 64)
+    }
 
     operator =
       RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)

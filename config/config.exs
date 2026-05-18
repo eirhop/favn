@@ -12,6 +12,17 @@ import Config
 config :favn_view,
   generators: [context_app: false]
 
+config :favn_view,
+  session_cookie_options: [
+    store: :cookie,
+    key: "_favn_view_key",
+    signing_salt: "zqy+dPTK",
+    encryption_salt: "favn-view-session-v1",
+    same_site: "Lax",
+    http_only: true,
+    secure: Mix.env() == :prod
+  ]
+
 config :phoenix, :json_library, Jason
 
 config :favn_view, FavnView.Endpoint,

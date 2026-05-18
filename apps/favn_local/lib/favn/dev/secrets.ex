@@ -14,7 +14,7 @@ defmodule Favn.Dev.Secrets do
     {:ok,
      %{
        "service_token" => config.service_token || random_secret(24),
-       "web_session_secret" => config.web_session_secret || random_secret(32),
+       "web_session_secret" => config.web_session_secret || random_secret(48),
        "rpc_cookie" => @local_rpc_cookie
       }}
   end

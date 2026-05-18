@@ -11,6 +11,11 @@ Ownership rules:
 - `apps/favn_view/lib/favn_view/readiness.ex` and
   `apps/favn_view/lib/favn_view/production_runtime_config.ex` own web health,
   readiness, and web-owned production config validation.
+- `apps/favn_view/lib/favn_view/auth.ex` and
+  `apps/favn_view/lib/favn_view/auth/*.ex` own browser auth glue, Phoenix
+  session handling, the volatile server-side browser-session token mapping,
+  LiveView `on_mount` auth, and sanitized view-local scope assignment. Durable
+  auth state remains in `favn_orchestrator`.
 - `apps/favn_view/assets/` contains the standard Phoenix-generated asset setup.
 - `apps/favn_view/storybook/` contains PhoenixStorybook stories for reusable
   UI component states.
@@ -21,5 +26,9 @@ Ownership rules:
 - Production web readiness calls the public `FavnOrchestrator` facade in the same
   BEAM. It must not use orchestrator HTTP, service-token shortcuts, storage
   access, scheduler runtime access, or runner internals.
+- Browser auth calls only public `FavnOrchestrator` facade functions. It must not
+  call `FavnOrchestrator.Auth`, auth storage, password hashing internals, audit
+  storage, service-token internals, storage adapters, scheduler internals, or
+  runner internals directly.
 - Tidewave is plugged only in dev. PhoenixStorybook is mounted under
   `/storybook` when dev routes are enabled.
