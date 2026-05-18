@@ -148,6 +148,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
   Prefer `config_schema_fields/0` so `open` and `duckdb` are validated together.
   """
+  @deprecated "Use config_schema_fields/0 so open and duckdb config are validated together"
   def bootstrap_schema_field, do: Bootstrap.schema_field()
 
   @spec config_schema_fields() :: [Favn.Connection.Definition.field()]
@@ -378,6 +379,25 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
     {:ok, catalogs}
   end
+
+  @impl true
+  @spec default_catalog(Resolved.t()) :: {:ok, String.t() | nil}
+  def default_catalog(%Resolved{} = resolved), do: {:ok, duckdb_use_catalog(resolved)}
+
+  defp duckdb_use_catalog(%Resolved{config: %{duckdb: duckdb}}) when is_map(duckdb) do
+    duckdb |> Map.get(:use) |> normalize_catalog_name()
+  end
+
+  defp duckdb_use_catalog(%Resolved{config: %{duckdb: duckdb}}) when is_list(duckdb) do
+    duckdb |> Keyword.get(:use) |> normalize_catalog_name()
+  end
+
+  defp duckdb_use_catalog(_resolved), do: nil
+
+  defp normalize_catalog_name(nil), do: nil
+  defp normalize_catalog_name(catalog) when is_atom(catalog), do: Atom.to_string(catalog)
+  defp normalize_catalog_name(catalog) when is_binary(catalog), do: catalog
+  defp normalize_catalog_name(_catalog), do: nil
 
   defp catalog_write_concurrency(config) when is_map(config) do
     config

@@ -386,6 +386,13 @@ while DuckLake catalogs default to `:unlimited` unless configured otherwise.
 Write admission is keyed by `{connection, catalog}` so a single-writer `mart`
 file catalog does not block independent DuckLake writes.
 
+Catalog-level write admission is guaranteed for Favn SQL asset materialization,
+where the target relation carries an explicit catalog. Raw
+`Favn.SQLClient.execute/3` and `Favn.SQLClient.query/3` calls cannot reliably
+infer the write catalog from arbitrary SQL today; use asset materialization for
+protected writes or serialize manual raw SQL at the caller until a future
+explicit `catalog:` option exists.
+
 Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module
 schemas. Add `production_storage_schema_fields/0` when production local-file

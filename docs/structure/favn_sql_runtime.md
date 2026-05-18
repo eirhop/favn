@@ -18,3 +18,9 @@ Use when changing connection runtime config validation, SQL client behavior,
 session lifecycle, transaction behavior, adapter bootstrap, read-only relation
 inspection, write-plan adapter contracts, or SQL admission and concurrency policy
 behavior.
+
+Catalog-level admission is driven by materialization write plans whose target
+relations include a catalog. Raw `Favn.SQLClient.execute/3` and
+`Favn.SQLClient.query/3` do not parse arbitrary SQL to infer write catalogs;
+callers that issue manual raw writes must handle any needed serialization until
+the client contract grows an explicit target catalog option.

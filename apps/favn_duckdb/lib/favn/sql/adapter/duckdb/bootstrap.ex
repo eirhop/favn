@@ -584,7 +584,7 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     extension_steps(:load, load) ++
       setting_steps(settings) ++
       Enum.map(secrets, &secret_step/1) ++
-      Enum.flat_map(attach, &attach_steps/1) ++
+      Enum.flat_map(attach, &attach_steps(&1, secrets)) ++
       use_steps(use_catalog)
   end
 
@@ -743,9 +743,9 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     }
   end
 
-  defp attach_steps(nil), do: []
+  defp attach_steps(nil, _secrets), do: []
 
-  defp attach_steps(%{name: name, type: :duckdb, path: path}) do
+  defp attach_steps(%{name: name, type: :duckdb, path: path}, _secrets) do
     statement = ["ATTACH ", quote_literal(path), " AS ", quote_ident(name)]
 
     [
@@ -759,13 +759,18 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
     ]
   end
 
-  defp attach_steps(%{
-         name: name,
-         type: :ducklake,
-         metadata: metadata,
-         meta_secret: secret,
-         data_path: data_path
-       }) do
+  defp attach_steps(
+         %{
+           name: name,
+           type: :ducklake,
+           metadata: metadata,
+           meta_secret: secret,
+           data_path: data_path
+         },
+         secrets
+       ) do
+    metadata = metadata_with_postgres_secret_options(metadata, secret, secrets)
+
     statement = [
       "ATTACH ",
       quote_literal(metadata),
@@ -800,6 +805,18 @@ defmodule Favn.SQL.Adapter.DuckDB.Bootstrap do
       }
     ]
   end
+
+  defp metadata_with_postgres_secret_options(metadata, secret, secrets) do
+    case Enum.find(secrets, &(&1.type == :postgres and &1.name == secret)) do
+      %{sslmode: sslmode} when is_binary(sslmode) -> append_ducklake_sslmode(metadata, sslmode)
+      _secret -> metadata
+    end
+  end
+
+  defp append_ducklake_sslmode("ducklake:postgres:", sslmode),
+    do: "ducklake:postgres:sslmode=#{sslmode}"
+
+  defp append_ducklake_sslmode(metadata, _sslmode), do: metadata
 
   defp use_steps(nil), do: []
 

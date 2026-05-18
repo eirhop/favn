@@ -27,6 +27,8 @@ defmodule Favn.SQL.Adapter do
 
   @callback configured_catalogs(Resolved.t()) :: {:ok, [atom() | String.t()]} | {:error, term()}
 
+  @callback default_catalog(Resolved.t()) :: {:ok, atom() | String.t() | nil} | {:error, term()}
+
   @callback default_concurrency_policy(Resolved.t()) :: ConcurrencyPolicy.t()
 
   @callback concurrency_policies(Resolved.t()) ::
@@ -65,6 +67,7 @@ defmodule Favn.SQL.Adapter do
     bootstrap: 3,
     diagnostics: 2,
     configured_catalogs: 1,
+    default_catalog: 1,
     schema_exists?: 3,
     relation: 3,
     list_schemas: 2,

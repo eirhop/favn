@@ -229,7 +229,7 @@ defmodule Favn.Dev.Doctor do
     connection = relation_field(relation, :connection)
     catalog = relation_field(relation, :catalog)
 
-    if is_atom(connection) and is_binary(catalog) do
+    if is_atom(connection) and (is_binary(catalog) or is_nil(catalog)) do
       [%{connection: connection, catalog: catalog}]
     else
       []
@@ -272,15 +272,11 @@ defmodule Favn.Dev.Doctor do
     case resolved.adapter.configured_catalogs(resolved) do
       {:ok, configured_catalogs} ->
         configured = normalize_catalog_set(configured_catalogs)
-        missing = Enum.reject(required_catalogs, &MapSet.member?(configured, &1))
+        {catalogless?, qualified_catalogs} = split_required_catalogs(required_catalogs)
+        missing = Enum.reject(qualified_catalogs, &MapSet.member?(configured, &1))
 
-        if missing == [] do
-          []
-        else
-          [
-            "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} is missing configured catalog(s) #{inspect(missing)}"
-          ]
-        end
+        missing_catalog_messages(resolved, missing) ++
+          catalogless_relation_messages(resolved, configured, catalogless?)
 
       {:error, reason} ->
         [
@@ -302,6 +298,62 @@ defmodule Favn.Dev.Doctor do
       [
         "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} failed configured_catalogs/1: #{kind} #{inspect(redact_reason(reason))}"
       ]
+  end
+
+  defp split_required_catalogs(required_catalogs) do
+    {catalogless, qualified} = Enum.split_with(required_catalogs, &is_nil/1)
+    {catalogless != [], qualified}
+  end
+
+  defp missing_catalog_messages(_resolved, []), do: []
+
+  defp missing_catalog_messages(resolved, missing) do
+    [
+      "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} is missing configured catalog(s) #{inspect(missing)}"
+    ]
+  end
+
+  defp catalogless_relation_messages(_resolved, _configured, false), do: []
+
+  defp catalogless_relation_messages(resolved, configured, true) do
+    case adapter_default_catalog(resolved) do
+      {:ok, catalog} when is_binary(catalog) ->
+        if MapSet.member?(configured, catalog) do
+          []
+        else
+          [
+            "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} default catalog #{inspect(catalog)} is not attached"
+          ]
+        end
+
+      {:ok, nil} ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} has catalogless asset relation(s); configure relation.catalog or a default attached catalog"
+        ]
+
+      {:error, reason} ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} could not report default catalog: #{inspect(redact_reason(reason))}"
+        ]
+
+      other ->
+        [
+          "connection #{inspect(resolved.name)} adapter #{inspect(resolved.adapter)} returned invalid default_catalog/1 result #{inspect(redact_reason(other))}"
+        ]
+    end
+  end
+
+  defp adapter_default_catalog(resolved) do
+    if function_exported?(resolved.adapter, :default_catalog, 1) do
+      case resolved.adapter.default_catalog(resolved) do
+        {:ok, catalog} when is_binary(catalog) -> {:ok, catalog}
+        {:ok, catalog} when is_atom(catalog) -> {:ok, Atom.to_string(catalog)}
+        {:ok, nil} -> {:ok, nil}
+        other -> other
+      end
+    else
+      {:ok, nil}
+    end
   end
 
   defp normalize_catalog_set(%MapSet{} = catalogs) do
@@ -361,6 +413,8 @@ defmodule Favn.Dev.Doctor do
     end)
     |> Enum.join("; ")
   end
+
+  defp format_connection_errors(error), do: format_connection_errors([error])
 
   defp redact_reason(reason) when is_atom(reason), do: reason
   defp redact_reason(reason) when is_binary(reason), do: :redacted

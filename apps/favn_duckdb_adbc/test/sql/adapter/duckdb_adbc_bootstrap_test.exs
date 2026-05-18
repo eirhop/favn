@@ -73,7 +73,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
   end
 
   test "schema field accepts typed settings and rejects unknown settings" do
-    assert %{type: {:custom, validator}} = ADBC.bootstrap_schema_field()
+    assert %{type: {:custom, validator}} = duckdb_schema_field()
 
     assert :ok = validator.(settings: [azure_transport_option_type: :curl])
     assert :ok = validator.(settings: [azure_transport_option_type: "default"])
@@ -138,7 +138,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
              "LOAD azure",
              "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
              "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
-             "ATTACH 'ducklake:postgres:' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
+             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
              ~s(USE "lakehouse_lake")
            ]
   end
@@ -156,7 +156,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
              "SET azure_transport_option_type = 'curl'",
              "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
              "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
-             "ATTACH 'ducklake:postgres:' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
+             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
              ~s(USE "lakehouse_lake")
            ]
   end
@@ -171,7 +171,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
              "LOAD ducklake",
              "LOAD postgres",
              "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'entra-token')",
-             "ATTACH 'ducklake:postgres:' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
+             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
              ~s(USE "lakehouse_lake")
             ]
   end
@@ -317,6 +317,10 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
       },
       secret_fields: [:duckdb]
     }
+  end
+
+  defp duckdb_schema_field do
+    Enum.find(ADBC.config_schema_fields(), &(&1.key == :duckdb))
   end
 
   defp ducklake_postgres_resolved(opts \\ []) do
