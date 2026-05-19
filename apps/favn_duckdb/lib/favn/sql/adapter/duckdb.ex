@@ -377,11 +377,43 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp catalog_write_policies(%Resolved{} = resolved) do
+    secrets = duckdb_secret_config(resolved)
+
     resolved
     |> duckdb_attach_config()
     |> Enum.map(fn {catalog, attach_config} ->
-      ConcurrencyPolicy.catalog(resolved, catalog, catalog_write_concurrency(attach_config))
+      catalog_write_policy(resolved, catalog, attach_config, secrets)
     end)
+    |> normalize_shared_policy_limits()
+  end
+
+  defp catalog_write_policy(%Resolved{} = resolved, catalog, attach_config, secrets) do
+    policy =
+      ConcurrencyPolicy.catalog(resolved, catalog, catalog_write_concurrency(attach_config))
+
+    %{policy | scope: catalog_policy_scope(resolved, catalog, attach_config, secrets)}
+  end
+
+  defp normalize_shared_policy_limits(policies) do
+    limits_by_scope =
+      policies
+      |> Enum.group_by(& &1.scope)
+      |> Map.new(fn {scope, scoped_policies} ->
+        {scope, strictest_policy_limit(Enum.map(scoped_policies, & &1.limit))}
+      end)
+
+    Enum.map(policies, fn policy ->
+      %{policy | limit: Map.fetch!(limits_by_scope, policy.scope)}
+    end)
+  end
+
+  defp strictest_policy_limit(limits) do
+    limits
+    |> Enum.reject(&(&1 == :unlimited))
+    |> case do
+      [] -> :unlimited
+      finite -> Enum.min(finite)
+    end
   end
 
   defp duckdb_attach_config(%Resolved{config: %{duckdb: duckdb}}) when is_map(duckdb),
@@ -391,6 +423,14 @@ defmodule Favn.SQL.Adapter.DuckDB do
     do: normalize_attach_entries(Keyword.get(duckdb, :attach, []))
 
   defp duckdb_attach_config(_resolved), do: []
+
+  defp duckdb_secret_config(%Resolved{config: %{duckdb: duckdb}}) when is_map(duckdb),
+    do: normalize_secret_entries(Map.get(duckdb, :secrets, []))
+
+  defp duckdb_secret_config(%Resolved{config: %{duckdb: duckdb}}) when is_list(duckdb),
+    do: normalize_secret_entries(Keyword.get(duckdb, :secrets, []))
+
+  defp duckdb_secret_config(_resolved), do: %{}
 
   defp normalize_attach_entries(entries) when is_map(entries) do
     Enum.map(entries, fn {catalog, config} -> {to_string(catalog), config} end)
@@ -405,6 +445,20 @@ defmodule Favn.SQL.Adapter.DuckDB do
   end
 
   defp normalize_attach_entries(_entries), do: []
+
+  defp normalize_secret_entries(entries) when is_map(entries) do
+    Map.new(entries, fn {name, config} -> {to_string(name), config} end)
+  end
+
+  defp normalize_secret_entries(entries) when is_list(entries) do
+    if Keyword.keyword?(entries) do
+      Map.new(entries, fn {name, config} -> {to_string(name), config} end)
+    else
+      %{}
+    end
+  end
+
+  defp normalize_secret_entries(_entries), do: %{}
 
   @impl true
   @spec configured_catalogs(Resolved.t()) :: {:ok, [String.t()]}
@@ -461,6 +515,104 @@ defmodule Favn.SQL.Adapter.DuckDB do
   defp normalize_catalog_write_concurrency(:single), do: 1
   defp normalize_catalog_write_concurrency(value) when is_integer(value) and value > 0, do: value
   defp normalize_catalog_write_concurrency(_value), do: 1
+
+  defp catalog_policy_scope(%Resolved{} = resolved, catalog, attach_config, secrets) do
+    with true <- ducklake_attach?(attach_config),
+         {:ok, secret_name} <- attach_meta_secret(attach_config),
+         {:ok, secret_config} <- Map.fetch(secrets, secret_name),
+         {:ok, scope} <- postgres_metadata_scope(resolved, secret_config) do
+      scope
+    else
+      _ -> {resolved.name, catalog}
+    end
+  end
+
+  defp ducklake_attach?(config) when is_map(config),
+    do: Map.get(config, :type) in [:ducklake, "ducklake"]
+
+  defp ducklake_attach?(config) when is_list(config),
+    do: Keyword.get(config, :type) in [:ducklake, "ducklake"]
+
+  defp ducklake_attach?(_config), do: false
+
+  defp attach_meta_secret(config) when is_map(config) do
+    case Map.get(config, :meta_secret) do
+      nil -> :error
+      secret -> {:ok, to_string(secret)}
+    end
+  end
+
+  defp attach_meta_secret(config) when is_list(config) do
+    case Keyword.get(config, :meta_secret) do
+      nil -> :error
+      secret -> {:ok, to_string(secret)}
+    end
+  end
+
+  defp attach_meta_secret(_config), do: :error
+
+  defp postgres_metadata_scope(%Resolved{}, secret_config) do
+    with true <- postgres_secret?(secret_config),
+         {:ok, host} <- secret_value(secret_config, :host),
+         {:ok, host} <- normalize_metadata_host(host),
+         {:ok, port} <- secret_value(secret_config, :port),
+         {:ok, port} <- normalize_metadata_port(port) do
+      hash =
+        {host, port}
+        |> :erlang.term_to_binary()
+        |> then(&:crypto.hash(:sha256, &1))
+        |> Base.encode16(case: :lower)
+
+      {:ok, {:ducklake_postgres_metadata, hash}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp postgres_secret?(config) when is_map(config),
+    do: Map.get(config, :type) in [:postgres, "postgres"]
+
+  defp postgres_secret?(config) when is_list(config),
+    do: Keyword.get(config, :type) in [:postgres, "postgres"]
+
+  defp postgres_secret?(_config), do: false
+
+  defp normalize_metadata_host(host) when is_binary(host) do
+    host = host |> String.trim() |> String.downcase()
+    if host == "", do: :error, else: {:ok, host}
+  end
+
+  defp normalize_metadata_host(host) when is_atom(host),
+    do: host |> Atom.to_string() |> normalize_metadata_host()
+
+  defp normalize_metadata_host(_host), do: :error
+
+  defp normalize_metadata_port(port) when is_integer(port) and port > 0, do: {:ok, port}
+
+  defp normalize_metadata_port(port) when is_binary(port) do
+    case Integer.parse(String.trim(port)) do
+      {port, ""} when port > 0 -> {:ok, port}
+      _other -> :error
+    end
+  end
+
+  defp normalize_metadata_port(_port), do: :error
+
+  defp secret_value(config, key) when is_map(config) do
+    case Map.fetch(config, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(config, Atom.to_string(key))
+    end
+  end
+
+  defp secret_value(config, key) when is_list(config) do
+    case Keyword.fetch(config, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> :error
+    end
+  end
+
+  defp secret_value(_config, _key), do: :error
 
   @impl true
   @spec execute(Conn.t(), iodata(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}

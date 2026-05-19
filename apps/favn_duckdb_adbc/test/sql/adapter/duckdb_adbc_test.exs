@@ -318,6 +318,46 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
              ADBC.default_concurrency_policy(resolved)
   end
 
+  test "ducklake catalogs on the same postgres metadata server share admission scope" do
+    resolved = %Resolved{
+      resolved()
+      | config: %{
+          open: [database: ":memory:"],
+          duckdb: [
+            secrets: [
+              raw_meta: [type: :postgres, host: " PG.EXAMPLE.COM ", port: "5432"],
+              mart_meta: [type: :postgres, host: "pg.example.com", port: 5432]
+            ],
+            attach: [
+              raw: [type: :ducklake, meta_secret: :raw_meta, write_concurrency: 1],
+              mart: [type: :ducklake, meta_secret: :mart_meta, write_concurrency: 10]
+            ]
+          ]
+        }
+    }
+
+    assert {:ok, policies} = ADBC.concurrency_policies(resolved)
+
+    scopes =
+      policies
+      |> Enum.filter(&match?(%ConcurrencyPolicy{target: {:catalog, _}}, &1))
+      |> Enum.map(& &1.scope)
+
+    assert length(scopes) == 2
+    assert scopes |> Enum.uniq() |> length() == 1
+    assert [%ConcurrencyPolicy{limit: 1}, %ConcurrencyPolicy{limit: 1}] = Enum.drop(policies, 1)
+
+    assert {:ok, other_connection_policies} =
+             ADBC.concurrency_policies(%Resolved{resolved | name: :other_warehouse})
+
+    other_scope =
+      other_connection_policies
+      |> Enum.find(&match?(%ConcurrencyPolicy{target: {:catalog, "raw"}}, &1))
+      |> Map.fetch!(:scope)
+
+    assert other_scope == hd(scopes)
+  end
+
   test "row_count uses adapter-owned quoted relation SQL" do
     {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
 

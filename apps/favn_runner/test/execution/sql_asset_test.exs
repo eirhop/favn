@@ -66,8 +66,36 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       }
 
     assert {:ok, result} = FavnRunner.run(work)
-    assert result.status == :ok
+    if result.status != :ok, do: flunk(inspect(result, pretty: true))
     assert [%{status: :ok}] = result.asset_results
+  end
+
+  test "elixir asset SQLClient sessions inherit owned relation catalog scope" do
+    configure_public_fake_connection!()
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.ElixirSQLClientAsset, :asset}
+
+    relation =
+      RelationRef.new!(%{
+        connection: :runner_sql_runtime,
+        catalog: "raw",
+        schema: "mercatus",
+        name: "raw_ingestion_asset"
+      })
+
+    version = register_elixir_manifest!(ref, relation)
+
+    work = %RunnerWork{
+      run_id: "run_elixir_sql_catalog_scope",
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: ref
+    }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    if result.status != :ok, do: flunk(inspect(result, pretty: true))
+    assert_received {:connect_opts, :runner_sql_runtime, opts}
+    assert Keyword.fetch!(opts, :required_catalogs) == ["raw"]
   end
 
   test "manifest execution does not fall back to compiled modules for deferred refs" do
@@ -400,6 +428,36 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     version
   end
 
+  defp register_elixir_manifest!(ref, relation) do
+    manifest = %Manifest{
+      schema_version: 1,
+      runner_contract_version: 2,
+      assets: [
+        %Asset{
+          ref: ref,
+          module: elem(ref, 0),
+          name: :asset,
+          type: :elixir,
+          execution: %{entrypoint: :asset, arity: 1},
+          relation: relation
+        }
+      ],
+      pipelines: [],
+      schedules: [],
+      graph: %Graph{nodes: [ref], edges: [], topo_order: [ref]},
+      metadata: %{}
+    }
+
+    {:ok, version} =
+      Version.new(manifest,
+        manifest_version_id:
+          "mv_elixir_sql_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    :ok = FavnRunner.register_manifest(version)
+    version
+  end
+
   defp reload_fake_connection(name, adapter) when is_atom(name) and is_atom(adapter) do
     :ok =
       Registry.reload(
@@ -415,6 +473,22 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       )
   end
 
+  defp configure_public_fake_connection! do
+    previous_modules = Application.get_env(:favn, :connection_modules, :unset)
+    previous_connections = Application.get_env(:favn, :connections, :unset)
+
+    Application.put_env(:favn, :connection_modules, [__MODULE__.FakeConnection])
+    Application.put_env(:favn, :connections, runner_sql_runtime: [])
+
+    on_exit(fn ->
+      restore_app_env(:connection_modules, previous_modules)
+      restore_app_env(:connections, previous_connections)
+    end)
+  end
+
+  defp restore_app_env(key, :unset), do: Application.delete_env(:favn, key)
+  defp restore_app_env(key, value), do: Application.put_env(:favn, key, value)
+
   defp restore_env(key, nil), do: Application.delete_env(:favn_runner, key)
   defp restore_env(key, value), do: Application.put_env(:favn_runner, key, value)
 end
@@ -426,6 +500,30 @@ defmodule FavnRunner.ExecutionSQLAssetTest.MissingPayloadSQLAsset do
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.MissingConnectionSQLAsset do
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.ElixirSQLClientAsset do
+  alias Favn.SQL.Client, as: SQLClient
+
+  def asset(ctx) do
+    with {:ok, session} <- SQLClient.connect(ctx.asset.relation.connection) do
+      :ok = SQLClient.disconnect(session)
+      {:ok, %{}}
+    end
+  end
+end
+
+defmodule FavnRunner.ExecutionSQLAssetTest.FakeConnection do
+  @behaviour Favn.Connection
+
+  @impl true
+  def definition do
+    %Favn.Connection.Definition{
+      name: :runner_sql_runtime,
+      adapter: FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter,
+      config_schema: [%{key: :noop, default: nil}]
+    }
+  end
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter do

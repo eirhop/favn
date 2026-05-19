@@ -38,7 +38,14 @@ DuckDB/DuckLake attach work is serialized before a session opens. Raw
 `Favn.SQLClient.execute/3` and `Favn.SQLClient.query/3` do not parse arbitrary SQL
 to infer write catalogs; callers that issue manual raw writes must handle any
 needed serialization until the client contract grows an explicit target catalog
-option.
+option. When `required_catalogs` is omitted for a connection with configured
+catalog policies, session bootstrap is treated as all-catalog bootstrap and must
+acquire every configured catalog permit before opening the adapter session.
+Elixir assets executed by the runner get a process-local default scope from
+their owned relation catalog when they open that same relation connection without
+passing `required_catalogs` explicitly. Spawned asset tasks do not inherit that
+process-local default; wrap child process bodies with
+`Favn.SQLClient.with_required_catalogs/2` or pass `required_catalogs` explicitly.
 
 Retry handling must stay operation-aware. Bounded retries are acceptable around
 session creation/bootstrap and read-only inspection/query paths. Blind retries of

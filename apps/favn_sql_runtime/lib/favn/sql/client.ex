@@ -36,6 +36,7 @@ defmodule Favn.SQL.Client do
   alias Favn.SQL.WritePlan
 
   @resolution_opt_keys [:registry_name]
+  @default_required_catalogs_key {__MODULE__, :default_required_catalogs_by_connection}
 
   @type operation_result :: {:ok, term()} | {:error, term()}
 
@@ -44,6 +45,7 @@ defmodule Favn.SQL.Client do
 
   def connect(connection, opts) when is_atom(connection) and is_list(opts) do
     {resolution_opts, adapter_opts} = split_connect_opts(opts)
+    adapter_opts = maybe_put_default_required_catalogs(connection, adapter_opts)
 
     with {:ok, %Resolved{} = resolved} <- fetch_connection(connection, resolution_opts),
          {:ok, concurrency_policies} <- ConcurrencyPolicy.resolve(resolved) do
@@ -56,6 +58,30 @@ defmodule Favn.SQL.Client do
   end
 
   def connect(connection, _opts), do: {:error, invalid_connection_error(connection)}
+
+  @doc false
+  @spec with_default_required_catalogs(atom(), [atom() | String.t()], (-> result)) :: result
+        when result: var
+  def with_default_required_catalogs(connection, catalogs, fun)
+      when is_atom(connection) and is_list(catalogs) and is_function(fun, 0) do
+    previous = Process.get(@default_required_catalogs_key, %{})
+    catalogs = normalize_catalogs(catalogs)
+
+    next =
+      if catalogs == [] do
+        Map.delete(previous, connection)
+      else
+        Map.put(previous, connection, catalogs)
+      end
+
+    Process.put(@default_required_catalogs_key, next)
+
+    try do
+      fun.()
+    after
+      Process.put(@default_required_catalogs_key, previous)
+    end
+  end
 
   @spec disconnect(Session.t()) :: :ok | {:error, Error.t()}
   def disconnect(%Session{pool_checkout: %Checkout{} = checkout} = session) do
@@ -283,6 +309,22 @@ defmodule Favn.SQL.Client do
     Keyword.split(opts, @resolution_opt_keys)
   end
 
+  defp maybe_put_default_required_catalogs(connection, adapter_opts) do
+    cond do
+      Keyword.has_key?(adapter_opts, :required_catalogs) ->
+        adapter_opts
+
+      true ->
+        @default_required_catalogs_key
+        |> Process.get(%{})
+        |> Map.get(connection, [])
+        |> case do
+          [] -> adapter_opts
+          catalogs -> Keyword.put(adapter_opts, :required_catalogs, catalogs)
+        end
+    end
+  end
+
   defp fetch_connection(connection, opts) do
     registry_name = Keyword.get(opts, :registry_name)
 
@@ -457,6 +499,11 @@ defmodule Favn.SQL.Client do
     adapter_opts
     |> Keyword.get(:required_catalogs, [])
     |> List.wrap()
+    |> normalize_catalogs()
+  end
+
+  defp normalize_catalogs(catalogs) when is_list(catalogs) do
+    catalogs
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()

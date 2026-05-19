@@ -55,7 +55,16 @@ defmodule Favn.SQLClient do
     materializations, etc.).
   - `relation/2`: inspect relation metadata for a table/view reference.
   - `columns/2`: inspect column metadata for a relation reference.
+  - `with_required_catalogs/2` and `with_required_catalogs/3`: set a
+    process-local default DuckDB/DuckLake catalog scope for nested SQLClient
+    calls.
   - `with_connection/3`: run a callback with auto connect/disconnect handling.
+
+  Runner-executed Elixir assets get a process-local default scope from their
+  owned relation when opening the same connection. That default does not cross
+  process boundaries. If an asset spawns a `Task` that opens SQLClient sessions,
+  wrap the task body with `with_required_catalogs/2` or pass
+  `required_catalogs: [...]` explicitly.
   """
 
   alias Favn.RelationRef
@@ -66,6 +75,7 @@ defmodule Favn.SQLClient do
   @type opts :: keyword()
   @type session :: Session.t()
   @type operation_result :: {:ok, term()} | {:error, term()}
+  @type catalog :: atom() | String.t()
 
   @doc """
   Opens a SQL session for a configured named connection.
@@ -79,7 +89,10 @@ defmodule Favn.SQLClient do
   DuckDB-backed connections also accept `required_catalogs: [catalog]` when the
   caller knows which catalog-qualified relations are needed. That lets DuckDB and
   DuckLake bootstrap attach only those catalogs and lets catalog-level admission
-  protect bootstrap work before the session is opened.
+  protect bootstrap work before the session is opened. Elixir assets executed by
+  the Favn runner inherit their owned relation catalog as a default scope when
+  they open that same relation connection without an explicit `:required_catalogs`
+  option.
 
   Public callers should only pass adapter-facing options here. Internal runtime
   routing controls such as `:registry_name` are not accepted by this facade.
@@ -113,6 +126,75 @@ defmodule Favn.SQLClient do
   def connect(_connection, opts) do
     {:error,
      ArgumentError.exception("SQL client options must be a keyword list, got: #{inspect(opts)}")}
+  end
+
+  @doc """
+  Runs a zero-arity callback with a default DuckDB/DuckLake catalog scope.
+
+  This helper is mainly for Elixir assets that spawn child processes. Runner
+  defaults are process-local, so a `Task` that opens SQLClient sessions should
+  carry the relation scope explicitly:
+
+      Task.async(fn ->
+        Favn.SQLClient.with_required_catalogs(ctx.asset.relation, fn ->
+          Favn.SQLClient.with_connection(ctx.asset.relation.connection, [], fn session ->
+            Favn.SQLClient.execute(session, landing_sql())
+          end)
+        end)
+      end)
+
+  If the relation has no connection or catalog, the callback runs unchanged.
+  Invalid relation input returns `{:error, %ArgumentError{}}`.
+  """
+  @spec with_required_catalogs(RelationRef.input(), (-> result)) ::
+          result | {:error, term()}
+        when result: var
+  def with_required_catalogs(relation_ref, fun) when is_function(fun, 0) do
+    case normalize_relation(relation_ref) do
+      {:ok, relation} ->
+        case relation_scope(relation) do
+          {connection, catalogs} ->
+            Client.with_default_required_catalogs(connection, catalogs, fun)
+
+          nil ->
+            fun.()
+        end
+
+      {:error, %ArgumentError{}} = error ->
+        error
+    end
+  end
+
+  @doc """
+  Runs a zero-arity callback with default required catalogs for one connection.
+
+  Explicit `required_catalogs: [...]` passed to `connect/2` still wins for that
+  call. The default is process-local and scoped only to the callback.
+  """
+  @spec with_required_catalogs(connection_name(), [catalog()], (-> result)) :: result
+        when result: var
+  def with_required_catalogs(connection, catalogs, fun)
+      when is_atom(connection) and is_list(catalogs) and is_function(fun, 0) do
+    with :ok <- validate_catalogs(catalogs) do
+      Client.with_default_required_catalogs(connection, catalogs, fun)
+    end
+  end
+
+  def with_required_catalogs(connection, _catalogs, _fun) when not is_atom(connection) do
+    {:error,
+     ArgumentError.exception("SQL connection name must be an atom, got: #{inspect(connection)}")}
+  end
+
+  def with_required_catalogs(_connection, catalogs, _fun) when not is_list(catalogs) do
+    {:error,
+     ArgumentError.exception("SQL required catalogs must be a list, got: #{inspect(catalogs)}")}
+  end
+
+  def with_required_catalogs(connection, _catalogs, fun) do
+    {:error,
+     ArgumentError.exception(
+       "with_required_catalogs/3 expects a 0-arity callback, got: #{inspect(fun)} for #{inspect(connection)}"
+     )}
   end
 
   @doc """
@@ -280,4 +362,38 @@ defmodule Favn.SQLClient do
        "with_connection/3 expects a 1-arity callback, got: #{inspect(fun)} for #{inspect(connection)}"
      )}
   end
+
+  defp normalize_relation(relation_ref) do
+    {:ok, RelationRef.new!(relation_ref)}
+  rescue
+    error in ArgumentError -> {:error, error}
+  end
+
+  defp validate_catalogs(catalogs) do
+    if Enum.all?(catalogs, &(is_atom(&1) or is_binary(&1))) do
+      :ok
+    else
+      {:error,
+       ArgumentError.exception(
+         "SQL required catalogs must contain only atoms or strings, got: #{inspect(catalogs)}"
+       )}
+    end
+  end
+
+  defp relation_scope(%RelationRef{connection: connection, catalog: catalog})
+       when is_atom(connection) do
+    case catalog_name(catalog) do
+      nil -> nil
+      catalog -> {connection, [catalog]}
+    end
+  end
+
+  defp relation_scope(%RelationRef{}), do: nil
+
+  defp catalog_name(catalog) when is_binary(catalog) and catalog != "", do: catalog
+
+  defp catalog_name(catalog) when is_atom(catalog) and not is_nil(catalog),
+    do: Atom.to_string(catalog)
+
+  defp catalog_name(_catalog), do: nil
 end

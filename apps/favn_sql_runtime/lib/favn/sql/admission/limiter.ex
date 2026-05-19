@@ -46,7 +46,7 @@ defmodule Favn.SQL.Admission.Limiter do
 
   @impl true
   def handle_call({:acquire, scope, limit, timeout_ms}, {pid, _tag} = from, state) do
-    state = put_in(state, [:limits, scope], limit)
+    state = put_scope_limit(state, scope, limit)
 
     if available?(state, scope) do
       {:reply, :ok, add_holder(state, scope, pid)}
@@ -101,6 +101,12 @@ defmodule Favn.SQL.Admission.Limiter do
   end
 
   defp initial_state, do: @initial_state
+
+  defp put_scope_limit(%{limits: limits} = state, scope, limit) do
+    %{state | limits: Map.update(limits, scope, limit, &strictest_limit(&1, limit))}
+  end
+
+  defp strictest_limit(left, right), do: min(left, right)
 
   defp available?(state, scope) do
     active_count(state, scope) < Map.fetch!(state.limits, scope)

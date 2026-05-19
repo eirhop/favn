@@ -36,7 +36,7 @@ defmodule Favn.SQL.Admission do
   def acquire_session(%ConcurrencyPolicies{} = policies, opts) when is_list(opts) do
     case required_catalogs(opts) do
       [] ->
-        acquire_session(policies.default, opts)
+        acquire_unscoped_session(policies, opts)
 
       catalogs ->
         policies
@@ -101,6 +101,13 @@ defmodule Favn.SQL.Admission do
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq_by(& &1.scope)
     |> Enum.sort_by(&inspect(&1.scope))
+  end
+
+  defp acquire_unscoped_session(%ConcurrencyPolicies{catalog: catalog} = policies, opts) do
+    case catalog |> Map.values() |> Enum.sort_by(&inspect(&1.scope)) do
+      [] -> acquire_session(policies.default, opts)
+      catalog_policies -> acquire_session_policies(catalog_policies, :connect)
+    end
   end
 
   defp acquire_session_policies([], _operation), do: nil
