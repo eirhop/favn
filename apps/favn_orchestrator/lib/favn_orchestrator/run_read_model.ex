@@ -490,10 +490,9 @@ defmodule FavnOrchestrator.RunReadModel do
       |> MapSet.new()
 
     waiting_steps =
-      run.target_refs
-      |> List.wrap()
-      |> Enum.map(&public_ref/1)
-      |> Enum.reject(&MapSet.member?(known_refs, &1))
+      run
+      |> planned_waiting_candidates()
+      |> Enum.reject(&MapSet.member?(known_refs, &1.asset_ref))
       |> Enum.map(&waiting_step(run.id, &1))
 
     steps ++ waiting_steps
@@ -501,14 +500,54 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp append_waiting_steps(steps, _run, _event_steps, _settling?), do: steps
 
-  defp waiting_step(run_id, asset_ref) do
+  defp planned_waiting_candidates(%RunState{plan: %Favn.Plan{nodes: nodes, node_stages: stages}})
+       when is_map(nodes) and map_size(nodes) > 0 do
+    ordered_node_keys = List.flatten(stages || [])
+    remaining_node_keys = Map.keys(nodes) -- ordered_node_keys
+
+    (ordered_node_keys ++ remaining_node_keys)
+    |> Enum.uniq()
+    |> Enum.flat_map(fn node_key ->
+      case Map.fetch(nodes, node_key) do
+        {:ok, node} ->
+          [
+            %{
+              node_key: node_key,
+              asset_ref: public_ref(Map.get(node, :ref)),
+              canonical_asset_ref: Map.get(node, :ref),
+              stage: Map.get(node, :stage),
+              window: public_window(Map.get(node, :window) || %{})
+            }
+          ]
+
+        :error ->
+          []
+      end
+    end)
+  end
+
+  defp planned_waiting_candidates(%RunState{} = run) do
+    run.target_refs
+    |> List.wrap()
+    |> Enum.map(fn ref ->
+      %{
+        node_key: nil,
+        asset_ref: public_ref(ref),
+        canonical_asset_ref: nil,
+        stage: nil,
+        window: nil
+      }
+    end)
+  end
+
+  defp waiting_step(run_id, candidate) do
     %{
-      id: AssetStepIdentity.asset_step_id(run_id, nil, asset_ref),
-      asset_ref: asset_ref,
-      canonical_asset_ref: nil,
+      id: AssetStepIdentity.asset_step_id(run_id, candidate.node_key, candidate.asset_ref),
+      asset_ref: candidate.asset_ref,
+      canonical_asset_ref: candidate.canonical_asset_ref,
       status: :pending,
-      stage: nil,
-      window: nil,
+      stage: candidate.stage,
+      window: candidate.window,
       duration_ms: nil,
       started_at: nil,
       attempt: nil,

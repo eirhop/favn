@@ -388,7 +388,8 @@ defmodule FavnOrchestrator.RunReadModelTest do
 
     run =
       run("pipeline_failed_gap", submit_kind: :pipeline)
-      |> Map.put(:target_refs, [gold_ref, silver_ref, bronze_ref])
+      |> Map.put(:target_refs, [bronze_ref])
+      |> Map.put(:plan, dependency_plan([gold_ref, silver_ref, bronze_ref]))
       |> RunState.transition(
         status: :error,
         error: :failed,
@@ -553,6 +554,36 @@ defmodule FavnOrchestrator.RunReadModelTest do
   end
 
   defp window_key(%Anchor{} = anchor), do: WindowKey.encode(anchor.key)
+
+  defp dependency_plan(refs) do
+    node_keys = Enum.map(refs, &{&1, nil})
+
+    nodes =
+      refs
+      |> Enum.zip(node_keys)
+      |> Enum.with_index()
+      |> Map.new(fn {{ref, node_key}, stage} ->
+        {node_key,
+         %{
+           ref: ref,
+           node_key: node_key,
+           window: nil,
+           upstream: Enum.take(node_keys, stage),
+           downstream: Enum.drop(node_keys, stage + 1),
+           stage: stage,
+           action: :run
+         }}
+      end)
+
+    %Favn.Plan{
+      target_refs: [List.last(refs)],
+      target_node_keys: [List.last(node_keys)],
+      nodes: nodes,
+      topo_order: refs,
+      stages: Enum.map(refs, &[&1]),
+      node_stages: Enum.map(node_keys, &[&1])
+    }
+  end
 
   defp backfill_window(parent_run_id, %Anchor{} = anchor, status) do
     {:ok, window} =
