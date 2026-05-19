@@ -62,6 +62,11 @@ defmodule Favn.SQL.Admission do
   def acquire_session(_policy, _opts), do: nil
 
   @spec release_session(term()) :: :ok
+  def release_session({:external, scope, owner}) do
+    Limiter.release(scope, owner)
+    :ok
+  end
+
   def release_session({:held, scope, owner}) when owner == self() do
     release_held_scope(scope)
     :ok
@@ -86,6 +91,32 @@ defmodule Favn.SQL.Admission do
 
   def release_session(_lease), do: :ok
 
+  @spec detach_session(term()) :: :ok
+  def detach_session({:held, scope, owner}) when owner == self() do
+    decrement_held(scope)
+    :ok
+  end
+
+  def detach_session({:borrowed, scope, owner}) when owner == self() do
+    decrement_held(scope)
+    :ok
+  end
+
+  def detach_session(leases) when is_list(leases) do
+    Enum.each(Enum.reverse(leases), &detach_session/1)
+    :ok
+  end
+
+  def detach_session(_lease), do: :ok
+
+  @spec externalize_session(term(), pid()) :: {:ok, term()} | {:error, term()}
+  def externalize_session(lease, owner) when is_pid(owner) do
+    transfer_session(lease, owner, :external)
+  end
+
+  @spec adopt_session(term()) :: {:ok, term()} | {:error, term()}
+  def adopt_session(lease), do: transfer_session(lease, self(), :held)
+
   defp required_catalogs(opts) do
     opts
     |> Keyword.get(:required_catalogs)
@@ -93,6 +124,48 @@ defmodule Favn.SQL.Admission do
     |> Enum.map(&to_string/1)
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
+  end
+
+  defp transfer_session(nil, _owner, _target), do: {:ok, nil}
+
+  defp transfer_session({:external, scope, owner}, new_owner, :held) do
+    with :ok <- Limiter.transfer(scope, owner, new_owner) do
+      increment_held(scope)
+      {:ok, {:held, scope, new_owner}}
+    end
+  end
+
+  defp transfer_session({:held, scope, owner}, new_owner, :external) do
+    with :ok <- Limiter.transfer(scope, owner, new_owner) do
+      {:ok, {:external, scope, new_owner}}
+    end
+  end
+
+  defp transfer_session({:borrowed, _scope, _owner}, _new_owner, _target),
+    do: {:error, :borrowed_lease}
+
+  defp transfer_session(leases, new_owner, target) when is_list(leases) do
+    if Enum.all?(leases, &transferable_lease?(&1, target)) do
+      transfer_lease_list(leases, new_owner, target, [])
+    else
+      {:error, :borrowed_lease}
+    end
+  end
+
+  defp transfer_session(_lease, _new_owner, _target), do: {:error, :invalid_lease}
+
+  defp transferable_lease?({:held, _scope, _owner}, :external), do: true
+  defp transferable_lease?({:external, _scope, _owner}, :held), do: true
+  defp transferable_lease?(nil, _target), do: true
+  defp transferable_lease?(_lease, _target), do: false
+
+  defp transfer_lease_list([], _new_owner, _target, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp transfer_lease_list([lease | rest], new_owner, target, acc) do
+    case transfer_session(lease, new_owner, target) do
+      {:ok, transferred} -> transfer_lease_list(rest, new_owner, target, [transferred | acc])
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp catalog_connect_policies(%ConcurrencyPolicies{} = policies, catalogs) do

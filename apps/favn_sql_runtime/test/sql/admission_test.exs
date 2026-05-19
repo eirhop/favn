@@ -3,7 +3,17 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
   alias Favn.Connection.Registry
   alias Favn.Connection.Resolved
-  alias Favn.SQL.{Admission, Client, ConcurrencyPolicies, ConcurrencyPolicy, Result, Session}
+
+  alias Favn.SQL.{
+    Admission,
+    Client,
+    ConcurrencyPolicies,
+    ConcurrencyPolicy,
+    PoolConfig,
+    Result,
+    Session
+  }
+
   alias Favn.SQL.Admission.Limiter
 
   defmodule TrackingAdapter do
@@ -124,7 +134,12 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
   defmodule CatalogConnectAdapter do
     def connect(resolved, opts) do
       tracker = Map.fetch!(resolved.config, :tracker)
-      Agent.update(tracker, &Map.update(&1, :connect_opts, [opts], fn existing -> [opts | existing] end))
+
+      Agent.update(
+        tracker,
+        &Map.update(&1, :connect_opts, [opts], fn existing -> [opts | existing] end)
+      )
+
       bump_session(tracker, 1)
       {:ok, %{tracker: tracker}}
     end
@@ -152,6 +167,18 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         %{state | sessions: sessions, max_sessions: max(state.max_sessions, sessions)}
       end)
     end
+  end
+
+  defmodule PooledCatalogConnectAdapter do
+    def connect(resolved, opts), do: CatalogConnectAdapter.connect(resolved, opts)
+    def disconnect(conn, opts), do: CatalogConnectAdapter.disconnect(conn, opts)
+    def capabilities(resolved, opts), do: CatalogConnectAdapter.capabilities(resolved, opts)
+    def concurrency_policies(resolved), do: CatalogConnectAdapter.concurrency_policies(resolved)
+
+    def poolable?(%Resolved{}, _opts), do: true
+    def pool_fingerprint(%Resolved{}, opts), do: {__MODULE__, Keyword.get(opts, :pool_marker)}
+    def validate_session(_conn, _opts), do: :ok
+    def reset_session(_conn, _resolved, _opts), do: :ok
   end
 
   setup do
@@ -475,6 +502,44 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert Agent.get(tracker, & &1.max_sessions) == 1
   end
 
+  test "idle pooled sessions keep catalog admission until closed", %{tracker: tracker} do
+    registry_name = :admission_pooled_idle_catalog_registry
+
+    start_registry(registry_name, PooledCatalogConnectAdapter, tracker, %{
+      admission_timeout_ms: 20,
+      pool: %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 1_000}
+    })
+
+    assert {:ok, session} =
+             Client.connect(:warehouse,
+               registry_name: registry_name,
+               required_catalogs: ["raw"],
+               pool_marker: :first
+             )
+
+    assert :ok = Client.disconnect(session)
+    assert Agent.get(tracker, & &1.sessions) == 1
+
+    assert {:error, %Favn.SQL.Error{type: :admission_timeout}} =
+             Client.connect(:warehouse,
+               registry_name: registry_name,
+               required_catalogs: ["raw"],
+               pool_marker: :second
+             )
+
+    assert Agent.get(tracker, & &1.max_sessions) == 1
+
+    assert {:ok, reused} =
+             Client.connect(:warehouse,
+               registry_name: registry_name,
+               required_catalogs: ["raw"],
+               pool_marker: :first
+             )
+
+    assert :ok = Client.disconnect(reused)
+    assert eventually(fn -> Agent.get(tracker, & &1.sessions) == 0 end, 150)
+  end
+
   test "process default required catalogs scope SQL client connect", %{tracker: tracker} do
     registry_name = :admission_default_required_catalog_registry
     start_registry(registry_name, CatalogConnectAdapter, tracker)
@@ -525,7 +590,14 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
   test "cross-process borrowed lease release does not release the real holder" do
     scope = {:db, :borrowed_cross_process}
-    policy = %ConcurrencyPolicy{limit: 1, scope: scope, applies_to: :all, admission_timeout_ms: 10}
+
+    policy = %ConcurrencyPolicy{
+      limit: 1,
+      scope: scope,
+      applies_to: :all,
+      admission_timeout_ms: 10
+    }
+
     parent = self()
 
     holder =
@@ -555,11 +627,17 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     scope = {:ducklake_postgres_metadata, :shared_limit}
 
     assert :ok = Limiter.acquire(scope, 10, 10)
-    assert {:error, :admission_timeout} = Task.async(fn -> Limiter.acquire(scope, 1, 10) end) |> Task.await()
+
+    assert {:error, :admission_timeout} =
+             Task.async(fn -> Limiter.acquire(scope, 1, 10) end) |> Task.await()
+
     assert :ok = Limiter.release(scope, self())
 
     assert :ok = Limiter.acquire(scope, 1, 10)
-    assert {:error, :admission_timeout} = Task.async(fn -> Limiter.acquire(scope, 10, 10) end) |> Task.await()
+
+    assert {:error, :admission_timeout} =
+             Task.async(fn -> Limiter.acquire(scope, 10, 10) end) |> Task.await()
+
     assert :ok = Limiter.release(scope, self())
   end
 
@@ -685,6 +763,17 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
   catch
     :exit, _reason -> :ok
   end
+
+  defp eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      true
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
+  end
+
+  defp eventually(_fun, 0), do: false
 
   defp eventually_acquire(policy, attempts \\ 20)
 

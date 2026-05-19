@@ -23,7 +23,6 @@ defmodule Favn.Dev.Run do
           timeout_ms: non_neg_integer(),
           wait_timeout_ms: pos_integer(),
           run_timeout_ms: pos_integer(),
-          pipeline_stage_concurrency: pos_integer(),
           poll_interval_ms: pos_integer()
         ]
 
@@ -53,8 +52,7 @@ defmodule Favn.Dev.Run do
              target,
              window_request,
              run_idempotency_key(opts),
-             run_timeout_ms(opts),
-             Keyword.get(opts, :pipeline_stage_concurrency)
+             run_timeout_ms(opts)
            ),
          {:ok, final_run} <-
            maybe_wait(run, runtime, credentials.service_token, session_context, opts),
@@ -71,7 +69,6 @@ defmodule Favn.Dev.Run do
         with :ok <- validate_positive_integer(opts, :timeout_ms),
              :ok <- validate_positive_integer(opts, :wait_timeout_ms),
              :ok <- validate_positive_integer(opts, :run_timeout_ms),
-             :ok <- validate_positive_integer(opts, :pipeline_stage_concurrency),
              :ok <- validate_positive_integer(opts, :poll_interval_ms) do
           validate_idempotency_key(opts)
         else
@@ -173,8 +170,7 @@ defmodule Favn.Dev.Run do
          target,
          window_request,
          idempotency_key,
-         timeout_ms,
-         pipeline_stage_concurrency
+         timeout_ms
        ) do
     case target do
       %{"target_id" => target_id} when is_binary(target_id) and target_id != "" ->
@@ -185,7 +181,6 @@ defmodule Favn.Dev.Run do
           }
           |> maybe_put_window(window_request)
           |> maybe_put(:timeout_ms, timeout_ms)
-          |> maybe_put(:pipeline_stage_concurrency, pipeline_stage_concurrency)
 
         case OrchestratorClient.submit_run(base_url, service_token, session_context, payload,
                idempotency_key: idempotency_key

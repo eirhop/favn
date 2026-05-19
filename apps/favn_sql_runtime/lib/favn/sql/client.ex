@@ -87,8 +87,11 @@ defmodule Favn.SQL.Client do
   def disconnect(%Session{pool_checkout: %Checkout{} = checkout} = session) do
     case checkout_owner_error(session, :disconnect) do
       nil ->
-        session = release_checkout_admission(session)
-        SessionPool.checkin(session, :ok)
+        try do
+          SessionPool.checkin(session, :ok)
+        after
+          Admission.detach_session(session.admission_lease)
+        end
 
       %Error{} = error ->
         SessionPool.mark_discard(checkout.token, discard_reason(:disconnect, error))
@@ -297,7 +300,11 @@ defmodule Favn.SQL.Client do
       session
       |> run_session_operation(:transaction, nil, opts, fn ->
         Admission.with_permit(session, :transaction, nil, fn ->
-          adapter.transaction(conn, fn tx_conn -> fun.(%Session{session | conn: tx_conn}) end, opts)
+          adapter.transaction(
+            conn,
+            fn tx_conn -> fun.(%Session{session | conn: tx_conn}) end,
+            opts
+          )
         end)
       end)
     else
@@ -379,7 +386,7 @@ defmodule Favn.SQL.Client do
           kind, reason ->
             Admission.release_session(lease)
             :erlang.raise(kind, reason, __STACKTRACE__)
-      end
+        end
     end
   end
 
@@ -413,9 +420,10 @@ defmodule Favn.SQL.Client do
   end
 
   defp prepare_warm_session(%Session{} = session, resolved, concurrency_policies, adapter_opts) do
-    case acquire_checkout_lease(concurrency_policies, adapter_opts) do
+    case checkout_warm_session_lease(session, concurrency_policies, adapter_opts) do
       {:ok, lease} ->
         session = put_session_runtime(session, resolved, concurrency_policies, lease)
+        :ok = SessionPool.update_checkout(session)
 
         with :ok <- validate_pooled_session(session, adapter_opts),
              :ok <- reset_pooled_session(session, resolved, adapter_opts) do
@@ -435,6 +443,10 @@ defmodule Favn.SQL.Client do
       {:error, %Error{}} = error ->
         SessionPool.discard(session, :admission_failed)
         error
+
+      {:error, reason} ->
+        SessionPool.discard(session, {:admission_adopt_failed, reason})
+        :miss
     end
   end
 
@@ -451,7 +463,13 @@ defmodule Favn.SQL.Client do
               |> put_session_runtime(resolved, concurrency_policies, lease)
 
             :ok = SessionPool.track_checkout(session)
-            Observability.emit([:pool, :session, :created], %{}, pool_session_metadata(key, resolved))
+
+            Observability.emit(
+              [:pool, :session, :created],
+              %{},
+              pool_session_metadata(key, resolved)
+            )
+
             {:ok, session}
           end
         end,
@@ -474,6 +492,22 @@ defmodule Favn.SQL.Client do
         emit_admission_wait(:ok, started_at, concurrency_policies, adapter_opts)
         {:ok, lease}
     end
+  end
+
+  defp checkout_warm_session_lease(
+         %Session{admission_lease: nil},
+         concurrency_policies,
+         adapter_opts
+       ) do
+    acquire_checkout_lease(concurrency_policies, adapter_opts)
+  end
+
+  defp checkout_warm_session_lease(
+         %Session{admission_lease: lease},
+         _concurrency_policies,
+         _adapter_opts
+       ) do
+    Admission.adopt_session(lease)
   end
 
   defp pool_session_metadata(%PoolKey{} = key, %Resolved{} = resolved) do
@@ -510,7 +544,9 @@ defmodule Favn.SQL.Client do
     |> Enum.sort()
   end
 
-  defp pool_enabled?(%Resolved{adapter: adapter} = resolved, adapter_opts, %PoolConfig{enabled: true}) do
+  defp pool_enabled?(%Resolved{adapter: adapter} = resolved, adapter_opts, %PoolConfig{
+         enabled: true
+       }) do
     function_exported?(adapter, :poolable?, 2) and adapter.poolable?(resolved, adapter_opts)
   rescue
     _ -> false
@@ -522,7 +558,13 @@ defmodule Favn.SQL.Client do
 
   defp pool_key(%Resolved{adapter: adapter} = resolved, adapter_opts) do
     required_catalogs = Keyword.get(adapter_opts, :required_catalogs, []) |> List.wrap()
-    PoolKey.build(resolved, adapter_opts, required_catalogs, adapter_fingerprint(adapter, resolved, adapter_opts))
+
+    PoolKey.build(
+      resolved,
+      adapter_opts,
+      required_catalogs,
+      adapter_fingerprint(adapter, resolved, adapter_opts)
+    )
   end
 
   defp adapter_fingerprint(adapter, resolved, adapter_opts) do
@@ -660,11 +702,6 @@ defmodule Favn.SQL.Client do
     error
   end
 
-  defp release_checkout_admission(%Session{} = session) do
-    Admission.release_session(session.admission_lease)
-    %Session{session | admission_lease: nil}
-  end
-
   defp run_session_operation(%Session{} = session, operation, payload, opts, fun)
        when is_function(fun, 0) do
     case checkout_owner_error(session, operation) do
@@ -693,7 +730,11 @@ defmodule Favn.SQL.Client do
     end
   end
 
-  defp maybe_mark_pooled_session_success(%Session{pool_checkout: %Checkout{} = checkout}, operation, opts) do
+  defp maybe_mark_pooled_session_success(
+         %Session{pool_checkout: %Checkout{} = checkout},
+         operation,
+         opts
+       ) do
     if discard_pooled_session_after_success?(operation, opts) do
       SessionPool.mark_discard(checkout.token, %{operation: operation, status: :success})
     end
@@ -767,7 +808,10 @@ defmodule Favn.SQL.Client do
   defp checkout_owner_error(%Session{}, _operation), do: nil
 
   defp discard_pooled_session?(_operation, _payload, %Error{type: :admission_timeout}), do: false
-  defp discard_pooled_session?(_operation, _payload, %Error{type: :invalid_checkout_owner}), do: true
+
+  defp discard_pooled_session?(_operation, _payload, %Error{type: :invalid_checkout_owner}),
+    do: true
+
   defp discard_pooled_session?(_operation, _payload, %Error{type: :connection_error}), do: true
 
   defp discard_pooled_session?(operation, _payload, %Error{} = error)

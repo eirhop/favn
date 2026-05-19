@@ -28,6 +28,13 @@ defmodule Favn.SQL.Admission.Limiter do
     :ok
   end
 
+  @spec transfer(scope(), pid(), pid()) :: :ok | {:error, :not_found}
+  def transfer(scope, from_pid, to_pid)
+      when is_pid(from_pid) and is_pid(to_pid) do
+    ensure_started()
+    GenServer.call(__MODULE__, {:transfer, scope, from_pid, to_pid})
+  end
+
   @spec reset() :: :ok
   def reset do
     ensure_started()
@@ -58,6 +65,13 @@ defmodule Favn.SQL.Admission.Limiter do
   def handle_call(:reset, _from, state) do
     Enum.each(Map.keys(state.monitors), &Process.demonitor(&1, [:flush]))
     {:reply, :ok, initial_state()}
+  end
+
+  def handle_call({:transfer, scope, from_pid, to_pid}, _from, state) do
+    case transfer_holder(state, scope, from_pid, to_pid) do
+      {:ok, state} -> {:reply, :ok, state}
+      {:error, :not_found} -> {:reply, {:error, :not_found}, state}
+    end
   end
 
   @impl true
@@ -144,6 +158,31 @@ defmodule Favn.SQL.Admission.Limiter do
       |> Enum.reject(&(&1.pid == pid and &1.monitor_ref == monitor_ref))
 
     put_scope_holders(state, scope, holders)
+  end
+
+  defp transfer_holder(state, scope, from_pid, to_pid) do
+    holders = Map.get(state.holders, scope, [])
+
+    case pop_first_holder(holders, &(&1.pid == from_pid)) do
+      {nil, _holders} ->
+        {:error, :not_found}
+
+      {%{monitor_ref: monitor_ref}, remaining} ->
+        Process.demonitor(monitor_ref, [:flush])
+        next_monitor_ref = Process.monitor(to_pid)
+        holder = %{pid: to_pid, monitor_ref: next_monitor_ref}
+
+        state =
+          state
+          |> put_scope_holders(scope, [holder | remaining])
+          |> update_in([:monitors], fn monitors ->
+            monitors
+            |> Map.delete(monitor_ref)
+            |> Map.put(next_monitor_ref, {:holder, scope, to_pid})
+          end)
+
+        {:ok, state}
+    end
   end
 
   defp pop_first_holder([], _predicate), do: {nil, []}

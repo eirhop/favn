@@ -1470,60 +1470,6 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
   end
 
-  test "run submission accepts valid pipeline stage concurrency" do
-    version = schedule_manifest_version("mv_pipeline_stage_concurrency_http")
-    assert :ok = FavnOrchestrator.register_manifest(version)
-
-    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
-
-    response =
-      conn(:post, "/api/orchestrator/v1/runs", %{
-        target: %{type: "pipeline", id: "pipeline:Elixir.MyApp.Pipelines.DailyOrders"},
-        manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
-        window: %{mode: "single", kind: "day", value: "2026-03-01"},
-        pipeline_stage_concurrency: 2
-      })
-      |> put_req_header("authorization", "Bearer test-service-token")
-      |> put_req_header("x-favn-actor-id", actor.id)
-      |> put_req_header("x-favn-session-token", session.token)
-      |> put_idempotency_key("pipeline-stage-concurrency-http")
-      |> Router.call(@opts)
-
-    assert response.status == 201
-    assert %{"data" => %{"run" => %{"id" => run_id}}} = Jason.decode!(response.resp_body)
-    assert {:ok, run} = FavnOrchestrator.get_run(run_id)
-    assert run.metadata.effective_concurrency == %{pipeline_stage_concurrency: 2}
-  end
-
-  for invalid_value <- [0, -1, "1"] do
-    @invalid_value invalid_value
-
-    test "run submission rejects invalid pipeline_stage_concurrency #{@invalid_value}" do
-      version = dependency_manifest_version("mv_pipeline_stage_concurrency_invalid_http")
-      assert :ok = FavnOrchestrator.register_manifest(version)
-
-      {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
-
-      response =
-        conn(:post, "/api/orchestrator/v1/runs", %{
-          target: %{type: "asset", id: "asset:Elixir.MyApp.Assets.Gold:asset"},
-          manifest_selection: %{mode: "version", manifest_version_id: version.manifest_version_id},
-          dependencies: "none",
-          pipeline_stage_concurrency: @invalid_value
-        })
-        |> put_req_header("authorization", "Bearer test-service-token")
-        |> put_req_header("x-favn-actor-id", actor.id)
-        |> put_req_header("x-favn-session-token", session.token)
-        |> put_idempotency_key(
-          "pipeline-stage-concurrency-invalid-http-#{:erlang.phash2(@invalid_value)}"
-        )
-        |> Router.call(@opts)
-
-      assert response.status == 422
-      assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
-    end
-  end
-
   test "run submission reports missing pipeline window request clearly" do
     version = schedule_manifest_version("mv_pipeline_window_missing")
     assert :ok = FavnOrchestrator.register_manifest(version)
@@ -1597,9 +1543,7 @@ defmodule FavnOrchestrator.API.RouterTest do
           "to" => "2026-01-02",
           "kind" => "day",
           "timezone" => "Etc/UTC"
-        },
-        "backfill_child_concurrency" => 2,
-        "pipeline_stage_concurrency" => 2
+        }
       })
       |> put_req_header("authorization", "Bearer test-service-token")
       |> put_req_header("x-favn-actor-id", actor.id)
@@ -1629,61 +1573,6 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert length(windows) == 2
     assert Enum.all?(windows, &(&1["backfill_run_id"] == backfill_run_id))
     assert Enum.all?(windows, &(&1["pipeline_module"] == "Elixir.MyApp.Pipelines.DailyOrders"))
-
-    assert {:ok, parent} = Storage.get_run(backfill_run_id)
-    assert parent.metadata.backfill.backfill_child_concurrency == 2
-  end
-
-  for {field, invalid_value} <- [
-        {"backfill_child_concurrency", 0},
-        {"backfill_child_concurrency", -1},
-        {"backfill_child_concurrency", "1"},
-        {"pipeline_stage_concurrency", 0},
-        {"pipeline_stage_concurrency", -1},
-        {"pipeline_stage_concurrency", "1"}
-      ] do
-    @field field
-    @invalid_value invalid_value
-
-    test "backfill submit rejects invalid #{@field} #{@invalid_value}" do
-      version = schedule_manifest_version("mv_backfill_invalid_concurrency_http")
-      assert :ok = FavnOrchestrator.register_manifest(version)
-
-      {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
-
-      payload =
-        Map.put(
-          %{
-            "target" => %{
-              "type" => "pipeline",
-              "id" => "pipeline:Elixir.MyApp.Pipelines.DailyOrders"
-            },
-            "manifest_selection" => %{
-              "mode" => "version",
-              "manifest_version_id" => version.manifest_version_id
-            },
-            "range" => %{
-              "from" => "2026-01-01",
-              "to" => "2026-01-02",
-              "kind" => "day",
-              "timezone" => "Etc/UTC"
-            }
-          },
-          @field,
-          @invalid_value
-        )
-
-      response =
-        conn(:post, "/api/orchestrator/v1/backfills", payload)
-        |> put_req_header("authorization", "Bearer test-service-token")
-        |> put_req_header("x-favn-actor-id", actor.id)
-        |> put_req_header("x-favn-session-token", session.token)
-        |> put_idempotency_key("backfill-invalid-#{@field}-#{:erlang.phash2(@invalid_value)}")
-        |> Router.call(@opts)
-
-      assert response.status == 422
-      assert %{"error" => %{"code" => "validation_failed"}} = Jason.decode!(response.resp_body)
-    end
   end
 
   test "plans pipeline backfill without creating runs" do
