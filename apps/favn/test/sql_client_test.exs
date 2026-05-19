@@ -43,6 +43,7 @@ defmodule Favn.SQLClientTest do
     @impl true
     def connect(%Resolved{}, opts) do
       reject_internal_registry_opt!(opts)
+      notify({:connect_opts, opts})
       {:ok, :conn}
     end
 
@@ -86,6 +87,14 @@ defmodule Favn.SQLClientTest do
         raise "adapter should not receive internal :registry_name routing opt"
       end
     end
+
+    defp notify(message) do
+      if pid = Application.get_env(:favn, :sql_client_test_pid) do
+        send(pid, message)
+      end
+
+      :ok
+    end
   end
 
   defmodule NoTransactionAdapter do
@@ -118,7 +127,9 @@ defmodule Favn.SQLClientTest do
   setup do
     previous_modules = Application.get_env(:favn, :connection_modules)
     previous_connections = Application.get_env(:favn, :connections)
+    previous_pid = Application.get_env(:favn, :sql_client_test_pid)
 
+    Application.put_env(:favn, :sql_client_test_pid, self())
     Application.put_env(:favn, :connection_modules, [TestConnection, NoTransactionConnection])
 
     Application.put_env(:favn, :connections,
@@ -129,6 +140,7 @@ defmodule Favn.SQLClientTest do
     on_exit(fn ->
       restore_env(:connection_modules, previous_modules)
       restore_env(:connections, previous_connections)
+      restore_env(:sql_client_test_pid, previous_pid)
     end)
 
     :ok
@@ -159,6 +171,34 @@ defmodule Favn.SQLClientTest do
                assert {:ok, %Result{kind: :query}} = Favn.SQLClient.query(session, "select 1")
                {:ok, :done}
              end)
+  end
+
+  test "with_required_catalogs scopes SQLClient connects in spawned tasks" do
+    relation =
+      RelationRef.new!(connection: :test_sql, catalog: :raw, schema: :landing, name: :events)
+
+    task =
+      Task.async(fn ->
+        Favn.SQLClient.with_required_catalogs(relation, fn ->
+          Favn.SQLClient.with_connection(:test_sql, [], fn session ->
+            Favn.SQLClient.query(session, "select 1")
+          end)
+        end)
+      end)
+
+    assert {:ok, %Result{kind: :query}} = Task.await(task)
+    assert_received {:connect_opts, [required_catalogs: ["raw"]]}
+  end
+
+  test "with_required_catalogs does not rescue callback argument errors" do
+    relation =
+      RelationRef.new!(connection: :test_sql, catalog: :raw, schema: :landing, name: :events)
+
+    assert_raise ArgumentError, "callback failure", fn ->
+      Favn.SQLClient.with_required_catalogs(relation, fn ->
+        raise ArgumentError, "callback failure"
+      end)
+    end
   end
 
   test "transaction delegates through adapter callback" do

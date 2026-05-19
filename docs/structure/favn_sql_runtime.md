@@ -43,7 +43,9 @@ catalog policies, session bootstrap is treated as all-catalog bootstrap and must
 acquire every configured catalog permit before opening the adapter session.
 Elixir assets executed by the runner get a process-local default scope from
 their owned relation catalog when they open that same relation connection without
-passing `required_catalogs` explicitly.
+passing `required_catalogs` explicitly. Spawned asset tasks do not inherit that
+process-local default; wrap child process bodies with
+`Favn.SQLClient.with_required_catalogs/2` or pass `required_catalogs` explicitly.
 
 Retry handling must stay operation-aware. Bounded retries are acceptable around
 session creation/bootstrap and read-only inspection/query paths. Blind retries of

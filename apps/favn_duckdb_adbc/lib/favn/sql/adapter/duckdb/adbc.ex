@@ -560,7 +560,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   defp postgres_metadata_scope(%Resolved{}, secret_config) do
     with true <- postgres_secret?(secret_config),
          {:ok, host} <- secret_value(secret_config, :host),
-         {:ok, port} <- secret_value(secret_config, :port) do
+         {:ok, host} <- normalize_metadata_host(host),
+         {:ok, port} <- secret_value(secret_config, :port),
+         {:ok, port} <- normalize_metadata_port(port) do
       hash =
         {host, port}
         |> :erlang.term_to_binary()
@@ -576,6 +578,27 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   defp postgres_secret?(config) when is_map(config), do: Map.get(config, :type) in [:postgres, "postgres"]
   defp postgres_secret?(config) when is_list(config), do: Keyword.get(config, :type) in [:postgres, "postgres"]
   defp postgres_secret?(_config), do: false
+
+  defp normalize_metadata_host(host) when is_binary(host) do
+    host = host |> String.trim() |> String.downcase()
+    if host == "", do: :error, else: {:ok, host}
+  end
+
+  defp normalize_metadata_host(host) when is_atom(host),
+    do: host |> Atom.to_string() |> normalize_metadata_host()
+
+  defp normalize_metadata_host(_host), do: :error
+
+  defp normalize_metadata_port(port) when is_integer(port) and port > 0, do: {:ok, port}
+
+  defp normalize_metadata_port(port) when is_binary(port) do
+    case Integer.parse(String.trim(port)) do
+      {port, ""} when port > 0 -> {:ok, port}
+      _other -> :error
+    end
+  end
+
+  defp normalize_metadata_port(_port), do: :error
 
   defp secret_value(config, key) when is_map(config) do
     case Map.fetch(config, key) do

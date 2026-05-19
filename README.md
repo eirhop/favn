@@ -421,7 +421,9 @@ policies, Favn treats bootstrap as all-catalog bootstrap and acquires every
 configured catalog permit before opening the adapter session.
 Elixir assets executed by the runner inherit their owned relation catalog as the
 default SQLClient scope when they open that same relation connection without
-passing `required_catalogs` explicitly.
+passing `required_catalogs` explicitly. That default is process-local; spawned
+asset tasks should wrap their child body with `Favn.SQLClient.with_required_catalogs/2`
+or pass `required_catalogs` explicitly.
 
 Raw SQL execute/materialize/transaction paths do not return sessions to the idle
 pool after mutation unless Favn has explicitly proven the operation pool-safe

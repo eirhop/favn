@@ -825,7 +825,7 @@ defmodule FavnDuckdb.SQLAdapterDuckDBHardeningTest do
           open: [database: ":memory:"],
           duckdb: [
             secrets: [
-              raw_meta: [type: :postgres, host: "pg.example.com", port: 5432],
+              raw_meta: [type: :postgres, host: " PG.EXAMPLE.COM ", port: "5432"],
               mart_meta: [type: :postgres, host: "pg.example.com", port: 5432]
             ],
             attach: [
