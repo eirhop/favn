@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.TransitionWriter do
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage
 
   require Logger
@@ -112,8 +113,15 @@ defmodule FavnOrchestrator.TransitionWriter do
       event_type: event.event_type,
       status: event.status,
       stage: event.stage,
-      data: event.data || %{}
+      attempt: data_field(event, :attempt),
+      max_attempts: data_field(event, :max_attempts),
+      freshness_key: data_field(event, :freshness_key),
+      result_status: data_field(event, :result_status),
+      error: JsonSafe.error(data_field(event, :error)),
+      reason: JsonSafe.error(data_field(event, :reason))
     }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
   end
 
   defp data_field(%RunEvent{data: data}, key) when is_map(data) do
