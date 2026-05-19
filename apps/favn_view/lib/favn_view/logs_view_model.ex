@@ -165,8 +165,8 @@ defmodule FavnView.LogsViewModel do
       {Map.get(entry, :producer_id), Map.get(entry, :producer_sequence)}
   end
 
-  defp time_label(%DateTime{} = value), do: Calendar.strftime(value, "%H:%M:%S")
-  defp time_label(_value), do: "--:--:--"
+  defp time_label(%DateTime{} = value), do: Calendar.strftime(value, "%b %-d %H:%M:%S")
+  defp time_label(_value), do: "--- -- --:--:--"
 
   defp source_label(source), do: source |> normalize_atom() |> String.replace("_", ":")
   defp normalize_atom(value) when is_atom(value), do: Atom.to_string(value)

@@ -962,7 +962,11 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.status == :ok
 
     assert {:ok, page} = FavnOrchestrator.list_logs(%Favn.Log.Filter{run_id: run_id})
-    assert page.items == []
+
+    assert Enum.map(page.items, & &1.message) == [
+             "asset execution started",
+             "asset execution finished"
+           ]
   end
 
   test "accepted success transitions broadcast on both run and global topics in storage order" do

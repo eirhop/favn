@@ -317,7 +317,7 @@ defmodule FavnView.Components.LogViewer do
   def log_row(assigns) do
     ~H"""
     <article
-      class="grid gap-2 text-slate-100/90 sm:grid-cols-[6.5rem_4.5rem_13rem_minmax(0,1fr)]"
+      class="grid gap-2 text-slate-100/90 sm:grid-cols-[9.5rem_4.5rem_13rem_minmax(0,1fr)]"
       data-testid="log-row"
       title={sequence_title(@log)}
     >

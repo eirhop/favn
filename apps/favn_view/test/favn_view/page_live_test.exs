@@ -1209,13 +1209,14 @@ defmodule FavnView.PageLiveTest do
   end
 
   test "/logs renders the global log viewer", %{conn: conn} do
-    seed_log!("global boot", source: :system)
+    seed_log!("global boot", source: :system, occurred_at: ~U[2026-05-19 19:24:56Z])
 
     {:ok, view, html} = live(conn, ~p"/logs")
 
     assert html =~ "Live system and run logs"
     assert has_element?(view, ~s([data-testid="log-viewer"][data-log-scope="global"]))
     assert has_element?(view, ~s([data-testid="log-row"]), "global boot")
+    assert has_element?(view, ~s([data-testid="log-row"]), "May 19 19:24:56")
   end
 
   test "/logs loads newest entries when more than one backend page exists", %{conn: conn} do

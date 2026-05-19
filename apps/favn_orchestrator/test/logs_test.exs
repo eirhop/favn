@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.LogsTest do
   alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.TransitionWriter
 
   defmodule RunnerClientLogStub do
     def subscribe_execution_logs(execution_id, subscriber, opts) do
@@ -275,6 +276,63 @@ defmodule FavnOrchestrator.LogsTest do
     RunnerLogBridge.stop(bridge, RunnerClientLogStub, "exec_bad_log", runner_opts)
   end
 
+  test "step transition logs are durable and idempotent" do
+    run = transition_run("run_transition_log_once", :running)
+    data = transition_data("step_once", :step_started)
+
+    assert :ok = TransitionWriter.persist_transition(run, :step_started, data)
+    assert :ok = TransitionWriter.persist_transition(run, :step_started, data)
+
+    assert {:ok, page} = FavnOrchestrator.list_logs(%Filter{run_id: run.id})
+    assert [%Entry{} = entry] = page.items
+    assert entry.message == "asset execution started"
+    assert entry.producer_id == "orchestrator:#{run.id}"
+    assert entry.producer_sequence == run.event_seq
+  end
+
+  test "step transition logs use lifecycle levels and sanitized metadata" do
+    failed = transition_run("run_transition_log_failed", :error)
+    retrying = transition_run("run_transition_log_retrying", :running)
+
+    assert :ok =
+             TransitionWriter.persist_transition(
+               failed,
+               :step_failed,
+               transition_data("step_failed", :step_failed,
+                 error: %{kind: :error, reason: {:db_password, "secret"}},
+                 reason: {:db_password, "secret"},
+                 result_status: :error
+               )
+             )
+
+    assert :ok =
+             TransitionWriter.persist_transition(
+               retrying,
+               :step_retry_scheduled,
+               transition_data("step_retrying", :step_retry_scheduled,
+                 reason: :retryable,
+                 attempt: 2,
+                 max_attempts: 3
+               )
+             )
+
+    assert {:ok, failed_page} = FavnOrchestrator.list_logs(%Filter{run_id: failed.id})
+    assert [%Entry{} = failed_entry] = failed_page.items
+    assert failed_entry.level == :error
+    assert failed_entry.message == "asset execution failed"
+    assert failed_entry.metadata["event_type"] == "step_failed"
+    assert failed_entry.metadata["result_status"] == "error"
+    assert failed_entry.metadata["error"]["redacted"] == true
+    refute Map.has_key?(failed_entry.metadata, "data")
+
+    assert {:ok, retry_page} = FavnOrchestrator.list_logs(%Filter{run_id: retrying.id})
+    assert [%Entry{} = retry_entry] = retry_page.items
+    assert retry_entry.level == :warning
+    assert retry_entry.message == "asset execution retry scheduled"
+    assert retry_entry.metadata["attempt"] == 2
+    assert retry_entry.metadata["max_attempts"] == 3
+  end
+
   test "live run subscriptions deliver only matching run entries" do
     assert {:ok, subscription} = FavnOrchestrator.subscribe_logs(%Filter{run_id: "run_live_a"})
 
@@ -391,6 +449,36 @@ defmodule FavnOrchestrator.LogsTest do
     |> :erlang.term_to_binary()
     |> Base.url_encode64(padding: false)
     |> String.replace(~r/[^a-zA-Z0-9_-]+/, "-")
+  end
+
+  defp transition_run(run_id, status) do
+    RunState.new(
+      id: run_id,
+      manifest_version_id: "manifest_logs_test",
+      manifest_content_hash: "hash_logs_test",
+      asset_ref: {__MODULE__.TransitionAsset, :asset},
+      target_refs: [{__MODULE__.TransitionAsset, :asset}]
+    )
+    |> RunState.transition(status: status)
+  end
+
+  defp transition_data(asset_step_id, event_type, opts \\ []) do
+    asset_ref = {__MODULE__.TransitionAsset, :asset}
+
+    %{
+      asset_ref: asset_ref,
+      asset_step_id: asset_step_id,
+      node_key: {asset_ref, nil},
+      stage: 0,
+      attempt: Keyword.get(opts, :attempt, 1),
+      max_attempts: Keyword.get(opts, :max_attempts, 1),
+      event_type: event_type,
+      freshness_key: Keyword.get(opts, :freshness_key, Favn.Freshness.Key.latest()),
+      result_status: Keyword.get(opts, :result_status),
+      error: Keyword.get(opts, :error),
+      reason: Keyword.get(opts, :reason),
+      unsafe_extra: %{credentials: "secret"}
+    }
   end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)

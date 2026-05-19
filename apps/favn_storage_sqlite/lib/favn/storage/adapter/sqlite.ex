@@ -21,6 +21,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.ManifestCodec
+  alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -1862,7 +1863,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         encode_optional_atom(entry.source),
         encode_optional_atom(entry.stream),
         entry.message,
-        Jason.encode!(entry.metadata || %{}),
+        Jason.encode!(JsonSafe.data(entry.metadata || %{})),
         encode_log_entry(entry),
         entry.truncated == true,
         now
