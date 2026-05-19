@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.BackfillManagerTest do
   alias Favn.Manifest.Version
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Policy
+  alias FavnOrchestrator.BackfillChildCoordinator
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.Storage
@@ -274,6 +275,52 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert_terminal_window("run_backfill_child_concurrency", second_window_key)
 
     assert {:ok, "run_backfill_child_concurrency"} = Task.await(task, 1_000)
+  end
+
+  test "terminalizes finite backfill admission after coordinator restart" do
+    version = manifest_version("mv_backfill_child_concurrency_restart")
+    test_pid = self()
+
+    submitter = fn pipeline_module, child_opts ->
+      trigger = Keyword.fetch!(child_opts, :trigger)
+      send(test_pid, {:child_submit, pipeline_module, trigger.window_key})
+      {:ok, "child_#{trigger.window_key}"}
+    end
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_child_concurrency_restart"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_child_concurrency_restart",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               backfill_child_concurrency: 1,
+               _child_submitter: submitter
+             )
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, _first_window_key}
+    refute_receive {:child_submit, MyApp.Pipelines.Daily, _window_key}, 100
+
+    old_pid = Process.whereis(BackfillChildCoordinator)
+    assert is_pid(old_pid)
+    Process.exit(old_pid, :kill)
+
+    eventually(fn ->
+      new_pid = Process.whereis(BackfillChildCoordinator)
+      assert is_pid(new_pid)
+      refute new_pid == old_pid
+    end)
+
+    eventually(fn ->
+      assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency_restart")
+      assert parent.status == :error
+      assert parent.error == {:backfill_child_admission_interrupted, :coordinator_restarted}
+
+      windows = list_backfill_windows(backfill_run_id: parent.id)
+      assert length(windows) == 2
+      assert Enum.all?(windows, &(&1.status == :error))
+      assert Enum.all?(windows, &(&1.last_error == parent.error))
+    end)
   end
 
   for invalid_value <- [0, -1, "1"] do

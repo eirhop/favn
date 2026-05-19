@@ -14,8 +14,13 @@ defmodule FavnOrchestrator.BackfillChildCoordinator do
 
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.Projector, as: BackfillProjector
+  alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.TransitionWriter
 
   @poll_ms 100
+  @restart_error {:backfill_child_admission_interrupted, :coordinator_restarted}
+  @active_window_statuses [:pending, :running]
   @terminal_window_statuses [:ok, :partial, :cancelled, :timed_out, :error]
 
   @type child_spec :: %{
@@ -45,7 +50,10 @@ defmodule FavnOrchestrator.BackfillChildCoordinator do
   end
 
   @impl true
-  def init(state), do: {:ok, state}
+  def init(state) do
+    _ = terminalize_interrupted_finite_backfills()
+    {:ok, state}
+  end
 
   @impl true
   def handle_call(
@@ -156,6 +164,93 @@ defmodule FavnOrchestrator.BackfillChildCoordinator do
 
   defp terminal_window?(pipeline_module, %BackfillWindow{} = window) do
     window.pipeline_module == pipeline_module and window.status in @terminal_window_statuses
+  end
+
+  defp terminalize_interrupted_finite_backfills do
+    case Storage.list_runs(status: :running) do
+      {:ok, runs} ->
+        runs
+        |> Enum.filter(&finite_backfill_parent?/1)
+        |> Enum.each(&terminalize_interrupted_backfill/1)
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp finite_backfill_parent?(%RunState{submit_kind: :backfill_pipeline, metadata: metadata}) do
+    case backfill_metadata(metadata) do
+      %{backfill_child_concurrency: value} when is_integer(value) and value > 0 -> true
+      %{"backfill_child_concurrency" => value} when is_integer(value) and value > 0 -> true
+      _other -> false
+    end
+  end
+
+  defp finite_backfill_parent?(%RunState{}), do: false
+
+  defp backfill_metadata(metadata) when is_map(metadata) do
+    Map.get(metadata, :backfill) || Map.get(metadata, "backfill") || %{}
+  end
+
+  defp backfill_metadata(_metadata), do: %{}
+
+  defp terminalize_interrupted_backfill(%RunState{} = parent) do
+    with {:ok, windows} <- BackfillProjector.list_all_backfill_windows(backfill_run_id: parent.id),
+         active_windows <- Enum.filter(windows, &(&1.status in @active_window_statuses)),
+         true <- active_windows != [],
+         :ok <- put_interrupted_windows(active_windows),
+         {:ok, updated_windows} <-
+           BackfillProjector.list_all_backfill_windows(backfill_run_id: parent.id) do
+      status = BackfillProjector.parent_status(updated_windows)
+
+      parent
+      |> RunState.transition(
+        status: status,
+        error: @restart_error,
+        result: %{status: status, backfill_windows: length(updated_windows)}
+      )
+      |> TransitionWriter.persist_transition(parent_event_type(status), %{
+        status: status,
+        error: @restart_error,
+        window_counts: window_counts(updated_windows)
+      })
+    else
+      false -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp put_interrupted_windows(windows) do
+    now = DateTime.utc_now()
+
+    Enum.reduce_while(windows, :ok, fn %BackfillWindow{} = window, :ok ->
+      updated = %{
+        window
+        | status: :error,
+          last_error: @restart_error,
+          errors: window.errors ++ [@restart_error],
+          finished_at: window.finished_at || now,
+          updated_at: now
+      }
+
+      case Storage.put_backfill_window(updated) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp parent_event_type(:ok), do: :backfill_finished
+  defp parent_event_type(:partial), do: :backfill_partial
+  defp parent_event_type(:cancelled), do: :backfill_cancelled
+  defp parent_event_type(:timed_out), do: :backfill_timed_out
+  defp parent_event_type(:error), do: :backfill_failed
+  defp parent_event_type(:running), do: :backfill_progressed
+
+  defp window_counts(windows) do
+    Enum.reduce(windows, %{}, fn %BackfillWindow{status: status}, acc ->
+      Map.update(acc, status, 1, &(&1 + 1))
+    end)
   end
 
   defp fail_backfill(backfill_run_id, reason, state) do

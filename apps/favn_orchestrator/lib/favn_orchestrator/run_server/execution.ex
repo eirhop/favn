@@ -232,8 +232,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
                runner_opts,
                []
              ) do
-          {:ok, next_run, stage_results} -> {:ok, next_run, stage_results, node_keys}
-          {:error, failed_run, stage_results} -> {:error, failed_run, stage_results, node_keys}
+          {:ok, next_run, stage_results} ->
+            {:ok, next_run, stage_results, node_keys}
+
+          {:error, failed_run, stage_results, attempted_node_keys} ->
+            {:error, failed_run, stage_results, attempted_node_keys}
         end
 
       limit ->
@@ -278,8 +281,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
         {:ok, next_run, next_results} ->
           {:cont, {:ok, next_run, next_results, executed_keys ++ chunk}}
 
-        {:error, failed_run, next_results} ->
-          {:halt, {:error, failed_run, next_results, executed_keys ++ chunk}}
+        {:error, failed_run, next_results, attempted_node_keys} ->
+          {:halt,
+           {:error, failed_run, next_results, Enum.uniq(executed_keys ++ attempted_node_keys)}}
       end
     end)
   end
@@ -441,49 +445,64 @@ defmodule FavnOrchestrator.RunServer.Execution do
          acc_results
        ) do
     if Persistence.externally_cancelled?(run_state.id) do
-      {:error, Snapshots.cancelled_snapshot(run_state), acc_results}
+      {:error, Snapshots.cancelled_snapshot(run_state), acc_results, []}
     else
-      with {:ok, run_after_submit, entries} <-
-             submit_stage_entries(
-               run_state,
-               version,
-               stage,
-               node_keys,
-               decisions,
-               attempt,
-               runner_client,
-               runner_opts
-             ),
-           {:ok, next_run, next_acc_results, retry_refs} <-
-             process_stage_attempt_results(
-               run_after_submit,
-               entries,
-               stage,
-               attempt,
-               acc_results,
-               runner_client,
-               runner_opts
-             ) do
-        if retry_refs == [] do
-          {:ok, next_run, next_acc_results}
-        else
-          run_after_schedule =
-            Enum.reduce(retry_refs, next_run, fn node_key, current ->
-              schedule_retry_for_ref(current, node_key, stage, attempt)
-            end)
+      case submit_stage_entries(
+             run_state,
+             version,
+             stage,
+             node_keys,
+             decisions,
+             attempt,
+             runner_client,
+             runner_opts
+           ) do
+        {:ok, run_after_submit, entries} ->
+          attempted_node_keys = entry_node_keys(entries)
 
-          run_stage_attempt(
-            run_after_schedule,
-            version,
-            stage,
-            retry_refs,
-            decisions,
-            attempt + 1,
-            runner_client,
-            runner_opts,
-            next_acc_results
-          )
-        end
+          case process_stage_attempt_results(
+                 run_after_submit,
+                 entries,
+                 stage,
+                 attempt,
+                 acc_results,
+                 runner_client,
+                 runner_opts
+               ) do
+            {:ok, next_run, next_acc_results, []} ->
+              {:ok, next_run, next_acc_results}
+
+            {:ok, next_run, next_acc_results, retry_refs} ->
+              run_after_schedule =
+                Enum.reduce(retry_refs, next_run, fn node_key, current ->
+                  schedule_retry_for_ref(current, node_key, stage, attempt)
+                end)
+
+              case run_stage_attempt(
+                     run_after_schedule,
+                     version,
+                     stage,
+                     retry_refs,
+                     decisions,
+                     attempt + 1,
+                     runner_client,
+                     runner_opts,
+                     next_acc_results
+                   ) do
+                {:ok, retry_run, retry_results} ->
+                  {:ok, retry_run, retry_results}
+
+                {:error, retry_failed_run, retry_results, retry_attempted_node_keys} ->
+                  {:error, retry_failed_run, retry_results,
+                   Enum.uniq(attempted_node_keys ++ retry_attempted_node_keys)}
+              end
+
+            {:error, failed_run, next_acc_results} ->
+              {:error, failed_run, next_acc_results, attempted_node_keys}
+          end
+
+        {:error, failed_run, step_results, attempted_node_keys} ->
+          {:error, failed_run, step_results, attempted_node_keys}
       end
     end
   end
@@ -542,7 +561,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
                   runner_opts
                 )
 
-              {:halt, {:error, Snapshots.cancelled_snapshot(cancelled), []}}
+              attempted = Enum.map(acc, & &1.node_key) ++ [node_key]
+              {:halt, {:error, Snapshots.cancelled_snapshot(cancelled), [], attempted}}
           end
 
         {:error, reason} ->
@@ -572,18 +592,25 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  max_attempts: current_run.max_attempts
                }) do
             :ok ->
-              {:halt, {:error, failed, []}}
+              attempted = Enum.map(acc, & &1.node_key)
+              {:halt, {:error, failed, [], attempted}}
 
             {:error, :external_cancel} ->
-              {:halt, {:error, Snapshots.cancelled_snapshot(failed), []}}
+              attempted = Enum.map(acc, & &1.node_key)
+              {:halt, {:error, Snapshots.cancelled_snapshot(failed), [], attempted}}
           end
       end
     end)
     |> case do
-      {:ok, run_after_submit, entries} -> {:ok, run_after_submit, entries}
-      {:error, failed_run, step_results} -> {:error, failed_run, step_results}
+      {:ok, run_after_submit, entries} ->
+        {:ok, run_after_submit, entries}
+
+      {:error, failed_run, step_results, attempted_node_keys} ->
+        {:error, failed_run, step_results, attempted_node_keys}
     end
   end
+
+  defp entry_node_keys(entries), do: Enum.map(entries, & &1.node_key)
 
   defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
     parent = self()

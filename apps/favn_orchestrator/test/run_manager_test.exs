@@ -1668,6 +1668,56 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Enum.count(events, &(&1.event_type == :step_finished)) == 0
   end
 
+  test "pipeline stage concurrency cap records only attempted nodes after partial submit failure" do
+    version = manifest_version("mv_pipeline_stage_concurrency_partial_submit")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+
+    assert :ok =
+             FavnOrchestrator.activate_manifest("mv_pipeline_stage_concurrency_partial_submit")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientPartialSubmitStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               pipeline_stage_concurrency: 2
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :error
+    assert run.error == :submit_failed
+    assert run.metadata.effective_concurrency == %{pipeline_stage_concurrency: 2}
+
+    assert Map.keys(run.asset_results) == []
+    assert Enum.map(run.result.asset_results, & &1.ref) == []
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :step_started)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_failed)) == 1
+
+    case Storage.get_asset_freshness_state(
+           MyApp.Assets.Silver,
+           :asset,
+           Favn.Freshness.Key.latest()
+         ) do
+      {:ok, freshness} -> refute freshness.latest_attempt_run_id == run_id
+      {:error, :not_found} -> :ok
+    end
+  end
+
   test "pipeline submission rejects invalid stage concurrency caps" do
     version = manifest_version("mv_pipeline_invalid_stage_concurrency")
     assert :ok = FavnOrchestrator.register_manifest(version)

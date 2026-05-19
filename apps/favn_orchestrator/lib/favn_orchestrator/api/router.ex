@@ -1780,24 +1780,21 @@ defmodule FavnOrchestrator.API.Router do
     with {:ok, target} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
          {:ok, dependencies} <- fetch_dependencies(params, target),
-         {:ok, window_request} <- fetch_window_request(params, target) do
+         {:ok, window_request} <- fetch_window_request(params, target),
+         {:ok, run_opts} <- run_submit_opts(params) do
       case target do
         %{type: "asset", id: target_id} ->
           FavnOrchestrator.submit_asset_run_for_manifest(
             manifest_version_id,
             target_id,
-            params
-            |> run_submit_opts()
-            |> Keyword.put(:dependencies, dependencies)
+            Keyword.put(run_opts, :dependencies, dependencies)
           )
 
         %{type: "pipeline", id: target_id} ->
           FavnOrchestrator.submit_pipeline_run_for_manifest(
             manifest_version_id,
             target_id,
-            params
-            |> run_submit_opts()
-            |> Keyword.put(:window_request, window_request)
+            Keyword.put(run_opts, :window_request, window_request)
           )
 
         _ ->
@@ -1807,11 +1804,13 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp run_submit_opts(params) when is_map(params) do
-    []
-    |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
-    |> maybe_put_positive_int_opt(
+    opts = maybe_put_positive_int_opt([], :timeout_ms, Map.get(params, "timeout_ms"))
+
+    put_optional_positive_int_opt(
+      opts,
       :pipeline_stage_concurrency,
-      Map.get(params, "pipeline_stage_concurrency")
+      params,
+      "pipeline_stage_concurrency"
     )
   end
 
@@ -1819,11 +1818,12 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- reject_backfill_lookback_params(params),
          {:ok, %{type: "pipeline", id: target_id}} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
-         {:ok, range_request} <- fetch_backfill_range_request(params) do
+         {:ok, range_request} <- fetch_backfill_range_request(params),
+         {:ok, backfill_opts} <- backfill_submit_opts(params, range_request) do
       FavnOrchestrator.submit_pipeline_backfill_for_manifest(
         manifest_version_id,
         target_id,
-        backfill_submit_opts(params, range_request)
+        backfill_opts
       )
     else
       {:ok, _target} -> {:error, :invalid_target}
@@ -1835,11 +1835,12 @@ defmodule FavnOrchestrator.API.Router do
     with :ok <- reject_backfill_lookback_params(params),
          {:ok, target} <- fetch_target(params),
          {:ok, manifest_version_id} <- select_manifest_version(params),
-         {:ok, range_request} <- fetch_backfill_range_request(params) do
+         {:ok, range_request} <- fetch_backfill_range_request(params),
+         {:ok, backfill_opts} <- backfill_submit_opts(params, range_request) do
       plan_backfill_target(
         manifest_version_id,
         target,
-        backfill_submit_opts(params, range_request)
+        backfill_opts
       )
     end
   end
@@ -1881,21 +1882,29 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_submit_opts(params, range_request) when is_map(params) do
-    []
-    |> Keyword.put(:range_request, range_request)
-    |> maybe_put_string_opt(:coverage_baseline_id, Map.get(params, "coverage_baseline_id"))
-    |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
-    |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
-    |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
-    |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
-    |> maybe_put_positive_int_opt(
-      :backfill_child_concurrency,
-      Map.get(params, "backfill_child_concurrency")
-    )
-    |> maybe_put_positive_int_opt(
-      :pipeline_stage_concurrency,
-      Map.get(params, "pipeline_stage_concurrency")
-    )
+    opts =
+      []
+      |> Keyword.put(:range_request, range_request)
+      |> maybe_put_string_opt(:coverage_baseline_id, Map.get(params, "coverage_baseline_id"))
+      |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
+      |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
+      |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
+      |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
+
+    with {:ok, opts} <-
+           put_optional_positive_int_opt(
+             opts,
+             :backfill_child_concurrency,
+             params,
+             "backfill_child_concurrency"
+           ) do
+      put_optional_positive_int_opt(
+        opts,
+        :pipeline_stage_concurrency,
+        params,
+        "pipeline_stage_concurrency"
+      )
+    end
   end
 
   defp backfill_repair_opts(params) when is_map(params) do
@@ -2167,6 +2176,15 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_positive_int_opt(opts, _key, _value), do: opts
 
+  defp put_optional_positive_int_opt(opts, key, params, param_key) do
+    case Map.fetch(params, param_key) do
+      :error -> {:ok, opts}
+      {:ok, nil} -> {:ok, opts}
+      {:ok, value} when is_integer(value) and value > 0 -> {:ok, Keyword.put(opts, key, value)}
+      {:ok, _value} -> {:error, {:invalid_positive_integer_option, key}}
+    end
+  end
+
   defp maybe_put_non_neg_int_opt(opts, key, value) when is_integer(value) and value >= 0,
     do: Keyword.put(opts, key, value)
 
@@ -2350,6 +2368,10 @@ defmodule FavnOrchestrator.API.Router do
     {:ok, "Invalid window timezone", %{timezone: timezone}}
   end
 
+  defp window_policy_error({:invalid_positive_integer_option, option}) do
+    {:ok, "Invalid positive integer option", %{option: Atom.to_string(option)}}
+  end
+
   defp window_policy_error(_reason), do: :error
 
   defp command_backfill_range_error(reason) do
@@ -2389,6 +2411,10 @@ defmodule FavnOrchestrator.API.Router do
 
   defp backfill_range_error({:unsupported_backfill_option, option}) do
     {:ok, "Unsupported backfill option", %{option: Atom.to_string(option)}}
+  end
+
+  defp backfill_range_error({:invalid_positive_integer_option, option}) do
+    {:ok, "Invalid positive integer option", %{option: Atom.to_string(option)}}
   end
 
   defp backfill_range_error({:coverage_baseline_not_found, baseline_id}) do
