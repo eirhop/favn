@@ -45,19 +45,6 @@ defmodule Favn.Dev.BackfillTest do
     assert payload.timeout_ms == 5_000
   end
 
-  test "build_submit_payload/3 forwards concurrency caps" do
-    assert {:ok, payload} =
-             Backfill.build_submit_payload(
-               %{"target_id" => "pipeline:Elixir.MyApp.Pipeline"},
-               %{from: "2026-01-01", to: "2026-01-03", kind: "day", timezone: "Etc/UTC"},
-               backfill_child_concurrency: 2,
-               pipeline_stage_concurrency: 4
-             )
-
-    assert payload.backfill_child_concurrency == 2
-    assert payload.pipeline_stage_concurrency == 4
-  end
-
   test "submit_pipeline/2 treats waited partial parent as terminal failure", %{root_dir: root_dir} do
     parent = self()
 
@@ -125,19 +112,6 @@ defmodule Favn.Dev.BackfillTest do
              range: %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"},
              coverage_baseline_id: "baseline_1"
            }
-  end
-
-  test "build_plan_payload/3 forwards concurrency caps" do
-    assert {:ok, payload} =
-             Backfill.build_plan_payload(
-               MyApp.Pipeline,
-               %{from: "2026-01-01", to: "2026-01-02", kind: "day", timezone: "Etc/UTC"},
-               backfill_child_concurrency: 2,
-               pipeline_stage_concurrency: 4
-             )
-
-    assert payload.backfill_child_concurrency == 2
-    assert payload.pipeline_stage_concurrency == 4
   end
 
   test "submit_pipeline/2 resolves active manifest target and posts backfill", %{

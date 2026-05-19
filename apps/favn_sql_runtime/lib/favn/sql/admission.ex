@@ -62,6 +62,11 @@ defmodule Favn.SQL.Admission do
   def acquire_session(_policy, _opts), do: nil
 
   @spec release_session(term()) :: :ok
+  def release_session({:external, scope, owner}) do
+    Limiter.release(scope, owner)
+    :ok
+  end
+
   def release_session({:held, scope, owner}) when owner == self() do
     release_held_scope(scope)
     :ok
@@ -86,6 +91,32 @@ defmodule Favn.SQL.Admission do
 
   def release_session(_lease), do: :ok
 
+  @spec detach_session(term()) :: :ok
+  def detach_session({:held, scope, owner}) when owner == self() do
+    decrement_held(scope)
+    :ok
+  end
+
+  def detach_session({:borrowed, scope, owner}) when owner == self() do
+    decrement_held(scope)
+    :ok
+  end
+
+  def detach_session(leases) when is_list(leases) do
+    Enum.each(Enum.reverse(leases), &detach_session/1)
+    :ok
+  end
+
+  def detach_session(_lease), do: :ok
+
+  @spec externalize_session(term(), pid()) :: {:ok, term()} | {:error, term()}
+  def externalize_session(lease, owner) when is_pid(owner) do
+    transfer_session(lease, owner, :external)
+  end
+
+  @spec adopt_session(term()) :: {:ok, term()} | {:error, term()}
+  def adopt_session(lease), do: transfer_session(lease, self(), :held)
+
   defp required_catalogs(opts) do
     opts
     |> Keyword.get(:required_catalogs)
@@ -94,6 +125,65 @@ defmodule Favn.SQL.Admission do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
   end
+
+  defp transfer_session(nil, _owner, _target), do: {:ok, nil}
+
+  defp transfer_session({:borrowed, _scope, _owner}, _new_owner, _target),
+    do: {:error, :borrowed_lease}
+
+  defp transfer_session(lease, new_owner, target) when is_tuple(lease) do
+    with {:ok, transfers, transferred, held_scopes} <- transfer_plan([lease], new_owner, target),
+         :ok <- Limiter.transfer_many(transfers) do
+      Enum.each(held_scopes, &increment_held/1)
+      {:ok, List.first(transferred)}
+    end
+  end
+
+  defp transfer_session(leases, new_owner, target) when is_list(leases) do
+    with {:ok, transfers, transferred, held_scopes} <- transfer_plan(leases, new_owner, target),
+         :ok <- Limiter.transfer_many(transfers) do
+      Enum.each(held_scopes, &increment_held/1)
+      {:ok, transferred}
+    end
+  end
+
+  defp transfer_session(_lease, _new_owner, _target), do: {:error, :invalid_lease}
+
+  defp transfer_plan(leases, new_owner, target) do
+    Enum.reduce_while(leases, {:ok, [], [], []}, fn lease,
+                                                    {:ok, transfers, transferred, held_scopes} ->
+      case transfer_plan_lease(lease, new_owner, target) do
+        {:ok, transfer, next_lease, held_scope} ->
+          transfers = if transfer, do: [transfer | transfers], else: transfers
+          held_scopes = if held_scope, do: [held_scope | held_scopes], else: held_scopes
+
+          {:cont, {:ok, transfers, [next_lease | transferred], held_scopes}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, transfers, transferred, held_scopes} ->
+        {:ok, Enum.reverse(transfers), Enum.reverse(transferred), Enum.reverse(held_scopes)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp transfer_plan_lease(nil, _new_owner, _target), do: {:ok, nil, nil, nil}
+
+  defp transfer_plan_lease({:external, scope, owner}, new_owner, :held),
+    do: {:ok, {scope, owner, new_owner}, {:held, scope, new_owner}, scope}
+
+  defp transfer_plan_lease({:held, scope, owner}, new_owner, :external),
+    do: {:ok, {scope, owner, new_owner}, {:external, scope, new_owner}, nil}
+
+  defp transfer_plan_lease({:borrowed, _scope, _owner}, _new_owner, _target),
+    do: {:error, :borrowed_lease}
+
+  defp transfer_plan_lease(_lease, _new_owner, _target), do: {:error, :invalid_lease}
 
   defp catalog_connect_policies(%ConcurrencyPolicies{} = policies, catalogs) do
     catalogs

@@ -12,6 +12,11 @@ defmodule Favn.SQL.SessionPool do
   Unsafe write/materialization/raw execution paths mark sessions for discard so
   mutated state is not returned to the idle pool unless the caller has explicitly
   proven the operation pool-safe.
+
+  Idle sessions retain any catalog admission leases they acquired during session
+  creation. This keeps pooled physical sessions inside configured catalog
+  capacity, but also means an idle session for one pool key may block a different
+  pool key for the same catalog until the idle session is reused or evicted.
   """
 
   use GenServer
@@ -70,6 +75,12 @@ defmodule Favn.SQL.SessionPool do
   @spec track_checkout(Session.t(), keyword()) :: :ok
   def track_checkout(%Session{pool_checkout: %Checkout{}} = session, opts \\ []) do
     GenServer.call(pool_name(opts), {:track_checkout, session})
+  end
+
+  @doc false
+  @spec update_checkout(Session.t(), keyword()) :: :ok
+  def update_checkout(%Session{pool_checkout: %Checkout{}} = session, opts \\ []) do
+    GenServer.call(pool_name(opts), {:update_checkout, session})
   end
 
   @doc """
@@ -141,6 +152,12 @@ defmodule Favn.SQL.SessionPool do
     GenServer.call(pool_name(opts), :diagnostics)
   end
 
+  @doc false
+  @spec reset(keyword()) :: :ok
+  def reset(opts \\ []) do
+    GenServer.call(pool_name(opts), :reset)
+  end
+
   @impl true
   def init(%__MODULE__{} = state) do
     Process.flag(:trap_exit, true)
@@ -175,7 +192,7 @@ defmodule Favn.SQL.SessionPool do
            | idle: idle,
              active: Map.put(state.active, token, active_entry),
              monitors: Map.put(state.monitors, monitor, token)
-          }}
+         }}
     end
   end
 
@@ -212,6 +229,22 @@ defmodule Favn.SQL.SessionPool do
   end
 
   def handle_call(
+        {:update_checkout, %Session{pool_checkout: %Checkout{} = checkout} = session},
+        _from,
+        %__MODULE__{} = state
+      ) do
+    active =
+      Map.update(state.active, checkout.token, nil, fn
+        nil -> nil
+        entry -> %{entry | session: session}
+      end)
+      |> Enum.reject(fn {_token, entry} -> is_nil(entry) end)
+      |> Map.new()
+
+    {:reply, :ok, %__MODULE__{state | active: active}}
+  end
+
+  def handle_call(
         {:checkin, %Session{pool_checkout: %Checkout{} = checkout} = session, :ok},
         {caller, _ref},
         %__MODULE__{} = state
@@ -225,7 +258,13 @@ defmodule Favn.SQL.SessionPool do
 
       {%{owner: owner} = entry, active} ->
         {monitors, session} = release_active_monitor(state.monitors, entry, session)
-        state = %__MODULE__{state | active: active, monitors: monitors, discard_reasons: discard_reasons}
+
+        state = %__MODULE__{
+          state
+          | active: active,
+            monitors: monitors,
+            discard_reasons: discard_reasons
+        }
 
         cond do
           not is_nil(discard_reason) ->
@@ -233,23 +272,22 @@ defmodule Favn.SQL.SessionPool do
             {:reply, :ok, state}
 
           owner == caller ->
-          {:reply, :ok,
-           return_to_idle(
-              state,
-              session,
-              checkout
-           )}
+            {:reply, :ok,
+             return_to_idle(
+               state,
+               session,
+               checkout
+             )}
 
           true ->
-          close_session(session)
-          {:reply, :ok, state}
+            close_session(session)
+            {:reply, :ok, state}
         end
     end
   end
 
   def handle_call(
-        {:checkin, %Session{pool_checkout: %Checkout{} = checkout} = session,
-         {:discard, reason}},
+        {:checkin, %Session{pool_checkout: %Checkout{} = checkout} = session, {:discard, reason}},
         _from,
         %__MODULE__{} = state
       ) do
@@ -257,6 +295,7 @@ defmodule Favn.SQL.SessionPool do
     monitors = if entry, do: Map.delete(state.monitors, entry.monitor), else: state.monitors
     if entry, do: Process.demonitor(entry.monitor, [:flush])
     close_session(session, reason)
+
     {:reply, :ok,
      %__MODULE__{
        state
@@ -273,6 +312,15 @@ defmodule Favn.SQL.SessionPool do
 
   def handle_call(:diagnostics, _from, %__MODULE__{} = state) do
     {:reply, build_diagnostics(state), state}
+  end
+
+  def handle_call(:reset, _from, %__MODULE__{} = state) do
+    close_all_sessions(state, :pool_reset)
+    demonitor_all(state.monitors)
+    demonitor_all(state.creator_monitors)
+    demonitor_all(state.waiter_monitors)
+
+    {:reply, :ok, %__MODULE__{}}
   end
 
   def handle_call({:mark_discard, token, reason}, _from, %__MODULE__{} = state)
@@ -352,15 +400,7 @@ defmodule Favn.SQL.SessionPool do
 
   @impl true
   def terminate(reason, %__MODULE__{} = state) do
-    state.idle
-    |> Map.values()
-    |> List.flatten()
-    |> Enum.each(&close_session(&1.session, {:pool_shutdown, reason}))
-
-    state.active
-    |> Map.values()
-    |> Enum.each(&close_session(&1.session, {:pool_shutdown, reason}))
-
+    close_all_sessions(state, {:pool_shutdown, reason})
     :ok
   end
 
@@ -416,7 +456,8 @@ defmodule Favn.SQL.SessionPool do
       {:noreply,
        %__MODULE__{
          state
-         | waiters: Map.update(state.waiters, hash, :queue.from_list([waiter]), &:queue.in(waiter, &1)),
+         | waiters:
+             Map.update(state.waiters, hash, :queue.from_list([waiter]), &:queue.in(waiter, &1)),
            waiter_monitors: Map.put(state.waiter_monitors, monitor, hash)
        }}
     else
@@ -463,7 +504,16 @@ defmodule Favn.SQL.SessionPool do
           {%{session: %Session{} = session, key: key, config: config}, idle} ->
             {{:value, waiter}, queue} = :queue.out(queue)
             {waiter_monitors, wait_ms} = release_waiter_monitor(state.waiter_monitors, waiter)
-            {session, state} = activate_idle_session(%__MODULE__{state | idle: idle}, session, key, config, waiter.owner)
+
+            {session, state} =
+              activate_idle_session(
+                %__MODULE__{state | idle: idle},
+                session,
+                key,
+                config,
+                waiter.owner
+              )
+
             GenServer.reply(waiter.from, {:ok, session})
             emit_pool_checkout(:hit, hash, wait_ms)
 
@@ -500,24 +550,41 @@ defmodule Favn.SQL.SessionPool do
     session = %Session{session | pool_checkout: nil}
 
     if config.enabled and config.max_idle_per_key > 0 do
-      entries = Map.get(state.idle, key.hash, [])
+      return_to_idle_with_external_lease(state, session, key, config)
+    else
+      close_session(session)
+      state
+    end
+  end
 
-      if length(entries) < config.max_idle_per_key do
-        token = make_ref()
-        Process.send_after(self(), {:evict_idle, key.hash, token}, config.idle_timeout_ms)
+  defp return_to_idle_with_external_lease(
+         %__MODULE__{} = state,
+         %Session{} = session,
+         key,
+         config
+       ) do
+    entries = Map.get(state.idle, key.hash, [])
 
-        entry = %{
-          session: session,
-          key: key,
-          config: config,
-          token: token,
-          idle_since: monotonic_ms()
-        }
+    if length(entries) < config.max_idle_per_key do
+      case Admission.externalize_session(session.admission_lease, self()) do
+        {:ok, lease} ->
+          session = %Session{session | admission_lease: lease}
+          token = make_ref()
+          Process.send_after(self(), {:evict_idle, key.hash, token}, config.idle_timeout_ms)
 
-        %__MODULE__{state | idle: Map.put(state.idle, key.hash, [entry | entries])}
-      else
-        close_session(session)
-        state
+          entry = %{
+            session: session,
+            key: key,
+            config: config,
+            token: token,
+            idle_since: monotonic_ms()
+          }
+
+          %__MODULE__{state | idle: Map.put(state.idle, key.hash, [entry | entries])}
+
+        {:error, reason} ->
+          close_session(session, {:idle_admission_transfer_failed, reason})
+          state
       end
     else
       close_session(session)
@@ -592,6 +659,23 @@ defmodule Favn.SQL.SessionPool do
         Admission.release_session(lease)
         :ok
     end
+  end
+
+  defp close_all_sessions(%__MODULE__{} = state, reason) do
+    state.idle
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.each(&close_session(&1.session, reason))
+
+    state.active
+    |> Map.values()
+    |> Enum.each(&close_session(&1.session, reason))
+  end
+
+  defp demonitor_all(monitors) do
+    monitors
+    |> Map.keys()
+    |> Enum.each(&Process.demonitor(&1, [:flush]))
   end
 
   defp build_diagnostics(state) do

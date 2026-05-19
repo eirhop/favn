@@ -9,7 +9,9 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
   alias Favn.SQL.PoolConfig
   alias Favn.SQL.Relation
   alias Favn.SQL.Result
+  alias Favn.SQL.SessionPool
   alias Favn.SQL.WritePlan
+  alias Favn.SQL.Admission.Limiter
 
   @events_table :favn_sql_client_bootstrap_events
 
@@ -274,6 +276,9 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
   end
 
   setup do
+    SessionPool.reset()
+    Limiter.reset()
+
     if :ets.whereis(@events_table) != :undefined do
       :ets.delete(@events_table)
     end
@@ -286,6 +291,9 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     registry_name = Module.concat(__MODULE__, "Registry#{System.unique_integer([:positive])}")
 
     on_exit(fn ->
+      SessionPool.reset()
+      Limiter.reset()
+
       Application.delete_env(:favn, :sql_bootstrap_mode)
       Application.delete_env(:favn, :sql_pool_bootstrap_mode)
       Application.delete_env(:favn, :sql_materialize_mode)
@@ -314,7 +322,9 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
            ] = events()
   end
 
-  test "disconnects and releases the session when bootstrap fails", %{registry_name: registry_name} do
+  test "disconnects and releases the session when bootstrap fails", %{
+    registry_name: registry_name
+  } do
     start_registry(registry_name, AdapterWithBootstrap)
     Application.put_env(:favn, :sql_bootstrap_mode, :error)
 
@@ -396,21 +406,29 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     assert eventually(fn -> {:disconnect, conn} in events() end)
   end
 
-  test "different required catalog sets do not reuse pooled sessions", %{registry_name: registry_name} do
+  test "different required catalog sets do not reuse pooled sessions", %{
+    registry_name: registry_name
+  } do
     pool = %PoolConfig{enabled: true, max_idle_per_key: 2, idle_timeout_ms: 60_000}
     start_registry(registry_name, AdapterWithPool, %{pool: pool})
 
-    assert {:ok, first} = Client.connect(:warehouse, registry_name: registry_name, required_catalogs: ["raw"])
+    assert {:ok, first} =
+             Client.connect(:warehouse, registry_name: registry_name, required_catalogs: ["raw"])
+
     Client.disconnect(first)
 
-    assert {:ok, second} = Client.connect(:warehouse, registry_name: registry_name, required_catalogs: ["mart"])
+    assert {:ok, second} =
+             Client.connect(:warehouse, registry_name: registry_name, required_catalogs: ["mart"])
+
     Client.disconnect(second)
 
     assert Enum.count(events(), &match?({:connect, :warehouse, _conn}, &1)) == 2
     refute Enum.any?(events(), &match?({:validate, _conn}, &1))
   end
 
-  test "two concurrent checkouts never receive the same pooled session", %{registry_name: registry_name} do
+  test "two concurrent checkouts never receive the same pooled session", %{
+    registry_name: registry_name
+  } do
     pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
     start_registry(registry_name, AdapterWithPool, %{pool: pool})
 
@@ -430,7 +448,9 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     Client.disconnect(second_session)
   end
 
-  test "bootstrap failure retries and then succeeds for pooled creation", %{registry_name: registry_name} do
+  test "bootstrap failure retries and then succeeds for pooled creation", %{
+    registry_name: registry_name
+  } do
     pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
     start_registry(registry_name, AdapterWithPool, %{pool: pool})
     Application.put_env(:favn, :sql_pool_bootstrap_mode, :fail_once)
@@ -465,7 +485,9 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     assert {:disconnect, failed_conn} in events()
   end
 
-  test "successful raw execute discards the pooled session by default", %{registry_name: registry_name} do
+  test "successful raw execute discards the pooled session by default", %{
+    registry_name: registry_name
+  } do
     pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
     start_registry(registry_name, AdapterWithPool, %{pool: pool})
 
@@ -533,7 +555,9 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     conn = session.conn
 
     non_owner_disconnect = Task.async(fn -> Client.disconnect(session) end)
-    assert {:error, %Error{type: :invalid_checkout_owner, operation: :disconnect}} = Task.await(non_owner_disconnect)
+
+    assert {:error, %Error{type: :invalid_checkout_owner, operation: :disconnect}} =
+             Task.await(non_owner_disconnect)
 
     blocked = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
     assert {:ok, {:error, %Error{type: :admission_timeout}}} = Task.yield(blocked, 1_000)

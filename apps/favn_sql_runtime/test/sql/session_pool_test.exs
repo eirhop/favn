@@ -130,9 +130,41 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert eventually(fn -> Agent.get(context.tracker, & &1.disconnects) == 2 end)
   end
 
+  test "reset closes pooled sessions and releases admission leases", context do
+    key = pool_key(:reset)
+    config = %PoolConfig{enabled: true, max_idle_per_key: 2, idle_timeout_ms: 60_000}
+    idle_scope = {:test_scope, make_ref()}
+    active_scope = {:test_scope, make_ref()}
+
+    assert :ok = Limiter.acquire(idle_scope, 1, 50)
+    assert :ok = Limiter.acquire(active_scope, 1, 50)
+
+    idle = checked_out_session(context.tracker, key, config, self(), {:held, idle_scope, self()})
+
+    active =
+      checked_out_session(context.tracker, key, config, self(), {:held, active_scope, self()})
+
+    assert :ok = SessionPool.track_checkout(idle, name: context.pool_name)
+    assert :ok = SessionPool.checkin(idle, :ok, name: context.pool_name)
+    assert :ok = SessionPool.track_checkout(active, name: context.pool_name)
+
+    assert :ok = SessionPool.reset(name: context.pool_name)
+
+    assert %{active: 0, idle: 0, keys: []} = SessionPool.diagnostics(name: context.pool_name)
+    assert eventually(fn -> Agent.get(context.tracker, & &1.disconnects) == 2 end)
+    assert eventually(fn -> Limiter.acquire(idle_scope, 1, 10) == :ok end)
+    assert eventually(fn -> Limiter.acquire(active_scope, 1, 10) == :ok end)
+
+    Limiter.release(idle_scope)
+    Limiter.release(active_scope)
+  end
+
   test "supervisor shutdown closes sessions and releases admission leases", context do
     pool_name = Module.concat(__MODULE__, "SupervisorPool#{System.unique_integer([:positive])}")
-    {:ok, supervisor} = Supervisor.start_link([{SessionPool, name: pool_name}], strategy: :one_for_one)
+
+    {:ok, supervisor} =
+      Supervisor.start_link([{SessionPool, name: pool_name}], strategy: :one_for_one)
+
     key = pool_key(:supervisor_shutdown)
     config = %PoolConfig{enabled: true, max_idle_per_key: 2, idle_timeout_ms: 60_000}
     scope = {:test_scope, make_ref()}
@@ -186,7 +218,10 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert %{creating: 1, waiters: 0} = SessionPool.diagnostics(name: context.pool_name)
 
     send(waiter, :finish)
-    assert eventually(fn -> match?(%{creating: 0, waiters: 0}, SessionPool.diagnostics(name: context.pool_name)) end)
+
+    assert eventually(fn ->
+             match?(%{creating: 0, waiters: 0}, SessionPool.diagnostics(name: context.pool_name))
+           end)
   end
 
   test "pool keys hash stable inputs and sort required catalogs" do

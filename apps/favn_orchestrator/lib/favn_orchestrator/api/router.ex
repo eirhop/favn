@@ -1804,14 +1804,7 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp run_submit_opts(params) when is_map(params) do
-    opts = maybe_put_positive_int_opt([], :timeout_ms, Map.get(params, "timeout_ms"))
-
-    put_optional_positive_int_opt(
-      opts,
-      :pipeline_stage_concurrency,
-      params,
-      "pipeline_stage_concurrency"
-    )
+    {:ok, maybe_put_positive_int_opt([], :timeout_ms, Map.get(params, "timeout_ms"))}
   end
 
   defp submit_backfill_from_request(params) do
@@ -1882,29 +1875,14 @@ defmodule FavnOrchestrator.API.Router do
   end
 
   defp backfill_submit_opts(params, range_request) when is_map(params) do
-    opts =
-      []
-      |> Keyword.put(:range_request, range_request)
-      |> maybe_put_string_opt(:coverage_baseline_id, Map.get(params, "coverage_baseline_id"))
-      |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
-      |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
-      |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
-      |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
-
-    with {:ok, opts} <-
-           put_optional_positive_int_opt(
-             opts,
-             :backfill_child_concurrency,
-             params,
-             "backfill_child_concurrency"
-           ) do
-      put_optional_positive_int_opt(
-        opts,
-        :pipeline_stage_concurrency,
-        params,
-        "pipeline_stage_concurrency"
-      )
-    end
+    {:ok,
+     []
+     |> Keyword.put(:range_request, range_request)
+     |> maybe_put_string_opt(:coverage_baseline_id, Map.get(params, "coverage_baseline_id"))
+     |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
+     |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
+     |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
+     |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))}
   end
 
   defp backfill_repair_opts(params) when is_map(params) do
@@ -2175,15 +2153,6 @@ defmodule FavnOrchestrator.API.Router do
     do: Keyword.put(opts, key, value)
 
   defp maybe_put_positive_int_opt(opts, _key, _value), do: opts
-
-  defp put_optional_positive_int_opt(opts, key, params, param_key) do
-    case Map.fetch(params, param_key) do
-      :error -> {:ok, opts}
-      {:ok, nil} -> {:ok, opts}
-      {:ok, value} when is_integer(value) and value > 0 -> {:ok, Keyword.put(opts, key, value)}
-      {:ok, _value} -> {:error, {:invalid_positive_integer_option, key}}
-    end
-  end
 
   defp maybe_put_non_neg_int_opt(opts, key, value) when is_integer(value) and value >= 0,
     do: Keyword.put(opts, key, value)

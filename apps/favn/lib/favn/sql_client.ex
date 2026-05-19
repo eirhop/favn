@@ -65,6 +65,14 @@ defmodule Favn.SQLClient do
   process boundaries. If an asset spawns a `Task` that opens SQLClient sessions,
   wrap the task body with `with_required_catalogs/2` or pass
   `required_catalogs: [...]` explicitly.
+
+  DuckDB/DuckLake connections may use runner-local pooling. Disconnecting a
+  pooled session can return it to idle storage rather than physically closing it;
+  idle sessions keep catalog admission until they are reused or evicted. For
+  DuckLake with PostgreSQL metadata, observed deployments can use about three
+  PostgreSQL backend connections per concurrent DuckLake writer, so size
+  `write_concurrency` with that headroom instead of treating it as a raw
+  PostgreSQL connection count.
   """
 
   alias Favn.RelationRef

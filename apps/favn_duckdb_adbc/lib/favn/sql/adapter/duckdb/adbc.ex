@@ -21,6 +21,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   DuckLake metadata capacity controls such as conservative `write_concurrency`,
   PgBouncer, or scaling the PostgreSQL metadata database.
 
+  When DuckLake uses a PostgreSQL metadata catalog, one concurrent DuckLake
+  writer can use multiple PostgreSQL backend connections. In observed
+  deployments, one writer used about three PostgreSQL backends. Size
+  `write_concurrency` with that multiplier and leave headroom for admin tools,
+  migrations, monitoring, and other application traffic.
+
   ## DuckDB ADBC driver installation
 
   Production hosts must have a DuckDB ADBC-capable `libduckdb` installed or use
@@ -402,7 +408,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   defp catalog_write_policy(%Resolved{} = resolved, catalog, attach_config, secrets) do
-    policy = ConcurrencyPolicy.catalog(resolved, catalog, catalog_write_concurrency(attach_config))
+    policy =
+      ConcurrencyPolicy.catalog(resolved, catalog, catalog_write_concurrency(attach_config))
+
     %{policy | scope: catalog_policy_scope(resolved, catalog, attach_config, secrets)}
   end
 
@@ -414,7 +422,9 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
         {scope, strictest_policy_limit(Enum.map(scoped_policies, & &1.limit))}
       end)
 
-    Enum.map(policies, fn policy -> %{policy | limit: Map.fetch!(limits_by_scope, policy.scope)} end)
+    Enum.map(policies, fn policy ->
+      %{policy | limit: Map.fetch!(limits_by_scope, policy.scope)}
+    end)
   end
 
   defp strictest_policy_limit(limits) do
@@ -537,8 +547,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     end
   end
 
-  defp ducklake_attach?(config) when is_map(config), do: Map.get(config, :type) in [:ducklake, "ducklake"]
-  defp ducklake_attach?(config) when is_list(config), do: Keyword.get(config, :type) in [:ducklake, "ducklake"]
+  defp ducklake_attach?(config) when is_map(config),
+    do: Map.get(config, :type) in [:ducklake, "ducklake"]
+
+  defp ducklake_attach?(config) when is_list(config),
+    do: Keyword.get(config, :type) in [:ducklake, "ducklake"]
+
   defp ducklake_attach?(_config), do: false
 
   defp attach_meta_secret(config) when is_map(config) do
@@ -575,8 +589,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     end
   end
 
-  defp postgres_secret?(config) when is_map(config), do: Map.get(config, :type) in [:postgres, "postgres"]
-  defp postgres_secret?(config) when is_list(config), do: Keyword.get(config, :type) in [:postgres, "postgres"]
+  defp postgres_secret?(config) when is_map(config),
+    do: Map.get(config, :type) in [:postgres, "postgres"]
+
+  defp postgres_secret?(config) when is_list(config),
+    do: Keyword.get(config, :type) in [:postgres, "postgres"]
+
   defp postgres_secret?(_config), do: false
 
   defp normalize_metadata_host(host) when is_binary(host) do

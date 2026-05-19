@@ -6,9 +6,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   stage are independent siblings, so a failed sibling must not cancel the rest
   of that stage. The current stage is drained and all submitted sibling outcomes
   are persisted before the run decides whether later stages may continue.
-  Operators may cap stage admission with `:pipeline_stage_concurrency`; finite
-  caps submit one chunk at a time and stop before unsubmitted chunks after a
-  failed chunk.
 
   Freshness classification happens between drained stages: already-fresh nodes
   are recorded as skipped, successful executed nodes dirty downstream nodes in
@@ -219,84 +216,24 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_client,
          runner_opts
        ) do
-    case pipeline_stage_concurrency(run_state) do
-      nil ->
-        case run_stage_attempt(
-               run_state,
-               version,
-               stage,
-               node_keys,
-               decisions,
-               1,
-               runner_client,
-               runner_opts,
-               []
-             ) do
-          {:ok, next_run, stage_results} ->
-            {:ok, next_run, stage_results, node_keys}
+    case run_stage_attempt(
+           run_state,
+           version,
+           stage,
+           node_keys,
+           decisions,
+           1,
+           runner_client,
+           runner_opts,
+           []
+         ) do
+      {:ok, next_run, stage_results} ->
+        {:ok, next_run, stage_results, node_keys}
 
-          {:error, failed_run, stage_results, attempted_node_keys} ->
-            {:error, failed_run, stage_results, attempted_node_keys}
-        end
-
-      limit ->
-        run_stage_chunks(
-          run_state,
-          version,
-          stage,
-          Enum.chunk_every(node_keys, limit),
-          decisions,
-          runner_client,
-          runner_opts,
-          []
-        )
+      {:error, failed_run, stage_results, attempted_node_keys} ->
+        {:error, failed_run, stage_results, attempted_node_keys}
     end
   end
-
-  defp run_stage_chunks(
-         %RunState{} = run_state,
-         %Version{} = version,
-         stage,
-         chunks,
-         decisions,
-         runner_client,
-         runner_opts,
-         acc_results
-       ) do
-    Enum.reduce_while(chunks, {:ok, run_state, acc_results, []}, fn chunk,
-                                                                    {:ok, current_run,
-                                                                     current_results,
-                                                                     executed_keys} ->
-      case run_stage_attempt(
-             current_run,
-             version,
-             stage,
-             chunk,
-             decisions,
-             1,
-             runner_client,
-             runner_opts,
-             current_results
-           ) do
-        {:ok, next_run, next_results} ->
-          {:cont, {:ok, next_run, next_results, executed_keys ++ chunk}}
-
-        {:error, failed_run, next_results, attempted_node_keys} ->
-          {:halt,
-           {:error, failed_run, next_results, Enum.uniq(executed_keys ++ attempted_node_keys)}}
-      end
-    end)
-  end
-
-  defp pipeline_stage_concurrency(%RunState{metadata: metadata}) when is_map(metadata) do
-    case Map.get(metadata, :effective_concurrency) do
-      %{pipeline_stage_concurrency: limit} when is_integer(limit) and limit > 0 -> limit
-      %{"pipeline_stage_concurrency" => limit} when is_integer(limit) and limit > 0 -> limit
-      _other -> nil
-    end
-  end
-
-  defp pipeline_stage_concurrency(%RunState{}), do: nil
 
   defp classify_pipeline_stage(
          %RunState{} = run_state,

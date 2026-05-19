@@ -19,10 +19,7 @@ defmodule Mix.Tasks.Favn.Backfill do
   windows. Use `--dry-run` to print the resolved windows without creating runs.
   By default `submit` waits for the parent backfill run to finish. Use
   `--no-wait` to return after submission. Use `--wait-timeout-ms` for local
-  polling and `--run-timeout-ms` for child run execution timeout. Use
-  `--backfill-child-concurrency N` to cap active child window runs and
-  `--pipeline-stage-concurrency N` to cap concurrently submitted runnable assets
-  inside each child pipeline stage.
+  polling and `--run-timeout-ms` for child run execution timeout.
   """
 
   alias Favn.Dev
@@ -39,8 +36,6 @@ defmodule Mix.Tasks.Favn.Backfill do
     wait: :boolean,
     wait_timeout_ms: :integer,
     run_timeout_ms: :integer,
-    backfill_child_concurrency: :integer,
-    pipeline_stage_concurrency: :integer,
     timeout_ms: :integer,
     poll_interval_ms: :integer
   ]
@@ -329,12 +324,6 @@ defmodule Mix.Tasks.Favn.Backfill do
 
   defp error_message({:invalid_option, :run_timeout_ms}),
     do: "--run-timeout-ms must be greater than 0"
-
-  defp error_message({:invalid_option, :backfill_child_concurrency}),
-    do: "--backfill-child-concurrency must be greater than 0"
-
-  defp error_message({:invalid_option, :pipeline_stage_concurrency}),
-    do: "--pipeline-stage-concurrency must be greater than 0"
 
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"

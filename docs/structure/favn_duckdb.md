@@ -29,3 +29,7 @@ max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pool reuse is safe only for
 matching connection/config hash, required catalog set, and adapter fingerprint;
 checked-out sessions are exclusive to one asset execution. Pooling must not
 bypass catalog/write admission or retry unknown-outcome writes.
+DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
+backend connections per concurrent DuckLake writer; observed deployments used
+about three. Size DuckLake `write_concurrency` with that multiplier and leave
+headroom for admin tools, migrations, monitoring, and other application traffic.

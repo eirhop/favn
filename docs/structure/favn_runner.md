@@ -42,3 +42,6 @@ owner. The pool and same-key single-flight creation do not coordinate across
 runner nodes, do not increase catalog/write concurrency, and do not replace
 finite DuckLake catalog `write_concurrency`, especially on low-tier Azure
 PostgreSQL metadata stores.
+For DuckLake with PostgreSQL metadata, one concurrent DuckLake writer can use
+multiple PostgreSQL backend connections; observed deployments used about three,
+so size `write_concurrency` with that multiplier and leave operational headroom.

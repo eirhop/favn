@@ -457,6 +457,12 @@ creation reduce repeated attach/bootstrap pressure in a single BEAM, but they do
 not replace catalog write admission and do not solve multi-runner distributed
 metadata pressure by themselves.
 
+When DuckLake uses PostgreSQL for metadata, one concurrent DuckLake writer can
+use multiple PostgreSQL backend connections. In observed deployments, one writer
+used about three PostgreSQL backends. Size `write_concurrency` with that
+multiplier, plus headroom for admin tools, migrations, monitoring, and other
+application traffic.
+
 Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module
 schemas. Add `production_storage_schema_fields/0` when production local-file

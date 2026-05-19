@@ -153,26 +153,6 @@ defmodule Favn.Dev.RunTest do
     assert %{"timeout_ms" => 30_000} = submit_body()
   end
 
-  test "run_pipeline/2 forwards pipeline stage concurrency cap", %{
-    root_dir: root_dir
-  } do
-    parent = self()
-
-    {:ok, base_url, _server} =
-      start_server([active_manifest_response(), run_response("run_1")], parent: parent)
-
-    write_running_runtime!(root_dir, base_url)
-
-    assert {:ok, %{"id" => "run_1", "status" => "running"}} =
-             Dev.run_pipeline(MyApp.Pipeline,
-               root_dir: root_dir,
-               wait: false,
-               pipeline_stage_concurrency: 3
-             )
-
-    assert %{"pipeline_stage_concurrency" => 3} = submit_body()
-  end
-
   test "run_pipeline/2 keeps --timeout-ms as wait and execution timeout alias", %{
     root_dir: root_dir
   } do
@@ -202,9 +182,6 @@ defmodule Favn.Dev.RunTest do
 
     assert {:error, {:invalid_option, :run_timeout_ms}} =
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, run_timeout_ms: 0)
-
-    assert {:error, {:invalid_option, :pipeline_stage_concurrency}} =
-             Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, pipeline_stage_concurrency: 0)
 
     assert {:error, {:invalid_option, :poll_interval_ms}} =
              Dev.run_pipeline(MyApp.Pipeline, root_dir: root_dir, poll_interval_ms: -1)
