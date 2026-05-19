@@ -427,11 +427,68 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
 
     assert detail.summary.status == :error
+    assert detail.summary.progress.label == "1/3 steps"
 
     steps_by_ref = Map.new(detail.steps, &{&1.asset_ref, &1})
     assert steps_by_ref["MyApp.Assets.Gold.asset"].status == :error
     assert steps_by_ref["MyApp.Assets.Silver.asset"].status == :running
     assert steps_by_ref["MyApp.Assets.Bronze.asset"].status == :pending
+  end
+
+  test "pending rows keep repeated asset refs for distinct planned nodes" do
+    ref = {MyApp.Assets.Gold, :asset}
+    window_a = %{key: "window:a", label: "Window A"}
+    window_b = %{key: "window:b", label: "Window B"}
+    node_a = {ref, "window:a"}
+    node_b = {ref, "window:b"}
+
+    run =
+      run("pipeline_repeated_asset_gap", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [ref])
+      |> Map.put(
+        :plan,
+        %Favn.Plan{
+          target_refs: [ref],
+          target_node_keys: [node_a, node_b],
+          nodes: %{
+            node_a => plan_node(ref, node_a, window_a, 0),
+            node_b => plan_node(ref, node_b, window_b, 0)
+          },
+          topo_order: [ref],
+          stages: [[ref]],
+          node_stages: [[node_a, node_b]]
+        }
+      )
+      |> RunState.transition(
+        status: :running,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: node_a,
+              ref: ref,
+              window: window_a,
+              stage: 0,
+              status: :running,
+              started_at: ~U[2026-05-01 00:00:00Z],
+              asset_step_id: "window-a-step"
+            })
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert length(detail.steps) == 2
+
+    assert Enum.map(detail.steps, & &1.asset_ref) == [
+             "MyApp.Assets.Gold.asset",
+             "MyApp.Assets.Gold.asset"
+           ]
+
+    assert Enum.map(detail.steps, & &1.window.key) == ["window:a", "window:b"]
+    assert Enum.map(detail.steps, & &1.status) == [:running, :pending]
   end
 
   test "backfill parent detail includes failed child window context" do
@@ -582,6 +639,18 @@ defmodule FavnOrchestrator.RunReadModelTest do
       topo_order: refs,
       stages: Enum.map(refs, &[&1]),
       node_stages: Enum.map(node_keys, &[&1])
+    }
+  end
+
+  defp plan_node(ref, node_key, window, stage) do
+    %{
+      ref: ref,
+      node_key: node_key,
+      window: window,
+      upstream: [],
+      downstream: [],
+      stage: stage,
+      action: :run
     }
   end
 

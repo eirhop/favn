@@ -37,6 +37,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
   @type step_summary :: %{
           required(:id) => String.t(),
+          required(:node_key) => Favn.Plan.node_key() | nil,
           required(:asset_ref) => String.t(),
           required(:canonical_asset_ref) => Favn.Ref.t() | nil,
           required(:status) => atom() | nil,
@@ -268,7 +269,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp progress(%RunState{} = run, role, _backfill_windows) do
     steps = persisted_steps(run)
-    total = max(length(steps), length(run.target_refs || []))
+    total = progress_total(run, steps)
 
     unit =
       if(role in [:pipeline, :backfill_child] or has_node_results?(run),
@@ -291,6 +292,15 @@ defmodule FavnOrchestrator.RunReadModel do
           label: "#{completed}/#{total} #{unit_label(unit, total)}",
           counts: %{total: total, completed: completed}
         }
+    end
+  end
+
+  defp progress_total(%RunState{} = run, steps) do
+    expected = expected_step_count(run)
+
+    cond do
+      pipeline_like_run?(run) and expected > 0 -> max(length(steps), expected)
+      true -> max(length(steps), length(run.target_refs || []))
     end
   end
 
@@ -484,21 +494,43 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp append_waiting_steps(steps, %RunState{status: status} = run, event_steps, settling?)
        when status in [:pending, :running] or settling? do
-    known_refs =
-      (Enum.map(steps, & &1.asset_ref) ++ Enum.map(event_steps, & &1.asset_ref))
-      |> Enum.reject(&is_nil/1)
-      |> MapSet.new()
+    known = known_waiting_identities(steps, event_steps)
+
+    candidates = planned_waiting_candidates(run)
+    candidate_ref_counts = Enum.frequencies_by(candidates, & &1.asset_ref)
 
     waiting_steps =
-      run
-      |> planned_waiting_candidates()
-      |> Enum.reject(&MapSet.member?(known_refs, &1.asset_ref))
+      candidates
+      |> Enum.reject(&known_waiting_candidate?(run.id, known, &1, candidate_ref_counts))
       |> Enum.map(&waiting_step(run.id, &1))
 
     steps ++ waiting_steps
   end
 
   defp append_waiting_steps(steps, _run, _event_steps, _settling?), do: steps
+
+  defp known_waiting_identities(steps, event_steps) do
+    all_steps = steps ++ event_steps
+
+    %{
+      ids: all_steps |> Enum.map(& &1.id) |> Enum.reject(&is_nil/1) |> MapSet.new(),
+      node_keys:
+        all_steps |> Enum.map(&Map.get(&1, :node_key)) |> Enum.reject(&is_nil/1) |> MapSet.new(),
+      asset_refs: all_steps |> Enum.map(& &1.asset_ref) |> Enum.reject(&is_nil/1) |> MapSet.new()
+    }
+  end
+
+  defp known_waiting_candidate?(run_id, known, %{node_key: node_key} = candidate, ref_counts)
+       when not is_nil(node_key) do
+    MapSet.member?(known.node_keys, node_key) ||
+      MapSet.member?(known.ids, candidate_step_id(run_id, candidate)) ||
+      (Map.get(ref_counts, candidate.asset_ref) == 1 and
+         MapSet.member?(known.asset_refs, candidate.asset_ref))
+  end
+
+  defp known_waiting_candidate?(_run_id, known, candidate, _ref_counts) do
+    MapSet.member?(known.asset_refs, candidate.asset_ref)
+  end
 
   defp planned_waiting_candidates(%RunState{plan: %Favn.Plan{nodes: nodes, node_stages: stages}})
        when is_map(nodes) and map_size(nodes) > 0 do
@@ -540,9 +572,14 @@ defmodule FavnOrchestrator.RunReadModel do
     end)
   end
 
+  defp candidate_step_id(run_id, candidate) do
+    AssetStepIdentity.asset_step_id(run_id, candidate.node_key, candidate.canonical_asset_ref)
+  end
+
   defp waiting_step(run_id, candidate) do
     %{
-      id: AssetStepIdentity.asset_step_id(run_id, candidate.node_key, candidate.asset_ref),
+      id: candidate_step_id(run_id, candidate),
+      node_key: candidate.node_key,
       asset_ref: candidate.asset_ref,
       canonical_asset_ref: candidate.canonical_asset_ref,
       status: :pending,
@@ -588,6 +625,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
     %{
       id: step_id,
+      node_key: node_key,
       asset_ref: asset_ref,
       canonical_asset_ref: canonical_asset_ref,
       status: Map.get(result, :status) || Map.get(result, "status"),
@@ -618,6 +656,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
     %{
       id: event_step_id(run_id, latest),
+      node_key: Map.get(data, :node_key) || Map.get(data, "node_key"),
       asset_ref: asset_ref,
       canonical_asset_ref: latest.asset_ref,
       status: event_step_status(latest.event_type, latest.status),
