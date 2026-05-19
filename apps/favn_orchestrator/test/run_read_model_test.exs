@@ -491,6 +491,27 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert Enum.map(detail.steps, & &1.status) == [:running, :pending]
   end
 
+  test "no-plan active run creates distinct pending ids for multiple targets" do
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    silver_ref = {MyApp.Assets.Silver, :asset}
+
+    run =
+      run("active_no_plan_multiple_targets", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [gold_ref, silver_ref])
+      |> RunState.transition(status: :running, result: %{node_results: []})
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert Enum.map(detail.steps, & &1.asset_ref) == [
+             "MyApp.Assets.Gold.asset",
+             "MyApp.Assets.Silver.asset"
+           ]
+
+    assert detail.steps |> Enum.map(& &1.id) |> Enum.uniq() |> length() == 2
+  end
+
   test "backfill parent detail includes failed child window context" do
     parent =
       run("backfill_parent_failure", submit_kind: :backfill_pipeline)

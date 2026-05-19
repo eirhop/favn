@@ -565,7 +565,7 @@ defmodule FavnOrchestrator.RunReadModel do
       %{
         node_key: nil,
         asset_ref: public_ref(ref),
-        canonical_asset_ref: nil,
+        canonical_asset_ref: ref,
         stage: nil,
         window: nil
       }
