@@ -395,6 +395,58 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert length(refresh_run.plan.target_node_keys) == 2
   end
 
+  test "refresh timeline marks latest successful run without latest freshness state" do
+    ref = {MyApp.ReportingBaseline, :asset}
+    now = ~U[2026-05-19 12:00:00Z]
+    {:ok, period} = Favn.TimePeriod.current(:month, now, "Etc/UTC")
+    window_key = Favn.Window.Key.new!(:month, period.start_at, "Etc/UTC")
+
+    manifest = %Manifest{
+      assets: [
+        freshness_asset(
+          ref,
+          Favn.Freshness.Policy.from_value!(window_success: true),
+          [],
+          WindowSpec.new!(:month)
+        )
+      ]
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: "mv_refresh_marker")
+    assert :ok = ManifestStore.register_manifest(version)
+    assert :ok = ManifestStore.set_active_manifest("mv_refresh_marker")
+
+    assert :ok =
+             Storage.put_run(
+               run_state("run_reporting_baseline", ref, :ok, now, "mv_refresh_marker")
+             )
+
+    assert :ok =
+             Storage.put_asset_freshness_state(
+               freshness_state(ref, "reporting:v1", now,
+                 run_id: "run_reporting_baseline",
+                 freshness_key: Favn.Freshness.Key.window!(window_key),
+                 node_key: {ref, window_key},
+                 manifest_version_id: "mv_refresh_marker"
+               )
+             )
+
+    assert {:ok, detail} =
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.ReportingBaseline:asset",
+               now: now
+             )
+
+    assert detail.freshness.state == :fresh
+
+    assert data_window = Enum.find(detail.data_coverage_timeline, &(&1.value == "2026-05"))
+    assert data_window.status == :covered
+    assert data_window.latest_run_id == "run_reporting_baseline"
+
+    assert refresh_window = Enum.find(detail.refresh_timeline, &(&1.value == "2026-05-19"))
+    assert refresh_window.status == :fresh
+    assert refresh_window.latest_run_id == "run_reporting_baseline"
+  end
+
   test "hourly asset detail timeline uses hours without collapsing same-day freshness" do
     window_spec = WindowSpec.new!(:hour, required: true)
 

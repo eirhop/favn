@@ -17,6 +17,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
+  alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.ManifestCodec
   alias FavnOrchestrator.Storage.RunEventCodec
@@ -1313,7 +1314,7 @@ defmodule Favn.Storage.Adapter.Postgres do
         optional_atom_to_string(entry.source),
         optional_atom_to_string(entry.stream),
         entry.message,
-        Jason.encode!(entry.metadata || %{}),
+        Jason.encode!(JsonSafe.data(entry.metadata || %{})),
         encode_log_entry(entry),
         entry.truncated == true,
         now

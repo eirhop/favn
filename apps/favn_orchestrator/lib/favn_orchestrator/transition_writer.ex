@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.TransitionWriter do
 
   alias FavnOrchestrator.Backfill
   alias FavnOrchestrator.Events
+  alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunEvent
@@ -29,6 +30,7 @@ defmodule FavnOrchestrator.TransitionWriter do
 
         Events.broadcast_run_event(event)
         project_derived_state(run_state, event_type, data)
+        safe_emit_transition_log(event)
         :ok
 
       :idempotent ->
@@ -54,6 +56,71 @@ defmodule FavnOrchestrator.TransitionWriter do
     safe_project(Backfill.Projector, run_state, event_type, data)
     safe_project(Backfill.CoverageProjector, run_state, event_type, data)
   end
+
+  defp safe_emit_transition_log(%RunEvent{entity: :step} = event) do
+    entry = %{
+      run_id: event.run_id,
+      asset_step_id: data_field(event, :asset_step_id),
+      node_key: data_field(event, :node_key),
+      asset_ref: event.asset_ref,
+      runner_execution_id: data_field(event, :runner_execution_id),
+      attempt: data_field(event, :attempt),
+      occurred_at: event.occurred_at,
+      level: transition_log_level(event.event_type),
+      source: :orchestrator,
+      message: transition_log_message(event.event_type),
+      metadata: transition_log_metadata(event),
+      producer_id: "orchestrator:#{event.run_id}",
+      producer_sequence: event.sequence
+    }
+
+    case LogWriter.write(entry) do
+      {:ok, _entries} -> :ok
+      {:error, reason} -> Logger.warning("transition log write failed: #{inspect(reason)}")
+    end
+  rescue
+    error -> Logger.warning("transition log write raised: #{Exception.message(error)}")
+  catch
+    kind, reason -> Logger.warning("transition log write exited: #{inspect({kind, reason})}")
+  end
+
+  defp safe_emit_transition_log(%RunEvent{}), do: :ok
+
+  defp transition_log_level(event_type)
+       when event_type in [:step_failed, :step_timed_out, :step_cancelled, :step_blocked],
+       do: :error
+
+  defp transition_log_level(:step_retry_scheduled), do: :warning
+  defp transition_log_level(_event_type), do: :info
+
+  defp transition_log_message(:step_started), do: "asset execution started"
+  defp transition_log_message(:step_finished), do: "asset execution finished"
+  defp transition_log_message(:step_failed), do: "asset execution failed"
+  defp transition_log_message(:step_timed_out), do: "asset execution timed out"
+  defp transition_log_message(:step_cancelled), do: "asset execution cancelled"
+  defp transition_log_message(:step_retry_scheduled), do: "asset execution retry scheduled"
+  defp transition_log_message(:step_skipped_fresh), do: "asset skipped because it is fresh"
+  defp transition_log_message(:step_blocked), do: "asset execution blocked"
+
+  defp transition_log_message(event_type) when is_atom(event_type),
+    do: event_type |> Atom.to_string() |> String.replace("_", " ")
+
+  defp transition_log_message(event_type), do: to_string(event_type)
+
+  defp transition_log_metadata(%RunEvent{} = event) do
+    %{
+      event_type: event.event_type,
+      status: event.status,
+      stage: event.stage,
+      data: event.data || %{}
+    }
+  end
+
+  defp data_field(%RunEvent{data: data}, key) when is_map(data) do
+    Map.get(data, key) || Map.get(data, Atom.to_string(key))
+  end
+
+  defp data_field(%RunEvent{}, _key), do: nil
 
   defp safe_project(projector, %RunState{} = run_state, event_type, data) do
     case projector.project_transition(run_state, event_type, data) do

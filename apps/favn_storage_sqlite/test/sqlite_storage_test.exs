@@ -123,7 +123,11 @@ defmodule Favn.SQLiteStorageTest do
         source: :runner,
         stream: :stdout,
         message: "line one\nline two",
-        metadata: %{password: "secret", keep: "visible"}
+        metadata: %{
+          password: "secret",
+          keep: "visible",
+          node_key: {{Favn.SQLiteStorageTest, :sample_asset}, nil}
+        }
       })
 
     second =
@@ -155,6 +159,12 @@ defmodule Favn.SQLiteStorageTest do
              )
 
     assert Jason.decode!(metadata_blob)["password"] == "[REDACTED]"
+
+    assert Jason.decode!(metadata_blob)["node_key"] == [
+             %{"module" => "Elixir.Favn.SQLiteStorageTest", "name" => "sample_asset"},
+             nil
+           ]
+
     assert Jason.decode!(log_blob)["metadata"]["password"] == "[REDACTED]"
     refute metadata_blob =~ "secret"
     refute log_blob =~ "secret"

@@ -2150,6 +2150,12 @@ defmodule FavnOrchestrator do
   defp refresh_status_from_latest(_freshness, %{status: status})
        when status in [:running, :pending], do: :running
 
+  defp refresh_status_from_latest(_freshness, %{status: :ok}), do: :fresh
+
+  defp refresh_status_from_latest(_freshness, %{status: status})
+       when status in [:partial, :error, :cancelled, :timed_out],
+       do: :failed
+
   defp refresh_status_from_latest(_freshness, _run), do: :unknown
 
   defp default_timeline_run_config(source, kind, value, timezone) do
