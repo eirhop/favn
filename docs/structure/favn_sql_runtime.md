@@ -30,6 +30,10 @@ concurrency. The SQL client enforces checkout ownership, so copied session struc
 cannot be operated on or disconnected by non-owner processes. Raw
 execute/materialize/transaction paths discard pooled sessions after mutation
 unless explicitly proven pool-safe internally.
+Idle pooled sessions retain catalog admission until reuse or eviction. That keeps
+physical pooled sessions inside the configured catalog budget, but with finite
+catalog concurrency an idle session for one pool key can block a different pool
+key that needs the same catalog until the idle session is reused or closed.
 
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits
@@ -46,6 +50,12 @@ their owned relation catalog when they open that same relation connection withou
 passing `required_catalogs` explicitly. Spawned asset tasks do not inherit that
 process-local default; wrap child process bodies with
 `Favn.SQLClient.with_required_catalogs/2` or pass `required_catalogs` explicitly.
+
+DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
+backend connections per admitted DuckLake writer. Observed deployments used about
+three PostgreSQL backends per concurrent writer, so operators should size
+DuckLake `write_concurrency` with that multiplier and leave headroom for admin
+tools, migrations, monitoring, and other traffic.
 
 Retry handling must stay operation-aware. Bounded retries are acceptable around
 session creation/bootstrap and read-only inspection/query paths. Blind retries of

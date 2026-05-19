@@ -90,7 +90,10 @@ defmodule Favn.AI do
     auth can fetch managed identity or Azure CLI tokens during session bootstrap
     for DuckLake PostgreSQL metadata catalogs. The PostgreSQL `user` must be the
     role created for the Entra principal, and token expiry requires reconnect and
-    rebootstrap.
+    rebootstrap. When sizing DuckLake PostgreSQL metadata capacity, remember that
+    one concurrent DuckLake writer can use multiple PostgreSQL backend
+    connections; observed deployments used about three backends per writer, so
+    `write_concurrency` needs PostgreSQL headroom beyond the logical writer count.
   - To run SQL queries from plain Elixir code using named Favn connections, read
     `Favn.SQLClient`.
   - To compile a manifest, read `Favn generate_manifest`; if the project uses
@@ -158,7 +161,8 @@ defmodule Favn.AI do
   - `Favn.SQL.Adapter.DuckDB`: when a DuckDB connection needs
     `config_schema_fields/0`, `open: [database: ...]`, keyed `duckdb.attach`
     catalogs, DuckLake session setup, Azure ADLS DuckDB secrets, PostgreSQL
-    metadata secret wiring, or catalog-level write admission
+    metadata secret wiring, DuckLake PostgreSQL connection sizing, or
+    catalog-level write admission
   - `Favn.SQL.Adapter.DuckDB.ADBC`: when the ADBC DuckDB adapter needs the same
     DuckDB/DuckLake config shape with explicit DuckDB driver control
   - `Favn.Azure.PostgresEntraToken`: when DuckDB bootstrap needs runtime Azure

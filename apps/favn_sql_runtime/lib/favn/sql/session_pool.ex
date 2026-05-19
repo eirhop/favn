@@ -12,6 +12,11 @@ defmodule Favn.SQL.SessionPool do
   Unsafe write/materialization/raw execution paths mark sessions for discard so
   mutated state is not returned to the idle pool unless the caller has explicitly
   proven the operation pool-safe.
+
+  Idle sessions retain any catalog admission leases they acquired during session
+  creation. This keeps pooled physical sessions inside configured catalog
+  capacity, but also means an idle session for one pool key may block a different
+  pool key for the same catalog until the idle session is reused or evicted.
   """
 
   use GenServer
@@ -145,6 +150,12 @@ defmodule Favn.SQL.SessionPool do
   @spec diagnostics(keyword()) :: diagnostics()
   def diagnostics(opts \\ []) do
     GenServer.call(pool_name(opts), :diagnostics)
+  end
+
+  @doc false
+  @spec reset(keyword()) :: :ok
+  def reset(opts \\ []) do
+    GenServer.call(pool_name(opts), :reset)
   end
 
   @impl true
@@ -303,6 +314,15 @@ defmodule Favn.SQL.SessionPool do
     {:reply, build_diagnostics(state), state}
   end
 
+  def handle_call(:reset, _from, %__MODULE__{} = state) do
+    close_all_sessions(state, :pool_reset)
+    demonitor_all(state.monitors)
+    demonitor_all(state.creator_monitors)
+    demonitor_all(state.waiter_monitors)
+
+    {:reply, :ok, %__MODULE__{}}
+  end
+
   def handle_call({:mark_discard, token, reason}, _from, %__MODULE__{} = state)
       when is_reference(token) do
     discard_reasons =
@@ -380,15 +400,7 @@ defmodule Favn.SQL.SessionPool do
 
   @impl true
   def terminate(reason, %__MODULE__{} = state) do
-    state.idle
-    |> Map.values()
-    |> List.flatten()
-    |> Enum.each(&close_session(&1.session, {:pool_shutdown, reason}))
-
-    state.active
-    |> Map.values()
-    |> Enum.each(&close_session(&1.session, {:pool_shutdown, reason}))
-
+    close_all_sessions(state, {:pool_shutdown, reason})
     :ok
   end
 
@@ -647,6 +659,23 @@ defmodule Favn.SQL.SessionPool do
         Admission.release_session(lease)
         :ok
     end
+  end
+
+  defp close_all_sessions(%__MODULE__{} = state, reason) do
+    state.idle
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.each(&close_session(&1.session, reason))
+
+    state.active
+    |> Map.values()
+    |> Enum.each(&close_session(&1.session, reason))
+  end
+
+  defp demonitor_all(monitors) do
+    monitors
+    |> Map.keys()
+    |> Enum.each(&Process.demonitor(&1, [:flush]))
   end
 
   defp build_diagnostics(state) do

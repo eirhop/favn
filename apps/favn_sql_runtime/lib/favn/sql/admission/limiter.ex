@@ -35,6 +35,12 @@ defmodule Favn.SQL.Admission.Limiter do
     GenServer.call(__MODULE__, {:transfer, scope, from_pid, to_pid})
   end
 
+  @spec transfer_many([{scope(), pid(), pid()}]) :: :ok | {:error, :not_found}
+  def transfer_many(transfers) when is_list(transfers) do
+    ensure_started()
+    GenServer.call(__MODULE__, {:transfer_many, transfers})
+  end
+
   @spec reset() :: :ok
   def reset do
     ensure_started()
@@ -71,6 +77,15 @@ defmodule Favn.SQL.Admission.Limiter do
     case transfer_holder(state, scope, from_pid, to_pid) do
       {:ok, state} -> {:reply, :ok, state}
       {:error, :not_found} -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:transfer_many, transfers}, _from, state) do
+    if Enum.all?(transfers, &holder_exists?(state, &1)) do
+      state = Enum.reduce(transfers, state, &transfer_holder!/2)
+      {:reply, :ok, state}
+    else
+      {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -184,6 +199,20 @@ defmodule Favn.SQL.Admission.Limiter do
         {:ok, state}
     end
   end
+
+  defp transfer_holder!({scope, from_pid, to_pid}, state) do
+    {:ok, state} = transfer_holder(state, scope, from_pid, to_pid)
+    state
+  end
+
+  defp holder_exists?(state, {scope, from_pid, to_pid})
+       when is_pid(from_pid) and is_pid(to_pid) do
+    state.holders
+    |> Map.get(scope, [])
+    |> Enum.any?(&(&1.pid == from_pid))
+  end
+
+  defp holder_exists?(_state, _transfer), do: false
 
   defp pop_first_holder([], _predicate), do: {nil, []}
 

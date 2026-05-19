@@ -17,6 +17,11 @@ defmodule Favn.SQL.Client do
   outcome failures are not blindly retried. Raw execute/materialize/transaction
   paths discard pooled sessions after mutation unless explicitly marked
   internally as pool-safe.
+
+  Idle pooled sessions keep their catalog admission leases until reuse or idle
+  eviction. With finite catalog concurrency, an idle session for one pool key can
+  block a new incompatible pool key that needs the same catalog until the idle
+  session is reused or closed.
   """
 
   alias Favn.Connection.Loader
@@ -87,20 +92,12 @@ defmodule Favn.SQL.Client do
   def disconnect(%Session{pool_checkout: %Checkout{} = checkout} = session) do
     case checkout_owner_error(session, :disconnect) do
       nil ->
-        try do
-          SessionPool.checkin(session, :ok)
-        after
-          Admission.detach_session(session.admission_lease)
-        end
+        disconnect_pooled_session(session)
 
       %Error{} = error ->
         SessionPool.mark_discard(checkout.token, discard_reason(:disconnect, error))
         {:error, error}
     end
-  rescue
-    _error -> :ok
-  catch
-    :exit, _ -> :ok
   end
 
   def disconnect(%Session{adapter: adapter, conn: conn, admission_lease: lease}) do
@@ -118,6 +115,41 @@ defmodule Favn.SQL.Client do
   end
 
   def disconnect(_session), do: :ok
+
+  defp disconnect_pooled_session(%Session{} = session) do
+    case checkin_pooled_session(session) do
+      :ok ->
+        Admission.detach_session(session.admission_lease)
+        :ok
+
+      {:error, _reason} ->
+        disconnect_directly(session)
+    end
+  end
+
+  defp checkin_pooled_session(%Session{} = session) do
+    SessionPool.checkin(session, :ok)
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp disconnect_directly(%Session{adapter: adapter, conn: conn, admission_lease: lease}) do
+    try do
+      _ = adapter.disconnect(conn, [])
+      Admission.release_session(lease)
+      :ok
+    rescue
+      _error ->
+        Admission.release_session(lease)
+        :ok
+    catch
+      :exit, _reason ->
+        Admission.release_session(lease)
+        :ok
+    end
+  end
 
   @spec capabilities(Session.t()) :: {:ok, Favn.SQL.Capabilities.t()} | {:error, term()}
   def capabilities(%Session{capabilities: capabilities}), do: {:ok, capabilities}

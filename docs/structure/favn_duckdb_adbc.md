@@ -29,3 +29,7 @@ adapter fingerprint match. Checked-out sessions are exclusive to one asset
 execution, and pooling must not increase catalog/write concurrency or retry
 unknown-outcome writes. Safe bounded retries are limited to session
 creation/bootstrap and read-only inspection/query paths.
+DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
+backend connections per concurrent DuckLake writer; observed deployments used
+about three. Size DuckLake `write_concurrency` with that multiplier and leave
+headroom for admin tools, migrations, monitoring, and other application traffic.

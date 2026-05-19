@@ -11,7 +11,8 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     ConcurrencyPolicy,
     PoolConfig,
     Result,
-    Session
+    Session,
+    SessionPool
   }
 
   alias Favn.SQL.Admission.Limiter
@@ -182,12 +183,14 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
   end
 
   setup do
+    SessionPool.reset()
     Limiter.reset()
 
     {:ok, tracker} =
       Agent.start_link(fn -> %{active: 0, max_active: 0, sessions: 0, max_sessions: 0} end)
 
     on_exit(fn ->
+      SessionPool.reset()
       Limiter.reset()
       stop_tracker(tracker)
     end)
@@ -502,7 +505,9 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     assert Agent.get(tracker, & &1.max_sessions) == 1
   end
 
-  test "idle pooled sessions keep catalog admission until closed", %{tracker: tracker} do
+  test "idle pooled sessions hold catalog admission for incompatible pool keys until eviction", %{
+    tracker: tracker
+  } do
     registry_name = :admission_pooled_idle_catalog_registry
 
     start_registry(registry_name, PooledCatalogConnectAdapter, tracker, %{
@@ -538,6 +543,15 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
     assert :ok = Client.disconnect(reused)
     assert eventually(fn -> Agent.get(tracker, & &1.sessions) == 0 end, 150)
+
+    assert {:ok, second_key} =
+             Client.connect(:warehouse,
+               registry_name: registry_name,
+               required_catalogs: ["raw"],
+               pool_marker: :second
+             )
+
+    assert :ok = Client.disconnect(second_key)
   end
 
   test "process default required catalogs scope SQL client connect", %{tracker: tracker} do
@@ -639,6 +653,26 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
              Task.async(fn -> Limiter.acquire(scope, 10, 10) end) |> Task.await()
 
     assert :ok = Limiter.release(scope, self())
+  end
+
+  test "multi-lease transfers are atomic" do
+    held_scope = {:db, :transfer_many_held}
+    missing_scope = {:db, :transfer_many_missing}
+    pool_owner = spawn(fn -> Process.sleep(:infinity) end)
+
+    assert :ok = Limiter.acquire(held_scope, 1, 10)
+
+    assert {:error, :not_found} =
+             Limiter.transfer_many([
+               {held_scope, self(), pool_owner},
+               {missing_scope, self(), pool_owner}
+             ])
+
+    assert {:error, :admission_timeout} =
+             Task.async(fn -> Limiter.acquire(held_scope, 1, 10) end) |> Task.await()
+
+    assert :ok = Limiter.release(held_scope, self())
+    Process.exit(pool_owner, :kill)
   end
 
   test "out-of-order nested session disconnect keeps permit held", %{tracker: tracker} do

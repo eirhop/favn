@@ -24,6 +24,12 @@ defmodule Favn.SQL.Adapter.DuckDB do
   DuckLake metadata capacity controls such as conservative `write_concurrency`,
   PgBouncer, or scaling the PostgreSQL metadata database.
 
+  When DuckLake uses a PostgreSQL metadata catalog, one concurrent DuckLake
+  writer can use multiple PostgreSQL backend connections. In observed
+  deployments, one writer used about three PostgreSQL backends. Size
+  `write_concurrency` with that multiplier and leave headroom for admin tools,
+  migrations, monitoring, and other application traffic.
+
   ## Consumer setup
 
   This adapter is exposed through the public `:favn_duckdb` package/plugin. Add
