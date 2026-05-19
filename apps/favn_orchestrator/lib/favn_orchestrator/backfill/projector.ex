@@ -111,12 +111,14 @@ defmodule FavnOrchestrator.Backfill.Projector do
     with {:ok, windows} <- list_all_backfill_windows(backfill_run_id: backfill_run_id),
          {:ok, parent} <- Storage.get_run(backfill_run_id),
          status <- parent_status(windows),
-         true <- status != parent.status do
+         error <- parent_error(status, parent),
+         true <- status != parent.status or error != parent.error do
       event_type = parent_event_type(status)
 
       parent
       |> RunState.transition(
         status: status,
+        error: error,
         result: %{status: status, backfill_windows: length(windows)}
       )
       |> TransitionWriter.persist_transition(event_type, %{
@@ -173,6 +175,9 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp parent_event_type(:cancelled), do: :backfill_cancelled
   defp parent_event_type(:timed_out), do: :backfill_timed_out
   defp parent_event_type(:error), do: :backfill_failed
+
+  defp parent_error(:ok, _parent), do: nil
+  defp parent_error(_status, %RunState{} = parent), do: parent.error
 
   defp window_counts(windows) do
     Enum.reduce(windows, %{}, fn %BackfillWindow{status: status}, acc ->

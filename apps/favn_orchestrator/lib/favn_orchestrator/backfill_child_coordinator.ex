@@ -209,7 +209,7 @@ defmodule FavnOrchestrator.BackfillChildCoordinator do
       if pending == [] and active == [] do
         state
       else
-        rehydrate_entry(parent, pending, active, state)
+        rehydrate_entry(parent, windows, pending, active, state)
       end
     else
       {:error, _reason} -> state
@@ -251,38 +251,66 @@ defmodule FavnOrchestrator.BackfillChildCoordinator do
   defp terminal_event_type(:timed_out), do: {:ok, :run_timed_out}
   defp terminal_event_type(_status), do: {:error, :not_terminal}
 
-  defp rehydrate_entry(%RunState{} = parent, pending, active, state) do
-    backfill = backfill_metadata(parent.metadata)
-    pipeline_module = pipeline_module(parent, pending, active)
+  defp rehydrate_entry(%RunState{} = parent, windows, pending, active, state) do
+    with {:ok, parent} <- resume_parent(parent, windows) do
+      backfill = backfill_metadata(parent.metadata)
+      pipeline_module = pipeline_module(parent, pending, active)
 
-    child_specs =
-      pending
-      |> Enum.map(&child_spec(parent, &1, backfill))
-      |> Enum.reject(&is_nil/1)
+      child_specs =
+        pending
+        |> Enum.map(&child_spec(parent, &1, backfill))
+        |> Enum.reject(&is_nil/1)
 
-    entry = %{
-      pipeline_module: pipeline_module,
-      queue: :queue.from_list(child_specs),
-      active: MapSet.new(active, & &1.window_key),
-      limit: backfill_child_concurrency(backfill),
-      submitter: fn child_opts ->
-        RunManager.submit_pipeline_module_run(pipeline_module, child_opts)
-      end,
-      failure_handler: fn backfill_run_id, reason ->
-        mark_pending_windows_failed(backfill_run_id, reason)
+      entry = %{
+        pipeline_module: pipeline_module,
+        queue: :queue.from_list(child_specs),
+        active: MapSet.new(active, & &1.window_key),
+        limit: backfill_child_concurrency(backfill),
+        submitter: fn child_opts ->
+          RunManager.submit_pipeline_module_run(pipeline_module, child_opts)
+        end,
+        failure_handler: fn backfill_run_id, reason ->
+          mark_pending_windows_failed(backfill_run_id, reason)
+        end
+      }
+
+      state = Map.put(state, parent.id, entry)
+
+      case submit_available(parent.id, state) do
+        {:ok, state} ->
+          if Map.has_key?(state, parent.id), do: schedule_poll(parent.id)
+          state
+
+        {{:error, reason}, state} ->
+          state = fail_backfill(parent.id, reason, state)
+          Map.delete(state, parent.id)
       end
-    }
+    else
+      {:error, _reason} -> state
+    end
+  end
 
-    state = Map.put(state, parent.id, entry)
+  defp resume_parent(%RunState{} = parent, windows) do
+    status = BackfillProjector.parent_status(windows)
 
-    case submit_available(parent.id, state) do
-      {:ok, state} ->
-        if Map.has_key?(state, parent.id), do: schedule_poll(parent.id)
-        state
+    if parent.status == status and is_nil(parent.error) do
+      {:ok, parent}
+    else
+      resumed =
+        RunState.transition(parent,
+          status: status,
+          error: nil,
+          result: %{status: status, backfill_windows: length(windows)}
+        )
 
-      {{:error, reason}, state} ->
-        state = fail_backfill(parent.id, reason, state)
-        Map.delete(state, parent.id)
+      case TransitionWriter.persist_transition(resumed, parent_event_type(status), %{
+             status: status,
+             window_counts: window_counts(windows),
+             recovery: :finite_backfill_admission_rehydrated
+           }) do
+        :ok -> {:ok, resumed}
+        {:error, _reason} = error -> error
+      end
     end
   end
 

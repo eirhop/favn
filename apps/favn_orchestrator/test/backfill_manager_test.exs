@@ -13,8 +13,10 @@ defmodule FavnOrchestrator.BackfillManagerTest do
   alias FavnOrchestrator.BackfillChildCoordinator
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.TransitionWriter
 
   defmodule RunnerClientStub do
     @behaviour Favn.Contracts.RunnerClient
@@ -377,6 +379,71 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     eventually(fn ->
       assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency_restart")
       assert parent.status == :ok
+      assert parent.error == nil
+      windows = list_backfill_windows(backfill_run_id: parent.id)
+      assert length(windows) == 2
+      assert Enum.all?(windows, &(&1.status == :ok))
+    end)
+  end
+
+  test "rehydrated finite backfill clears stale orphaned parent error" do
+    version = manifest_version("mv_backfill_child_concurrency_orphaned_parent")
+
+    Application.put_env(:favn_orchestrator, :runner_client, BlockingRunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_child_concurrency_orphaned_parent"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_child_concurrency_orphaned_parent",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               backfill_child_concurrency: 1
+             )
+
+    assert_receive {:await_started, first_execution_id, first_await_pid}, 1_000
+
+    eventually(fn ->
+      windows =
+        list_backfill_windows(backfill_run_id: "run_backfill_child_concurrency_orphaned_parent")
+
+      assert Enum.count(windows, &(&1.status == :running)) == 1
+      assert Enum.count(windows, &(&1.status == :pending)) == 1
+    end)
+
+    assert :ok = mark_parent_orphaned("run_backfill_child_concurrency_orphaned_parent")
+
+    assert {:ok, orphaned_parent} =
+             Storage.get_run("run_backfill_child_concurrency_orphaned_parent")
+
+    assert orphaned_parent.status == :error
+    assert orphaned_parent.error.type == :orphaned_run_reconciled
+
+    old_pid = Process.whereis(BackfillChildCoordinator)
+    assert is_pid(old_pid)
+    Process.exit(old_pid, :kill)
+
+    eventually(fn ->
+      new_pid = Process.whereis(BackfillChildCoordinator)
+      assert is_pid(new_pid)
+      refute new_pid == old_pid
+
+      assert {:ok, resumed_parent} =
+               Storage.get_run("run_backfill_child_concurrency_orphaned_parent")
+
+      assert resumed_parent.status == :running
+      assert resumed_parent.error == nil
+    end)
+
+    send(first_await_pid, {:unblock_await, first_execution_id})
+    assert_receive {:await_started, second_execution_id, second_await_pid}, 1_000
+    send(second_await_pid, {:unblock_await, second_execution_id})
+
+    eventually(fn ->
+      assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency_orphaned_parent")
+      assert parent.status == :ok
+      assert parent.error == nil
       windows = list_backfill_windows(backfill_run_id: parent.id)
       assert length(windows) == 2
       assert Enum.all?(windows, &(&1.status == :ok))
@@ -863,6 +930,26 @@ defmodule FavnOrchestrator.BackfillManagerTest do
                  finished_at: DateTime.utc_now(),
                  updated_at: DateTime.utc_now()
              })
+  end
+
+  defp mark_parent_orphaned(backfill_run_id) do
+    with {:ok, parent} <- Storage.get_run(backfill_run_id) do
+      error = %{
+        type: :orphaned_run_reconciled,
+        scope: :local_single_node,
+        previous_status: parent.status,
+        reconciled_at: DateTime.utc_now()
+      }
+
+      parent
+      |> RunState.transition(
+        status: :error,
+        error: error,
+        runner_execution_id: nil,
+        metadata: Map.put(parent.metadata, :terminal_event_type, :run_failed)
+      )
+      |> TransitionWriter.persist_transition(:run_failed, %{status: :error, error: error})
+    end
   end
 
   defp list_backfill_windows(filters) do
