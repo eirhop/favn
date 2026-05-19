@@ -175,7 +175,26 @@ defmodule Favn.SQLClient do
         when result: var
   def with_required_catalogs(connection, catalogs, fun)
       when is_atom(connection) and is_list(catalogs) and is_function(fun, 0) do
-    Client.with_default_required_catalogs(connection, catalogs, fun)
+    with :ok <- validate_catalogs(catalogs) do
+      Client.with_default_required_catalogs(connection, catalogs, fun)
+    end
+  end
+
+  def with_required_catalogs(connection, _catalogs, _fun) when not is_atom(connection) do
+    {:error,
+     ArgumentError.exception("SQL connection name must be an atom, got: #{inspect(connection)}")}
+  end
+
+  def with_required_catalogs(_connection, catalogs, _fun) when not is_list(catalogs) do
+    {:error,
+     ArgumentError.exception("SQL required catalogs must be a list, got: #{inspect(catalogs)}")}
+  end
+
+  def with_required_catalogs(connection, _catalogs, fun) do
+    {:error,
+     ArgumentError.exception(
+       "with_required_catalogs/3 expects a 0-arity callback, got: #{inspect(fun)} for #{inspect(connection)}"
+     )}
   end
 
   @doc """
@@ -348,6 +367,17 @@ defmodule Favn.SQLClient do
     {:ok, RelationRef.new!(relation_ref)}
   rescue
     error in ArgumentError -> {:error, error}
+  end
+
+  defp validate_catalogs(catalogs) do
+    if Enum.all?(catalogs, &(is_atom(&1) or is_binary(&1))) do
+      :ok
+    else
+      {:error,
+       ArgumentError.exception(
+         "SQL required catalogs must contain only atoms or strings, got: #{inspect(catalogs)}"
+       )}
+    end
   end
 
   defp relation_scope(%RelationRef{connection: connection, catalog: catalog})

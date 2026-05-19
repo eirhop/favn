@@ -201,6 +201,28 @@ defmodule Favn.SQLClientTest do
     end
   end
 
+  test "with_required_catalogs returns validation errors for invalid public inputs" do
+    assert {:error, %ArgumentError{message: connection_message}} =
+             Favn.SQLClient.with_required_catalogs("test_sql", [:raw], fn -> :ok end)
+
+    assert connection_message =~ "must be an atom"
+
+    assert {:error, %ArgumentError{message: catalogs_message}} =
+             Favn.SQLClient.with_required_catalogs(:test_sql, :raw, fn -> :ok end)
+
+    assert catalogs_message =~ "must be a list"
+
+    assert {:error, %ArgumentError{message: catalog_value_message}} =
+             Favn.SQLClient.with_required_catalogs(:test_sql, [123], fn -> :ok end)
+
+    assert catalog_value_message =~ "atoms or strings"
+
+    assert {:error, %ArgumentError{message: callback_message}} =
+             Favn.SQLClient.with_required_catalogs(:test_sql, [:raw], :not_a_fun)
+
+    assert callback_message =~ "0-arity callback"
+  end
+
   test "transaction delegates through adapter callback" do
     assert {:ok, session} = Favn.SQLClient.connect(:test_sql)
 
