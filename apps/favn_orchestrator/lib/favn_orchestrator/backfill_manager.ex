@@ -589,7 +589,10 @@ defmodule FavnOrchestrator.BackfillManager do
       range_end_at: range.range_end_at,
       window_keys: encoded_window_keys(range.anchors),
       coverage_baseline_id: Keyword.get(opts, :coverage_baseline_id),
-      backfill_child_concurrency: backfill_child_concurrency_summary(opts)
+      backfill_child_concurrency: backfill_child_concurrency_summary(opts),
+      pipeline_stage_concurrency: Keyword.get(opts, :pipeline_stage_concurrency),
+      refresh: Keyword.get(opts, :refresh),
+      refresh_policy: Keyword.get(opts, :refresh_policy)
     }
   end
 

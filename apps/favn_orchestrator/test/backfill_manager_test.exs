@@ -47,6 +47,65 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     def inspect_relation(_request, _opts), do: {:error, :invalid_inspection_target}
   end
 
+  defmodule BlockingRunnerClientStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, execution_id(work)}
+
+    @impl true
+    def await_result(execution_id, _timeout, opts) do
+      test_pid = Keyword.fetch!(opts, :test_pid)
+      send(test_pid, {:await_started, execution_id, self()})
+
+      receive do
+        {:unblock_await, ^execution_id} -> :ok
+      end
+
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(execution_id)],
+         metadata: %{stub: :blocking}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :invalid_inspection_target}
+
+    defp asset_result(execution_id) do
+      %Favn.Run.AssetResult{
+        ref: execution_ref(execution_id),
+        stage: 0,
+        status: :ok,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: nil,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -277,15 +336,11 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert {:ok, "run_backfill_child_concurrency"} = Task.await(task, 1_000)
   end
 
-  test "terminalizes finite backfill admission after coordinator restart" do
+  test "resumes finite backfill admission after coordinator restart" do
     version = manifest_version("mv_backfill_child_concurrency_restart")
-    test_pid = self()
 
-    submitter = fn pipeline_module, child_opts ->
-      trigger = Keyword.fetch!(child_opts, :trigger)
-      send(test_pid, {:child_submit, pipeline_module, trigger.window_key})
-      {:ok, "child_#{trigger.window_key}"}
-    end
+    Application.put_env(:favn_orchestrator, :runner_client, BlockingRunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
 
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
@@ -294,12 +349,16 @@ defmodule FavnOrchestrator.BackfillManagerTest do
              FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
                run_id: "run_backfill_child_concurrency_restart",
                range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
-               backfill_child_concurrency: 1,
-               _child_submitter: submitter
+               backfill_child_concurrency: 1
              )
 
-    assert_receive {:child_submit, MyApp.Pipelines.Daily, _first_window_key}
-    refute_receive {:child_submit, MyApp.Pipelines.Daily, _window_key}, 100
+    assert_receive {:await_started, first_execution_id, first_await_pid}, 1_000
+
+    eventually(fn ->
+      windows = list_backfill_windows(backfill_run_id: "run_backfill_child_concurrency_restart")
+      assert Enum.count(windows, &(&1.status == :running)) == 1
+      assert Enum.count(windows, &(&1.status == :pending)) == 1
+    end)
 
     old_pid = Process.whereis(BackfillChildCoordinator)
     assert is_pid(old_pid)
@@ -311,15 +370,16 @@ defmodule FavnOrchestrator.BackfillManagerTest do
       refute new_pid == old_pid
     end)
 
+    send(first_await_pid, {:unblock_await, first_execution_id})
+    assert_receive {:await_started, second_execution_id, second_await_pid}, 1_000
+    send(second_await_pid, {:unblock_await, second_execution_id})
+
     eventually(fn ->
       assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency_restart")
-      assert parent.status == :error
-      assert parent.error == {:backfill_child_admission_interrupted, :coordinator_restarted}
-
+      assert parent.status == :ok
       windows = list_backfill_windows(backfill_run_id: parent.id)
       assert length(windows) == 2
-      assert Enum.all?(windows, &(&1.status == :error))
-      assert Enum.all?(windows, &(&1.last_error == parent.error))
+      assert Enum.all?(windows, &(&1.status == :ok))
     end)
   end
 

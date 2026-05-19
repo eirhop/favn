@@ -36,9 +36,9 @@ defmodule FavnOrchestrator.Application do
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
             {RunRecovery, []},
-            {BackfillChildCoordinator, []},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
-            {RunManager, []}
+            {RunManager, []},
+            {BackfillChildCoordinator, []}
           ] ++ scheduler_children() ++ api_children()
 
       with {:ok, supervisor} <-
