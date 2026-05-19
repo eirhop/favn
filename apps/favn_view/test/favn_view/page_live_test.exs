@@ -16,6 +16,7 @@ defmodule FavnView.PageLiveTest do
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -754,6 +755,25 @@ defmodule FavnView.PageLiveTest do
            )
   end
 
+  test "run detail hides nil latest event activity", %{conn: conn} do
+    assert :ok =
+             Storage.append_run_event("run_empty_running", %{
+               run_id: "run_empty_running",
+               sequence: 3,
+               event_type: :run_started,
+               occurred_at: DateTime.utc_now(),
+               status: nil,
+               asset_ref: "nil",
+               data: %{}
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_empty_running")
+
+    refute has_element?(view, ~s([data-testid="run-current-activity"]))
+    refute render(view) =~ "Latest event: nil"
+    refute render(view) =~ "Asset nil"
+  end
+
   test "run detail derives active asset rows from step events before results persist", %{
     conn: conn
   } do
@@ -1051,6 +1071,106 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="run-failure-summary"]), "Warehouse timeout")
     refute has_element?(view, ~s([data-testid="run-asset-result-row"]))
+  end
+
+  test "backfill parent surfaces failed child window context", %{conn: conn} do
+    parent_id = "run_backfill_parent_failed_child"
+    child_id = "run_backfill_child_failed_asset"
+    failed_ref = {__MODULE__.Assets, :inventory_by_day}
+    started_at = ~U[2026-05-01 00:00:00Z]
+    finished_at = DateTime.add(started_at, 2, :second)
+    window_key = "day:2026-05-01"
+
+    parent =
+      RunState.new(
+        id: parent_id,
+        manifest_version_id: "mv_view_assets",
+        manifest_content_hash: "hash_view_assets",
+        asset_ref: failed_ref,
+        target_refs: [failed_ref],
+        submit_kind: :backfill_pipeline,
+        trigger: %{kind: :backfill, pipeline_module: __MODULE__.Pipelines.DailyOrders},
+        metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+      )
+      |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
+
+    child =
+      RunState.new(
+        id: child_id,
+        manifest_version_id: "mv_view_assets",
+        manifest_content_hash: "hash_view_assets",
+        asset_ref: failed_ref,
+        target_refs: [failed_ref],
+        submit_kind: :pipeline,
+        parent_run_id: parent_id,
+        root_run_id: parent_id,
+        lineage_depth: 1,
+        trigger: %{
+          kind: :backfill,
+          backfill_run_id: parent_id,
+          pipeline_module: __MODULE__.Pipelines.DailyOrders,
+          window_key: window_key
+        },
+        metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+      )
+      |> RunState.transition(
+        status: :error,
+        error: :failed,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {failed_ref, window_key},
+              ref: failed_ref,
+              stage: 0,
+              status: :error,
+              started_at: started_at,
+              finished_at: finished_at,
+              duration_ms: 2_000,
+              error: %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"},
+              asset_step_id: "failed-inventory-step"
+            })
+          ]
+        }
+      )
+
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: parent_id,
+        child_run_id: child_id,
+        latest_attempt_run_id: child_id,
+        pipeline_module: __MODULE__.Pipelines.DailyOrders,
+        manifest_version_id: "mv_view_assets",
+        window_kind: :day,
+        window_start_at: started_at,
+        window_end_at: DateTime.add(started_at, 1, :day),
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :error,
+        attempt_count: 1,
+        last_error: :failed,
+        started_at: started_at,
+        finished_at: finished_at,
+        updated_at: finished_at
+      })
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+    assert :ok = Storage.put_backfill_window(window)
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    assert has_element?(view, ~s([data-testid="run-failure-summary"]), "1 backfill window failed")
+    assert has_element?(view, ~s([data-testid="backfill-failure-list"]), "Failed backfill window")
+    assert has_element?(view, ~s([data-testid="backfill-failure-list"]), "Showing 1 of 1")
+    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "inventory_by_day")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="backfill-failure-row"]),
+             "DuckDB ADBC connection bootstrap failed at attach_mart"
+           )
+
+    assert has_element?(view, ~s(a[href="/runs/#{child_id}"]), "Open child run")
   end
 
   test "run detail mode rail changes to events mode", %{conn: conn} do

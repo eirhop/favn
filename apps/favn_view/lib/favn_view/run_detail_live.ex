@@ -99,7 +99,14 @@ defmodule FavnView.RunDetailLive do
     status = summary.status
     steps = Enum.map(Map.get(detail, :steps, []), &step_from_public/1)
     events = Enum.map(Map.get(detail, :events, []), &event_from_public/1)
-    failure_summary = failure_summary(status, steps, events)
+
+    backfill_failures =
+      Enum.map(Map.get(detail, :backfill_failures, []), &backfill_failure_from_public/1)
+
+    backfill_failure_count = Map.get(detail, :backfill_failure_count, length(backfill_failures))
+
+    failure_summary =
+      failure_summary(status, steps, events, backfill_failures, backfill_failure_count)
 
     %{
       found?: true,
@@ -123,6 +130,8 @@ defmodule FavnView.RunDetailLive do
       latest_event_summary: latest_event_summary(events),
       current_activity: current_activity(status, steps, events),
       failure_summary: failure_summary,
+      backfill_failures: backfill_failures,
+      backfill_failure_count: backfill_failure_count,
       asset_empty_message: asset_empty_message(status, failure_summary),
       outputs: outputs(steps),
       context: context_items(summary, target, window),
@@ -226,6 +235,23 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
+  defp backfill_failure_from_public(failure) do
+    window = Map.get(failure, :window) || %{}
+    child_run_id = Map.get(failure, :child_run_id)
+
+    %{
+      child_run_id: child_run_id,
+      child_run_href: child_run_id && "/runs/#{child_run_id}",
+      status: LogsViewModel.status_label(Map.get(failure, :status)),
+      status_tone: LogsViewModel.status_tone(Map.get(failure, :status)),
+      asset_ref: Map.get(failure, :asset_ref),
+      error: error_summary(Map.get(failure, :error)),
+      window: window_label(window) || "Unknown window",
+      attempt_count: Map.get(failure, :attempt_count),
+      duration: LogsViewModel.duration_ms_label(Map.get(failure, :duration_ms))
+    }
+  end
+
   defp step_secondary(step) do
     [window_label(step.window), step.stage && "Stage #{step.stage}"]
     |> Enum.reject(&is_nil/1)
@@ -237,7 +263,13 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp target_label(%{target_refs: refs}) when is_list(refs) and refs != [] do
-    refs |> Enum.map(&LogsViewModel.ref_label/1) |> Enum.join(", ")
+    case refs do
+      [single_ref] ->
+        LogsViewModel.ref_label(single_ref)
+
+      refs ->
+        "#{length(refs)} selected assets"
+    end
   end
 
   defp target_label(%{asset_ref: ref}), do: LogsViewModel.ref_label(ref)
@@ -276,12 +308,25 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  defp failure_summary(status, steps, events) when status in [:partial, :error, :timed_out] do
+  defp failure_summary(status, _steps, _events, [failure | _rest], backfill_failure_count)
+       when status in [:partial, :error, :timed_out] do
+    %{
+      kind: :backfill,
+      count: backfill_failure_count,
+      total: backfill_failure_count,
+      asset: failure.asset_ref,
+      error: failure.error
+    }
+  end
+
+  defp failure_summary(status, steps, events, _backfill_failures, _backfill_failure_count)
+       when status in [:partial, :error, :timed_out] do
     failed = Enum.filter(steps, &(&1.status_tone == :error))
     first = List.first(failed)
     latest_error = Enum.find(Enum.reverse(events), &(&1.status_tone == :error))
 
     %{
+      kind: :assets,
       count: length(failed),
       total: length(steps),
       asset: first && first.asset_ref,
@@ -289,16 +334,20 @@ defmodule FavnView.RunDetailLive do
     }
   end
 
-  defp failure_summary(_status, _steps, _events), do: nil
+  defp failure_summary(_status, _steps, _events, _backfill_failures, _backfill_failure_count),
+    do: nil
 
   defp current_activity(status, steps, events) when status in [:pending, :running] do
     running = Enum.find(steps, &(&1.status == "Running"))
     latest = List.last(events)
+    latest_asset = latest && meaningful_activity(latest.asset)
+    latest_summary = latest && meaningful_activity(latest.summary)
 
     cond do
       running -> "Currently executing #{running.asset_ref}"
-      latest && latest.asset -> "Latest event: #{latest.asset}"
-      latest -> "Latest event: #{latest.summary}"
+      latest_asset -> "Latest event: #{latest_asset}"
+      latest_summary -> "Latest event: #{latest_summary}"
+      latest -> nil
       true -> "Waiting for first execution event..."
     end
   end
@@ -338,6 +387,18 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp latest_event_sequence(_run, fallback), do: fallback
+
+  defp meaningful_activity(value) when is_binary(value) do
+    value = String.trim(value)
+
+    if value in ["", "nil", "Asset nil", "Unknown"] do
+      nil
+    else
+      value
+    end
+  end
+
+  defp meaningful_activity(_value), do: nil
 
   defp active_status?(status), do: status in @active_statuses
   defp subtitle(parts), do: parts |> Enum.reject(&is_nil/1) |> Enum.join(" · ")

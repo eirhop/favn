@@ -330,6 +330,285 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert step.explanation == "Failed while executing this asset."
   end
 
+  test "pipeline success remains active while persisted step results are incomplete" do
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    silver_ref = {MyApp.Assets.Silver, :asset}
+    started_at = ~U[2026-05-01 00:00:00Z]
+
+    run =
+      run("pipeline_success_gap", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [gold_ref, silver_ref])
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {gold_ref, nil},
+              ref: gold_ref,
+              stage: 0,
+              status: :ok,
+              started_at: started_at,
+              finished_at: DateTime.add(started_at, 1, :second),
+              duration_ms: 1_000,
+              asset_step_id: "gold-step"
+            })
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: run.event_seq + 1,
+               event_type: :step_started,
+               occurred_at: DateTime.add(started_at, 2, :second),
+               status: :running,
+               asset_ref: silver_ref,
+               stage: 0,
+               data: %{asset_step_id: "silver-step"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert detail.summary.status == :running
+    assert detail.summary.finished_at == nil
+
+    steps_by_ref = Map.new(detail.steps, &{&1.asset_ref, &1})
+    assert steps_by_ref["MyApp.Assets.Gold.asset"].status == :ok
+    assert steps_by_ref["MyApp.Assets.Silver.asset"].status == :running
+  end
+
+  test "failed pipeline keeps failure status while filling incomplete step rows" do
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    silver_ref = {MyApp.Assets.Silver, :asset}
+    bronze_ref = {MyApp.Assets.Bronze, :asset}
+    started_at = ~U[2026-05-01 00:00:00Z]
+
+    run =
+      run("pipeline_failed_gap", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [bronze_ref])
+      |> Map.put(:plan, dependency_plan([gold_ref, silver_ref, bronze_ref]))
+      |> RunState.transition(
+        status: :error,
+        error: :failed,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {gold_ref, nil},
+              ref: gold_ref,
+              stage: 0,
+              status: :error,
+              started_at: started_at,
+              finished_at: DateTime.add(started_at, 1, :second),
+              duration_ms: 1_000,
+              error: %{message: "warehouse unavailable"},
+              asset_step_id: "gold-step"
+            })
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: run.event_seq + 1,
+               event_type: :step_started,
+               occurred_at: DateTime.add(started_at, 2, :second),
+               status: :running,
+               asset_ref: silver_ref,
+               stage: 0,
+               data: %{asset_step_id: "silver-step"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert detail.summary.status == :error
+    assert detail.summary.progress.label == "1/3 steps"
+
+    steps_by_ref = Map.new(detail.steps, &{&1.asset_ref, &1})
+    assert steps_by_ref["MyApp.Assets.Gold.asset"].status == :error
+    assert steps_by_ref["MyApp.Assets.Silver.asset"].status == :running
+    assert steps_by_ref["MyApp.Assets.Bronze.asset"].status == :pending
+  end
+
+  test "pending rows keep repeated asset refs for distinct planned nodes" do
+    ref = {MyApp.Assets.Gold, :asset}
+    window_a = %{key: "window:a", label: "Window A"}
+    window_b = %{key: "window:b", label: "Window B"}
+    node_a = {ref, "window:a"}
+    node_b = {ref, "window:b"}
+
+    run =
+      run("pipeline_repeated_asset_gap", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [ref])
+      |> Map.put(
+        :plan,
+        %Favn.Plan{
+          target_refs: [ref],
+          target_node_keys: [node_a, node_b],
+          nodes: %{
+            node_a => plan_node(ref, node_a, window_a, 0),
+            node_b => plan_node(ref, node_b, window_b, 0)
+          },
+          topo_order: [ref],
+          stages: [[ref]],
+          node_stages: [[node_a, node_b]]
+        }
+      )
+      |> RunState.transition(
+        status: :running,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: node_a,
+              ref: ref,
+              window: window_a,
+              stage: 0,
+              status: :running,
+              started_at: ~U[2026-05-01 00:00:00Z],
+              asset_step_id: "window-a-step"
+            })
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert length(detail.steps) == 2
+
+    assert Enum.map(detail.steps, & &1.asset_ref) == [
+             "MyApp.Assets.Gold.asset",
+             "MyApp.Assets.Gold.asset"
+           ]
+
+    assert Enum.map(detail.steps, & &1.window.key) == ["window:a", "window:b"]
+    assert Enum.map(detail.steps, & &1.status) == [:running, :pending]
+  end
+
+  test "no-plan active run creates distinct pending ids for multiple targets" do
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    silver_ref = {MyApp.Assets.Silver, :asset}
+
+    run =
+      run("active_no_plan_multiple_targets", submit_kind: :pipeline)
+      |> Map.put(:target_refs, [gold_ref, silver_ref])
+      |> RunState.transition(status: :running, result: %{node_results: []})
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    assert Enum.map(detail.steps, & &1.asset_ref) == [
+             "MyApp.Assets.Gold.asset",
+             "MyApp.Assets.Silver.asset"
+           ]
+
+    assert detail.steps |> Enum.map(& &1.id) |> Enum.uniq() |> length() == 2
+  end
+
+  test "backfill parent detail includes failed child window context" do
+    parent =
+      run("backfill_parent_failure", submit_kind: :backfill_pipeline)
+      |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
+
+    failed_ref = {MyApp.Assets.Inventory, :inventory_by_day}
+    started_at = ~U[2026-05-01 00:00:00Z]
+    finished_at = DateTime.add(started_at, 2, :second)
+    anchor = anchor(started_at)
+
+    child =
+      run("backfill_child_failure",
+        submit_kind: :pipeline,
+        parent_run_id: parent.id,
+        root_run_id: parent.id,
+        lineage_depth: 1,
+        trigger: %{
+          kind: :backfill,
+          backfill_run_id: parent.id,
+          pipeline_module: MyApp.Pipelines.Daily,
+          window_key: window_key(anchor)
+        },
+        metadata: %{pipeline_submit_ref: MyApp.Pipelines.Daily}
+      )
+      |> Map.put(:target_refs, [failed_ref])
+      |> RunState.transition(
+        status: :error,
+        error: :failed,
+        result: %{
+          node_results: [
+            NodeResult.new(%{
+              node_key: {failed_ref, window_key(anchor)},
+              ref: failed_ref,
+              stage: 0,
+              status: :error,
+              started_at: started_at,
+              finished_at: finished_at,
+              duration_ms: 2_000,
+              error: %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"},
+              asset_step_id: "failed-inventory-step"
+            })
+          ]
+        }
+      )
+
+    window =
+      parent.id
+      |> backfill_window(anchor, :error)
+      |> Map.merge(%{
+        child_run_id: child.id,
+        latest_attempt_run_id: child.id,
+        attempt_count: 1,
+        last_error: :failed,
+        started_at: started_at,
+        finished_at: finished_at,
+        updated_at: finished_at
+      })
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+    assert :ok = Storage.put_backfill_window(window)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(parent.id)
+
+    assert [failure] = detail.backfill_failures
+    assert failure.child_run_id == child.id
+    assert failure.asset_ref == "MyApp.Assets.Inventory.inventory_by_day"
+    assert failure.window.key == window_key(anchor)
+    assert failure.duration_ms == 2_000
+    assert failure.error == %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"}
+  end
+
+  test "backfill parent detail caps enriched failed window context" do
+    parent =
+      run("backfill_parent_many_failures", submit_kind: :backfill_pipeline)
+      |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
+
+    assert :ok = Storage.put_run(parent)
+
+    for day <- 1..12 do
+      anchor = anchor(DateTime.add(~U[2026-05-01 00:00:00Z], (day - 1) * 86_400, :second))
+
+      window =
+        parent.id
+        |> backfill_window(anchor, :error)
+        |> Map.put(:last_error, {:failed_window, day})
+
+      assert :ok = Storage.put_backfill_window(window)
+    end
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(parent.id)
+
+    assert detail.backfill_failure_count == 12
+    assert length(detail.backfill_failures) == 10
+    assert detail.summary.progress.counts.failed == 12
+  end
+
   defp run(run_id, opts) do
     RunState.new(
       id: run_id,
@@ -353,6 +632,48 @@ defmodule FavnOrchestrator.RunReadModelTest do
   end
 
   defp window_key(%Anchor{} = anchor), do: WindowKey.encode(anchor.key)
+
+  defp dependency_plan(refs) do
+    node_keys = Enum.map(refs, &{&1, nil})
+
+    nodes =
+      refs
+      |> Enum.zip(node_keys)
+      |> Enum.with_index()
+      |> Map.new(fn {{ref, node_key}, stage} ->
+        {node_key,
+         %{
+           ref: ref,
+           node_key: node_key,
+           window: nil,
+           upstream: Enum.take(node_keys, stage),
+           downstream: Enum.drop(node_keys, stage + 1),
+           stage: stage,
+           action: :run
+         }}
+      end)
+
+    %Favn.Plan{
+      target_refs: [List.last(refs)],
+      target_node_keys: [List.last(node_keys)],
+      nodes: nodes,
+      topo_order: refs,
+      stages: Enum.map(refs, &[&1]),
+      node_stages: Enum.map(node_keys, &[&1])
+    }
+  end
+
+  defp plan_node(ref, node_key, window, stage) do
+    %{
+      ref: ref,
+      node_key: node_key,
+      window: window,
+      upstream: [],
+      downstream: [],
+      stage: stage,
+      action: :run
+    }
+  end
 
   defp backfill_window(parent_run_id, %Anchor{} = anchor, status) do
     {:ok, window} =

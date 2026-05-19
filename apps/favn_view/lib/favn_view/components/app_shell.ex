@@ -28,7 +28,7 @@ defmodule FavnView.Components.AppShell do
       <IconNav.icon_nav items={@nav_items} />
 
       <div class="relative z-10 flex h-screen min-h-0 flex-col px-5 py-3 md:py-4 md:pl-32 md:pr-8 lg:pr-32">
-        <header class="mx-auto flex w-full max-w-7xl shrink-0 items-center justify-between gap-3">
+        <header class="mx-auto flex w-full max-w-[96rem] shrink-0 items-center justify-between gap-3">
           <div class="flex min-w-0 items-center gap-2">
             <IconNav.mobile_icon_nav items={@nav_items} />
             <a href={~p"/"} class="btn btn-ghost gap-2 px-2 md:hidden" aria-label="Favn home">
@@ -69,20 +69,20 @@ defmodule FavnView.Components.AppShell do
           </div>
         </header>
 
-        <main class="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col justify-start overflow-y-auto py-4 md:py-6">
+        <main class="mx-auto flex min-h-0 w-full max-w-[96rem] flex-1 flex-col justify-start overflow-y-auto py-4 md:py-6">
           <section
             :if={@show_header?}
             class="mb-4 flex flex-col gap-4 md:mb-5 lg:flex-row lg:items-end lg:justify-between"
           >
             <div class="min-w-0">
               <div class="flex flex-col gap-2 sm:flex-row sm:items-center md:gap-3">
-                <h1 class="truncate text-2xl font-light tracking-tight text-base-content sm:text-3xl lg:text-4xl">
+                <h1 class="truncate text-xl font-light tracking-tight text-base-content sm:text-2xl lg:text-3xl">
                   {@title}
                 </h1>
                 <span
                   :if={@status}
                   class={[
-                    "badge badge-soft favn-status-glow gap-2 px-3 py-3",
+                    "badge badge-soft favn-status-glow gap-2 px-2.5 py-2 text-xs",
                     status_badge_class(@status_tone)
                   ]}
                 >
@@ -91,12 +91,16 @@ defmodule FavnView.Components.AppShell do
                 </span>
               </div>
 
-              <p :if={@subtitle} class="mt-1.5 text-sm text-base-content/60 md:text-base">
+              <p
+                :if={@subtitle}
+                class="mt-1.5 max-w-3xl truncate text-xs text-base-content/60 md:text-sm"
+                title={@subtitle}
+              >
                 {@subtitle}
               </p>
             </div>
 
-            <dl :if={@facts != []} class="grid gap-4 text-sm sm:grid-cols-3 lg:min-w-[28rem]">
+            <dl :if={@facts != []} class="grid gap-4 text-xs sm:grid-cols-3 lg:min-w-[28rem]">
               <div
                 :for={fact <- @facts}
                 class="border-base-content/20 sm:border-l sm:pl-5 first:border-l-0 first:pl-0"
