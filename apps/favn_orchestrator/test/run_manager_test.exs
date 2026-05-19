@@ -610,6 +610,73 @@ defmodule FavnOrchestrator.RunManagerTest do
     end
   end
 
+  defmodule RunnerClientStageConcurrencyStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      submit_log = Keyword.fetch!(opts, :submit_log)
+
+      Agent.update(submit_log, fn values ->
+        values ++ [{:submit, work.asset_ref, System.monotonic_time()}]
+      end)
+
+      {:ok, execution_id(work)}
+    end
+
+    @impl true
+    def await_result(execution_id, _timeout, opts) do
+      test_pid = Keyword.fetch!(opts, :test_pid)
+      send(test_pid, {:await_started, execution_id, self()})
+
+      receive do
+        {:unblock_await, ^execution_id} -> :ok
+      end
+
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(execution_id)],
+         metadata: %{stub: :stage_concurrency}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp asset_result(execution_id) do
+      %Favn.Run.AssetResult{
+        ref: execution_ref(execution_id),
+        stage: 0,
+        status: :ok,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: nil,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
+  end
+
   defmodule RunnerClientTimeoutCancelableStub do
     @behaviour Favn.Contracts.RunnerClient
 
@@ -1505,6 +1572,114 @@ defmodule FavnOrchestrator.RunManagerTest do
       events |> Enum.find(&(&1.event_type == :step_finished)) |> Map.fetch!(:sequence)
 
     assert failed_sequence < finished_sequence
+  end
+
+  test "pipeline stage concurrency cap submits later siblings only after earlier chunks drain" do
+    version = manifest_version("mv_pipeline_stage_concurrency")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_stage_concurrency")
+
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(submit_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStageConcurrencyStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_log: submit_log,
+      test_pid: self()
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               pipeline_stage_concurrency: 1
+             )
+
+    assert_receive {:await_started, first_execution_id, first_await_pid}, 1_000
+    assert [{:submit, _first_ref, _first_submitted_at}] = Agent.get(submit_log, & &1)
+
+    send(first_await_pid, {:unblock_await, first_execution_id})
+
+    assert_receive {:await_started, second_execution_id, second_await_pid}, 1_000
+    assert length(Agent.get(submit_log, & &1)) == 2
+
+    send(second_await_pid, {:unblock_await, second_execution_id})
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :ok
+
+    assert run.metadata.effective_concurrency == %{pipeline_stage_concurrency: 1}
+    assert length(run.result.asset_results) == 2
+  end
+
+  test "pipeline stage concurrency cap does not mark unsubmitted later chunks after failure" do
+    version = manifest_version("mv_pipeline_stage_concurrency_failure")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_stage_concurrency_failure")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStageSiblingFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      raw_status: :error,
+      raw_block_ms: 0,
+      silver_status: :ok,
+      silver_block_ms: 0
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_pipeline_run(
+               [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+               pipeline_stage_concurrency: 1
+             )
+
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :error
+    assert run.metadata.effective_concurrency == %{pipeline_stage_concurrency: 1}
+    assert Agent.get(cancel_log, & &1) == []
+
+    assert Enum.map(run.result.asset_results, & &1.ref) == [{MyApp.Assets.Raw, :asset}]
+    assert Map.keys(run.asset_results) == [{MyApp.Assets.Raw, :asset}]
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :step_started)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_failed)) == 1
+    assert Enum.count(events, &(&1.event_type == :step_finished)) == 0
+  end
+
+  test "pipeline submission rejects invalid stage concurrency caps" do
+    version = manifest_version("mv_pipeline_invalid_stage_concurrency")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_invalid_stage_concurrency")
+
+    for invalid <- [0, -1, 1.5, "1"] do
+      assert {:error, :invalid_pipeline_stage_concurrency} =
+               FavnOrchestrator.submit_pipeline_run(
+                 [{MyApp.Assets.Raw, :asset}, {MyApp.Assets.Silver, :asset}],
+                 pipeline_stage_concurrency: invalid
+               )
+    end
   end
 
   test "pipeline stage await timeout keeps original sibling execution context" do

@@ -68,11 +68,14 @@ defmodule Favn.AI do
     `--window kind:FROM..TO` input, read `Favn.Backfill.RangeRequest` and
     `Favn.Backfill.RangeResolver`. If you are wiring orchestrator-side
     submission, planning, or projection, then read `FavnOrchestrator`,
-    `FavnOrchestrator.BackfillManager`, and the internal modules under
-    `FavnOrchestrator.Backfill.*`. If you are changing the private service HTTP
-    surface for backfills, also read `FavnOrchestrator.API.Router`. For the
-    local operator CLI, read `Favn.Dev.Backfill` and
-    `Mix.Tasks.Favn.Backfill`.
+    `FavnOrchestrator.BackfillManager`, `FavnOrchestrator.BackfillChildCoordinator`,
+    and the internal modules under `FavnOrchestrator.Backfill.*`. If you are
+    changing child-run or per-stage admission caps, also read
+    `FavnOrchestrator.RunManager` and `FavnOrchestrator.RunServer.Execution`. If
+    you are changing the private service HTTP surface for backfills, also read
+    `FavnOrchestrator.API.Router`. For the local operator CLI, read
+    `Favn.Dev.Backfill`, `Favn.Dev.Run`, `Mix.Tasks.Favn.Backfill`, and
+    `Mix.Tasks.Favn.Run`.
   - To define connection contracts, read `Favn.Connection`; if connection
     modules should be discovered from an OTP app, read `Favn.ModuleDiscovery`.
     If connection values come from environment variables or secrets, also read
@@ -146,6 +149,12 @@ defmodule Favn.AI do
   - `FavnOrchestrator.BackfillManager`: when working inside the orchestrator on
     parent backfill runs, child run submission, and the normalized backfill
     window ledger
+  - `FavnOrchestrator.BackfillChildCoordinator`: when finite
+    `:backfill_child_concurrency` should admit only some child window runs and
+    continue admission as windows terminalize
+  - `FavnOrchestrator.RunServer.Execution`: when finite
+    `:pipeline_stage_concurrency` should bound submitted sibling assets within
+    one topological pipeline stage
   - `FavnOrchestrator.Backfill.Projector`: when working inside the orchestrator
     on derived backfill-window and asset-window state after child run
     transitions
@@ -195,8 +204,10 @@ defmodule Favn.AI do
     lifecycle, local pipeline submission, local run investigation, local SQL
     inspection/querying, docs lookup, or packaging, not asset authoring. Read
     `Favn.Dev.Backfill` for the local `mix favn.backfill` workflow over the
-    private orchestrator backfill endpoints. Read `Favn.Dev.Runs` for
-    `mix favn.runs` and `mix favn.logs RUN_ID`. Read
+    private orchestrator backfill endpoints, including
+    `--backfill-child-concurrency` and `--pipeline-stage-concurrency`. Read
+    `Favn.Dev.Run` for `mix favn.run --pipeline-stage-concurrency`. Read
+    `Favn.Dev.Runs` for `mix favn.runs` and `mix favn.logs RUN_ID`. Read
     `Favn.Dev.DataInspection` for `mix favn.inspect` and `mix favn.query`.
 
   ## Related docs outside BEAM docs

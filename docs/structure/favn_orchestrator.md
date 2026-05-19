@@ -9,7 +9,8 @@ Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
 - Run admission and recovery in `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex` and `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
-- Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
+- Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`, including per-stage pipeline admission caps in `RunServer.Execution`
+- Finite operational-backfill child-run admission in `apps/favn_orchestrator/lib/favn_orchestrator/backfill_child_coordinator.ex`
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
@@ -34,4 +35,5 @@ Tests:
 Use when changing run lifecycle, freshness decisions/queries, scheduling,
 private API behavior, SSE/events, auth, command idempotency, bootstrap
 service-token/runner-registration endpoints, same-BEAM readiness facade behavior,
-backfill orchestration, or storage contract semantics.
+backfill orchestration, control-plane concurrency/admission, or storage contract
+semantics.

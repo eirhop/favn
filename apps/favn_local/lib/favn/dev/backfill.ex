@@ -46,6 +46,8 @@ defmodule Favn.Dev.Backfill do
           timeout_ms: pos_integer(),
           wait_timeout_ms: pos_integer(),
           run_timeout_ms: pos_integer(),
+          backfill_child_concurrency: pos_integer(),
+          pipeline_stage_concurrency: pos_integer(),
           poll_interval_ms: pos_integer(),
           metadata: map()
         ]
@@ -221,6 +223,8 @@ defmodule Favn.Dev.Backfill do
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
      |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
+     |> maybe_put(:backfill_child_concurrency, Keyword.get(opts, :backfill_child_concurrency))
+     |> maybe_put(:pipeline_stage_concurrency, Keyword.get(opts, :pipeline_stage_concurrency))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end
 
@@ -244,6 +248,8 @@ defmodule Favn.Dev.Backfill do
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
      |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
      |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
+     |> maybe_put(:backfill_child_concurrency, Keyword.get(opts, :backfill_child_concurrency))
+     |> maybe_put(:pipeline_stage_concurrency, Keyword.get(opts, :pipeline_stage_concurrency))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
   end
 
@@ -315,12 +321,19 @@ defmodule Favn.Dev.Backfill do
   end
 
   defp validate_opts(opts) do
-    Enum.reduce_while([:timeout_ms, :wait_timeout_ms, :run_timeout_ms, :poll_interval_ms], :ok, fn
-      key, :ok ->
-        case validate_positive_integer(opts, key) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
+    [
+      :timeout_ms,
+      :wait_timeout_ms,
+      :run_timeout_ms,
+      :backfill_child_concurrency,
+      :pipeline_stage_concurrency,
+      :poll_interval_ms
+    ]
+    |> Enum.reduce_while(:ok, fn key, :ok ->
+      case validate_positive_integer(opts, key) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
     end)
   end
 

@@ -1809,6 +1809,10 @@ defmodule FavnOrchestrator.API.Router do
   defp run_submit_opts(params) when is_map(params) do
     []
     |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
+    |> maybe_put_positive_int_opt(
+      :pipeline_stage_concurrency,
+      Map.get(params, "pipeline_stage_concurrency")
+    )
   end
 
   defp submit_backfill_from_request(params) do
@@ -1884,6 +1888,14 @@ defmodule FavnOrchestrator.API.Router do
     |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
     |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
     |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))
+    |> maybe_put_positive_int_opt(
+      :backfill_child_concurrency,
+      Map.get(params, "backfill_child_concurrency")
+    )
+    |> maybe_put_positive_int_opt(
+      :pipeline_stage_concurrency,
+      Map.get(params, "pipeline_stage_concurrency")
+    )
   end
 
   defp backfill_repair_opts(params) when is_map(params) do

@@ -238,6 +238,68 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     refute Keyword.has_key?(child_opts, :refresh)
   end
 
+  test "limits finite child window submissions until prior batch is terminal" do
+    version = manifest_version("mv_backfill_child_concurrency")
+    test_pid = self()
+
+    submitter = fn pipeline_module, child_opts ->
+      trigger = Keyword.fetch!(child_opts, :trigger)
+      send(test_pid, {:child_submit, pipeline_module, trigger.window_key})
+      {:ok, "child_#{trigger.window_key}"}
+    end
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    task =
+      Task.async(fn ->
+        FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+          run_id: "run_backfill_child_concurrency",
+          range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+          backfill_child_concurrency: 1,
+          _child_submitter: submitter
+        )
+      end)
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, first_window_key}
+    refute_receive {:child_submit, MyApp.Pipelines.Daily, _window_key}, 100
+
+    assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency")
+    assert parent.metadata.backfill.backfill_child_concurrency == 1
+    assert_terminal_window("run_backfill_child_concurrency", first_window_key)
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, second_window_key}, 500
+    refute second_window_key == first_window_key
+
+    assert_terminal_window("run_backfill_child_concurrency", second_window_key)
+
+    assert {:ok, "run_backfill_child_concurrency"} = Task.await(task, 1_000)
+  end
+
+  for invalid_value <- [0, -1, "1"] do
+    @invalid_value invalid_value
+
+    test "rejects invalid backfill_child_concurrency #{@invalid_value} before persisting parent state" do
+      version =
+        manifest_version("mv_backfill_invalid_child_concurrency_#{inspect(@invalid_value)}")
+
+      run_id = "run_backfill_invalid_child_concurrency_#{inspect(@invalid_value)}"
+
+      assert :ok = FavnOrchestrator.register_manifest(version)
+      assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+      assert {:error, {:invalid_backfill_child_concurrency, @invalid_value}} =
+               FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+                 run_id: run_id,
+                 range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+                 backfill_child_concurrency: @invalid_value
+               )
+
+      assert {:error, :not_found} = Storage.get_run(run_id)
+      assert [] = list_backfill_windows(backfill_run_id: run_id)
+    end
+  end
+
   for option <- [:lookback, :lookback_policy] do
     @option option
 
@@ -678,6 +740,22 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
       assert window.status == status
     end)
+  end
+
+  defp assert_terminal_window(backfill_run_id, window_key) do
+    assert {:ok, window} =
+             Storage.get_backfill_window(backfill_run_id, MyApp.Pipelines.Daily, window_key)
+
+    assert :ok =
+             Storage.put_backfill_window(%{
+               window
+               | status: :ok,
+                 child_run_id: window.child_run_id || "child_#{window_key}",
+                 latest_attempt_run_id: window.latest_attempt_run_id || "child_#{window_key}",
+                 attempt_count: max(window.attempt_count, 1),
+                 finished_at: DateTime.utc_now(),
+                 updated_at: DateTime.utc_now()
+             })
   end
 
   defp list_backfill_windows(filters) do
