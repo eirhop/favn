@@ -857,6 +857,12 @@ defmodule FavnOrchestrator do
   Under `:auto`, manifest freshness policies decide which planned nodes run or
   skip. `:missing` skips nodes with prior successful freshness state. `:force`
   runs every planned node.
+
+  Concurrency-related options:
+
+  - `:pipeline_stage_concurrency` - positive integer cap for concurrently
+    submitted runnable assets inside each topological pipeline stage. Defaults
+    to unbounded stage submission when omitted.
   """
   @spec submit_pipeline_run([Favn.Ref.t()], keyword()) :: {:ok, run_id()} | {:error, term()}
   @spec submit_pipeline_run(module(), keyword()) :: {:ok, run_id()} | {:error, term()}
@@ -912,6 +918,10 @@ defmodule FavnOrchestrator do
     coverage baseline.
   - `:refresh` or `:refresh_policy` - forwarded to child pipeline runs. Defaults
     to `:missing` when neither option is provided.
+  - `:backfill_child_concurrency` - positive integer cap for active child
+    window runs. Defaults to unbounded child submission when omitted.
+  - `:pipeline_stage_concurrency` - positive integer cap forwarded to each child
+    pipeline run.
   - `:metadata` - user metadata merged into the parent run metadata.
   - `:max_attempts`, `:retry_backoff_ms`, and `:timeout_ms` - forwarded to child
     runs.
@@ -2767,6 +2777,10 @@ defmodule FavnOrchestrator do
         []
         |> maybe_put_opt(:metadata, field_value(opts, :metadata))
         |> maybe_put_opt(:window_request, window_request)
+        |> maybe_put_opt(
+          :pipeline_stage_concurrency,
+          field_value(opts, :pipeline_stage_concurrency)
+        )
 
       {:ok, opts}
     end
@@ -2787,6 +2801,14 @@ defmodule FavnOrchestrator do
         |> Keyword.put(:range_request, range_request)
         |> maybe_put_opt(:metadata, field_value(opts, :metadata))
         |> maybe_put_opt(:coverage_baseline_id, field_value(opts, :coverage_baseline_id))
+        |> maybe_put_opt(
+          :backfill_child_concurrency,
+          field_value(opts, :backfill_child_concurrency)
+        )
+        |> maybe_put_opt(
+          :pipeline_stage_concurrency,
+          field_value(opts, :pipeline_stage_concurrency)
+        )
 
       {:ok, submit_opts}
     end

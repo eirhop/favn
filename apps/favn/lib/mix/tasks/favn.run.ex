@@ -11,7 +11,9 @@ defmodule Mix.Tasks.Favn.Run do
   By default the task waits for the run to finish. Use `--no-wait` to return
   after submission. Use `--wait-timeout-ms` for local polling and
   `--run-timeout-ms` for per-asset execution timeout. `--timeout-ms` remains an
-  alias for both when the more specific options are not provided.
+  alias for both when the more specific options are not provided. Use
+  `--pipeline-stage-concurrency N` to cap concurrently submitted runnable assets
+  inside one pipeline stage.
   """
 
   alias Favn.Dev
@@ -25,6 +27,7 @@ defmodule Mix.Tasks.Favn.Run do
     timeout_ms: :integer,
     wait_timeout_ms: :integer,
     run_timeout_ms: :integer,
+    pipeline_stage_concurrency: :integer,
     poll_interval_ms: :integer
   ]
 
@@ -84,6 +87,9 @@ defmodule Mix.Tasks.Favn.Run do
 
   defp error_message({:invalid_option, :poll_interval_ms}),
     do: "--poll-interval-ms must be greater than 0"
+
+  defp error_message({:invalid_option, :pipeline_stage_concurrency}),
+    do: "--pipeline-stage-concurrency must be greater than 0"
 
   defp error_message({:invalid_option, :idempotency_key}),
     do: "--idempotency-key must be a non-empty string up to 512 bytes"

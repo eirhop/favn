@@ -6,6 +6,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
   stage are independent siblings, so a failed sibling must not cancel the rest
   of that stage. The current stage is drained and all submitted sibling outcomes
   are persisted before the run decides whether later stages may continue.
+  Operators may cap stage admission with `:pipeline_stage_concurrency`; finite
+  caps submit one chunk at a time and stop before unsubmitted chunks after a
+  failed chunk.
 
   Freshness classification happens between drained stages: already-fresh nodes
   are recorded as skipped, successful executed nodes dirty downstream nodes in
@@ -137,12 +140,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
                        runner_client,
                        runner_opts
                      ) do
-                  {:ok, next_run, stage_results} ->
+                  {:ok, next_run, stage_results, executed_node_keys} ->
                     {next_context, persisted_run} =
                       record_successful_freshness(
                         next_run,
                         version,
-                        runnable_node_keys,
+                        executed_node_keys,
                         decisions,
                         stage_results,
                         classified_context
@@ -152,12 +155,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
                      {persisted_run, acc_results ++ stage_results, next_context,
                       next_terminal_failure}}
 
-                  {:error, failed_run, stage_results} ->
+                  {:error, failed_run, stage_results, executed_node_keys} ->
                     {next_context, persisted_run} =
                       record_completed_stage_after_failure(
                         failed_run,
                         version,
-                        runnable_node_keys,
+                        executed_node_keys,
                         decisions,
                         stage_results,
                         classified_context
@@ -216,18 +219,84 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_client,
          runner_opts
        ) do
-    run_stage_attempt(
-      run_state,
-      version,
-      stage,
-      node_keys,
-      decisions,
-      1,
-      runner_client,
-      runner_opts,
-      []
-    )
+    case pipeline_stage_concurrency(run_state) do
+      nil ->
+        case run_stage_attempt(
+               run_state,
+               version,
+               stage,
+               node_keys,
+               decisions,
+               1,
+               runner_client,
+               runner_opts,
+               []
+             ) do
+          {:ok, next_run, stage_results} ->
+            {:ok, next_run, stage_results, node_keys}
+
+          {:error, failed_run, stage_results, attempted_node_keys} ->
+            {:error, failed_run, stage_results, attempted_node_keys}
+        end
+
+      limit ->
+        run_stage_chunks(
+          run_state,
+          version,
+          stage,
+          Enum.chunk_every(node_keys, limit),
+          decisions,
+          runner_client,
+          runner_opts,
+          []
+        )
+    end
   end
+
+  defp run_stage_chunks(
+         %RunState{} = run_state,
+         %Version{} = version,
+         stage,
+         chunks,
+         decisions,
+         runner_client,
+         runner_opts,
+         acc_results
+       ) do
+    Enum.reduce_while(chunks, {:ok, run_state, acc_results, []}, fn chunk,
+                                                                    {:ok, current_run,
+                                                                     current_results,
+                                                                     executed_keys} ->
+      case run_stage_attempt(
+             current_run,
+             version,
+             stage,
+             chunk,
+             decisions,
+             1,
+             runner_client,
+             runner_opts,
+             current_results
+           ) do
+        {:ok, next_run, next_results} ->
+          {:cont, {:ok, next_run, next_results, executed_keys ++ chunk}}
+
+        {:error, failed_run, next_results, attempted_node_keys} ->
+          {:halt,
+           {:error, failed_run, next_results, Enum.uniq(executed_keys ++ attempted_node_keys)}}
+      end
+    end)
+  end
+
+  defp pipeline_stage_concurrency(%RunState{metadata: metadata}) when is_map(metadata) do
+    case Map.get(metadata, :effective_concurrency) do
+      %{pipeline_stage_concurrency: limit} when is_integer(limit) and limit > 0 -> limit
+      %{"pipeline_stage_concurrency" => limit} when is_integer(limit) and limit > 0 -> limit
+      _other -> nil
+    end
+  end
+
+  defp pipeline_stage_concurrency(%RunState{}), do: nil
 
   defp classify_pipeline_stage(
          %RunState{} = run_state,
@@ -376,49 +445,64 @@ defmodule FavnOrchestrator.RunServer.Execution do
          acc_results
        ) do
     if Persistence.externally_cancelled?(run_state.id) do
-      {:error, Snapshots.cancelled_snapshot(run_state), acc_results}
+      {:error, Snapshots.cancelled_snapshot(run_state), acc_results, []}
     else
-      with {:ok, run_after_submit, entries} <-
-             submit_stage_entries(
-               run_state,
-               version,
-               stage,
-               node_keys,
-               decisions,
-               attempt,
-               runner_client,
-               runner_opts
-             ),
-           {:ok, next_run, next_acc_results, retry_refs} <-
-             process_stage_attempt_results(
-               run_after_submit,
-               entries,
-               stage,
-               attempt,
-               acc_results,
-               runner_client,
-               runner_opts
-             ) do
-        if retry_refs == [] do
-          {:ok, next_run, next_acc_results}
-        else
-          run_after_schedule =
-            Enum.reduce(retry_refs, next_run, fn node_key, current ->
-              schedule_retry_for_ref(current, node_key, stage, attempt)
-            end)
+      case submit_stage_entries(
+             run_state,
+             version,
+             stage,
+             node_keys,
+             decisions,
+             attempt,
+             runner_client,
+             runner_opts
+           ) do
+        {:ok, run_after_submit, entries} ->
+          attempted_node_keys = entry_node_keys(entries)
 
-          run_stage_attempt(
-            run_after_schedule,
-            version,
-            stage,
-            retry_refs,
-            decisions,
-            attempt + 1,
-            runner_client,
-            runner_opts,
-            next_acc_results
-          )
-        end
+          case process_stage_attempt_results(
+                 run_after_submit,
+                 entries,
+                 stage,
+                 attempt,
+                 acc_results,
+                 runner_client,
+                 runner_opts
+               ) do
+            {:ok, next_run, next_acc_results, []} ->
+              {:ok, next_run, next_acc_results}
+
+            {:ok, next_run, next_acc_results, retry_refs} ->
+              run_after_schedule =
+                Enum.reduce(retry_refs, next_run, fn node_key, current ->
+                  schedule_retry_for_ref(current, node_key, stage, attempt)
+                end)
+
+              case run_stage_attempt(
+                     run_after_schedule,
+                     version,
+                     stage,
+                     retry_refs,
+                     decisions,
+                     attempt + 1,
+                     runner_client,
+                     runner_opts,
+                     next_acc_results
+                   ) do
+                {:ok, retry_run, retry_results} ->
+                  {:ok, retry_run, retry_results}
+
+                {:error, retry_failed_run, retry_results, retry_attempted_node_keys} ->
+                  {:error, retry_failed_run, retry_results,
+                   Enum.uniq(attempted_node_keys ++ retry_attempted_node_keys)}
+              end
+
+            {:error, failed_run, next_acc_results} ->
+              {:error, failed_run, next_acc_results, attempted_node_keys}
+          end
+
+        {:error, failed_run, step_results, attempted_node_keys} ->
+          {:error, failed_run, step_results, attempted_node_keys}
       end
     end
   end
@@ -477,7 +561,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
                   runner_opts
                 )
 
-              {:halt, {:error, Snapshots.cancelled_snapshot(cancelled), []}}
+              attempted = Enum.map(acc, & &1.node_key) ++ [node_key]
+              {:halt, {:error, Snapshots.cancelled_snapshot(cancelled), [], attempted}}
           end
 
         {:error, reason} ->
@@ -507,18 +592,25 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  max_attempts: current_run.max_attempts
                }) do
             :ok ->
-              {:halt, {:error, failed, []}}
+              attempted = Enum.map(acc, & &1.node_key)
+              {:halt, {:error, failed, [], attempted}}
 
             {:error, :external_cancel} ->
-              {:halt, {:error, Snapshots.cancelled_snapshot(failed), []}}
+              attempted = Enum.map(acc, & &1.node_key)
+              {:halt, {:error, Snapshots.cancelled_snapshot(failed), [], attempted}}
           end
       end
     end)
     |> case do
-      {:ok, run_after_submit, entries} -> {:ok, run_after_submit, entries}
-      {:error, failed_run, step_results} -> {:error, failed_run, step_results}
+      {:ok, run_after_submit, entries} ->
+        {:ok, run_after_submit, entries}
+
+      {:error, failed_run, step_results, attempted_node_keys} ->
+        {:error, failed_run, step_results, attempted_node_keys}
     end
   end
+
+  defp entry_node_keys(entries), do: Enum.map(entries, & &1.node_key)
 
   defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
     parent = self()

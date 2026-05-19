@@ -10,10 +10,13 @@ defmodule FavnOrchestrator.BackfillManagerTest do
   alias Favn.Manifest.Version
   alias Favn.Window.Key, as: WindowKey
   alias Favn.Window.Policy
+  alias FavnOrchestrator.BackfillChildCoordinator
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
+  alias FavnOrchestrator.TransitionWriter
 
   defmodule RunnerClientStub do
     @behaviour Favn.Contracts.RunnerClient
@@ -44,6 +47,65 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :invalid_inspection_target}
+  end
+
+  defmodule BlockingRunnerClientStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, _opts), do: {:ok, execution_id(work)}
+
+    @impl true
+    def await_result(execution_id, _timeout, opts) do
+      test_pid = Keyword.fetch!(opts, :test_pid)
+      send(test_pid, {:await_started, execution_id, self()})
+
+      receive do
+        {:unblock_await, ^execution_id} -> :ok
+      end
+
+      {:ok,
+       %RunnerResult{
+         status: :ok,
+         asset_results: [asset_result(execution_id)],
+         metadata: %{stub: :blocking}
+       }}
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :invalid_inspection_target}
+
+    defp asset_result(execution_id) do
+      %Favn.Run.AssetResult{
+        ref: execution_ref(execution_id),
+        stage: 0,
+        status: :ok,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: nil,
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+      "exec_#{work.run_id}_#{Atom.to_string(module)}_#{Atom.to_string(name)}"
+    end
+
+    defp execution_ref(execution_id) do
+      [module, name] = execution_id |> String.split("_") |> Enum.take(-2)
+      {String.to_atom(module), String.to_atom(name)}
+    end
   end
 
   setup do
@@ -236,6 +298,180 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert_receive {:child_submit, MyApp.Pipelines.Daily, child_opts}
     assert Keyword.fetch!(child_opts, :refresh_policy) == refresh_policy
     refute Keyword.has_key?(child_opts, :refresh)
+  end
+
+  test "limits finite child window submissions until prior batch is terminal" do
+    version = manifest_version("mv_backfill_child_concurrency")
+    test_pid = self()
+
+    submitter = fn pipeline_module, child_opts ->
+      trigger = Keyword.fetch!(child_opts, :trigger)
+      send(test_pid, {:child_submit, pipeline_module, trigger.window_key})
+      {:ok, "child_#{trigger.window_key}"}
+    end
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    task =
+      Task.async(fn ->
+        FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+          run_id: "run_backfill_child_concurrency",
+          range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+          backfill_child_concurrency: 1,
+          _child_submitter: submitter
+        )
+      end)
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, first_window_key}
+    refute_receive {:child_submit, MyApp.Pipelines.Daily, _window_key}, 100
+
+    assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency")
+    assert parent.metadata.backfill.backfill_child_concurrency == 1
+    assert_terminal_window("run_backfill_child_concurrency", first_window_key)
+
+    assert_receive {:child_submit, MyApp.Pipelines.Daily, second_window_key}, 500
+    refute second_window_key == first_window_key
+
+    assert_terminal_window("run_backfill_child_concurrency", second_window_key)
+
+    assert {:ok, "run_backfill_child_concurrency"} = Task.await(task, 1_000)
+  end
+
+  test "resumes finite backfill admission after coordinator restart" do
+    version = manifest_version("mv_backfill_child_concurrency_restart")
+
+    Application.put_env(:favn_orchestrator, :runner_client, BlockingRunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_child_concurrency_restart"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_child_concurrency_restart",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               backfill_child_concurrency: 1
+             )
+
+    assert_receive {:await_started, first_execution_id, first_await_pid}, 1_000
+
+    eventually(fn ->
+      windows = list_backfill_windows(backfill_run_id: "run_backfill_child_concurrency_restart")
+      assert Enum.count(windows, &(&1.status == :running)) == 1
+      assert Enum.count(windows, &(&1.status == :pending)) == 1
+    end)
+
+    old_pid = Process.whereis(BackfillChildCoordinator)
+    assert is_pid(old_pid)
+    Process.exit(old_pid, :kill)
+
+    eventually(fn ->
+      new_pid = Process.whereis(BackfillChildCoordinator)
+      assert is_pid(new_pid)
+      refute new_pid == old_pid
+    end)
+
+    send(first_await_pid, {:unblock_await, first_execution_id})
+    assert_receive {:await_started, second_execution_id, second_await_pid}, 1_000
+    send(second_await_pid, {:unblock_await, second_execution_id})
+
+    eventually(fn ->
+      assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency_restart")
+      assert parent.status == :ok
+      assert parent.error == nil
+      windows = list_backfill_windows(backfill_run_id: parent.id)
+      assert length(windows) == 2
+      assert Enum.all?(windows, &(&1.status == :ok))
+    end)
+  end
+
+  test "rehydrated finite backfill clears stale orphaned parent error" do
+    version = manifest_version("mv_backfill_child_concurrency_orphaned_parent")
+
+    Application.put_env(:favn_orchestrator, :runner_client, BlockingRunnerClientStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, test_pid: self())
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, "run_backfill_child_concurrency_orphaned_parent"} =
+             FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+               run_id: "run_backfill_child_concurrency_orphaned_parent",
+               range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-27"},
+               backfill_child_concurrency: 1
+             )
+
+    assert_receive {:await_started, first_execution_id, first_await_pid}, 1_000
+
+    eventually(fn ->
+      windows =
+        list_backfill_windows(backfill_run_id: "run_backfill_child_concurrency_orphaned_parent")
+
+      assert Enum.count(windows, &(&1.status == :running)) == 1
+      assert Enum.count(windows, &(&1.status == :pending)) == 1
+    end)
+
+    assert :ok = mark_parent_orphaned("run_backfill_child_concurrency_orphaned_parent")
+
+    assert {:ok, orphaned_parent} =
+             Storage.get_run("run_backfill_child_concurrency_orphaned_parent")
+
+    assert orphaned_parent.status == :error
+    assert orphaned_parent.error.type == :orphaned_run_reconciled
+
+    old_pid = Process.whereis(BackfillChildCoordinator)
+    assert is_pid(old_pid)
+    Process.exit(old_pid, :kill)
+
+    eventually(fn ->
+      new_pid = Process.whereis(BackfillChildCoordinator)
+      assert is_pid(new_pid)
+      refute new_pid == old_pid
+
+      assert {:ok, resumed_parent} =
+               Storage.get_run("run_backfill_child_concurrency_orphaned_parent")
+
+      assert resumed_parent.status == :running
+      assert resumed_parent.error == nil
+    end)
+
+    send(first_await_pid, {:unblock_await, first_execution_id})
+    assert_receive {:await_started, second_execution_id, second_await_pid}, 1_000
+    send(second_await_pid, {:unblock_await, second_execution_id})
+
+    eventually(fn ->
+      assert {:ok, parent} = Storage.get_run("run_backfill_child_concurrency_orphaned_parent")
+      assert parent.status == :ok
+      assert parent.error == nil
+      windows = list_backfill_windows(backfill_run_id: parent.id)
+      assert length(windows) == 2
+      assert Enum.all?(windows, &(&1.status == :ok))
+    end)
+  end
+
+  for invalid_value <- [0, -1, "1"] do
+    @invalid_value invalid_value
+
+    test "rejects invalid backfill_child_concurrency #{@invalid_value} before persisting parent state" do
+      version =
+        manifest_version("mv_backfill_invalid_child_concurrency_#{inspect(@invalid_value)}")
+
+      run_id = "run_backfill_invalid_child_concurrency_#{inspect(@invalid_value)}"
+
+      assert :ok = FavnOrchestrator.register_manifest(version)
+      assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+      assert {:error, {:invalid_backfill_child_concurrency, @invalid_value}} =
+               FavnOrchestrator.submit_pipeline_backfill(MyApp.Pipelines.Daily,
+                 run_id: run_id,
+                 range_request: %{kind: :day, from: "2026-04-26", to: "2026-04-26"},
+                 backfill_child_concurrency: @invalid_value
+               )
+
+      assert {:error, :not_found} = Storage.get_run(run_id)
+      assert [] = list_backfill_windows(backfill_run_id: run_id)
+    end
   end
 
   for option <- [:lookback, :lookback_policy] do
@@ -678,6 +914,42 @@ defmodule FavnOrchestrator.BackfillManagerTest do
 
       assert window.status == status
     end)
+  end
+
+  defp assert_terminal_window(backfill_run_id, window_key) do
+    assert {:ok, window} =
+             Storage.get_backfill_window(backfill_run_id, MyApp.Pipelines.Daily, window_key)
+
+    assert :ok =
+             Storage.put_backfill_window(%{
+               window
+               | status: :ok,
+                 child_run_id: window.child_run_id || "child_#{window_key}",
+                 latest_attempt_run_id: window.latest_attempt_run_id || "child_#{window_key}",
+                 attempt_count: max(window.attempt_count, 1),
+                 finished_at: DateTime.utc_now(),
+                 updated_at: DateTime.utc_now()
+             })
+  end
+
+  defp mark_parent_orphaned(backfill_run_id) do
+    with {:ok, parent} <- Storage.get_run(backfill_run_id) do
+      error = %{
+        type: :orphaned_run_reconciled,
+        scope: :local_single_node,
+        previous_status: parent.status,
+        reconciled_at: DateTime.utc_now()
+      }
+
+      parent
+      |> RunState.transition(
+        status: :error,
+        error: error,
+        runner_execution_id: nil,
+        metadata: Map.put(parent.metadata, :terminal_event_type, :run_failed)
+      )
+      |> TransitionWriter.persist_transition(:run_failed, %{status: :error, error: error})
+    end
   end
 
   defp list_backfill_windows(filters) do

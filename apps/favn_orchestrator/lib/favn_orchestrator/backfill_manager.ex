@@ -9,7 +9,8 @@ defmodule FavnOrchestrator.BackfillManager do
   - persist a parent `:backfill_pipeline` run
   - persist one `FavnOrchestrator.Backfill.BackfillWindow` row per requested
     window
-  - submit one normal child pipeline run per window with lineage metadata
+  - submit one normal child pipeline run per window with lineage metadata,
+    optionally through finite child-run admission
 
   HTTP, CLI, and future web surfaces should call the orchestrator facade rather
   than duplicating these mechanics.
@@ -23,6 +24,7 @@ defmodule FavnOrchestrator.BackfillManager do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Projector, as: BackfillProjector
+  alias FavnOrchestrator.BackfillChildCoordinator
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunState
@@ -30,7 +32,6 @@ defmodule FavnOrchestrator.BackfillManager do
   alias FavnOrchestrator.TransitionWriter
 
   @default_max_windows 500
-
   @doc """
   Submits a parent pipeline backfill run and one child pipeline run per resolved anchor.
 
@@ -45,6 +46,7 @@ defmodule FavnOrchestrator.BackfillManager do
     range_request = Keyword.get(opts, :range_request)
 
     with :ok <- reject_unsupported_lookback(opts),
+         :ok <- validate_backfill_child_concurrency(opts),
          {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
          {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
          {:ok, index} <- Index.build_from_version(version),
@@ -213,29 +215,69 @@ defmodule FavnOrchestrator.BackfillManager do
   end
 
   defp submit_child_runs(%RunState{} = parent, pipeline_module, range, opts) do
-    Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
-      window_key = WindowKey.encode(anchor.key)
+    case Keyword.get(opts, :backfill_child_concurrency) do
+      value when is_integer(value) and value > 0 ->
+        child_specs = Enum.map(range.anchors, &child_spec(parent, &1, opts))
 
-      child_opts =
-        opts
-        |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id])
-        |> default_child_refresh()
-        |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
-        |> Keyword.put(:anchor_window, anchor)
-        |> Keyword.put(:parent_run_id, parent.id)
-        |> Keyword.put(:root_run_id, parent.id)
-        |> Keyword.put(:lineage_depth, 1)
-        |> Keyword.put(:trigger, %{
-          kind: :backfill,
-          backfill_run_id: parent.id,
-          window_key: window_key
-        })
+        BackfillChildCoordinator.start_backfill(parent, pipeline_module, child_specs,
+          concurrency: value,
+          submitter: child_submitter(pipeline_module, opts),
+          failure_handler: child_failure_handler(pipeline_module, opts)
+        )
 
-      case submit_child_run(pipeline_module, child_opts, opts) do
-        {:ok, _child_run_id} -> {:cont, :ok}
-        {:error, _reason} = error -> {:halt, error}
-      end
+      nil ->
+        submit_child_runs_unbounded(parent, pipeline_module, range.anchors, opts)
+    end
+  end
+
+  defp submit_child_runs_unbounded(%RunState{} = parent, pipeline_module, anchors, opts) do
+    Enum.reduce_while(anchors, :ok, fn anchor, :ok ->
+      submit_child_run_for_anchor(parent, pipeline_module, anchor, opts)
     end)
+  end
+
+  defp submit_child_run_for_anchor(%RunState{} = parent, pipeline_module, anchor, opts) do
+    case submit_child_run(pipeline_module, child_opts(parent, anchor, opts), opts) do
+      {:ok, _child_run_id} -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
+
+  defp child_spec(%RunState{} = parent, anchor, opts) do
+    %{window_key: WindowKey.encode(anchor.key), child_opts: child_opts(parent, anchor, opts)}
+  end
+
+  defp child_opts(%RunState{} = parent, anchor, opts) do
+    window_key = WindowKey.encode(anchor.key)
+
+    opts
+    |> Keyword.drop([
+      :range_request,
+      :run_id,
+      :coverage_baseline_id,
+      :backfill_child_concurrency
+    ])
+    |> default_child_refresh()
+    |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
+    |> Keyword.put(:anchor_window, anchor)
+    |> Keyword.put(:parent_run_id, parent.id)
+    |> Keyword.put(:root_run_id, parent.id)
+    |> Keyword.put(:lineage_depth, 1)
+    |> Keyword.put(:trigger, %{
+      kind: :backfill,
+      backfill_run_id: parent.id,
+      window_key: window_key
+    })
+  end
+
+  defp child_submitter(pipeline_module, opts) do
+    fn child_opts -> submit_child_run(pipeline_module, child_opts, opts) end
+  end
+
+  defp child_failure_handler(pipeline_module, opts) do
+    fn backfill_run_id, reason ->
+      maybe_compensate_submit_failure(backfill_run_id, pipeline_module, reason, opts)
+    end
   end
 
   defp default_child_refresh(opts) do
@@ -265,6 +307,14 @@ defmodule FavnOrchestrator.BackfillManager do
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_backfill_child_concurrency(opts) do
+    case Keyword.get(opts, :backfill_child_concurrency) do
+      nil -> :ok
+      value when is_integer(value) and value > 0 -> :ok
+      value -> {:error, {:invalid_backfill_child_concurrency, value}}
     end
   end
 
@@ -538,8 +588,16 @@ defmodule FavnOrchestrator.BackfillManager do
       range_start_at: range.range_start_at,
       range_end_at: range.range_end_at,
       window_keys: encoded_window_keys(range.anchors),
-      coverage_baseline_id: Keyword.get(opts, :coverage_baseline_id)
+      coverage_baseline_id: Keyword.get(opts, :coverage_baseline_id),
+      backfill_child_concurrency: backfill_child_concurrency_summary(opts),
+      pipeline_stage_concurrency: Keyword.get(opts, :pipeline_stage_concurrency),
+      refresh: Keyword.get(opts, :refresh),
+      refresh_policy: Keyword.get(opts, :refresh_policy)
     }
+  end
+
+  defp backfill_child_concurrency_summary(opts) do
+    Keyword.get(opts, :backfill_child_concurrency, :unbounded)
   end
 
   defp reject_unsupported_lookback(opts) do

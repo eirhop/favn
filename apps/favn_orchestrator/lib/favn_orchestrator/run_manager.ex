@@ -106,7 +106,7 @@ defmodule FavnOrchestrator.RunManager do
   def handle_call({:submit_pipeline_run, target_refs, opts}, _from, state) do
     reply =
       with :ok <- validate_target_refs(target_refs),
-           metadata <- build_pipeline_metadata(target_refs, opts),
+           {:ok, metadata} <- build_pipeline_metadata(target_refs, opts),
            submit_opts <-
              opts |> Keyword.put(:metadata, metadata) |> Keyword.put(:_submit_kind, :pipeline),
            {:ok, run_state, version} <- build_pipeline_submission(target_refs, submit_opts),
@@ -348,13 +348,19 @@ defmodule FavnOrchestrator.RunManager do
     timeout_ms = Keyword.get(opts, :timeout_ms, RunState.default_timeout_ms())
     dependencies = Keyword.get(opts, :dependencies, :all)
     anchor_window = Keyword.get(opts, :anchor_window)
+    pipeline_stage_concurrency = Keyword.get(opts, :pipeline_stage_concurrency)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_metadata(metadata),
+         {:ok, pipeline_stage_concurrency} <-
+           validate_pipeline_stage_concurrency(pipeline_stage_concurrency),
          :ok <- validate_dependencies(dependencies),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, dependencies),
-         metadata <- Map.put(metadata, :refresh_policy, refresh_policy),
+         metadata <-
+           metadata
+           |> Map.put(:refresh_policy, refresh_policy)
+           |> put_effective_pipeline_stage_concurrency(pipeline_stage_concurrency),
          :ok <- validate_anchor_window(anchor_window),
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
@@ -493,14 +499,21 @@ defmodule FavnOrchestrator.RunManager do
 
   defp build_pipeline_metadata(target_refs, opts) do
     user_metadata = Keyword.get(opts, :metadata, %{})
+    pipeline_stage_concurrency = Keyword.get(opts, :pipeline_stage_concurrency)
 
-    Map.merge(user_metadata, %{
-      submit_kind: :pipeline,
-      pipeline_target_refs: target_refs,
-      pipeline_context: Keyword.get(opts, :_pipeline_context),
-      pipeline_dependencies: Keyword.get(opts, :dependencies),
-      pipeline_submit_ref: Keyword.get(opts, :_submit_ref)
-    })
+    with {:ok, pipeline_stage_concurrency} <-
+           validate_pipeline_stage_concurrency(pipeline_stage_concurrency) do
+      metadata =
+        Map.merge(user_metadata, %{
+          submit_kind: :pipeline,
+          pipeline_target_refs: target_refs,
+          pipeline_context: Keyword.get(opts, :_pipeline_context),
+          pipeline_dependencies: Keyword.get(opts, :dependencies),
+          pipeline_submit_ref: Keyword.get(opts, :_submit_ref)
+        })
+
+      {:ok, put_effective_pipeline_stage_concurrency(metadata, pipeline_stage_concurrency)}
+    end
   end
 
   defp build_rerun_submission(%RunState{} = source_run, opts) when is_list(opts) do
@@ -511,11 +524,14 @@ defmodule FavnOrchestrator.RunManager do
     max_attempts = Keyword.get(opts, :max_attempts, source_run.max_attempts)
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, source_run.retry_backoff_ms)
     timeout_ms = Keyword.get(opts, :timeout_ms, source_run.timeout_ms)
+    pipeline_stage_concurrency = Keyword.get(opts, :pipeline_stage_concurrency)
     {rerun_asset_ref, rerun_targets, rerun_dependencies} = replay_selection(source_run)
 
     with :ok <- validate_params(params),
          :ok <- validate_trigger(trigger),
          :ok <- validate_metadata(metadata),
+         {:ok, pipeline_stage_concurrency} <-
+           validate_pipeline_stage_concurrency(pipeline_stage_concurrency),
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
          :ok <- validate_timeout_ms(timeout_ms),
@@ -542,6 +558,7 @@ defmodule FavnOrchestrator.RunManager do
         metadata
         |> Map.put(:source_run_id, source_run.id)
         |> Map.put(:refresh_policy, refresh_policy)
+        |> put_effective_pipeline_stage_concurrency(pipeline_stage_concurrency)
 
       metadata_with_replay =
         if pipeline_origin?(source_run) do
@@ -769,6 +786,27 @@ defmodule FavnOrchestrator.RunManager do
 
   defp validate_timeout_ms(value) when is_integer(value) and value > 0, do: :ok
   defp validate_timeout_ms(_value), do: {:error, :invalid_timeout_ms}
+
+  defp validate_pipeline_stage_concurrency(nil), do: {:ok, nil}
+
+  defp validate_pipeline_stage_concurrency(value) when is_integer(value) and value > 0,
+    do: {:ok, value}
+
+  defp validate_pipeline_stage_concurrency(_value),
+    do: {:error, :invalid_pipeline_stage_concurrency}
+
+  defp put_effective_pipeline_stage_concurrency(metadata, nil), do: metadata
+
+  defp put_effective_pipeline_stage_concurrency(metadata, limit) do
+    effective =
+      case Map.get(metadata, :effective_concurrency) do
+        value when is_map(value) -> value
+        _other -> %{}
+      end
+      |> Map.put(:pipeline_stage_concurrency, limit)
+
+    Map.put(metadata, :effective_concurrency, effective)
+  end
 
   defp build_cancel_snapshots(%RunState{status: status}, _reason)
        when status in [:ok, :partial, :error, :cancelled, :timed_out] do

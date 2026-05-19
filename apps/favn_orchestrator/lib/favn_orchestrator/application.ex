@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.BackfillChildCoordinator
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunManager
@@ -36,7 +37,8 @@ defmodule FavnOrchestrator.Application do
             {Phoenix.PubSub, name: pubsub_name()},
             {RunRecovery, []},
             {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
-            {RunManager, []}
+            {RunManager, []},
+            {BackfillChildCoordinator, []}
           ] ++ scheduler_children() ++ api_children()
 
       with {:ok, supervisor} <-
