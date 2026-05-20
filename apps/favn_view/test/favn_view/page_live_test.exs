@@ -12,6 +12,7 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
+  alias FavnView.Components.RunDetailPage.Timeline
   alias FavnView.Auth.BrowserSessionStore
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
@@ -84,16 +85,154 @@ defmodule FavnView.PageLiveTest do
     {:ok, view, html} = live(conn, ~p"/runs")
 
     assert html =~ "Runs"
-    assert html =~ "Recent orchestration activity"
-    assert has_element?(view, ~s([data-testid="runs-table"]))
-    assert has_element?(view, ~s([data-testid="run-card-list"]))
+    assert html =~ "Backfills and runs"
+    assert has_element?(view, ~s([data-testid="execution-groups-table"]))
+    assert has_element?(view, ~s([data-testid="execution-group-card-list"]))
+    assert has_element?(view, ~s([data-testid="runs-summary-band"]))
 
     assert has_element?(view, ~s(a[href="/runs/run_customer_orders_daily"]), "run_custo..._daily")
     assert html =~ "customer_orders_daily"
     assert html =~ "Succeeded"
-    assert html =~ "1/1 asset"
-    assert html =~ "2/3 steps"
+    assert html =~ "1 / 1 attempts"
+    assert html =~ "2 / 3 attempts"
     assert html =~ "+2"
+  end
+
+  test "renders execution groups without child runs as equal top-level rows", %{conn: conn} do
+    %{parent_id: parent_id, child_ids: [child_id | _]} = seed_backfill_overview_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="#{parent_id}"])
+           )
+
+    refute has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="#{child_id}"])
+           )
+
+    view
+    |> element(
+      ~s([data-testid="execution-group-row"][data-group-id="#{parent_id}"] [data-testid="toggle-execution-group"])
+    )
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="child-runs-table"]))
+    assert has_element?(view, ~s([data-testid="child-run-row"][data-run-id="#{child_id}"]))
+
+    assert has_element?(
+             view,
+             ~s(a[href="/runs/#{parent_id}?view=windows&child_run_id=#{child_id}"]),
+             "Open window run"
+           )
+  end
+
+  test "execution group health reflects failed and running children", %{conn: conn} do
+    %{parent_id: parent_id} = seed_backfill_overview_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="#{parent_id}"]),
+             "Failed"
+           )
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="#{parent_id}"]),
+             "2 / 3 attempts"
+           )
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="#{parent_id}"]),
+             "May 2026"
+           )
+  end
+
+  test "filters execution groups by failed running incomplete and search", %{conn: conn} do
+    %{parent_id: parent_id} = seed_backfill_overview_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs")
+
+    view
+    |> element(~s([data-testid="execution-group-filters"]))
+    |> render_change(%{"filters" => %{"only_failed" => "true"}})
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="#{parent_id}"])
+           )
+
+    refute has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="run_customer_orders_daily"])
+           )
+
+    view
+    |> element(~s([data-testid="execution-group-filters"]))
+    |> render_change(%{"filters" => %{"only_failed" => "false", "only_running" => "true"}})
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="run_empty_running"])
+           )
+
+    refute has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="run_customer_orders_daily"])
+           )
+
+    view
+    |> element(~s([data-testid="execution-group-filters"]))
+    |> render_change(%{"filters" => %{"only_running" => "false", "only_incomplete" => "true"}})
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="run_empty_running"])
+           )
+
+    view
+    |> element(~s([data-testid="execution-group-filters"]))
+    |> render_change(%{
+      "filters" => %{"only_incomplete" => "false", "search" => "overview_backfill"}
+    })
+
+    assert has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="#{parent_id}"])
+           )
+
+    refute has_element?(
+             view,
+             ~s([data-testid="execution-group-row"][data-group-id="run_customer_orders_daily"])
+           )
+  end
+
+  test "runs overview shows empty state", %{conn: conn} do
+    Memory.reset()
+    conn = authenticate_conn(conn)
+
+    {:ok, view, _html} = live(conn, ~p"/runs")
+
+    assert has_element?(view, ~s([data-testid="runs-empty-state"]), "No runs yet")
+  end
+
+  test "runs overview shows filtered empty state for unmatched search", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs")
+
+    view
+    |> element(~s([data-testid="execution-group-filters"]))
+    |> render_change(%{"filters" => %{"search" => "not_real"}})
+
+    assert has_element?(
+             view,
+             ~s([data-testid="runs-filtered-empty-state"]),
+             "No runs found"
+           )
   end
 
   test "renders the pipelines list", %{conn: conn} do
@@ -229,8 +368,8 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(
              view,
-             ~s([data-testid="run-row"][data-run-id="run_empty_running"]),
-             "Waiting"
+             ~s([data-testid="execution-group-row"][data-group-id="run_empty_running"]),
+             "Running"
            )
 
     {:ok, active_run} = Storage.get_run("run_empty_running")
@@ -255,14 +394,14 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(
              view,
-             ~s([data-testid="run-row"][data-run-id="run_empty_running"]),
+             ~s([data-testid="execution-group-row"][data-group-id="run_empty_running"]),
              "Succeeded"
            )
 
     refute has_element?(
              view,
-             ~s([data-testid="run-row"][data-run-id="run_empty_running"]),
-             "Waiting"
+             ~s([data-testid="execution-group-row"][data-group-id="run_empty_running"]),
+             "Running"
            )
   end
 
@@ -628,11 +767,8 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="run-overview-panel"]), "Succeeded")
     refute html =~ "Healthy"
 
-    view
-    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Context"]))
-    |> render_click()
-
-    assert has_element?(view, ~s([data-testid="run-context-panel"]), "mv_view_assets")
+    assert has_element?(view, ~s([data-testid="execution-group-header"]))
+    refute has_element?(view, ~s([data-testid="run-detail-tabs"]))
   end
 
   test "run detail renders events mode when present", %{conn: conn} do
@@ -1170,7 +1306,331 @@ defmodule FavnView.PageLiveTest do
              "DuckDB ADBC connection bootstrap failed at attach_mart"
            )
 
-    assert has_element?(view, ~s(a[href="/runs/#{child_id}"]), "Open child run")
+    assert has_element?(
+             view,
+             ~s(a[href="/runs/#{parent_id}?view=windows&child_run_id=#{child_id}"]),
+             "Open window run"
+           )
+  end
+
+  test "run detail renders execution group header for backfill", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    assert has_element?(view, ~s([data-testid="execution-group-header"]), "Windows")
+    assert has_element?(view, ~s([data-testid="execution-group-id"]), parent_id)
+    assert has_element?(view, ~s([data-testid="execution-group-stat-cards"]), "Asset attempts")
+    assert has_element?(view, ~s([data-testid="execution-group-stat-cards"]), "Running")
+  end
+
+  test "run detail renders asset window matrix with multiple windows", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    assert has_element?(view, ~s([data-testid="asset-window-matrix"]), "Jan 2026")
+    assert has_element?(view, ~s([data-testid="asset-window-matrix"]), "Feb 2026")
+    assert has_element?(view, ~s([data-testid="asset-window-matrix"]), "Mar 2026")
+    assert has_element?(view, ~s([data-testid="asset-window-matrix"]), "customer_orders_daily")
+    assert has_element?(view, ~s([data-testid="asset-window-matrix"]), "stg_payments")
+  end
+
+  test "run detail matrix exposes a window for every attempt", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, _view, html} = live(conn, ~p"/runs/#{parent_id}")
+
+    assert Regex.scan(~r/data-testid="asset-window-cell"/, html) |> length() == 6
+    refute html =~ ~s(data-window-id="none")
+  end
+
+  test "run detail matrix renders failed running and queued statuses", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="asset-window-cell"][data-status="error"]),
+             "Failed"
+           )
+
+    assert has_element?(
+             view,
+             ~s([data-testid="asset-window-cell"][data-status="running"]),
+             "Running"
+           )
+
+    assert has_element?(
+             view,
+             ~s([data-testid="asset-window-cell"][data-status="pending"]),
+             "Queued"
+           )
+  end
+
+  test "run detail failures view focuses failed attempts", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Failures"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="failures-view"]), "Failed asset attempts")
+    assert has_element?(view, ~s([data-testid="failure-row"]), "customer_orders_daily")
+    assert has_element?(view, ~s([data-testid="failure-row"]), "detail group failed")
+  end
+
+  test "run detail window runs view shows child runs", %{conn: conn} do
+    %{parent_id: parent_id, child_ids: child_ids} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Window runs"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="window-runs-view"]), "Window runs")
+
+    for child_id <- child_ids do
+      assert has_element?(view, ~s([data-testid="window-run-row"][data-run-id="#{child_id}"]))
+    end
+  end
+
+  test "run detail deep links child run ids to highlighted window runs", %{conn: conn} do
+    %{parent_id: parent_id, child_ids: [child_id | _]} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}?view=windows&child_run_id=#{child_id}")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="window-run-row"][data-run-id="#{child_id}"][data-selected="true"])
+           )
+  end
+
+  test "run detail timeline groups attempts into running ran and queued", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Timeline"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="timeline-view"]), "Timeline")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="timeline-section"][data-section="running"]),
+             "Running"
+           )
+
+    assert has_element?(view, ~s([data-testid="timeline-section"][data-section="ran"]), "Ran")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="timeline-section"][data-section="queued"]),
+             "Queued"
+           )
+  end
+
+  test "run detail timeline sorts started groups by start time", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    html = render_click(view, "set_mode", %{"mode" => "timeline"})
+
+    assert html =~
+             ~r/data-section="ran".*customer_orders_daily.*Jan 2026.*stg_payments.*Jan 2026.*customer_orders_daily.*Feb 2026/s
+  end
+
+  test "run detail timeline shows window labels on every row", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    html = render_click(view, "set_mode", %{"mode" => "timeline"})
+    rows = Regex.scan(~r/data-testid="timeline-row"[^>]+data-window-label="([^"]+)"/, html)
+
+    assert length(rows) == 6
+
+    assert Enum.all?(rows, fn [_match, label] -> label in ["Jan 2026", "Feb 2026", "Mar 2026"] end)
+  end
+
+  test "run detail timeline puts failed terminal attempts in ran", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    html = render_click(view, "set_mode", %{"mode" => "timeline"})
+
+    assert html =~ ~r/data-section="ran".*customer_orders_daily.*Feb 2026.*Failed/s
+  end
+
+  test "run detail timeline puts blocked skipped fresh and partial attempts in ran" do
+    run = %{
+      active?: false,
+      windows: [],
+      matrix: %{
+        rows: [
+          %{
+            cells: [
+              timeline_attempt(:blocked),
+              timeline_attempt(:skipped_fresh),
+              timeline_attempt(:partial)
+            ]
+          }
+        ]
+      }
+    }
+
+    html =
+      render_component(&Timeline.timeline_panel/1,
+        run: run,
+        timeline_hook?: false,
+        timeline_state: %{
+          mode: :fit,
+          zoom: "full",
+          live_follow?: false,
+          search: "",
+          status: "all",
+          window: "all",
+          failed_only?: false,
+          running_only?: false
+        }
+      )
+
+    assert html =~ ~r/data-section="ran".*Blocked.*Skipped fresh.*Partial/s
+    refute html =~ ~r/data-section="queued".*Blocked/s
+  end
+
+  test "run detail timeline uses started to now bars for running attempts", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    html = render_click(view, "set_mode", %{"mode" => "timeline"})
+
+    assert html =~ ~r/data-section="running"[^>]+data-time-mode="started-to-now"/s
+    assert html =~ ~s(data-testid="timeline-now-marker")
+    assert html =~ ~s(data-testid="timeline-bar")
+  end
+
+  test "run detail timeline exposes live mode for active runs", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}?view=timeline")
+
+    assert has_element?(view, ~s([data-testid="timeline-mode-indicator"][data-mode="live"]))
+    assert has_element?(view, ~s([data-testid="timeline-now-marker"]))
+    assert has_element?(view, ~s([data-testid="timeline-scroll-region"][data-live-follow="true"]))
+  end
+
+  test "run detail timeline defaults completed runs to fit behavior", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!(completed?: true)
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}?view=timeline")
+
+    assert has_element?(view, ~s([data-testid="timeline-mode-indicator"][data-mode="fit"]))
+    assert has_element?(view, ~s([data-testid="timeline-fit-run"].btn-warning))
+    refute has_element?(view, ~s([data-testid="timeline-now-marker"]))
+  end
+
+  test "run detail timeline zoom controls update rendered state", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}?view=timeline")
+
+    view
+    |> element(~s([data-testid="timeline-zoom-1h"]))
+    |> render_click()
+
+    path = assert_patch(view)
+    assert path =~ "/runs/#{parent_id}"
+    assert path =~ "view=timeline"
+    assert path =~ "timeline_zoom=1h"
+    assert path =~ "timeline_mode=manual"
+    assert path =~ "timeline_follow=0"
+    assert has_element?(view, ~s([data-testid="timeline-mode-indicator"][data-mode="manual"]))
+    assert has_element?(view, ~s([data-testid="timeline-zoom-1h"].btn-info))
+    assert has_element?(view, ~s([data-testid="timeline-jump-now"]), "Jump to now")
+  end
+
+  test "run detail timeline filters remain active after zoom changes", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}?view=timeline")
+
+    view
+    |> form(~s([data-testid="timeline-controls"]), %{
+      "timeline" => %{"search" => "payments", "status" => "succeeded", "window" => "Jan 2026"}
+    })
+    |> render_change()
+
+    path = assert_patch(view)
+    assert path =~ "/runs/#{parent_id}"
+    assert path =~ "timeline_search=payments"
+    assert path =~ "timeline_status=succeeded"
+    assert path =~ "timeline_window=Jan+2026"
+
+    view
+    |> element(~s([data-testid="timeline-zoom-15m"]))
+    |> render_click()
+
+    path = assert_patch(view)
+    assert path =~ "timeline_zoom=15m"
+    assert path =~ "timeline_mode=manual"
+    assert path =~ "timeline_follow=0"
+    assert path =~ "timeline_search=payments"
+    assert path =~ "timeline_status=succeeded"
+    assert path =~ "timeline_window=Jan+2026"
+
+    assert has_element?(view, ~s([data-testid="timeline-row"]), "stg_payments")
+    refute has_element?(view, ~s([data-testid="timeline-row"]), "customer_orders_daily")
+  end
+
+  test "run detail timeline shows queued rows without fake starts", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    html = render_click(view, "set_mode", %{"mode" => "timeline"})
+
+    assert html =~ ~r/data-section="queued"[^>]+data-time-mode="no-start"/s
+    assert html =~ ~s(data-testid="timeline-queued-placeholder")
+    assert html =~ "No scheduled start"
+  end
+
+  test "run detail opens attempt drawer from timeline row", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    render_click(view, "set_mode", %{"mode" => "timeline"})
+
+    view
+    |> element(~s([data-testid="timeline-row"][data-section="ran"][data-attempt-id]), "Failed")
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="asset-attempt-drawer"]), "customer_orders_daily")
+    assert has_element?(view, ~s([data-testid="asset-attempt-drawer"]), "Feb 2026")
+  end
+
+  test "run detail opens attempt drawer from matrix cell", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    view
+    |> element(~s([data-testid="asset-window-cell"][data-status="error"]), "Failed")
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="asset-attempt-drawer"]), "customer_orders_daily")
+    assert has_element?(view, ~s([data-testid="asset-attempt-drawer"]), "Feb 2026")
+    assert has_element?(view, ~s([data-testid="attempt-logs-link"]), "Open logs/events")
   end
 
   test "run detail mode rail changes to events mode", %{conn: conn} do
@@ -1187,10 +1647,13 @@ defmodule FavnView.PageLiveTest do
   test "run detail right rail exposes expected modes", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
-    for label <- ["Overview", "Events", "Outputs", "Context", "Debug"] do
+    for label <- ["Overview", "Timeline", "Failures", "Window runs", "Events"] do
       assert has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="#{label}"]))
     end
 
+    refute has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="Outputs"]))
+    refute has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="Context"]))
+    refute has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="Debug"]))
     refute has_element?(view, ~s([data-testid="view-mode-rail"] button[aria-label="Assets"]))
   end
 
@@ -1487,6 +1950,265 @@ defmodule FavnView.PageLiveTest do
       freshness: Keyword.get(opts, :freshness),
       depends_on: Keyword.get(opts, :depends_on, []),
       relation: %{connection: connection, catalog: catalog, name: Atom.to_string(name)}
+    }
+  end
+
+  defp seed_backfill_overview_group! do
+    parent_id = "run_overview_backfill_parent"
+
+    child_ids = [
+      "run_overview_backfill_jan",
+      "run_overview_backfill_apr",
+      "run_overview_backfill_may"
+    ]
+
+    ref = {__MODULE__.Assets, :customer_orders_daily}
+    base = ~U[2026-01-01 00:00:00Z]
+
+    parent =
+      RunState.new(
+        id: parent_id,
+        manifest_version_id: "mv_view_assets",
+        manifest_content_hash: "hash_view_assets",
+        asset_ref: ref,
+        target_refs: [ref],
+        submit_kind: :backfill_pipeline,
+        trigger: %{kind: :backfill, pipeline_module: __MODULE__.Pipelines.DailyOrders},
+        metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+      )
+      |> RunState.transition(status: :running, result: %{status: :running})
+      |> Map.put(:inserted_at, base)
+      |> Map.put(:updated_at, DateTime.add(base, 5, :minute))
+      |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(parent)
+
+    windows = [
+      {Enum.at(child_ids, 0), :ok, "Jan 2026", 0, 1_000},
+      {Enum.at(child_ids, 1), :error, "Apr 2026", 90, 1_000},
+      {Enum.at(child_ids, 2), :running, "May 2026", 120, nil}
+    ]
+
+    Enum.each(windows, fn {child_id, status, label, day_offset, duration_ms} ->
+      started_at = DateTime.add(base, day_offset, :day)
+      finished_at = if(duration_ms, do: DateTime.add(started_at, duration_ms, :millisecond))
+      window_key = "month:#{label}"
+
+      child =
+        RunState.new(
+          id: child_id,
+          manifest_version_id: "mv_view_assets",
+          manifest_content_hash: "hash_view_assets",
+          asset_ref: ref,
+          target_refs: [ref],
+          submit_kind: :pipeline,
+          parent_run_id: parent_id,
+          root_run_id: parent_id,
+          lineage_depth: 1,
+          trigger: %{
+            kind: :backfill,
+            backfill_run_id: parent_id,
+            pipeline_module: __MODULE__.Pipelines.DailyOrders,
+            window_key: window_key
+          },
+          metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+        )
+        |> RunState.transition(
+          status: status,
+          result: %{
+            node_results: [
+              NodeResult.new(%{
+                node_key: {ref, window_key},
+                ref: ref,
+                window: %{id: window_key},
+                stage: 0,
+                status: status,
+                started_at: started_at,
+                finished_at: finished_at,
+                duration_ms: duration_ms,
+                error: if(status == :error, do: %{message: "overview child failed"}),
+                asset_step_id: "#{child_id}-step"
+              })
+            ]
+          }
+        )
+        |> Map.put(:inserted_at, started_at)
+        |> Map.put(:updated_at, finished_at || started_at)
+        |> RunState.with_snapshot_hash()
+
+      assert :ok = Storage.put_run(child)
+
+      {:ok, window} =
+        BackfillWindow.new(%{
+          backfill_run_id: parent_id,
+          child_run_id: child_id,
+          latest_attempt_run_id: child_id,
+          pipeline_module: __MODULE__.Pipelines.DailyOrders,
+          manifest_version_id: "mv_view_assets",
+          window_kind: :month,
+          window_start_at: started_at,
+          window_end_at: DateTime.add(started_at, 31, :day),
+          timezone: "Etc/UTC",
+          window_key: window_key,
+          status: status,
+          attempt_count: 1,
+          last_error: if(status == :error, do: :failed),
+          started_at: started_at,
+          finished_at: finished_at,
+          updated_at: finished_at || started_at
+        })
+
+      assert :ok = Storage.put_backfill_window(window)
+    end)
+
+    %{parent_id: parent_id, child_ids: child_ids}
+  end
+
+  defp seed_run_detail_group!(opts \\ []) do
+    parent_id = "run_detail_backfill_parent"
+    child_ids = ["run_detail_backfill_jan", "run_detail_backfill_feb", "run_detail_backfill_mar"]
+    refs = [{__MODULE__.Assets, :customer_orders_daily}, {__MODULE__.Assets, :stg_payments}]
+    base = ~U[2026-01-01 00:00:00Z]
+    completed? = Keyword.get(opts, :completed?, false)
+    parent_status = if(completed?, do: :ok, else: :running)
+
+    parent =
+      RunState.new(
+        id: parent_id,
+        manifest_version_id: "mv_view_assets",
+        manifest_content_hash: "hash_view_assets",
+        asset_ref: List.first(refs),
+        target_refs: refs,
+        submit_kind: :backfill_pipeline,
+        trigger: %{kind: :backfill, pipeline_module: __MODULE__.Pipelines.DailyOrders},
+        metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+      )
+      |> RunState.transition(status: parent_status, result: %{status: parent_status})
+      |> Map.put(:inserted_at, base)
+      |> Map.put(:updated_at, DateTime.add(base, 5, :minute))
+      |> RunState.with_snapshot_hash()
+
+    assert :ok = Storage.put_run(parent)
+
+    windows =
+      if completed? do
+        [
+          {Enum.at(child_ids, 0), :ok, "Jan 2026", 0, [:ok, :ok]},
+          {Enum.at(child_ids, 1), :ok, "Feb 2026", 31, [:ok, :ok]},
+          {Enum.at(child_ids, 2), :ok, "Mar 2026", 59, [:ok, :ok]}
+        ]
+      else
+        [
+          {Enum.at(child_ids, 0), :ok, "Jan 2026", 0, [:ok, :ok]},
+          {Enum.at(child_ids, 1), :error, "Feb 2026", 31, [:error, :ok]},
+          {Enum.at(child_ids, 2), :running, "Mar 2026", 59, [:running, nil]}
+        ]
+      end
+
+    Enum.each(windows, fn {child_id, run_status, label, day_offset, statuses} ->
+      started_at = DateTime.add(base, day_offset, :day)
+      finished_at = if(run_status in [:ok, :error], do: DateTime.add(started_at, 90, :second))
+      window_key = "month:#{label}"
+
+      node_results =
+        refs
+        |> Enum.zip(statuses)
+        |> Enum.reject(fn {_ref, status} -> is_nil(status) end)
+        |> Enum.map(fn {ref, status} ->
+          NodeResult.new(%{
+            node_key: {ref, window_key},
+            ref: ref,
+            window: %{
+              key: window_key,
+              label: label,
+              start_at: started_at,
+              end_at: DateTime.add(started_at, 31, :day)
+            },
+            stage: 0,
+            status: status,
+            started_at: started_at,
+            finished_at: if(status in [:ok, :error], do: DateTime.add(started_at, 90, :second)),
+            duration_ms: if(status in [:ok, :error], do: 90_000),
+            error: if(status == :error, do: %{message: "detail group failed"}),
+            asset_step_id: "#{child_id}-#{elem(ref, 1)}"
+          })
+        end)
+
+      child =
+        RunState.new(
+          id: child_id,
+          manifest_version_id: "mv_view_assets",
+          manifest_content_hash: "hash_view_assets",
+          asset_ref: List.first(refs),
+          target_refs: refs,
+          submit_kind: :pipeline,
+          parent_run_id: parent_id,
+          root_run_id: parent_id,
+          lineage_depth: 1,
+          trigger: %{
+            kind: :backfill,
+            backfill_run_id: parent_id,
+            pipeline_module: __MODULE__.Pipelines.DailyOrders,
+            window_key: window_key
+          },
+          metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+        )
+        |> RunState.transition(status: run_status, result: %{node_results: node_results})
+        |> Map.put(:inserted_at, started_at)
+        |> Map.put(:updated_at, finished_at || started_at)
+        |> RunState.with_snapshot_hash()
+
+      assert :ok = Storage.put_run(child)
+
+      {:ok, window} =
+        BackfillWindow.new(%{
+          backfill_run_id: parent_id,
+          child_run_id: child_id,
+          latest_attempt_run_id: child_id,
+          pipeline_module: __MODULE__.Pipelines.DailyOrders,
+          manifest_version_id: "mv_view_assets",
+          window_kind: :month,
+          window_start_at: started_at,
+          window_end_at: DateTime.add(started_at, 31, :day),
+          timezone: "Etc/UTC",
+          window_key: window_key,
+          status: run_status,
+          attempt_count: 1,
+          last_error: if(run_status == :error, do: :failed),
+          started_at: started_at,
+          finished_at: finished_at,
+          updated_at: finished_at || started_at
+        })
+
+      assert :ok = Storage.put_backfill_window(window)
+    end)
+
+    %{parent_id: parent_id, child_ids: child_ids}
+  end
+
+  defp timeline_attempt(status) do
+    label =
+      status
+      |> to_string()
+      |> String.replace("_", " ")
+      |> String.capitalize()
+
+    %{
+      id: "attempt-#{status}",
+      attempt_id: "attempt-#{status}",
+      asset_key: "asset_#{status}",
+      asset_ref: "asset_#{status}",
+      asset_name: "asset_#{status}",
+      short_asset_name: "asset_#{status}",
+      window_label: "May 2026",
+      raw_status: status,
+      status: label,
+      status_tone: if(status == :blocked, do: :error, else: :neutral),
+      started_at_raw: ~U[2026-05-01 00:00:00Z],
+      finished_at_raw: ~U[2026-05-01 00:00:10Z],
+      started_at: "May 1, 2026 00:00 UTC",
+      duration: "10s",
+      error_summary: nil
     }
   end
 

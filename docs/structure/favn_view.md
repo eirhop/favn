@@ -20,6 +20,12 @@ Ownership rules:
 - `apps/favn_view/storybook/` contains PhoenixStorybook stories for reusable
   UI component states.
 - `apps/favn_view/test/` contains endpoint, controller, and LiveView tests.
+- Run overview and run detail LiveViews must render orchestrator-owned run read
+  models. They may prepare view-models and UI query state, but must not derive
+  backfill hierarchy, asset attempt aggregation, window membership, or log
+  lookup rules from ids, names, or formatted strings.
+- Run detail Storybook coverage is split by view so heavy Timeline variations do
+  not slow down the overview story.
 - `favn_view` must call backend behavior only through the public orchestrator
   facade. It must not depend on storage, scheduler, runner, persistence, repo,
   manifest compiler, plugin, adapter, or low-level orchestrator internals.

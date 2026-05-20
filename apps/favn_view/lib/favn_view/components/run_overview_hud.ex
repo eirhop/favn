@@ -86,7 +86,7 @@ defmodule FavnView.Components.RunOverviewHud do
                   @run.backfill_failure_count == 1,
                   do: "window",
                   else: "windows"
-                )}. Open a child run for the actionable execution context.
+                )}. Open a window run for the actionable execution context.
               </p>
             </div>
           </div>
@@ -100,7 +100,7 @@ defmodule FavnView.Components.RunOverviewHud do
               <div class="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
                 <div class="min-w-0 space-y-1">
                   <p class="font-mono text-xs font-medium text-base-content">
-                    {failure.asset_ref || "Failed child run"}
+                    {failure.asset_ref || "Failed window run"}
                   </p>
                   <p class="text-base-content/60">
                     <span class="text-base-content/45">Window:</span> {failure.window}
@@ -120,7 +120,7 @@ defmodule FavnView.Components.RunOverviewHud do
                     class="btn btn-error btn-soft btn-xs rounded-box"
                     data-testid="backfill-child-run-link"
                   >
-                    Open child run
+                    Open window run
                   </.link>
                 </div>
               </div>

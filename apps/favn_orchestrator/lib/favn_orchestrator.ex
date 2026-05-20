@@ -189,6 +189,8 @@ defmodule FavnOrchestrator do
 
   @type run_summary :: RunReadModel.run_summary()
   @type run_detail :: RunReadModel.run_detail()
+  @type execution_group_summary :: RunReadModel.execution_group_summary()
+  @type execution_group_detail :: RunReadModel.execution_group_detail()
 
   @doc """
   Returns redacted operator diagnostics for the orchestrator runtime.
@@ -1260,6 +1262,53 @@ defmodule FavnOrchestrator do
   @spec get_run_detail(run_id()) :: {:ok, run_detail()} | {:error, term()}
   def get_run_detail(run_id) when is_binary(run_id) do
     RunReadModel.get_run_detail(run_id)
+  end
+
+  @doc """
+  Lists execution groups with orchestrator-owned run/backfill aggregation.
+  """
+  @spec list_execution_groups(keyword()) :: {:ok, [execution_group_summary()]} | {:error, term()}
+  def list_execution_groups(filters \\ []) when is_list(filters) do
+    RunReadModel.list_execution_groups(filters)
+  end
+
+  @doc """
+  Returns one execution group detail for redesigned run views.
+  """
+  @spec get_execution_group_detail(run_id(), keyword()) ::
+          {:ok, execution_group_detail()} | {:error, term()}
+  def get_execution_group_detail(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    RunReadModel.get_execution_group_detail(group_id, filters)
+  end
+
+  @doc """
+  Lists asset attempts for one execution group.
+  """
+  @spec list_execution_group_asset_attempts(run_id(), keyword()) ::
+          {:ok, [RunReadModel.asset_attempt_summary()]} | {:error, term()}
+  def list_execution_group_asset_attempts(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    RunReadModel.list_execution_group_asset_attempts(group_id, filters)
+  end
+
+  @doc """
+  Lists window summaries for one execution group.
+  """
+  @spec list_execution_group_windows(run_id(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_execution_group_windows(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    RunReadModel.list_execution_group_windows(group_id, filters)
+  end
+
+  @doc """
+  Lists wall-clock timeline entries for one execution group.
+  """
+  @spec list_execution_group_timeline(run_id(), keyword()) ::
+          {:ok, [RunReadModel.timeline_entry()]} | {:error, term()}
+  def list_execution_group_timeline(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    RunReadModel.list_execution_group_timeline(group_id, filters)
   end
 
   @doc """

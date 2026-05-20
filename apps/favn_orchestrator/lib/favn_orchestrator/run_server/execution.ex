@@ -328,6 +328,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     case Persistence.persist_run_step(next_run, event_type, %{
            asset_ref: node.ref,
            node_key: node_key,
+           window: node.window,
            asset_step_id: asset_step_id,
            stage: stage,
            reason: decision.reason,
@@ -468,6 +469,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  asset_ref: asset_ref,
                  runner_execution_id: execution_id,
                  asset_step_id: asset_step_id,
+                 window: Map.get(work.metadata, :window),
                  stage: stage,
                  attempt: attempt,
                  max_attempts: current_run.max_attempts,
@@ -479,6 +481,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                 asset_step_id: asset_step_id,
                 asset_ref: asset_ref,
                 node_key: node_key,
+                window: Map.get(work.metadata, :window),
                 execution_id: execution_id,
                 runner_execution_id: execution_id,
                 attempt: attempt,
@@ -524,6 +527,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  error: reason,
                  node_key: Map.get(work.metadata, :node_key),
                  asset_step_id: Map.get(work.metadata, :asset_step_id),
+                 window: Map.get(work.metadata, :window),
                  stage: stage,
                  attempt: attempt,
                  max_attempts: current_run.max_attempts
@@ -1264,6 +1268,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            asset_ref: asset_ref,
            node_key: node_key,
            asset_step_id: asset_step_id,
+           window: node_window(run_state, node_key),
            stage: stage,
            attempt: attempt,
            max_attempts: run_state.max_attempts,
@@ -1283,6 +1288,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
     case Map.fetch(nodes, node_key) do
       {:ok, node} -> node.ref
       :error -> elem(node_key, 0)
+    end
+  end
+
+  defp node_window(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
+    case Map.fetch(nodes, node_key) do
+      {:ok, node} -> node.window
+      :error -> nil
     end
   end
 
@@ -1309,7 +1321,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           asset_step_id: asset_step_id,
           max_attempts: run_state.max_attempts,
           stage: stage,
-          node_key: node_key
+          node_key: node_key,
+          window: node.window
         })
     }
   end

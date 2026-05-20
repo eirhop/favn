@@ -12,83 +12,40 @@ defmodule FavnView.Storybook.Components.RunDetailPage do
   def variations do
     [
       %Variation{
-        id: :succeeded_with_asset_rows,
-        attributes: %{
-          run: RunDetailPage.sample_run(:ok),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
-        }
-      },
-      %Variation{
-        id: :running_no_asset_results,
-        attributes: %{
-          run: RunDetailPage.empty_run(),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
-        }
-      },
-      %Variation{
-        id: :running_with_partial_asset_results,
+        id: :backfill_overview_matrix,
         attributes: %{
           run: RunDetailPage.sample_run(:running),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
+          run_id: "run_backfill_8f2c9d1",
+          nav_items: RunDetailPage.sample_nav_items(),
+          active_mode: :overview
         }
       },
       %Variation{
-        id: :failed_with_asset_error,
-        attributes: %{
-          run: RunDetailPage.sample_run(:error),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
-        }
-      },
-      %Variation{
-        id: :failed_no_asset_results_error_event,
-        attributes: %{
-          run: RunDetailPage.sample_run_with_no_results(:error),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
-        }
-      },
-      %Variation{
-        id: :partial_run,
+        id: :attempt_drawer_open,
         attributes: %{
           run: RunDetailPage.sample_run(:partial),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
+          run_id: "run_backfill_8f2c9d1",
+          nav_items: RunDetailPage.sample_nav_items(),
+          active_mode: :overview,
+          selected_attempt_id: "revenue_metrics-2026-02"
         }
       },
       %Variation{
-        id: :cancelled_run,
+        id: :single_window_run,
         attributes: %{
-          run: RunDetailPage.sample_run(:cancelled),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
+          run: RunDetailPage.sample_single_window_run(),
+          run_id: "run_daily_orders_2026_05_19",
+          nav_items: RunDetailPage.sample_nav_items(),
+          active_mode: :overview
         }
       },
       %Variation{
-        id: :timed_out_run,
+        id: :full_refresh_no_window,
         attributes: %{
-          run: RunDetailPage.sample_run(:timed_out),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
-        }
-      },
-      %Variation{
-        id: :long_asset_names,
-        attributes: %{
-          run: RunDetailPage.sample_run_with_long_asset_names(),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
-        }
-      },
-      %Variation{
-        id: :node_statuses,
-        attributes: %{
-          run: RunDetailPage.sample_run_with_node_statuses(),
-          run_id: "run_01jrun_detail_sample",
-          nav_items: RunDetailPage.sample_nav_items()
+          run: RunDetailPage.sample_full_refresh_run(),
+          run_id: "run_full_refresh_sales",
+          nav_items: RunDetailPage.sample_nav_items(),
+          active_mode: :overview
         }
       },
       %Variation{

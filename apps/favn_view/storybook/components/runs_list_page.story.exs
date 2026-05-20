@@ -20,9 +20,15 @@ defmodule FavnView.Storybook.Components.RunsListPage do
   def variations do
     [
       %Variation{
-        id: :runs,
+        id: :execution_groups,
         attributes: %{
-          runs: RunsListPage.sample_runs(),
+          groups: RunsListPage.sample_groups(),
+          all_groups: RunsListPage.sample_groups(),
+          group_details: %{"run_backfill_8f2c9d1" => RunsListPage.sample_detail()},
+          expanded_group_ids: MapSet.new(["run_backfill_8f2c9d1"]),
+          filters: RunsListPage.sample_filters(),
+          filter_options: RunsListPage.sample_filter_options(),
+          summary: RunsListPage.sample_summary(),
           active_mode: :list,
           loading: false,
           error: nil,
@@ -32,7 +38,13 @@ defmodule FavnView.Storybook.Components.RunsListPage do
       %Variation{
         id: :empty,
         attributes: %{
-          runs: [],
+          groups: [],
+          all_groups: [],
+          group_details: %{},
+          expanded_group_ids: MapSet.new(),
+          filters: RunsListPage.sample_filters(),
+          filter_options: %{targets: [], triggers: []},
+          summary: RunsListPage.sample_summary([]),
           active_mode: :list,
           loading: false,
           error: nil,
@@ -42,7 +54,13 @@ defmodule FavnView.Storybook.Components.RunsListPage do
       %Variation{
         id: :loading,
         attributes: %{
-          runs: [],
+          groups: [],
+          all_groups: [],
+          group_details: %{},
+          expanded_group_ids: MapSet.new(),
+          filters: RunsListPage.sample_filters(),
+          filter_options: %{targets: [], triggers: []},
+          summary: RunsListPage.sample_summary([]),
           active_mode: :list,
           loading: true,
           error: nil,
@@ -52,7 +70,13 @@ defmodule FavnView.Storybook.Components.RunsListPage do
       %Variation{
         id: :error,
         attributes: %{
-          runs: [],
+          groups: [],
+          all_groups: [],
+          group_details: %{},
+          expanded_group_ids: MapSet.new(),
+          filters: RunsListPage.sample_filters(),
+          filter_options: %{targets: [], triggers: []},
+          summary: RunsListPage.sample_summary([]),
           active_mode: :list,
           loading: false,
           error: "load_failed",
