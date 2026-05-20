@@ -1423,6 +1423,86 @@ defmodule FavnView.PageLiveTest do
            )
   end
 
+  test "backfill parent surfaces child admission failure without asset results", %{conn: conn} do
+    parent_id = "run_backfill_parent_unknown_pool"
+    child_id = "run_backfill_child_unknown_pool"
+    failed_ref = {__MODULE__.Assets, :inventory_by_day}
+    started_at = ~U[2026-05-01 00:00:00Z]
+    window_key = "day:2026-05-01"
+    error = {:unknown_execution_pool, :mercatus_api}
+
+    parent =
+      RunState.new(
+        id: parent_id,
+        manifest_version_id: "mv_view_assets",
+        manifest_content_hash: "hash_view_assets",
+        asset_ref: failed_ref,
+        target_refs: [failed_ref],
+        submit_kind: :backfill_pipeline,
+        trigger: %{kind: :backfill, pipeline_module: __MODULE__.Pipelines.DailyOrders},
+        metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+      )
+      |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
+
+    child =
+      RunState.new(
+        id: child_id,
+        manifest_version_id: "mv_view_assets",
+        manifest_content_hash: "hash_view_assets",
+        asset_ref: failed_ref,
+        target_refs: [failed_ref],
+        submit_kind: :pipeline,
+        parent_run_id: parent_id,
+        root_run_id: parent_id,
+        lineage_depth: 1,
+        trigger: %{
+          kind: :backfill,
+          backfill_run_id: parent_id,
+          pipeline_module: __MODULE__.Pipelines.DailyOrders,
+          window_key: window_key
+        },
+        metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+      )
+      |> RunState.transition(status: :error, error: error, result: %{status: :error})
+
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: parent_id,
+        child_run_id: child_id,
+        latest_attempt_run_id: child_id,
+        pipeline_module: __MODULE__.Pipelines.DailyOrders,
+        manifest_version_id: "mv_view_assets",
+        window_kind: :day,
+        window_start_at: started_at,
+        window_end_at: DateTime.add(started_at, 1, :day),
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :error,
+        attempt_count: 1,
+        last_error: error,
+        started_at: started_at,
+        finished_at: started_at,
+        updated_at: started_at
+      })
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+    assert :ok = Storage.put_backfill_window(window)
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    assert has_element?(view, ~s([data-testid="run-failure-summary"]), "1 backfill window failed")
+    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "unknown_execution_pool")
+    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "mercatus_api")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Failures"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="window-failure-row"]), "unknown_execution_pool")
+    assert has_element?(view, ~s([data-testid="window-failure-row"]), "mercatus_api")
+  end
+
   test "run detail renders execution group header for backfill", %{conn: conn} do
     %{parent_id: parent_id} = seed_run_detail_group!()
 

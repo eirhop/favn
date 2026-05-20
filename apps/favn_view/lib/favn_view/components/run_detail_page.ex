@@ -28,12 +28,12 @@ defmodule FavnView.Components.RunDetailPage do
   attr :selected_attempt_id, :string, default: nil
 
   def run_detail_page(assigns) do
+    run = normalize_run(assigns.run)
+
     assigns =
-      assign(
-        assigns,
-        :selected_attempt,
-        selected_attempt(assigns.run, assigns.selected_attempt_id)
-      )
+      assigns
+      |> assign(:run, run)
+      |> assign(:selected_attempt, selected_attempt(run, assigns.selected_attempt_id))
 
     ~H"""
     <AppShell.app_shell
@@ -114,6 +114,7 @@ defmodule FavnView.Components.RunDetailPage do
   defdelegate sample_single_window_run(), to: Samples
   defdelegate sample_timeline_run(), to: Samples
   defdelegate sample_completed_timeline_run(), to: Samples
+  defdelegate sample_admission_failed_backfill(), to: Samples
   defdelegate not_found_run(), to: Samples
   defdelegate sample_execution_group(status \\ :running), to: Samples
 
@@ -121,6 +122,13 @@ defmodule FavnView.Components.RunDetailPage do
     do: Enum.find(attempts, &(&1.id == attempt_id))
 
   defp selected_attempt(_run, _attempt_id), do: nil
+
+  defp normalize_run(run) when is_map(run) do
+    run
+    |> Map.put_new(:failures, [])
+    |> Map.put_new(:backfill_failures, [])
+    |> Map.put_new(:backfill_failure_count, 0)
+  end
 
   defp default_timeline_state(%{active?: true}) do
     live_timeline_state()

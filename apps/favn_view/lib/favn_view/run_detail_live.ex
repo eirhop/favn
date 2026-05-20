@@ -231,6 +231,10 @@ defmodule FavnView.RunDetailLive do
     timeline = Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
     matrix = matrix(attempts, windows)
     failures = Enum.filter(attempts, &(&1.status_tone == :error))
+
+    backfill_failures =
+      Enum.map(Map.get(root_detail, :backfill_failures, []), &backfill_failure_from_public/1)
+
     target = target_label(summary.target_assets)
     status = group_status(summary)
 
@@ -272,6 +276,9 @@ defmodule FavnView.RunDetailLive do
       legacy_asset_results: legacy_asset_results,
       legacy_asset_text: legacy_asset_text(legacy_asset_results),
       failures: failures,
+      backfill_failures: backfill_failures,
+      backfill_failure_count:
+        Map.get(root_detail, :backfill_failure_count, length(backfill_failures)),
       child_runs: child_runs,
       timeline: timeline,
       events: Enum.map(events, &event_from_public/1),
@@ -508,6 +515,33 @@ defmodule FavnView.RunDetailLive do
       started_at: LogsViewModel.timestamp_label(Map.get(window, :started_at)),
       finished_at: LogsViewModel.timestamp_label(Map.get(window, :finished_at)),
       duration: LogsViewModel.duration_ms_label(Map.get(window, :duration_ms))
+    }
+  end
+
+  defp backfill_failure_from_public(failure) do
+    window = window_from_public(Map.get(failure, :window))
+    status = Map.get(failure, :status)
+    asset_ref = Map.get(failure, :asset_ref)
+    child_run_id = Map.get(failure, :child_run_id)
+
+    %{
+      id: child_run_id || "backfill-window-#{window_identity(window)}",
+      child_run_id: child_run_id,
+      asset_ref: asset_ref,
+      short_asset_name:
+        LogsViewModel.display_name(asset_ref) || LogsViewModel.ref_label(asset_ref) ||
+          "Window run",
+      window: window,
+      window_id: window_identity(window),
+      window_label: window_label(window) || "No window",
+      status: status_label(status),
+      raw_status: status,
+      status_tone: status_tone(status),
+      error_summary: error_summary(Map.get(failure, :error)),
+      attempt_count: Map.get(failure, :attempt_count),
+      started_at: LogsViewModel.timestamp_label(Map.get(failure, :started_at)),
+      finished_at: LogsViewModel.timestamp_label(Map.get(failure, :finished_at)),
+      duration: LogsViewModel.duration_ms_label(Map.get(failure, :duration_ms))
     }
   end
 

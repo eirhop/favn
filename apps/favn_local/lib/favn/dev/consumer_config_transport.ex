@@ -7,6 +7,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
     :discovery,
     :connection_modules,
     :connections,
+    :execution_pools,
     :runner_plugins,
     :duckdb_in_process_client,
     :duckdb_adbc
@@ -30,6 +31,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
     "discovery" => :discovery,
     "connection_modules" => :connection_modules,
     "connections" => :connections,
+    "execution_pools" => :execution_pools,
     "runner_plugins" => :runner_plugins,
     "duckdb_in_process_client" => :duckdb_in_process_client,
     "duckdb_adbc" => :duckdb_adbc
@@ -114,6 +116,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
         "discovery" => :discovery,
         "connection_modules" => :connection_modules,
         "connections" => :connections,
+        "execution_pools" => :execution_pools,
         "runner_plugins" => :runner_plugins,
         "duckdb_in_process_client" => :duckdb_in_process_client,
         "duckdb_adbc" => :duckdb_adbc
