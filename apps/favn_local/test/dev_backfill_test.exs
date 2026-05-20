@@ -45,6 +45,17 @@ defmodule Favn.Dev.BackfillTest do
     assert payload.timeout_ms == 5_000
   end
 
+  test "build_submit_payload/3 forwards refresh policy" do
+    assert {:ok, payload} =
+             Backfill.build_submit_payload(
+               %{"target_id" => "pipeline:Elixir.MyApp.Pipeline"},
+               %{from: "2026-01", to: "2026-03", kind: "month", timezone: "Etc/UTC"},
+               refresh: "force"
+             )
+
+    assert payload.refresh == "force"
+  end
+
   test "submit_pipeline/2 treats waited partial parent as terminal failure", %{root_dir: root_dir} do
     parent = self()
 
@@ -214,7 +225,11 @@ defmodule Favn.Dev.BackfillTest do
              Backfill.list_windows("backfill_1", root_dir: root_dir, status: "error")
 
     assert {:ok, %{"id" => "rerun_1"}} =
-             Backfill.rerun_window("backfill_1", "day:2026-01-01:Etc/UTC", root_dir: root_dir)
+             Backfill.rerun_window("backfill_1", "day:2026-01-01:Etc/UTC",
+               root_dir: root_dir,
+               refresh: "force",
+               allow_success: true
+             )
 
     assert_receive {:request,
                     %{path: "/api/orchestrator/v1/backfills/backfill_1/windows?status=error"}}
@@ -222,7 +237,11 @@ defmodule Favn.Dev.BackfillTest do
     assert_receive {:request,
                     %{path: "/api/orchestrator/v1/backfills/backfill_1/windows/rerun", body: body}}
 
-    assert JSON.decode!(body) == %{"window_key" => "day:2026-01-01:Etc/UTC"}
+    assert JSON.decode!(body) == %{
+             "window_key" => "day:2026-01-01:Etc/UTC",
+             "refresh" => "force",
+             "allow_success" => true
+           }
   end
 
   test "repair_projections posts repair payload", %{root_dir: root_dir} do

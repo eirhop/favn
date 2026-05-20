@@ -1096,6 +1096,10 @@ defmodule FavnOrchestrator do
 
   @doc """
   Reruns the latest attempt for one failed backfill window.
+
+  Pass `allow_success: true` with an explicit refresh policy such as
+  `refresh: :force` to intentionally repair a successful window whose external
+  side effects need recomputation.
   """
   @spec rerun_backfill_window(String.t(), module(), String.t(), keyword()) ::
           {:ok, run_id()} | {:error, term()}
@@ -1104,7 +1108,7 @@ defmodule FavnOrchestrator do
              is_list(opts) do
     with {:ok, window} <-
            Storage.get_backfill_window(backfill_run_id, pipeline_module, window_key),
-         :ok <- ensure_window_rerunnable(window),
+         :ok <- ensure_window_rerunnable(window, opts),
          source_run_id when is_binary(source_run_id) <- window.latest_attempt_run_id,
          {:ok, anchor} <-
            Anchor.new(window.window_kind, window.window_start_at, window.window_end_at,
@@ -1147,6 +1151,20 @@ defmodule FavnOrchestrator do
   def rerun(source_run_id, opts \\ []) when is_binary(source_run_id) and is_list(opts) do
     RunManager.rerun(source_run_id, opts)
   end
+
+  defp ensure_window_rerunnable(window, opts) when is_list(opts) do
+    if Keyword.get(opts, :allow_success, false) == true do
+      case Keyword.get(opts, :refresh_policy, Keyword.get(opts, :refresh)) do
+        nil -> ensure_window_rerunnable(window)
+        "" -> ensure_window_rerunnable(window)
+        _refresh -> :ok
+      end
+    else
+      ensure_window_rerunnable(window)
+    end
+  end
+
+  defp ensure_window_rerunnable(window, _opts), do: ensure_window_rerunnable(window)
 
   defp ensure_window_rerunnable(%FavnOrchestrator.Backfill.BackfillWindow{status: status})
        when status in [:error, :cancelled, :timed_out, :partial],
@@ -2827,6 +2845,9 @@ defmodule FavnOrchestrator do
         []
         |> maybe_put_opt(:metadata, field_value(opts, :metadata))
         |> maybe_put_opt(:window_request, window_request)
+        |> maybe_put_opt(:refresh, field_value(opts, :refresh))
+        |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
+        |> maybe_put_opt(:timeout_ms, field_value(opts, :timeout_ms))
 
       {:ok, opts}
     end
@@ -2847,6 +2868,11 @@ defmodule FavnOrchestrator do
         |> Keyword.put(:range_request, range_request)
         |> maybe_put_opt(:metadata, field_value(opts, :metadata))
         |> maybe_put_opt(:coverage_baseline_id, field_value(opts, :coverage_baseline_id))
+        |> maybe_put_opt(:refresh, field_value(opts, :refresh))
+        |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
+        |> maybe_put_opt(:max_attempts, field_value(opts, :max_attempts))
+        |> maybe_put_opt(:retry_backoff_ms, field_value(opts, :retry_backoff_ms))
+        |> maybe_put_opt(:timeout_ms, field_value(opts, :timeout_ms))
 
       {:ok, submit_opts}
     end

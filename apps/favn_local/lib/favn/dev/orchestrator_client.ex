@@ -251,11 +251,24 @@ defmodule Favn.Dev.OrchestratorClient do
     request_page(:list_backfill_windows, url, service_token, session_context)
   end
 
-  @spec rerun_backfill_window(String.t(), String.t(), session_context(), String.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def rerun_backfill_window(base_url, service_token, session_context, backfill_run_id, window_key)
+  @spec rerun_backfill_window(
+          String.t(),
+          String.t(),
+          session_context(),
+          String.t(),
+          String.t(),
+          map()
+        ) :: {:ok, map()} | {:error, term()}
+  def rerun_backfill_window(
+        base_url,
+        service_token,
+        session_context,
+        backfill_run_id,
+        window_key,
+        payload \\ %{}
+      )
       when is_binary(base_url) and is_binary(service_token) and is_map(session_context) and
-             is_binary(backfill_run_id) and is_binary(window_key) do
+              is_binary(backfill_run_id) and is_binary(window_key) and is_map(payload) do
     url =
       base_url <>
         "/api/orchestrator/v1/backfills/#{URI.encode(backfill_run_id)}/windows/rerun"
@@ -264,13 +277,14 @@ defmodule Favn.Dev.OrchestratorClient do
            :rerun_backfill_window,
            url,
            service_token,
-           %{window_key: window_key},
-           session_context,
-           idempotency_key(:rerun_backfill_window, session_context, %{
-             backfill_run_id: backfill_run_id,
-             window_key: window_key
-           })
-         ) do
+            Map.put(payload, :window_key, window_key),
+            session_context,
+            idempotency_key(
+              :rerun_backfill_window,
+              session_context,
+              Map.merge(payload, %{backfill_run_id: backfill_run_id, window_key: window_key})
+            )
+          ) do
       {:ok, %{"data" => %{"run" => run}}} when is_map(run) ->
         {:ok, run}
 

@@ -294,6 +294,7 @@ defmodule FavnView.PageLiveTest do
     assert {:ok, run} = Storage.get_run(run_id)
     assert run.submit_kind == :pipeline
     assert run.metadata.pipeline_submit_ref == __MODULE__.Pipelines.FullRefresh
+    assert run.metadata.refresh_policy == %{mode: :force, refs: [], include_upstream?: false}
   end
 
   test "viewer cannot submit a pipeline run with a forged LiveView event", %{conn: _conn} do
@@ -332,7 +333,8 @@ defmodule FavnView.PageLiveTest do
         "from" => "2026-01-01",
         "to" => "2026-01-02",
         "kind" => "day",
-        "timezone" => "Europe/Oslo"
+        "timezone" => "Europe/Oslo",
+        "refresh" => "force"
       }
     })
 
@@ -342,6 +344,17 @@ defmodule FavnView.PageLiveTest do
     assert run.submit_kind == :backfill_pipeline
     assert run.metadata.backfill.kind == :day
     assert run.metadata.backfill.timezone == "Europe/Oslo"
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    assert Enum.any?(runs, fn child ->
+             child.parent_run_id == run_id and
+               child.metadata.refresh_policy == %{
+                 mode: :force,
+                 refs: [],
+                 include_upstream?: false
+               }
+           end)
   end
 
   test "viewer cannot submit a pipeline backfill with a forged LiveView event", %{conn: _conn} do
@@ -668,6 +681,41 @@ defmodule FavnView.PageLiveTest do
       refs: [{__MODULE__.Assets, :customer_orders_daily}],
       include_upstream?: true
     })
+  end
+
+  test "run asset form submits an inclusive forced window range", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    open_run_config(view)
+
+    view
+    |> element(~s([data-testid="run-config-form"]))
+    |> render_submit(%{
+      "run_config" => %{
+        "dependencies" => "all",
+        "refresh" => "force_all",
+        "source" => "refresh_timeline",
+        "kind" => "day",
+        "value" => "2026-06-12",
+        "to" => "2026-06-13",
+        "timezone" => "Etc/UTC"
+      }
+    })
+
+    assert {run_path, %{"info" => "Submitted 2 runs"}} = assert_redirect(view)
+    first_run_id = String.replace_prefix(run_path, "/runs/", "")
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    range_runs =
+      Enum.filter(runs, fn run ->
+        run.asset_ref == {__MODULE__.Assets, :customer_orders_daily} and
+          run.metadata[:refresh_policy] == %{mode: :force, refs: [], include_upstream?: false} and
+          get_in(run.metadata, [:timeline_selection, :value]) in ["2026-06-12", "2026-06-13"]
+      end)
+
+    assert length(range_runs) == 2
+    assert Enum.any?(range_runs, &(&1.id == first_run_id))
   end
 
   test "full-refresh asset can run without data coverage windows", %{conn: conn} do

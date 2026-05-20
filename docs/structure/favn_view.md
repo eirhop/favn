@@ -36,5 +36,8 @@ Ownership rules:
   call `FavnOrchestrator.Auth`, auth storage, password hashing internals, audit
   storage, service-token internals, storage adapters, scheduler internals, or
   runner internals directly.
+- Operator mutation forms for pipeline runs, pipeline backfills, and asset/window
+  runs must pass refresh intent through the public orchestrator facade rather
+  than reconstructing freshness or backfill state in the UI.
 - Tidewave is plugged only in dev. PhoenixStorybook is mounted under
   `/storybook` when dev routes are enabled.

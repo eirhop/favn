@@ -14,6 +14,8 @@ Code:
   including execution-group summaries/details, asset attempts, windows, and
   timeline entries for thin operator clients.
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
+- Refresh policy normalization and forced-run selection in
+  `apps/favn_orchestrator/lib/favn_orchestrator/refresh_policy.ex`
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`

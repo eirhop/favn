@@ -174,16 +174,17 @@ defmodule FavnView.AssetDetailLive do
         submitted_run_id: nil
       )
 
-    case FavnOrchestrator.submit_operator_asset_run(
-           actor_context(socket),
-           asset.manifest_version_id,
-           asset.target_id,
-           %{selection: timeline_selection(selected_window, run_config), config: Map.new(opts)}
-         ) do
-      {:ok, run_id} ->
+    case submit_asset_window_runs(socket, asset, selected_window, run_config, opts) do
+      {:ok, [run_id]} ->
         {:noreply,
          socket
          |> put_flash(:info, "Run submitted")
+         |> push_navigate(to: ~p"/runs/#{run_id}")}
+
+      {:ok, [run_id | _rest] = run_ids} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Submitted #{length(run_ids)} runs")
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:error, reason} ->
@@ -192,6 +193,31 @@ defmodule FavnView.AssetDetailLive do
            submitting_window_run?: false,
            selected_window_error: submit_error_label(reason)
          )}
+    end
+  end
+
+  defp submit_asset_window_runs(socket, asset, selected_window, run_config, opts) do
+    with {:ok, run_configs} <- expand_run_configs(selected_window, run_config) do
+      Enum.reduce_while(run_configs, {:ok, []}, fn run_config, {:ok, run_ids} ->
+        request = %{
+          selection: timeline_selection(selected_window, run_config),
+          config: Map.new(opts)
+        }
+
+        case FavnOrchestrator.submit_operator_asset_run(
+               actor_context(socket),
+               asset.manifest_version_id,
+               asset.target_id,
+               request
+             ) do
+          {:ok, run_id} -> {:cont, {:ok, [run_id | run_ids]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+      |> case do
+        {:ok, run_ids} -> {:ok, Enum.reverse(run_ids)}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -404,6 +430,7 @@ defmodule FavnView.AssetDetailLive do
       source: config |> Map.get(:source) |> source_config_value(),
       kind: config |> Map.get(:kind) |> kind_config_value(),
       value: config |> Map.get(:value, "") |> to_string(),
+      to: config |> Map.get(:to, "") |> to_string(),
       timezone: config |> Map.get(:timezone, "Etc/UTC") |> to_string()
     }
   end
@@ -469,6 +496,50 @@ defmodule FavnView.AssetDetailLive do
   defp selection_id("data_coverage_timeline", kind, value), do: "window:#{kind}:#{value}"
   defp selection_id(_source, kind, value), do: "window:#{kind}:#{value}"
 
+  defp expand_run_configs(_selected_window, %{to: to} = run_config) when to in [nil, ""] do
+    {:ok, [run_config]}
+  end
+
+  defp expand_run_configs(nil, %{kind: kind, value: from, to: to} = run_config) do
+    with {:ok, values} <- window_values(kind, from, to) do
+      {:ok, Enum.map(values, &Map.put(run_config, :value, &1))}
+    end
+  end
+
+  defp expand_run_configs(_selected_window, run_config), do: {:ok, [run_config]}
+
+  defp window_values(kind, from, to) when kind in ["day", "month", "year"] do
+    with {:ok, first} <- parse_window_value(kind, from),
+         {:ok, last} <- parse_window_value(kind, to),
+         true <- Date.compare(first, last) != :gt do
+      {:ok,
+       first
+       |> Stream.iterate(&next_window_value(kind, &1))
+       |> Enum.take_while(&(Date.compare(&1, last) != :gt))
+       |> Enum.map(&format_window_value(kind, &1))}
+    else
+      false -> {:error, :invalid_window_range}
+      {:error, _reason} -> {:error, :invalid_window_range}
+    end
+  end
+
+  defp window_values(_kind, _from, _to), do: {:error, :invalid_window_range}
+
+  defp parse_window_value("day", value), do: Date.from_iso8601(value)
+  defp parse_window_value("month", value), do: Date.from_iso8601(value <> "-01")
+  defp parse_window_value("year", value), do: Date.from_iso8601(value <> "-01-01")
+
+  defp next_window_value("day", date), do: Date.add(date, 1)
+
+  defp next_window_value("month", date),
+    do: Date.add(date, Calendar.ISO.days_in_month(date.year, date.month))
+
+  defp next_window_value("year", date), do: Date.new!(date.year + 1, 1, 1)
+
+  defp format_window_value("day", date), do: Date.to_iso8601(date)
+  defp format_window_value("month", date), do: Calendar.strftime(date, "%Y-%m")
+  defp format_window_value("year", date), do: Calendar.strftime(date, "%Y")
+
   defp missing_freshness_detail do
     %{
       state: :unknown,
@@ -491,6 +562,7 @@ defmodule FavnView.AssetDetailLive do
       source: nil,
       kind: "",
       value: "",
+      to: "",
       timezone: "Etc/UTC"
     }
 
@@ -501,6 +573,7 @@ defmodule FavnView.AssetDetailLive do
       source: Map.get(params, "source", Map.get(current_config, :source)),
       kind: Map.get(params, "kind", Map.get(current_config, :kind, "")),
       value: Map.get(params, "value", Map.get(current_config, :value, "")),
+      to: Map.get(params, "to", Map.get(current_config, :to, "")),
       timezone: Map.get(params, "timezone", Map.get(current_config, :timezone, "Etc/UTC"))
     }
   end
@@ -554,6 +627,8 @@ defmodule FavnView.AssetDetailLive do
   defp submit_error_label({:invalid_dependencies_mode, _value}), do: "Dependency mode is invalid."
 
   defp submit_error_label({:invalid_refresh_policy, _value}), do: "Refresh behavior is invalid."
+
+  defp submit_error_label(:invalid_window_range), do: "Window range is invalid."
 
   defp submit_error_label(:forbidden), do: "Operator role required to submit runs."
 

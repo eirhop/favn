@@ -3,14 +3,15 @@ defmodule Favn.Dev.Backfill do
   Local operational-backfill workflow for a running `mix favn.dev` stack.
 
   This module backs `mix favn.backfill`. It submits operational backfills,
-  dry-runs backfill plans, reads backfill-window projections, reruns failed
-  windows, and repairs derived backfill read models through the private local
-  orchestrator HTTP boundary.
+  dry-runs backfill plans, reads backfill-window projections, reruns failed or
+  explicitly force-refreshed successful windows, and repairs derived backfill
+  read models through the private local orchestrator HTTP boundary.
 
   Submit options accept explicit `:from`, `:to`, and `:kind` values or compact
-  `:window` ranges such as `"month:2025-05..2026-05"`. Month and year inputs may
-  be provided as full dates; they are normalized to the anchor value expected by
-  the orchestrator.
+  `:window` ranges such as `"month:2025-05..2026-05"`. Pass `refresh: "force"`
+  to recompute windows even when freshness state is already successful. Month
+  and year inputs may be provided as full dates; they are normalized to the
+  anchor value expected by the orchestrator.
   """
 
   alias Favn.Dev.Config
@@ -46,8 +47,9 @@ defmodule Favn.Dev.Backfill do
           timeout_ms: pos_integer(),
           wait_timeout_ms: pos_integer(),
           run_timeout_ms: pos_integer(),
-          poll_interval_ms: pos_integer(),
-          metadata: map()
+           poll_interval_ms: pos_integer(),
+           refresh: String.t(),
+           metadata: map()
         ]
 
   @spec submit_pipeline(module() | String.t(), submit_opts()) :: {:ok, map()} | {:error, term()}
@@ -178,7 +180,8 @@ defmodule Favn.Dev.Backfill do
     end
   end
 
-  @spec rerun_window(String.t(), String.t(), workflow_opts()) :: {:ok, map()} | {:error, term()}
+  @spec rerun_window(String.t(), String.t(), workflow_opts() | submit_opts()) ::
+          {:ok, map()} | {:error, term()}
   def rerun_window(backfill_run_id, window_key, opts \\ [])
       when is_binary(backfill_run_id) and is_binary(window_key) and is_list(opts) do
     with {:ok, base_url, credentials, session_context} <- session(opts) do
@@ -187,7 +190,8 @@ defmodule Favn.Dev.Backfill do
         credentials.service_token,
         session_context,
         backfill_run_id,
-        window_key
+        window_key,
+        rerun_window_payload(opts)
       )
     end
   end
@@ -219,6 +223,7 @@ defmodule Favn.Dev.Backfill do
      payload
      |> maybe_put(:coverage_baseline_id, Keyword.get(opts, :coverage_baseline_id))
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
+     |> maybe_put(:refresh, Keyword.get(opts, :refresh))
      |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
      |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
@@ -242,6 +247,7 @@ defmodule Favn.Dev.Backfill do
      payload
      |> maybe_put(:coverage_baseline_id, Keyword.get(opts, :coverage_baseline_id))
      |> maybe_put(:metadata, Keyword.get(opts, :metadata))
+     |> maybe_put(:refresh, Keyword.get(opts, :refresh))
      |> maybe_put(:max_attempts, Keyword.get(opts, :max_attempts))
      |> maybe_put(:retry_backoff_ms, Keyword.get(opts, :retry_backoff_ms))
      |> maybe_put(:timeout_ms, run_timeout_ms(opts))}
@@ -327,6 +333,12 @@ defmodule Favn.Dev.Backfill do
         {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp rerun_window_payload(opts) do
+    %{}
+    |> maybe_put(:refresh, Keyword.get(opts, :refresh))
+    |> maybe_put(:allow_success, Keyword.get(opts, :allow_success))
   end
 
   defp validate_positive_integer(opts, key) do

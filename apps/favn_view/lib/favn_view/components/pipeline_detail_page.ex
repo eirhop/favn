@@ -151,7 +151,7 @@ defmodule FavnView.Components.PipelineDetailPage do
           </p>
           <form
             phx-submit="submit_backfill"
-            class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_8rem_auto]"
+            class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_8rem_9rem_auto]"
             data-testid="pipeline-backfill-form"
           >
             <input type="hidden" name="backfill[timezone]" value={@backfill_config.timezone} />
@@ -191,6 +191,21 @@ defmodule FavnView.Components.PipelineDetailPage do
                 </option>
               </select>
             </label>
+            <label class="form-control">
+              <span class="label-text text-xs">Refresh</span>
+              <select
+                name="backfill[refresh]"
+                class="select select-sm favn-surface-control"
+                disabled={!@can_submit_runs? || !@pipeline.can_backfill?}
+                data-testid="pipeline-backfill-refresh"
+              >
+                <option value="missing" selected={@backfill_config.refresh == "missing"}>
+                  missing
+                </option>
+                <option value="force" selected={@backfill_config.refresh == "force"}>force</option>
+                <option value="auto" selected={@backfill_config.refresh == "auto"}>auto</option>
+              </select>
+            </label>
             <button
               type="submit"
               class="btn btn-primary btn-soft self-end"
@@ -205,7 +220,7 @@ defmodule FavnView.Components.PipelineDetailPage do
             class="mt-2 text-xs text-base-content/55"
             data-testid="pipeline-backfill-defaults"
           >
-            Defaults to {@backfill_config.kind} windows in {@backfill_config.timezone}.
+            Defaults to {@backfill_config.kind} windows in {@backfill_config.timezone} with {@backfill_config.refresh} refresh.
           </p>
           <p
             :if={!@pipeline.can_backfill?}

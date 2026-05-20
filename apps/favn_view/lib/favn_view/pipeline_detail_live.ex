@@ -54,7 +54,7 @@ defmodule FavnView.PipelineDetailLive do
            actor_context(socket),
            pipeline.manifest_version_id,
            pipeline.id,
-           %{}
+           %{refresh: :force}
          ) do
       {:ok, run_id} ->
         {:noreply,
@@ -89,7 +89,7 @@ defmodule FavnView.PipelineDetailLive do
              actor_context(socket),
              pipeline.manifest_version_id,
              pipeline.id,
-             %{range: config}
+             %{range: Map.drop(config, [:refresh]), refresh: refresh_option(config.refresh)}
            ) do
       {:noreply,
        socket
@@ -205,7 +205,8 @@ defmodule FavnView.PipelineDetailLive do
       from: params |> Map.get("from", "") |> String.trim(),
       to: params |> Map.get("to", "") |> String.trim(),
       kind: params |> Map.get("kind", "month") |> String.trim(),
-      timezone: params |> Map.get("timezone", "Etc/UTC") |> String.trim()
+      timezone: params |> Map.get("timezone", "Etc/UTC") |> String.trim(),
+      refresh: params |> Map.get("refresh", "missing") |> String.trim()
     }
   end
 
@@ -225,7 +226,9 @@ defmodule FavnView.PipelineDetailLive do
 
   defp normalize_window_kind(_kind), do: nil
 
-  defp default_backfill_config(nil), do: %{from: "", to: "", kind: "month", timezone: "Etc/UTC"}
+  defp default_backfill_config(nil),
+    do: %{from: "", to: "", kind: "month", timezone: "Etc/UTC", refresh: "missing"}
+
   defp default_backfill_config(%{window: nil}), do: default_backfill_config(nil)
 
   defp default_backfill_config(%{window: window}) do
@@ -233,9 +236,14 @@ defmodule FavnView.PipelineDetailLive do
       from: "",
       to: "",
       kind: window |> window_kind() |> Atom.to_string(),
-      timezone: window_timezone(window)
+      timezone: window_timezone(window),
+      refresh: "missing"
     }
   end
+
+  defp refresh_option("force"), do: :force
+  defp refresh_option("auto"), do: :auto
+  defp refresh_option(_refresh), do: :missing
 
   defp window_kind(nil), do: :month
 
