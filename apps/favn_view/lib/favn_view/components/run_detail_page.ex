@@ -176,7 +176,7 @@ defmodule FavnView.Components.RunDetailPage do
         id: :failures,
         label: "Failures",
         icon: "hero-exclamation-triangle",
-        count: run[:failed_asset_attempts]
+        count: failed_count(run)
       },
       %{
         id: :windows,
@@ -201,6 +201,10 @@ defmodule FavnView.Components.RunDetailPage do
   defp page_title(_run, run_id), do: "Run #{short_id(run_id)}"
   defp page_subtitle(%{found?: true, subtitle: subtitle}), do: subtitle
   defp page_subtitle(_run), do: "Run detail"
+
+  defp failed_count(run),
+    do: (run[:failed_asset_attempts] || 0) + (run[:backfill_failure_count] || 0)
+
   defp short_id(id) when is_binary(id) and byte_size(id) > 18, do: String.slice(id, 0, 18)
   defp short_id(id), do: to_string(id)
 end

@@ -244,7 +244,8 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_VIEW_SECRET_KEY_BASE" => secrets["web_session_secret"],
           "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
           "FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH" => "1",
-          "FAVN_DEV_CONSUMER_FAVN_CONFIG" => ConsumerConfigTransport.collect_and_encode(opts)
+          "FAVN_DEV_CONSUMER_FAVN_CONFIG" =>
+            ConsumerConfigTransport.collect_and_encode(opts, only: [:execution_pools])
         })
     }
   end

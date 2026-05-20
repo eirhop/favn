@@ -5,12 +5,12 @@ defmodule FavnView.Components.RunDetailPage.Failures do
   attr :run, :map, required: true
 
   def failures_panel(assigns) do
+    backfill_failure_count = backfill_failure_count(assigns.run)
+
     assigns =
-      assign(
-        assigns,
-        :failure_count,
-        length(assigns.run.failures) + length(assigns.run.backfill_failures)
-      )
+      assigns
+      |> assign(:backfill_failure_count, backfill_failure_count)
+      |> assign(:failure_count, length(assigns.run.failures) + backfill_failure_count)
 
     ~H"""
     <section data-testid="failures-view">
@@ -36,6 +36,12 @@ defmodule FavnView.Components.RunDetailPage.Failures do
       </div>
 
       <div :if={@run.backfill_failures != []} class="space-y-2">
+        <p
+          :if={@backfill_failure_count > length(@run.backfill_failures)}
+          class="text-xs text-base-content/55"
+        >
+          Showing {length(@run.backfill_failures)} of {@backfill_failure_count} failed window runs.
+        </p>
         <.window_failure_row :for={failure <- @run.backfill_failures} failure={failure} />
       </div>
     </section>
@@ -71,21 +77,41 @@ defmodule FavnView.Components.RunDetailPage.Failures do
 
   def window_failure_row(assigns) do
     ~H"""
+    <.link
+      :if={@failure.child_run_id}
+      navigate={~p"/runs/#{@failure.child_run_id}"}
+      class="grid w-full gap-3 rounded-box border border-error/30 bg-error/10 p-3 text-left transition hover:border-error/60 lg:grid-cols-[minmax(0,1fr)_8rem_10rem_6rem_8rem]"
+      data-testid="window-failure-row"
+    >
+      <.window_failure_row_content failure={@failure} />
+    </.link>
     <div
+      :if={is_nil(@failure.child_run_id)}
       class="grid w-full gap-3 rounded-box border border-error/30 bg-error/10 p-3 text-left lg:grid-cols-[minmax(0,1fr)_8rem_10rem_6rem_8rem]"
       data-testid="window-failure-row"
     >
-      <div class="min-w-0">
-        <p class="truncate font-medium text-error">{@failure.short_asset_name}</p>
-        <p class="truncate text-xs text-base-content/55">
-          {@failure.error_summary || "No error summary"}
-        </p>
-      </div>
-      <p class="text-sm">{@failure.window_label}</p>
-      <p class="font-mono text-xs text-base-content/60">{@failure.child_run_id || "-"}</p>
-      <p class="text-sm">Attempt {@failure.attempt_count || "-"}</p>
-      <p class="text-sm">{@failure.duration}</p>
+      <.window_failure_row_content failure={@failure} />
     </div>
     """
   end
+
+  attr :failure, :map, required: true
+
+  def window_failure_row_content(assigns) do
+    ~H"""
+    <div class="min-w-0">
+      <p class="truncate font-medium text-error">{@failure.short_asset_name}</p>
+      <p class="truncate text-xs text-base-content/55">
+        {@failure.error_summary || "No error summary"}
+      </p>
+    </div>
+    <p class="text-sm">{@failure.window_label}</p>
+    <p class="font-mono text-xs text-base-content/60">{@failure.child_run_id || "-"}</p>
+    <p class="text-sm">Attempt {@failure.attempt_count || "-"}</p>
+    <p class="text-sm">{@failure.duration}</p>
+    """
+  end
+
+  defp backfill_failure_count(run),
+    do: Map.get(run, :backfill_failure_count, length(Map.get(run, :backfill_failures, [])))
 end

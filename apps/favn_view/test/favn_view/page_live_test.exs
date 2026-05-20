@@ -1503,6 +1503,65 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="window-failure-row"]), "mercatus_api")
   end
 
+  test "run detail failures view counts all failed windows when details are capped", %{conn: conn} do
+    parent_id = "run_backfill_parent_many_window_failures"
+    failed_ref = {__MODULE__.Assets, :inventory_by_day}
+    started_at = ~U[2026-05-01 00:00:00Z]
+
+    parent =
+      RunState.new(
+        id: parent_id,
+        manifest_version_id: "mv_view_assets",
+        manifest_content_hash: "hash_view_assets",
+        asset_ref: failed_ref,
+        target_refs: [failed_ref],
+        submit_kind: :backfill_pipeline,
+        trigger: %{kind: :backfill, pipeline_module: __MODULE__.Pipelines.DailyOrders},
+        metadata: %{pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders}
+      )
+      |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
+
+    assert :ok = Storage.put_run(parent)
+
+    for day <- 1..12 do
+      window_start = DateTime.add(started_at, (day - 1) * 86_400, :second)
+
+      {:ok, window} =
+        BackfillWindow.new(%{
+          backfill_run_id: parent_id,
+          pipeline_module: __MODULE__.Pipelines.DailyOrders,
+          manifest_version_id: "mv_view_assets",
+          window_kind: :day,
+          window_start_at: window_start,
+          window_end_at: DateTime.add(window_start, 1, :day),
+          timezone: "Etc/UTC",
+          window_key: "day:2026-05-#{String.pad_leading(Integer.to_string(day), 2, "0")}",
+          status: :error,
+          attempt_count: 1,
+          last_error: {:unknown_execution_pool, :mercatus_api},
+          started_at: window_start,
+          finished_at: window_start,
+          updated_at: window_start
+        })
+
+      assert :ok = Storage.put_backfill_window(window)
+    end
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Failures"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="failures-view"]), "12 failed")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="failures-view"]),
+             "Showing 10 of 12 failed window runs"
+           )
+  end
+
   test "run detail renders execution group header for backfill", %{conn: conn} do
     %{parent_id: parent_id} = seed_run_detail_group!()
 

@@ -351,14 +351,29 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       "web_session_secret" => String.duplicate("s", 64)
     }
 
+    previous_connections = Application.get_env(:favn, :connections)
+    previous_duckdb_adbc = Application.get_env(:favn, :duckdb_adbc)
+    previous_duckdb_in_process_client = Application.get_env(:favn, :duckdb_in_process_client)
     previous_execution_pools = Application.get_env(:favn, :execution_pools)
+    previous_runner_plugins = Application.get_env(:favn, :runner_plugins)
 
+    Application.put_env(:favn, :connections, warehouse: [database: "warehouse.duckdb"])
+    Application.put_env(:favn, :duckdb_adbc, driver: "/opt/duckdb/1.5.2/libduckdb.so")
+    Application.put_env(:favn, :duckdb_in_process_client, enabled: true)
     Application.put_env(:favn, :execution_pools,
       global: [max_concurrency: 5],
       mercatus_api: [max_concurrency: 2]
     )
 
-    on_exit(fn -> restore_env(:execution_pools, previous_execution_pools) end)
+    Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :in_process}])
+
+    on_exit(fn ->
+      restore_env(:connections, previous_connections)
+      restore_env(:duckdb_adbc, previous_duckdb_adbc)
+      restore_env(:duckdb_in_process_client, previous_duckdb_in_process_client)
+      restore_env(:execution_pools, previous_execution_pools)
+      restore_env(:runner_plugins, previous_runner_plugins)
+    end)
 
     operator = RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
     code = eval_code!(operator)
@@ -369,6 +384,11 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert {:execution_pools, [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]]} in
              decoded_config
+
+    refute Keyword.has_key?(decoded_config, :connections)
+    refute Keyword.has_key?(decoded_config, :duckdb_adbc)
+    refute Keyword.has_key?(decoded_config, :duckdb_in_process_client)
+    refute Keyword.has_key?(decoded_config, :runner_plugins)
 
     assert before?(
              code,
