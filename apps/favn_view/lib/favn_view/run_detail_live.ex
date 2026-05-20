@@ -857,7 +857,7 @@ defmodule FavnView.RunDetailLive do
   defp status_label(:running), do: "Running"
   defp status_label(:retrying), do: "Retrying"
   defp status_label(:skipped), do: "Skipped"
-  defp status_label(:skipped_fresh), do: "Skipped fresh"
+  defp status_label(:skipped_fresh), do: "Skipped"
   defp status_label(:blocked), do: "Blocked"
   defp status_label(:partial), do: "Partial"
   defp status_label(nil), do: "Pending"

@@ -70,7 +70,24 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
         />
 
         <div
-          :if={@attempt.error_summary}
+          :if={skipped_attempt?(@attempt)}
+          class="mt-3 rounded-box border border-base-content/10 bg-base-content/[0.035] p-3 text-sm text-base-content/75"
+        >
+          <p class="font-medium text-base-content">Skipped asset</p>
+          <p class="mt-1">
+            Window already ran{skipped_at(@attempt)}.
+            <.link
+              :if={attempt_run_href(@attempt)}
+              navigate={attempt_run_href(@attempt)}
+              class="ml-1 font-medium text-info underline-offset-2 hover:underline"
+            >
+              Open run
+            </.link>
+          </p>
+        </div>
+
+        <div
+          :if={@attempt.error_summary && !skipped_attempt?(@attempt)}
           class="mt-3 rounded-box border border-error/30 bg-error/10 p-3 text-sm text-error"
         >
           {@attempt.error_summary}
@@ -103,4 +120,22 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
     </div>
     """
   end
+
+  defp skipped_attempt?(%{raw_status: status})
+       when status in [:skipped, :skipped_fresh, "skipped", "skipped_fresh"],
+       do: true
+
+  defp skipped_attempt?(_attempt), do: false
+
+  defp skipped_at(%{finished_at: finished_at}) when is_binary(finished_at) and finished_at != "-",
+    do: " on #{finished_at}"
+
+  defp skipped_at(%{started_at: started_at}) when is_binary(started_at) and started_at != "-",
+    do: " on #{started_at}"
+
+  defp skipped_at(_attempt), do: ""
+
+  defp attempt_run_href(%{child_run_id: run_id}) when is_binary(run_id), do: "/runs/#{run_id}"
+  defp attempt_run_href(%{run_id: run_id}) when is_binary(run_id), do: "/runs/#{run_id}"
+  defp attempt_run_href(_attempt), do: nil
 end

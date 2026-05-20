@@ -12,6 +12,7 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
+  alias FavnView.Components.RunDetailPage.AttemptDrawer
   alias FavnView.Components.RunDetailPage.Timeline
   alias FavnView.Auth.BrowserSessionStore
   alias FavnOrchestrator.Auth
@@ -935,7 +936,7 @@ defmodule FavnView.PageLiveTest do
   test "run detail prefers node results for execution rows", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_node_results")
 
-    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Skipped fresh")
+    assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Skipped")
     assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Retrying")
     assert has_element?(view, ~s([data-testid="run-asset-result-row"]), "Blocked")
     assert has_element?(view, ~s([data-testid="run-asset-result-row"][data-asset-step-id]))
@@ -1683,7 +1684,7 @@ defmodule FavnView.PageLiveTest do
            )
   end
 
-  test "run detail timeline groups attempts into running ran and queued", %{conn: conn} do
+  test "run detail timeline groups attempts into running ran queued and skipped", %{conn: conn} do
     %{parent_id: parent_id} = seed_run_detail_group!()
 
     {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
@@ -1707,9 +1708,15 @@ defmodule FavnView.PageLiveTest do
              ~s([data-testid="timeline-section"][data-section="queued"]),
              "Queued"
            )
+
+    assert has_element?(
+             view,
+             ~s([data-testid="timeline-section"][data-section="skipped"]),
+             "Skipped"
+           )
   end
 
-  test "run detail timeline sorts started groups by start time", %{conn: conn} do
+  test "run detail timeline sorts completed rows latest first", %{conn: conn} do
     %{parent_id: parent_id} = seed_run_detail_group!()
 
     {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}")
@@ -1717,7 +1724,7 @@ defmodule FavnView.PageLiveTest do
     html = render_click(view, "set_mode", %{"mode" => "timeline"})
 
     assert html =~
-             ~r/data-section="ran".*customer_orders_daily.*Jan 2026.*stg_payments.*Jan 2026.*customer_orders_daily.*Feb 2026/s
+             ~r/data-section="ran".*customer_orders_daily.*Feb 2026.*stg_payments.*Feb 2026.*customer_orders_daily.*Jan 2026/s
   end
 
   test "run detail timeline shows window labels on every row", %{conn: conn} do
@@ -1743,7 +1750,7 @@ defmodule FavnView.PageLiveTest do
     assert html =~ ~r/data-section="ran".*customer_orders_daily.*Feb 2026.*Failed/s
   end
 
-  test "run detail timeline puts blocked skipped fresh and partial attempts in ran" do
+  test "run detail timeline separates skipped attempts at the bottom" do
     run = %{
       active?: false,
       windows: [],
@@ -1776,8 +1783,41 @@ defmodule FavnView.PageLiveTest do
         }
       )
 
-    assert html =~ ~r/data-section="ran".*Blocked.*Skipped fresh.*Partial/s
+    assert html =~ ~r/data-section="ran".*Blocked.*Partial/s
+    assert html =~ ~r/data-section="skipped".*Skipped/s
     refute html =~ ~r/data-section="queued".*Blocked/s
+  end
+
+  test "run detail timeline filters skipped attempts" do
+    run = %{
+      active?: false,
+      windows: [],
+      timeline: [
+        timeline_attempt(:ok),
+        timeline_attempt(:skipped_fresh),
+        timeline_attempt(:queued)
+      ]
+    }
+
+    html =
+      render_component(&Timeline.timeline_panel/1,
+        run: run,
+        timeline_hook?: false,
+        timeline_state: %{
+          mode: :fit,
+          zoom: "full",
+          live_follow?: false,
+          search: "",
+          status: "skipped",
+          window: "all",
+          failed_only?: false,
+          running_only?: false
+        }
+      )
+
+    assert html =~ ~r/data-section="skipped".*asset_skipped_fresh.*Skipped/s
+    refute html =~ ~r/data-testid="timeline-row"[^>]+data-section="ran"/s
+    refute html =~ ~r/data-testid="timeline-row"[^>]+data-section="queued"/s
   end
 
   test "run detail timeline prefers authoritative attempts over matrix placeholders" do
@@ -2095,6 +2135,24 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="output-metadata"]), "Output metadata")
     assert has_element?(view, ~s([data-testid="output-metadata"]), "Rows written")
     assert has_element?(view, ~s([data-testid="output-metadata"]), "0")
+  end
+
+  test "run detail attempt drawer describes skipped attempts without error styling" do
+    attempt = %{
+      timeline_attempt(:skipped_fresh)
+      | status: "Skipped",
+        error_summary: "existing_success",
+        finished_at: "May 20, 2026 19:51 UTC",
+        child_run_id: "run_existing_window"
+    }
+
+    html = render_component(&AttemptDrawer.attempt_drawer/1, attempt: attempt)
+
+    assert html =~ "Skipped asset"
+    assert html =~ "Window already ran on May 20, 2026 19:51 UTC"
+    assert html =~ ~s(href="/runs/run_existing_window")
+    refute html =~ "existing_success"
+    refute html =~ "border-error"
   end
 
   test "run detail mode rail changes to events mode", %{conn: conn} do
@@ -2674,10 +2732,15 @@ defmodule FavnView.PageLiveTest do
     %{
       id: "attempt-#{status}",
       attempt_id: "attempt-#{status}",
+      root_execution_group_id: "run_backfill_test",
+      child_run_id: "run_window_test",
+      run_id: "run_window_test",
       asset_key: "asset_#{status}",
       asset_ref: "asset_#{status}",
       asset_name: "asset_#{status}",
       short_asset_name: "asset_#{status}",
+      stage_label: "Stage 0",
+      attempt_number: 0,
       window_label: "May 2026",
       raw_status: status,
       status: label,
@@ -2685,8 +2748,10 @@ defmodule FavnView.PageLiveTest do
       started_at_raw: ~U[2026-05-01 00:00:00Z],
       finished_at_raw: ~U[2026-05-01 00:00:10Z],
       started_at: "May 1, 2026 00:00 UTC",
+      finished_at: "May 1, 2026 00:00 UTC",
       duration: "10s",
-      error_summary: nil
+      error_summary: nil,
+      logs_href: "/runs/run_window_test/assets/attempt-#{status}/logs"
     }
   end
 

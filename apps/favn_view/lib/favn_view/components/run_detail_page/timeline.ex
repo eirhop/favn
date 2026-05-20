@@ -122,6 +122,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
         <option value="running" selected={@timeline_state.status == "running"}>Running</option>
         <option value="succeeded" selected={@timeline_state.status == "succeeded"}>Succeeded</option>
         <option value="failed" selected={@timeline_state.status == "failed"}>Failed</option>
+        <option value="skipped" selected={@timeline_state.status == "skipped"}>Skipped</option>
         <option value="queued" selected={@timeline_state.status == "queued"}>Queued</option>
       </select>
       <select
@@ -303,6 +304,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       data-attempt-id={@row.attempt_id}
       data-window-label={@row.window_label}
       data-start-sort={@row.start_sort || "none"}
+      data-completed-sort={@row.completed_sort || "none"}
       data-time-mode={@row.time_mode}
     >
       <div class="sticky left-0 z-20 grid grid-cols-[minmax(0,1.4fr)_8rem_7rem_8rem_7rem] items-center border-r border-base-content/10 bg-base-300/80 text-sm backdrop-blur group-hover:bg-base-300/95">
@@ -352,8 +354,15 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     running =
       rows |> Enum.filter(&(&1.section == "running")) |> Enum.sort_by(&(&1.start_sort || 0))
 
-    ran = rows |> Enum.filter(&(&1.section == "ran")) |> Enum.sort_by(&(&1.start_sort || 0))
+    ran =
+      rows
+      |> Enum.filter(&(&1.section == "ran"))
+      |> Enum.sort_by(&(&1.completed_sort || 0), :desc)
+
     queued = Enum.filter(rows, &(&1.section == "queued"))
+
+    skipped =
+      rows |> Enum.filter(&(&1.section == "skipped")) |> Enum.sort_by(&(&1.start_sort || 0))
 
     active? = run[:active?] || Enum.any?(all_rows, &(&1.section == "running"))
     now = timeline_now(all_rows)
@@ -379,6 +388,12 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
         label: "Queued",
         hint: "Queued work is shown without fabricated scheduled bars.",
         rows: Enum.map(queued, &position_timeline_row(&1, start_ms, span, now))
+      },
+      %{
+        id: "skipped",
+        label: "Skipped",
+        hint: "Skipped assets already had successful work for this window.",
+        rows: Enum.map(skipped, &position_timeline_row(&1, start_ms, span, now))
       }
     ]
 
@@ -410,6 +425,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
         "running" -> row.section == "running"
         "succeeded" -> row.status_tone == :success
         "failed" -> row.status_tone == :error
+        "skipped" -> row.section == "skipped"
         "queued" -> row.section == "queued"
         _status -> true
       end
@@ -446,7 +462,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       asset_key: attempt[:asset_key] || attempt[:asset_ref] || attempt[:short_asset_name],
       asset_name: attempt[:short_asset_name] || attempt[:asset_name] || attempt[:asset_key],
       window_label: attempt[:window_label] || "No window",
-      status: attempt[:status] || status_label(attempt[:raw_status]),
+      status: timeline_status_label(attempt),
       raw_status: attempt[:raw_status],
       status_tone: attempt[:status_tone],
       started_at: attempt[:started_at] || "-",
@@ -456,13 +472,24 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       start_ms: start_ms,
       finish_ms: finish_ms,
       start_sort: start_ms || attempt[:timeline_order],
+      completed_sort: finish_ms || start_ms || attempt[:timeline_order],
       order: attempt[:timeline_order] || 0,
       time_mode: timeline_time_mode(section, start_ms, finish_ms),
       has_real_bar?: not is_nil(start_ms) and section != "queued"
     }
   end
 
+  defp timeline_status_label(%{raw_status: status})
+       when status in [:skipped, :skipped_fresh, "skipped", "skipped_fresh"],
+       do: "Skipped"
+
+  defp timeline_status_label(attempt), do: attempt[:status] || status_label(attempt[:raw_status])
+
   defp timeline_section_for(status) when status in [:running, :retrying], do: "running"
+
+  defp timeline_section_for(status)
+       when status in [:skipped_fresh, :skipped, "skipped_fresh", "skipped"],
+       do: "skipped"
 
   defp timeline_section_for(status)
        when status in [
@@ -472,9 +499,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
               :failed,
               :timed_out,
               :cancelled,
-              :blocked,
-              :skipped_fresh,
-              :skipped
+              :blocked
             ],
        do: "ran"
 
@@ -484,6 +509,9 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     do: "started-to-now"
 
   defp timeline_time_mode("ran", start_ms, finish_ms)
+       when is_integer(start_ms) and is_integer(finish_ms), do: "started-to-finished"
+
+  defp timeline_time_mode("skipped", start_ms, finish_ms)
        when is_integer(start_ms) and is_integer(finish_ms), do: "started-to-finished"
 
   defp timeline_time_mode("queued", nil, _finish_ms), do: "no-start"
@@ -646,6 +674,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
   defp timeline_empty_label("running"), do: "No attempts are running."
   defp timeline_empty_label("ran"), do: "No attempts have completed yet."
   defp timeline_empty_label("queued"), do: "No queued attempts."
+  defp timeline_empty_label("skipped"), do: "No skipped attempts."
 
   defp timeline_zoom_levels do
     [
@@ -700,10 +729,12 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
   defp timeline_section_icon("running"), do: "hero-arrow-path"
   defp timeline_section_icon("ran"), do: "hero-check-circle"
   defp timeline_section_icon("queued"), do: "hero-clock"
+  defp timeline_section_icon("skipped"), do: "hero-minus-circle"
 
   defp timeline_section_icon_class("running"), do: "size-4 text-info"
   defp timeline_section_icon_class("ran"), do: "size-4 text-success"
   defp timeline_section_icon_class("queued"), do: "size-4 text-warning"
+  defp timeline_section_icon_class("skipped"), do: "size-4 text-base-content/50"
 
   defp timeline_bar_class(:success),
     do:

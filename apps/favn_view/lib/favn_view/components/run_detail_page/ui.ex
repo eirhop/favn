@@ -9,6 +9,7 @@ defmodule FavnView.Components.RunDetailPage.Ui do
   def status_label(:cancelled), do: "Cancelled"
   def status_label(:timed_out), do: "Timed out"
   def status_label(:skipped), do: "Skipped"
+  def status_label(:skipped_fresh), do: "Skipped"
   def status_label(nil), do: "Pending"
 
   def status_label(status),

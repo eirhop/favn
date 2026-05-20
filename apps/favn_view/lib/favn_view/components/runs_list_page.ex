@@ -930,7 +930,7 @@ defmodule FavnView.Components.RunsListPage do
   defp status_label(:error), do: "Failed"
   defp status_label(:blocked), do: "Blocked"
   defp status_label(:cancelled), do: "Cancelled"
-  defp status_label(:skipped_fresh), do: "Skipped fresh"
+  defp status_label(:skipped_fresh), do: "Skipped"
   defp status_label(:timed_out), do: "Timed out"
   defp status_label(_status), do: "Unknown"
 
