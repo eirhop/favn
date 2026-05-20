@@ -811,7 +811,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert group.duration_ms == 172_845_000
   end
 
-  test "execution group overview fetches missing roots for bounded scans" do
+  test "execution group overview fetches missing roots and sorts by child activity" do
     parent =
       "exec_group_missing_root_parent"
       |> run(submit_kind: :backfill_pipeline)
@@ -830,7 +830,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
       |> Map.put(:updated_at, ~U[2026-05-20 00:00:00Z])
 
     filler_runs =
-      1..4
+      1..6
       |> Enum.map(fn index ->
         "exec_group_missing_root_filler_#{index}"
         |> run(submit_kind: :pipeline)
@@ -841,13 +841,10 @@ defmodule FavnOrchestrator.RunReadModelTest do
     Enum.each([parent, child | filler_runs], &assert(:ok = Storage.put_run(&1)))
     assert :ok = Storage.put_backfill_window(backfill_window(parent.id, anchor, :running))
 
-    assert {:ok, groups} = FavnOrchestrator.list_execution_groups(limit: 5)
-    group = Enum.find(groups, &(&1.id == parent.id))
+    assert {:ok, [group]} = FavnOrchestrator.list_execution_groups(limit: 1)
 
-    assert group
-    assert group.root_execution_group_id == parent.id
+    assert group.id == parent.id
     assert group.child_run_ids == [child.id]
-    refute Enum.any?(groups, &(&1.id == child.id))
   end
 
   defp run(run_id, opts) do

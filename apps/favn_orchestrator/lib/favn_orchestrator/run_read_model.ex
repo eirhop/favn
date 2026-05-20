@@ -373,7 +373,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
       %{id: root.id, root: root, children: children, runs: [root | children]}
     end)
-    |> Enum.sort_by(fn group -> run_started_sort_key(group.root) end, :desc)
+    |> Enum.sort_by(&group_run_activity_sort_key/1, :desc)
   end
 
   defp include_missing_execution_group_roots(runs) do
@@ -674,6 +674,13 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
+  defp group_run_activity_sort_key(group) do
+    group.runs
+    |> Enum.flat_map(fn run -> [run.updated_at, run.inserted_at] end)
+    |> latest_datetime()
+    |> datetime_sort_key()
+  end
+
   defp filter_asset_attempts(attempts, filters) do
     Enum.filter(attempts, fn attempt ->
       matches_filter?(attempt.status, Keyword.get(filters, :status)) and
@@ -775,6 +782,9 @@ defmodule FavnOrchestrator.RunReadModel do
     do: DateTime.to_unix(inserted_at, :microsecond)
 
   defp run_started_sort_key(_run), do: 0
+
+  defp datetime_sort_key(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
+  defp datetime_sort_key(_datetime), do: 0
 
   defp with_public_status(%RunState{} = run) do
     %{run | status: public_status(run)}
