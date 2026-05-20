@@ -266,6 +266,30 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="pipeline-runs-table"]), "run_daily_orders")
   end
 
+  test "pipeline detail renders run history when window keys are maps", %{conn: conn} do
+    assert :ok =
+             Storage.put_run(
+               pipeline_run_state(
+                 id: "run_daily_orders_windowed",
+                 metadata: %{
+                   selected_window: %{
+                     kind: :month,
+                     key: %{
+                       "kind" => "month",
+                       "start_at_us" => 1_772_323_200_000_000,
+                       "timezone" => "Etc/UTC"
+                     },
+                     timezone: "Etc/UTC"
+                   }
+                 }
+               )
+             )
+
+    {:ok, view, _html} = live(conn, pipeline_detail_path())
+
+    assert has_element?(view, ~s([data-testid="pipeline-runs-table"]), "run_daily...ndowed")
+  end
+
   test "pipeline detail does not invent an implicit window for normal pipeline runs", %{
     conn: conn
   } do
@@ -2635,23 +2659,30 @@ defmodule FavnView.PageLiveTest do
     |> RunState.with_snapshot_hash()
   end
 
-  defp pipeline_run_state do
+  defp pipeline_run_state(opts \\ []) do
     ref = {__MODULE__.Assets, :customer_orders_daily}
     finished_at = DateTime.add(DateTime.utc_now(), -900, :second)
     started_at = DateTime.add(finished_at, -5, :second)
+    id = Keyword.get(opts, :id, "run_daily_orders")
+
+    metadata =
+      Map.merge(
+        %{
+          pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders,
+          pipeline_target_refs: [ref],
+          pipeline_dependencies: :all
+        },
+        Keyword.get(opts, :metadata, %{})
+      )
 
     RunState.new(
-      id: "run_daily_orders",
+      id: id,
       manifest_version_id: "mv_view_assets",
       manifest_content_hash: "hash_view_assets",
       asset_ref: ref,
       target_refs: [ref],
       submit_kind: :pipeline,
-      metadata: %{
-        pipeline_submit_ref: __MODULE__.Pipelines.DailyOrders,
-        pipeline_target_refs: [ref],
-        pipeline_dependencies: :all
-      }
+      metadata: metadata
     )
     |> RunState.transition(
       status: :ok,
