@@ -374,6 +374,7 @@ defmodule Favn.Assets.Planner do
       full_node =
         Map.merge(node, %{
           stage: Map.fetch!(stage_map, node.node_key),
+          execution_pool: Map.get(asset, :execution_pool),
           action: node_action(asset)
         })
 

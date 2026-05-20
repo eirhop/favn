@@ -17,6 +17,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
+  alias FavnOrchestrator.Storage.ExecutionLeaseCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.IdempotencyResponseCodec
   alias FavnOrchestrator.Storage.LogEntryCodec
@@ -304,6 +305,79 @@ defmodule Favn.Storage.Adapter.SQLite do
           |> decode_event_rows()
           |> case do
             {:ok, events} -> {:ok, Enum.reverse(events)}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def try_acquire_execution_lease(lease, opts) when is_map(lease) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, normalized} <- ExecutionLeaseCodec.normalize(lease),
+         {:ok, payload} <- ExecutionLeaseCodec.encode(normalized) do
+      repo.transact(fn ->
+        with {:ok, _expired} <- delete_expired_execution_leases(repo, normalized.acquired_at),
+             :ok <-
+               ensure_execution_lease_capacity(repo, normalized.scopes, normalized.acquired_at),
+             :ok <- insert_execution_lease(repo, normalized, payload),
+             :ok <- insert_execution_lease_scopes(repo, normalized) do
+          {:ok, normalized}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, lease} -> {:ok, lease}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def release_execution_lease(lease_id, opts) when is_binary(lease_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      repo.transact(fn ->
+        with :ok <- delete_execution_lease_scopes(repo, lease_id),
+             :ok <- delete_execution_lease(repo, lease_id) do
+          {:ok, :ok}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def expire_execution_leases(%DateTime{} = now, opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      delete_expired_execution_leases(repo, now)
+    end
+  end
+
+  @impl true
+  def list_execution_leases(opts) when is_list(opts) do
+    with {:ok, repo} <- repo_name(opts) do
+      sql = "SELECT lease_payload FROM favn_execution_leases ORDER BY lease_id ASC"
+
+      case SQL.query(repo, sql, []) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.reduce_while({:ok, []}, fn [payload], {:ok, acc} ->
+            case ExecutionLeaseCodec.decode(payload) do
+              {:ok, lease} -> {:cont, {:ok, [lease | acc]}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+          |> case do
+            {:ok, leases} -> {:ok, Enum.reverse(leases)}
             {:error, reason} -> {:error, reason}
           end
 
@@ -2575,6 +2649,127 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp decode_optional_idempotency_response(payload) when is_binary(payload) do
     IdempotencyResponseCodec.decode(payload)
+  end
+
+  defp delete_expired_execution_leases(repo, %DateTime{} = now) do
+    timestamp = DateTime.to_iso8601(now)
+
+    repo.transact(fn ->
+      case SQL.query(repo, "SELECT lease_id FROM favn_execution_leases WHERE expires_at <= ?1", [
+             timestamp
+           ]) do
+        {:ok, %{rows: rows}} ->
+          lease_ids = Enum.map(rows, fn [lease_id] -> lease_id end)
+
+          with :ok <- delete_execution_lease_scopes(repo, lease_ids),
+               :ok <- delete_execution_leases(repo, lease_ids) do
+            {:ok, length(lease_ids)}
+          else
+            {:error, reason} -> repo.rollback(reason)
+          end
+
+        {:error, reason} ->
+          repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, count} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp ensure_execution_lease_capacity(repo, scopes, %DateTime{} = now) do
+    timestamp = DateTime.to_iso8601(now)
+
+    Enum.reduce_while(scopes, :ok, fn scope, :ok ->
+      {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(scope)
+
+      sql = """
+      SELECT COUNT(*)
+      FROM favn_execution_lease_scopes AS s
+      JOIN favn_execution_leases AS l ON l.lease_id = s.lease_id
+      WHERE s.scope_kind = ?1 AND s.scope_key = ?2 AND l.expires_at > ?3
+      """
+
+      case SQL.query(repo, sql, [scope_kind, scope_key, timestamp]) do
+        {:ok, %{rows: [[count]]}} when count < scope.limit -> {:cont, :ok}
+        {:ok, %{rows: [[_count]]}} -> {:halt, {:error, {:execution_capacity_exceeded, scope}}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp insert_execution_lease(repo, lease, payload) do
+    sql = """
+    INSERT INTO favn_execution_leases
+      (lease_id, run_id, asset_step_id, acquired_at, expires_at, lease_payload)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    """
+
+    params = [
+      lease.lease_id,
+      lease.run_id,
+      lease.asset_step_id,
+      DateTime.to_iso8601(lease.acquired_at),
+      DateTime.to_iso8601(lease.expires_at),
+      payload
+    ]
+
+    case SQL.query(repo, sql, params) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp insert_execution_lease_scopes(repo, lease) do
+    Enum.reduce_while(lease.scopes, :ok, fn scope, :ok ->
+      {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(scope)
+
+      sql = """
+      INSERT INTO favn_execution_lease_scopes
+        (lease_id, scope_kind, scope_key, scope_limit)
+      VALUES (?1, ?2, ?3, ?4)
+      """
+
+      case SQL.query(repo, sql, [lease.lease_id, scope_kind, scope_key, scope.limit]) do
+        {:ok, _result} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp delete_execution_lease_scopes(repo, lease_id) when is_binary(lease_id),
+    do: delete_execution_lease_scopes(repo, [lease_id])
+
+  defp delete_execution_lease_scopes(_repo, []), do: :ok
+
+  defp delete_execution_lease_scopes(repo, lease_ids) when is_list(lease_ids) do
+    placeholders = Enum.map_join(1..length(lease_ids), ",", &"?#{&1}")
+    sql = "DELETE FROM favn_execution_lease_scopes WHERE lease_id IN (#{placeholders})"
+
+    case SQL.query(repo, sql, lease_ids) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_execution_lease(repo, lease_id) do
+    case SQL.query(repo, "DELETE FROM favn_execution_leases WHERE lease_id = ?1", [lease_id]) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_execution_leases(_repo, []), do: :ok
+
+  defp delete_execution_leases(repo, lease_ids) do
+    placeholders = Enum.map_join(1..length(lease_ids), ",", &"?#{&1}")
+    sql = "DELETE FROM favn_execution_leases WHERE lease_id IN (#{placeholders})"
+
+    case SQL.query(repo, sql, lease_ids) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp repo_name(opts) do

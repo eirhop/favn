@@ -41,6 +41,7 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Extend command idempotency from the implemented SQLite single-node scope into any future distributed/Postgres production mode when that mode is introduced.
 - Extend the new single-node SSE contract into future distributed/Postgres production modes when those modes are introduced.
 - Add broader end-to-end integration coverage against the live orchestrator stream boundary beyond the focused single-node cursor/replay tests.
+- Complete persisted orchestrator execution admission for pipeline `max_concurrency`, named execution pools, global concurrency, queue reasons, execution leases, lease heartbeat/expiry, and restart recovery across memory, SQLite, and Postgres storage adapters.
 
 ### 5. Close Storage And Persistence Gaps
 
@@ -62,6 +63,6 @@ Based on the current feature audit, the main path to a stable production `v1` is
 - Richer landed-data inspection beyond the curated local preview, such as broader DuckLake snapshot metadata, pagination, and optional local-only SQL console behind an explicit feature flag.
 - More storage adapters and runner plugins beyond the current built-in set.
 - Additional API-triggered or externally triggered execution flows.
-- Stronger queueing, admission control, distributed execution, and resource-aware scheduling after Postgres production mode exists.
+- Distributed execution and resource-aware scheduling beyond the orchestrator-owned execution admission contract.
 - Deeper observability, diagnostics, and operator tooling.
 - More complete deployment automation for cloud and split-topology environments.

@@ -12,6 +12,8 @@ defmodule Favn.Manifest.Pipeline do
           deps: :all | :none,
           schedule: term(),
           window: Favn.Window.Policy.t() | nil,
+          max_concurrency: pos_integer() | nil,
+          execution_pool: atom() | nil,
           source: atom() | nil,
           outputs: [atom()],
           config: map(),
@@ -24,6 +26,8 @@ defmodule Favn.Manifest.Pipeline do
             deps: :all,
             schedule: nil,
             window: nil,
+            max_concurrency: nil,
+            execution_pool: nil,
             source: nil,
             outputs: [],
             config: %{},
@@ -38,6 +42,8 @@ defmodule Favn.Manifest.Pipeline do
       deps: normalize_deps(Map.get(definition, :deps, :all)),
       schedule: Map.get(definition, :schedule),
       window: Policy.from_value!(Map.get(definition, :window)),
+      max_concurrency: normalize_max_concurrency(Map.get(definition, :max_concurrency)),
+      execution_pool: normalize_execution_pool(Map.get(definition, :execution_pool)),
       source: Map.get(definition, :source),
       outputs: normalize_atom_list(Map.get(definition, :outputs, [])),
       config: normalize_map(Map.get(definition, :config, %{})),
@@ -48,6 +54,12 @@ defmodule Favn.Manifest.Pipeline do
   defp normalize_deps(:all), do: :all
   defp normalize_deps(:none), do: :none
   defp normalize_deps(_other), do: :all
+
+  defp normalize_max_concurrency(value) when is_integer(value) and value > 0, do: value
+  defp normalize_max_concurrency(_other), do: nil
+
+  defp normalize_execution_pool(value) when is_atom(value), do: value
+  defp normalize_execution_pool(_other), do: nil
 
   defp normalize_atom_list(list) when is_list(list) do
     list

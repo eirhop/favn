@@ -105,6 +105,44 @@ defmodule Favn.Pipeline.ResolverParityTest do
     assert resolution.pipeline_ctx.schedule.timezone_source == :app_default
   end
 
+  test "resolve/2 carries pipeline execution policy into pipeline context" do
+    definition = %Definition{
+      module: MyApp.Pipelines.Daily,
+      name: :daily,
+      selectors: [{:asset, {MyApp.Sales, :daily_gold}}],
+      max_concurrency: 2,
+      execution_pool: :github_api
+    }
+
+    assets = [
+      %{ref: {MyApp.Sales, :daily_gold}, module: MyApp.Sales, name: :daily_gold, meta: %{}}
+    ]
+
+    assert {:ok, resolution} = Resolver.resolve(definition, assets: assets)
+    assert resolution.pipeline_ctx.max_concurrency == 2
+    assert resolution.pipeline_ctx.execution_pool == :github_api
+  end
+
+  test "resolve/2 rejects invalid pipeline execution policy" do
+    assets = [
+      %{ref: {MyApp.Sales, :daily_gold}, module: MyApp.Sales, name: :daily_gold, meta: %{}}
+    ]
+
+    definition = %Definition{
+      module: MyApp.Pipelines.Daily,
+      name: :daily,
+      selectors: [{:asset, {MyApp.Sales, :daily_gold}}],
+      max_concurrency: 0
+    }
+
+    assert {:error, {:invalid_max_concurrency, 0}} = Resolver.resolve(definition, assets: assets)
+
+    definition = %Definition{definition | max_concurrency: nil, execution_pool: "github_api"}
+
+    assert {:error, {:invalid_execution_pool, "github_api"}} =
+             Resolver.resolve(definition, assets: assets)
+  end
+
   test "resolve/2 reports invalid schedule references and invalid opts" do
     definition = %Definition{
       module: MyApp.Pipelines.Daily,

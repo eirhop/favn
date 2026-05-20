@@ -61,6 +61,8 @@ defmodule Favn.Pipeline.Resolver do
          :ok <- validate_deps(definition.deps),
          :ok <- validate_selectors(definition.selectors),
          :ok <- validate_window(definition.window),
+         :ok <- validate_max_concurrency(definition.max_concurrency),
+         :ok <- validate_execution_pool(definition.execution_pool),
          :ok <- validate_source(definition.source) do
       validate_outputs(definition.outputs)
     end
@@ -87,6 +89,14 @@ defmodule Favn.Pipeline.Resolver do
   end
 
   defp validate_window(value), do: {:error, {:invalid_window, value}}
+
+  defp validate_max_concurrency(nil), do: :ok
+  defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
+  defp validate_max_concurrency(value), do: {:error, {:invalid_max_concurrency, value}}
+
+  defp validate_execution_pool(nil), do: :ok
+  defp validate_execution_pool(value) when is_atom(value), do: :ok
+  defp validate_execution_pool(value), do: {:error, {:invalid_execution_pool, value}}
 
   defp validate_source(nil), do: :ok
   defp validate_source(value) when is_atom(value), do: :ok
@@ -221,6 +231,8 @@ defmodule Favn.Pipeline.Resolver do
       params: params,
       anchor_window: anchor_window,
       window: definition.window,
+      max_concurrency: definition.max_concurrency,
+      execution_pool: definition.execution_pool,
       schedule: schedule,
       source: definition.source,
       outputs: definition.outputs

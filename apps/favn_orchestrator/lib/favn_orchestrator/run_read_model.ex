@@ -44,6 +44,8 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:canonical_asset_ref) => Favn.Ref.t() | nil,
           required(:status) => atom() | nil,
           required(:stage) => non_neg_integer() | nil,
+          required(:execution_pool) => atom() | String.t() | nil,
+          required(:queue_reason) => atom() | String.t() | nil,
           required(:window) => window_summary() | nil,
           required(:duration_ms) => non_neg_integer() | nil,
           required(:started_at) => DateTime.t() | nil,
@@ -113,6 +115,8 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:asset_key) => String.t(),
           required(:asset_ref) => String.t(),
           required(:stage) => non_neg_integer() | nil,
+          required(:execution_pool) => atom() | String.t() | nil,
+          required(:queue_reason) => atom() | String.t() | nil,
           required(:attempt_number) => non_neg_integer() | nil,
           required(:started_at) => DateTime.t() | nil,
           required(:finished_at) => DateTime.t() | nil,
@@ -512,6 +516,8 @@ defmodule FavnOrchestrator.RunReadModel do
       asset_key: step.asset_ref,
       asset_ref: step.asset_ref,
       stage: step.stage,
+      execution_pool: step.execution_pool,
+      queue_reason: step.queue_reason,
       attempt_number: step.attempt,
       started_at: step.started_at,
       finished_at: step.finished_at,
@@ -1047,7 +1053,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
     results
     |> result_values()
-    |> Enum.map(&step_summary(&1, run.id))
+    |> Enum.map(&step_summary(&1, run))
   end
 
   defp persisted_steps(_run), do: []
@@ -1140,7 +1146,9 @@ defmodule FavnOrchestrator.RunReadModel do
     MapSet.member?(known.asset_refs, candidate.asset_ref)
   end
 
-  defp planned_waiting_candidates(%RunState{plan: %Favn.Plan{nodes: nodes, node_stages: stages}})
+  defp planned_waiting_candidates(
+         %RunState{plan: %Favn.Plan{nodes: nodes, node_stages: stages}} = run
+       )
        when is_map(nodes) and map_size(nodes) > 0 do
     ordered_node_keys = List.flatten(stages || [])
     remaining_node_keys = Map.keys(nodes) -- ordered_node_keys
@@ -1156,6 +1164,8 @@ defmodule FavnOrchestrator.RunReadModel do
               asset_ref: public_ref(Map.get(node, :ref)),
               canonical_asset_ref: Map.get(node, :ref),
               stage: Map.get(node, :stage),
+              execution_pool: effective_execution_pool(run, node),
+              queue_reason: waiting_queue_reason(run, node),
               window: public_window(Map.get(node, :window) || %{})
             }
           ]
@@ -1175,10 +1185,50 @@ defmodule FavnOrchestrator.RunReadModel do
         asset_ref: public_ref(ref),
         canonical_asset_ref: ref,
         stage: nil,
+        execution_pool: nil,
+        queue_reason: nil,
         window: nil
       }
     end)
   end
+
+  defp effective_execution_pool(%RunState{} = run, node) when is_map(node) do
+    Map.get(node, :execution_pool) || pipeline_default_execution_pool(run)
+  end
+
+  defp effective_execution_pool(%RunState{} = run, node_key, asset_ref) do
+    case run.plan do
+      %Favn.Plan{nodes: nodes} when is_map(nodes) ->
+        case Map.fetch(nodes, node_key) do
+          {:ok, node} -> effective_execution_pool(run, node)
+          :error -> effective_execution_pool_from_ref(run, asset_ref)
+        end
+
+      _other ->
+        pipeline_default_execution_pool(run)
+    end
+  end
+
+  defp effective_execution_pool_from_ref(%RunState{} = run, asset_ref) do
+    with %Favn.Plan{nodes: nodes} <- run.plan,
+         true <- is_map(nodes),
+         {_node_key, node} <-
+           Enum.find(nodes, fn {_key, node} -> Map.get(node, :ref) == asset_ref end) do
+      effective_execution_pool(run, node)
+    else
+      _other -> pipeline_default_execution_pool(run)
+    end
+  end
+
+  defp pipeline_default_execution_pool(%RunState{metadata: %{pipeline_execution_policy: policy}})
+       when is_map(policy) do
+    Map.get(policy, :execution_pool) || Map.get(policy, "execution_pool")
+  end
+
+  defp pipeline_default_execution_pool(%RunState{}), do: nil
+
+  defp waiting_queue_reason(_run, %{upstream: [_ | _]}), do: :waiting_dependencies
+  defp waiting_queue_reason(_run, _node), do: nil
 
   defp candidate_step_id(run_id, candidate) do
     AssetStepIdentity.asset_step_id(run_id, candidate.node_key, candidate.canonical_asset_ref)
@@ -1192,6 +1242,8 @@ defmodule FavnOrchestrator.RunReadModel do
       canonical_asset_ref: candidate.canonical_asset_ref,
       status: :pending,
       stage: candidate.stage,
+      execution_pool: candidate.execution_pool,
+      queue_reason: candidate.queue_reason,
       window: candidate.window,
       duration_ms: nil,
       started_at: nil,
@@ -1219,7 +1271,8 @@ defmodule FavnOrchestrator.RunReadModel do
     |> MapSet.new()
   end
 
-  defp step_summary(result, run_id) when is_map(result) do
+  defp step_summary(result, %RunState{} = run) when is_map(result) do
+    run_id = run.id
     node_key = Map.get(result, :node_key) || Map.get(result, "node_key")
     canonical_asset_ref = Map.get(result, :ref) || Map.get(result, "ref") || node_ref(result)
     asset_ref = public_ref(canonical_asset_ref)
@@ -1239,6 +1292,10 @@ defmodule FavnOrchestrator.RunReadModel do
       canonical_asset_ref: canonical_asset_ref,
       status: Map.get(result, :status) || Map.get(result, "status"),
       stage: Map.get(result, :stage) || Map.get(result, "stage"),
+      execution_pool:
+        Map.get(result, :execution_pool) || Map.get(result, "execution_pool") ||
+          effective_execution_pool(run, node_key, canonical_asset_ref),
+      queue_reason: Map.get(result, :queue_reason) || Map.get(result, "queue_reason"),
       window: public_window(Map.get(result, :window) || Map.get(result, "window") || %{}),
       duration_ms: Map.get(result, :duration_ms) || Map.get(result, "duration_ms"),
       started_at: Map.get(result, :started_at) || Map.get(result, "started_at"),
@@ -1271,6 +1328,10 @@ defmodule FavnOrchestrator.RunReadModel do
       canonical_asset_ref: latest.asset_ref,
       status: event_step_status(latest.event_type, latest.status),
       stage: latest.stage,
+      execution_pool:
+        Map.get(data, :execution_pool) || Map.get(data, "execution_pool") ||
+          Map.get(data, :execution_pool_key) || Map.get(data, "execution_pool_key"),
+      queue_reason: Map.get(data, :queue_reason) || Map.get(data, "queue_reason"),
       window: event_window(events),
       duration_ms: nil,
       started_at:
@@ -1422,6 +1483,7 @@ defmodule FavnOrchestrator.RunReadModel do
   defp event_step_status(event_type, status) do
     case event_type_name(event_type) do
       "step_started" -> :running
+      "step_queued" -> :queued
       "step_finished" -> :ok
       "step_failed" -> :error
       "step_timed_out" -> :timed_out
@@ -1449,6 +1511,7 @@ defmodule FavnOrchestrator.RunReadModel do
   defp event_step_explanation(event_type) do
     case event_type_name(event_type) do
       "step_started" -> "Execution has started; waiting for runner result."
+      "step_queued" -> "Execution is queued by orchestrator admission."
       "step_retry_scheduled" -> "Retry has been scheduled for this asset."
       "step_finished" -> "Execution finished successfully."
       "step_failed" -> "Failed while executing this asset."

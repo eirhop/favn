@@ -557,6 +557,82 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert detail.steps |> Enum.map(& &1.id) |> Enum.uniq() |> length() == 2
   end
 
+  test "pending planned steps expose execution pools and queue reasons" do
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    silver_ref = {MyApp.Assets.Silver, :asset}
+    gold_node = {gold_ref, nil}
+    silver_node = {silver_ref, nil}
+
+    plan = %Favn.Plan{
+      target_refs: [silver_ref],
+      target_node_keys: [silver_node],
+      nodes: %{
+        gold_node =>
+          gold_ref
+          |> plan_node(gold_node, nil, 0)
+          |> Map.merge(%{downstream: [silver_node], execution_pool: :github_api}),
+        silver_node =>
+          silver_ref
+          |> plan_node(silver_node, nil, 1)
+          |> Map.merge(%{upstream: [gold_node]})
+      },
+      topo_order: [gold_ref, silver_ref],
+      stages: [[gold_ref], [silver_ref]],
+      node_stages: [[gold_node], [silver_node]]
+    }
+
+    run =
+      run("pending_execution_policy",
+        submit_kind: :pipeline,
+        metadata: %{pipeline_execution_policy: %{execution_pool: :warehouse_default}}
+      )
+      |> Map.put(:target_refs, [silver_ref])
+      |> Map.put(:plan, plan)
+      |> RunState.transition(status: :running, result: %{node_results: []})
+
+    assert :ok = Storage.put_run(run)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+
+    steps_by_ref = Map.new(detail.steps, &{&1.asset_ref, &1})
+    assert steps_by_ref["MyApp.Assets.Gold.asset"].execution_pool == :github_api
+    assert steps_by_ref["MyApp.Assets.Gold.asset"].queue_reason == nil
+    assert steps_by_ref["MyApp.Assets.Silver.asset"].execution_pool == :warehouse_default
+    assert steps_by_ref["MyApp.Assets.Silver.asset"].queue_reason == :waiting_dependencies
+  end
+
+  test "queued step events expose execution pool and queue reason" do
+    ref = {MyApp.Assets.Gold, :asset}
+
+    run =
+      run("queued_step_event", submit_kind: :pipeline)
+      |> RunState.transition(status: :running)
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: 1,
+               event_type: :step_queued,
+               occurred_at: ~U[2026-05-01 00:00:00Z],
+               status: :queued,
+               asset_ref: ref,
+               stage: 0,
+               data: %{
+                 asset_step_id: "queued-step",
+                 execution_pool: :github_api,
+                 queue_reason: :execution_pool
+               }
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+    assert [%{id: "queued-step", status: :queued} = step] = detail.steps
+    assert step.execution_pool == "github_api"
+    assert step.queue_reason == "execution_pool"
+    assert step.explanation == "Execution is queued by orchestrator admission."
+  end
+
   test "backfill parent detail includes failed child window context" do
     parent =
       run("backfill_parent_failure", submit_kind: :backfill_pipeline)

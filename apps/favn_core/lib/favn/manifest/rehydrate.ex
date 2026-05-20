@@ -88,6 +88,7 @@ defmodule Favn.Manifest.Rehydrate do
       relation_inputs: value |> field_value(:relation_inputs, []) |> build_relation_inputs(),
       runtime_config: value |> field_value(:runtime_config, %{}) |> build_runtime_config(),
       sql_execution: value |> field_value(:sql_execution) |> build_sql_execution(),
+      execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
       metadata: value |> field_value(:metadata, %{}) |> build_metadata()
     }
   end
@@ -548,6 +549,8 @@ defmodule Favn.Manifest.Rehydrate do
       deps: value |> field_value(:deps, :all) |> decode_known_atom([:all, :none]),
       schedule: value |> field_value(:schedule) |> decode_pipeline_schedule(),
       window: value |> field_value(:window) |> build_window_policy(),
+      max_concurrency: value |> field_value(:max_concurrency) |> decode_max_concurrency(),
+      execution_pool: value |> field_value(:execution_pool) |> decode_atom_optional(),
       source: value |> field_value(:source) |> decode_atom_optional(),
       outputs: value |> field_value(:outputs, []) |> build_atom_list(),
       config: value |> field_value(:config, %{}) |> plain_map(),
@@ -560,6 +563,9 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_window_policy(nil), do: nil
   defp build_window_policy(%Policy{} = policy), do: policy
   defp build_window_policy(value), do: Policy.from_value!(value)
+
+  defp decode_max_concurrency(value) when is_integer(value) and value > 0, do: value
+  defp decode_max_concurrency(_value), do: nil
 
   defp build_selectors(values) when is_list(values), do: Enum.map(values, &decode_selector/1)
   defp build_selectors(_other), do: []

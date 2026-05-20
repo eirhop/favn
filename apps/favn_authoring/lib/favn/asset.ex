@@ -52,7 +52,7 @@ defmodule Favn.Asset do
   ## Contract
 
   - define exactly one public `asset/1`
-  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, and `@relation` directly above `def asset(ctx)`
+  - attach `@doc`, `@meta`, `@depends`, `@window`, `@freshness`, `@execution_pool`, and `@relation` directly above `def asset(ctx)`
   - repeat `@depends` for multiple upstream dependencies
   - use module shorthand in `@depends` for another single-asset module
 
@@ -63,7 +63,22 @@ defmodule Favn.Asset do
   - `@depends`: repeatable dependency declaration
   - `@window`: one `Favn.Window.*` spec
   - `@freshness`: optional asset freshness policy
+  - `@execution_pool`: optional orchestrator admission pool
   - `@relation`: optional owned relation declaration
+
+  ## Execution Pool
+
+  Use `@execution_pool` when the asset body talks to a rate-limited API, source
+  database, SFTP server, memory-heavy transform, or another shared resource that
+  should be admitted by the orchestrator before code starts running.
+
+      @execution_pool :github_api
+      def asset(ctx), do: fetch_from_github(ctx)
+
+  Asset-level pools override any pipeline-level default `execution_pool`. The
+  pool itself is configured by the orchestrator runtime with `config :favn,
+  execution_pools: [...]`. SQL/database `write_concurrency` remains separate and
+  protects writer/backend admission only after the asset body has started.
 
   ## Freshness
 
@@ -182,6 +197,7 @@ defmodule Favn.Asset do
   - normalized metadata and dependency refs
   - optional window and relation ownership metadata
   - optional normalized freshness policy
+  - optional orchestrator execution pool
 
   ## Runtime Context
 
@@ -226,6 +242,7 @@ defmodule Favn.Asset do
     quote do
       Module.register_attribute(__MODULE__, :depends, accumulate: true)
       Module.register_attribute(__MODULE__, :freshness, accumulate: true)
+      Module.register_attribute(__MODULE__, :execution_pool, persist: false)
       Module.register_attribute(__MODULE__, :meta, persist: false)
       Module.register_attribute(__MODULE__, :relation, accumulate: true)
       Module.register_attribute(__MODULE__, :runtime_config, accumulate: true)
@@ -322,18 +339,19 @@ defmodule Favn.Asset do
       Module.get_attribute(env.module, :depends) || [],
       Module.get_attribute(env.module, :meta),
       Module.get_attribute(env.module, :freshness) || [],
+      Module.get_attribute(env.module, :execution_pool),
       Module.get_attribute(env.module, :runtime_config) || [],
       Module.get_attribute(env.module, :window) || [],
       Module.get_attribute(env.module, :relation) || []
     } do
-      {[], nil, [], [], [], []} ->
+      {[], nil, [], nil, [], [], []} ->
         :ok
 
       _ ->
         DSLCompiler.compile_error!(
           env.file,
           env.line,
-          "@depends/@freshness/@meta/@window/@relation and source_config/2 must be attached to def asset(ctx)"
+          "@depends/@freshness/@execution_pool/@meta/@window/@relation and source_config/2 must be attached to def asset(ctx)"
         )
     end
 
@@ -369,6 +387,7 @@ defmodule Favn.Asset do
           config: map(),
           window_spec: Spec.t() | nil,
           freshness: FreshnessPolicy.t() | nil,
+          execution_pool: atom() | nil,
           relation: RelationRef.t() | nil,
           materialization: Favn.SQLAsset.Materialization.t() | nil,
           relation_inputs: [RelationInput.t()],
@@ -398,6 +417,7 @@ defmodule Favn.Asset do
     config: %{},
     window_spec: nil,
     freshness: nil,
+    execution_pool: nil,
     relation: nil,
     materialization: nil,
     relation_inputs: [],
@@ -424,6 +444,7 @@ defmodule Favn.Asset do
     validate_config!(asset.config)
     validate_window_spec!(asset.window_spec)
     validate_freshness!(asset.freshness)
+    validate_execution_pool!(asset.execution_pool)
     validate_relation!(asset.relation)
     validate_runtime_config!(asset.runtime_config)
     validate_type!(asset.type)
@@ -561,6 +582,14 @@ defmodule Favn.Asset do
           "asset freshness must be a Favn.Freshness.Policy or nil, got: #{inspect(value)}"
   end
 
+  defp validate_execution_pool!(nil), do: :ok
+  defp validate_execution_pool!(value) when is_atom(value), do: :ok
+
+  defp validate_execution_pool!(value) do
+    raise ArgumentError,
+          "asset execution_pool must be an atom or nil, got: #{inspect(value)}"
+  end
+
   @doc false
   @spec normalize_freshness!([term()], Spec.t() | nil, String.t()) :: FreshnessPolicy.t() | nil
   def normalize_freshness!([], nil, _attachment), do: nil
@@ -617,6 +646,7 @@ defmodule Favn.Asset do
 
     depends = env.module |> Module.get_attribute(:depends) |> Enum.reverse()
     freshness = env.module |> Module.get_attribute(:freshness) |> Enum.reverse()
+    execution_pool = Module.get_attribute(env.module, :execution_pool)
     meta = Module.get_attribute(env.module, :meta)
     runtime_config = env.module |> Module.get_attribute(:runtime_config) |> Enum.reverse()
     window = env.module |> Module.get_attribute(:window) |> Enum.reverse()
@@ -625,6 +655,7 @@ defmodule Favn.Asset do
 
     Module.delete_attribute(env.module, :depends)
     Module.delete_attribute(env.module, :freshness)
+    Module.delete_attribute(env.module, :execution_pool)
     Module.delete_attribute(env.module, :meta)
     Module.delete_attribute(env.module, :runtime_config)
     Module.delete_attribute(env.module, :window)
@@ -639,6 +670,7 @@ defmodule Favn.Asset do
       line: env.line,
       depends: depends,
       freshness: freshness,
+      execution_pool: execution_pool,
       meta: meta,
       runtime_config: runtime_config,
       window: window,
@@ -652,6 +684,7 @@ defmodule Favn.Asset do
     runtime_config = normalize_single_asset_runtime_config!(raw_asset.runtime_config, raw_asset)
     window_spec = normalize_single_asset_window!(raw_asset.window, raw_asset)
     freshness = normalize_single_asset_freshness!(raw_asset.freshness, window_spec, raw_asset)
+    execution_pool = normalize_execution_pool!(raw_asset.execution_pool, raw_asset)
 
     asset = %__MODULE__{
       module: raw_asset.module,
@@ -669,7 +702,8 @@ defmodule Favn.Asset do
       config: %{},
       runtime_config: runtime_config,
       window_spec: window_spec,
-      freshness: freshness
+      freshness: freshness,
+      execution_pool: execution_pool
     }
 
     try do
@@ -765,6 +799,17 @@ defmodule Favn.Asset do
       DSLCompiler.compile_error!(raw_asset.file, raw_asset.line, error.message)
   end
 
+  defp normalize_execution_pool!(nil, _raw_asset), do: nil
+  defp normalize_execution_pool!(value, _raw_asset) when is_atom(value), do: value
+
+  defp normalize_execution_pool!(value, raw_asset) do
+    DSLCompiler.compile_error!(
+      raw_asset.file,
+      raw_asset.line,
+      "invalid @execution_pool value #{inspect(value)}; expected a non-nil atom"
+    )
+  end
+
   defp validate_relation_attr!([], _env), do: :ok
 
   defp validate_relation_attr!([relation], env) do
@@ -792,13 +837,16 @@ defmodule Favn.Asset do
   defp validate_no_stray_asset_attributes!(env, kind, name, arity) do
     depends = Module.get_attribute(env.module, :depends)
     freshness = Module.get_attribute(env.module, :freshness) || []
+    execution_pool = Module.get_attribute(env.module, :execution_pool)
     meta = Module.get_attribute(env.module, :meta)
     window = Module.get_attribute(env.module, :window)
     relation = Module.get_attribute(env.module, :relation)
 
-    if depends != [] or freshness != [] or not is_nil(meta) or window != [] or relation != [] do
+    if depends != [] or freshness != [] or not is_nil(execution_pool) or not is_nil(meta) or
+         window != [] or relation != [] do
       Module.delete_attribute(env.module, :depends)
       Module.delete_attribute(env.module, :freshness)
+      Module.delete_attribute(env.module, :execution_pool)
       Module.delete_attribute(env.module, :meta)
       Module.delete_attribute(env.module, :window)
       Module.delete_attribute(env.module, :relation)
@@ -806,7 +854,7 @@ defmodule Favn.Asset do
       DSLCompiler.compile_error!(
         env.file,
         env.line,
-        "@depends/@freshness/@meta/@window/@relation on #{kind} #{name}/#{arity} requires def asset(ctx) immediately below those attributes"
+        "@depends/@freshness/@execution_pool/@meta/@window/@relation on #{kind} #{name}/#{arity} requires def asset(ctx) immediately below those attributes"
       )
     else
       :ok

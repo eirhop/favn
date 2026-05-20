@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.RunServer do
   use GenServer
 
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
@@ -31,8 +32,10 @@ defmodule FavnOrchestrator.RunServer do
         terminal = Execution.execute_plan(running, version)
 
         if Persistence.externally_cancelled?(terminal.id) do
+          :ok = ExecutionAdmission.release_run(terminal.id)
           {:stop, :normal, %{state | run_state: terminal}}
         else
+          :ok = ExecutionAdmission.release_run(terminal.id)
           terminal_event_type = Persistence.terminal_event_type(terminal)
 
           finalized =

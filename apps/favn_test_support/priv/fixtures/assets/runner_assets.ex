@@ -294,6 +294,18 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_global_run_events(_filters, _opts), do: {:ok, []}
 
   @impl true
+  def try_acquire_execution_lease(lease, _opts), do: {:ok, lease}
+
+  @impl true
+  def release_execution_lease(_lease_id, _opts), do: :ok
+
+  @impl true
+  def expire_execution_leases(_now, _opts), do: {:ok, 0}
+
+  @impl true
+  def list_execution_leases(_opts), do: {:ok, []}
+
+  @impl true
   def persist_log_entries(entries, _opts), do: {:ok, entries}
 
   @impl true

@@ -43,6 +43,24 @@ defmodule Favn.Assets.PlannerWindowTest do
     assert Enum.all?(windows, &(&1.anchor_key == anchor.key))
   end
 
+  test "copies asset execution pool onto planned nodes" do
+    ref = {MyApp.ExternalApi, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: MyApp.ExternalApi,
+                 name: :asset,
+                 depends_on: [],
+                 execution_pool: :github_api
+               }
+             ])
+
+    assert {:ok, plan} = Planner.plan(ref, graph_index: index)
+    assert [%{execution_pool: :github_api}] = Map.values(plan.nodes)
+  end
+
   defp oslo_datetime!(naive) do
     DateTime.from_naive!(naive, "Europe/Oslo", Favn.Timezone.database!())
   end

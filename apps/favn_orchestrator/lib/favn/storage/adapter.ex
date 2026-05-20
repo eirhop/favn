@@ -27,6 +27,10 @@ defmodule Favn.Storage.Adapter do
   `persist_run_transition/3` applies the same run-event duplicate semantics
   atomically with the run snapshot write. It returns `:idempotent` only when the
   stored run snapshot and stored event are both identical to the incoming write.
+
+  Execution lease callbacks are required. They enforce orchestrator-owned asset
+  execution admission across run concurrency and shared execution pools before
+  runner work is submitted.
   """
 
   alias Favn.Manifest.Version
@@ -70,6 +74,13 @@ defmodule Favn.Storage.Adapter do
   @callback list_run_events(String.t(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}
   @callback list_global_run_events(filter_opts(), adapter_opts()) ::
               {:ok, [map()]} | {:error, error()}
+
+  @callback try_acquire_execution_lease(map(), adapter_opts()) ::
+              {:ok, map()} | {:error, {:execution_capacity_exceeded, map()} | error()}
+  @callback release_execution_lease(String.t(), adapter_opts()) :: :ok | {:error, error()}
+  @callback expire_execution_leases(DateTime.t(), adapter_opts()) ::
+              {:ok, non_neg_integer()} | {:error, error()}
+  @callback list_execution_leases(adapter_opts()) :: {:ok, [map()]} | {:error, error()}
 
   @callback persist_log_entries([Favn.Log.Entry.t()], adapter_opts()) ::
               {:ok, [Favn.Log.Entry.t()]} | {:error, error()}

@@ -31,6 +31,7 @@ defmodule Favn.Plan do
           upstream: [node_key()],
           downstream: [node_key()],
           stage: non_neg_integer(),
+          execution_pool: atom() | nil,
           action: action()
         }
 

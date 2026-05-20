@@ -59,6 +59,8 @@ defmodule Favn.Manifest.PipelineResolver do
            params: params,
            anchor_window: anchor_window,
            window: normalized_pipeline.window,
+           max_concurrency: normalized_pipeline.max_concurrency,
+           execution_pool: normalized_pipeline.execution_pool,
            schedule: schedule,
            source: normalized_pipeline.source,
            outputs: normalized_pipeline.outputs
@@ -79,11 +81,13 @@ defmodule Favn.Manifest.PipelineResolver do
   defp validate_opts(opts),
     do: Validate.strict_keyword_opts(opts, [:params, :trigger, :anchor_window])
 
-  defp validate_pipeline(%Pipeline{deps: deps, selectors: selectors, window: window}) do
+  defp validate_pipeline(%Pipeline{deps: deps, selectors: selectors, window: window} = pipeline) do
     with :ok <- validate_deps(deps),
          :ok <- validate_selectors(selectors),
-         :ok <- validate_window(window) do
-      validate_outputs(%Pipeline{deps: deps, selectors: selectors})
+         :ok <- validate_window(window),
+         :ok <- validate_max_concurrency(pipeline.max_concurrency),
+         :ok <- validate_execution_pool(pipeline.execution_pool) do
+      validate_outputs(pipeline)
     end
   end
 
@@ -111,6 +115,14 @@ defmodule Favn.Manifest.PipelineResolver do
   end
 
   defp validate_window(other), do: {:error, {:invalid_window_policy, other}}
+
+  defp validate_max_concurrency(nil), do: :ok
+  defp validate_max_concurrency(value) when is_integer(value) and value > 0, do: :ok
+  defp validate_max_concurrency(value), do: {:error, {:invalid_max_concurrency, value}}
+
+  defp validate_execution_pool(nil), do: :ok
+  defp validate_execution_pool(value) when is_atom(value), do: :ok
+  defp validate_execution_pool(value), do: {:error, {:invalid_execution_pool, value}}
 
   defp validate_params(params) when is_map(params), do: :ok
   defp validate_params(_other), do: {:error, :invalid_run_params}

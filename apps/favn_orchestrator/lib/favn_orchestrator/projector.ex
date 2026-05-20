@@ -50,7 +50,7 @@ defmodule FavnOrchestrator.Projector do
       pipeline_context: Map.get(run_state.metadata, :pipeline_context),
       submit_kind: project_submit_kind(run_state.submit_kind),
       submit_ref: Map.get(run_state.metadata, :pipeline_submit_ref, run_state.asset_ref),
-      max_concurrency: project_max_concurrency(run_state.plan),
+      max_concurrency: project_max_concurrency(run_state),
       timeout_ms: run_state.timeout_ms,
       retry_backoff_ms: run_state.retry_backoff_ms,
       status: run_state.status,
@@ -213,13 +213,19 @@ defmodule FavnOrchestrator.Projector do
   defp project_submit_kind(:rerun), do: :rerun
   defp project_submit_kind(_other), do: :asset
 
-  defp project_max_concurrency(%Favn.Plan{node_stages: node_stages}) when is_list(node_stages) do
+  defp project_max_concurrency(%RunState{metadata: %{pipeline_execution_policy: policy}})
+       when is_map(policy) do
+    Map.get(policy, :max_concurrency) || Map.get(policy, "max_concurrency")
+  end
+
+  defp project_max_concurrency(%RunState{plan: %Favn.Plan{node_stages: node_stages}})
+       when is_list(node_stages) do
     node_stages
     |> Enum.map(&length/1)
     |> Enum.max(fn -> 1 end)
   end
 
-  defp project_max_concurrency(_plan), do: 1
+  defp project_max_concurrency(_run_state), do: 1
 
   defp project_replay_mode(%RunState{submit_kind: :rerun, metadata: metadata})
        when is_map(metadata) do
@@ -370,6 +376,8 @@ defmodule FavnOrchestrator.Projector do
       trigger: Map.get(pipeline_context, :trigger),
       schedule: Map.get(pipeline_context, :schedule),
       window: Map.get(pipeline_context, :window),
+      max_concurrency: Map.get(pipeline_context, :max_concurrency),
+      execution_pool: Map.get(pipeline_context, :execution_pool),
       anchor_window: Map.get(pipeline_context, :anchor_window),
       backfill_range: Map.get(pipeline_context, :backfill_range),
       anchor_ranges: Map.get(pipeline_context, :anchor_ranges, []),
