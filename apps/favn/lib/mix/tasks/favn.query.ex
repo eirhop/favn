@@ -12,6 +12,10 @@ defmodule Mix.Tasks.Favn.Query do
   accidental mutations before connecting, but it is not a SQL sandbox or security
   boundary. Pass `--allow-write` for deliberate local mutation and `--connection
   NAME` when more than one SQL connection is configured.
+
+  The task starts the current Mix app and `:favn_sql_runtime` before connecting,
+  including the supervised SQL session pool. Users do not need to wrap it in
+  `mix do app.start + favn.query ...`.
   """
 
   alias Favn.Dev

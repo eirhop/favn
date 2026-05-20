@@ -7,6 +7,11 @@ defmodule Favn.Dev.DataInspection do
   simple relation strings into `Favn.RelationRef`, and execute inspection through
   `Favn.SQL.Client`.
 
+  `Mix.Tasks.Favn.Query` starts the Mix app and `:favn_sql_runtime` before
+  calling this module so direct CLI usage has a supervised `Favn.SQL.SessionPool`.
+  Direct calls to this module should run in an already-started application or
+  test supervisor context.
+
   Query validation is a best-effort local guardrail for avoiding accidental
   mutation. It is not a SQL sandbox or security boundary.
   """

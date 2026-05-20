@@ -117,7 +117,9 @@ defmodule Favn.AI do
   - To inspect local runs, run events, relation metadata, relation partitions, or
     ad hoc read-only SQL, read `Favn.Dev.Runs`, `Favn.Dev.DataInspection`,
     `Mix.Tasks.Favn.Runs`, `Mix.Tasks.Favn.Logs`, `Mix.Tasks.Favn.Inspect`, and
-    `Mix.Tasks.Favn.Query`.
+    `Mix.Tasks.Favn.Query`. `mix favn.query "select ..."` is the direct local
+    operator entrypoint: it starts the Mix app and `:favn_sql_runtime` before
+    connecting, so users do not need `mix do app.start + favn.query ...`.
   - To run local tooling, read `Favn.Dev`, then `apps/favn_local/README.md`.
     The public local command surface is `mix favn.install`, `mix favn.init`,
     `mix favn.doctor`, `mix favn.dev`, `mix favn.run`, `mix favn.backfill`,
@@ -224,6 +226,8 @@ defmodule Favn.AI do
     `mix favn.run`. Read
     `Favn.Dev.Runs` for `mix favn.runs` and `mix favn.logs RUN_ID`. Read
     `Favn.Dev.DataInspection` for `mix favn.inspect` and `mix favn.query`.
+    `Mix.Tasks.Favn.Query` owns CLI runtime bootstrap for direct ad hoc SQL: it
+    starts the app and SQL runtime before delegating into `Favn.Dev.query/2`.
 
   ## Related docs outside BEAM docs
 

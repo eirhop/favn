@@ -746,7 +746,9 @@ local stack is running. `mix favn.inspect relation RELATION`,
 provide local SQL inspection without ad-hoc `mix run -e` snippets. `mix
 favn.query` uses a best-effort read-only guardrail by default; it is not a SQL
 sandbox or security boundary. Pass `--connection NAME` when multiple SQL
-connections are configured.
+connections are configured. `mix favn.query` starts the current Mix app and the
+SQL runtime itself, including `Favn.SQL.SessionPool`; users should run it
+directly rather than wrapping it in `mix do app.start + ...`.
 
 DuckDB and DuckDB ADBC bootstrap now accept run-scoped catalog requirements.
 SQL asset execution and relation inspection pass the rendered relation catalogs
