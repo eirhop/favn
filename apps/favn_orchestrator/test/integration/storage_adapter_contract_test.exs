@@ -137,6 +137,22 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, [stored_event]} = Storage.list_run_events(run.id)
     assert stored_event.sequence == 1
 
+    now = DateTime.utc_now()
+    lease = execution_lease(run.id, "step-1", now, [%{kind: :run, key: run.id, limit: 1}])
+
+    assert {:ok, ^lease} = Storage.try_acquire_execution_lease(lease)
+
+    blocked = execution_lease(run.id, "step-2", now, [%{kind: :run, key: run.id, limit: 1}])
+
+    assert {:error, {:execution_capacity_exceeded, %{kind: :run, key: _, limit: 1}}} =
+             Storage.try_acquire_execution_lease(blocked)
+
+    assert :ok = Storage.release_execution_lease(lease.lease_id)
+    assert {:ok, ^blocked} = Storage.try_acquire_execution_lease(blocked)
+    assert {:ok, [^blocked]} = Storage.list_execution_leases()
+    assert {:ok, 1} = Storage.expire_execution_leases(DateTime.add(now, 6, :second))
+    assert {:ok, []} = Storage.list_execution_leases()
+
     running = RunState.transition(run, status: :running)
 
     transition_event = %{
@@ -207,6 +223,17 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
     version
+  end
+
+  defp execution_lease(run_id, asset_step_id, now, scopes) do
+    %{
+      lease_id: "lease_#{asset_step_id}",
+      run_id: run_id,
+      asset_step_id: asset_step_id,
+      scopes: scopes,
+      acquired_at: now,
+      expires_at: DateTime.add(now, 5, :second)
+    }
   end
 
   defp postgres_opts do

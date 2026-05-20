@@ -65,6 +65,31 @@ defmodule Favn.PublicPipelineParityTest do
            ]
   end
 
+  test "resolve_pipeline/2 exposes pipeline execution policy" do
+    module = Module.concat(__MODULE__, "ExecutionPolicyPipeline#{unique_suffix()}")
+
+    compile_loadable_module!(
+      module,
+      """
+      defmodule #{inspect(module)} do
+        use Favn.Pipeline
+
+        pipeline :execution_policy do
+          asset {#{inspect(SalesAssets)}, :sales_daily}
+          max_concurrency 2
+          execution_pool :github_api
+        end
+      end
+      """
+    )
+
+    assert {:ok, resolution} = Favn.resolve_pipeline(module)
+    assert resolution.pipeline.max_concurrency == 2
+    assert resolution.pipeline.execution_pool == :github_api
+    assert resolution.pipeline_ctx.max_concurrency == 2
+    assert resolution.pipeline_ctx.execution_pool == :github_api
+  end
+
   test "resolve_pipeline/2 resolves single-asset module shorthand selector" do
     asset_module = Module.concat(__MODULE__, "SingleAsset#{unique_suffix()}")
 
@@ -325,6 +350,34 @@ defmodule Favn.PublicPipelineParityTest do
         pipeline :invalid_outputs do
           asset {#{inspect(SalesAssets)}, :sales_daily}
           outputs [:warehouse_gold, "backup"]
+        end
+      end
+      """)
+    end
+
+    assert_raise ArgumentError,
+                 ~r/pipeline clause `max_concurrency` must be a positive integer/,
+                 fn ->
+                   Code.compile_string("""
+                   defmodule InvalidMaxConcurrencyPipeline do
+                     use Favn.Pipeline
+
+                     pipeline :invalid_max_concurrency do
+                       asset {#{inspect(SalesAssets)}, :sales_daily}
+                       max_concurrency 0
+                     end
+                   end
+                   """)
+                 end
+
+    assert_raise ArgumentError, ~r/pipeline clause `execution_pool` must be a non-nil atom/, fn ->
+      Code.compile_string("""
+      defmodule InvalidExecutionPoolPipeline do
+        use Favn.Pipeline
+
+        pipeline :invalid_execution_pool do
+          asset {#{inspect(SalesAssets)}, :sales_daily}
+          execution_pool "github_api"
         end
       end
       """)

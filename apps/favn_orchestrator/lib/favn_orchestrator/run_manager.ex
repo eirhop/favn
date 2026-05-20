@@ -358,6 +358,7 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- validate_dependencies(dependencies),
          {:ok, refresh_policy} <- refresh_policy_metadata(opts, dependencies),
          metadata <- Map.put(metadata, :refresh_policy, refresh_policy),
+         metadata <- maybe_put_pipeline_execution_policy(metadata),
          :ok <- validate_anchor_window(anchor_window),
          :ok <- validate_max_attempts(max_attempts),
          :ok <- validate_retry_backoff_ms(retry_backoff_ms),
@@ -428,7 +429,8 @@ defmodule FavnOrchestrator.RunManager do
           pipeline_target_refs: resolution.target_refs,
           pipeline_context: resolution.pipeline_ctx,
           pipeline_dependencies: resolution.dependencies,
-          pipeline_submit_ref: pipeline_module
+          pipeline_submit_ref: pipeline_module,
+          pipeline_execution_policy: pipeline_execution_policy(resolution.pipeline)
         })
 
       build_pipeline_submission(
@@ -454,6 +456,20 @@ defmodule FavnOrchestrator.RunManager do
         :ok -> {:ok, anchor_window}
         error -> error
       end)
+
+  defp pipeline_execution_policy(pipeline) do
+    %{
+      max_concurrency: Map.get(pipeline, :max_concurrency),
+      execution_pool: Map.get(pipeline, :execution_pool)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp maybe_put_pipeline_execution_policy(%{pipeline_execution_policy: _policy} = metadata),
+    do: metadata
+
+  defp maybe_put_pipeline_execution_policy(metadata), do: metadata
 
   defp normalize_pipeline_window_request(nil, window_request),
     do: WindowRequest.from_value(window_request)

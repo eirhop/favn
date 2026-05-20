@@ -34,6 +34,7 @@ defmodule Favn.Manifest.Asset do
           relation_inputs: [map() | struct()],
           runtime_config: Requirements.declarations(),
           sql_execution: SQLExecution.t() | nil,
+          execution_pool: atom() | nil,
           metadata: map()
         }
 
@@ -52,6 +53,7 @@ defmodule Favn.Manifest.Asset do
     relation_inputs: [],
     runtime_config: %{},
     sql_execution: nil,
+    execution_pool: nil,
     metadata: %{}
   ]
 
@@ -72,9 +74,13 @@ defmodule Favn.Manifest.Asset do
       relation_inputs: normalize_list(Map.get(asset, :relation_inputs, [])),
       runtime_config: normalize_runtime_config(Map.get(asset, :runtime_config, %{})),
       sql_execution: build_sql_execution(asset),
+      execution_pool: normalize_execution_pool(Map.get(asset, :execution_pool)),
       metadata: normalize_map(Map.get(asset, :meta, %{}))
     }
   end
+
+  defp normalize_execution_pool(value) when is_atom(value), do: value
+  defp normalize_execution_pool(_other), do: nil
 
   defp build_sql_execution(%{type: :sql, module: module}) when is_atom(module) do
     case Compiler.fetch_definition(module) do

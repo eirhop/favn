@@ -71,6 +71,13 @@ defmodule Favn.Storage.Adapter do
   @callback list_global_run_events(filter_opts(), adapter_opts()) ::
               {:ok, [map()]} | {:error, error()}
 
+  @callback try_acquire_execution_lease(map(), adapter_opts()) ::
+              {:ok, map()} | {:error, {:execution_capacity_exceeded, map()} | error()}
+  @callback release_execution_lease(String.t(), adapter_opts()) :: :ok | {:error, error()}
+  @callback expire_execution_leases(DateTime.t(), adapter_opts()) ::
+              {:ok, non_neg_integer()} | {:error, error()}
+  @callback list_execution_leases(adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+
   @callback persist_log_entries([Favn.Log.Entry.t()], adapter_opts()) ::
               {:ok, [Favn.Log.Entry.t()]} | {:error, error()}
   @callback list_logs(Favn.Log.Filter.t() | map() | keyword(), keyword(), adapter_opts()) ::
@@ -174,6 +181,10 @@ defmodule Favn.Storage.Adapter do
                       reserve_idempotency_record: 2,
                       complete_idempotency_record: 3,
                       get_idempotency_record: 2,
+                      try_acquire_execution_lease: 2,
+                      release_execution_lease: 2,
+                      expire_execution_leases: 2,
+                      list_execution_leases: 1,
                       put_asset_freshness_state: 2,
                       get_asset_freshness_state: 4,
                       list_asset_freshness_states: 2

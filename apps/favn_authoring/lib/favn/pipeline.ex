@@ -36,8 +36,36 @@ defmodule Favn.Pipeline do
   - `schedule {Module, :name}`: reference a named schedule
   - `schedule cron: ..., ...`: declare an inline schedule
   - `window atom`: attach a pipeline window policy
+  - `max_concurrency positive_integer`: limit asset steps admitted from one run
+  - `execution_pool atom`: default shared execution pool for selected assets
   - `source atom`: attach a named pipeline source
   - `outputs [atom, ...]`: attach named outputs
+
+  ## Execution Concurrency
+
+  `max_concurrency` is a per-run orchestrator admission limit. It limits how many
+  runnable asset steps from one pipeline run may execute at once without changing
+  dependency graph semantics.
+
+      pipeline :raw_api_ingestion do
+        assets MyApp.Lakehouse.Raw.ExternalApi
+        max_concurrency 1
+      end
+
+  `execution_pool` declares the default shared pool for assets in the pipeline.
+  Asset-level `@execution_pool` declarations override this default for that
+  asset. Pools are configured at runtime with `config :favn, execution_pools:
+  [...]`; the orchestrator owns admission globally, not the runner.
+
+      pipeline :raw_github_ingestion do
+        assets MyApp.Lakehouse.Raw.GitHub
+        execution_pool :github_api
+        max_concurrency 2
+      end
+
+  Execution concurrency applies before the asset body starts. SQL
+  `write_concurrency` remains separate and protects only SQL/backend writer
+  admission after asset execution has begun.
 
   ## Schedule Options
 
@@ -184,6 +212,8 @@ defmodule Favn.Pipeline do
       Module.register_attribute(__MODULE__, :favn_pipeline_meta, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_schedule, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_window, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_max_concurrency, persist: false)
+      Module.register_attribute(__MODULE__, :favn_pipeline_execution_pool, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_source, persist: false)
       Module.register_attribute(__MODULE__, :favn_pipeline_outputs, persist: false)
 
@@ -340,6 +370,57 @@ defmodule Favn.Pipeline do
       Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "window")
       Favn.Pipeline.ensure_singleton_clause!(__MODULE__, :favn_pipeline_window, "window")
       @favn_pipeline_window Favn.Pipeline.normalize_window_clause!(name, opts)
+    end
+  end
+
+  @doc """
+  Limits how many asset steps may execute concurrently within one pipeline run.
+
+  The limit is enforced by the orchestrator admission layer and does not alter
+  the dependency graph. Use this for source systems or transforms that should not
+  run all independent assets at once.
+
+  ## Example
+
+      max_concurrency 1
+  """
+  defmacro max_concurrency(value) do
+    quote bind_quoted: [value: value] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "max_concurrency")
+
+      Favn.Pipeline.ensure_singleton_clause!(
+        __MODULE__,
+        :favn_pipeline_max_concurrency,
+        "max_concurrency"
+      )
+
+      Favn.Pipeline.validate_max_concurrency!(value)
+      @favn_pipeline_max_concurrency value
+    end
+  end
+
+  @doc """
+  Declares the default shared execution pool for selected pipeline assets.
+
+  Asset-level `@execution_pool` declarations override this default. The pool must
+  be configured in the orchestrator runtime before admission can enforce it.
+
+  ## Example
+
+      execution_pool :github_api
+  """
+  defmacro execution_pool(name) do
+    quote bind_quoted: [name: name] do
+      Favn.Pipeline.ensure_in_pipeline_block!(__MODULE__, "execution_pool")
+
+      Favn.Pipeline.ensure_singleton_clause!(
+        __MODULE__,
+        :favn_pipeline_execution_pool,
+        "execution_pool"
+      )
+
+      Favn.Pipeline.validate_execution_pool!(name)
+      @favn_pipeline_execution_pool name
     end
   end
 
@@ -509,6 +590,8 @@ defmodule Favn.Pipeline do
         meta: Module.get_attribute(env.module, :favn_pipeline_meta) || %{},
         schedule: Module.get_attribute(env.module, :favn_pipeline_schedule),
         window: Module.get_attribute(env.module, :favn_pipeline_window),
+        max_concurrency: Module.get_attribute(env.module, :favn_pipeline_max_concurrency),
+        execution_pool: Module.get_attribute(env.module, :favn_pipeline_execution_pool),
         source: Module.get_attribute(env.module, :favn_pipeline_source),
         outputs: Module.get_attribute(env.module, :favn_pipeline_outputs) || []
       }
@@ -580,6 +663,26 @@ defmodule Favn.Pipeline do
       :ok
     else
       raise ArgumentError, "pipeline clause `outputs` must be a list of atoms"
+    end
+  end
+
+  @doc false
+  def validate_max_concurrency!(value) do
+    if is_integer(value) and value > 0 do
+      :ok
+    else
+      raise ArgumentError, "pipeline clause `max_concurrency` must be a positive integer"
+    end
+  end
+
+  @doc false
+  def validate_execution_pool!(value) do
+    cond do
+      is_atom(value) and not is_nil(value) ->
+        :ok
+
+      true ->
+        raise ArgumentError, "pipeline clause `execution_pool` must be a non-nil atom"
     end
   end
 

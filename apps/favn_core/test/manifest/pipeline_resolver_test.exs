@@ -20,6 +20,8 @@ defmodule Favn.Manifest.PipelineResolverTest do
     assert resolution.target_refs == [{MyApp.Gold, :asset}, {MyApp.Raw, :asset}]
     assert resolution.dependencies == :all
     assert resolution.pipeline_ctx.schedule.name == :daily
+    assert resolution.pipeline_ctx.max_concurrency == 2
+    assert resolution.pipeline_ctx.execution_pool == :warehouse_api
     assert resolution.pipeline_ctx.trigger == %{kind: :schedule}
     assert resolution.pipeline_ctx.params == %{full_refresh: false}
   end
@@ -76,6 +78,8 @@ defmodule Favn.Manifest.PipelineResolverTest do
           selectors: [{:tag, :daily}, {:category, :gold}],
           deps: :all,
           schedule: {:ref, {MyApp.Schedules, :daily}},
+          max_concurrency: 2,
+          execution_pool: :warehouse_api,
           metadata: %{owner: :ops}
         }
       ],

@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
     previous_modules = Application.get_env(:favn, :connection_modules)
     previous_connections = Application.get_env(:favn, :connections)
+    previous_execution_pools = Application.get_env(:favn, :execution_pools)
     previous_pid = Application.get_env(:favn_orchestrator, :preflight_test_pid)
 
     Application.put_env(:favn_orchestrator, :runner_client, FavnRunner)
@@ -37,6 +38,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
       restore_app_env(:favn, :connection_modules, previous_modules)
       restore_app_env(:favn, :connections, previous_connections)
+      restore_app_env(:favn, :execution_pools, previous_execution_pools)
       restore_app_env(:favn_orchestrator, :preflight_test_pid, previous_pid)
       System.delete_env(@missing_secret_env)
       System.delete_env(@missing_elixir_env)
@@ -73,6 +75,22 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     assert run.status == :ok
     assert run.submit_kind == :pipeline
     assert run.target_refs == [{__MODULE__.SleepAsset, :asset}]
+  end
+
+  test "pipeline max_concurrency admits same-stage assets one at a time" do
+    version = concurrency_manifest_version("mv_runner_concurrency")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, run_id} = FavnOrchestrator.submit_pipeline_run(__MODULE__.LimitedPipeline)
+    assert {:ok, run} = await_terminal_run(run_id)
+    assert run.status == :ok
+    assert :ok = await_execution_leases_empty()
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run_id)
+    [first, second] = Enum.sort_by(detail.steps, & &1.started_at, DateTime)
+
+    assert DateTime.compare(second.started_at, first.finished_at) in [:eq, :gt]
   end
 
   test "pipeline SQL preflight fails before an earlier Elixir dependency stage starts" do
@@ -156,6 +174,24 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
 
   defp await_terminal_run(_run_id, 0), do: {:error, :timeout_waiting_for_terminal_state}
 
+  defp await_execution_leases_empty(attempts \\ 20)
+
+  defp await_execution_leases_empty(attempts) when attempts > 0 do
+    case FavnOrchestrator.Storage.list_execution_leases() do
+      {:ok, []} ->
+        :ok
+
+      {:ok, _leases} ->
+        Process.sleep(20)
+        await_execution_leases_empty(attempts - 1)
+
+      error ->
+        error
+    end
+  end
+
+  defp await_execution_leases_empty(0), do: {:error, :execution_leases_not_released}
+
   defp manifest_version(manifest_version_id) do
     assets = [
       %Asset{
@@ -188,6 +224,48 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
       schedules: [],
       graph: %Graph{nodes: refs, edges: [], topo_order: refs},
       metadata: %{}
+    }
+
+    {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
+    version
+  end
+
+  defp concurrency_manifest_version(manifest_version_id) do
+    assets = [
+      %Asset{
+        ref: {__MODULE__.SleepAsset, :asset},
+        module: __MODULE__.SleepAsset,
+        name: :asset,
+        type: :elixir,
+        execution: %{entrypoint: :asset, arity: 1},
+        depends_on: []
+      },
+      %Asset{
+        ref: {__MODULE__.SecondSleepAsset, :asset},
+        module: __MODULE__.SecondSleepAsset,
+        name: :asset,
+        type: :elixir,
+        execution: %{entrypoint: :asset, arity: 1},
+        depends_on: []
+      }
+    ]
+
+    refs = Enum.map(assets, & &1.ref)
+
+    manifest = %Manifest{
+      schema_version: 2,
+      runner_contract_version: 2,
+      assets: assets,
+      pipelines: [
+        %Pipeline{
+          module: __MODULE__.LimitedPipeline,
+          name: :limited,
+          selectors: Enum.map(refs, &{:asset, &1}),
+          deps: :none,
+          max_concurrency: 1
+        }
+      ],
+      graph: %Graph{nodes: refs, edges: [], topo_order: refs}
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)
@@ -298,7 +376,19 @@ defmodule FavnOrchestrator.RunnerIntegrationTest.SleepAsset do
   end
 end
 
+defmodule FavnOrchestrator.RunnerIntegrationTest.SecondSleepAsset do
+  alias Favn.Run.Context
+
+  def asset(%Context{} = _ctx) do
+    Process.sleep(150)
+    :ok
+  end
+end
+
 defmodule FavnOrchestrator.RunnerIntegrationTest.DailyPipeline do
+end
+
+defmodule FavnOrchestrator.RunnerIntegrationTest.LimitedPipeline do
 end
 
 defmodule FavnOrchestrator.RunnerIntegrationTest.PreflightElixirAsset do

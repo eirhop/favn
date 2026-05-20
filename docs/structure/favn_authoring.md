@@ -15,5 +15,6 @@ Tests:
 - Schedule DSL fetch/load coverage lives here because `Favn.Triggers.Schedules`
   is an authoring macro layered on core schedule values.
 
-Use when changing asset, SQL asset, freshness DSL capture, pipeline, namespace,
-source, connection, or authoring documentation behavior.
+Use when changing asset, SQL asset, freshness DSL capture, execution pool DSL
+capture, pipeline concurrency clauses, namespace, source, connection, or
+authoring documentation behavior.

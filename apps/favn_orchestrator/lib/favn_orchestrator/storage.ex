@@ -126,6 +126,27 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.list_global_run_events(run_event_opts, opts) end)
   end
 
+  @spec try_acquire_execution_lease(map()) ::
+          {:ok, map()} | {:error, {:execution_capacity_exceeded, map()} | term()}
+  def try_acquire_execution_lease(lease) when is_map(lease) do
+    adapter_call(fn adapter, opts -> adapter.try_acquire_execution_lease(lease, opts) end)
+  end
+
+  @spec release_execution_lease(String.t()) :: :ok | {:error, term()}
+  def release_execution_lease(lease_id) when is_binary(lease_id) do
+    adapter_call(fn adapter, opts -> adapter.release_execution_lease(lease_id, opts) end)
+  end
+
+  @spec expire_execution_leases(DateTime.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def expire_execution_leases(%DateTime{} = now) do
+    adapter_call(fn adapter, opts -> adapter.expire_execution_leases(now, opts) end)
+  end
+
+  @spec list_execution_leases() :: {:ok, [map()]} | {:error, term()}
+  def list_execution_leases do
+    adapter_call(fn adapter, opts -> adapter.list_execution_leases(opts) end)
+  end
+
   @spec persist_log_entries([Favn.Log.Entry.t()]) ::
           {:ok, [Favn.Log.Entry.t()]} | {:error, term()}
   def persist_log_entries(entries) when is_list(entries) do

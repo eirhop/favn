@@ -470,6 +470,8 @@ defmodule FavnView.RunDetailLive do
       short_asset_name: LogsViewModel.display_name(attempt.asset_ref) || attempt.asset_ref,
       stage: attempt.stage,
       stage_label: stage_label(attempt.stage),
+      execution_pool: Map.get(attempt, :execution_pool),
+      queue_reason: Map.get(attempt, :queue_reason),
       attempt_number: attempt.attempt_number,
       started_at_raw: attempt.started_at,
       finished_at_raw: attempt.finished_at,

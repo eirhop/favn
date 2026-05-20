@@ -59,7 +59,16 @@ defmodule Favn.AI do
   - To define a pipeline, read `Favn.Pipeline`, then
     `Favn.Triggers.Schedules` if schedules are involved. If the pipeline is
     windowed, also read `Favn.Window`, `Favn.Window.Policy`, and
-    `Favn.Window.Request`.
+    `Favn.Window.Request`. If the pipeline or its assets touch rate-limited
+    source systems or shared infrastructure, read the `max_concurrency` and
+    `execution_pool` sections in `Favn.Pipeline` and `Favn.Asset`.
+  - To limit asset execution before asset code starts, use orchestrator-owned
+    execution concurrency controls: pipeline `max_concurrency`, pipeline
+    `execution_pool`, asset `@execution_pool`, and `config :favn,
+    execution_pools: [...]`. Do not model artificial dependencies only to
+    serialize independent assets, and do not confuse these controls with SQL
+    `write_concurrency`, which protects writer/backend admission after asset
+    execution has already started.
   - To work with windows or one-off run input, read `Favn.Window`, then
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
@@ -134,9 +143,14 @@ defmodule Favn.AI do
   - `Favn.ModuleDiscovery`: when app-scoped `:all` discovery maps compiled OTP
     application modules to authored assets, pipelines, schedules, or connections
   - `Favn.Pipeline.Resolver`: when you need selector normalization, schedule
-    resolution, or the exact `%Favn.Pipeline.Resolution{}` shape
+    resolution, execution-concurrency policy propagation, or the exact
+    `%Favn.Pipeline.Resolution{}` shape
   - `Favn.Assets.Planner`: when you need topological stages, dependency
-    expansion, anchor windows, or backfill planning
+    expansion, anchor windows, effective per-node execution pools, or backfill
+    planning
+  - `FavnOrchestrator.ExecutionAdmission`: when working inside the orchestrator
+    on persisted execution leases, run-level concurrency limits, global/pool
+    admission, queue reasons, lease release, and recovery semantics
   - `Favn.Freshness.Policy`: when you need accepted `@freshness` values such as
     `:daily`, `{:daily, timezone: "Europe/Oslo"}`, `[max_age: {:hours, 6}]`,
     `[window_success: true]`, and `:always`
@@ -192,6 +206,10 @@ defmodule Favn.AI do
     docs whenever a task mentions `@freshness`, skipping fresh work, forcing
     refresh, stale downstream assets, or backfill children running only missing
     windows.
+  - Read `Favn.Pipeline`, `Favn.Asset`, and orchestrator admission docs whenever
+    a task mentions `max_concurrency`, `execution_pool`, rate-limited APIs,
+    runner-local versus orchestrator-owned limits, queue reasons, execution
+    leases, or why many independent assets should not start at once.
   - Read `Favn.Backfill.RangeRequest`, `Favn.Backfill.RangeResolver`, and
     `FavnOrchestrator.RefreshPolicy` when a task mentions operational backfill
     ranges, relative `last` ranges, baseline cutover, force-refresh repair,

@@ -2690,6 +2690,7 @@ defmodule FavnOrchestrator do
       type: atom_name(asset.type),
       relation: relation_dto(asset.relation),
       metadata: normalize_map(asset.metadata),
+      execution_pool: atom_name(asset.execution_pool),
       runtime_config: normalize_data(asset.runtime_config),
       depends_on: Enum.map(List.wrap(asset.depends_on), &ref_to_string/1),
       materialization: normalize_data(asset.materialization),
@@ -2711,6 +2712,8 @@ defmodule FavnOrchestrator do
       target_id: target_id_for_pipeline(target_module),
       label: inspect(target_module),
       window: window_policy_dto(pipeline.window),
+      max_concurrency: pipeline.max_concurrency,
+      execution_pool: atom_name(pipeline.execution_pool),
       can_run_without_window?: pipeline_can_run_without_window?(pipeline.window),
       can_backfill?: pipeline_can_backfill?(pipeline.window)
     }

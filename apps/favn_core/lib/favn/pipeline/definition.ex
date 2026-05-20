@@ -28,6 +28,8 @@ defmodule Favn.Pipeline.Definition do
           meta: map(),
           schedule: schedule_clause(),
           window: Favn.Window.Policy.t() | nil,
+          max_concurrency: pos_integer() | nil,
+          execution_pool: atom() | nil,
           source: atom() | nil,
           outputs: [atom()]
         }
@@ -41,6 +43,8 @@ defmodule Favn.Pipeline.Definition do
             meta: %{},
             schedule: nil,
             window: nil,
+            max_concurrency: nil,
+            execution_pool: nil,
             source: nil,
             outputs: []
 end

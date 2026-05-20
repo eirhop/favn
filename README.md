@@ -63,7 +63,7 @@ tooling, and single-node runtime support boundaries for a stable `v1`.
 
 ## What Favn Gives You
 
-- Elixir DSLs for single assets, multi-assets, SQL assets, namespaces, schedules, asset freshness policies, pipeline window policies, and pipelines
+- Elixir DSLs for single assets, multi-assets, SQL assets, namespaces, schedules, asset freshness policies, pipeline window policies, execution concurrency policy, and pipelines
 - explicit dependency modeling between assets
 - compile-time manifest generation for authored business code
 - deterministic planning from selected targets and dependency rules
@@ -85,6 +85,12 @@ Assets are the units of business work in Favn. An asset can be written as normal
 Pipelines select one or more target assets and describe how they should run, for example whether dependencies should be included and whether the pipeline should have a schedule.
 Cron schedules support both standard 5-field expressions and 6-field expressions with a leading seconds field, so production schedules can be defined down to seconds when needed.
 When `missed: :all` is used, scheduler catch-up is capped per schedule entry per tick to avoid unbounded backlog submission for high-frequency schedules. The orchestrator default cap is 1,000 occurrences per schedule entry per tick and can be adjusted with `config :favn_orchestrator, :scheduler, max_missed_all_occurrences: ...`.
+
+Pipeline and asset execution concurrency is an orchestrator concern. Pipeline
+`max_concurrency` limits how many asset steps from one run may execute at once,
+while named `execution_pool` declarations protect shared resources across runs.
+SQL/database `write_concurrency` remains separate and only protects writer or
+backend admission after asset execution has started.
 
 ### Manifests
 
@@ -308,6 +314,7 @@ defmodule MyDataPlatform.Pipelines.DailySales do
     deps :all
     schedule cron: "0 2 * * *", timezone: "Etc/UTC"
     window :daily
+    max_concurrency 2
   end
 end
 ```
@@ -330,6 +337,45 @@ or choose force refresh in the web flow to intentionally recompute windows whose
 external side effects need repair. The web `/runs` surface groups a parent
 backfill run with its child window runs so operators see one coherent backfill,
 not many unrelated runs.
+
+Use execution concurrency controls when source systems or shared infrastructure
+must be protected before asset code starts:
+
+```elixir
+config :favn,
+  execution_pools: [
+    global: [max_concurrency: 8],
+    github_api: [max_concurrency: 2],
+    shopify_api: [max_concurrency: 1]
+  ]
+```
+
+```elixir
+defmodule MyDataPlatform.Lakehouse.Raw.GitHub.PullRequests do
+  use Favn.Asset
+
+  @execution_pool :github_api
+  def asset(ctx) do
+    MyDataPlatform.GitHub.fetch_pull_requests(ctx.config.github)
+  end
+end
+
+defmodule MyDataPlatform.Pipelines.RawGitHub do
+  use Favn.Pipeline
+
+  pipeline :raw_github do
+    assets MyDataPlatform.Lakehouse.Raw.GitHub
+    execution_pool :github_api
+    max_concurrency 2
+  end
+end
+```
+
+`max_concurrency` is per pipeline run. `execution_pool` is global to the
+orchestrator; every admitted asset step using the same pool consumes a shared
+slot until the step finishes, fails, is cancelled, or times out. Asset-level
+`@execution_pool` overrides the pipeline default for that asset. The reserved
+`:global` pool, when configured, applies to every admitted asset step.
 
 ### 5. Configure authored modules
 

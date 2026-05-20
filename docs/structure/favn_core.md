@@ -1,7 +1,8 @@
 # favn_core
 
-Purpose: shared compiler, manifest, planning, graph, freshness, window, runtime
-config, backfill range, and cross-runtime contract types.
+Purpose: shared compiler, manifest, planning, graph, execution policy,
+freshness, window, runtime config, backfill range, and cross-runtime contract
+types.
 
 Code:
 - `apps/favn_core/lib/favn/`
@@ -13,5 +14,6 @@ Tests:
 - `apps/favn_core/test/sql/` covers SQL template parsing behavior.
 
 Use when changing manifest generation/serialization, graph planning, dependency
-inference, freshness keys/policies, windows, schedules, runtime config refs,
-backfill range resolution, or runner/orchestrator contract structs.
+inference, effective execution-pool propagation, freshness keys/policies,
+windows, schedules, runtime config refs, backfill range resolution, or
+runner/orchestrator contract structs.

@@ -3,6 +3,7 @@ defmodule FavnStoragePostgres.Migrations do
 
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Migrations.AddAssetFreshnessState
+  alias FavnStoragePostgres.Migrations.AddExecutionLeases
   alias FavnStoragePostgres.Migrations.AddLogEntries
   alias FavnStoragePostgres.Migrations.AddBackfillState
   alias FavnStoragePostgres.Migrations.AddRunEventGlobalSequence
@@ -15,7 +16,8 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_503_120_000, AddRunEventGlobalSequence},
     {20_260_505_100_000, RebuildBackfillReadModelsForDtos},
     {20_260_509_100_000, AddAssetFreshnessState},
-    {20_260_510_100_000, AddLogEntries}
+    {20_260_510_100_000, AddLogEntries},
+    {20_260_520_100_000, AddExecutionLeases}
   ]
   @required_tables [
     "public.favn_manifest_versions",
@@ -30,7 +32,9 @@ defmodule FavnStoragePostgres.Migrations do
     "public.favn_run_write_seq",
     "public.favn_run_event_global_seq",
     "public.favn_log_entries",
-    "public.favn_log_global_seq"
+    "public.favn_log_global_seq",
+    "public.favn_execution_leases",
+    "public.favn_execution_lease_scopes"
   ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 

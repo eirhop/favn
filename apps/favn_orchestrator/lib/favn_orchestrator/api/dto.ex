@@ -89,6 +89,7 @@ defmodule FavnOrchestrator.API.DTO do
       materialization: normalize(field(target, :materialization)),
       window: normalize(field(target, :window))
     }
+    |> maybe_put(:execution_pool, atom_name(field(target, :execution_pool)))
   end
 
   @spec manifest_pipeline_target(map()) :: map()
@@ -100,6 +101,8 @@ defmodule FavnOrchestrator.API.DTO do
       label: field(target, :label) || target_id,
       window: normalize(field(target, :window))
     }
+    |> maybe_put(:max_concurrency, field(target, :max_concurrency))
+    |> maybe_put(:execution_pool, atom_name(field(target, :execution_pool)))
   end
 
   @spec run_summary(map()) :: map()
@@ -112,6 +115,7 @@ defmodule FavnOrchestrator.API.DTO do
       event_seq: run.event_seq,
       started_at: datetime(run.started_at),
       finished_at: datetime(run.finished_at),
+      max_concurrency: Map.get(run, :max_concurrency),
       target_refs: Enum.map(List.wrap(run.target_refs), &ref_to_string/1),
       asset_results: asset_results(run.asset_results),
       error: error_payload(run.error)
@@ -130,6 +134,7 @@ defmodule FavnOrchestrator.API.DTO do
       started_at: datetime(run.started_at),
       finished_at: datetime(run.finished_at),
       timeout_ms: run.timeout_ms,
+      max_concurrency: Map.get(run, :max_concurrency),
       retry_backoff_ms: run.retry_backoff_ms,
       rerun_of_run_id: run.rerun_of_run_id,
       parent_run_id: run.parent_run_id,
@@ -422,6 +427,9 @@ defmodule FavnOrchestrator.API.DTO do
 
   defp error_payload(nil), do: nil
   defp error_payload(value), do: JsonSafe.error(value)
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp field(map, key, default \\ nil) when is_map(map) and is_atom(key) do
     Map.get(map, key, Map.get(map, Atom.to_string(key), default))
