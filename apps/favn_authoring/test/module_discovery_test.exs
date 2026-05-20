@@ -84,6 +84,38 @@ defmodule FavnAuthoring.ModuleDiscoveryTest do
              ModuleDiscovery.discover(:assets, apps: [app])
   end
 
+  test "discovers Mix app modules from BEAM artifacts when .app metadata is missing" do
+    unique = System.unique_integer([:positive])
+    app = String.to_atom("favn_discovery_missing_app_#{unique}")
+    module = Module.concat([FavnDiscoveryMissingApp, "Connection#{unique}"])
+    ebin_path = Path.join([Mix.Project.build_path(), "lib", Atom.to_string(app), "ebin"])
+
+    File.rm_rf!(ebin_path)
+    File.mkdir_p!(ebin_path)
+
+    on_exit(fn -> File.rm_rf!(ebin_path) end)
+
+    [{^module, beam}] =
+      Code.compile_string("""
+      defmodule #{inspect(module)} do
+        @behaviour Favn.Connection
+
+        @impl true
+        def definition do
+          %Favn.Connection.Definition{
+            name: :fallback_warehouse,
+            adapter: __MODULE__.Adapter,
+            config_schema: []
+          }
+        end
+      end
+      """)
+
+    File.write!(Path.join(ebin_path, "#{module}.beam"), beam)
+
+    assert {:ok, [^module]} = ModuleDiscovery.discover(:connections, apps: [app])
+  end
+
   test "explicit manifest module inputs override discovery" do
     app = load_test_app!([DiscoveryAsset, DiscoveryPipeline])
     Application.put_env(:favn, :discovery, apps: [app], assets: :all, pipelines: :all)
