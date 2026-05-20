@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Favn.Query do
   @moduledoc """
   Runs a local Favn SQL query.
 
-      mix favn.query "select * from raw.mercatus.inventory_by_day"
+      mix favn.query "select * from raw.sales.orders"
 
   Queries use a best-effort read-only guardrail by default. This prevents common
   accidental mutations before connecting, but it is not a SQL sandbox or security
@@ -69,15 +69,28 @@ defmodule Mix.Tasks.Favn.Query do
   end
 
   defp run_query(sql, opts) do
-    case Dev.query(sql, opts) do
-      {:ok, %{result: %Favn.SQL.Result{} = result, displayed_rows: rows, display_limit: limit}} ->
-        print_result(result, rows, limit)
+    with :ok <- ensure_runtime_started() do
+      case Dev.query(sql, opts) do
+        {:ok, %{result: %Favn.SQL.Result{} = result, displayed_rows: rows, display_limit: limit}} ->
+          print_result(result, rows, limit)
 
-      {:ok, result} ->
-        IO.puts(inspect(result))
+        {:ok, result} ->
+          IO.puts(inspect(result))
 
-      {:error, reason} ->
-        Mix.raise(format_error(reason))
+        {:error, reason} ->
+          Mix.raise(format_error(reason))
+      end
+    else
+      {:error, reason} -> Mix.raise(format_error(reason))
+    end
+  end
+
+  defp ensure_runtime_started do
+    Mix.Task.run("app.start")
+
+    case Application.ensure_all_started(:favn_sql_runtime) do
+      {:ok, _apps} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 

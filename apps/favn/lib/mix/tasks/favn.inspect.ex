@@ -6,8 +6,8 @@ defmodule Mix.Tasks.Favn.Inspect do
   @moduledoc """
   Inspects local Favn SQL relations.
 
-      mix favn.inspect relation raw.mercatus.inventory_by_day
-      mix favn.inspect partitions raw.mercatus.inventory_by_day
+      mix favn.inspect relation raw.sales.orders
+      mix favn.inspect partitions raw.sales.orders
 
   Pass `--connection NAME` when more than one Favn SQL connection is configured.
   """

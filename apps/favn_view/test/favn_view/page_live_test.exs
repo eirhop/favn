@@ -1322,7 +1322,7 @@ defmodule FavnView.PageLiveTest do
   test "backfill parent surfaces failed child window context", %{conn: conn} do
     parent_id = "run_backfill_parent_failed_child"
     child_id = "run_backfill_child_failed_asset"
-    failed_ref = {__MODULE__.Assets, :inventory_by_day}
+    failed_ref = {__MODULE__.Assets, :orders_by_day}
     started_at = ~U[2026-05-01 00:00:00Z]
     finished_at = DateTime.add(started_at, 2, :second)
     window_key = "day:2026-05-01"
@@ -1373,7 +1373,7 @@ defmodule FavnView.PageLiveTest do
               finished_at: finished_at,
               duration_ms: 2_000,
               error: %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"},
-              asset_step_id: "failed-inventory-step"
+              asset_step_id: "failed-orders-step"
             })
           ]
         }
@@ -1408,7 +1408,7 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="run-failure-summary"]), "1 backfill window failed")
     assert has_element?(view, ~s([data-testid="backfill-failure-list"]), "Failed backfill window")
     assert has_element?(view, ~s([data-testid="backfill-failure-list"]), "Showing 1 of 1")
-    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "inventory_by_day")
+    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "orders_by_day")
 
     assert has_element?(
              view,
@@ -1426,10 +1426,10 @@ defmodule FavnView.PageLiveTest do
   test "backfill parent surfaces child admission failure without asset results", %{conn: conn} do
     parent_id = "run_backfill_parent_unknown_pool"
     child_id = "run_backfill_child_unknown_pool"
-    failed_ref = {__MODULE__.Assets, :inventory_by_day}
+    failed_ref = {__MODULE__.Assets, :orders_by_day}
     started_at = ~U[2026-05-01 00:00:00Z]
     window_key = "day:2026-05-01"
-    error = {:unknown_execution_pool, :mercatus_api}
+    error = {:unknown_execution_pool, :partner_api}
 
     parent =
       RunState.new(
@@ -1493,19 +1493,19 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="run-failure-summary"]), "1 backfill window failed")
     assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "unknown_execution_pool")
-    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "mercatus_api")
+    assert has_element?(view, ~s([data-testid="backfill-failure-row"]), "partner_api")
 
     view
     |> element(~s([data-testid="view-mode-rail"] button[aria-label="Failures"]))
     |> render_click()
 
     assert has_element?(view, ~s([data-testid="window-failure-row"]), "unknown_execution_pool")
-    assert has_element?(view, ~s([data-testid="window-failure-row"]), "mercatus_api")
+    assert has_element?(view, ~s([data-testid="window-failure-row"]), "partner_api")
   end
 
   test "run detail failures view counts all failed windows when details are capped", %{conn: conn} do
     parent_id = "run_backfill_parent_many_window_failures"
-    failed_ref = {__MODULE__.Assets, :inventory_by_day}
+    failed_ref = {__MODULE__.Assets, :orders_by_day}
     started_at = ~U[2026-05-01 00:00:00Z]
 
     parent =
@@ -1538,7 +1538,7 @@ defmodule FavnView.PageLiveTest do
           window_key: "day:2026-05-#{String.pad_leading(Integer.to_string(day), 2, "0")}",
           status: :error,
           attempt_count: 1,
-          last_error: {:unknown_execution_pool, :mercatus_api},
+          last_error: {:unknown_execution_pool, :partner_api},
           started_at: window_start,
           finished_at: window_start,
           updated_at: window_start

@@ -548,8 +548,8 @@ mix favn.backfill repair --pipeline-module MyApp.Pipelines.DailySales --apply
 mix favn.runs list --status error --limit 20
 mix favn.runs show RUN_ID
 mix favn.logs RUN_ID
-mix favn.inspect relation raw.mercatus.reporting_baseline_inventory_by_day
-mix favn.query "select count(*) from raw.mercatus.reporting_baseline_inventory_by_day"
+mix favn.inspect relation raw.sales.orders
+mix favn.query "select count(*) from raw.sales.orders"
 mix favn.logs
 mix favn.status
 mix favn.reload

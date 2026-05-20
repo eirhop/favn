@@ -638,7 +638,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
       run("backfill_parent_failure", submit_kind: :backfill_pipeline)
       |> RunState.transition(status: :error, error: :failed, result: %{status: :error})
 
-    failed_ref = {MyApp.Assets.Inventory, :inventory_by_day}
+    failed_ref = {MyApp.Assets.Orders, :orders_by_day}
     started_at = ~U[2026-05-01 00:00:00Z]
     finished_at = DateTime.add(started_at, 2, :second)
     anchor = anchor(started_at)
@@ -672,7 +672,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
               finished_at: finished_at,
               duration_ms: 2_000,
               error: %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"},
-              asset_step_id: "failed-inventory-step"
+              asset_step_id: "failed-orders-step"
             })
           ]
         }
@@ -699,7 +699,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
 
     assert [failure] = detail.backfill_failures
     assert failure.child_run_id == child.id
-    assert failure.asset_ref == "MyApp.Assets.Inventory.inventory_by_day"
+    assert failure.asset_ref == "MyApp.Assets.Orders.orders_by_day"
     assert failure.window.key == window_key(anchor)
     assert failure.duration_ms == 2_000
     assert failure.error == %{message: "DuckDB ADBC connection bootstrap failed at attach_mart"}

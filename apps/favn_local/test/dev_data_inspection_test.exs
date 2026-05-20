@@ -22,9 +22,9 @@ defmodule Favn.Dev.DataInspectionTest do
             %RelationRef{
               connection: :warehouse,
               catalog: "raw",
-              schema: "mercatus",
-              name: "reporting_baseline_inventory_by_day"
-            }} = DataInspection.parse_relation("raw.mercatus.reporting_baseline_inventory_by_day")
+              schema: "sales",
+              name: "orders_by_day"
+            }} = DataInspection.parse_relation("raw.sales.orders_by_day")
   end
 
   test "uses explicit connection when multiple connections are configured" do

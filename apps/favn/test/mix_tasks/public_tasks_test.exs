@@ -3,9 +3,13 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
   import ExUnit.CaptureIO
 
+  alias Favn.Connection.Definition
+  alias Favn.Connection.Resolved
   alias Favn.Dev.Bootstrap.Single, as: BootstrapSingle
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
+  alias Favn.SQL.Capabilities
+  alias Favn.SQL.Result
   alias Mix.Tasks.Favn.Backfill, as: BackfillTask
   alias Mix.Tasks.Favn.Bootstrap.Single, as: BootstrapSingleTask
   alias Mix.Tasks.Favn.Build.Orchestrator, as: BuildOrchestratorTask
@@ -26,6 +30,60 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Mix.Tasks.Favn.Runs, as: RunsTask
   alias Mix.Tasks.Favn.Status, as: StatusTask
   alias Mix.Tasks.Favn.Stop, as: StopTask
+
+  defmodule QueryConnection do
+    @behaviour Favn.Connection
+
+    @impl true
+    def definition do
+      %Definition{
+        name: :query_test,
+        adapter: Mix.Tasks.Favn.PublicTasksTest.QueryAdapter,
+        config_schema: [%{key: :database, type: :string, required: true}]
+      }
+    end
+  end
+
+  defmodule QueryAdapter do
+    @behaviour Favn.SQL.Adapter
+
+    @impl true
+    def connect(%Resolved{}, _opts), do: {:ok, :query_conn}
+
+    @impl true
+    def disconnect(:query_conn, _opts), do: :ok
+
+    @impl true
+    def poolable?(%Resolved{}, _opts), do: true
+
+    @impl true
+    def validate_session(:query_conn, _opts), do: :ok
+
+    @impl true
+    def reset_session(:query_conn, %Resolved{}, _opts), do: :ok
+
+    @impl true
+    def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+    @impl true
+    def execute(:query_conn, _statement, _opts), do: {:ok, %Result{kind: :execute}}
+
+    @impl true
+    def query(:query_conn, statement, _opts) do
+      {:ok,
+       %Result{
+         kind: :query,
+         columns: ["value"],
+         rows: [%{"value" => IO.iodata_to_binary(statement)}]
+       }}
+    end
+
+    @impl true
+    def introspection_query(_kind, _payload, _opts), do: {:ok, "select 1"}
+
+    @impl true
+    def materialization_statements(%Favn.SQL.WritePlan{}, %Capabilities{}, _opts), do: {:ok, []}
+  end
 
   setup do
     root_dir =
@@ -879,6 +937,31 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert invalid_message == "invalid option for mix favn.query"
   end
 
+  test "mix favn.query starts the SQL runtime before connecting" do
+    previous_modules = Application.get_env(:favn, :connection_modules)
+    previous_connections = Application.get_env(:favn, :connections)
+
+    Application.put_env(:favn, :connection_modules, [QueryConnection])
+    Application.put_env(:favn, :connections, query_test: [database: ":memory:"])
+
+    on_exit(fn ->
+      restore_env(:connection_modules, previous_modules)
+      restore_env(:connections, previous_connections)
+    end)
+
+    _ = Application.stop(:favn_sql_runtime)
+    refute Process.whereis(Favn.SQL.SessionPool)
+
+    output =
+      capture_io(fn ->
+        QueryTask.run(["select 1", "--connection", "query_test"])
+      end)
+
+    assert Process.whereis(Favn.SQL.SessionPool)
+    assert output =~ "value"
+    assert output =~ "select 1"
+  end
+
   test "mix favn.reset removes .favn when stack is not running", %{root_dir: root_dir} do
     assert :ok = State.ensure_layout(root_dir: root_dir)
     assert File.dir?(Path.join(root_dir, ".favn"))
@@ -1222,6 +1305,9 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     :ok = :gen_tcp.close(socket)
     port
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:favn, key)
+  defp restore_env(key, value), do: Application.put_env(:favn, key, value)
 
   defp clear_bootstrap_env do
     bootstrap_env_names()

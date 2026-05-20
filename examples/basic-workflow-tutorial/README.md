@@ -392,7 +392,7 @@ Local tooling runtime state (when `mix favn.*` starts normally):
   - use hyphenated flags (`--skip-web-install`, not `--skip_web_install`)
 - `runner_node_unreachable` with host errors
   - known issue: distributed node host validation can reject current host value
-  - tracked in `https://github.com/eirhop/favn/issues/107`
+  - tracked in issue #107
 - partial stack state message from `mix favn.dev`
   - run `mix favn.stop` and retry
 
