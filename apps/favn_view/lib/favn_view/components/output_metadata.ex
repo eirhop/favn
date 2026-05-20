@@ -37,7 +37,7 @@ defmodule FavnView.Components.OutputMetadata do
     "cancelled",
     "blocked"
   ]
-  @active_statuses [:pending, :running, "pending", "running"]
+  @active_statuses [:pending, :running, :retrying, "pending", "running", "retrying"]
 
   attr :id, :string, default: "output-metadata"
   attr :metadata, :any, default: nil
