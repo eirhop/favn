@@ -32,7 +32,7 @@ defmodule FavnView.PageLiveTest do
     version = manifest_version()
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
-    assert :ok = Storage.put_run(run_state(:customer_orders_daily, :ok, -600))
+    assert :ok = Storage.put_run(run_state(:customer_orders_daily, :ok, -650))
     assert :ok = Storage.put_run(run_state(:raw_payments, :running, -30))
     assert :ok = Storage.put_run(pipeline_run_state())
 
