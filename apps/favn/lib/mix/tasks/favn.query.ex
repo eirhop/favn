@@ -13,8 +13,9 @@ defmodule Mix.Tasks.Favn.Query do
   boundary. Pass `--allow-write` for deliberate local mutation and `--connection
   NAME` when more than one SQL connection is configured.
 
-  The task starts the current Mix app and `:favn_sql_runtime` before connecting,
-  including the supervised SQL session pool. Users do not need to wrap it in
+  The task starts the current Mix app before connecting, and the local data
+  inspection boundary starts `:favn_sql_runtime`, including the supervised SQL
+  session pool. Users do not need to wrap it in
   `mix do app.start + favn.query ...`.
   """
 
@@ -73,7 +74,7 @@ defmodule Mix.Tasks.Favn.Query do
   end
 
   defp run_query(sql, opts) do
-    with :ok <- ensure_runtime_started() do
+    with :ok <- ensure_app_started() do
       case Dev.query(sql, opts) do
         {:ok, %{result: %Favn.SQL.Result{} = result, displayed_rows: rows, display_limit: limit}} ->
           print_result(result, rows, limit)
@@ -89,13 +90,9 @@ defmodule Mix.Tasks.Favn.Query do
     end
   end
 
-  defp ensure_runtime_started do
+  defp ensure_app_started do
     Mix.Task.run("app.start")
-
-    case Application.ensure_all_started(:favn_sql_runtime) do
-      {:ok, _apps} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    :ok
   end
 
   defp format_cell(nil), do: "NULL"

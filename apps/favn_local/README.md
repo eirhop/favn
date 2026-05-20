@@ -90,9 +90,10 @@ mix favn.reload
 mix favn.stop
 ```
 
-`mix favn.query "select ..."` is safe to run directly from a consumer project.
-The task starts the current Mix app and `:favn_sql_runtime` before connecting, so
-the SQL session pool is supervised without requiring `mix do app.start + ...`.
+`mix favn.inspect ...` and `mix favn.query "select ..."` are safe to run
+directly from a consumer project. The tasks start the current Mix app and
+`:favn_sql_runtime` before connecting, so the SQL session pool is supervised
+without requiring `mix do app.start + ...`.
 
 ### Clean local state
 
@@ -285,8 +286,8 @@ is out of sync.
   SQL connections are configured
 - `mix favn.query "select ..."` uses a best-effort read-only guardrail by
   default; this is not a SQL sandbox or security boundary. Pass `--allow-write`
-  only for deliberate local mutation. The task starts the Mix app and SQL runtime
-  before connecting, including `Favn.SQL.SessionPool`
+  only for deliberate local mutation. The SQL inspection commands start the Mix
+  app and SQL runtime before connecting, including `Favn.SQL.SessionPool`
 - `mix favn.reset` removes `.favn/` after verifying no managed services are
   still running
 

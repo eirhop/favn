@@ -9,6 +9,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   alias Favn.Dev.Process, as: DevProcess
   alias Favn.Dev.State
   alias Favn.SQL.Capabilities
+  alias Favn.SQL.Column
+  alias Favn.SQL.Relation
   alias Favn.SQL.Result
   alias Mix.Tasks.Favn.Backfill, as: BackfillTask
   alias Mix.Tasks.Favn.Bootstrap.Single, as: BootstrapSingleTask
@@ -83,6 +85,30 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
 
     @impl true
     def materialization_statements(%Favn.SQL.WritePlan{}, %Capabilities{}, _opts), do: {:ok, []}
+
+    @impl true
+    def relation(:query_conn, relation_ref, _opts) do
+      {:ok,
+       %Relation{name: relation_ref.name, schema: relation_ref.schema || "main", type: :table}}
+    end
+
+    @impl true
+    def columns(:query_conn, _relation_ref, _opts) do
+      {:ok, [%Column{name: "id", data_type: "integer"}]}
+    end
+
+    @impl true
+    def row_count(:query_conn, _relation_ref, _opts), do: {:ok, 1}
+
+    @impl true
+    def sample(:query_conn, _relation_ref, _opts) do
+      {:ok, %Result{kind: :query, columns: ["id"], rows: [%{"id" => 1}]}}
+    end
+
+    @impl true
+    def table_metadata(:query_conn, _relation_ref, _opts) do
+      {:ok, %{partitions: [%{month: "2026-05"}]}}
+    end
   end
 
   setup do
@@ -938,19 +964,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
   end
 
   test "mix favn.query starts the SQL runtime before connecting" do
-    previous_modules = Application.get_env(:favn, :connection_modules)
-    previous_connections = Application.get_env(:favn, :connections)
-
-    Application.put_env(:favn, :connection_modules, [QueryConnection])
-    Application.put_env(:favn, :connections, query_test: [database: ":memory:"])
-
-    on_exit(fn ->
-      restore_env(:connection_modules, previous_modules)
-      restore_env(:connections, previous_connections)
-    end)
-
-    _ = Application.stop(:favn_sql_runtime)
-    refute Process.whereis(Favn.SQL.SessionPool)
+    configure_query_connection!()
+    stop_sql_runtime!()
 
     output =
       capture_io(fn ->
@@ -960,6 +975,35 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert Process.whereis(Favn.SQL.SessionPool)
     assert output =~ "value"
     assert output =~ "select 1"
+  end
+
+  test "mix favn.inspect relation starts the SQL runtime before connecting" do
+    configure_query_connection!()
+    stop_sql_runtime!()
+
+    output =
+      capture_io(fn ->
+        InspectTask.run(["relation", "raw.sales.orders", "--connection", "query_test"])
+      end)
+
+    assert Process.whereis(Favn.SQL.SessionPool)
+    assert output =~ "relation: query_test.raw.sales.orders"
+    assert output =~ "row_count: 1"
+    assert output =~ "id\tinteger"
+  end
+
+  test "mix favn.inspect partitions starts the SQL runtime before connecting" do
+    configure_query_connection!()
+    stop_sql_runtime!()
+
+    output =
+      capture_io(fn ->
+        InspectTask.run(["partitions", "raw.sales.orders", "--connection", "query_test"])
+      end)
+
+    assert Process.whereis(Favn.SQL.SessionPool)
+    assert output =~ "relation: query_test.raw.sales.orders"
+    assert output =~ "partitions: [%{month: \"2026-05\"}]"
   end
 
   test "mix favn.reset removes .favn when stack is not running", %{root_dir: root_dir} do
@@ -1304,6 +1348,29 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
     port
+  end
+
+  defp configure_query_connection! do
+    previous_modules = Application.get_env(:favn, :connection_modules)
+    previous_connections = Application.get_env(:favn, :connections)
+
+    Application.put_env(:favn, :connection_modules, [QueryConnection])
+    Application.put_env(:favn, :connections, query_test: [database: ":memory:"])
+
+    on_exit(fn ->
+      stop_sql_runtime!()
+      restore_env(:connection_modules, previous_modules)
+      restore_env(:connections, previous_connections)
+    end)
+  end
+
+  defp stop_sql_runtime! do
+    if Process.whereis(Favn.SQL.SessionPool) do
+      _ = Favn.SQL.SessionPool.reset()
+    end
+
+    _ = Application.stop(:favn_sql_runtime)
+    refute Process.whereis(Favn.SQL.SessionPool)
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:favn, key)

@@ -10,6 +10,10 @@ defmodule Mix.Tasks.Favn.Inspect do
       mix favn.inspect partitions raw.sales.orders
 
   Pass `--connection NAME` when more than one Favn SQL connection is configured.
+
+  The task starts the current Mix app before connecting, and the local data
+  inspection boundary starts `:favn_sql_runtime`, including the supervised SQL
+  session pool. Users do not need to wrap it in `mix do app.start + ...`.
   """
 
   alias Favn.Dev
@@ -19,8 +23,15 @@ defmodule Mix.Tasks.Favn.Inspect do
   @impl Mix.Task
   def run(args) do
     case parse_args(args) do
-      {:ok, {command, relation, opts}} -> run_command(command, relation, opts)
-      {:error, message} -> Mix.raise(message)
+      {:ok, {command, relation, opts}} ->
+        with :ok <- ensure_app_started() do
+          run_command(command, relation, opts)
+        else
+          {:error, reason} -> Mix.raise(format_error(reason))
+        end
+
+      {:error, message} ->
+        Mix.raise(message)
     end
   end
 
@@ -51,6 +62,11 @@ defmodule Mix.Tasks.Favn.Inspect do
       {:ok, result} -> print_partitions(result)
       {:error, reason} -> Mix.raise(format_error(reason))
     end
+  end
+
+  defp ensure_app_started do
+    Mix.Task.run("app.start")
+    :ok
   end
 
   defp print_relation(result) do

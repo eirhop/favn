@@ -63,5 +63,6 @@ SQL writes are not safe, and unknown commit state must be surfaced rather than
 retried.
 
 Local `mix favn.query` read-only validation is a best-effort operator guardrail,
-not a SQL sandbox or security boundary. The Mix task starts `:favn_sql_runtime`
-before connecting so `Favn.SQL.SessionPool` is available for direct CLI queries.
+not a SQL sandbox or security boundary. `mix favn.inspect` and `mix favn.query`
+start `:favn_sql_runtime` before connecting so `Favn.SQL.SessionPool` is
+available for direct CLI inspection.
