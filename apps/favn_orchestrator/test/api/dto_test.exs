@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.API.DTOTest do
 
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias Favn.Window.Policy
   alias FavnOrchestrator.API.DTO
   alias FavnOrchestrator.Backfill.AssetWindowState
@@ -157,6 +158,19 @@ defmodule FavnOrchestrator.API.DTOTest do
       next_retry_at: @later
     }
 
+    node_result = %NodeResult{
+      node_key: {{SampleAsset, :orders}, "window:day"},
+      ref: {SampleAsset, :orders},
+      stage: 1,
+      status: :ok,
+      started_at: @now,
+      finished_at: @later,
+      duration_ms: 100,
+      meta: %{rows_written: 0, relation: "gold.orders"},
+      attempt_count: 1,
+      max_attempts: 1
+    }
+
     run = %{
       id: "run_1",
       status: :error,
@@ -179,7 +193,7 @@ defmodule FavnOrchestrator.API.DTOTest do
       pipeline: %{module: SamplePipeline},
       pipeline_context: %{attempt: 1},
       asset_results: %{{SampleAsset, :orders} => asset_result},
-      node_results: %{{:asset, {SampleAsset, :orders}} => asset_result},
+      node_results: %{{:asset, {SampleAsset, :orders}} => node_result},
       error: %{kind: :error, reason: :boom}
     }
 
@@ -195,7 +209,16 @@ defmodule FavnOrchestrator.API.DTOTest do
              detail.node_results
 
     assert hd(detail.asset_results).meta == %{"api_token" => "[REDACTED]", "rows" => 10}
+
+    assert hd(detail.asset_results).output_metadata == %{
+             "api_token" => "[REDACTED]",
+             "rows" => 10
+           }
+
     assert hd(detail.asset_results).error["type"] == "boom"
+
+    assert [node] = detail.node_results
+    assert node.result.output_metadata == %{"relation" => "gold.orders", "rows_written" => 0}
   end
 
   test "asset results sort plain normalized maps with string keys" do

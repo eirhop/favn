@@ -8,6 +8,7 @@ defmodule FavnView.Components.LogPages do
   alias FavnView.Components.AppShell
   alias FavnView.Components.LogViewer
   alias FavnView.Components.ModeRail
+  alias FavnView.Components.OutputMetadata
 
   attr :nav_items, :list, default: []
   attr :title, :string, required: true
@@ -32,6 +33,8 @@ defmodule FavnView.Components.LogPages do
   attr :empty_state, :string, default: "No logs yet."
   attr :stream_warning, :string, default: nil
   attr :context_note, :string, default: nil
+  attr :output_metadata, :any, default: nil
+  attr :output_status, :any, default: nil
 
   def global_logs_page(assigns) do
     ~H"""
@@ -75,6 +78,14 @@ defmodule FavnView.Components.LogPages do
       back_label={@back_label}
       facts={@facts}
     >
+      <OutputMetadata.output_metadata
+        :if={@output_status}
+        id="asset-log-output-metadata"
+        class="mx-auto mb-3 w-full max-w-[120rem]"
+        metadata={@output_metadata}
+        status={@output_status}
+      />
+
       <.viewer
         assigns={assigns}
         viewer_title="Logs"

@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
+  alias FavnOrchestrator.Storage.JsonSafe
 
   @backfill_failure_detail_limit 10
   @execution_group_overview_default_scan_limit 500
@@ -53,6 +54,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:attempt) => non_neg_integer() | nil,
           required(:error) => term(),
           required(:output) => term(),
+          required(:output_metadata) => map() | nil,
           required(:explanation) => String.t() | nil,
           required(:failure_role) => :primary | :cascade | nil,
           required(:root_failure_asset_ref) => String.t() | nil
@@ -122,6 +124,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:finished_at) => DateTime.t() | nil,
           required(:duration_ms) => non_neg_integer() | nil,
           required(:error_summary) => String.t() | nil,
+          required(:output_metadata) => map() | nil,
           required(:window) => window_summary() | nil,
           required(:window_start_at) => DateTime.t() | nil,
           required(:window_end_at) => DateTime.t() | nil
@@ -523,6 +526,7 @@ defmodule FavnOrchestrator.RunReadModel do
       finished_at: step.finished_at,
       duration_ms: step.duration_ms || duration_ms(step.started_at, step.finished_at),
       error_summary: error_summary(step.error),
+      output_metadata: step.output_metadata,
       window: window,
       window_start_at: window && window.start_at,
       window_end_at: window && window.end_at
@@ -1251,6 +1255,7 @@ defmodule FavnOrchestrator.RunReadModel do
       attempt: nil,
       error: nil,
       output: nil,
+      output_metadata: nil,
       explanation: "Asset has not started yet for this run.",
       failure_role: nil,
       root_failure_asset_ref: nil
@@ -1284,6 +1289,7 @@ defmodule FavnOrchestrator.RunReadModel do
         AssetStepIdentity.asset_step_id(run_id, node_key, canonical_asset_ref)
 
     meta = Map.get(result, :meta) || Map.get(result, "meta") || %{}
+    output_metadata = output_metadata(meta)
 
     %{
       id: step_id,
@@ -1306,10 +1312,8 @@ defmodule FavnOrchestrator.RunReadModel do
       error:
         Map.get(result, :error) || Map.get(result, "error") || Map.get(result, :reason) ||
           Map.get(result, "reason"),
-      output:
-        Map.get(meta, :output) || Map.get(meta, "output") || Map.get(meta, :outputs) ||
-          Map.get(meta, "outputs") || Map.get(meta, :materialization) ||
-          Map.get(meta, "materialization"),
+      output: output_from_metadata(output_metadata),
+      output_metadata: output_metadata,
       explanation: step_explanation(Map.get(result, :status) || Map.get(result, "status")),
       failure_role: nil,
       root_failure_asset_ref: nil
@@ -1343,6 +1347,7 @@ defmodule FavnOrchestrator.RunReadModel do
       attempt: Map.get(data, :attempt) || Map.get(data, "attempt"),
       error: Map.get(data, :error) || Map.get(data, "error"),
       output: nil,
+      output_metadata: nil,
       explanation: event_step_explanation(latest.event_type),
       failure_role: nil,
       root_failure_asset_ref: nil
@@ -1450,6 +1455,16 @@ defmodule FavnOrchestrator.RunReadModel do
   defp result_values(results) when is_map(results), do: Map.values(results)
   defp result_values(results) when is_list(results), do: results
   defp result_values(_results), do: []
+
+  defp output_metadata(metadata) when is_map(metadata), do: JsonSafe.data(metadata)
+  defp output_metadata(_metadata), do: nil
+
+  defp output_from_metadata(metadata) when is_map(metadata) do
+    Map.get(metadata, "output") || Map.get(metadata, "outputs") ||
+      Map.get(metadata, "materialization")
+  end
+
+  defp output_from_metadata(_metadata), do: nil
 
   defp node_ref(result) do
     case Map.get(result, :node_key) || Map.get(result, "node_key") do

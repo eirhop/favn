@@ -2010,6 +2010,57 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="attempt-logs-link"]), "Open logs/events")
   end
 
+  test "run detail attempt drawer renders output metadata", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
+
+    view
+    |> element(~s([data-testid="asset-window-cell"]))
+    |> render_click()
+
+    assert has_element?(view, ~s([data-testid="asset-attempt-drawer"]), "Output metadata")
+    assert has_element?(view, ~s([data-testid="output-metadata"]), "Rows written")
+    assert has_element?(view, ~s([data-testid="output-metadata"]), "0")
+    assert has_element?(view, ~s([data-testid="output-metadata"]), "Relation")
+    assert has_element?(view, ~s([data-testid="output-metadata"]), "source.system")
+    assert has_element?(view, ~s([data-testid="output-metadata-copy"]), "Copy JSON")
+  end
+
+  test "run detail attempt drawer distinguishes empty success and failed attempts", %{conn: conn} do
+    {:ok, success_view, _html} = live(conn, ~p"/runs/run_daily_orders")
+
+    success_view
+    |> element(~s([data-testid="asset-window-cell"]))
+    |> render_click()
+
+    assert has_element?(
+             success_view,
+             ~s([data-testid="output-metadata-empty"]),
+             "No output metadata returned."
+           )
+
+    {:ok, failed_view, _html} = live(conn, ~p"/runs/run_failed_customer_daily")
+
+    failed_view
+    |> element(~s([data-testid="asset-window-cell"][data-status="error"]))
+    |> render_click()
+
+    assert has_element?(
+             failed_view,
+             ~s([data-testid="output-metadata-empty"]),
+             "No output metadata available because the attempt failed before completion."
+           )
+  end
+
+  test "asset logs page renders selected attempt output metadata", %{conn: conn} do
+    {:ok, %{steps: [step]}} = FavnOrchestrator.get_run_detail("run_customer_orders_daily")
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily/assets/#{step.id}/logs")
+
+    assert has_element?(view, ~s([data-testid="output-metadata"]), "Output metadata")
+    assert has_element?(view, ~s([data-testid="output-metadata"]), "Rows written")
+    assert has_element?(view, ~s([data-testid="output-metadata"]), "0")
+  end
+
   test "run detail mode rail changes to events mode", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
@@ -2625,7 +2676,8 @@ defmodule FavnView.PageLiveTest do
             status: status,
             started_at: started_at,
             finished_at: if(status in [:pending, :running], do: nil, else: finished_at),
-            duration_ms: 1
+            duration_ms: 1,
+            meta: result_metadata(name, status)
           }
         ]
       }
@@ -2661,6 +2713,20 @@ defmodule FavnView.PageLiveTest do
     |> Map.put(:updated_at, finished_at)
     |> RunState.with_snapshot_hash()
   end
+
+  defp result_metadata(:customer_orders_daily, :ok) do
+    %{
+      rows_written: 0,
+      relation: "raw.mercatus.reporting_baseline_feeding",
+      mode: :monthly_replace,
+      partition_month: "2026-04",
+      endpoint: "vReportingBaselineFeeding",
+      source: %{system: :mercatus},
+      empty_list: []
+    }
+  end
+
+  defp result_metadata(_name, _status), do: %{}
 
   defp empty_run_state(name, status, run_id) do
     ref = {__MODULE__.Assets, name}

@@ -490,6 +490,7 @@ defmodule FavnView.RunDetailLive do
       raw_status: attempt.status,
       status_tone: status_tone(attempt.status),
       error_summary: attempt.error_summary,
+      output_metadata: Map.get(attempt, :output_metadata),
       window: window_from_public(attempt.window),
       window_id: window_identity(attempt.window),
       window_label: window_label(attempt.window) || "No window",
