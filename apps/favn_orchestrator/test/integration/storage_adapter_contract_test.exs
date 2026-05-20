@@ -153,6 +153,29 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, 1} = Storage.expire_execution_leases(DateTime.add(now, 6, :second))
     assert {:ok, []} = Storage.list_execution_leases()
 
+    concurrent_now = DateTime.utc_now()
+    shared_scope = [%{kind: :pool, key: "shared_api", limit: 1}]
+    first_concurrent = execution_lease(run.id, "step-3", concurrent_now, shared_scope)
+    second_concurrent = execution_lease(run.id, "step-4", concurrent_now, shared_scope)
+
+    concurrent_results =
+      [first_concurrent, second_concurrent]
+      |> Enum.map(&Task.async(fn -> Storage.try_acquire_execution_lease(&1) end))
+      |> Enum.map(&Task.await(&1, 5_000))
+
+    assert Enum.count(concurrent_results, &match?({:ok, _lease}, &1)) == 1
+
+    assert Enum.count(
+             concurrent_results,
+             &match?({:error, {:execution_capacity_exceeded, %{kind: :pool}}}, &1)
+           ) == 1
+
+    concurrent_results
+    |> Enum.each(fn
+      {:ok, lease} -> assert :ok = Storage.release_execution_lease(lease.lease_id)
+      _other -> :ok
+    end)
+
     running = RunState.transition(run, status: :running)
 
     transition_event = %{

@@ -27,6 +27,10 @@ defmodule Favn.Storage.Adapter do
   `persist_run_transition/3` applies the same run-event duplicate semantics
   atomically with the run snapshot write. It returns `:idempotent` only when the
   stored run snapshot and stored event are both identical to the incoming write.
+
+  Execution lease callbacks are required. They enforce orchestrator-owned asset
+  execution admission across run concurrency and shared execution pools before
+  runner work is submitted.
   """
 
   alias Favn.Manifest.Version
@@ -181,10 +185,6 @@ defmodule Favn.Storage.Adapter do
                       reserve_idempotency_record: 2,
                       complete_idempotency_record: 3,
                       get_idempotency_record: 2,
-                      try_acquire_execution_lease: 2,
-                      release_execution_lease: 2,
-                      expire_execution_leases: 2,
-                      list_execution_leases: 1,
                       put_asset_freshness_state: 2,
                       get_asset_freshness_state: 4,
                       list_asset_freshness_states: 2

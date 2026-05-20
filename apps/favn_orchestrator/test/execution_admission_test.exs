@@ -52,6 +52,30 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
              ExecutionAdmission.acquire(run_b, %{asset_step_id: "step-b"})
   end
 
+  test "lease ttl covers run timeout even when configured ttl is shorter" do
+    Application.put_env(:favn, :execution_lease_ttl_ms, 50)
+
+    run = run(max_concurrency: 1, timeout_ms: 1_000)
+
+    assert {:ok, lease} = ExecutionAdmission.acquire(run, %{asset_step_id: "step-1"})
+    assert DateTime.diff(lease.expires_at, lease.acquired_at, :millisecond) > 1_000
+
+    Process.sleep(70)
+
+    assert {:queued, :pipeline_concurrency, %{kind: :run}} =
+             ExecutionAdmission.acquire(run, %{asset_step_id: "step-2"})
+  end
+
+  test "unknown execution pool fails closed" do
+    run = run(max_concurrency: 2)
+
+    assert {:error, {:unknown_execution_pool, :missing_pool}} =
+             ExecutionAdmission.acquire(run, %{
+               asset_step_id: "step-1",
+               execution_pool: :missing_pool
+             })
+  end
+
   defp run(opts) do
     RunState.new(
       id: Keyword.get(opts, :id, "run-admission"),
@@ -59,6 +83,7 @@ defmodule FavnOrchestrator.ExecutionAdmissionTest do
       manifest_content_hash: "hash_admission",
       asset_ref: {MyApp.Asset, :asset},
       submit_kind: :pipeline,
+      timeout_ms: Keyword.get(opts, :timeout_ms, RunState.default_timeout_ms()),
       metadata: %{
         pipeline_execution_policy: %{
           max_concurrency: Keyword.get(opts, :max_concurrency)

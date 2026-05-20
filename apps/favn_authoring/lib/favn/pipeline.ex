@@ -403,7 +403,8 @@ defmodule Favn.Pipeline do
   Declares the default shared execution pool for selected pipeline assets.
 
   Asset-level `@execution_pool` declarations override this default. The pool must
-  be configured in the orchestrator runtime before admission can enforce it.
+  be configured in the orchestrator runtime; unknown pools fail closed instead of
+  running unprotected.
 
   ## Example
 

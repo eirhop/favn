@@ -91,6 +91,9 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     [first, second] = Enum.sort_by(detail.steps, & &1.started_at, DateTime)
 
     assert DateTime.compare(second.started_at, first.finished_at) in [:eq, :gt]
+
+    assert {:ok, events} = FavnOrchestrator.Storage.list_run_events(run_id)
+    assert Enum.count(events, &(&1.event_type == :step_queued)) == 1
   end
 
   test "pipeline SQL preflight fails before an earlier Elixir dependency stage starts" do

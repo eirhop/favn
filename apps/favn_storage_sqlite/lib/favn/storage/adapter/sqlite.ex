@@ -321,7 +321,8 @@ defmodule Favn.Storage.Adapter.SQLite do
          {:ok, payload} <- ExecutionLeaseCodec.encode(normalized) do
       repo.transact(fn ->
         with {:ok, _expired} <- delete_expired_execution_leases(repo, normalized.acquired_at),
-             :ok <- ensure_execution_lease_capacity(repo, normalized.scopes),
+             :ok <-
+               ensure_execution_lease_capacity(repo, normalized.scopes, normalized.acquired_at),
              :ok <- insert_execution_lease(repo, normalized, payload),
              :ok <- insert_execution_lease_scopes(repo, normalized) do
           {:ok, normalized}
@@ -2677,14 +2678,20 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
-  defp ensure_execution_lease_capacity(repo, scopes) do
+  defp ensure_execution_lease_capacity(repo, scopes, %DateTime{} = now) do
+    timestamp = DateTime.to_iso8601(now)
+
     Enum.reduce_while(scopes, :ok, fn scope, :ok ->
       {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(scope)
 
-      sql =
-        "SELECT COUNT(*) FROM favn_execution_lease_scopes WHERE scope_kind = ?1 AND scope_key = ?2"
+      sql = """
+      SELECT COUNT(*)
+      FROM favn_execution_lease_scopes AS s
+      JOIN favn_execution_leases AS l ON l.lease_id = s.lease_id
+      WHERE s.scope_kind = ?1 AND s.scope_key = ?2 AND l.expires_at > ?3
+      """
 
-      case SQL.query(repo, sql, [scope_kind, scope_key]) do
+      case SQL.query(repo, sql, [scope_kind, scope_key, timestamp]) do
         {:ok, %{rows: [[count]]}} when count < scope.limit -> {:cont, :ok}
         {:ok, %{rows: [[_count]]}} -> {:halt, {:error, {:execution_capacity_exceeded, scope}}}
         {:error, reason} -> {:halt, {:error, reason}}

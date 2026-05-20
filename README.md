@@ -375,7 +375,9 @@ end
 orchestrator; every admitted asset step using the same pool consumes a shared
 slot until the step finishes, fails, is cancelled, or times out. Asset-level
 `@execution_pool` overrides the pipeline default for that asset. The reserved
-`:global` pool, when configured, applies to every admitted asset step.
+`:global` pool, when configured, applies to every admitted asset step. Declared
+execution pools must be configured; unknown pools fail closed instead of running
+unprotected.
 
 ### 5. Configure authored modules
 

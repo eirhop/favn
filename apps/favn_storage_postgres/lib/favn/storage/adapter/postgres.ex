@@ -316,7 +316,9 @@ defmodule Favn.Storage.Adapter.Postgres do
          {:ok, payload} <- ExecutionLeaseCodec.encode(normalized) do
       repo.transact(fn ->
         with {:ok, _expired} <- delete_expired_execution_leases(repo, normalized.acquired_at),
-             :ok <- ensure_execution_lease_capacity(repo, normalized.scopes),
+             :ok <- lock_execution_lease_scopes(repo, normalized.scopes),
+             :ok <-
+               ensure_execution_lease_capacity(repo, normalized.scopes, normalized.acquired_at),
              :ok <- insert_execution_lease(repo, normalized, payload),
              :ok <- insert_execution_lease_scopes(repo, normalized) do
           {:ok, normalized}
@@ -2094,14 +2096,30 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  defp ensure_execution_lease_capacity(repo, scopes) do
+  defp lock_execution_lease_scopes(repo, scopes) do
+    Enum.reduce_while(scopes, :ok, fn scope, :ok ->
+      {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(scope)
+      lock_key = "#{scope_kind}:#{scope_key}"
+
+      case SQL.query(repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [lock_key]) do
+        {:ok, _result} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp ensure_execution_lease_capacity(repo, scopes, %DateTime{} = now) do
     Enum.reduce_while(scopes, :ok, fn scope, :ok ->
       {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(scope)
 
-      sql =
-        "SELECT COUNT(*) FROM favn_execution_lease_scopes WHERE scope_kind = $1 AND scope_key = $2"
+      sql = """
+      SELECT COUNT(*)
+      FROM favn_execution_lease_scopes AS s
+      JOIN favn_execution_leases AS l ON l.lease_id = s.lease_id
+      WHERE s.scope_kind = $1 AND s.scope_key = $2 AND l.expires_at > $3
+      """
 
-      case SQL.query(repo, sql, [scope_kind, scope_key]) do
+      case SQL.query(repo, sql, [scope_kind, scope_key, now]) do
         {:ok, %{rows: [[count]]}} when count < scope.limit -> {:cont, :ok}
         {:ok, %{rows: [[_count]]}} -> {:halt, {:error, {:execution_capacity_exceeded, scope}}}
         {:error, reason} -> {:halt, {:error, reason}}

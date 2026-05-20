@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   alias FavnOrchestrator.Storage
 
   @default_lease_ttl_ms 300_000
+  @lease_timeout_buffer_ms 60_000
 
   @type lease :: map()
   @type queue_reason :: :pipeline_concurrency | :execution_pool | :global_concurrency
@@ -22,27 +23,29 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   @spec acquire(RunState.t(), entry()) ::
           {:ok, lease() | nil} | {:queued, queue_reason(), map()} | {:error, term()}
   def acquire(%RunState{} = run, entry) when is_map(entry) do
-    scopes = admission_scopes(run, entry)
+    with :ok <- validate_execution_pool(entry) do
+      scopes = admission_scopes(run, entry)
 
-    if scopes == [] do
-      {:ok, nil}
-    else
-      now = DateTime.utc_now()
-      ttl_ms = execution_lease_ttl_ms()
+      if scopes == [] do
+        {:ok, nil}
+      else
+        now = DateTime.utc_now()
+        ttl_ms = lease_ttl_ms(run)
 
-      lease = %{
-        lease_id: lease_id(run.id, entry.asset_step_id),
-        run_id: run.id,
-        asset_step_id: entry.asset_step_id,
-        scopes: scopes,
-        acquired_at: now,
-        expires_at: DateTime.add(now, ttl_ms, :millisecond)
-      }
+        lease = %{
+          lease_id: lease_id(run.id, entry.asset_step_id),
+          run_id: run.id,
+          asset_step_id: entry.asset_step_id,
+          scopes: scopes,
+          acquired_at: now,
+          expires_at: DateTime.add(now, ttl_ms, :millisecond)
+        }
 
-      case Storage.try_acquire_execution_lease(lease) do
-        {:ok, lease} -> {:ok, lease}
-        {:error, {:execution_capacity_exceeded, scope}} -> {:queued, queue_reason(scope), scope}
-        {:error, reason} -> {:error, reason}
+        case Storage.try_acquire_execution_lease(lease) do
+          {:ok, lease} -> {:ok, lease}
+          {:error, {:execution_capacity_exceeded, scope}} -> {:queued, queue_reason(scope), scope}
+          {:error, reason} -> {:error, reason}
+        end
       end
     end
   end
@@ -116,6 +119,19 @@ defmodule FavnOrchestrator.ExecutionAdmission do
 
   defp pipeline_max_concurrency(%RunState{}), do: nil
 
+  defp validate_execution_pool(entry) do
+    case Map.get(entry, :execution_pool) || Map.get(entry, "execution_pool") do
+      nil ->
+        :ok
+
+      pool ->
+        case pool_limit(pool) do
+          {:ok, _key, _limit} -> :ok
+          :none -> {:error, {:unknown_execution_pool, pool}}
+        end
+    end
+  end
+
   defp pool_limit(nil), do: :none
 
   defp pool_limit(pool) when is_atom(pool) or is_binary(pool) do
@@ -154,6 +170,13 @@ defmodule FavnOrchestrator.ExecutionAdmission do
       _other -> @default_lease_ttl_ms
     end
   end
+
+  defp lease_ttl_ms(%RunState{timeout_ms: timeout_ms})
+       when is_integer(timeout_ms) and timeout_ms > 0 do
+    max(execution_lease_ttl_ms(), timeout_ms + @lease_timeout_buffer_ms)
+  end
+
+  defp lease_ttl_ms(%RunState{}), do: execution_lease_ttl_ms()
 
   defp lease_id(run_id, asset_step_id), do: "#{run_id}:#{asset_step_id}"
 

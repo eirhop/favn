@@ -14,7 +14,16 @@ defmodule FavnStoragePostgres.Migrations.AddExecutionLeases do
     end
 
     create_if_not_exists table(:favn_execution_lease_scopes, primary_key: false) do
-      add(:lease_id, :string, null: false)
+      add(
+        :lease_id,
+        references(:favn_execution_leases,
+          column: :lease_id,
+          type: :string,
+          on_delete: :delete_all
+        ),
+        null: false
+      )
+
       add(:scope_kind, :string, null: false)
       add(:scope_key, :string, null: false)
       add(:scope_limit, :integer, null: false)

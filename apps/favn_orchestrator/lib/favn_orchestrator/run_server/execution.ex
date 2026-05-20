@@ -589,7 +589,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
       attempt,
       runner_client,
       runner_opts,
-      []
+      [],
+      MapSet.new()
     )
   end
 
@@ -602,7 +603,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
          _attempt,
          _runner_client,
          _runner_opts,
-         entries
+         entries,
+         _queued_steps
        ) do
     {:ok, run_state, entries, []}
   end
@@ -616,7 +618,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
          attempt,
          runner_client,
          runner_opts,
-         acc
+         acc,
+         queued_steps
        ) do
     if Persistence.externally_cancelled?(current_run.id) do
       {:error, Snapshots.cancelled_snapshot(current_run), [], Enum.map(acc, & &1.node_key)}
@@ -639,14 +642,26 @@ defmodule FavnOrchestrator.RunServer.Execution do
             runner_client,
             runner_opts,
             acc,
+            queued_steps,
             node_key,
             work,
             lease
           )
 
         {:queued, queue_reason, scope} ->
-          case persist_step_queued(current_run, work, stage, attempt, queue_reason, scope) do
-            {:ok, queued_run} when acc == [] ->
+          queue_signature = queue_signature(asset_step_id, queue_reason, scope)
+
+          case maybe_persist_step_queued(
+                 queued_steps,
+                 queue_signature,
+                 current_run,
+                 work,
+                 stage,
+                 attempt,
+                 queue_reason,
+                 scope
+               ) do
+            {:ok, queued_run, next_queued_steps} when acc == [] ->
               Process.sleep(100)
 
               submit_stage_entries(
@@ -658,10 +673,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
                 attempt,
                 runner_client,
                 runner_opts,
-                acc
+                acc,
+                next_queued_steps
               )
 
-            {:ok, queued_run} ->
+            {:ok, queued_run, _next_queued_steps} ->
               {:ok, queued_run, acc, node_keys}
 
             {:error, :external_cancel} ->
@@ -690,6 +706,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_client,
          runner_opts,
          acc,
+         queued_steps,
          node_key,
          work,
          lease
@@ -737,7 +754,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
               attempt,
               runner_client,
               runner_opts,
-              acc ++ [entry]
+              acc ++ [entry],
+              queued_steps
             )
 
           {:error, :external_cancel} ->
@@ -1156,6 +1174,33 @@ defmodule FavnOrchestrator.RunServer.Execution do
       :ok -> {:ok, queued_run}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp maybe_persist_step_queued(
+         queued_steps,
+         queue_signature,
+         %RunState{} = run_state,
+         work,
+         stage,
+         attempt,
+         queue_reason,
+         scope
+       ) do
+    if MapSet.member?(queued_steps, queue_signature) do
+      {:ok, run_state, queued_steps}
+    else
+      case persist_step_queued(run_state, work, stage, attempt, queue_reason, scope) do
+        {:ok, queued_run} -> {:ok, queued_run, MapSet.put(queued_steps, queue_signature)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp queue_signature(asset_step_id, queue_reason, scope) do
+    scope_kind = Map.get(scope, :kind) || Map.get(scope, "kind")
+    scope_key = Map.get(scope, :key) || Map.get(scope, "key")
+
+    {asset_step_id, queue_reason, scope_kind, scope_key}
   end
 
   defp release_entry_leases(entries) when is_list(entries) do
