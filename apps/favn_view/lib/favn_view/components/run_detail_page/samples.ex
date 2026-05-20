@@ -445,6 +445,72 @@ defmodule FavnView.Components.RunDetailPage.Samples do
     }
   end
 
+  def sample_admission_failed_backfill do
+    run = sample_execution_group(:error)
+    window = List.first(run.windows)
+
+    failure = %{
+      id: "run_backfill_unknown_pool_jan",
+      child_run_id: "run_backfill_unknown_pool_jan",
+      asset_ref: nil,
+      short_asset_name: "Window run",
+      window: window,
+      window_id: window.id,
+      window_label: window.label,
+      status: "Failed",
+      raw_status: :error,
+      status_tone: :error,
+      error_summary: "{:unknown_execution_pool, :mercatus_api}",
+      attempt_count: 1,
+      started_at: "May 19, 2026 16:26 UTC",
+      finished_at: "May 19, 2026 16:26 UTC",
+      duration: "0.0 s"
+    }
+
+    Map.merge(run, %{
+      raw_status: :error,
+      active?: false,
+      status: "Failed",
+      status_tone: :error,
+      failed_windows: 1,
+      total_asset_attempts: 0,
+      completed_asset_attempts: 0,
+      succeeded_asset_attempts: 0,
+      failed_asset_attempts: 0,
+      running_asset_attempts: 0,
+      queued_asset_attempts: 0,
+      progress_label: "0 / 0",
+      matrix: %{assets: [], windows: [window], rows: []},
+      assets: [],
+      windows: [window],
+      attempts: [],
+      failures: [],
+      backfill_failures: [failure],
+      backfill_failure_count: 1,
+      child_runs: [
+        %{
+          id: "run_backfill_unknown_pool_jan",
+          window: window,
+          window_label: window.label,
+          status: "Failed",
+          raw_status: :error,
+          status_tone: :error,
+          progress: "0 / 0",
+          started_at: "May 19, 2026 16:26 UTC",
+          finished_at: "May 19, 2026 16:26 UTC",
+          duration: "0.0 s",
+          succeeded_count: 0,
+          failed_count: 0,
+          running_count: 0,
+          queued_count: 0,
+          attempts: []
+        }
+      ],
+      timeline: [],
+      latest_event_summary: "Backfill failed"
+    })
+  end
+
   def not_found_run do
     %{
       found?: false,

@@ -19,6 +19,15 @@ defmodule FavnView.Storybook.Components.RunDetailFailuresPage do
           nav_items: RunDetailPage.sample_nav_items(),
           active_mode: :failures
         }
+      },
+      %Variation{
+        id: :admission_failure,
+        attributes: %{
+          run: RunDetailPage.sample_admission_failed_backfill(),
+          run_id: "run_backfill_unknown_pool",
+          nav_items: RunDetailPage.sample_nav_items(),
+          active_mode: :failures
+        }
       }
     ]
   end

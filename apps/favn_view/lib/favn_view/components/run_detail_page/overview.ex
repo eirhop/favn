@@ -58,9 +58,12 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         <span :for={attempt <- @run.failures}>
           {attempt.short_asset_name} {attempt.error_summary}
         </span>
+        <span :for={failure <- @run.backfill_failures}>
+          {failure.short_asset_name} {failure.window_label} {failure.error_summary}
+        </span>
         <span>{@run.latest_event_summary}</span>
         <button
-          :if={@run.failures != []}
+          :if={@run.failures != [] or @run.backfill_failures != []}
           type="button"
           class="sr-only"
           data-testid="asset-error-copy-button"
@@ -70,16 +73,16 @@ defmodule FavnView.Components.RunDetailPage.Overview do
       </div>
 
       <div
-        :if={@run.failed_windows > 0 and @run.failures != []}
+        :if={@run.failed_windows > 0 and @run.backfill_failures != []}
         class="sr-only"
         data-testid="backfill-failure-list"
       >
-        Failed backfill window Showing {length(@run.failures)} of {@run.failed_windows}
-        <div :for={attempt <- @run.failures} data-testid="backfill-failure-row">
-          {attempt.short_asset_name} {attempt.window_label} {attempt.error_summary}
+        Failed backfill window Showing {length(@run.backfill_failures)} of {@run.backfill_failure_count}
+        <div :for={failure <- @run.backfill_failures} data-testid="backfill-failure-row">
+          {failure.short_asset_name} {failure.window_label} {failure.error_summary}
           <.link
-            :if={attempt.child_run_id}
-            navigate={~p"/runs/#{@run.id}?view=windows&child_run_id=#{attempt.child_run_id}"}
+            :if={failure.child_run_id}
+            navigate={~p"/runs/#{@run.id}?view=windows&child_run_id=#{failure.child_run_id}"}
           >
             Open window run
           </.link>

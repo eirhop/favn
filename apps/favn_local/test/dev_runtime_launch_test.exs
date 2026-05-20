@@ -260,15 +260,22 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     previous_connection_modules = Application.get_env(:favn, :connection_modules)
     previous_connections = Application.get_env(:favn, :connections)
+    previous_execution_pools = Application.get_env(:favn, :execution_pools)
     previous_runner_plugins = Application.get_env(:favn, :runner_plugins)
 
     Application.put_env(:favn, :connection_modules, [MyApp.Connections.Warehouse])
     Application.put_env(:favn, :connections, warehouse: [database: "warehouse.duckdb"])
+    Application.put_env(:favn, :execution_pools,
+      global: [max_concurrency: 5],
+      mercatus_api: [max_concurrency: 2]
+    )
+
     Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :in_process}])
 
     on_exit(fn ->
       restore_env(:connection_modules, previous_connection_modules)
       restore_env(:connections, previous_connections)
+      restore_env(:execution_pools, previous_execution_pools)
       restore_env(:runner_plugins, previous_runner_plugins)
     end)
 
@@ -289,6 +296,9 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     assert {:connection_modules, [MyApp.Connections.Warehouse]} in decoded_config
 
     assert {:connections, [warehouse: [database: "/tmp/consumer/warehouse.duckdb"]]} in decoded_config
+
+    assert {:execution_pools, [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]]} in
+             decoded_config
 
     assert {:runner_plugins, [{FavnDuckdb, [execution_mode: :in_process]}]} in decoded_config
     assert code =~ "FAVN_DEV_CONSUMER_FAVN_CONFIG"
@@ -324,6 +334,67 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert code =~ "validate_runner_node_name!"
     assert before?(code, "validate_runner_node_name!", "String.to_atom()")
+  end
+
+  test "operator spec applies transported consumer config before orchestrator starts" do
+    runtime = %{"orchestrator_root" => "/tmp/favn_runtime"}
+    config = Config.resolve([])
+
+    node_names = %{
+      runner_full: "favn_runner_test@host",
+      orchestrator_short: "favn_orchestrator_test"
+    }
+
+    secrets = %{
+      "rpc_cookie" => "cookie",
+      "service_token" => "token",
+      "web_session_secret" => String.duplicate("s", 64)
+    }
+
+    previous_connections = Application.get_env(:favn, :connections)
+    previous_duckdb_adbc = Application.get_env(:favn, :duckdb_adbc)
+    previous_duckdb_in_process_client = Application.get_env(:favn, :duckdb_in_process_client)
+    previous_execution_pools = Application.get_env(:favn, :execution_pools)
+    previous_runner_plugins = Application.get_env(:favn, :runner_plugins)
+
+    Application.put_env(:favn, :connections, warehouse: [database: "warehouse.duckdb"])
+    Application.put_env(:favn, :duckdb_adbc, driver: "/opt/duckdb/1.5.2/libduckdb.so")
+    Application.put_env(:favn, :duckdb_in_process_client, enabled: true)
+    Application.put_env(:favn, :execution_pools,
+      global: [max_concurrency: 5],
+      mercatus_api: [max_concurrency: 2]
+    )
+
+    Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :in_process}])
+
+    on_exit(fn ->
+      restore_env(:connections, previous_connections)
+      restore_env(:duckdb_adbc, previous_duckdb_adbc)
+      restore_env(:duckdb_in_process_client, previous_duckdb_in_process_client)
+      restore_env(:execution_pools, previous_execution_pools)
+      restore_env(:runner_plugins, previous_runner_plugins)
+    end)
+
+    operator = RuntimeLaunch.operator_spec(runtime, config, distribution_opts(), node_names, secrets)
+    code = eval_code!(operator)
+
+    decoded_config =
+      ConsumerConfigTransport.decode(operator.env["FAVN_DEV_CONSUMER_FAVN_CONFIG"])
+      |> then(fn {:ok, config} -> config end)
+
+    assert {:execution_pools, [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]]} in
+             decoded_config
+
+    refute Keyword.has_key?(decoded_config, :connections)
+    refute Keyword.has_key?(decoded_config, :duckdb_adbc)
+    refute Keyword.has_key?(decoded_config, :duckdb_in_process_client)
+    refute Keyword.has_key?(decoded_config, :runner_plugins)
+
+    assert before?(
+             code,
+             "Application.put_env(:favn, key, value)",
+             "Application.ensure_all_started(:favn_orchestrator)"
+           )
   end
 
   test "orchestrator spec disables scheduler by default" do

@@ -34,6 +34,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
       connections: [
         warehouse: [adapter: Favn.SQL.Adapter.DuckDB, database: "/tmp/warehouse.duckdb"]
       ],
+      execution_pools: [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]],
       runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
       duckdb_in_process_client: [pool: MyApp.DuckPool, enabled: true, note: nil],
       duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
@@ -128,6 +129,14 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert connection[:database] == "/tmp/consumer/data/warehouse.duckdb"
   end
 
+  test "collect raises for unsupported only keys" do
+    assert_raise ArgumentError,
+                 ~r/unsupported Favn consumer config transport keys: \[:execution_pool\]/,
+                 fn ->
+                   ConsumerConfigTransport.collect([root_dir: "/tmp/consumer"], only: [:execution_pool])
+                 end
+  end
+
   test "apply_encoded applies decoded config to favn application env" do
     encoded = ConsumerConfigTransport.encode(connection_modules: [MyApp.Connections.Warehouse])
 
@@ -159,7 +168,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
              ConsumerConfigTransport.decode(
                encode_payload(%{
                   "schema_version" => 1,
-                  "entries" => duplicate_entries(7)
+                   "entries" => duplicate_entries(8)
                 })
               )
 
@@ -282,6 +291,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     encoded =
       ConsumerConfigTransport.encode(
         connection_modules: [MyApp.Connections.Warehouse],
+        execution_pools: [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]],
         runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
         duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
       )
@@ -291,6 +301,11 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     purge_bootstrap_module()
     assert {:ok, _bindings} = Code.eval_string(ConsumerConfigTransport.bootstrap_eval_snippet())
     assert Application.get_env(:favn, :connection_modules) == [MyApp.Connections.Warehouse]
+
+    assert Application.get_env(:favn, :execution_pools) == [
+             global: [max_concurrency: 5],
+             mercatus_api: [max_concurrency: 2]
+           ]
 
     assert Application.get_env(:favn, :runner_plugins) == [
              {FavnDuckdb, [execution_mode: :in_process]}

@@ -7,6 +7,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
     :discovery,
     :connection_modules,
     :connections,
+    :execution_pools,
     :runner_plugins,
     :duckdb_in_process_client,
     :duckdb_adbc
@@ -30,6 +31,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
     "discovery" => :discovery,
     "connection_modules" => :connection_modules,
     "connections" => :connections,
+    "execution_pools" => :execution_pools,
     "runner_plugins" => :runner_plugins,
     "duckdb_in_process_client" => :duckdb_in_process_client,
     "duckdb_adbc" => :duckdb_adbc
@@ -41,10 +43,11 @@ defmodule Favn.Dev.ConsumerConfigTransport do
   def supported_keys, do: @supported_keys
 
   @spec collect(keyword()) :: keyword()
-  def collect(opts) when is_list(opts) do
+  @spec collect(keyword(), keyword()) :: keyword()
+  def collect(opts, collect_opts \\ []) when is_list(opts) and is_list(collect_opts) do
     root_dir = Paths.root_dir(opts)
 
-    @supported_keys
+    collect_keys(collect_opts)
     |> Enum.flat_map(fn key ->
       case Application.fetch_env(:favn, key) do
         {:ok, value} -> [{key, normalize_config(key, value, root_dir)}]
@@ -62,7 +65,9 @@ defmodule Favn.Dev.ConsumerConfigTransport do
   end
 
   @spec collect_and_encode(keyword()) :: String.t()
-  def collect_and_encode(opts) when is_list(opts), do: opts |> collect() |> encode()
+  @spec collect_and_encode(keyword(), keyword()) :: String.t()
+  def collect_and_encode(opts, collect_opts \\ []) when is_list(opts) and is_list(collect_opts),
+    do: opts |> collect(collect_opts) |> encode()
 
   @spec decode(String.t()) :: {:ok, keyword()} | {:error, transport_error()}
   def decode(encoded) when is_binary(encoded) do
@@ -114,6 +119,7 @@ defmodule Favn.Dev.ConsumerConfigTransport do
         "discovery" => :discovery,
         "connection_modules" => :connection_modules,
         "connections" => :connections,
+        "execution_pools" => :execution_pools,
         "runner_plugins" => :runner_plugins,
         "duckdb_in_process_client" => :duckdb_in_process_client,
         "duckdb_adbc" => :duckdb_adbc
@@ -320,6 +326,22 @@ defmodule Favn.Dev.ConsumerConfigTransport do
       end)
 
     %{"schema_version" => @schema_version, "entries" => entries}
+  end
+
+  defp collect_keys(collect_opts) do
+    case Keyword.get(collect_opts, :only, @supported_keys) do
+      keys when is_list(keys) ->
+        unsupported = keys -- @supported_keys
+
+        if unsupported == [] do
+          Enum.filter(@supported_keys, &(&1 in keys))
+        else
+          raise ArgumentError,
+                "unsupported Favn consumer config transport keys: #{inspect(unsupported)}"
+        end
+
+      _other -> @supported_keys
+    end
   end
 
   defp encode_value(value) when is_boolean(value) or is_nil(value), do: value

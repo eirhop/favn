@@ -87,8 +87,10 @@ defmodule Favn.Dev.RuntimeLaunch do
     sqlite_path = Path.expand(config.sqlite_path, Paths.root_dir(opts))
     distribution = local_distribution!(opts)
 
-    code =
-      """
+      code =
+        """
+      #{ConsumerConfigTransport.bootstrap_eval_snippet()}
+
       storage = System.fetch_env!("FAVN_DEV_STORAGE")
 
       api_bind_ip =
@@ -241,7 +243,9 @@ defmodule Favn.Dev.RuntimeLaunch do
           "FAVN_VIEW_PUBLIC_ORIGIN" => config.web_base_url,
           "FAVN_VIEW_SECRET_KEY_BASE" => secrets["web_session_secret"],
           "FAVN_VIEW_ORCHESTRATOR_SERVICE_TOKEN" => secrets["service_token"],
-          "FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH" => "1"
+          "FAVN_VIEW_LOCAL_DEV_TRUSTED_AUTH" => "1",
+          "FAVN_DEV_CONSUMER_FAVN_CONFIG" =>
+            ConsumerConfigTransport.collect_and_encode(opts, only: [:execution_pools])
         })
     }
   end
