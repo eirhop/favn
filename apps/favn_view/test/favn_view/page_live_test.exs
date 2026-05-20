@@ -1832,6 +1832,73 @@ defmodule FavnView.PageLiveTest do
     refute has_element?(view, ~s([data-testid="timeline-now-marker"]))
   end
 
+  test "run detail timeline fit bounds use real attempt times" do
+    started_at = ~U[2026-05-20 17:59:00Z]
+    finished_at = ~U[2026-05-20 17:59:20Z]
+
+    run = %{
+      active?: false,
+      windows: [],
+      timeline: [
+        %{
+          timeline_attempt(:ok)
+          | started_at_raw: started_at,
+            finished_at_raw: finished_at,
+            started_at: "May 20, 2026 17:59 UTC",
+            duration: "20s"
+        }
+      ]
+    }
+
+    html =
+      render_component(&Timeline.timeline_panel/1,
+        run: run,
+        timeline_hook?: false,
+        timeline_state: %{
+          mode: :fit,
+          zoom: "full",
+          live_follow?: false,
+          search: "",
+          status: "all",
+          window: "all",
+          failed_only?: false,
+          running_only?: false
+        }
+      )
+
+    [_, axis_start] = Regex.run(~r/data-axis-start-ms="(\d+)"/, html)
+    [_, axis_end] = Regex.run(~r/data-axis-end-ms="(\d+)"/, html)
+
+    assert String.to_integer(axis_start) >= DateTime.to_unix(started_at, :millisecond) - 60_000
+    assert String.to_integer(axis_end) <= DateTime.to_unix(finished_at, :millisecond) + 60_000
+  end
+
+  test "run detail timeline non-fit width still fills wide viewports" do
+    run = %{
+      active?: true,
+      windows: [],
+      timeline: [timeline_attempt(:running)]
+    }
+
+    html =
+      render_component(&Timeline.timeline_panel/1,
+        run: run,
+        timeline_hook?: false,
+        timeline_state: %{
+          mode: :live,
+          zoom: "30m",
+          live_follow?: true,
+          search: "",
+          status: "all",
+          window: "all",
+          failed_only?: false,
+          running_only?: false
+        }
+      )
+
+    assert html =~ "width: max(100%,"
+  end
+
   test "run detail timeline zoom controls update rendered state", %{conn: conn} do
     %{parent_id: parent_id} = seed_run_detail_group!()
 
