@@ -37,6 +37,7 @@ defmodule FavnView.Components.OutputMetadata do
     "cancelled",
     "blocked"
   ]
+  @active_statuses [:pending, :running, "pending", "running"]
 
   attr :id, :string, default: "output-metadata"
   attr :metadata, :any, default: nil
@@ -57,6 +58,7 @@ defmodule FavnView.Components.OutputMetadata do
       |> assign(:raw_json, raw_json(assigns.metadata))
       |> assign(:empty?, empty_metadata?(assigns.metadata))
       |> assign(:failed?, failed_status?(assigns.status))
+      |> assign(:active?, active_status?(assigns.status))
 
     ~H"""
     <section
@@ -89,7 +91,14 @@ defmodule FavnView.Components.OutputMetadata do
         No output metadata available because the attempt failed before completion.
       </p>
       <p
-        :if={@empty? && !@failed?}
+        :if={@empty? && @active?}
+        class="mt-3 text-sm text-base-content/55"
+        data-testid="output-metadata-empty"
+      >
+        No output metadata yet.
+      </p>
+      <p
+        :if={@empty? && !@failed? && !@active?}
         class="mt-3 text-sm text-base-content/55"
         data-testid="output-metadata-empty"
       >
@@ -201,6 +210,8 @@ defmodule FavnView.Components.OutputMetadata do
   defp empty_metadata?(_metadata), do: false
 
   defp failed_status?(status), do: status in @terminal_failures
+
+  defp active_status?(status), do: status in @active_statuses
 
   defp raw_json(value), do: encode_json(value, pretty: true)
   defp compact_json(value), do: encode_json(value, pretty: false)

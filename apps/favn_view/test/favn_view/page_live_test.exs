@@ -2049,6 +2049,18 @@ defmodule FavnView.PageLiveTest do
              ~s([data-testid="output-metadata-empty"]),
              "No output metadata available because the attempt failed before completion."
            )
+
+    {:ok, running_view, _html} = live(conn, ~p"/runs/run_raw_payments")
+
+    running_view
+    |> element(~s([data-testid="asset-window-cell"][data-status="running"]))
+    |> render_click()
+
+    assert has_element?(
+             running_view,
+             ~s([data-testid="output-metadata-empty"]),
+             "No output metadata yet."
+           )
   end
 
   test "asset logs page renders selected attempt output metadata", %{conn: conn} do

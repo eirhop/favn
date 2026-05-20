@@ -184,21 +184,9 @@ defmodule FavnOrchestrator.API.DTO do
   end
 
   def asset_result(%NodeResult{} = result) do
-    %{
-      asset_ref: ref_to_string(result.ref),
-      stage: result.stage,
-      status: atom_name(result.status),
-      started_at: datetime(result.started_at),
-      finished_at: datetime(result.finished_at),
-      duration_ms: result.duration_ms,
-      meta: normalize(result.meta),
-      output_metadata: normalize(result.meta),
-      error: error_payload(result.error),
-      attempt_count: result.attempt_count,
-      max_attempts: result.max_attempts,
-      attempts: normalize(result.attempts),
-      asset_step_id: result.asset_step_id
-    }
+    result
+    |> Map.from_struct()
+    |> asset_result()
   end
 
   def asset_result(result) when is_map(result) do

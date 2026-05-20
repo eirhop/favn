@@ -166,6 +166,9 @@ defmodule FavnOrchestrator.API.DTOTest do
       started_at: @now,
       finished_at: @later,
       duration_ms: 100,
+      window: %{key: "window:day", label: "Jan 2"},
+      input_versions: [%{upstream_ref: {SampleAsset, :raw_orders}, freshness_version: "raw:v1"}],
+      runner_execution_id: "runner-1",
       meta: %{rows_written: 0, relation: "gold.orders"},
       attempt_count: 1,
       max_attempts: 1
@@ -218,7 +221,17 @@ defmodule FavnOrchestrator.API.DTOTest do
     assert hd(detail.asset_results).error["type"] == "boom"
 
     assert [node] = detail.node_results
-    assert node.result.output_metadata == %{"relation" => "gold.orders", "rows_written" => 0}
+    assert node.result["output_metadata"] == %{"relation" => "gold.orders", "rows_written" => 0}
+    assert node.result["window"] == %{"key" => "window:day", "label" => "Jan 2"}
+
+    assert node.result["input_versions"] == [
+             %{
+               "upstream_ref" => %{"module" => "Elixir.SampleAsset", "name" => "raw_orders"},
+               "freshness_version" => "raw:v1"
+             }
+           ]
+
+    assert node.result["runner_execution_id"] == "runner-1"
   end
 
   test "asset results sort plain normalized maps with string keys" do
