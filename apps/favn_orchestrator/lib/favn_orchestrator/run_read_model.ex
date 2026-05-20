@@ -17,6 +17,8 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.Storage
 
   @backfill_failure_detail_limit 10
+  @execution_group_overview_default_scan_limit 500
+  @execution_group_overview_max_scan_limit 2_000
 
   @type run_role :: :asset | :pipeline | :backfill_parent | :backfill_child | :rerun
 
@@ -221,16 +223,22 @@ defmodule FavnOrchestrator.RunReadModel do
   An execution group is rooted at a submitted run request. Backfill child runs are
   grouped under their persisted `root_run_id`/`parent_run_id` so callers do not
   derive parent/child relationships from raw run rows.
+
+  The overview path is intentionally bounded and uses run snapshots plus
+  backfill-window ledger data. It does not hydrate per-run events; event-backed
+  attempt detail is loaded by `get_execution_group_detail/2` and the focused
+  asset-attempt/timeline helpers.
   """
   @spec list_execution_groups(keyword()) :: {:ok, [execution_group_summary()]} | {:error, term()}
   def list_execution_groups(filters \\ []) when is_list(filters) do
-    with {:ok, runs} <- Storage.list_runs() do
+    with {:ok, runs} <- Storage.list_runs(limit: execution_group_scan_limit(filters)) do
       groups = execution_groups(runs)
 
       {:ok,
        groups
-       |> Enum.map(&execution_group_summary/1)
-       |> filter_execution_group_summaries(filters)}
+       |> Enum.map(&execution_group_summary(&1, :overview))
+       |> filter_execution_group_summaries(filters)
+       |> maybe_limit_execution_groups(filters)}
     end
   end
 
@@ -243,13 +251,18 @@ defmodule FavnOrchestrator.RunReadModel do
       when is_binary(group_id) and is_list(filters) do
     with {:ok, runs} <- Storage.list_runs(),
          {:ok, group} <- find_execution_group(runs, group_id) do
-      attempts = group |> execution_group_asset_attempts() |> filter_asset_attempts(filters)
+      attempts =
+        group |> execution_group_asset_attempts(:detail) |> filter_asset_attempts(filters)
+
       windows = execution_group_window_summaries(group)
 
       {:ok,
        %{
          summary:
-           execution_group_summary(Map.merge(group, %{attempts: attempts, windows: windows})),
+           execution_group_summary(
+             Map.merge(group, %{attempts: attempts, windows: windows}),
+             :detail
+           ),
          root_run: summary(group.root),
          child_runs: Enum.map(group.children, &summary/1),
          windows: windows,
@@ -380,12 +393,13 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
-  defp execution_group_summary(group) do
-    attempts = Map.get(group, :attempts) || execution_group_asset_attempts(group)
+  defp execution_group_summary(group, mode) do
+    attempts = Map.get(group, :attempts) || execution_group_asset_attempts(group, mode)
     windows = Map.get(group, :windows) || execution_group_window_summaries(group)
     attempt_counts = attempt_counts(attempts)
     window_counts = window_counts(windows)
     root = with_public_status(group.root)
+    timing = execution_group_timing(group, attempts, windows, attempt_counts)
 
     %{
       id: root.id,
@@ -393,9 +407,9 @@ defmodule FavnOrchestrator.RunReadModel do
       trigger_type: trigger_type(root),
       target_assets: target_assets(root),
       root_status: root.status,
-      started_at: root.inserted_at,
-      finished_at: finished_at(root),
-      duration_ms: duration_ms(root),
+      started_at: timing.started_at,
+      finished_at: timing.finished_at,
+      duration_ms: timing.duration_ms,
       total_windows: window_counts.total,
       completed_windows: window_counts.completed,
       failed_windows: window_counts.failed,
@@ -426,31 +440,38 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp trigger_type(_run), do: :manual
 
-  defp execution_group_asset_attempts(group) do
+  defp execution_group_asset_attempts(group, mode) do
+    windows_by_child_run_id =
+      group
+      |> execution_group_window_summaries()
+      |> Map.new(fn window -> {Map.get(window, :child_run_id), window} end)
+
     Enum.flat_map(group.runs, fn run ->
       case classify(run) do
         :backfill_parent ->
           []
 
         _role ->
-          events = run_events(run.id)
+          events = if(mode == :detail, do: run_events(run.id), else: [])
+          window = Map.get(windows_by_child_run_id, run.id)
 
           run
           |> step_summaries(events)
-          |> Enum.map(&asset_attempt_summary(group.root.id, run, &1))
+          |> Enum.map(&asset_attempt_summary(group.root.id, run, &1, window, mode))
       end
     end)
   end
 
-  defp asset_attempt_summary(root_id, %RunState{} = run, step) do
-    window = step.window || window(run, classify(run))
+  defp asset_attempt_summary(root_id, %RunState{} = run, step, window_hint, mode) do
+    window = step.window || window_hint || window(run, classify(run))
+    status = attempt_status(step.status, window_hint, mode)
 
     %{
       id: step.id,
       root_execution_group_id: root_id,
       child_run_id: if(run.id == root_id, do: nil, else: run.id),
       run_id: run.id,
-      status: status_name(step.status),
+      status: status,
       asset_key: step.asset_ref,
       asset_ref: step.asset_ref,
       stage: step.stage,
@@ -463,6 +484,61 @@ defmodule FavnOrchestrator.RunReadModel do
       window_start_at: window && window.start_at,
       window_end_at: window && window.end_at
     }
+  end
+
+  defp attempt_status(status, %{status: window_status}, :overview)
+       when status in [:pending, nil] and window_status in [:running, :pending, :queued],
+       do: status_name(window_status)
+
+  defp attempt_status(status, _window_hint, _mode), do: status_name(status)
+
+  defp execution_group_timing(group, attempts, windows, attempt_counts) do
+    started_at =
+      group.runs
+      |> Enum.map(& &1.inserted_at)
+      |> Kernel.++(Enum.map(attempts, & &1.started_at))
+      |> Kernel.++(Enum.map(windows, &Map.get(&1, :started_at)))
+      |> earliest_datetime()
+
+    active? =
+      attempt_counts.running > 0 or attempt_counts.queued > 0 or
+        Enum.any?(group.runs, &(with_public_status(&1).status in [:pending, :running])) or
+        Enum.any?(windows, &(Map.get(&1, :status) in [:pending, :queued, :running]))
+
+    finished_at =
+      if active? do
+        nil
+      else
+        group.runs
+        |> Enum.map(&(with_public_status(&1) |> finished_at()))
+        |> Kernel.++(Enum.map(attempts, & &1.finished_at))
+        |> Kernel.++(Enum.map(windows, &Map.get(&1, :finished_at)))
+        |> latest_datetime()
+      end
+
+    %{
+      started_at: started_at,
+      finished_at: finished_at,
+      duration_ms: duration_ms(started_at, finished_at)
+    }
+  end
+
+  defp earliest_datetime(values), do: datetime_extreme(values, &(DateTime.compare(&1, &2) == :lt))
+  defp latest_datetime(values), do: datetime_extreme(values, &(DateTime.compare(&1, &2) == :gt))
+
+  defp datetime_extreme(values, compare_fun) do
+    values
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce(nil, fn
+      %DateTime{} = value, nil ->
+        value
+
+      %DateTime{} = value, %DateTime{} = current ->
+        if(compare_fun.(value, current), do: value, else: current)
+
+      _value, current ->
+        current
+    end)
   end
 
   defp execution_group_window_summaries(%{root: root, runs: runs}) do
@@ -553,6 +629,26 @@ defmodule FavnOrchestrator.RunReadModel do
         matches_target_asset?(group, Keyword.get(filters, :target_asset)) and
         matches_group_only_filters?(group, filters)
     end)
+  end
+
+  defp maybe_limit_execution_groups(groups, filters) do
+    case Keyword.get(filters, :limit) do
+      limit when is_integer(limit) and limit > 0 -> Enum.take(groups, limit)
+      _other -> groups
+    end
+  end
+
+  defp execution_group_scan_limit(filters) do
+    case Keyword.get(filters, :limit) do
+      limit when is_integer(limit) and limit > 0 ->
+        limit
+        |> Kernel.*(5)
+        |> max(limit)
+        |> min(@execution_group_overview_max_scan_limit)
+
+      _other ->
+        @execution_group_overview_default_scan_limit
+    end
   end
 
   defp filter_asset_attempts(attempts, filters) do
@@ -1386,6 +1482,7 @@ defmodule FavnOrchestrator.RunReadModel do
         :blocked,
         :cancelled,
         :timed_out,
+        :skipped,
         :skipped_fresh,
         "ok",
         "partial",
@@ -1393,6 +1490,7 @@ defmodule FavnOrchestrator.RunReadModel do
         "blocked",
         "cancelled",
         "timed_out",
+        "skipped",
         "skipped_fresh"
       ]
 
@@ -1411,7 +1509,7 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp running_status?(status), do: status in [:running, :retrying, "running", "retrying"]
 
-  defp queued_status?(status), do: status in [:pending, nil, "pending"]
+  defp queued_status?(status), do: status in [:pending, :queued, nil, "pending", "queued"]
 
   defp empty_window?(nil), do: true
 

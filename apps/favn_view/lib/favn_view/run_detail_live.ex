@@ -25,6 +25,7 @@ defmodule FavnView.RunDetailLive do
         run_events_live?: false,
         active_mode: :overview,
         timeline_state: default_timeline_state(run),
+        selected_child_run_id: nil,
         selected_attempt_id: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
@@ -142,6 +143,7 @@ defmodule FavnView.RunDetailLive do
       active_mode={@active_mode}
       timeline_state={@timeline_state}
       timeline_hook?={true}
+      selected_child_run_id={@selected_child_run_id}
       selected_attempt_id={@selected_attempt_id}
     />
     """
@@ -152,7 +154,18 @@ defmodule FavnView.RunDetailLive do
     active_mode = active_mode_from_params(params, socket.assigns.active_mode)
     timeline_state = timeline_state_from_params(params, socket.assigns.run)
 
-    {:noreply, assign(socket, active_mode: active_mode, timeline_state: timeline_state)}
+    selected_child_run_id =
+      selected_child_run_id_from_params(params, socket.assigns.run, socket.assigns.run_id)
+
+    active_mode =
+      if selected_child_run_id && active_mode == :overview, do: :windows, else: active_mode
+
+    {:noreply,
+     assign(socket,
+       active_mode: active_mode,
+       timeline_state: timeline_state,
+       selected_child_run_id: selected_child_run_id
+     )}
   end
 
   @impl true
@@ -413,6 +426,21 @@ defmodule FavnView.RunDetailLive do
   defp timeline_zoom(zoom, _default) when zoom in @timeline_zoom_levels, do: zoom
   defp timeline_zoom(_zoom, default), do: default
 
+  defp selected_child_run_id_from_params(params, run, requested_run_id) do
+    child_ids = MapSet.new(Enum.map(run[:child_runs] || [], & &1.id))
+
+    cond do
+      MapSet.member?(child_ids, Map.get(params, "child_run_id")) ->
+        Map.get(params, "child_run_id")
+
+      MapSet.member?(child_ids, requested_run_id) ->
+        requested_run_id
+
+      true ->
+        nil
+    end
+  end
+
   defp attempt_from_public(attempt) do
     %{
       id: attempt.id,
@@ -657,7 +685,7 @@ defmodule FavnView.RunDetailLive do
 
   defp context_items(summary, root_run, target, windows) do
     [
-      %{label: "Execution group", value: summary.id},
+      %{label: "Backfill run", value: summary.id},
       %{label: "Manifest version", value: root_run.manifest_version_id || "Unknown"},
       %{label: "Target", value: target || "No target"},
       %{label: "Trigger", value: label(summary.trigger_type)},
@@ -744,7 +772,17 @@ defmodule FavnView.RunDetailLive do
   defp range_label(_start_at, _end_at), do: nil
 
   defp terminal_status?(status),
-    do: status in [:ok, :error, :partial, :cancelled, :timed_out, :skipped, :blocked]
+    do:
+      status in [
+        :ok,
+        :error,
+        :partial,
+        :cancelled,
+        :timed_out,
+        :skipped,
+        :skipped_fresh,
+        :blocked
+      ]
 
   defp failed_status?(status), do: status in [:error, :failed, :timed_out, :blocked]
   defp running_status?(status), do: status in [:running, :retrying]
@@ -757,6 +795,9 @@ defmodule FavnView.RunDetailLive do
   defp status_label(:running), do: "Running"
   defp status_label(:retrying), do: "Retrying"
   defp status_label(:skipped), do: "Skipped"
+  defp status_label(:skipped_fresh), do: "Skipped fresh"
+  defp status_label(:blocked), do: "Blocked"
+  defp status_label(:partial), do: "Partial"
   defp status_label(nil), do: "Pending"
   defp status_label(status), do: LogsViewModel.status_label(status)
   defp status_tone(status) when status in [:ok], do: :success

@@ -4,6 +4,7 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
   import FavnView.Components.RunDetailPage.Ui
 
   attr :run, :map, required: true
+  attr :selected_child_run_id, :string, default: nil
 
   def window_runs_panel(assigns) do
     ~H"""
@@ -14,9 +15,10 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
       <div class="mt-4 space-y-2">
         <div
           :for={child <- @run.child_runs}
-          class="rounded-box border border-base-content/10 bg-base-content/[0.03] p-3"
+          class={window_run_row_class(child.id == @selected_child_run_id)}
           data-testid="window-run-row"
           data-run-id={child.id}
+          data-selected={to_string(child.id == @selected_child_run_id)}
         >
           <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_8rem_8rem_8rem_12rem] lg:items-center">
             <div class="min-w-0">
@@ -37,4 +39,11 @@ defmodule FavnView.Components.RunDetailPage.WindowRuns do
     </section>
     """
   end
+
+  defp window_run_row_class(true),
+    do:
+      "rounded-box border border-primary/50 bg-primary/10 p-3 shadow-[0_0_24px_rgba(14,165,233,0.18)]"
+
+  defp window_run_row_class(false),
+    do: "rounded-box border border-base-content/10 bg-base-content/[0.03] p-3"
 end

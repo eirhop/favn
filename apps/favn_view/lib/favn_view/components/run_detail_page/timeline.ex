@@ -446,10 +446,21 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     }
   end
 
-  defp timeline_section_for(status) when status in [:running], do: "running"
+  defp timeline_section_for(status) when status in [:running, :retrying], do: "running"
 
   defp timeline_section_for(status)
-       when status in [:ok, :error, :timed_out, :cancelled, :skipped], do: "ran"
+       when status in [
+              :ok,
+              :partial,
+              :error,
+              :failed,
+              :timed_out,
+              :cancelled,
+              :blocked,
+              :skipped_fresh,
+              :skipped
+            ],
+       do: "ran"
 
   defp timeline_section_for(_status), do: "queued"
 

@@ -12,6 +12,7 @@ defmodule FavnView.PageLiveTest do
   alias Favn.Window.Policy
   alias Favn.Window.Spec, as: WindowSpec
   alias FavnView.Components.AssetDetailPage
+  alias FavnView.Components.RunDetailPage.Timeline
   alias FavnView.Auth.BrowserSessionStore
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
@@ -120,7 +121,12 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="child-runs-table"]))
     assert has_element?(view, ~s([data-testid="child-run-row"][data-run-id="#{child_id}"]))
-    assert has_element?(view, ~s(a[href="/runs/#{child_id}"]), "Open window run")
+
+    assert has_element?(
+             view,
+             ~s(a[href="/runs/#{parent_id}?view=windows&child_run_id=#{child_id}"]),
+             "Open window run"
+           )
   end
 
   test "execution group health reflects failed and running children", %{conn: conn} do
@@ -1300,7 +1306,11 @@ defmodule FavnView.PageLiveTest do
              "DuckDB ADBC connection bootstrap failed at attach_mart"
            )
 
-    assert has_element?(view, ~s(a[href="/runs/#{child_id}"]), "Open window run")
+    assert has_element?(
+             view,
+             ~s(a[href="/runs/#{parent_id}?view=windows&child_run_id=#{child_id}"]),
+             "Open window run"
+           )
   end
 
   test "run detail renders execution group header for backfill", %{conn: conn} do
@@ -1389,6 +1399,17 @@ defmodule FavnView.PageLiveTest do
     end
   end
 
+  test "run detail deep links child run ids to highlighted window runs", %{conn: conn} do
+    %{parent_id: parent_id, child_ids: [child_id | _]} = seed_run_detail_group!()
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}?view=windows&child_run_id=#{child_id}")
+
+    assert has_element?(
+             view,
+             ~s([data-testid="window-run-row"][data-run-id="#{child_id}"][data-selected="true"])
+           )
+  end
+
   test "run detail timeline groups attempts into running ran and queued", %{conn: conn} do
     %{parent_id: parent_id} = seed_run_detail_group!()
 
@@ -1447,6 +1468,43 @@ defmodule FavnView.PageLiveTest do
     html = render_click(view, "set_mode", %{"mode" => "timeline"})
 
     assert html =~ ~r/data-section="ran".*customer_orders_daily.*Feb 2026.*Failed/s
+  end
+
+  test "run detail timeline puts blocked skipped fresh and partial attempts in ran" do
+    run = %{
+      active?: false,
+      windows: [],
+      matrix: %{
+        rows: [
+          %{
+            cells: [
+              timeline_attempt(:blocked),
+              timeline_attempt(:skipped_fresh),
+              timeline_attempt(:partial)
+            ]
+          }
+        ]
+      }
+    }
+
+    html =
+      render_component(&Timeline.timeline_panel/1,
+        run: run,
+        timeline_hook?: false,
+        timeline_state: %{
+          mode: :fit,
+          zoom: "full",
+          live_follow?: false,
+          search: "",
+          status: "all",
+          window: "all",
+          failed_only?: false,
+          running_only?: false
+        }
+      )
+
+    assert html =~ ~r/data-section="ran".*Blocked.*Skipped fresh.*Partial/s
+    refute html =~ ~r/data-section="queued".*Blocked/s
   end
 
   test "run detail timeline uses started to now bars for running attempts", %{conn: conn} do
@@ -2126,6 +2184,32 @@ defmodule FavnView.PageLiveTest do
     end)
 
     %{parent_id: parent_id, child_ids: child_ids}
+  end
+
+  defp timeline_attempt(status) do
+    label =
+      status
+      |> to_string()
+      |> String.replace("_", " ")
+      |> String.capitalize()
+
+    %{
+      id: "attempt-#{status}",
+      attempt_id: "attempt-#{status}",
+      asset_key: "asset_#{status}",
+      asset_ref: "asset_#{status}",
+      asset_name: "asset_#{status}",
+      short_asset_name: "asset_#{status}",
+      window_label: "May 2026",
+      raw_status: status,
+      status: label,
+      status_tone: if(status == :blocked, do: :error, else: :neutral),
+      started_at_raw: ~U[2026-05-01 00:00:00Z],
+      finished_at_raw: ~U[2026-05-01 00:00:10Z],
+      started_at: "May 1, 2026 00:00 UTC",
+      duration: "10s",
+      error_summary: nil
+    }
   end
 
   defp run_state(name, status, seconds_from_now, run_id \\ nil) do

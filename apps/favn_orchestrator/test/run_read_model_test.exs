@@ -771,6 +771,46 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert ok.status == :ok
   end
 
+  test "execution group summary timing spans child window run activity" do
+    parent =
+      "exec_group_duration_parent"
+      |> run(submit_kind: :backfill_pipeline)
+      |> RunState.transition(status: :ok, result: %{status: :ok})
+      |> Map.put(:inserted_at, ~U[2026-04-30 00:00:00Z])
+      |> Map.put(:updated_at, ~U[2026-04-30 00:00:01Z])
+
+    first_anchor = anchor(~U[2026-05-01 00:00:00Z])
+    second_anchor = anchor(~U[2026-05-02 00:00:00Z])
+
+    first_child =
+      child_run(parent, "exec_group_duration_first", first_anchor, :ok,
+        result_status: :ok,
+        started_at: ~U[2026-05-01 00:00:10Z],
+        finished_at: ~U[2026-05-01 00:00:20Z]
+      )
+      |> Map.put(:inserted_at, ~U[2026-05-01 00:00:10Z])
+      |> Map.put(:updated_at, ~U[2026-05-01 00:00:20Z])
+
+    second_child =
+      child_run(parent, "exec_group_duration_second", second_anchor, :ok,
+        result_status: :ok,
+        started_at: ~U[2026-05-02 00:00:30Z],
+        finished_at: ~U[2026-05-02 00:00:45Z]
+      )
+      |> Map.put(:inserted_at, ~U[2026-05-02 00:00:30Z])
+      |> Map.put(:updated_at, ~U[2026-05-02 00:00:45Z])
+
+    Enum.each([parent, first_child, second_child], &assert(:ok = Storage.put_run(&1)))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, first_anchor, :ok))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, second_anchor, :ok))
+
+    assert {:ok, [group]} = FavnOrchestrator.list_execution_groups(trigger_type: :backfill)
+
+    assert group.started_at == ~U[2026-04-30 00:00:00Z]
+    assert group.finished_at == ~U[2026-05-02 00:00:45Z]
+    assert group.duration_ms == 172_845_000
+  end
+
   defp run(run_id, opts) do
     RunState.new(
       id: run_id,

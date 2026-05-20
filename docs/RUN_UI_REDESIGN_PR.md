@@ -20,6 +20,9 @@ diagnose.
 - Parent backfill runs and child window runs are distinct concepts. Parent
   backfills appear as the primary `/runs` rows; child runs are shown under their
   parent or in the run detail Window runs view.
+- The `/runs` overview read path is bounded and summary-oriented. It uses run
+  snapshots plus the backfill-window ledger and avoids per-run event hydration;
+  detail views load asset attempts and timeline data.
 
 ## UI Changes
 
@@ -70,6 +73,8 @@ kept generic using sales/order/customer assets.
 - Horizontal virtualization is basic. The chart width is bounded pragmatically;
   true horizontal virtualization is deferred.
 - Vertical virtualization/pagination for very high attempt counts is deferred.
+- The run overview uses a bounded recent-run scan while storage-level execution
+  group pagination remains future work.
 - Retry/rerun actions are not included in this PR.
 - Logs/events are linked and listed, but the logs/events experience was not
   redesigned in this PR.

@@ -77,7 +77,10 @@ defmodule FavnView.Components.RunDetailPage.Overview do
         Failed backfill window Showing {length(@run.failures)} of {@run.failed_windows}
         <div :for={attempt <- @run.failures} data-testid="backfill-failure-row">
           {attempt.short_asset_name} {attempt.window_label} {attempt.error_summary}
-          <.link :if={attempt.child_run_id} navigate={~p"/runs/#{attempt.child_run_id}"}>
+          <.link
+            :if={attempt.child_run_id}
+            navigate={~p"/runs/#{@run.id}?view=windows&child_run_id=#{attempt.child_run_id}"}
+          >
             Open window run
           </.link>
         </div>

@@ -24,6 +24,7 @@ defmodule FavnView.Components.RunDetailPage do
   attr :active_mode, :atom, default: :overview
   attr :timeline_state, :map, default: nil
   attr :timeline_hook?, :boolean, default: false
+  attr :selected_child_run_id, :string, default: nil
   attr :selected_attempt_id, :string, default: nil
 
   def run_detail_page(assigns) do
@@ -52,6 +53,7 @@ defmodule FavnView.Components.RunDetailPage do
         active_mode={@active_mode}
         timeline_state={@timeline_state || default_timeline_state(@run)}
         timeline_hook?={@timeline_hook?}
+        selected_child_run_id={@selected_child_run_id}
         selected_attempt={@selected_attempt}
       />
 
@@ -66,6 +68,7 @@ defmodule FavnView.Components.RunDetailPage do
   attr :active_mode, :atom, required: true
   attr :timeline_state, :map, required: true
   attr :timeline_hook?, :boolean, required: true
+  attr :selected_child_run_id, :string, default: nil
   attr :selected_attempt, :map, default: nil
 
   def execution_group_page(assigns) do
@@ -87,7 +90,11 @@ defmodule FavnView.Components.RunDetailPage do
             timeline_hook?={@timeline_hook?}
           />
           <Failures.failures_panel :if={@active_mode == :failures} run={@run} />
-          <WindowRuns.window_runs_panel :if={@active_mode == :windows} run={@run} />
+          <WindowRuns.window_runs_panel
+            :if={@active_mode == :windows}
+            run={@run}
+            selected_child_run_id={@selected_child_run_id}
+          />
           <Events.events_panel :if={@active_mode == :events} run={@run} />
         </div>
       </GlassPanel.glass_panel>

@@ -441,7 +441,10 @@ defmodule FavnView.Components.RunsListPage do
                 <td class="whitespace-nowrap text-base-content/65">{child.started_at}</td>
                 <td class="whitespace-nowrap text-base-content/65">{child.duration}</td>
                 <td class="text-right">
-                  <.link navigate={~p"/runs/#{child.id}"} class="btn btn-ghost btn-xs text-primary">
+                  <.link
+                    navigate={~p"/runs/#{@group.id}?view=windows&child_run_id=#{child.id}"}
+                    class="btn btn-ghost btn-xs text-primary"
+                  >
                     Open window run
                   </.link>
                 </td>
@@ -520,7 +523,7 @@ defmodule FavnView.Components.RunsListPage do
         <div :if={match?(%{child_runs: [_ | _]}, @detail)} class="space-y-2">
           <.link
             :for={child <- @detail.child_runs}
-            navigate={~p"/runs/#{child.id}"}
+            navigate={~p"/runs/#{@group.id}?view=windows&child_run_id=#{child.id}"}
             class="block rounded-field border border-base-content/10 p-2 text-xs hover:border-primary/30"
             data-testid="child-run-card"
           >
