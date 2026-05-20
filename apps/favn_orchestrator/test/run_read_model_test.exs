@@ -837,6 +837,81 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert attempt.window_end_at == anchor.end_at
   end
 
+  test "execution group asset attempts expose output metadata" do
+    parent = run("exec_group_output_parent", submit_kind: :backfill_pipeline)
+    anchor = anchor(~U[2026-06-01 00:00:00Z])
+
+    child =
+      child_run(parent, "exec_group_output_child", anchor, :ok,
+        result_status: :ok,
+        meta: %{
+          rows_written: 0,
+          relation: "raw.mercatus.reporting_baseline_feeding",
+          mode: :monthly_replace,
+          source: %{system: :mercatus}
+        }
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, anchor, :ok))
+
+    assert {:ok, [attempt]} = FavnOrchestrator.list_execution_group_asset_attempts(parent.id)
+
+    assert attempt.output_metadata == %{
+             "rows_written" => 0,
+             "relation" => "raw.mercatus.reporting_baseline_feeding",
+             "mode" => "monthly_replace",
+             "source" => %{"system" => "mercatus"}
+           }
+  end
+
+  test "asset step log context exposes output metadata states" do
+    parent = run("asset_log_output_parent", submit_kind: :backfill_pipeline)
+    anchor = anchor(~U[2026-06-01 00:00:00Z])
+
+    success =
+      child_run(parent, "asset_log_output_success", anchor, :ok,
+        result_status: :ok,
+        meta: %{rows_written: 0}
+      )
+
+    empty_success =
+      child_run(parent, "asset_log_output_empty_success", anchor, :ok,
+        result_status: :ok,
+        meta: %{}
+      )
+
+    failed =
+      child_run(parent, "asset_log_output_failed", anchor, :error,
+        result_status: :error,
+        error: %{message: "failed"},
+        meta: %{}
+      )
+
+    Enum.each([parent, success, empty_success, failed], &assert(:ok = Storage.put_run(&1)))
+
+    assert {:ok, success_context} =
+             FavnOrchestrator.get_asset_step_log_context(success.id, "#{success.id}-step")
+
+    assert success_context.step.output_metadata == %{"rows_written" => 0}
+
+    assert {:ok, empty_context} =
+             FavnOrchestrator.get_asset_step_log_context(
+               empty_success.id,
+               "#{empty_success.id}-step"
+             )
+
+    assert empty_context.step.status == :ok
+    assert empty_context.step.output_metadata == %{}
+
+    assert {:ok, failed_context} =
+             FavnOrchestrator.get_asset_step_log_context(failed.id, "#{failed.id}-step")
+
+    assert failed_context.step.status == :error
+    assert failed_context.step.output_metadata == %{}
+  end
+
   test "execution group timeline is ordered by execution start time" do
     parent = run("exec_group_timeline_parent", submit_kind: :backfill_pipeline)
     first_anchor = anchor(~U[2026-07-01 00:00:00Z])
@@ -1025,6 +1100,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
     started_at = Keyword.get(opts, :started_at, anchor.start_at)
     finished_at = Keyword.get(opts, :finished_at, DateTime.add(started_at, 1, :second))
     error = Keyword.get(opts, :error)
+    meta = Keyword.get(opts, :meta, %{})
     window = public_window(anchor)
     node_key = {asset_ref, window.key}
 
@@ -1061,6 +1137,7 @@ defmodule FavnOrchestrator.RunReadModelTest do
             finished_at: finished_at,
             duration_ms: DateTime.diff(finished_at, started_at, :millisecond),
             error: error,
+            meta: meta,
             attempt_count: 1,
             max_attempts: 1,
             asset_step_id: "#{run_id}-step"

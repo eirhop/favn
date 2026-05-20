@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.API.DTO do
 
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Run.AssetResult
+  alias Favn.Run.NodeResult
   alias Favn.Window.Policy
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
@@ -172,6 +173,7 @@ defmodule FavnOrchestrator.API.DTO do
       finished_at: datetime(result.finished_at),
       duration_ms: result.duration_ms,
       meta: normalize(result.meta),
+      output_metadata: normalize(result.meta),
       error: error_payload(result.error),
       attempt_count: result.attempt_count,
       max_attempts: result.max_attempts,
@@ -181,10 +183,19 @@ defmodule FavnOrchestrator.API.DTO do
     }
   end
 
-  def asset_result(result) when is_map(result) do
+  def asset_result(%NodeResult{} = result) do
     result
-    |> normalize()
+    |> Map.from_struct()
+    |> asset_result()
+  end
+
+  def asset_result(result) when is_map(result) do
+    normalized = normalize(result)
+    output_metadata = map_output_metadata(result)
+
+    normalized
     |> Map.put_new("asset_ref", ref_to_string(Map.get(result, :ref) || Map.get(result, "ref")))
+    |> Map.put_new("output_metadata", output_metadata)
   end
 
   def asset_result(result), do: %{asset_ref: nil, error: error_payload(result)}
@@ -194,6 +205,12 @@ defmodule FavnOrchestrator.API.DTO do
       Map.get(result, :stage) || Map.get(result, "stage") || 0,
       Map.get(result, :asset_ref) || Map.get(result, "asset_ref") || ""
     }
+  end
+
+  defp map_output_metadata(result) when is_map(result) do
+    result
+    |> field(:output_metadata, field(result, :meta, %{}))
+    |> normalize()
   end
 
   @spec node_results(map() | term()) :: [map()]

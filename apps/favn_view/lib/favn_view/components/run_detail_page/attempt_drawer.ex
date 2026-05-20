@@ -2,6 +2,7 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
   @moduledoc false
   use FavnView, :html
   import FavnView.Components.RunDetailPage.Ui
+  alias FavnView.Components.OutputMetadata
 
   attr :attempt, :map, required: true
 
@@ -60,6 +61,13 @@ defmodule FavnView.Components.RunDetailPage.AttemptDrawer do
             <.drawer_fact label="Asset key" value={@attempt.asset_key} mono />
           </dl>
         </section>
+
+        <OutputMetadata.output_metadata
+          id={"output-metadata-#{@attempt.id}"}
+          class="mt-3"
+          metadata={Map.get(@attempt, :output_metadata)}
+          status={@attempt.raw_status}
+        />
 
         <div
           :if={@attempt.error_summary}

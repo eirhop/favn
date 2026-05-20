@@ -1089,6 +1089,8 @@ defmodule FavnOrchestrator.API.RouterTest do
              run["asset_results"]
 
     assert meta == %{"rows_written" => 2, "relation" => "gold.orders"}
+    assert [%{"output_metadata" => output_metadata}] = run["asset_results"]
+    assert output_metadata == %{"rows_written" => 2, "relation" => "gold.orders"}
     assert run["params"]["limit"] == 1
     assert run["params"]["credentials"] == "[REDACTED]"
     assert run["params"]["relation"]["schema"] == "gold"
@@ -1159,6 +1161,8 @@ defmodule FavnOrchestrator.API.RouterTest do
              run["asset_results"]
 
     assert meta == %{"rows_written" => 3, "relation" => "gold.orders"}
+    assert [%{"output_metadata" => output_metadata}] = run["asset_results"]
+    assert output_metadata == %{"rows_written" => 3, "relation" => "gold.orders"}
   end
 
   test "inspection endpoint dispatches to runner and caps sample limit" do
