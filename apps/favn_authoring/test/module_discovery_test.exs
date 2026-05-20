@@ -93,7 +93,10 @@ defmodule FavnAuthoring.ModuleDiscoveryTest do
     File.rm_rf!(ebin_path)
     File.mkdir_p!(ebin_path)
 
-    on_exit(fn -> File.rm_rf!(ebin_path) end)
+    on_exit(fn ->
+      Code.delete_path(ebin_path)
+      File.rm_rf!(ebin_path)
+    end)
 
     [{^module, beam}] =
       Code.compile_string("""
@@ -113,7 +116,12 @@ defmodule FavnAuthoring.ModuleDiscoveryTest do
 
     File.write!(Path.join(ebin_path, "#{module}.beam"), beam)
 
+    :code.purge(module)
+    :code.delete(module)
+    refute Code.loaded?(module)
+
     assert {:ok, [^module]} = ModuleDiscovery.discover(:connections, apps: [app])
+    assert Code.loaded?(module)
   end
 
   test "explicit manifest module inputs override discovery" do

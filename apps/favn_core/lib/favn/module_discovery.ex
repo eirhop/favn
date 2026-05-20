@@ -105,7 +105,7 @@ defmodule Favn.ModuleDiscovery do
          ebin_path <- Path.join([build_path, "lib", Atom.to_string(app), "ebin"]),
          {:ok, modules} <- beam_modules(ebin_path),
          true <- modules != [] do
-      Code.prepend_path(String.to_charlist(ebin_path))
+      Code.prepend_path(ebin_path)
       {:ok, modules}
     else
       _other -> :error
