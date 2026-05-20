@@ -2097,8 +2097,10 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   defp lock_execution_lease_scopes(repo, scopes) do
-    Enum.reduce_while(scopes, :ok, fn scope, :ok ->
-      {scope_kind, scope_key} = ExecutionLeaseCodec.scope_identity(scope)
+    scopes
+    |> Enum.map(&ExecutionLeaseCodec.scope_identity/1)
+    |> Enum.sort()
+    |> Enum.reduce_while(:ok, fn {scope_kind, scope_key}, :ok ->
       lock_key = "#{scope_kind}:#{scope_key}"
 
       case SQL.query(repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [lock_key]) do
