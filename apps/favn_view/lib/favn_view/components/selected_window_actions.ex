@@ -101,6 +101,7 @@ defmodule FavnView.Components.SelectedWindowActions do
       <.form
         for={%{}}
         as={:run_config}
+        phx-change="change_run_config"
         phx-submit="run_selected_window"
         class="space-y-4"
         data-testid="run-config-form"
@@ -201,6 +202,9 @@ defmodule FavnView.Components.SelectedWindowActions do
           </div>
           <p class="mt-2 text-xs text-base-content/55">
             {window_context_description(@selected_window, @active_timeline)}
+          </p>
+          <p :if={is_nil(@selected_window)} class="mt-1 text-xs text-base-content/55">
+            Range backfills default to missing refresh; choose force explicitly to recompute existing successful windows.
           </p>
         </fieldset>
 

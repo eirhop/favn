@@ -683,6 +683,58 @@ defmodule FavnView.PageLiveTest do
     })
   end
 
+  test "run asset range defaults visible refresh and child runs to missing", %{conn: conn} do
+    {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
+
+    open_run_config(view)
+
+    assert has_element?(view, ~s(input[name="run_config[refresh]"][value="auto"][checked]))
+
+    assert has_element?(
+             view,
+             ~s([data-testid="run-config-panel"]),
+             "Range backfills default to missing refresh"
+           )
+
+    view
+    |> element(~s([data-testid="run-config-form"]))
+    |> render_change(%{
+      "run_config" => %{
+        "dependencies" => "all",
+        "refresh" => "auto",
+        "source" => "refresh_timeline",
+        "kind" => "day",
+        "value" => "2026-06-12",
+        "to" => "2026-06-13",
+        "timezone" => "Etc/UTC"
+      }
+    })
+
+    assert has_element?(view, ~s(input[name="run_config[refresh]"][value="missing"][checked]))
+
+    view
+    |> element(~s([data-testid="run-config-form"]))
+    |> render_submit(%{
+      "run_config" => %{
+        "dependencies" => "all",
+        "source" => "refresh_timeline",
+        "kind" => "day",
+        "value" => "2026-06-12",
+        "to" => "2026-06-13",
+        "timezone" => "Etc/UTC"
+      }
+    })
+
+    assert {run_path, %{"info" => "Asset backfill submitted"}} = assert_redirect(view)
+    parent_run_id = String.replace_prefix(run_path, "/runs/", "")
+
+    assert {:ok, runs} = Storage.list_runs()
+
+    children = Enum.filter(runs, &(&1.parent_run_id == parent_run_id))
+    assert length(children) == 2
+    assert Enum.all?(children, &(&1.metadata[:refresh_policy].mode == :missing))
+  end
+
   test "run asset form submits an inclusive forced backfill range", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 

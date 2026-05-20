@@ -1,15 +1,15 @@
 defmodule FavnOrchestrator.BackfillManager do
   @moduledoc """
-  Orchestrator-owned parent/child pipeline backfill submission.
+  Orchestrator-owned parent/child operational backfill submission.
 
   This module is deliberately below the public `Favn` facade. It owns the
   control-plane mechanics for issue 168 style operational backfills:
 
   - resolve an operator range request into concrete windows
-  - persist a parent `:backfill_pipeline` run
+  - persist a parent `:backfill_pipeline` or `:backfill_asset` run
   - persist one `FavnOrchestrator.Backfill.BackfillWindow` row per requested
     window
-  - submit one normal child pipeline run per window with lineage metadata,
+  - submit one normal child pipeline or asset run per window with lineage metadata,
     immediately through the normal orchestrator run path
 
   HTTP, CLI, and future web surfaces should call the orchestrator facade rather

@@ -127,9 +127,22 @@ defmodule FavnView.AssetDetailLive do
     {:noreply, assign(socket, :run_config_open?, false)}
   end
 
+  def handle_event("change_run_config", params, socket) do
+    run_config =
+      params
+      |> run_config_from_params(socket.assigns.run_config)
+      |> apply_asset_range_defaults(socket.assigns.selected_window)
+
+    {:noreply, assign(socket, :run_config, run_config)}
+  end
+
   def handle_event("run_selected_window", params, socket) do
     %{asset: asset, selected_window: selected_window} = socket.assigns
-    run_config = run_config_from_params(params, socket.assigns.run_config)
+
+    run_config =
+      params
+      |> run_config_from_params(socket.assigns.run_config)
+      |> apply_asset_range_defaults(selected_window)
 
     cond do
       !socket.assigns.can_submit_runs? ->
@@ -557,6 +570,13 @@ defmodule FavnView.AssetDetailLive do
   end
 
   defp run_config_from_params(_params, current_config), do: current_config || default_run_config()
+
+  defp apply_asset_range_defaults(%{to: to, refresh: refresh} = run_config, nil)
+       when is_binary(to) and to != "" and refresh == "auto" do
+    %{run_config | refresh: "missing"}
+  end
+
+  defp apply_asset_range_defaults(run_config, _selected_window), do: run_config
 
   defp run_submit_opts(asset, %{dependencies: dependencies, refresh: refresh}) do
     with {:ok, dependencies} <- dependency_option(dependencies),
