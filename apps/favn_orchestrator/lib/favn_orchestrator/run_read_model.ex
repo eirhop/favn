@@ -1011,6 +1011,8 @@ defmodule FavnOrchestrator.RunReadModel do
     persisted_steps
     |> merge_event_steps(event_steps, run, settling?)
     |> append_waiting_steps(run, event_steps, settling?)
+    |> normalize_step_timings()
+    |> normalize_active_step_statuses(run)
     |> mark_cascade_failures(events)
     |> Enum.sort_by(&{&1.stage || 999_999, &1.asset_ref})
   end
@@ -1253,6 +1255,7 @@ defmodule FavnOrchestrator.RunReadModel do
         |> Enum.find(&step_event_type?(&1, "step_started"))
         |> then(&(&1 && &1.occurred_at)),
       finished_at: event_step_finished_at(latest, events),
+      sequence: latest.sequence,
       attempt: Map.get(data, :attempt) || Map.get(data, "attempt"),
       error: Map.get(data, :error) || Map.get(data, "error"),
       output: nil,
@@ -1260,6 +1263,71 @@ defmodule FavnOrchestrator.RunReadModel do
       failure_role: nil,
       root_failure_asset_ref: nil
     }
+  end
+
+  defp normalize_step_timings(steps) do
+    Enum.map(steps, fn step ->
+      started_at = derived_step_started_at(step) || step.started_at
+      duration_ms = step.duration_ms || duration_ms(started_at, step.finished_at)
+
+      %{step | started_at: started_at, duration_ms: duration_ms}
+    end)
+  end
+
+  defp derived_step_started_at(%{
+         status: status,
+         finished_at: %DateTime{} = finished_at,
+         duration_ms: duration_ms
+       })
+       when is_integer(duration_ms) and duration_ms >= 0 do
+    if terminal_status?(status),
+      do: DateTime.add(finished_at, -duration_ms, :millisecond),
+      else: nil
+  end
+
+  defp derived_step_started_at(_step), do: nil
+
+  defp normalize_active_step_statuses(steps, %RunState{} = run) do
+    max_concurrency = run_max_concurrency(run)
+    running_steps = Enum.filter(steps, &submitted_running_step?/1)
+
+    if length(running_steps) > max_concurrency do
+      running_ids =
+        running_steps
+        |> Enum.sort_by(&submitted_step_sort_key/1)
+        |> Enum.take(max_concurrency)
+        |> MapSet.new(& &1.id)
+
+      Enum.map(steps, fn step ->
+        if submitted_running_step?(step) and not MapSet.member?(running_ids, step.id) do
+          %{
+            step
+            | status: :pending,
+              explanation: "Asset has been submitted and is waiting for runner capacity."
+          }
+        else
+          step
+        end
+      end)
+    else
+      steps
+    end
+  end
+
+  defp run_max_concurrency(%RunState{metadata: metadata}) when is_map(metadata) do
+    case Map.get(metadata, :max_concurrency) || Map.get(metadata, "max_concurrency") do
+      max_concurrency when is_integer(max_concurrency) and max_concurrency > 0 -> max_concurrency
+      _other -> 1
+    end
+  end
+
+  defp run_max_concurrency(_run), do: 1
+
+  defp submitted_running_step?(%{status: :running, finished_at: nil}), do: true
+  defp submitted_running_step?(_step), do: false
+
+  defp submitted_step_sort_key(step) do
+    {datetime_sort_key(step.started_at), Map.get(step, :sequence) || 0, step.id || ""}
   end
 
   defp mark_cascade_failures(steps, events) do

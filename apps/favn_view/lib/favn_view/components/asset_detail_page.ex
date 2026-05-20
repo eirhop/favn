@@ -164,7 +164,7 @@ defmodule FavnView.Components.AssetDetailPage do
     ~H"""
     <GlassPanel.glass_panel
       id="window-timeline"
-      class="mx-auto w-full max-w-6xl p-6 sm:p-8 lg:p-10"
+      class="mx-auto w-full max-w-[120rem] p-6 sm:p-8 lg:p-10"
       data-testid="window-timeline-panel"
     >
       <div class="flex flex-col gap-10">

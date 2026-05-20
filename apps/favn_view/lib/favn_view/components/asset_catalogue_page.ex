@@ -25,7 +25,7 @@ defmodule FavnView.Components.AssetCataloguePage do
       subtitle="Browse and monitor all assets"
       nav_items={@nav_items}
     >
-      <div class="mx-auto w-full max-w-6xl pb-24 lg:pb-0" data-testid="asset-catalogue-page">
+      <div class="mx-auto w-full max-w-[120rem] pb-24 lg:pb-0" data-testid="asset-catalogue-page">
         <.loading_state :if={@loading} />
         <.error_state :if={!@loading && @error} />
 

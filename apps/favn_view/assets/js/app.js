@@ -82,12 +82,24 @@ const Hooks = {
         if (!bounds.width) return
 
         const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width))
-        this.el.scrollLeft = ratio * Math.max(this.el.scrollWidth - this.el.clientWidth, 0)
-        if (this.el.dataset.liveFollow === "true") this.pushEvent("timeline_pause_live", {})
+        this.pendingFocusRatio = ratio
+        this.pushEvent("timeline_focus", {ratio})
+        this.scrollToRatio(ratio)
       })
     },
     updated() {
       this.followNow()
+      if (this.pendingFocusRatio !== undefined) {
+        const ratio = this.pendingFocusRatio
+        this.pendingFocusRatio = undefined
+        window.requestAnimationFrame(() => this.scrollToRatio(ratio))
+      }
+    },
+    scrollToRatio(ratio) {
+      const maxScroll = Math.max(this.el.scrollWidth - this.el.clientWidth, 0)
+      this.ignoreScroll = true
+      this.el.scrollLeft = Math.max(0, Math.min(maxScroll, ratio * maxScroll))
+      window.requestAnimationFrame(() => { this.ignoreScroll = false })
     },
     followNow() {
       if (this.el.dataset.active !== "true" || this.el.dataset.liveFollow !== "true") return

@@ -35,7 +35,7 @@ defmodule FavnView.Components.LogViewer do
 
     ~H"""
     <section
-      class="mx-auto flex min-h-0 w-full max-w-6xl flex-1"
+      class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1"
       data-testid="log-viewer"
       data-log-scope={@scope}
     >

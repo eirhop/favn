@@ -18,6 +18,7 @@ defmodule FavnView.Components.AppShell do
   attr :facts, :list, default: []
   attr :show_header?, :boolean, default: false
   attr :compact_header?, :boolean, default: true
+  attr :content_scroll?, :boolean, default: true
 
   slot :inner_block, required: true
   slot :mode_rail
@@ -29,7 +30,7 @@ defmodule FavnView.Components.AppShell do
       <IconNav.icon_nav items={@nav_items} />
 
       <div class="relative z-10 flex h-screen min-h-0 flex-col px-5 py-3 md:py-4 md:pl-32 md:pr-8 lg:pr-32">
-        <header class="mx-auto flex w-full max-w-[96rem] shrink-0 items-center justify-between gap-3">
+        <header class="mx-auto flex w-full max-w-[120rem] shrink-0 items-center justify-between gap-3">
           <div class="flex min-w-0 items-center gap-3">
             <IconNav.mobile_icon_nav items={@nav_items} />
             <a href={~p"/"} class="btn btn-ghost gap-2 px-2 md:hidden" aria-label="Favn home">
@@ -96,7 +97,8 @@ defmodule FavnView.Components.AppShell do
         </header>
 
         <main class={[
-          "mx-auto flex min-h-0 w-full max-w-[96rem] flex-1 flex-col justify-start overflow-y-auto",
+          "mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col justify-start",
+          if(@content_scroll?, do: "overflow-y-auto", else: "overflow-hidden"),
           if(@compact_header?, do: "py-2 md:py-3", else: "py-4 md:py-6")
         ]}>
           <dl

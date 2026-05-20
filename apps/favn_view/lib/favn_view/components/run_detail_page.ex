@@ -73,7 +73,7 @@ defmodule FavnView.Components.RunDetailPage do
 
   def execution_group_page(assigns) do
     ~H"""
-    <div class="mx-auto flex w-full max-w-[96rem] flex-col gap-3" data-testid="run-detail-page">
+    <div class="mx-auto flex w-full max-w-[120rem] flex-col gap-3" data-testid="run-detail-page">
       <Stats.execution_group_stats run={@run} />
 
       <GlassPanel.glass_panel

@@ -89,6 +89,21 @@ defmodule FavnView.RunDetailLive do
      )}
   end
 
+  def handle_event("timeline_focus", _params, socket) do
+    zoom = socket.assigns.timeline_state.zoom
+
+    {:noreply,
+     patch_run_state(socket,
+       active_mode: :timeline,
+       timeline_state: %{
+         socket.assigns.timeline_state
+         | zoom: if(zoom == "full", do: "30m", else: zoom),
+           mode: :manual,
+           live_follow?: false
+       }
+     )}
+  end
+
   def handle_event("timeline_jump_now", _params, socket) do
     if socket.assigns.run[:active?] do
       {:noreply,
@@ -211,6 +226,7 @@ defmodule FavnView.RunDetailLive do
     attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public/1)
     legacy_asset_results = Enum.map(Map.get(root_detail, :steps, []), &legacy_step_from_public/1)
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
+    events = group_events(root_detail.events, Map.get(detail, :child_runs, []))
     child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
     timeline = Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
     matrix = matrix(attempts, windows)
@@ -258,9 +274,8 @@ defmodule FavnView.RunDetailLive do
       failures: failures,
       child_runs: child_runs,
       timeline: timeline,
-      events: Enum.map(root_detail.events, &event_from_public/1),
-      latest_event_summary:
-        root_detail.events |> Enum.map(&event_from_public/1) |> latest_event_summary(),
+      events: Enum.map(events, &event_from_public/1),
+      latest_event_summary: events |> Enum.map(&event_from_public/1) |> latest_event_summary(),
       waiting_activity?: root_detail.events == [] and active_group?(summary),
       current_activity: current_activity(attempts),
       selected_attempt: nil,
@@ -268,7 +283,8 @@ defmodule FavnView.RunDetailLive do
       back_asset_href:
         existing_back_asset_href || back_asset_href(List.first(summary.target_assets)),
       raw_run: inspect(detail, pretty: true, limit: 50, printable_limit: 2_000),
-      raw_events: inspect(root_detail.events, pretty: true, limit: 50, printable_limit: 2_000)
+      raw_events: inspect(events, pretty: true, limit: 50, printable_limit: 2_000),
+      root_event_sequence: latest_sequence(root_detail.events, nil)
     }
   end
 
@@ -277,6 +293,27 @@ defmodule FavnView.RunDetailLive do
       {:ok, detail} -> detail
       {:error, _reason} -> %{events: []}
     end
+  end
+
+  defp group_events(root_events, child_runs) do
+    child_events =
+      child_runs
+      |> Enum.flat_map(fn child ->
+        case FavnOrchestrator.get_run_detail(child.id) do
+          {:ok, detail} -> Map.get(detail, :events, [])
+          {:error, _reason} -> []
+        end
+      end)
+
+    (root_events ++ child_events)
+    |> Enum.sort_by(&event_sort_key/1)
+  end
+
+  defp event_sort_key(event) do
+    occurred_at = Map.get(event, :occurred_at)
+
+    {datetime_sort_key(occurred_at), Map.get(event, :run_id) || "",
+     Map.get(event, :sequence) || 0}
   end
 
   defp maybe_schedule_refresh(%{assigns: %{run: %{active?: true}}} = socket) do
@@ -330,9 +367,7 @@ defmodule FavnView.RunDetailLive do
     )
   end
 
-  defp run_query_params(:overview, timeline_state) do
-    timeline_query_params(timeline_state)
-  end
+  defp run_query_params(:overview, _timeline_state), do: %{}
 
   defp run_query_params(active_mode, timeline_state) do
     Map.put(timeline_query_params(timeline_state), "view", Atom.to_string(active_mode))
@@ -340,7 +375,11 @@ defmodule FavnView.RunDetailLive do
 
   defp timeline_query_params(timeline_state) do
     %{}
-    |> maybe_put_param("timeline_zoom", timeline_state.zoom, timeline_state.zoom != "30m")
+    |> maybe_put_param(
+      "timeline_zoom",
+      timeline_state.zoom,
+      timeline_state.zoom != "30m" or timeline_state.mode == :manual
+    )
     |> maybe_put_param(
       "timeline_mode",
       Atom.to_string(timeline_state.mode),
@@ -360,7 +399,7 @@ defmodule FavnView.RunDetailLive do
   defp active_mode_from_params(%{"view" => mode}, _current) when mode in @valid_modes,
     do: String.to_existing_atom(mode)
 
-  defp active_mode_from_params(_params, current), do: current
+  defp active_mode_from_params(_params, _current), do: :overview
 
   defp timeline_state_from_params(params, run) do
     default = default_timeline_state(run)
@@ -554,13 +593,16 @@ defmodule FavnView.RunDetailLive do
       end)
       |> Enum.sort_by(& &1.name)
 
-    attempts_by_cell = Map.new(attempts, &{{&1.asset_key, &1.window_id || "none"}, &1})
+    attempts_by_window_id = Map.new(attempts, &{{&1.asset_key, &1.window_id || "none"}, &1})
+    attempts_by_child_run_id = Map.new(attempts, &{{&1.asset_key, &1.child_run_id}, &1})
 
     rows =
       Enum.map(assets, fn asset ->
         cells =
           Enum.map(windows, fn window ->
-            Map.get(attempts_by_cell, {asset.key, window.id}) || pending_cell(asset, window)
+            Map.get(attempts_by_window_id, {asset.key, window.id}) ||
+              Map.get(attempts_by_child_run_id, {asset.key, Map.get(window, :child_run_id)}) ||
+              pending_cell(asset, window)
           end)
 
         Map.put(asset, :cells, cells)
@@ -732,6 +774,10 @@ defmodule FavnView.RunDetailLive do
 
   defp latest_event_sequence(run, fallback \\ nil)
 
+  defp latest_event_sequence(%{root_event_sequence: sequence}, fallback)
+       when is_integer(sequence),
+       do: max(sequence, fallback || 0)
+
   defp latest_event_sequence(%{events: events}, fallback) when is_list(events) do
     events
     |> Enum.map(&Map.get(&1, :sequence))
@@ -765,6 +811,9 @@ defmodule FavnView.RunDetailLive do
   defp window_label(_window), do: nil
   defp datetime_iso(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp datetime_iso(_datetime), do: nil
+
+  defp datetime_sort_key(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
+  defp datetime_sort_key(_datetime), do: 0
 
   defp range_label(%DateTime{} = start_at, %DateTime{} = end_at),
     do: "#{Calendar.strftime(start_at, "%b %-d")} - #{Calendar.strftime(end_at, "%b %-d")}"
@@ -806,6 +855,8 @@ defmodule FavnView.RunDetailLive do
   defp status_tone(status) when status in [:pending, :queued], do: :warning
   defp status_tone(_status), do: :neutral
   defp label(nil), do: "Unknown"
+  defp label(:step_started), do: "Step submitted"
+  defp label("step_started"), do: "Step submitted"
   defp label(value), do: value |> to_string() |> String.replace("_", " ") |> String.capitalize()
 
   defp legacy_step_status_label(_status, :cascade), do: "Cascade failed"

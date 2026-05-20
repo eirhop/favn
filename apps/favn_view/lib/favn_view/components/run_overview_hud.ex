@@ -14,7 +14,7 @@ defmodule FavnView.Components.RunOverviewHud do
     <GlassPanel.glass_panel
       id="run-overview-panel"
       phx-hook="FavnClipboard"
-      class="mx-auto w-full max-w-[96rem] p-4 sm:p-5 lg:p-6"
+      class="mx-auto w-full max-w-[120rem] p-4 sm:p-5 lg:p-6"
       data-testid="run-overview-panel"
       data-run-active={to_string(@run.active?)}
     >

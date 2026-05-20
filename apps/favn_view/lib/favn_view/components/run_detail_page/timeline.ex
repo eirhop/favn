@@ -91,11 +91,11 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
   def timeline_controls(assigns) do
     ~H"""
     <form
-      class="grid gap-2 rounded-box border border-base-content/10 bg-base-content/[0.025] p-3 xl:grid-cols-[minmax(12rem,1fr)_9rem_10rem_11rem_auto_auto_auto_auto] xl:items-center"
+      class="flex flex-wrap items-center gap-2 rounded-box border border-base-content/10 bg-base-content/[0.025] p-3"
       data-testid="timeline-controls"
       phx-change="timeline_filter"
     >
-      <label class="input input-sm favn-surface-control flex items-center gap-2 rounded-field">
+      <label class="input input-sm favn-surface-control min-w-56 flex-1 items-center gap-2 rounded-field xl:max-w-80">
         <.icon name="hero-magnifying-glass" class="size-4 text-base-content/45" />
         <input
           type="search"
@@ -107,7 +107,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       </label>
       <select
         name="timeline[status]"
-        class="select select-sm favn-surface-control rounded-field"
+        class="select select-sm favn-surface-control min-w-40 rounded-field"
         aria-label="Status filter"
       >
         <option value="all" selected={@timeline_state.status == "all"}>All statuses</option>
@@ -118,7 +118,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       </select>
       <select
         name="timeline[window]"
-        class="select select-sm favn-surface-control rounded-field"
+        class="select select-sm favn-surface-control min-w-44 rounded-field"
         aria-label="Window filter"
       >
         <option value="all" selected={@timeline_state.window == "all"}>All windows</option>
@@ -132,29 +132,29 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       </select>
       <select
         name="timeline[group_by]"
-        class="select select-sm favn-surface-control rounded-field"
+        class="select select-sm favn-surface-control min-w-44 rounded-field"
         aria-label="Group by"
         disabled
       >
         <option>Group by Status</option>
       </select>
-      <label class="flex items-center gap-2 text-xs text-base-content/65">
+      <label class="flex items-center gap-2 text-xs leading-tight text-base-content/65">
         <input
           type="checkbox"
           name="timeline[failed_only]"
           checked={@timeline_state.failed_only?}
           class="toggle toggle-error toggle-xs"
-        /> Show failed only
+        /> <span class="max-w-16">Show failed only</span>
       </label>
-      <label class="flex items-center gap-2 text-xs text-base-content/65">
+      <label class="flex items-center gap-2 text-xs leading-tight text-base-content/65">
         <input
           type="checkbox"
           name="timeline[running_only]"
           checked={@timeline_state.running_only?}
           class="toggle toggle-info toggle-xs"
-        /> Show running only
+        /> <span class="max-w-20">Show running only</span>
       </label>
-      <div class="join justify-self-start xl:justify-self-end" aria-label="Zoom control">
+      <div class="join ml-auto flex shrink-0 flex-wrap justify-end" aria-label="Zoom control">
         <button
           :for={zoom <- timeline_zoom_levels()}
           type="button"
@@ -166,7 +166,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           {zoom.label}
         </button>
       </div>
-      <div class="join justify-self-start xl:justify-self-end">
+      <div class="join shrink-0">
         <button
           type="button"
           phx-click="timeline_fit"
@@ -408,15 +408,18 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     search_match? and status_match? and window_match? and failed_match? and running_match?
   end
 
+  defp timeline_attempts(%{timeline: [_ | _] = timeline}),
+    do: Enum.with_index(timeline, &Map.put_new(&1, :timeline_order, &2))
+
+  defp timeline_attempts(%{attempts: attempts}),
+    do: Enum.with_index(attempts, &Map.put_new(&1, :timeline_order, &2))
+
   defp timeline_attempts(%{matrix: %{rows: matrix_rows}}) do
     matrix_rows
     |> Enum.flat_map(& &1.cells)
     |> Enum.with_index()
     |> Enum.map(fn {attempt, index} -> Map.put_new(attempt, :timeline_order, index) end)
   end
-
-  defp timeline_attempts(%{attempts: attempts}),
-    do: Enum.with_index(attempts, &Map.put_new(&1, :timeline_order, &2))
 
   defp timeline_attempts(_run), do: []
 
@@ -426,7 +429,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     section = timeline_section_for(attempt[:raw_status])
 
     %{
-      attempt_id: attempt[:id],
+      attempt_id: attempt[:attempt_id] || attempt[:id],
       asset_key: attempt[:asset_key] || attempt[:asset_ref] || attempt[:short_asset_name],
       asset_name: attempt[:short_asset_name] || attempt[:asset_name] || attempt[:asset_key],
       window_label: attempt[:window_label] || "No window",

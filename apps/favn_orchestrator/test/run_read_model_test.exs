@@ -330,6 +330,90 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert step.explanation == "Failed while executing this asset."
   end
 
+  test "run detail derives terminal step start time from finish and duration" do
+    ref = {MyApp.Assets.Gold, :asset}
+    submitted_at = ~U[2026-05-20 07:57:13Z]
+    finished_at = ~U[2026-05-20 07:57:40Z]
+
+    run =
+      run("derived_terminal_step_start", submit_kind: :pipeline)
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          node_results: [
+            %{
+              node_key: {ref, nil},
+              ref: ref,
+              stage: 0,
+              status: :ok,
+              finished_at: finished_at,
+              duration_ms: 26_800,
+              asset_step_id: "derived-step"
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: 1,
+               event_type: :step_started,
+               occurred_at: submitted_at,
+               status: :running,
+               asset_ref: ref,
+               stage: 0,
+               data: %{asset_step_id: "derived-step"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+    assert [step] = detail.steps
+    assert step.started_at == DateTime.add(finished_at, -26_800, :millisecond)
+    assert step.finished_at == finished_at
+    assert step.duration_ms == 26_800
+  end
+
+  test "run detail does not mark every submitted step as running beyond max concurrency" do
+    refs = [
+      {MyApp.Assets.Gold, :asset},
+      {MyApp.Assets.Silver, :asset},
+      {MyApp.Assets.Bronze, :asset}
+    ]
+
+    run =
+      "submitted_step_capacity"
+      |> run(submit_kind: :pipeline)
+      |> Map.put(:metadata, %{max_concurrency: 1})
+      |> Map.put(:target_refs, refs)
+      |> RunState.transition(status: :running)
+
+    assert :ok = Storage.put_run(run)
+
+    refs
+    |> Enum.with_index(1)
+    |> Enum.each(fn {ref, index} ->
+      assert :ok =
+               Storage.append_run_event(run.id, %{
+                 run_id: run.id,
+                 sequence: index,
+                 event_type: :step_started,
+                 occurred_at: ~U[2026-05-20 07:57:13Z],
+                 status: :running,
+                 asset_ref: ref,
+                 stage: 0,
+                 data: %{asset_step_id: "submitted-step-#{index}"}
+               })
+    end)
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+    statuses = Enum.frequencies_by(detail.steps, & &1.status)
+
+    assert statuses.running == 1
+    assert statuses.pending == 2
+  end
+
   test "pipeline success remains active while persisted step results are incomplete" do
     gold_ref = {MyApp.Assets.Gold, :asset}
     silver_ref = {MyApp.Assets.Silver, :asset}
