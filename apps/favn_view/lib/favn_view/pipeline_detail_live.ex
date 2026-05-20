@@ -286,6 +286,10 @@ defmodule FavnView.PipelineDetailLive do
   defp scope_label(nil), do: "-"
   defp scope_label(value) when is_binary(value), do: value
 
+  defp scope_label(%{type: :window} = value) do
+    labelled_scope_value(value) || window_scope_label(value)
+  end
+
   defp scope_label(%{type: :range} = value) do
     [
       Map.get(value, :kind),
@@ -301,11 +305,34 @@ defmodule FavnView.PipelineDetailLive do
   end
 
   defp scope_label(value) when is_map(value) do
-    Map.get(value, :label) || Map.get(value, "label") || Map.get(value, :id) ||
-      Map.get(value, "id") || Map.get(value, :key) || Map.get(value, "key") || inspect(value)
+    labelled_scope_value(value) || inspect(value)
   end
 
   defp scope_label(value), do: inspect(value)
+
+  defp labelled_scope_value(value) do
+    [:label, "label", :id, "id", :key, "key"]
+    |> Enum.find_value(fn key ->
+      case Map.get(value, key) do
+        label when is_binary(label) -> label
+        label when is_atom(label) -> Atom.to_string(label)
+        label when is_integer(label) -> Integer.to_string(label)
+        _other -> nil
+      end
+    end)
+  end
+
+  defp window_scope_label(value) do
+    kind = Map.get(value, :kind) || Map.get(value, "kind")
+    timezone = Map.get(value, :timezone) || Map.get(value, "timezone")
+
+    case {kind, timezone} do
+      {nil, nil} -> inspect(value)
+      {nil, timezone} -> timezone
+      {kind, nil} -> humanize(kind)
+      {kind, timezone} -> "#{humanize(kind)} #{timezone}"
+    end
+  end
 
   defp range_boundary_label(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp range_boundary_label(value), do: value
