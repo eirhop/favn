@@ -904,13 +904,17 @@ defmodule FavnOrchestrator.API.Router do
         "backfill.window.rerun",
         actor.id,
         session.id,
-        %{backfill_run_id: backfill_run_id, window_key: window_key},
+        Map.take(params, ["refresh", "refresh_policy", "allow_success"])
+        |> Map.merge(%{"backfill_run_id" => backfill_run_id, "window_key" => window_key}),
         fn idempotency ->
+          opts = backfill_window_rerun_opts(params)
+
           with {:ok, rerun_id} <-
                  FavnOrchestrator.rerun_backfill_window(
                    backfill_run_id,
                    window.pipeline_module,
-                   window.window_key
+                   window.window_key,
+                   opts
                  ),
                {:ok, run} <- FavnOrchestrator.get_run(rerun_id),
                :ok <-
@@ -933,6 +937,10 @@ defmodule FavnOrchestrator.API.Router do
 
             {:error, :backfill_window_has_no_attempt} ->
               {:error, 409, "conflict", "Backfill window has no attempt to rerun", %{}}
+
+            {:error, :successful_backfill_window_requires_force_refresh} ->
+              {:error, 409, "conflict", "Successful backfill window rerun requires force refresh",
+               %{}}
 
             {:error, _reason} ->
               {:error, 400, "bad_request", "Request failed", %{}}
@@ -1880,9 +1888,18 @@ defmodule FavnOrchestrator.API.Router do
      |> Keyword.put(:range_request, range_request)
      |> maybe_put_string_opt(:coverage_baseline_id, Map.get(params, "coverage_baseline_id"))
      |> maybe_put_map_opt(:metadata, Map.get(params, "metadata"))
+     |> maybe_put_opt(:refresh, Map.get(params, "refresh"))
+     |> maybe_put_opt(:refresh_policy, Map.get(params, "refresh_policy"))
      |> maybe_put_positive_int_opt(:max_attempts, Map.get(params, "max_attempts"))
      |> maybe_put_non_neg_int_opt(:retry_backoff_ms, Map.get(params, "retry_backoff_ms"))
      |> maybe_put_positive_int_opt(:timeout_ms, Map.get(params, "timeout_ms"))}
+  end
+
+  defp backfill_window_rerun_opts(params) when is_map(params) do
+    []
+    |> maybe_put_opt(:refresh, Map.get(params, "refresh"))
+    |> maybe_put_opt(:refresh_policy, Map.get(params, "refresh_policy"))
+    |> Keyword.put(:allow_success, Map.get(params, "allow_success") == true)
   end
 
   defp backfill_repair_opts(params) when is_map(params) do
@@ -2148,6 +2165,10 @@ defmodule FavnOrchestrator.API.Router do
 
   defp maybe_put_map_opt(opts, key, value) when is_map(value), do: Keyword.put(opts, key, value)
   defp maybe_put_map_opt(opts, _key, _value), do: opts
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, _key, ""), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp maybe_put_positive_int_opt(opts, key, value) when is_integer(value) and value > 0,
     do: Keyword.put(opts, key, value)

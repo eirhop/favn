@@ -13,7 +13,8 @@ Code:
 - `apps/favn_local/lib/favn/dev/local_context.ex` for the shared trusted local-dev
   API context used by local CLI commands
 - `apps/favn_local/lib/favn/dev/run.ex` and `apps/favn_local/lib/favn/dev/backfill.ex`
-  for local operator run/backfill payloads, including concurrency option forwarding
+  for local operator run/backfill payloads, including timeout, refresh-policy,
+  successful-window rerun, and concurrency option forwarding
 - `apps/favn_local/lib/favn/dev/init.ex` for generated local sample files; keep
   its lakehouse sample aligned with the convention that connections are
   server/session/auth, catalogs are phases, schemas are segments/domains, and

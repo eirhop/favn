@@ -64,13 +64,14 @@ defmodule Favn.AI do
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
     details.
-  - To work with operational backfill ranges, dry-run planning, or compact
-    `--window kind:FROM..TO` input, read `Favn.Backfill.RangeRequest` and
-    `Favn.Backfill.RangeResolver`. If you are wiring orchestrator-side
-    submission, planning, or projection, then read `FavnOrchestrator`,
-    `FavnOrchestrator.BackfillManager`, and the internal modules under
-    `FavnOrchestrator.Backfill.*`. If you are changing the private service HTTP
-    surface for backfills, also read
+  - To work with operational backfill ranges, dry-run planning, compact
+    `--window kind:FROM..TO` input, forced refresh repair, or successful-window
+    backfill reruns, read `Favn.Backfill.RangeRequest`,
+    `Favn.Backfill.RangeResolver`, and `FavnOrchestrator.RefreshPolicy`. If you
+    are wiring orchestrator-side submission, planning, or projection, then read
+    `FavnOrchestrator`, `FavnOrchestrator.BackfillManager`, and the internal
+    modules under `FavnOrchestrator.Backfill.*`. If you are changing the
+    private service HTTP surface for backfills, also read
     `FavnOrchestrator.API.Router`. For the local operator CLI, read
     `Favn.Dev.Backfill`, `Favn.Dev.Run`, `Mix.Tasks.Favn.Backfill`, and
     `Mix.Tasks.Favn.Run`.
@@ -191,11 +192,12 @@ defmodule Favn.AI do
     docs whenever a task mentions `@freshness`, skipping fresh work, forcing
     refresh, stale downstream assets, or backfill children running only missing
     windows.
-  - Read `Favn.Backfill.RangeRequest` and `Favn.Backfill.RangeResolver` when a
-    task mentions operational backfill ranges, relative `last` ranges, baseline
-    cutover, or expanding operator intent into concrete anchors. Read
-    `FavnOrchestrator.Backfill.*` only for internal control-plane persistence,
-    projection, and parent/child orchestration work.
+  - Read `Favn.Backfill.RangeRequest`, `Favn.Backfill.RangeResolver`, and
+    `FavnOrchestrator.RefreshPolicy` when a task mentions operational backfill
+    ranges, relative `last` ranges, baseline cutover, force-refresh repair,
+    successful-window rerun, or expanding operator intent into concrete anchors.
+    Read `FavnOrchestrator.Backfill.*` only for internal control-plane
+    persistence, projection, and parent/child orchestration work.
   - Read `Favn.Dev` and `apps/favn_local/README.md` when the task is about local
     lifecycle, local pipeline submission, local run investigation, local SQL
     inspection/querying, docs lookup, or packaging, not asset authoring. Read

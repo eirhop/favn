@@ -1,15 +1,15 @@
 defmodule FavnOrchestrator.BackfillManager do
   @moduledoc """
-  Orchestrator-owned parent/child pipeline backfill submission.
+  Orchestrator-owned parent/child operational backfill submission.
 
   This module is deliberately below the public `Favn` facade. It owns the
   control-plane mechanics for issue 168 style operational backfills:
 
   - resolve an operator range request into concrete windows
-  - persist a parent `:backfill_pipeline` run
+  - persist a parent `:backfill_pipeline` or `:backfill_asset` run
   - persist one `FavnOrchestrator.Backfill.BackfillWindow` row per requested
     window
-  - submit one normal child pipeline run per window with lineage metadata,
+  - submit one normal child pipeline or asset run per window with lineage metadata,
     immediately through the normal orchestrator run path
 
   HTTP, CLI, and future web surfaces should call the orchestrator facade rather
@@ -17,10 +17,12 @@ defmodule FavnOrchestrator.BackfillManager do
   """
 
   alias Favn.Backfill.RangeResolver
+  alias Favn.Manifest.Asset
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
   alias Favn.Window.Key, as: WindowKey
+  alias Favn.Window.Runtime, as: RuntimeWindow
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Backfill.Projector, as: BackfillProjector
@@ -77,6 +79,47 @@ defmodule FavnOrchestrator.BackfillManager do
   end
 
   def submit_pipeline_backfill(_pipeline_module, _opts), do: {:error, :invalid_pipeline_module}
+
+  @doc """
+  Submits a parent asset backfill run and one child asset run per resolved anchor.
+  """
+  @spec submit_asset_backfill(Favn.Ref.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def submit_asset_backfill(asset_ref, opts \\ [])
+
+  def submit_asset_backfill({module, name} = asset_ref, opts)
+      when is_atom(module) and is_atom(name) and is_list(opts) do
+    run_id = Keyword.get(opts, :run_id, new_run_id())
+    range_request = Keyword.get(opts, :range_request)
+
+    with :ok <- reject_unsupported_lookback(opts),
+         {:ok, manifest_version_id} <- resolve_manifest_version_id(opts),
+         {:ok, version} <- ManifestStore.get_manifest(manifest_version_id),
+         {:ok, index} <- Index.build_from_version(version),
+         {:ok, asset} <- Index.fetch_asset(index, asset_ref),
+         {:ok, range} <- RangeResolver.resolve(range_request),
+         :ok <- validate_window_count(range, opts),
+         {:ok, parent} <- build_asset_parent_run(run_id, version, asset, range, opts),
+         :ok <- persist_asset_parent(parent, range, opts),
+         :ok <-
+           create_pending_windows(
+             parent.id,
+             asset.module,
+             version.manifest_version_id,
+             range,
+             opts
+           ),
+         :ok <- submit_asset_child_runs(parent, asset, range, opts) do
+      {:ok, parent.id}
+    else
+      {:error, reason} = error ->
+        case maybe_compensate_submit_failure(run_id, module, reason, opts) do
+          :ok -> error
+          {:error, _reason} = compensation_error -> compensation_error
+        end
+    end
+  end
+
+  def submit_asset_backfill(_asset_ref, _opts), do: {:error, :invalid_target_ref}
 
   @doc """
   Resolves a pipeline backfill request without persisting or submitting runs.
@@ -167,11 +210,78 @@ defmodule FavnOrchestrator.BackfillManager do
     end
   end
 
+  defp build_asset_parent_run(run_id, version, %Asset{} = asset, range, opts) do
+    user_metadata = Keyword.get(opts, :metadata, %{})
+
+    metadata =
+      if is_map(user_metadata) do
+        Map.merge(user_metadata, %{
+          submit_kind: :backfill_asset,
+          asset_submit_ref: asset.ref,
+          backfill: backfill_summary(range, opts)
+        })
+      else
+        user_metadata
+      end
+
+    with :ok <- validate_metadata(metadata),
+         {:ok, max_attempts} <-
+           positive_integer_option(opts, :max_attempts, 1, :invalid_max_attempts),
+         {:ok, retry_backoff_ms} <-
+           non_neg_integer_option(opts, :retry_backoff_ms, 0, :invalid_retry_backoff_ms),
+         {:ok, timeout_ms} <-
+           positive_integer_option(
+             opts,
+             :timeout_ms,
+             RunState.default_timeout_ms(),
+             :invalid_timeout_ms
+           ) do
+      parent =
+        RunState.new(
+          id: run_id,
+          manifest_version_id: version.manifest_version_id,
+          manifest_content_hash: version.content_hash,
+          asset_ref: asset.ref,
+          target_refs: [asset.ref],
+          plan: nil,
+          params: %{},
+          trigger: %{kind: :backfill, asset_ref: asset.ref},
+          metadata: metadata,
+          submit_kind: :backfill_asset,
+          max_attempts: max_attempts,
+          retry_backoff_ms: retry_backoff_ms,
+          timeout_ms: timeout_ms
+        )
+        |> Map.put(:status, :running)
+        |> Map.put(:updated_at, DateTime.utc_now())
+        |> RunState.with_snapshot_hash()
+
+      {:ok, parent}
+    end
+  end
+
   defp persist_parent(%RunState{} = parent, range, opts) do
     with :ok <-
            TransitionWriter.persist_transition(parent, :run_created, %{
              status: parent.status,
              submit_kind: :backfill_pipeline,
+             backfill: backfill_summary(range, opts)
+           }) do
+      started = RunState.transition(parent, metadata: parent.metadata)
+
+      TransitionWriter.persist_transition(started, :backfill_started, %{
+        status: parent.status,
+        requested_count: range.requested_count,
+        window_keys: encoded_window_keys(range.anchors)
+      })
+    end
+  end
+
+  defp persist_asset_parent(%RunState{} = parent, range, opts) do
+    with :ok <-
+           TransitionWriter.persist_transition(parent, :run_created, %{
+             status: parent.status,
+             submit_kind: :backfill_asset,
              backfill: backfill_summary(range, opts)
            }) do
       started = RunState.transition(parent, metadata: parent.metadata)
@@ -217,6 +327,75 @@ defmodule FavnOrchestrator.BackfillManager do
     Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
       submit_child_run_for_anchor(parent, pipeline_module, anchor, opts)
     end)
+  end
+
+  defp submit_asset_child_runs(%RunState{} = parent, %Asset{} = asset, range, opts) do
+    Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
+      window_key = WindowKey.encode(anchor.key)
+
+      child_opts =
+        opts
+        |> Keyword.drop([:range_request, :run_id, :coverage_baseline_id])
+        |> default_child_refresh()
+        |> Keyword.put(:manifest_version_id, parent.manifest_version_id)
+        |> Keyword.put(:anchor_window, anchor)
+        |> Keyword.put(:exact_windows, %{asset.ref => [runtime_window!(anchor)]})
+        |> Keyword.put(:parent_run_id, parent.id)
+        |> Keyword.put(:root_run_id, parent.id)
+        |> Keyword.put(:lineage_depth, 1)
+        |> Keyword.put(:trigger, %{
+          kind: :backfill,
+          backfill_run_id: parent.id,
+          pipeline_module: asset.module,
+          window_key: window_key
+        })
+        |> Keyword.update(
+          :metadata,
+          asset_child_metadata(asset, anchor, window_key),
+          fn metadata ->
+            Map.merge(metadata, asset_child_metadata(asset, anchor, window_key))
+          end
+        )
+
+      case submit_asset_child_run(asset.ref, child_opts, opts) do
+        {:ok, _child_run_id} -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp runtime_window!(anchor) do
+    RuntimeWindow.new!(anchor.kind, anchor.start_at, anchor.end_at, anchor.key,
+      timezone: anchor.timezone
+    )
+  end
+
+  defp asset_child_metadata(%Asset{} = asset, anchor, window_key) do
+    %{
+      asset_submit_ref: asset.ref,
+      selected_window: %{
+        id: window_key,
+        kind: anchor.kind,
+        key: anchor.key,
+        start_at: anchor.start_at,
+        end_at: anchor.end_at,
+        timezone: anchor.timezone
+      },
+      timeline_selection: %{
+        source: :data_coverage_timeline,
+        id: window_key,
+        kind: anchor.kind,
+        value: window_key,
+        run_id: nil
+      }
+    }
+  end
+
+  defp submit_asset_child_run(asset_ref, child_opts, opts) do
+    case Keyword.get(opts, :_asset_child_submitter) do
+      submitter when is_function(submitter, 2) -> submitter.(asset_ref, child_opts)
+      _other -> RunManager.submit_asset_run(asset_ref, child_opts)
+    end
   end
 
   defp submit_child_run_for_anchor(%RunState{} = parent, pipeline_module, anchor, opts) do
@@ -454,7 +633,8 @@ defmodule FavnOrchestrator.BackfillManager do
 
   defp maybe_compensate_submit_failure(backfill_run_id, pipeline_module, reason, opts) do
     case Storage.get_run(backfill_run_id) do
-      {:ok, %RunState{submit_kind: :backfill_pipeline} = parent} ->
+      {:ok, %RunState{submit_kind: submit_kind} = parent}
+      when submit_kind in [:backfill_pipeline, :backfill_asset] ->
         compensate_existing_backfill(parent, pipeline_module, reason, opts)
 
       {:ok, _other_run} ->

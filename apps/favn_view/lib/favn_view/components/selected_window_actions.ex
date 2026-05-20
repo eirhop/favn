@@ -18,6 +18,7 @@ defmodule FavnView.Components.SelectedWindowActions do
       source: nil,
       kind: "",
       value: "",
+      to: "",
       timezone: "Etc/UTC"
     }
 
@@ -100,6 +101,7 @@ defmodule FavnView.Components.SelectedWindowActions do
       <.form
         for={%{}}
         as={:run_config}
+        phx-change="change_run_config"
         phx-submit="run_selected_window"
         class="space-y-4"
         data-testid="run-config-form"
@@ -147,7 +149,7 @@ defmodule FavnView.Components.SelectedWindowActions do
             name="run_config[source]"
             value={@run_config.source || default_source(@active_timeline)}
           />
-          <div class="grid gap-3 sm:grid-cols-[8rem_1fr_10rem]">
+          <div class="grid gap-3 sm:grid-cols-[8rem_1fr_1fr_10rem]">
             <label class="form-control">
               <span class="label-text text-xs">Kind</span>
               <select
@@ -163,7 +165,7 @@ defmodule FavnView.Components.SelectedWindowActions do
               </select>
             </label>
             <label class="form-control">
-              <span class="label-text text-xs">Value</span>
+              <span class="label-text text-xs">From</span>
               <input
                 type="text"
                 name="run_config[value]"
@@ -172,6 +174,18 @@ defmodule FavnView.Components.SelectedWindowActions do
                 placeholder="YYYY-MM-DD, YYYY-MM, or YYYY"
                 disabled={@submitting_window_run? || !is_nil(@selected_window)}
                 data-testid="run-config-window-value"
+              />
+            </label>
+            <label class="form-control">
+              <span class="label-text text-xs">To</span>
+              <input
+                type="text"
+                name="run_config[to]"
+                value={Map.get(@run_config, :to, "")}
+                class="input input-bordered input-sm"
+                placeholder="Optional end"
+                disabled={@submitting_window_run? || !is_nil(@selected_window)}
+                data-testid="run-config-window-to"
               />
             </label>
             <label class="form-control">
@@ -188,6 +202,9 @@ defmodule FavnView.Components.SelectedWindowActions do
           </div>
           <p class="mt-2 text-xs text-base-content/55">
             {window_context_description(@selected_window, @active_timeline)}
+          </p>
+          <p :if={is_nil(@selected_window)} class="mt-1 text-xs text-base-content/55">
+            Range backfills default to missing refresh; choose force explicitly to recompute existing successful windows.
           </p>
         </fieldset>
 
@@ -295,11 +312,11 @@ defmodule FavnView.Components.SelectedWindowActions do
   defp window_context_legend(_active_timeline), do: "Run period"
 
   defp window_context_description(nil, :data_coverage),
-    do: "Choose the exact data window to run. Lookback is not added to this target window."
+    do:
+      "Choose one exact data window or an inclusive range. Lookback is not added to target windows."
 
   defp window_context_description(nil, _active_timeline),
-    do:
-      "Choose the run period used as the planner anchor. Asset lookback can expand from this period."
+    do: "Choose one run period or an inclusive range. Asset lookback can expand from each period."
 
   defp window_context_description(window, _active_timeline),
     do: "Prefilled from #{window.range_label}. Clear the timeline selection to edit this context."

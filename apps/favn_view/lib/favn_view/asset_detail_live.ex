@@ -127,9 +127,22 @@ defmodule FavnView.AssetDetailLive do
     {:noreply, assign(socket, :run_config_open?, false)}
   end
 
+  def handle_event("change_run_config", params, socket) do
+    run_config =
+      params
+      |> run_config_from_params(socket.assigns.run_config)
+      |> apply_asset_range_defaults(socket.assigns.selected_window)
+
+    {:noreply, assign(socket, :run_config, run_config)}
+  end
+
   def handle_event("run_selected_window", params, socket) do
     %{asset: asset, selected_window: selected_window} = socket.assigns
-    run_config = run_config_from_params(params, socket.assigns.run_config)
+
+    run_config =
+      params
+      |> run_config_from_params(socket.assigns.run_config)
+      |> apply_asset_range_defaults(selected_window)
 
     cond do
       !socket.assigns.can_submit_runs? ->
@@ -174,16 +187,17 @@ defmodule FavnView.AssetDetailLive do
         submitted_run_id: nil
       )
 
-    case FavnOrchestrator.submit_operator_asset_run(
-           actor_context(socket),
-           asset.manifest_version_id,
-           asset.target_id,
-           %{selection: timeline_selection(selected_window, run_config), config: Map.new(opts)}
-         ) do
-      {:ok, run_id} ->
+    case submit_asset_window_run(socket, asset, selected_window, run_config, opts) do
+      {:ok, run_id, :single} ->
         {:noreply,
          socket
          |> put_flash(:info, "Run submitted")
+         |> push_navigate(to: ~p"/runs/#{run_id}")}
+
+      {:ok, run_id, :backfill} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Asset backfill submitted")
          |> push_navigate(to: ~p"/runs/#{run_id}")}
 
       {:error, reason} ->
@@ -192,6 +206,42 @@ defmodule FavnView.AssetDetailLive do
            submitting_window_run?: false,
            selected_window_error: submit_error_label(reason)
          )}
+    end
+  end
+
+  defp submit_asset_window_run(socket, asset, nil, %{to: to} = run_config, opts)
+       when is_binary(to) and to != "" do
+    request = %{
+      range: range_request(run_config),
+      dependencies: Keyword.get(opts, :dependencies),
+      refresh: backfill_refresh_option(opts)
+    }
+
+    case FavnOrchestrator.submit_operator_asset_backfill(
+           actor_context(socket),
+           asset.manifest_version_id,
+           asset.target_id,
+           request
+         ) do
+      {:ok, run_id} -> {:ok, run_id, :backfill}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp submit_asset_window_run(socket, asset, selected_window, run_config, opts) do
+    request = %{
+      selection: timeline_selection(selected_window, run_config),
+      config: Map.new(opts)
+    }
+
+    case FavnOrchestrator.submit_operator_asset_run(
+           actor_context(socket),
+           asset.manifest_version_id,
+           asset.target_id,
+           request
+         ) do
+      {:ok, run_id} -> {:ok, run_id, :single}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -404,6 +454,7 @@ defmodule FavnView.AssetDetailLive do
       source: config |> Map.get(:source) |> source_config_value(),
       kind: config |> Map.get(:kind) |> kind_config_value(),
       value: config |> Map.get(:value, "") |> to_string(),
+      to: config |> Map.get(:to, "") |> to_string(),
       timezone: config |> Map.get(:timezone, "Etc/UTC") |> to_string()
     }
   end
@@ -469,6 +520,17 @@ defmodule FavnView.AssetDetailLive do
   defp selection_id("data_coverage_timeline", kind, value), do: "window:#{kind}:#{value}"
   defp selection_id(_source, kind, value), do: "window:#{kind}:#{value}"
 
+  defp range_request(%{kind: kind, value: from, to: to, timezone: timezone}) do
+    %{kind: kind, from: from, to: to, timezone: timezone}
+  end
+
+  defp backfill_refresh_option(opts) do
+    case Keyword.get(opts, :refresh) do
+      refresh when refresh in [:auto, :missing] -> nil
+      refresh -> refresh
+    end
+  end
+
   defp missing_freshness_detail do
     %{
       state: :unknown,
@@ -491,6 +553,7 @@ defmodule FavnView.AssetDetailLive do
       source: nil,
       kind: "",
       value: "",
+      to: "",
       timezone: "Etc/UTC"
     }
 
@@ -501,11 +564,19 @@ defmodule FavnView.AssetDetailLive do
       source: Map.get(params, "source", Map.get(current_config, :source)),
       kind: Map.get(params, "kind", Map.get(current_config, :kind, "")),
       value: Map.get(params, "value", Map.get(current_config, :value, "")),
+      to: Map.get(params, "to", Map.get(current_config, :to, "")),
       timezone: Map.get(params, "timezone", Map.get(current_config, :timezone, "Etc/UTC"))
     }
   end
 
   defp run_config_from_params(_params, current_config), do: current_config || default_run_config()
+
+  defp apply_asset_range_defaults(%{to: to, refresh: refresh} = run_config, nil)
+       when is_binary(to) and to != "" and refresh == "auto" do
+    %{run_config | refresh: "missing"}
+  end
+
+  defp apply_asset_range_defaults(run_config, _selected_window), do: run_config
 
   defp run_submit_opts(asset, %{dependencies: dependencies, refresh: refresh}) do
     with {:ok, dependencies} <- dependency_option(dependencies),
@@ -554,6 +625,13 @@ defmodule FavnView.AssetDetailLive do
   defp submit_error_label({:invalid_dependencies_mode, _value}), do: "Dependency mode is invalid."
 
   defp submit_error_label({:invalid_refresh_policy, _value}), do: "Refresh behavior is invalid."
+
+  defp submit_error_label(:invalid_window_range), do: "Window range is invalid."
+
+  defp submit_error_label(:invalid_backfill_range_bounds), do: "Window range is invalid."
+
+  defp submit_error_label({:invalid_backfill_range_request, _value}),
+    do: "Window range is invalid."
 
   defp submit_error_label(:forbidden), do: "Operator role required to submit runs."
 

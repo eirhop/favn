@@ -7,11 +7,11 @@ defmodule Mix.Tasks.Favn.Backfill do
   Submits and inspects operational backfills in the running local Favn dev stack.
 
       mix favn.backfill submit MyApp.Pipelines.Daily --from 2026-04-01 --to 2026-04-07 --kind day
-      mix favn.backfill submit MyApp.Pipelines.Daily --window month:2025-05..2026-05 --dry-run
+      mix favn.backfill submit MyApp.Pipelines.Daily --window month:2025-05..2026-05 --refresh force
       mix favn.backfill windows RUN_ID
       mix favn.backfill coverage-baselines
       mix favn.backfill asset-window-states
-      mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01
+      mix favn.backfill rerun-window RUN_ID --window-key day:2026-04-01 --allow-success --refresh force
       mix favn.backfill repair --pipeline-module MyApp.Pipelines.Daily --apply
 
   The local CLI submit path accepts explicit `--from`/`--to`/`--kind` ranges or
@@ -20,6 +20,11 @@ defmodule Mix.Tasks.Favn.Backfill do
   By default `submit` waits for the parent backfill run to finish. Use
   `--no-wait` to return after submission. Use `--wait-timeout-ms` for local
   polling and `--run-timeout-ms` for child run execution timeout.
+
+  `submit --refresh force` intentionally recomputes selected windows even when
+  stored freshness says they are already successful. `rerun-window` accepts
+  `--refresh force --allow-success` for targeted repair of one successful
+  backfill window.
   """
 
   alias Favn.Dev
@@ -32,6 +37,7 @@ defmodule Mix.Tasks.Favn.Backfill do
     window: :string,
     dry_run: :boolean,
     timezone: :string,
+    refresh: :string,
     coverage_baseline_id: :string,
     wait: :boolean,
     wait_timeout_ms: :integer,
@@ -70,7 +76,12 @@ defmodule Mix.Tasks.Favn.Backfill do
     offset: :integer
   ]
 
-  @rerun_switches [root_dir: :string, window_key: :string]
+  @rerun_switches [
+    root_dir: :string,
+    window_key: :string,
+    refresh: :string,
+    allow_success: :boolean
+  ]
   @repair_switches [
     root_dir: :string,
     apply: :boolean,

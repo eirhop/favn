@@ -323,11 +323,13 @@ Operational backfill foundations can resolve explicit or relative ranges into
 the same concrete window anchors and submit one child pipeline run per resolved
 window through the orchestrator. Local development can submit explicit
 operational backfills and inspect their control-plane state with
-`mix favn.backfill` or the web operator flow at `/backfills`. Child pipeline
+`mix favn.backfill` or the web operator pipeline backfill flow. Child pipeline
 backfills default to `refresh: :missing` so already-successful windows can be
-skipped while missing windows are filled. The web `/runs` surface groups a
-parent backfill run with its child window runs so operators see one coherent
-backfill, not many unrelated runs.
+skipped while missing windows are filled. Operators can pass `--refresh force`
+or choose force refresh in the web flow to intentionally recompute windows whose
+external side effects need repair. The web `/runs` surface groups a parent
+backfill run with its child window runs so operators see one coherent backfill,
+not many unrelated runs.
 
 ### 5. Configure authored modules
 
@@ -491,8 +493,9 @@ mix favn.install
 mix favn.dev
 mix favn.run MyApp.Pipelines.DailySales --window day:2026-04-27 --timezone Europe/Oslo
 mix favn.backfill submit MyApp.Pipelines.DailySales --from 2026-04-01 --to 2026-04-07 --kind day
-mix favn.backfill submit MyApp.Pipelines.DailySales --window month:2025-05..2026-05 --dry-run
+mix favn.backfill submit MyApp.Pipelines.DailySales --window month:2025-05..2026-05 --refresh force
 mix favn.backfill windows RUN_ID --limit 100 --offset 0
+mix favn.backfill rerun-window RUN_ID --window-key day:Etc/UTC:2026-04-01T00:00:00.000000Z --allow-success --refresh force
 mix favn.backfill repair --pipeline-module MyApp.Pipelines.DailySales --apply
 mix favn.runs list --status error --limit 20
 mix favn.runs show RUN_ID
@@ -641,16 +644,22 @@ local stacks. Use `submit` for explicit `--from`/`--to`/`--kind` pipeline ranges
 or compact `--window kind:FROM..TO` ranges such as
 `--window month:2025-05..2026-05`. Add `--dry-run` to ask the orchestrator to
 resolve and print the concrete windows without creating parent or child runs.
+Use `--refresh force` to recompute every planned node in the selected windows;
+the default remains `--refresh missing` for submit paths that do not specify a
+policy.
 `windows RUN_ID` inspects child windows; `coverage-baselines` and
 `asset-window-states` to inspect projected backfill state, and `rerun-window
-RUN_ID --window-key KEY` for failed window reruns. Use `repair` to dry-run or,
+RUN_ID --window-key KEY` for failed window reruns. Add `--allow-success
+--refresh force` to rerun one successful window for external side-effect repair.
+Use `repair` to dry-run or,
 with `--apply`, rebuild derived coverage-baseline, backfill-window, and latest
 asset/window projections from authoritative run snapshots after projection drift
 or read-model deletion. `repair --backfill-run-id RUN_ID` rebuilds that parent
 window ledger only; use `--pipeline-module` or no scope when latest
 asset/window state must also be recomputed. Child pipeline backfills default to
-`refresh: :missing`. Operational backfill submit does not accept lookback-policy
-input; asset window lookback remains part of normal windowed execution only.
+`refresh: :missing` unless `auto`, `missing`, or `force` is explicitly supplied.
+Operational backfill submit does not accept lookback-policy input; asset window
+lookback remains part of normal windowed execution only.
 
 The Phoenix/LiveView UI is a thin operator shell behind the public orchestrator
 facade. The `/runs` page shows orchestrator-owned run groups with status,

@@ -163,6 +163,49 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     end)
   end
 
+  test "submits parent asset backfill, ledger rows, and child runs" do
+    version = manifest_version("mv_asset_backfill_submit")
+
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest(version.manifest_version_id)
+
+    assert {:ok, parent_run_id} =
+             FavnOrchestrator.BackfillManager.submit_asset_backfill({MyApp.Assets.Gold, :asset},
+               range_request: %{
+                 kind: :day,
+                 from: "2026-04-26",
+                 to: "2026-04-27",
+                 timezone: "Etc/UTC"
+               }
+             )
+
+    assert {:ok, parent} = Storage.get_run(parent_run_id)
+    assert parent.submit_kind == :backfill_asset
+    assert parent.metadata.backfill.requested_count == 2
+
+    eventually(fn ->
+      windows = list_backfill_windows(backfill_run_id: parent_run_id)
+      assert length(windows) == 2
+      assert Enum.all?(windows, &(&1.pipeline_module == MyApp.Assets.Gold))
+      assert Enum.all?(windows, &(&1.status == :ok))
+    end)
+
+    windows = list_backfill_windows(backfill_run_id: parent_run_id)
+    child_run_ids = windows |> Enum.map(& &1.child_run_id) |> Enum.sort()
+    assert length(child_run_ids) == 2
+
+    assert {:ok, all_runs} = Storage.list_runs()
+
+    children =
+      all_runs
+      |> Enum.filter(&(&1.parent_run_id == parent_run_id))
+      |> Enum.sort_by(& &1.id)
+
+    assert Enum.map(children, & &1.id) == child_run_ids
+    assert Enum.all?(children, &(&1.root_run_id == parent_run_id))
+    assert Enum.all?(children, &(&1.metadata.refresh_policy.mode == :missing))
+  end
+
   test "defaults child pipeline submissions to refresh missing" do
     version = manifest_version("mv_backfill_child_refresh_missing")
     test_pid = self()
