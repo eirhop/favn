@@ -330,7 +330,16 @@ defmodule Favn.Dev.ConsumerConfigTransport do
 
   defp collect_keys(collect_opts) do
     case Keyword.get(collect_opts, :only, @supported_keys) do
-      keys when is_list(keys) -> Enum.filter(@supported_keys, &(&1 in keys))
+      keys when is_list(keys) ->
+        unsupported = keys -- @supported_keys
+
+        if unsupported == [] do
+          Enum.filter(@supported_keys, &(&1 in keys))
+        else
+          raise ArgumentError,
+                "unsupported Favn consumer config transport keys: #{inspect(unsupported)}"
+        end
+
       _other -> @supported_keys
     end
   end

@@ -129,6 +129,14 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     assert connection[:database] == "/tmp/consumer/data/warehouse.duckdb"
   end
 
+  test "collect raises for unsupported only keys" do
+    assert_raise ArgumentError,
+                 ~r/unsupported Favn consumer config transport keys: \[:execution_pool\]/,
+                 fn ->
+                   ConsumerConfigTransport.collect([root_dir: "/tmp/consumer"], only: [:execution_pool])
+                 end
+  end
+
   test "apply_encoded applies decoded config to favn application env" do
     encoded = ConsumerConfigTransport.encode(connection_modules: [MyApp.Connections.Warehouse])
 
