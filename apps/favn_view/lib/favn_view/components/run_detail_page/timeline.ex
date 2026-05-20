@@ -48,6 +48,8 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
           data-active={to_string(@timeline.active?)}
           data-live-follow={to_string(@timeline_state.live_follow?)}
           data-now-offset={@timeline.now_offset}
+          data-axis-start-ms={@timeline.axis_start_ms}
+          data-axis-end-ms={@timeline.axis_end_ms}
           data-fit-mode={to_string(@timeline_state.mode == :fit)}
           phx-hook={if(@timeline_hook?, do: "FavnTimeline")}
         >
@@ -60,8 +62,14 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
                 <div class="p-3">Started</div>
                 <div class="p-3">Duration</div>
               </div>
-              <div class="relative grid grid-cols-5 px-4 py-3 text-center">
-                <span :for={tick <- @timeline.ticks}>{tick.label}</span>
+              <div class="relative px-4 py-3">
+                <span
+                  :for={tick <- @timeline.ticks}
+                  class={timeline_tick_label_class(tick.index)}
+                  style={"left: #{tick.offset}%;"}
+                >
+                  {tick.label}
+                </span>
               </div>
             </div>
 
@@ -200,7 +208,10 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       data-testid="timeline-minimap"
       data-target="run-timeline-scroll"
     >
-      <div class="relative h-full rounded-full bg-base-content/[0.06]">
+      <div
+        class="relative h-full rounded-full bg-base-content/[0.06]"
+        data-testid="timeline-minimap-track"
+      >
         <span
           :for={segment <- @timeline.minimap_segments}
           class={minimap_segment_class(segment.tone)}
@@ -346,7 +357,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
 
     active? = run[:active?] || Enum.any?(all_rows, &(&1.section == "running"))
     now = timeline_now(all_rows)
-    {start_ms, end_ms} = timeline_bounds(all_rows, now)
+    {start_ms, end_ms} = timeline_bounds(all_rows, now, timeline_state)
     span = max(end_ms - start_ms, 1)
     chart_width = timeline_chart_width(span, timeline_state)
 
@@ -377,6 +388,8 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
       ticks: timeline_ticks(start_ms, span),
       minimap_segments: minimap_segments(rows, start_ms, span, now),
       viewport: minimap_viewport(timeline_state),
+      axis_start_ms: start_ms,
+      axis_end_ms: end_ms,
       now: now,
       now_offset: percent(now - start_ms, span),
       chart_width: chart_width
@@ -518,19 +531,28 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     end
   end
 
-  defp timeline_bounds(rows, now) do
+  defp timeline_bounds(rows, now, timeline_state) do
     real_values =
       rows
       |> Enum.reject(&(&1.section == "queued"))
       |> Enum.flat_map(fn row -> [row.start_ms, row.finish_ms] end)
       |> Enum.reject(&is_nil/1)
 
-    start_ms = Enum.min(real_values ++ [now - 30 * 60 * 1_000])
-    end_ms = Enum.max(real_values ++ [now])
-    padding = max(div(end_ms - start_ms, 12), 60_000)
+    {start_ms, end_ms} =
+      case real_values do
+        [] -> {now - fallback_window_ms(timeline_state), now}
+        values -> {Enum.min(values), Enum.max(values ++ [now])}
+      end
+
+    padding = timeline_padding(end_ms - start_ms)
 
     {start_ms - padding, end_ms + padding}
   end
+
+  defp timeline_padding(span), do: max(div(span, 24), 15_000)
+
+  defp fallback_window_ms(%{zoom: "full"}), do: zoom_ms("30m")
+  defp fallback_window_ms(%{zoom: zoom}), do: zoom_ms(zoom)
 
   defp timeline_chart_width(_span, %{mode: :fit}), do: "100%"
 
@@ -538,14 +560,18 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
     minutes = span / 60_000
     pixels = minutes * 10
 
-    "#{round(max(1216, min(pixels, 12_000)))}px"
+    timeline_chart_width_css(pixels)
   end
 
   defp timeline_chart_width(span, %{zoom: zoom}) do
     zoom_ms = zoom_ms(zoom)
     pixels = span / zoom_ms * 840
 
-    "#{round(max(1216, min(pixels, 12_000)))}px"
+    timeline_chart_width_css(pixels)
+  end
+
+  defp timeline_chart_width_css(pixels) do
+    "max(100%, #{round(max(1216, min(pixels, 12_000)))}px)"
   end
 
   defp zoom_ms("5m"), do: 5 * 60 * 1_000
@@ -590,7 +616,7 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
   defp timeline_ticks(start_ms, span) do
     for index <- 0..4 do
       tick_ms = start_ms + div(span * index, 4)
-      %{label: time_tick_label(tick_ms), offset: percent(tick_ms - start_ms, span)}
+      %{index: index, label: time_tick_label(tick_ms), offset: percent(tick_ms - start_ms, span)}
     end
   end
 
@@ -645,6 +671,15 @@ defmodule FavnView.Components.RunDetailPage.Timeline do
 
   defp fit_button_class(true), do: "btn btn-sm join-item btn-warning"
   defp fit_button_class(false), do: "btn btn-sm join-item favn-surface-control"
+
+  defp timeline_tick_label_class(0),
+    do: "absolute top-1/2 -translate-y-1/2 whitespace-nowrap text-left"
+
+  defp timeline_tick_label_class(4),
+    do: "absolute top-1/2 -translate-x-full -translate-y-1/2 whitespace-nowrap text-right"
+
+  defp timeline_tick_label_class(_index),
+    do: "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-center"
 
   defp minimap_segment_class(:success),
     do: "absolute top-1/2 h-3 -translate-y-1/2 rounded-full bg-success/70"

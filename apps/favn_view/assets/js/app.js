@@ -69,16 +69,21 @@ const Hooks = {
     mounted() {
       this.userPaused = false
       this.followNow()
+      this.syncMinimapViewport()
 
       this.el.addEventListener("scroll", () => {
-        if (this.ignoreScroll || this.el.dataset.liveFollow !== "true") return
-        this.userPaused = true
-        this.pushEvent("timeline_pause_live", {})
+        if (!this.ignoreScroll && this.el.dataset.liveFollow === "true") {
+          this.userPaused = true
+          this.pushEvent("timeline_pause_live", {})
+        }
+
+        this.syncMinimapViewport()
       }, {passive: true})
 
       const minimap = document.getElementById("run-timeline-minimap")
       minimap?.addEventListener("click", event => {
-        const bounds = minimap.getBoundingClientRect()
+        const track = minimap.querySelector("[data-testid='timeline-minimap-track']") || minimap
+        const bounds = track.getBoundingClientRect()
         if (!bounds.width) return
 
         const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width))
@@ -89,17 +94,24 @@ const Hooks = {
     },
     updated() {
       this.followNow()
+      this.syncMinimapViewport()
       if (this.pendingFocusRatio !== undefined) {
         const ratio = this.pendingFocusRatio
         this.pendingFocusRatio = undefined
-        window.requestAnimationFrame(() => this.scrollToRatio(ratio))
+        window.requestAnimationFrame(() => {
+          this.scrollToRatio(ratio)
+          this.syncMinimapViewport()
+        })
       }
     },
     scrollToRatio(ratio) {
       const maxScroll = Math.max(this.el.scrollWidth - this.el.clientWidth, 0)
       this.ignoreScroll = true
-      this.el.scrollLeft = Math.max(0, Math.min(maxScroll, ratio * maxScroll))
-      window.requestAnimationFrame(() => { this.ignoreScroll = false })
+      this.el.scrollLeft = Math.max(0, Math.min(maxScroll, this.el.scrollWidth * ratio - this.el.clientWidth / 2))
+      window.requestAnimationFrame(() => {
+        this.ignoreScroll = false
+        this.syncMinimapViewport()
+      })
     },
     followNow() {
       if (this.el.dataset.active !== "true" || this.el.dataset.liveFollow !== "true") return
@@ -111,7 +123,22 @@ const Hooks = {
 
       this.ignoreScroll = true
       this.el.scrollLeft = target
-      window.requestAnimationFrame(() => { this.ignoreScroll = false })
+      window.requestAnimationFrame(() => {
+        this.ignoreScroll = false
+        this.syncMinimapViewport()
+      })
+    },
+    syncMinimapViewport() {
+      const minimap = document.getElementById("run-timeline-minimap")
+      const viewport = minimap?.querySelector("[data-testid='timeline-minimap-viewport']")
+      if (!viewport) return
+
+      const scrollWidth = Math.max(this.el.scrollWidth, this.el.clientWidth, 1)
+      const width = Math.max(0, Math.min(100, this.el.clientWidth / scrollWidth * 100))
+      const left = Math.max(0, Math.min(100 - width, this.el.scrollLeft / scrollWidth * 100))
+
+      viewport.style.left = `${left}%`
+      viewport.style.width = `${width}%`
     }
   }
 }
