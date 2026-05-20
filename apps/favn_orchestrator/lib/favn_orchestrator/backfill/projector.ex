@@ -326,9 +326,13 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp next_attempt_count(%BackfillWindow{attempt_count: count}, _run_id), do: count + 1
 
   defp pipeline_module(%RunState{metadata: metadata}) when is_map(metadata) do
-    case Map.get(metadata, :pipeline_submit_ref) do
+    case Map.get(metadata, :pipeline_submit_ref) ||
+           asset_module(Map.get(metadata, :asset_submit_ref)) do
       module when is_atom(module) and not is_nil(module) -> {:ok, module}
       _other -> {:error, :missing_backfill_pipeline_module}
     end
   end
+
+  defp asset_module({module, _name}) when is_atom(module), do: module
+  defp asset_module(_asset_ref), do: nil
 end

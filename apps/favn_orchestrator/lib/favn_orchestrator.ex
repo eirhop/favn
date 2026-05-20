@@ -32,6 +32,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunManager
@@ -547,6 +548,36 @@ defmodule FavnOrchestrator do
       ) do
     with :ok <- require_operator_context(actor_context) do
       submit_asset_run_for_manifest(manifest_version_id, target_id, opts_or_request)
+    end
+  end
+
+  @doc """
+  Submits an asset backfill range for an authenticated operator actor context.
+
+  Thin callers pass the unexpanded operator range request. The orchestrator owns
+  range expansion, parent/child grouping, child refresh defaults, and partial
+  submission compensation.
+  """
+  @spec submit_operator_asset_backfill(
+          operator_actor_context(),
+          String.t(),
+          String.t()
+        ) :: {:ok, run_id()} | {:error, term()}
+  @spec submit_operator_asset_backfill(
+          operator_actor_context(),
+          String.t(),
+          String.t(),
+          keyword() | map()
+        ) :: {:ok, run_id()} | {:error, term()}
+  def submit_operator_asset_backfill(actor_context, manifest_version_id, target_id, opts \\ []) do
+    with :ok <- require_operator_context(actor_context),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, asset_ref} <- resolve_asset_target_ref(version, target_id),
+         {:ok, opts} <- normalize_asset_backfill_submit_opts(opts) do
+      BackfillManager.submit_asset_backfill(
+        asset_ref,
+        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      )
     end
   end
 
@@ -1154,17 +1185,21 @@ defmodule FavnOrchestrator do
 
   defp ensure_window_rerunnable(window, opts) when is_list(opts) do
     if Keyword.get(opts, :allow_success, false) == true do
-      case Keyword.get(opts, :refresh_policy, Keyword.get(opts, :refresh)) do
-        nil -> ensure_window_rerunnable(window)
-        "" -> ensure_window_rerunnable(window)
-        _refresh -> :ok
-      end
+      ensure_success_rerun_refresh(opts)
     else
       ensure_window_rerunnable(window)
     end
   end
 
   defp ensure_window_rerunnable(window, _opts), do: ensure_window_rerunnable(window)
+
+  defp ensure_success_rerun_refresh(opts) do
+    case RefreshPolicy.from_opts(opts) do
+      {:ok, %RefreshPolicy{mode: :force}} -> :ok
+      {:ok, _policy} -> {:error, :successful_backfill_window_requires_force_refresh}
+      {:error, _reason} = error -> error
+    end
+  end
 
   defp ensure_window_rerunnable(%FavnOrchestrator.Backfill.BackfillWindow{status: status})
        when status in [:error, :cancelled, :timed_out, :partial],
@@ -2868,6 +2903,31 @@ defmodule FavnOrchestrator do
         |> Keyword.put(:range_request, range_request)
         |> maybe_put_opt(:metadata, field_value(opts, :metadata))
         |> maybe_put_opt(:coverage_baseline_id, field_value(opts, :coverage_baseline_id))
+        |> maybe_put_opt(:refresh, field_value(opts, :refresh))
+        |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
+        |> maybe_put_opt(:max_attempts, field_value(opts, :max_attempts))
+        |> maybe_put_opt(:retry_backoff_ms, field_value(opts, :retry_backoff_ms))
+        |> maybe_put_opt(:timeout_ms, field_value(opts, :timeout_ms))
+
+      {:ok, submit_opts}
+    end
+  end
+
+  defp normalize_asset_backfill_submit_opts(opts) when is_list(opts) do
+    with {:ok, range_request} <- RangeRequest.from_value(Keyword.get(opts, :range_request)) do
+      {:ok, Keyword.put(opts, :range_request, range_request)}
+    end
+  end
+
+  defp normalize_asset_backfill_submit_opts(opts) when is_map(opts) do
+    range = field_value(opts, :range) || field_value(opts, :range_request)
+
+    with {:ok, range_request} <- RangeRequest.from_value(range) do
+      submit_opts =
+        []
+        |> Keyword.put(:range_request, range_request)
+        |> maybe_put_opt(:metadata, field_value(opts, :metadata))
+        |> maybe_put_opt(:dependencies, field_value(opts, :dependencies))
         |> maybe_put_opt(:refresh, field_value(opts, :refresh))
         |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
         |> maybe_put_opt(:max_attempts, field_value(opts, :max_attempts))

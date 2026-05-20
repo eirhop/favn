@@ -938,6 +938,10 @@ defmodule FavnOrchestrator.API.Router do
             {:error, :backfill_window_has_no_attempt} ->
               {:error, 409, "conflict", "Backfill window has no attempt to rerun", %{}}
 
+            {:error, :successful_backfill_window_requires_force_refresh} ->
+              {:error, 409, "conflict", "Successful backfill window rerun requires force refresh",
+               %{}}
+
             {:error, _reason} ->
               {:error, 400, "bad_request", "Request failed", %{}}
           end

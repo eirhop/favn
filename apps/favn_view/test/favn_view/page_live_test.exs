@@ -294,7 +294,7 @@ defmodule FavnView.PageLiveTest do
     assert {:ok, run} = Storage.get_run(run_id)
     assert run.submit_kind == :pipeline
     assert run.metadata.pipeline_submit_ref == __MODULE__.Pipelines.FullRefresh
-    assert run.metadata.refresh_policy == %{mode: :force, refs: [], include_upstream?: false}
+    assert run.metadata.refresh_policy == %{mode: :auto, refs: [], include_upstream?: false}
   end
 
   test "viewer cannot submit a pipeline run with a forged LiveView event", %{conn: _conn} do
@@ -683,7 +683,7 @@ defmodule FavnView.PageLiveTest do
     })
   end
 
-  test "run asset form submits an inclusive forced window range", %{conn: conn} do
+  test "run asset form submits an inclusive forced backfill range", %{conn: conn} do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 
     open_run_config(view)
@@ -702,20 +702,30 @@ defmodule FavnView.PageLiveTest do
       }
     })
 
-    assert {run_path, %{"info" => "Submitted 2 runs"}} = assert_redirect(view)
-    first_run_id = String.replace_prefix(run_path, "/runs/", "")
+    assert {run_path, %{"info" => "Asset backfill submitted"}} = assert_redirect(view)
+    parent_run_id = String.replace_prefix(run_path, "/runs/", "")
+
+    assert {:ok, parent} = Storage.get_run(parent_run_id)
+    assert parent.submit_kind == :backfill_asset
 
     assert {:ok, runs} = Storage.list_runs()
 
     range_runs =
       Enum.filter(runs, fn run ->
-        run.asset_ref == {__MODULE__.Assets, :customer_orders_daily} and
+        run.parent_run_id == parent_run_id and
+          run.asset_ref == {__MODULE__.Assets, :customer_orders_daily} and
           run.metadata[:refresh_policy] == %{mode: :force, refs: [], include_upstream?: false} and
-          get_in(run.metadata, [:timeline_selection, :value]) in ["2026-06-12", "2026-06-13"]
+          get_in(run.metadata, [:selected_window, :kind]) == :day and
+          get_in(run.metadata, [:selected_window, :start_at]) in [
+            ~U[2026-06-12 00:00:00Z],
+            ~U[2026-06-13 00:00:00Z]
+          ]
       end)
 
     assert length(range_runs) == 2
-    assert Enum.any?(range_runs, &(&1.id == first_run_id))
+
+    assert {:ok, page} = Storage.list_backfill_windows(backfill_run_id: parent_run_id)
+    assert length(page.items) == 2
   end
 
   test "full-refresh asset can run without data coverage windows", %{conn: conn} do

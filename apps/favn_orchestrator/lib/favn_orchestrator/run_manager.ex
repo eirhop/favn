@@ -329,6 +329,9 @@ defmodule FavnOrchestrator.RunManager do
           trigger: trigger,
           metadata: metadata_with_selection,
           submit_kind: :manual,
+          parent_run_id: Keyword.get(opts, :parent_run_id),
+          root_run_id: Keyword.get(opts, :root_run_id),
+          lineage_depth: Keyword.get(opts, :lineage_depth, 0),
           max_attempts: max_attempts,
           retry_backoff_ms: retry_backoff_ms,
           timeout_ms: timeout_ms

@@ -2085,6 +2085,34 @@ defmodule FavnOrchestrator.API.RouterTest do
     assert rerun.metadata[:refresh_policy] == %{mode: :force, refs: [], include_upstream?: false}
   end
 
+  test "rejects successful backfill window rerun without force refresh" do
+    version = schedule_manifest_version("mv_backfill_success_requires_force_http")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    %{window_key: window_key} = seed_backfill_http_state!(version.manifest_version_id)
+
+    assert {:ok, window} =
+             Storage.get_backfill_window("backfill_http", MyApp.Pipelines.DailyOrders, window_key)
+
+    assert :ok = Storage.put_backfill_window(%{window | status: :ok, last_error: nil})
+
+    {:ok, session, actor} = Auth.password_login("admin", "admin-password-long")
+
+    response =
+      conn(:post, "/api/orchestrator/v1/backfills/backfill_http/windows/rerun", %{
+        "window_key" => window_key,
+        "allow_success" => true,
+        "refresh" => "missing"
+      })
+      |> put_req_header("authorization", "Bearer test-service-token")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", session.token)
+      |> put_idempotency_key("backfill-window-rerun-success-without-force-http")
+      |> Router.call(@opts)
+
+    assert response.status == 409
+    assert %{"error" => %{"code" => "conflict"}} = Jason.decode!(response.resp_body)
+  end
+
   test "backfill window rerun duplicate replays same rerun" do
     version = schedule_manifest_version("mv_backfill_rerun_idempotent_http")
     assert :ok = FavnOrchestrator.register_manifest(version)

@@ -16,6 +16,9 @@ Code:
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
 - Refresh policy normalization and forced-run selection in
   `apps/favn_orchestrator/lib/favn_orchestrator/refresh_policy.ex`
+- Operational pipeline and asset backfill range expansion, parent/child run
+  grouping, ledger rows, and partial-submission compensation in
+  `apps/favn_orchestrator/lib/favn_orchestrator/backfill_manager.ex`
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`

@@ -53,8 +53,7 @@ defmodule FavnView.PipelineDetailLive do
     case FavnOrchestrator.submit_operator_pipeline_run(
            actor_context(socket),
            pipeline.manifest_version_id,
-           pipeline.id,
-           %{refresh: :force}
+           pipeline.id
          ) do
       {:ok, run_id} ->
         {:noreply,
