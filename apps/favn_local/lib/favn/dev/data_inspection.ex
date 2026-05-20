@@ -7,6 +7,11 @@ defmodule Favn.Dev.DataInspection do
   simple relation strings into `Favn.RelationRef`, and execute inspection through
   `Favn.SQL.Client`.
 
+  The public Mix tasks start the current Mix app before calling this module. This
+  module starts `:favn_sql_runtime` before opening SQL client sessions so
+  `mix favn.inspect` and `mix favn.query` both have a supervised
+  `Favn.SQL.SessionPool`.
+
   Query validation is a best-effort local guardrail for avoiding accidental
   mutation. It is not a SQL sandbox or security boundary.
   """
@@ -39,6 +44,7 @@ defmodule Favn.Dev.DataInspection do
     client = Keyword.get(opts, :client, Client)
 
     with {:ok, relation_ref} <- parse_relation(relation, opts),
+         :ok <- ensure_sql_runtime_started(),
          {:ok, session} <- client.connect(relation_ref.connection, connect_opts(relation_ref)) do
       result =
         with {:ok, relation_info} <- client.relation(session, relation_ref),
@@ -73,6 +79,7 @@ defmodule Favn.Dev.DataInspection do
     client = Keyword.get(opts, :client, Client)
 
     with {:ok, relation_ref} <- parse_relation(relation, opts),
+         :ok <- ensure_sql_runtime_started(),
          {:ok, session} <- client.connect(relation_ref.connection, connect_opts(relation_ref)) do
       result =
         case client.table_metadata(session, relation_ref) do
@@ -102,6 +109,7 @@ defmodule Favn.Dev.DataInspection do
     with :ok <- validate_limit(limit),
          :ok <- validate_read_only(sql, opts),
          {:ok, connection} <- resolve_connection(Keyword.get(opts, :connection)),
+         :ok <- ensure_sql_runtime_started(),
          {:ok, session} <- client.connect(connection) do
       result =
         case client.query(session, sql, read_only?: not Keyword.get(opts, :allow_write, false)) do
@@ -223,6 +231,13 @@ defmodule Favn.Dev.DataInspection do
     else
       {:error,
        "connection #{inspect(connection)} is not configured; available: #{format_connections(Map.keys(connections))}"}
+    end
+  end
+
+  defp ensure_sql_runtime_started do
+    case Application.ensure_all_started(:favn_sql_runtime) do
+      {:ok, _apps} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 

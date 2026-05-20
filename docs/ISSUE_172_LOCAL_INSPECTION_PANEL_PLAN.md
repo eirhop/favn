@@ -4,7 +4,7 @@
 > Scope: manifest-owned asset relation previews with run/manifest metadata, DuckDB row count/schema/sample support, runner-owned inspection dispatch, and web asset-detail preview UI.
 > Richer DuckLake snapshot metadata, pagination, and any local-only SQL console remain future work.
 
-Issue: <https://github.com/eirhop/favn/issues/172>
+Issue: #172
 
 ## Goal
 

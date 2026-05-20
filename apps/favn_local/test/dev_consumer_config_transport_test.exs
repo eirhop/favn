@@ -34,7 +34,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
       connections: [
         warehouse: [adapter: Favn.SQL.Adapter.DuckDB, database: "/tmp/warehouse.duckdb"]
       ],
-      execution_pools: [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]],
+      execution_pools: [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]],
       runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
       duckdb_in_process_client: [pool: MyApp.DuckPool, enabled: true, note: nil],
       duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
@@ -291,7 +291,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
     encoded =
       ConsumerConfigTransport.encode(
         connection_modules: [MyApp.Connections.Warehouse],
-        execution_pools: [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]],
+        execution_pools: [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]],
         runner_plugins: [{FavnDuckdb, [execution_mode: :in_process]}],
         duckdb_adbc: [driver: "/opt/duckdb/1.5.2/libduckdb.so", entrypoint: "duckdb_adbc_init"]
       )
@@ -304,7 +304,7 @@ defmodule Favn.Dev.ConsumerConfigTransportTest do
 
     assert Application.get_env(:favn, :execution_pools) == [
              global: [max_concurrency: 5],
-             mercatus_api: [max_concurrency: 2]
+             partner_api: [max_concurrency: 2]
            ]
 
     assert Application.get_env(:favn, :runner_plugins) == [

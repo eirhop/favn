@@ -267,7 +267,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     Application.put_env(:favn, :connections, warehouse: [database: "warehouse.duckdb"])
     Application.put_env(:favn, :execution_pools,
       global: [max_concurrency: 5],
-      mercatus_api: [max_concurrency: 2]
+      partner_api: [max_concurrency: 2]
     )
 
     Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :in_process}])
@@ -297,7 +297,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
 
     assert {:connections, [warehouse: [database: "/tmp/consumer/warehouse.duckdb"]]} in decoded_config
 
-    assert {:execution_pools, [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]]} in
+    assert {:execution_pools, [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]]} in
              decoded_config
 
     assert {:runner_plugins, [{FavnDuckdb, [execution_mode: :in_process]}]} in decoded_config
@@ -362,7 +362,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
     Application.put_env(:favn, :duckdb_in_process_client, enabled: true)
     Application.put_env(:favn, :execution_pools,
       global: [max_concurrency: 5],
-      mercatus_api: [max_concurrency: 2]
+      partner_api: [max_concurrency: 2]
     )
 
     Application.put_env(:favn, :runner_plugins, [{FavnDuckdb, execution_mode: :in_process}])
@@ -382,7 +382,7 @@ defmodule Favn.Dev.RuntimeLaunchTest do
       ConsumerConfigTransport.decode(operator.env["FAVN_DEV_CONSUMER_FAVN_CONFIG"])
       |> then(fn {:ok, config} -> config end)
 
-    assert {:execution_pools, [global: [max_concurrency: 5], mercatus_api: [max_concurrency: 2]]} in
+    assert {:execution_pools, [global: [max_concurrency: 5], partner_api: [max_concurrency: 2]]} in
              decoded_config
 
     refute Keyword.has_key?(decoded_config, :connections)

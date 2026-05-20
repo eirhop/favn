@@ -1,6 +1,6 @@
 # Issue 171 Source-System Raw Landing Plan
 
-Issue: <https://github.com/eirhop/favn/issues/171>
+Issue: #171
 
 ## Goal
 

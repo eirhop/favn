@@ -3,7 +3,7 @@
 > Status: implemented for issue #185.
 > Scope: add bounded offset pagination to operational backfill read endpoints, storage adapters, local CLI helpers, and HTTP contracts.
 
-Issue: <https://github.com/eirhop/favn/issues/185>
+Issue: #185
 
 ## Goal
 

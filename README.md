@@ -548,8 +548,8 @@ mix favn.backfill repair --pipeline-module MyApp.Pipelines.DailySales --apply
 mix favn.runs list --status error --limit 20
 mix favn.runs show RUN_ID
 mix favn.logs RUN_ID
-mix favn.inspect relation raw.mercatus.reporting_baseline_inventory_by_day
-mix favn.query "select count(*) from raw.mercatus.reporting_baseline_inventory_by_day"
+mix favn.inspect relation raw.sales.orders
+mix favn.query "select count(*) from raw.sales.orders"
 mix favn.logs
 mix favn.status
 mix favn.reload
@@ -746,7 +746,10 @@ local stack is running. `mix favn.inspect relation RELATION`,
 provide local SQL inspection without ad-hoc `mix run -e` snippets. `mix
 favn.query` uses a best-effort read-only guardrail by default; it is not a SQL
 sandbox or security boundary. Pass `--connection NAME` when multiple SQL
-connections are configured.
+connections are configured. `mix favn.inspect` and `mix favn.query` start the
+current Mix app and SQL runtime themselves, including `Favn.SQL.SessionPool`;
+users should run them directly rather than wrapping them in `mix do app.start +
+...`.
 
 DuckDB and DuckDB ADBC bootstrap now accept run-scoped catalog requirements.
 SQL asset execution and relation inspection pass the rendered relation catalogs

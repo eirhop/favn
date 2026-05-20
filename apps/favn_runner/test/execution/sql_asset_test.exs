@@ -34,7 +34,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       RelationRef.new!(%{
         connection: :runner_sql_runtime,
         catalog: "raw",
-        schema: "mercatus",
+        schema: "sales",
         name: "manifest_sql_asset"
       })
 
@@ -79,7 +79,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       RelationRef.new!(%{
         connection: :runner_sql_runtime,
         catalog: "raw",
-        schema: "mercatus",
+        schema: "sales",
         name: "raw_ingestion_asset"
       })
 

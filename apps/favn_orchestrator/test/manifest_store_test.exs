@@ -396,7 +396,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
   end
 
   test "refresh timeline marks latest successful run without latest freshness state" do
-    ref = {MyApp.ReportingBaseline, :asset}
+    ref = {MyApp.DailySales, :asset}
     now = ~U[2026-05-19 12:00:00Z]
     {:ok, period} = Favn.TimePeriod.current(:month, now, "Etc/UTC")
     window_key = Favn.Window.Key.new!(:month, period.start_at, "Etc/UTC")
@@ -417,14 +417,12 @@ defmodule FavnOrchestrator.ManifestStoreTest do
     assert :ok = ManifestStore.set_active_manifest("mv_refresh_marker")
 
     assert :ok =
-             Storage.put_run(
-               run_state("run_reporting_baseline", ref, :ok, now, "mv_refresh_marker")
-             )
+             Storage.put_run(run_state("run_daily_sales", ref, :ok, now, "mv_refresh_marker"))
 
     assert :ok =
              Storage.put_asset_freshness_state(
-               freshness_state(ref, "reporting:v1", now,
-                 run_id: "run_reporting_baseline",
+               freshness_state(ref, "sales:v1", now,
+                 run_id: "run_daily_sales",
                  freshness_key: Favn.Freshness.Key.window!(window_key),
                  node_key: {ref, window_key},
                  manifest_version_id: "mv_refresh_marker"
@@ -432,7 +430,7 @@ defmodule FavnOrchestrator.ManifestStoreTest do
              )
 
     assert {:ok, detail} =
-             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.ReportingBaseline:asset",
+             FavnOrchestrator.active_asset_detail("asset:Elixir.MyApp.DailySales:asset",
                now: now
              )
 
@@ -440,11 +438,11 @@ defmodule FavnOrchestrator.ManifestStoreTest do
 
     assert data_window = Enum.find(detail.data_coverage_timeline, &(&1.value == "2026-05"))
     assert data_window.status == :covered
-    assert data_window.latest_run_id == "run_reporting_baseline"
+    assert data_window.latest_run_id == "run_daily_sales"
 
     assert refresh_window = Enum.find(detail.refresh_timeline, &(&1.value == "2026-05-19"))
     assert refresh_window.status == :fresh
-    assert refresh_window.latest_run_id == "run_reporting_baseline"
+    assert refresh_window.latest_run_id == "run_daily_sales"
   end
 
   test "hourly asset detail timeline uses hours without collapsing same-day freshness" do

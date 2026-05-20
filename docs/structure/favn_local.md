@@ -60,3 +60,11 @@ Use when changing `mix favn.*` local behavior, local runtime state, local HTTP
 client behavior, consumer config transport, install/runtime workspaces,
 single-node bootstrap, operator diagnostics, local run/data inspection, local
 run/backfill admission options, or local packaging outputs.
+
+Breadcrumbs:
+- `Mix.Tasks.Favn.Inspect` and `Mix.Tasks.Favn.Query` own CLI app startup for
+  direct local SQL inspection before delegating to `Favn.Dev.DataInspection`.
+- `Favn.Dev.DataInspection` owns relation parsing, connection resolution, and the
+  read-only SQL guardrail used by `mix favn.inspect` and `mix favn.query`. It
+  must start `:favn_sql_runtime` before opening SQL client sessions so
+  `Favn.SQL.SessionPool` is supervised without requiring manual `app.start`.
