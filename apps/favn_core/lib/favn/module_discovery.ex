@@ -1,10 +1,12 @@
 defmodule Favn.ModuleDiscovery do
   @moduledoc """
-  Discovers Favn-authored modules from compiled OTP application metadata.
+  Discovers Favn-authored modules from compiled application artifacts.
 
   Discovery is intentionally app-scoped. It reads the module list from each
-  configured OTP application instead of scanning source files, which keeps the
-  behavior compatible with releases and deterministic for manifest generation.
+  configured OTP application when `.app` metadata is available. In Mix projects,
+  it can fall back to compiled BEAM files for the configured app when the `.app`
+  artifact is unavailable, keeping local dev tasks usable without scanning
+  source files.
 
   ## Config
 
@@ -44,7 +46,7 @@ defmodule Favn.ModuleDiscovery do
   def discover(_kind, config), do: {:error, {:invalid_discovery_config, config}}
 
   @doc """
-  Returns all modules declared by the configured OTP applications.
+  Returns all modules declared by configured application artifacts.
   """
   @spec app_modules([atom()]) :: {:ok, [module()]} | {:error, error()}
   def app_modules(apps) when is_list(apps) do
@@ -90,7 +92,43 @@ defmodule Favn.ModuleDiscovery do
         end
 
       error ->
-        {:error, {:app_modules_unavailable, app, error}}
+        case fetch_mix_app_modules(app) do
+          {:ok, modules} -> {:ok, modules}
+          :error -> {:error, {:app_modules_unavailable, app, error}}
+        end
+    end
+  end
+
+  defp fetch_mix_app_modules(app) do
+    with true <- Code.ensure_loaded?(Mix.Project),
+         build_path when is_binary(build_path) <- Mix.Project.build_path(),
+         ebin_path <- Path.join([build_path, "lib", Atom.to_string(app), "ebin"]),
+         {:ok, modules} <- beam_modules(ebin_path),
+         true <- modules != [] do
+      Code.prepend_path(ebin_path)
+      {:ok, modules}
+    else
+      _other -> :error
+    end
+  rescue
+    _error -> :error
+  end
+
+  defp beam_modules(ebin_path) do
+    with {:ok, entries} <- File.ls(ebin_path) do
+      modules =
+        entries
+        |> Enum.filter(&String.ends_with?(&1, ".beam"))
+        |> Enum.reduce([], fn entry, acc ->
+          beam_path = Path.join(ebin_path, entry)
+
+          case :beam_lib.info(String.to_charlist(beam_path))[:module] do
+            module when is_atom(module) -> [module | acc]
+            _other -> acc
+          end
+        end)
+
+      {:ok, modules}
     end
   end
 
