@@ -226,7 +226,7 @@ defmodule FavnView.RunDetailLive do
     attempts = Enum.map(Map.get(detail, :asset_attempts, []), &attempt_from_public/1)
     legacy_asset_results = Enum.map(Map.get(root_detail, :steps, []), &legacy_step_from_public/1)
     windows = Enum.map(Map.get(detail, :windows, []), &window_from_public/1)
-    events = group_events(root_detail.events, Map.get(detail, :child_runs, []))
+    events = Map.get(detail, :events, root_detail.events)
     child_runs = child_runs_from_public(Map.get(detail, :child_runs, []), attempts, windows)
     timeline = Enum.map(Map.get(detail, :timeline, []), &timeline_from_public(&1, attempts))
     matrix = matrix(attempts, windows)
@@ -293,27 +293,6 @@ defmodule FavnView.RunDetailLive do
       {:ok, detail} -> detail
       {:error, _reason} -> %{events: []}
     end
-  end
-
-  defp group_events(root_events, child_runs) do
-    child_events =
-      child_runs
-      |> Enum.flat_map(fn child ->
-        case FavnOrchestrator.get_run_detail(child.id) do
-          {:ok, detail} -> Map.get(detail, :events, [])
-          {:error, _reason} -> []
-        end
-      end)
-
-    (root_events ++ child_events)
-    |> Enum.sort_by(&event_sort_key/1)
-  end
-
-  defp event_sort_key(event) do
-    occurred_at = Map.get(event, :occurred_at)
-
-    {datetime_sort_key(occurred_at), Map.get(event, :run_id) || "",
-     Map.get(event, :sequence) || 0}
   end
 
   defp maybe_schedule_refresh(%{assigns: %{run: %{active?: true}}} = socket) do
@@ -811,9 +790,6 @@ defmodule FavnView.RunDetailLive do
   defp window_label(_window), do: nil
   defp datetime_iso(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp datetime_iso(_datetime), do: nil
-
-  defp datetime_sort_key(%DateTime{} = datetime), do: DateTime.to_unix(datetime, :microsecond)
-  defp datetime_sort_key(_datetime), do: 0
 
   defp range_label(%DateTime{} = start_at, %DateTime{} = end_at),
     do: "#{Calendar.strftime(start_at, "%b %-d")} - #{Calendar.strftime(end_at, "%b %-d")}"
