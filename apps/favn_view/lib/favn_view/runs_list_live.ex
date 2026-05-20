@@ -202,6 +202,7 @@ defmodule FavnView.RunsListLive do
 
   defp group_from_public(group) do
     targets = targets(Map.get(group, :target_assets, []), nil)
+    target = List.first(targets) || "No target"
     status = display_status(group)
     current_activity = current_activity(Map.get(group, :currently_running_asset_attempts, []))
     window = window_range_label(group)
@@ -211,7 +212,8 @@ defmodule FavnView.RunsListLive do
     %{
       id: group.id,
       short_id: short_id(group.id),
-      target: List.first(targets) || "No target",
+      target: short_target(target),
+      target_title: target,
       targets: targets,
       status: status,
       raw_status: Map.get(group, :root_status),
@@ -251,7 +253,7 @@ defmodule FavnView.RunsListLive do
       short_id: short_id(run.id),
       status: display_run_status(Map.get(run, :status)),
       raw_status: Map.get(run, :status),
-      target: List.first(targets) || "No target",
+      target: short_target(List.first(targets) || "No target"),
       window: window_label(window || Map.get(run, :window)) || "-",
       progress: progress_label(progress, targets),
       started_at: short_timestamp(Map.get(run, :started_at)),
@@ -479,6 +481,13 @@ defmodule FavnView.RunsListLive do
       targets -> targets
     end
   end
+
+  defp short_target("No target"), do: "No target"
+
+  defp short_target(target) when is_binary(target),
+    do: LogsViewModel.display_name(target) || target
+
+  defp short_target(target), do: target
 
   defp window_label(%{label: label}) when is_binary(label), do: label
   defp window_label(%{"label" => label}) when is_binary(label), do: label

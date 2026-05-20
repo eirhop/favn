@@ -27,7 +27,10 @@ defmodule FavnView.Components.PipelineDetailPage do
       status_tone={status_tone(@pipeline.status)}
       nav_items={@nav_items}
     >
-      <div class="mx-auto w-full max-w-6xl space-y-4 pb-24 lg:pb-0" data-testid="pipeline-detail-page">
+      <div
+        class="mx-auto w-full max-w-[120rem] space-y-4 pb-24 lg:pb-0"
+        data-testid="pipeline-detail-page"
+      >
         <.summary_panel pipeline={@pipeline} />
         <.actions_panel
           pipeline={@pipeline}

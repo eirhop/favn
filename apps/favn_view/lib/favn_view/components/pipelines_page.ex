@@ -25,7 +25,7 @@ defmodule FavnView.Components.PipelinesPage do
       subtitle="Monitor active manifest pipelines"
       nav_items={@nav_items}
     >
-      <div class="mx-auto w-full max-w-6xl pb-24 lg:pb-0" data-testid="pipelines-page">
+      <div class="mx-auto w-full max-w-[120rem] pb-24 lg:pb-0" data-testid="pipelines-page">
         <.loading_state :if={@loading} />
         <.error_state :if={!@loading && @error} />
 

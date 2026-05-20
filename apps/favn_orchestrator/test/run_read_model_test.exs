@@ -330,6 +330,51 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert step.explanation == "Failed while executing this asset."
   end
 
+  test "run detail derives terminal step start time from finish and duration" do
+    ref = {MyApp.Assets.Gold, :asset}
+    submitted_at = ~U[2026-05-20 07:57:13Z]
+    finished_at = ~U[2026-05-20 07:57:40Z]
+
+    run =
+      run("derived_terminal_step_start", submit_kind: :pipeline)
+      |> RunState.transition(
+        status: :ok,
+        result: %{
+          node_results: [
+            %{
+              node_key: {ref, nil},
+              ref: ref,
+              stage: 0,
+              status: :ok,
+              finished_at: finished_at,
+              duration_ms: 26_800,
+              asset_step_id: "derived-step"
+            }
+          ]
+        }
+      )
+
+    assert :ok = Storage.put_run(run)
+
+    assert :ok =
+             Storage.append_run_event(run.id, %{
+               run_id: run.id,
+               sequence: 1,
+               event_type: :step_started,
+               occurred_at: submitted_at,
+               status: :running,
+               asset_ref: ref,
+               stage: 0,
+               data: %{asset_step_id: "derived-step"}
+             })
+
+    assert {:ok, detail} = FavnOrchestrator.get_run_detail(run.id)
+    assert [step] = detail.steps
+    assert step.started_at == DateTime.add(finished_at, -26_800, :millisecond)
+    assert step.finished_at == finished_at
+    assert step.duration_ms == 26_800
+  end
+
   test "pipeline success remains active while persisted step results are incomplete" do
     gold_ref = {MyApp.Assets.Gold, :asset}
     silver_ref = {MyApp.Assets.Silver, :asset}
@@ -741,6 +786,40 @@ defmodule FavnOrchestrator.RunReadModelTest do
 
     assert {:ok, timeline} = FavnOrchestrator.list_execution_group_timeline(parent.id)
     assert Enum.map(timeline, & &1.child_run_id) == [earlier_child.id, later_child.id]
+  end
+
+  test "execution group events include child window run events" do
+    parent = run("exec_group_events_parent", submit_kind: :backfill_pipeline)
+    anchor = anchor(~U[2026-07-01 00:00:00Z])
+    child = child_run(parent, "exec_group_events_child", anchor, :running, result_status: nil)
+
+    Enum.each([parent, child], &assert(:ok = Storage.put_run(&1)))
+
+    assert :ok =
+             Storage.append_run_event(parent.id, %{
+               run_id: parent.id,
+               sequence: 1,
+               event_type: :backfill_started,
+               occurred_at: ~U[2026-07-01 00:00:00Z],
+               status: :running
+             })
+
+    assert :ok =
+             Storage.append_run_event(child.id, %{
+               run_id: child.id,
+               sequence: 1,
+               event_type: :step_started,
+               occurred_at: ~U[2026-07-01 00:00:01Z],
+               status: :running,
+               asset_ref: {MyApp.Assets.Gold, :asset},
+               data: %{asset_step_id: "child-step"}
+             })
+
+    assert {:ok, events} = FavnOrchestrator.list_execution_group_events(parent.id)
+    assert Enum.map(events, & &1.run_id) == [parent.id, child.id]
+
+    assert {:ok, detail} = FavnOrchestrator.get_execution_group_detail(parent.id)
+    assert Enum.map(detail.events, & &1.run_id) == [parent.id, child.id]
   end
 
   test "execution group attempt filters apply on orchestrator read model" do

@@ -1507,6 +1507,50 @@ defmodule FavnView.PageLiveTest do
     refute html =~ ~r/data-section="queued".*Blocked/s
   end
 
+  test "run detail timeline prefers authoritative attempts over matrix placeholders" do
+    run = %{
+      active?: false,
+      windows: [],
+      attempts: [timeline_attempt(:ok)],
+      matrix: %{
+        rows: [
+          %{
+            cells: [
+              %{
+                timeline_attempt(:pending)
+                | id: nil,
+                  attempt_id: nil,
+                  raw_status: :pending,
+                  status: "Queued",
+                  started_at_raw: nil,
+                  finished_at_raw: nil
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+    html =
+      render_component(&Timeline.timeline_panel/1,
+        run: run,
+        timeline_hook?: false,
+        timeline_state: %{
+          mode: :fit,
+          zoom: "full",
+          live_follow?: false,
+          search: "",
+          status: "all",
+          window: "all",
+          failed_only?: false,
+          running_only?: false
+        }
+      )
+
+    assert html =~ ~r/data-section="ran".*Ok/s
+    refute html =~ ~r/data-testid="timeline-row"[^>]*data-section="queued"/s
+  end
+
   test "run detail timeline uses started to now bars for running attempts", %{conn: conn} do
     %{parent_id: parent_id} = seed_run_detail_group!()
 
@@ -1557,6 +1601,23 @@ defmodule FavnView.PageLiveTest do
     assert has_element?(view, ~s([data-testid="timeline-mode-indicator"][data-mode="manual"]))
     assert has_element?(view, ~s([data-testid="timeline-zoom-1h"].btn-info))
     assert has_element?(view, ~s([data-testid="timeline-jump-now"]), "Jump to now")
+  end
+
+  test "run detail timeline focus switches fit view to manual zoom", %{conn: conn} do
+    %{parent_id: parent_id} = seed_run_detail_group!(completed?: true)
+
+    {:ok, view, _html} = live(conn, ~p"/runs/#{parent_id}?view=timeline")
+
+    assert has_element?(view, ~s([data-testid="timeline-mode-indicator"][data-mode="fit"]))
+
+    render_hook(view, "timeline_focus", %{"ratio" => 0.5})
+
+    path = assert_patch(view)
+    assert path =~ "view=timeline"
+    assert path =~ "timeline_mode=manual"
+    assert path =~ "timeline_follow=0"
+    assert has_element?(view, ~s([data-testid="timeline-mode-indicator"][data-mode="manual"]))
+    assert has_element?(view, ~s([data-testid="timeline-zoom-30m"].btn-info))
   end
 
   test "run detail timeline filters remain active after zoom changes", %{conn: conn} do
@@ -1642,6 +1703,20 @@ defmodule FavnView.PageLiveTest do
 
     assert has_element?(view, ~s([data-testid="run-event-timeline"]), "Events")
     refute has_element?(view, ~s([data-testid="run-overview-panel"]))
+  end
+
+  test "run detail overview rail button returns from another mode", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily?view=timeline")
+
+    refute has_element?(view, ~s([data-testid="run-overview-panel"]))
+
+    view
+    |> element(~s([data-testid="view-mode-rail"] button[aria-label="Overview"]))
+    |> render_click()
+
+    path = assert_patch(view)
+    assert path == ~p"/runs/run_customer_orders_daily"
+    assert has_element?(view, ~s([data-testid="run-overview-panel"]))
   end
 
   test "run detail right rail exposes expected modes", %{conn: conn} do

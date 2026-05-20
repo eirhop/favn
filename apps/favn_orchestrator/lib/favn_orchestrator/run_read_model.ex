@@ -162,7 +162,8 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:child_runs) => [run_summary()],
           required(:windows) => [map()],
           required(:asset_attempts) => [asset_attempt_summary()],
-          required(:timeline) => [timeline_entry()]
+          required(:timeline) => [timeline_entry()],
+          required(:events) => [RunEvent.t()]
         }
 
   @type asset_step_log_context :: %{
@@ -268,8 +269,21 @@ defmodule FavnOrchestrator.RunReadModel do
          child_runs: Enum.map(group.children, &summary/1),
          windows: windows,
          asset_attempts: attempts,
-         timeline: timeline_entries(attempts)
+         timeline: timeline_entries(attempts),
+         events: execution_group_events(group)
        }}
+    end
+  end
+
+  @doc """
+  Lists persisted events for an execution group, including child/window runs.
+  """
+  @spec list_execution_group_events(String.t(), keyword()) ::
+          {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_execution_group_events(group_id, _filters \\ []) when is_binary(group_id) do
+    with {:ok, runs} <- Storage.list_runs(),
+         {:ok, group} <- find_execution_group(runs, group_id) do
+      {:ok, execution_group_events(group)}
     end
   end
 
@@ -743,6 +757,16 @@ defmodule FavnOrchestrator.RunReadModel do
     end
   end
 
+  defp execution_group_events(group) do
+    group.runs
+    |> Enum.flat_map(&run_events(&1.id))
+    |> Enum.sort_by(&event_sort_key/1)
+  end
+
+  defp event_sort_key(%RunEvent{} = event) do
+    {datetime_sort_key(event.occurred_at), event.run_id || "", event.sequence || 0}
+  end
+
   defp event_step_finished_at(latest, events) do
     cond do
       event_step_status(latest.event_type, latest.status) |> terminal_status?() ->
@@ -1011,6 +1035,7 @@ defmodule FavnOrchestrator.RunReadModel do
     persisted_steps
     |> merge_event_steps(event_steps, run, settling?)
     |> append_waiting_steps(run, event_steps, settling?)
+    |> normalize_step_timings()
     |> mark_cascade_failures(events)
     |> Enum.sort_by(&{&1.stage || 999_999, &1.asset_ref})
   end
@@ -1253,6 +1278,7 @@ defmodule FavnOrchestrator.RunReadModel do
         |> Enum.find(&step_event_type?(&1, "step_started"))
         |> then(&(&1 && &1.occurred_at)),
       finished_at: event_step_finished_at(latest, events),
+      sequence: latest.sequence,
       attempt: Map.get(data, :attempt) || Map.get(data, "attempt"),
       error: Map.get(data, :error) || Map.get(data, "error"),
       output: nil,
@@ -1261,6 +1287,28 @@ defmodule FavnOrchestrator.RunReadModel do
       root_failure_asset_ref: nil
     }
   end
+
+  defp normalize_step_timings(steps) do
+    Enum.map(steps, fn step ->
+      started_at = derived_step_started_at(step) || step.started_at
+      duration_ms = step.duration_ms || duration_ms(started_at, step.finished_at)
+
+      %{step | started_at: started_at, duration_ms: duration_ms}
+    end)
+  end
+
+  defp derived_step_started_at(%{
+         status: status,
+         finished_at: %DateTime{} = finished_at,
+         duration_ms: duration_ms
+       })
+       when is_integer(duration_ms) and duration_ms >= 0 do
+    if terminal_status?(status),
+      do: DateTime.add(finished_at, -duration_ms, :millisecond),
+      else: nil
+  end
+
+  defp derived_step_started_at(_step), do: nil
 
   defp mark_cascade_failures(steps, events) do
     cascade = cascade_failure_context(events)

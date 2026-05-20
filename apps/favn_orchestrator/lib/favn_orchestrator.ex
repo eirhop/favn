@@ -1312,6 +1312,16 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Lists persisted events for an execution group, including child/window runs.
+  """
+  @spec list_execution_group_events(run_id(), keyword()) ::
+          {:ok, [RunEvent.t()]} | {:error, term()}
+  def list_execution_group_events(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    RunReadModel.list_execution_group_events(group_id, filters)
+  end
+
+  @doc """
   Returns public log-page context for one asset step in a run.
   """
   @spec get_asset_step_log_context(run_id(), String.t()) ::

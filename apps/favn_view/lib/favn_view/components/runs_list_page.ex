@@ -29,16 +29,20 @@ defmodule FavnView.Components.RunsListPage do
       subtitle="Backfills and runs"
       nav_items={@nav_items}
       show_header?={false}
+      content_scroll?={false}
     >
-      <div class="mx-auto w-full max-w-[92rem] pb-24 lg:pb-0" data-testid="runs-list-page">
+      <div
+        class="mx-auto flex min-h-0 w-full max-w-[120rem] flex-1 flex-col pb-24 lg:pb-0"
+        data-testid="runs-list-page"
+      >
         <.loading_state :if={@loading} />
         <.error_state :if={!@loading && @error} />
 
-        <div :if={!@loading && !@error} class="space-y-2.5 lg:space-y-3">
+        <div :if={!@loading && !@error} class="flex min-h-0 flex-1 flex-col gap-2.5 lg:gap-3">
           <.summary_band summary={@summary} />
 
           <GlassPanel.glass_panel
-            class="overflow-visible p-3 sm:p-4"
+            class="flex min-h-0 flex-1 flex-col overflow-hidden p-3 sm:p-4"
             data-testid="execution-groups-panel"
           >
             <.filters_bar
@@ -301,7 +305,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def execution_groups_table(assigns) do
     ~H"""
-    <div class="hidden overflow-x-auto border-t border-base-content/10 lg:block">
+    <div class="hidden min-h-0 flex-1 overflow-auto border-t border-base-content/10 lg:block">
       <table class="table table-sm" data-testid="execution-groups-table">
         <thead>
           <tr class="border-base-content/10 text-xs text-base-content/55">
@@ -330,7 +334,7 @@ defmodule FavnView.Components.RunsListPage do
           <% end %>
         </tbody>
       </table>
-      <div class="border-t border-base-content/10 px-2 py-3 text-xs text-base-content/55">
+      <div class="sticky bottom-0 border-t border-base-content/10 bg-base-100/80 px-2 py-3 text-xs text-base-content/55 backdrop-blur">
         Showing 1-{length(@groups)} of {length(@groups)} runs
       </div>
     </div>
@@ -379,7 +383,7 @@ defmodule FavnView.Components.RunsListPage do
         </div>
       </td>
       <td class="text-xs text-base-content/75">{@group.trigger}</td>
-      <td class="min-w-56 max-w-80"><.target_cell group={@group} /></td>
+      <td class="min-w-44 max-w-56"><.target_cell group={@group} /></td>
       <td class="min-w-36 text-xs text-base-content/75">
         <p>{@group.window}</p>
         <p class="text-xs text-base-content/45">{@group.window_count_label}</p>
@@ -497,7 +501,9 @@ defmodule FavnView.Components.RunsListPage do
           >
             {@group.short_id}
           </.link>
-          <p class="line-clamp-2 text-sm text-base-content/80">{@group.target}</p>
+          <p class="line-clamp-2 text-sm text-base-content/80" title={@group.target_title}>
+            {@group.target}
+          </p>
         </div>
         <button
           type="button"
@@ -540,7 +546,7 @@ defmodule FavnView.Components.RunsListPage do
 
   def target_cell(%{group: %{targets: [_single]}} = assigns) do
     ~H"""
-    <p class="truncate text-sm font-medium text-base-content" title={@group.target}>
+    <p class="max-w-56 truncate text-sm font-medium text-base-content" title={@group.target_title}>
       {@group.target}
     </p>
     """
@@ -551,7 +557,10 @@ defmodule FavnView.Components.RunsListPage do
     <details class="dropdown dropdown-hover dropdown-bottom">
       <summary class="list-none marker:content-none">
         <span class="inline-flex max-w-full cursor-default items-center gap-2 align-middle">
-          <span class="truncate text-sm font-medium text-base-content" title={@group.target}>
+          <span
+            class="max-w-48 truncate text-sm font-medium text-base-content"
+            title={@group.target_title}
+          >
             {@group.target}
           </span>
           <span class="badge badge-xs badge-soft badge-info shrink-0">
