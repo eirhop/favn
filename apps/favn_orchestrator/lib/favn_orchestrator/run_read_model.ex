@@ -232,6 +232,7 @@ defmodule FavnOrchestrator.RunReadModel do
   @spec list_execution_groups(keyword()) :: {:ok, [execution_group_summary()]} | {:error, term()}
   def list_execution_groups(filters \\ []) when is_list(filters) do
     with {:ok, runs} <- Storage.list_runs(limit: execution_group_scan_limit(filters)) do
+      runs = include_missing_execution_group_roots(runs)
       groups = execution_groups(runs)
 
       {:ok,
@@ -373,6 +374,28 @@ defmodule FavnOrchestrator.RunReadModel do
       %{id: root.id, root: root, children: children, runs: [root | children]}
     end)
     |> Enum.sort_by(fn group -> run_started_sort_key(group.root) end, :desc)
+  end
+
+  defp include_missing_execution_group_roots(runs) do
+    runs_by_id = Map.new(runs, &{&1.id, &1})
+
+    missing_root_ids =
+      runs
+      |> Enum.map(&execution_group_id/1)
+      |> Enum.reject(&Map.has_key?(runs_by_id, &1))
+      |> Enum.uniq()
+
+    roots =
+      missing_root_ids
+      |> Enum.flat_map(fn root_id ->
+        case Storage.get_run(root_id) do
+          {:ok, %RunState{} = root} -> [root]
+          {:error, _reason} -> []
+        end
+      end)
+
+    (roots ++ runs)
+    |> Enum.uniq_by(& &1.id)
   end
 
   defp execution_group_id(%RunState{root_run_id: root_run_id}) when is_binary(root_run_id),
