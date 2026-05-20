@@ -609,6 +609,168 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert detail.summary.progress.counts.failed == 12
   end
 
+  test "execution group detail aggregates a multi-window backfill" do
+    parent = run("exec_group_parent", submit_kind: :backfill_pipeline)
+    anchors = Enum.map(0..3, &anchor(DateTime.add(~U[2026-05-01 00:00:00Z], &1, :day)))
+
+    completed_child =
+      child_run(parent, "exec_group_child_ok", Enum.at(anchors, 0), :ok,
+        result_status: :ok,
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        started_at: ~U[2026-05-01 00:00:10Z],
+        finished_at: ~U[2026-05-01 00:00:20Z]
+      )
+
+    failed_child =
+      child_run(parent, "exec_group_child_failed", Enum.at(anchors, 1), :error,
+        result_status: :error,
+        asset_ref: {MyApp.Assets.Silver, :asset},
+        started_at: ~U[2026-05-01 00:00:30Z],
+        finished_at: ~U[2026-05-01 00:00:40Z],
+        error: %{message: "boom"}
+      )
+
+    running_child =
+      child_run(parent, "exec_group_child_running", Enum.at(anchors, 2), :running,
+        asset_ref: {MyApp.Assets.Bronze, :asset}
+      )
+
+    queued_child =
+      child_run(parent, "exec_group_child_queued", Enum.at(anchors, 3), :running,
+        asset_ref: {MyApp.Assets.Copper, :asset}
+      )
+
+    runs = [parent, completed_child, failed_child, running_child, queued_child]
+    Enum.each(runs, &assert(:ok = Storage.put_run(&1)))
+
+    Enum.zip(anchors, [:ok, :error, :running, :pending])
+    |> Enum.zip([completed_child, failed_child, running_child, queued_child])
+    |> Enum.each(fn {{anchor, status}, child} ->
+      window =
+        parent.id
+        |> backfill_window(anchor, status)
+        |> Map.merge(%{child_run_id: child.id, latest_attempt_run_id: child.id})
+
+      assert :ok = Storage.put_backfill_window(window)
+    end)
+
+    assert :ok =
+             Storage.append_run_event(running_child.id, %{
+               run_id: running_child.id,
+               sequence: 1,
+               event_type: :step_started,
+               occurred_at: ~U[2026-05-01 00:00:50Z],
+               status: :running,
+               data: %{
+                 asset_ref: {MyApp.Assets.Bronze, :asset},
+                 asset_step_id: "running-step",
+                 stage: 0,
+                 attempt: 1,
+                 window: public_window(Enum.at(anchors, 2))
+               }
+             })
+
+    assert {:ok, [group]} = FavnOrchestrator.list_execution_groups(trigger_type: :backfill)
+
+    assert group.id == parent.id
+
+    assert group.child_run_ids ==
+             Enum.map([completed_child, failed_child, running_child, queued_child], & &1.id)
+
+    assert group.total_windows == 4
+    assert group.completed_windows == 2
+    assert group.failed_windows == 1
+    assert group.total_asset_attempts == 4
+    assert group.completed_asset_attempts == 2
+    assert group.failed_asset_attempts == 1
+    assert group.running_asset_attempts == 1
+    assert group.queued_asset_attempts == 1
+
+    assert {:ok, detail} = FavnOrchestrator.get_execution_group_detail(parent.id)
+    assert detail.summary.id == parent.id
+    assert length(detail.child_runs) == 4
+    assert length(detail.windows) == 4
+    assert length(detail.asset_attempts) == 4
+  end
+
+  test "execution group asset attempts expose persisted window data" do
+    parent = run("exec_group_windows_parent", submit_kind: :backfill_pipeline)
+    anchor = anchor(~U[2026-06-01 00:00:00Z])
+
+    child =
+      child_run(parent, "exec_group_windows_child", anchor, :ok,
+        result_status: :ok,
+        asset_ref: {MyApp.Assets.Gold, :asset},
+        started_at: ~U[2026-06-01 00:00:00Z],
+        finished_at: ~U[2026-06-01 00:00:01Z]
+      )
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(child)
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, anchor, :ok))
+
+    assert {:ok, [attempt]} = FavnOrchestrator.list_execution_group_asset_attempts(parent.id)
+    assert attempt.window.start_at == anchor.start_at
+    assert attempt.window.end_at == anchor.end_at
+    assert attempt.window_start_at == anchor.start_at
+    assert attempt.window_end_at == anchor.end_at
+  end
+
+  test "execution group timeline is ordered by execution start time" do
+    parent = run("exec_group_timeline_parent", submit_kind: :backfill_pipeline)
+    first_anchor = anchor(~U[2026-07-01 00:00:00Z])
+    second_anchor = anchor(~U[2026-07-02 00:00:00Z])
+
+    later_child =
+      child_run(parent, "exec_group_timeline_later", second_anchor, :ok,
+        result_status: :ok,
+        started_at: ~U[2026-07-03 00:00:00Z],
+        finished_at: ~U[2026-07-03 00:00:01Z]
+      )
+
+    earlier_child =
+      child_run(parent, "exec_group_timeline_earlier", first_anchor, :ok,
+        result_status: :ok,
+        started_at: ~U[2026-07-01 00:00:00Z],
+        finished_at: ~U[2026-07-01 00:00:01Z]
+      )
+
+    Enum.each([parent, later_child, earlier_child], &assert(:ok = Storage.put_run(&1)))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, first_anchor, :ok))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, second_anchor, :ok))
+
+    assert {:ok, timeline} = FavnOrchestrator.list_execution_group_timeline(parent.id)
+    assert Enum.map(timeline, & &1.child_run_id) == [earlier_child.id, later_child.id]
+  end
+
+  test "execution group attempt filters apply on orchestrator read model" do
+    parent = run("exec_group_filter_parent", submit_kind: :backfill_pipeline)
+    ok_anchor = anchor(~U[2026-08-01 00:00:00Z])
+    failed_anchor = anchor(~U[2026-08-02 00:00:00Z])
+
+    ok_child = child_run(parent, "exec_group_filter_ok", ok_anchor, :ok, result_status: :ok)
+
+    failed_child =
+      child_run(parent, "exec_group_filter_failed", failed_anchor, :error,
+        result_status: :error,
+        error: %{message: "failed"}
+      )
+
+    Enum.each([parent, ok_child, failed_child], &assert(:ok = Storage.put_run(&1)))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, ok_anchor, :ok))
+    assert :ok = Storage.put_backfill_window(backfill_window(parent.id, failed_anchor, :error))
+
+    assert {:ok, [failed]} =
+             FavnOrchestrator.list_execution_group_asset_attempts(parent.id, only_failed: true)
+
+    assert failed.status == :error
+
+    assert {:ok, [ok]} =
+             FavnOrchestrator.list_execution_group_asset_attempts(parent.id, status: :ok)
+
+    assert ok.status == :ok
+  end
+
   defp run(run_id, opts) do
     RunState.new(
       id: run_id,
@@ -626,9 +788,86 @@ defmodule FavnOrchestrator.RunReadModelTest do
     )
   end
 
+  defp child_run(parent, run_id, %Anchor{} = anchor, status, opts) do
+    asset_ref = Keyword.get(opts, :asset_ref, {MyApp.Assets.Gold, :asset})
+    result_status = Keyword.get(opts, :result_status)
+    started_at = Keyword.get(opts, :started_at, anchor.start_at)
+    finished_at = Keyword.get(opts, :finished_at, DateTime.add(started_at, 1, :second))
+    error = Keyword.get(opts, :error)
+    window = public_window(anchor)
+    node_key = {asset_ref, window.key}
+
+    base =
+      run(run_id,
+        submit_kind: :pipeline,
+        parent_run_id: parent.id,
+        root_run_id: parent.id,
+        lineage_depth: 1,
+        trigger: %{
+          kind: :backfill,
+          pipeline_module: MyApp.Pipelines.Daily,
+          window_key: window.key
+        },
+        metadata: %{pipeline_context: %{anchor_window: anchor}}
+      )
+      |> Map.put(:asset_ref, asset_ref)
+      |> Map.put(:target_refs, [asset_ref])
+      |> Map.put(:plan, single_node_plan(asset_ref, node_key, window))
+
+    case result_status do
+      nil ->
+        RunState.transition(base, status: status)
+
+      result_status ->
+        result =
+          NodeResult.new(%{
+            node_key: node_key,
+            ref: asset_ref,
+            window: window,
+            stage: 0,
+            status: result_status,
+            started_at: started_at,
+            finished_at: finished_at,
+            duration_ms: DateTime.diff(finished_at, started_at, :millisecond),
+            error: error,
+            attempt_count: 1,
+            max_attempts: 1,
+            asset_step_id: "#{run_id}-step"
+          })
+
+        RunState.transition(base,
+          status: status,
+          error: error,
+          result: %{status: status, node_results: [result]}
+        )
+    end
+  end
+
+  defp single_node_plan(asset_ref, node_key, window) do
+    %Favn.Plan{
+      target_refs: [asset_ref],
+      target_node_keys: [node_key],
+      nodes: %{node_key => plan_node(asset_ref, node_key, window, 0)},
+      topo_order: [asset_ref],
+      stages: [[asset_ref]],
+      node_stages: [[node_key]]
+    }
+  end
+
   defp anchor(start_at) do
     {:ok, anchor} = Anchor.new(:day, start_at, DateTime.add(start_at, 1, :day))
     anchor
+  end
+
+  defp public_window(%Anchor{} = anchor) do
+    %{
+      key: window_key(anchor),
+      label: Calendar.strftime(anchor.start_at, "%b %-d"),
+      kind: anchor.kind,
+      start_at: anchor.start_at,
+      end_at: anchor.end_at,
+      timezone: anchor.timezone
+    }
   end
 
   defp window_key(%Anchor{} = anchor), do: WindowKey.encode(anchor.key)

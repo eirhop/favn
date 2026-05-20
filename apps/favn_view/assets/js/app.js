@@ -64,6 +64,43 @@ const Hooks = {
       const terminal = this.el.querySelector("[data-testid='log-terminal-window']")
       if (terminal) terminal.scrollTop = terminal.scrollHeight
     }
+  },
+  FavnTimeline: {
+    mounted() {
+      this.userPaused = false
+      this.followNow()
+
+      this.el.addEventListener("scroll", () => {
+        if (this.ignoreScroll || this.el.dataset.liveFollow !== "true") return
+        this.userPaused = true
+        this.pushEvent("timeline_pause_live", {})
+      }, {passive: true})
+
+      const minimap = document.getElementById("run-timeline-minimap")
+      minimap?.addEventListener("click", event => {
+        const bounds = minimap.getBoundingClientRect()
+        if (!bounds.width) return
+
+        const ratio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width))
+        this.el.scrollLeft = ratio * Math.max(this.el.scrollWidth - this.el.clientWidth, 0)
+        if (this.el.dataset.liveFollow === "true") this.pushEvent("timeline_pause_live", {})
+      })
+    },
+    updated() {
+      this.followNow()
+    },
+    followNow() {
+      if (this.el.dataset.active !== "true" || this.el.dataset.liveFollow !== "true") return
+      if (this.el.dataset.fitMode === "true") return
+
+      const offset = Number.parseFloat(this.el.dataset.nowOffset || "100") / 100
+      const maxScroll = Math.max(this.el.scrollWidth - this.el.clientWidth, 0)
+      const target = Math.max(0, Math.min(maxScroll, this.el.scrollWidth * offset - this.el.clientWidth * 0.72))
+
+      this.ignoreScroll = true
+      this.el.scrollLeft = target
+      window.requestAnimationFrame(() => { this.ignoreScroll = false })
+    }
   }
 }
 

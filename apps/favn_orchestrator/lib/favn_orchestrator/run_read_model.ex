@@ -45,6 +45,7 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:window) => window_summary() | nil,
           required(:duration_ms) => non_neg_integer() | nil,
           required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
           required(:attempt) => non_neg_integer() | nil,
           required(:error) => term(),
           required(:output) => term(),
@@ -101,6 +102,67 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:events) => [RunEvent.t()]
         }
 
+  @type asset_attempt_summary :: %{
+          required(:id) => String.t(),
+          required(:root_execution_group_id) => String.t(),
+          required(:child_run_id) => String.t() | nil,
+          required(:run_id) => String.t(),
+          required(:status) => atom() | nil,
+          required(:asset_key) => String.t(),
+          required(:asset_ref) => String.t(),
+          required(:stage) => non_neg_integer() | nil,
+          required(:attempt_number) => non_neg_integer() | nil,
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:duration_ms) => non_neg_integer() | nil,
+          required(:error_summary) => String.t() | nil,
+          required(:window) => window_summary() | nil,
+          required(:window_start_at) => DateTime.t() | nil,
+          required(:window_end_at) => DateTime.t() | nil
+        }
+
+  @type execution_group_summary :: %{
+          required(:id) => String.t(),
+          required(:root_execution_group_id) => String.t(),
+          required(:trigger_type) => atom() | nil,
+          required(:target_assets) => [String.t()],
+          required(:root_status) => RunState.status(),
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:duration_ms) => non_neg_integer() | nil,
+          required(:total_windows) => non_neg_integer(),
+          required(:completed_windows) => non_neg_integer(),
+          required(:failed_windows) => non_neg_integer(),
+          required(:total_asset_attempts) => non_neg_integer(),
+          required(:completed_asset_attempts) => non_neg_integer(),
+          required(:failed_asset_attempts) => non_neg_integer(),
+          required(:running_asset_attempts) => non_neg_integer(),
+          required(:queued_asset_attempts) => non_neg_integer(),
+          required(:currently_running_asset_attempts) => [asset_attempt_summary()],
+          required(:child_run_ids) => [String.t()]
+        }
+
+  @type timeline_entry :: %{
+          required(:started_at) => DateTime.t() | nil,
+          required(:finished_at) => DateTime.t() | nil,
+          required(:asset_key) => String.t(),
+          required(:window) => window_summary() | nil,
+          required(:status) => atom() | nil,
+          required(:stage) => non_neg_integer() | nil,
+          required(:attempt_id) => String.t(),
+          required(:child_run_id) => String.t() | nil,
+          required(:root_execution_group_id) => String.t()
+        }
+
+  @type execution_group_detail :: %{
+          required(:summary) => execution_group_summary(),
+          required(:root_run) => run_summary(),
+          required(:child_runs) => [run_summary()],
+          required(:windows) => [map()],
+          required(:asset_attempts) => [asset_attempt_summary()],
+          required(:timeline) => [timeline_entry()]
+        }
+
   @type asset_step_log_context :: %{
           required(:run) => run_summary(),
           required(:step) => step_summary() | nil,
@@ -154,6 +216,85 @@ defmodule FavnOrchestrator.RunReadModel do
   end
 
   @doc """
+  Lists execution groups for run overview screens.
+
+  An execution group is rooted at a submitted run request. Backfill child runs are
+  grouped under their persisted `root_run_id`/`parent_run_id` so callers do not
+  derive parent/child relationships from raw run rows.
+  """
+  @spec list_execution_groups(keyword()) :: {:ok, [execution_group_summary()]} | {:error, term()}
+  def list_execution_groups(filters \\ []) when is_list(filters) do
+    with {:ok, runs} <- Storage.list_runs() do
+      groups = execution_groups(runs)
+
+      {:ok,
+       groups
+       |> Enum.map(&execution_group_summary/1)
+       |> filter_execution_group_summaries(filters)}
+    end
+  end
+
+  @doc """
+  Returns one execution group detail including children, windows, attempts, and timeline entries.
+  """
+  @spec get_execution_group_detail(String.t(), keyword()) ::
+          {:ok, execution_group_detail()} | {:error, term()}
+  def get_execution_group_detail(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    with {:ok, runs} <- Storage.list_runs(),
+         {:ok, group} <- find_execution_group(runs, group_id) do
+      attempts = group |> execution_group_asset_attempts() |> filter_asset_attempts(filters)
+      windows = execution_group_window_summaries(group)
+
+      {:ok,
+       %{
+         summary:
+           execution_group_summary(Map.merge(group, %{attempts: attempts, windows: windows})),
+         root_run: summary(group.root),
+         child_runs: Enum.map(group.children, &summary/1),
+         windows: windows,
+         asset_attempts: attempts,
+         timeline: timeline_entries(attempts)
+       }}
+    end
+  end
+
+  @doc """
+  Lists asset attempts for one execution group.
+  """
+  @spec list_execution_group_asset_attempts(String.t(), keyword()) ::
+          {:ok, [asset_attempt_summary()]} | {:error, term()}
+  def list_execution_group_asset_attempts(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    with {:ok, detail} <- get_execution_group_detail(group_id, filters) do
+      {:ok, detail.asset_attempts}
+    end
+  end
+
+  @doc """
+  Lists window summaries for one execution group.
+  """
+  @spec list_execution_group_windows(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_execution_group_windows(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    with {:ok, detail} <- get_execution_group_detail(group_id, filters) do
+      {:ok, detail.windows}
+    end
+  end
+
+  @doc """
+  Lists execution wall-clock timeline entries for one execution group.
+  """
+  @spec list_execution_group_timeline(String.t(), keyword()) ::
+          {:ok, [timeline_entry()]} | {:error, term()}
+  def list_execution_group_timeline(group_id, filters \\ [])
+      when is_binary(group_id) and is_list(filters) do
+    with {:ok, detail} <- get_execution_group_detail(group_id, filters) do
+      {:ok, detail.timeline}
+    end
+  end
+
+  @doc """
   Returns public log-page context for one asset step in a persisted run.
   """
   @spec get_asset_step_log_context(String.t(), String.t()) ::
@@ -202,6 +343,319 @@ defmodule FavnOrchestrator.RunReadModel do
       duration_ms: duration_ms(run)
     }
   end
+
+  defp execution_groups(runs) when is_list(runs) do
+    runs_by_id = Map.new(runs, &{&1.id, &1})
+
+    runs
+    |> Enum.group_by(&execution_group_id/1)
+    |> Enum.map(fn {group_id, group_runs} ->
+      root = Map.get(runs_by_id, group_id) || Enum.min_by(group_runs, &run_started_sort_key/1)
+
+      children =
+        group_runs
+        |> Enum.reject(&(&1.id == root.id))
+        |> Enum.sort_by(&run_started_sort_key/1)
+
+      %{id: root.id, root: root, children: children, runs: [root | children]}
+    end)
+    |> Enum.sort_by(fn group -> run_started_sort_key(group.root) end, :desc)
+  end
+
+  defp execution_group_id(%RunState{root_run_id: root_run_id}) when is_binary(root_run_id),
+    do: root_run_id
+
+  defp execution_group_id(%RunState{parent_run_id: parent_run_id}) when is_binary(parent_run_id),
+    do: parent_run_id
+
+  defp execution_group_id(%RunState{id: id}), do: id
+
+  defp find_execution_group(runs, group_id) do
+    runs
+    |> execution_groups()
+    |> Enum.find(&(&1.id == group_id))
+    |> case do
+      nil -> {:error, :not_found}
+      group -> {:ok, group}
+    end
+  end
+
+  defp execution_group_summary(group) do
+    attempts = Map.get(group, :attempts) || execution_group_asset_attempts(group)
+    windows = Map.get(group, :windows) || execution_group_window_summaries(group)
+    attempt_counts = attempt_counts(attempts)
+    window_counts = window_counts(windows)
+    root = with_public_status(group.root)
+
+    %{
+      id: root.id,
+      root_execution_group_id: root.id,
+      trigger_type: trigger_type(root),
+      target_assets: target_assets(root),
+      root_status: root.status,
+      started_at: root.inserted_at,
+      finished_at: finished_at(root),
+      duration_ms: duration_ms(root),
+      total_windows: window_counts.total,
+      completed_windows: window_counts.completed,
+      failed_windows: window_counts.failed,
+      total_asset_attempts: attempt_counts.total,
+      completed_asset_attempts: attempt_counts.completed,
+      failed_asset_attempts: attempt_counts.failed,
+      running_asset_attempts: attempt_counts.running,
+      queued_asset_attempts: attempt_counts.queued,
+      currently_running_asset_attempts: Enum.filter(attempts, &running_status?(&1.status)),
+      child_run_ids: Enum.map(group.children, & &1.id)
+    }
+  end
+
+  defp target_assets(%RunState{target_refs: refs}) when is_list(refs) and refs != [],
+    do: Enum.map(refs, &public_ref/1)
+
+  defp target_assets(%RunState{asset_ref: ref}), do: [public_ref(ref)]
+
+  defp trigger_type(%RunState{submit_kind: :rerun}), do: :retry
+
+  defp trigger_type(%RunState{submit_kind: submit_kind})
+       when submit_kind in [:backfill_asset, :backfill_pipeline],
+       do: :backfill
+
+  defp trigger_type(%RunState{trigger: trigger}) when is_map(trigger) do
+    Map.get(trigger, :kind) || Map.get(trigger, "kind") || :manual
+  end
+
+  defp trigger_type(_run), do: :manual
+
+  defp execution_group_asset_attempts(group) do
+    Enum.flat_map(group.runs, fn run ->
+      case classify(run) do
+        :backfill_parent ->
+          []
+
+        _role ->
+          events = run_events(run.id)
+
+          run
+          |> step_summaries(events)
+          |> Enum.map(&asset_attempt_summary(group.root.id, run, &1))
+      end
+    end)
+  end
+
+  defp asset_attempt_summary(root_id, %RunState{} = run, step) do
+    window = step.window || window(run, classify(run))
+
+    %{
+      id: step.id,
+      root_execution_group_id: root_id,
+      child_run_id: if(run.id == root_id, do: nil, else: run.id),
+      run_id: run.id,
+      status: status_name(step.status),
+      asset_key: step.asset_ref,
+      asset_ref: step.asset_ref,
+      stage: step.stage,
+      attempt_number: step.attempt,
+      started_at: step.started_at,
+      finished_at: step.finished_at,
+      duration_ms: step.duration_ms || duration_ms(step.started_at, step.finished_at),
+      error_summary: error_summary(step.error),
+      window: window,
+      window_start_at: window && window.start_at,
+      window_end_at: window && window.end_at
+    }
+  end
+
+  defp execution_group_window_summaries(%{root: root, runs: runs}) do
+    case list_all_backfill_windows(root.id) do
+      {:ok, [_ | _] = windows} -> Enum.map(windows, &execution_window_summary/1)
+      _other -> run_window_summaries(runs)
+    end
+  end
+
+  defp run_window_summaries(runs) do
+    runs
+    |> Enum.map(fn run -> window(run, classify(run)) end)
+    |> Enum.reject(&empty_window?/1)
+    |> Enum.uniq_by(&{&1.key, &1.start_at, &1.end_at})
+    |> Enum.map(fn window ->
+      Map.merge(window, %{
+        status: nil,
+        child_run_id: nil,
+        attempt_count: nil,
+        started_at: nil,
+        finished_at: nil,
+        duration_ms: nil
+      })
+    end)
+  end
+
+  defp execution_window_summary(%BackfillWindow{} = window) do
+    public = backfill_window(window)
+
+    %{
+      key: public.key,
+      label: public.label,
+      kind: public.kind,
+      start_at: public.start_at,
+      end_at: public.end_at,
+      timezone: public.timezone,
+      status: window.status,
+      child_run_id: window.latest_attempt_run_id || window.child_run_id,
+      attempt_count: window.attempt_count,
+      started_at: window.started_at,
+      finished_at: window.finished_at,
+      duration_ms: duration_ms(window.started_at, window.finished_at)
+    }
+  end
+
+  defp attempt_counts(attempts) do
+    %{
+      total: length(attempts),
+      completed: Enum.count(attempts, &terminal_status?(&1.status)),
+      failed: Enum.count(attempts, &failed_status?(&1.status)),
+      running: Enum.count(attempts, &running_status?(&1.status)),
+      queued: Enum.count(attempts, &queued_status?(&1.status))
+    }
+  end
+
+  defp window_counts(windows) do
+    %{
+      total: length(windows),
+      completed: Enum.count(windows, &terminal_status?(&1.status)),
+      failed: Enum.count(windows, &failed_status?(&1.status))
+    }
+  end
+
+  defp timeline_entries(attempts) do
+    now = DateTime.utc_now()
+
+    attempts
+    |> Enum.map(fn attempt ->
+      %{
+        started_at: attempt.started_at,
+        finished_at: if(running_status?(attempt.status), do: now, else: attempt.finished_at),
+        asset_key: attempt.asset_key,
+        window: attempt.window,
+        status: attempt.status,
+        stage: attempt.stage,
+        attempt_id: attempt.id,
+        child_run_id: attempt.child_run_id,
+        root_execution_group_id: attempt.root_execution_group_id
+      }
+    end)
+    |> Enum.sort_by(&timeline_sort_key/1)
+  end
+
+  defp filter_execution_group_summaries(groups, filters) do
+    Enum.filter(groups, fn group ->
+      matches_filter?(group.root_status, Keyword.get(filters, :status)) and
+        matches_filter?(group.trigger_type, Keyword.get(filters, :trigger_type)) and
+        matches_target_asset?(group, Keyword.get(filters, :target_asset)) and
+        matches_group_only_filters?(group, filters)
+    end)
+  end
+
+  defp filter_asset_attempts(attempts, filters) do
+    Enum.filter(attempts, fn attempt ->
+      matches_filter?(attempt.status, Keyword.get(filters, :status)) and
+        matches_filter?(attempt.asset_key, Keyword.get(filters, :target_asset)) and
+        matches_window_range?(attempt, filters) and
+        matches_attempt_only_filters?(attempt, filters)
+    end)
+  end
+
+  defp matches_filter?(_value, nil), do: true
+  defp matches_filter?(value, expected), do: value == expected
+
+  defp matches_target_asset?(_group, nil), do: true
+  defp matches_target_asset?(group, asset), do: asset in group.target_assets
+
+  defp matches_group_only_filters?(group, filters) do
+    (not Keyword.get(filters, :only_failed, false) or group.failed_asset_attempts > 0 or
+       group.failed_windows > 0) and
+      (not Keyword.get(filters, :only_running, false) or group.running_asset_attempts > 0 or
+         group.root_status in [:pending, :running]) and
+      (not Keyword.get(filters, :only_incomplete, false) or incomplete_group?(group))
+  end
+
+  defp matches_attempt_only_filters?(attempt, filters) do
+    (not Keyword.get(filters, :only_failed, false) or failed_status?(attempt.status)) and
+      (not Keyword.get(filters, :only_running, false) or running_status?(attempt.status)) and
+      (not Keyword.get(filters, :only_incomplete, false) or not terminal_status?(attempt.status))
+  end
+
+  defp incomplete_group?(group) do
+    group.root_status in [:pending, :running] or
+      group.running_asset_attempts > 0 or group.queued_asset_attempts > 0
+  end
+
+  defp matches_window_range?(attempt, filters) do
+    {from, until} = window_range(filters)
+
+    after_from? =
+      is_nil(from) or is_nil(attempt.window_end_at) or
+        DateTime.compare(attempt.window_end_at, from) == :gt
+
+    before_until? =
+      is_nil(until) or is_nil(attempt.window_start_at) or
+        DateTime.compare(attempt.window_start_at, until) == :lt
+
+    after_from? and before_until?
+  end
+
+  defp window_range(filters) do
+    case Keyword.get(filters, :window_range) do
+      {%DateTime{} = from, %DateTime{} = until} -> {from, until}
+      _other -> {Keyword.get(filters, :window_start_at), Keyword.get(filters, :window_end_at)}
+    end
+  end
+
+  defp run_events(run_id) do
+    case Storage.list_run_events(run_id) do
+      {:ok, events} -> Enum.map(events, &RunEvent.from_map/1)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp event_step_finished_at(latest, events) do
+    cond do
+      event_step_status(latest.event_type, latest.status) |> terminal_status?() ->
+        latest.occurred_at
+
+      true ->
+        events |> Enum.find(&terminal_step_event?/1) |> then(&(&1 && &1.occurred_at))
+    end
+  end
+
+  defp event_window(events) do
+    events
+    |> Enum.find_value(fn event ->
+      data = event.data || %{}
+      window = public_window(Map.get(data, :window) || Map.get(data, "window") || %{})
+      if empty_window?(window), do: nil, else: window
+    end)
+  end
+
+  defp terminal_step_event?(event) do
+    event_step_status(event.event_type, event.status) |> terminal_status?()
+  end
+
+  defp error_summary(nil), do: nil
+
+  defp error_summary(%{message: message}) when is_binary(message), do: message
+  defp error_summary(%{"message" => message}) when is_binary(message), do: message
+  defp error_summary(error) when is_binary(error), do: error
+  defp error_summary(error), do: inspect(error)
+
+  defp timeline_sort_key(%{started_at: %DateTime{} = started_at}),
+    do: DateTime.to_unix(started_at, :microsecond)
+
+  defp timeline_sort_key(_entry), do: 0
+
+  defp run_started_sort_key(%RunState{inserted_at: %DateTime{} = inserted_at}),
+    do: DateTime.to_unix(inserted_at, :microsecond)
+
+  defp run_started_sort_key(_run), do: 0
 
   defp with_public_status(%RunState{} = run) do
     %{run | status: public_status(run)}
@@ -587,6 +1041,7 @@ defmodule FavnOrchestrator.RunReadModel do
       window: candidate.window,
       duration_ms: nil,
       started_at: nil,
+      finished_at: nil,
       attempt: nil,
       error: nil,
       output: nil,
@@ -633,6 +1088,7 @@ defmodule FavnOrchestrator.RunReadModel do
       window: public_window(Map.get(result, :window) || Map.get(result, "window") || %{}),
       duration_ms: Map.get(result, :duration_ms) || Map.get(result, "duration_ms"),
       started_at: Map.get(result, :started_at) || Map.get(result, "started_at"),
+      finished_at: Map.get(result, :finished_at) || Map.get(result, "finished_at"),
       attempt:
         Map.get(result, :attempt) || Map.get(result, "attempt") || Map.get(result, :attempt_count) ||
           Map.get(result, "attempt_count"),
@@ -661,12 +1117,13 @@ defmodule FavnOrchestrator.RunReadModel do
       canonical_asset_ref: latest.asset_ref,
       status: event_step_status(latest.event_type, latest.status),
       stage: latest.stage,
-      window: nil,
+      window: event_window(events),
       duration_ms: nil,
       started_at:
         events
         |> Enum.find(&step_event_type?(&1, "step_started"))
         |> then(&(&1 && &1.occurred_at)),
+      finished_at: event_step_finished_at(latest, events),
       attempt: Map.get(data, :attempt) || Map.get(data, "attempt"),
       error: Map.get(data, :error) || Map.get(data, "error"),
       output: nil,
@@ -938,6 +1395,31 @@ defmodule FavnOrchestrator.RunReadModel do
         "timed_out",
         "skipped_fresh"
       ]
+
+  defp failed_status?(status),
+    do:
+      status in [
+        :error,
+        :timed_out,
+        :cancelled,
+        :blocked,
+        "error",
+        "timed_out",
+        "cancelled",
+        "blocked"
+      ]
+
+  defp running_status?(status), do: status in [:running, :retrying, "running", "retrying"]
+
+  defp queued_status?(status), do: status in [:pending, nil, "pending"]
+
+  defp empty_window?(nil), do: true
+
+  defp empty_window?(window) when is_map(window) do
+    is_nil(window.key) and is_nil(window.start_at) and is_nil(window.end_at)
+  end
+
+  defp empty_window?(_window), do: false
 
   defp unit_label(:assets, 1), do: "asset"
   defp unit_label(:assets, _total), do: "assets"

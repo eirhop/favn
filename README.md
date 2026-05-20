@@ -325,7 +325,9 @@ window through the orchestrator. Local development can submit explicit
 operational backfills and inspect their control-plane state with
 `mix favn.backfill` or the web operator flow at `/backfills`. Child pipeline
 backfills default to `refresh: :missing` so already-successful windows can be
-skipped while missing windows are filled.
+skipped while missing windows are filled. The web `/runs` surface groups a
+parent backfill run with its child window runs so operators see one coherent
+backfill, not many unrelated runs.
 
 ### 5. Configure authored modules
 
@@ -650,9 +652,12 @@ asset/window state must also be recomputed. Child pipeline backfills default to
 `refresh: :missing`. Operational backfill submit does not accept lookback-policy
 input; asset window lookback remains part of normal windowed execution only.
 
-The current Phoenix/LiveView UI is intentionally a placeholder shell only. Run,
-asset, graph, backfill, auth, and operator screens will be rebuilt in later PRs
-behind the public orchestrator facade.
+The Phoenix/LiveView UI is a thin operator shell behind the public orchestrator
+facade. The `/runs` page shows orchestrator-owned run groups with status,
+window, progress, and health filters. Run detail pages include an asset/window
+matrix, failures, window runs, persisted events, and a wall-clock execution
+timeline. Timeline rows show data windows as metadata; the x-axis is execution
+time, so bar length remains a duration signal.
 
 Backfill read commands are bounded. They default to `--limit 100 --offset 0`, reject
 `--limit` values above `500`, only accept known status values and manifest-owned
@@ -666,11 +671,11 @@ For repetitive endpoint-style `Favn.MultiAsset` pipelines, prefer a monthly
 dry-run before submitting a longer operational backfill:
 
 ```bash
-mix favn.backfill submit MyApp.Pipelines.MercatusInventoryByDayBackfill \
+mix favn.backfill submit MyApp.Pipelines.InventoryByDayBackfill \
   --window month:2025-05..2026-05 \
   --dry-run
 
-mix favn.backfill submit MyApp.Pipelines.MercatusInventoryByDayBackfill \
+mix favn.backfill submit MyApp.Pipelines.InventoryByDayBackfill \
   --window month:2025-05..2026-05 \
   --wait-timeout-ms 900000 \
   --run-timeout-ms 300000

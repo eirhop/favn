@@ -24,6 +24,7 @@ defmodule FavnUmbrella.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
+      listeners: listeners(Mix.env()),
       dialyzer: [plt_add_apps: [:mix]]
     ]
   end
@@ -45,6 +46,9 @@ defmodule FavnUmbrella.MixProject do
       {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false}
     ]
   end
+
+  defp listeners(:dev), do: [Phoenix.CodeReloader]
+  defp listeners(_env), do: []
 
   defp aliases do
     [

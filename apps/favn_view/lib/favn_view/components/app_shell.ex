@@ -16,7 +16,8 @@ defmodule FavnView.Components.AppShell do
   attr :back_href, :string, default: nil
   attr :back_label, :string, default: nil
   attr :facts, :list, default: []
-  attr :show_header?, :boolean, default: true
+  attr :show_header?, :boolean, default: false
+  attr :compact_header?, :boolean, default: true
 
   slot :inner_block, required: true
   slot :mode_rail
@@ -29,7 +30,7 @@ defmodule FavnView.Components.AppShell do
 
       <div class="relative z-10 flex h-screen min-h-0 flex-col px-5 py-3 md:py-4 md:pl-32 md:pr-8 lg:pr-32">
         <header class="mx-auto flex w-full max-w-[96rem] shrink-0 items-center justify-between gap-3">
-          <div class="flex min-w-0 items-center gap-2">
+          <div class="flex min-w-0 items-center gap-3">
             <IconNav.mobile_icon_nav items={@nav_items} />
             <a href={~p"/"} class="btn btn-ghost gap-2 px-2 md:hidden" aria-label="Favn home">
               <.icon name="hero-sparkles" class="size-5" />
@@ -44,6 +45,31 @@ defmodule FavnView.Components.AppShell do
               <.icon name="hero-arrow-left" class="size-4 shrink-0" />
               <span class="truncate">{@back_label}</span>
             </.link>
+
+            <div :if={@compact_header?} class="min-w-0">
+              <div class="flex min-w-0 items-center gap-2">
+                <h1 class="truncate text-base font-light tracking-tight text-base-content md:text-lg lg:text-xl">
+                  {@title}
+                </h1>
+                <span
+                  :if={@status}
+                  class={[
+                    "badge badge-soft favn-status-glow hidden gap-2 px-2 py-1 text-[0.68rem] sm:inline-flex",
+                    status_badge_class(@status_tone)
+                  ]}
+                >
+                  <span class={["status status-xs", status_dot_class(@status_tone)]}></span>
+                  {@status}
+                </span>
+              </div>
+              <p
+                :if={@subtitle}
+                class="truncate text-[0.68rem] text-base-content/55 md:text-xs"
+                title={@subtitle}
+              >
+                {@subtitle}
+              </p>
+            </div>
           </div>
 
           <div class="flex items-center gap-3">
@@ -69,7 +95,25 @@ defmodule FavnView.Components.AppShell do
           </div>
         </header>
 
-        <main class="mx-auto flex min-h-0 w-full max-w-[96rem] flex-1 flex-col justify-start overflow-y-auto py-4 md:py-6">
+        <main class={[
+          "mx-auto flex min-h-0 w-full max-w-[96rem] flex-1 flex-col justify-start overflow-y-auto",
+          if(@compact_header?, do: "py-2 md:py-3", else: "py-4 md:py-6")
+        ]}>
+          <dl
+            :if={@compact_header? && !@show_header? && @facts != []}
+            class="mb-3 grid shrink-0 gap-3 border-b border-base-content/10 pb-3 text-xs sm:grid-cols-3"
+          >
+            <div
+              :for={fact <- @facts}
+              class="border-base-content/10 sm:border-l sm:pl-4 first:border-l-0 first:pl-0"
+            >
+              <dt class="text-base-content/45">{fact.label}</dt>
+              <dd class="mt-0.5 truncate font-medium text-base-content" title={to_string(fact.value)}>
+                {fact.value}
+              </dd>
+            </div>
+          </dl>
+
           <section
             :if={@show_header?}
             class="mb-4 flex flex-col gap-4 md:mb-5 lg:flex-row lg:items-end lg:justify-between"

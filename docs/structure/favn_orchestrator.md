@@ -10,6 +10,9 @@ Code:
 - Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
 - Run admission and recovery in `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex` and `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
+- Run read models in `apps/favn_orchestrator/lib/favn_orchestrator/run_read_model.ex`,
+  including execution-group summaries/details, asset attempts, windows, and
+  timeline entries for thin operator clients.
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
 - Storage boundary codecs and JSON-safe DTO normalization under `apps/favn_orchestrator/lib/favn_orchestrator/storage/`, including full-row operational-backfill read-model codecs under `apps/favn_orchestrator/lib/favn_orchestrator/storage/backfill/`
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
@@ -29,6 +32,7 @@ Tests:
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`
 - Freshness decision/query tests under `apps/favn_orchestrator/test/freshness/`
 - cross-app runner integration coverage under `apps/favn_orchestrator/test/orchestrator_runner_integration_test.exs`
+- execution-group run read-model coverage in `apps/favn_orchestrator/test/run_read_model_test.exs`
 - optional adapter contract smoke coverage under `apps/favn_orchestrator/test/integration/`; adapter-specific suites own full adapter coverage
 
 Use when changing run lifecycle, freshness decisions/queries, scheduling,
