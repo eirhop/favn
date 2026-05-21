@@ -9,6 +9,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   @config_key :duckdb
   @old_config_message "DuckDB connection config now uses open: [database: ...] and duckdb: [...]; move duckdb_bootstrap entries under duckdb and move write_concurrency under duckdb.attach.<catalog>.write_concurrency"
   @azure_transport_option_type_values ~w(default curl)
+  @pg_pool_acquire_mode_values ~w(force wait try)
   @non_negative_integer_settings [
     :pg_pool_max_connections,
     :pg_pool_wait_timeout_millis,
@@ -202,8 +203,12 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
     end
   end
 
-  defp normalize_setting(:pg_pool_acquire_mode, _value),
-    do: {:error, {:unsupported_setting, :pg_pool_acquire_mode, :not_in_pinned_duckdb}}
+  defp normalize_setting(:pg_pool_acquire_mode, value) do
+    case normalize_enum_setting(:pg_pool_acquire_mode, value, @pg_pool_acquire_mode_values) do
+      {:ok, normalized} -> setting(:pg_pool_acquire_mode, normalized)
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp normalize_setting(:threads, value), do: normalize_positive_integer_setting(:threads, value)
 

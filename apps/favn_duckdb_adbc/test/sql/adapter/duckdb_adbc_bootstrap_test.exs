@@ -86,6 +86,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
                settings: [
                  threads: 4,
                  pg_pool_max_connections: 5,
+                 pg_pool_acquire_mode: :wait,
                  pg_pool_enable_thread_local_cache: false,
                  pg_pool_wait_timeout_millis: 60_000,
                  pg_pool_max_lifetime_millis: 900_000,
@@ -104,8 +105,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
     assert {:error, {:invalid_setting_value, :azure_transport_option_type, "bad"}} =
              validator.(settings: [azure_transport_option_type: :bad])
 
-    assert {:error, {:unsupported_setting, :pg_pool_acquire_mode, :not_in_pinned_duckdb}} =
-             validator.(settings: [pg_pool_acquire_mode: :wait])
+    assert {:error, {:invalid_setting_value, :pg_pool_acquire_mode, "bad"}} =
+             validator.(settings: [pg_pool_acquire_mode: :bad])
 
     assert {:error, {:invalid_setting_value, :threads, 0}} =
              validator.(settings: [threads: 0])
@@ -238,6 +239,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
         settings: [
           threads: 4,
           pg_pool_max_connections: 5,
+          pg_pool_acquire_mode: :wait,
           pg_pool_enable_thread_local_cache: false,
           pg_pool_wait_timeout_millis: 60_000,
           pg_pool_idle_timeout_millis: 300_000,
@@ -255,6 +257,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
              "LOAD azure",
              "SET threads = 4",
              "SET pg_pool_max_connections = 5",
+             "SET pg_pool_acquire_mode = 'wait'",
              "SET pg_pool_enable_thread_local_cache = false",
              "SET pg_pool_wait_timeout_millis = 60000",
              "SET pg_pool_idle_timeout_millis = 300000",
