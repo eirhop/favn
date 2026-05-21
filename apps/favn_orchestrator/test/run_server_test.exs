@@ -143,6 +143,134 @@ defmodule FavnOrchestrator.RunServerTest do
     end
   end
 
+  defmodule RunnerClientBlockingStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      parent = Keyword.fetch!(opts, :parent)
+      execution_id = execution_id(work)
+      send(parent, {:submitted, work.asset_ref, execution_id})
+      {:ok, execution_id}
+    end
+
+    @impl true
+    def await_result(execution_id, _timeout, opts) do
+      parent = Keyword.fetch!(opts, :parent)
+      asset_ref = execution_ref(execution_id)
+      send(parent, {:awaiting, execution_id, asset_ref, self()})
+
+      receive do
+        {:release_runner_result, ^execution_id, status} ->
+          {:ok,
+           %RunnerResult{
+             status: status,
+             error: if(status == :ok, do: nil, else: :runner_failed),
+             asset_results: [asset_result(execution_id, status)],
+             metadata: %{}
+           }}
+      end
+    end
+
+    @impl true
+    def cancel_work(_execution_id, _reason, _opts), do: :ok
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp execution_id(work) do
+      {module, name} = work.asset_ref
+
+      encoded_node_key =
+        work.metadata.node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+
+      Enum.join(
+        [
+          "blocking_exec",
+          work.run_id,
+          Atom.to_string(module),
+          Atom.to_string(name),
+          encoded_node_key
+        ],
+        ":"
+      )
+    end
+
+    defp execution_ref(execution_id) do
+      [_prefix, _run_id, module, name | _rest] = String.split(execution_id, ":")
+      {String.to_existing_atom(module), String.to_existing_atom(name)}
+    end
+
+    defp execution_node_key(execution_id) do
+      execution_id
+      |> String.split(":")
+      |> List.last()
+      |> Base.decode16!(case: :lower)
+      |> :erlang.binary_to_term()
+    end
+
+    defp asset_result(execution_id, status) do
+      ref = execution_ref(execution_id)
+      node_key = execution_node_key(execution_id)
+
+      %Favn.Run.AssetResult{
+        ref: ref,
+        stage: 0,
+        status: status,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{node_key: node_key},
+        error: if(status == :ok, do: nil, else: :runner_failed),
+        attempt_count: 1,
+        max_attempts: 1,
+        attempts: []
+      }
+    end
+  end
+
+  defmodule RunnerClientSubmitFailureStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      parent = Keyword.fetch!(opts, :parent)
+      execution_id = execution_id(work)
+      send(parent, {:submitted, work.asset_ref, execution_id})
+
+      if work.asset_ref == Keyword.fetch!(opts, :fail_ref) do
+        {:error, :submit_failed}
+      else
+        {:ok, execution_id}
+      end
+    end
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      raise "await_result/3 should not be called after submit failure cancels admitted work"
+    end
+
+    @impl true
+    def cancel_work(execution_id, reason, opts) do
+      send(Keyword.fetch!(opts, :parent), {:cancelled, execution_id, reason})
+      :ok
+    end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp execution_id(work) do
+      encoded_ref = work.asset_ref |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+      "submit_failure_exec:#{work.run_id}:#{encoded_ref}"
+    end
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -446,6 +574,146 @@ defmodule FavnOrchestrator.RunServerTest do
     assert statuses[{silver_b, nil}] == :ok
   end
 
+  test "pipeline max concurrency refills same-stage work as executions complete" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, parent: self())
+
+    refs =
+      Enum.map(1..6, fn index ->
+        {Module.concat([MyApp.Assets.PipelineRefill, "Asset#{index}"]), :asset}
+      end)
+
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_sliding_window_refill", refs)
+
+    run_state =
+      "run_pipeline_sliding_window_refill"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(metadata: %{pipeline_execution_policy: %{max_concurrency: 5}})
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    initial_submissions = receive_submissions(5)
+    refute_received {:submitted, _, _}
+
+    awaiters = receive_awaiters(initial_submissions)
+
+    {first_execution_id, first_awaiter} =
+      awaiter_for_submission(hd(initial_submissions), awaiters)
+
+    send(first_awaiter, {:release_runner_result, first_execution_id, :ok})
+
+    assert_receive {:submitted, sixth_ref, sixth_execution_id}, 1_000
+    assert sixth_ref == List.last(refs)
+
+    awaiters = Map.merge(awaiters, receive_awaiters([{sixth_ref, sixth_execution_id}]))
+
+    initial_submissions
+    |> tl()
+    |> Enum.each(fn submission -> release_submission(submission, awaiters) end)
+
+    release_submission({sixth_ref, sixth_execution_id}, awaiters)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :ok
+  end
+
+  test "pipeline max concurrency does not refill same-stage work after terminal failure" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, parent: self())
+
+    refs =
+      Enum.map(1..3, fn index ->
+        {Module.concat([MyApp.Assets.PipelineFailureDrain, "Asset#{index}"]), :asset}
+      end)
+
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_failure_does_not_refill", refs)
+
+    run_state =
+      "run_pipeline_failure_does_not_refill"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(metadata: %{pipeline_execution_policy: %{max_concurrency: 2}})
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    initial_submissions = receive_submissions(2)
+    refute_received {:submitted, _, _}
+
+    awaiters = receive_awaiters(initial_submissions)
+    release_submission(hd(initial_submissions), awaiters, :error)
+
+    last_ref = List.last(refs)
+    assert {:ok, _event} = wait_for_run_event(run_state.id, :stage_draining_after_failure)
+    refute_received {:submitted, ^last_ref, _execution_id}
+
+    initial_submissions
+    |> tl()
+    |> Enum.each(fn submission -> release_submission(submission, awaiters) end)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :error
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+
+    started_refs =
+      events |> Enum.filter(&(&1.event_type == :step_started)) |> Enum.map(& &1.asset_ref)
+
+    refute last_ref in started_refs
+  end
+
+  test "pipeline submit failure cancels admitted same-stage work with wrapped reason" do
+    [first_ref, fail_ref] =
+      Enum.map(1..2, fn index ->
+        {Module.concat([MyApp.Assets.PipelineSubmitFailure, "Asset#{index}"]), :asset}
+      end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSubmitFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      fail_ref: fail_ref
+    )
+
+    refs = [first_ref, fail_ref]
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_submit_failure_cancel_reason", refs)
+
+    run_state =
+      pipeline_run_state("run_pipeline_submit_failure_cancel_reason", version, plan, refs)
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, ^first_ref, first_execution_id}, 1_000
+    assert_receive {:submitted, ^fail_ref, _failed_execution_id}, 1_000
+
+    assert_receive {:cancelled, ^first_execution_id, cancellation_reason}, 1_000
+    assert cancellation_reason.run_id == run_state.id
+    assert %DateTime{} = cancellation_reason.requested_at
+
+    assert %{
+             kind: :submit_failure,
+             asset_ref: ^fail_ref,
+             error: :submit_failed
+           } = cancellation_reason.reason
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :error
+  end
+
   test "actual upstream success refreshes downstream in same pipeline" do
     {:ok, submit_log} = Agent.start_link(fn -> [] end)
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
@@ -735,6 +1003,74 @@ defmodule FavnOrchestrator.RunServerTest do
     statuses = Map.new(stored.result.node_results, &{&1.node_key, &1.status})
     assert statuses[node_one] == :ok
     assert statuses[node_two] == :error
+  end
+
+  defp receive_submissions(count) do
+    Enum.map(1..count, fn _index ->
+      assert_receive {:submitted, asset_ref, execution_id}, 1_000
+      {asset_ref, execution_id}
+    end)
+  end
+
+  defp receive_awaiters(submissions) do
+    submissions
+    |> Map.new(fn {asset_ref, execution_id} ->
+      assert_receive {:awaiting, ^execution_id, ^asset_ref, awaiter}, 1_000
+      {execution_id, awaiter}
+    end)
+  end
+
+  defp awaiter_for_submission({_asset_ref, execution_id}, awaiters) do
+    {execution_id, Map.fetch!(awaiters, execution_id)}
+  end
+
+  defp release_submission(submission, awaiters) do
+    release_submission(submission, awaiters, :ok)
+  end
+
+  defp release_submission({_asset_ref, execution_id} = submission, awaiters, status) do
+    {_execution_id, awaiter} = awaiter_for_submission(submission, awaiters)
+    send(awaiter, {:release_runner_result, execution_id, status})
+  end
+
+  defp wait_for_run_event(run_id, event_type, timeout_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    wait_for_run_event_until(run_id, event_type, deadline)
+  end
+
+  defp wait_for_run_event_until(run_id, event_type, deadline) do
+    {:ok, events} = Storage.list_run_events(run_id)
+
+    case Enum.find(events, &(&1.event_type == event_type)) do
+      nil ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :timeout}
+        else
+          Process.sleep(10)
+          wait_for_run_event_until(run_id, event_type, deadline)
+        end
+
+      event ->
+        {:ok, event}
+    end
+  end
+
+  defp same_stage_plan(refs) do
+    node_keys = Enum.map(refs, &{&1, nil})
+
+    nodes =
+      Map.new(Enum.zip(refs, node_keys), fn {ref, node_key} ->
+        {node_key, plan_node(ref, node_key, stage: 0)}
+      end)
+
+    %Plan{
+      target_refs: refs,
+      target_node_keys: node_keys,
+      nodes: nodes,
+      topo_order: refs,
+      stages: [refs],
+      node_stages: [node_keys]
+    }
   end
 
   defp manifest_version(manifest_version_id, opts \\ []) do
