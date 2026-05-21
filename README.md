@@ -429,6 +429,29 @@ file-backed `open.database` for local debugging. Configure DuckDB session setup
 under `duckdb: [...]`: extension `load`, typed settings, secrets, keyed catalog
 `attach`, and optional `use`.
 
+DuckDB ADBC validates first-class DuckDB settings used by DuckLake-on-Postgres
+deployments and emits them before `ATTACH`, so they apply to newly attached
+Postgres-backed catalogs. `pg_pool_max_connections` is per attached Postgres
+database, `pg_pool_acquire_mode: :wait` makes exhausted pools wait instead of
+opening extra connections, `pg_pool_enable_thread_local_cache: false` avoids
+thread-local connection pinning during parallel work, and `threads` bounds DuckDB
+parallel scan workers. Do not use deprecated `pg_connection_limit`.
+
+```elixir
+duckdb: [
+  load: [:ducklake, :postgres, :azure],
+  settings: [
+    threads: 4,
+    pg_pool_max_connections: 5,
+    pg_pool_acquire_mode: :wait,
+    pg_pool_enable_thread_local_cache: false,
+    pg_pool_wait_timeout_millis: 60_000,
+    pg_pool_idle_timeout_millis: 300_000,
+    pg_pool_enable_reaper_thread: true
+  ]
+]
+```
+
 DuckDB and DuckDB ADBC connections use runner-local warm session reuse by default
 when the adapter is poolable. Disable it per connection with:
 
@@ -535,6 +558,11 @@ use multiple PostgreSQL backend connections. In observed deployments, one writer
 used about three PostgreSQL backends. Size `write_concurrency` with that
 multiplier, plus headroom for admin tools, migrations, monitoring, and other
 application traffic.
+The worst-case metadata pressure is shaped by Favn execution concurrency,
+DuckLake catalog `write_concurrency`, DuckDB `threads`, the number of attached
+Postgres-backed catalogs, and each catalog's DuckDB Postgres pool settings.
+Keep the product of admitted concurrent DuckLake work and per-catalog pool limits
+below the managed Postgres metadata database's usable connection slots.
 
 Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module

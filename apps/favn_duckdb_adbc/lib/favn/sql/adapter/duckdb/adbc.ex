@@ -67,6 +67,26 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   trailing-slash `:scope`, PostgreSQL DuckDB secrets, and DuckLake attach through
   `META_SECRET`.
 
+  `duckdb.settings` are emitted after configured `LOAD` statements and before
+  secrets and `ATTACH`, so DuckDB Postgres extension pool settings apply to newly
+  attached Postgres-backed DuckLake catalogs. For DuckLake on PostgreSQL, prefer
+  `pg_pool_acquire_mode: :wait`, finite `pg_pool_max_connections`, and
+  `pg_pool_enable_thread_local_cache: false`; `pg_connection_limit` is deprecated
+  and rejected by config validation.
+
+      duckdb: [
+        load: [:ducklake, :postgres, :azure],
+        settings: [
+          threads: 4,
+          pg_pool_max_connections: 5,
+          pg_pool_acquire_mode: :wait,
+          pg_pool_enable_thread_local_cache: false,
+          pg_pool_wait_timeout_millis: 60_000,
+          pg_pool_idle_timeout_millis: 300_000,
+          pg_pool_enable_reaper_thread: true
+        ]
+      ]
+
   PostgreSQL secrets accept either `:password` or Azure PostgreSQL Entra `:auth`,
   not both. Azure auth supports managed identity and Azure CLI dogfooding:
 
