@@ -612,6 +612,8 @@ defmodule FavnOrchestrator.RunServerTest do
     release_submission(hd(initial_submissions), awaiters, :error)
 
     last_ref = List.last(refs)
+    assert {:ok, _event} = wait_for_run_event(run_state.id, :stage_draining_after_failure)
+    refute_received {:submitted, ^last_ref, _execution_id}
 
     initial_submissions
     |> tl()
@@ -946,6 +948,28 @@ defmodule FavnOrchestrator.RunServerTest do
   defp release_submission({_asset_ref, execution_id} = submission, awaiters, status) do
     {_execution_id, awaiter} = awaiter_for_submission(submission, awaiters)
     send(awaiter, {:release_runner_result, execution_id, status})
+  end
+
+  defp wait_for_run_event(run_id, event_type, timeout_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    wait_for_run_event_until(run_id, event_type, deadline)
+  end
+
+  defp wait_for_run_event_until(run_id, event_type, deadline) do
+    {:ok, events} = Storage.list_run_events(run_id)
+
+    case Enum.find(events, &(&1.event_type == event_type)) do
+      nil ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :timeout}
+        else
+          Process.sleep(10)
+          wait_for_run_event_until(run_id, event_type, deadline)
+        end
+
+      event ->
+        {:ok, event}
+    end
   end
 
   defp same_stage_plan(refs) do
