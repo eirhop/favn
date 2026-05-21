@@ -32,3 +32,81 @@ public API contracts, or compile-time versus runtime contracts.
 - Flag migration pain when a change spreads across apps without a public contract.
 - Prefer explicit data shapes at boundaries instead of passing internal structs by convenience.
 - Categorize recommendations as foundational, product-critical, refactor-enabling, nice-to-have, or legacy-only when that helps prioritization.
+
+## Architecture Quality Gates
+
+- Before adding or refactoring runtime behavior, name the contract being introduced or changed.
+- Good contracts are explicit structs, result types, behaviours, facade functions, storage callbacks, lifecycle modules, or adapter contracts.
+- Do not split files, extract helpers, or introduce shared modules unless the extraction names a real runtime or domain contract.
+- Prefer small, boring public surfaces over broad APIs that expose implementation details.
+- Refactors should improve behavior and readability together; cosmetic movement is not architecture work.
+
+## Hidden State Rules
+
+- Treat large maps, metadata bags, application env reads, loosely coupled tuples, process dictionaries, and anonymous lifecycle state as design pressure.
+- If state affects lifecycle, retries, cancellation, persistence, planning, permissions, or user-visible behavior, prefer an explicit struct or typed result.
+- State ownership must be clear: manifest truth, orchestrator persisted truth, runner process state, storage adapter state, or view assigns.
+- Keep application env as boot/runtime configuration input where possible; avoid repeatedly reading global config in hot execution paths.
+
+## Lifecycle Checklist
+
+When designing orchestration, runner, storage, or process behavior, account for:
+
+- success
+- failure
+- retry
+- timeout
+- cancellation
+- crash/restart
+- cleanup
+- persistence conflict
+- partial work already submitted
+
+If only the success path is clear, the design is not ready.
+
+## BEAM/OTP Quality
+
+- Prefer messages, monitors, timers, supervision, and explicit process ownership over polling, sleeps, hidden spawned processes, or blocking GenServer calls.
+- Long-lived processes need a supervision or ownership story.
+- Cancellation and cleanup should be idempotent and centralized around the owning contract.
+- Admission, concurrency limits, and backpressure should be explicit when runtime capacity is bounded.
+- Do not let retry, cancel, timeout, or failure paths be weaker than the success path.
+
+## Boundary Discipline
+
+- `favn_core` is not a convenience dumping ground; move code there only for shared compiler, domain, manifest, or cross-app contract shapes.
+- Keep runs, schedules, admission, cancellation, storage semantics, and persisted truth in `favn_orchestrator`.
+- Keep execution mechanics in `favn_runner`; expose only stable contracts to orchestrator callers.
+- Keep `favn_view` thin: it can render, manage form state, and handle UI interactions, but lifecycle status, query semantics, and command translation belong behind orchestrator facades.
+- Avoid moving code across apps to reduce duplication unless the receiving app clearly owns the concept.
+
+## Manifest-First Runtime
+
+- Runtime planning should derive from pinned manifests and explicit manifest indexes, not authoring modules or recomputed convenience graphs.
+- Compile-time/runtime crossings must be explicit and tested.
+- Persisted manifest decoding should fail precisely for invalid contract data rather than silently producing partially valid runtime structs.
+
+## Storage and Read Models
+
+- Avoid broad scans followed by in-memory filtering when the real contract is keyed, scoped, or cursor-based.
+- Operator pages, event replay, freshness restore, and backfill projection need bounded storage/read-model contracts as data grows.
+- Prefer stable cursor/keyset pagination for internal scans over mutable operational tables; reserve offset pagination for UI-facing cases where it is intentional.
+- Repair and replacement operations must use explicit scopes and reject unsupported scopes consistently across adapters.
+
+## Refactor Rejection Rules
+
+Reject proposals based only on:
+
+- generic `Helpers` or `Utils` modules
+- file splitting by line count
+- public APIs for internal implementation details
+- abstractions without a current repeated contract
+- moving code across apps for convenience
+- merging unrelated flows because code looks similar
+- runtime semantic changes without focused tests
+
+## Testing Expectations
+
+- Runtime refactors need behavior tests, not shape tests.
+- Cover cancellation, timeout, retry, persistence errors, concurrency, and cleanup when those paths are touched.
+- If ownership moves or a boundary contract changes, test at the owning app boundary.
