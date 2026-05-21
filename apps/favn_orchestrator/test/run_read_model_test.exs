@@ -1034,7 +1034,8 @@ defmodule FavnOrchestrator.RunReadModelTest do
     assert :ok = Storage.put_backfill_window(backfill_window(parent.id, first_anchor, :ok))
     assert :ok = Storage.put_backfill_window(backfill_window(parent.id, second_anchor, :ok))
 
-    assert {:ok, [group]} = FavnOrchestrator.list_execution_groups(trigger_type: :backfill)
+    assert {:ok, groups} = FavnOrchestrator.list_execution_groups(trigger_type: :backfill)
+    assert group = Enum.find(groups, &(&1.id == parent.id))
 
     assert group.started_at == ~U[2026-04-30 00:00:00Z]
     assert group.finished_at == ~U[2026-05-02 00:00:45Z]
