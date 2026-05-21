@@ -941,7 +941,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
           )
         end)
 
-      await = %{pid: pid, monitor_ref: monitor_ref, entry: entry}
+      await = %{
+        pid: pid,
+        monitor_ref: monitor_ref,
+        deadline_ms: await_deadline(timeout_ms),
+        entry: entry
+      }
 
       %{
         replies: Map.put(acc.replies, reply_ref, await),
@@ -1034,35 +1039,39 @@ defmodule FavnOrchestrator.RunServer.Execution do
        )
        when map_size(replies) == 0 do
     if state.terminal_failure == nil and state.deferred_node_keys != [] do
-      wait_for_stage_admission_retry()
+      case wait_for_stage_admission_retry(deadline) do
+        :ok ->
+          case refill_stage_attempt_capacity(
+                 pending_tasks,
+                 state,
+                 stage,
+                 attempt,
+                 version,
+                 decisions,
+                 freshness_context,
+                 runner_client,
+                 runner_opts
+               ) do
+            {:cont, next_pending_tasks, next_state} ->
+              collect_stage_attempt_results(
+                next_pending_tasks,
+                deadline,
+                next_state,
+                stage,
+                attempt,
+                version,
+                decisions,
+                freshness_context,
+                runner_client,
+                runner_opts
+              )
 
-      case refill_stage_attempt_capacity(
-             pending_tasks,
-             state,
-             stage,
-             attempt,
-             version,
-             decisions,
-             freshness_context,
-             runner_client,
-             runner_opts
-           ) do
-        {:cont, next_pending_tasks, next_state} ->
-          collect_stage_attempt_results(
-            next_pending_tasks,
-            deadline,
-            next_state,
-            stage,
-            attempt,
-            version,
-            decisions,
-            freshness_context,
-            runner_client,
-            runner_opts
-          )
+            {:halt, result} ->
+              result
+          end
 
-        {:halt, result} ->
-          result
+        :timeout ->
+          timeout_deferred_stage_attempt(state)
       end
     else
       finalize_stage_attempt_state(state)
@@ -1081,7 +1090,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_client,
          runner_opts
        ) do
-    receive_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+    receive_timeout_ms = next_await_receive_timeout_ms(pending_tasks)
 
     receive do
       {reply_ref, result} when is_map_key(replies, reply_ref) ->
@@ -1128,10 +1137,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
         )
     after
       receive_timeout_ms ->
-        pending_tasks
-        |> timeout_pending_await_tasks()
-        |> process_stage_attempt_result_list(
-          %{replies: %{}, monitors: %{}},
+        {timed_out, next_pending_tasks} = timeout_expired_await_tasks(pending_tasks)
+
+        process_stage_attempt_result_list(
+          timed_out,
+          next_pending_tasks,
           deadline,
           state,
           stage,
@@ -1366,13 +1376,31 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp wait_for_stage_admission_retry do
-    retry_ref = make_ref()
-    Process.send_after(self(), {:retry_stage_admission, retry_ref}, @stage_admission_retry_ms)
+  defp wait_for_stage_admission_retry(deadline) do
+    now = System.monotonic_time(:millisecond)
+    wait_ms = min(@stage_admission_retry_ms, max(deadline - now, 0))
 
-    receive do
-      {:retry_stage_admission, ^retry_ref} -> :ok
+    if wait_ms == 0 do
+      :timeout
+    else
+      retry_ref = make_ref()
+      Process.send_after(self(), {:retry_stage_admission, retry_ref}, wait_ms)
+
+      receive do
+        {:retry_stage_admission, ^retry_ref} -> :ok
+      end
     end
+  end
+
+  defp timeout_deferred_stage_attempt(%{run: %RunState{} = run_state} = state) do
+    timed_out =
+      RunState.transition(run_state,
+        status: :timed_out,
+        error: :timeout,
+        runner_execution_id: nil
+      )
+
+    {:error, timed_out, state.results, state.attempted_node_keys}
   end
 
   defp process_stage_attempt_result(
@@ -1455,15 +1483,38 @@ defmodule FavnOrchestrator.RunServer.Execution do
     {:error, failed_run, next_results, attempted_node_keys}
   end
 
-  defp timeout_pending_await_tasks(%{replies: replies}) do
-    Enum.map(replies, fn {reply_ref, %{pid: pid, monitor_ref: monitor_ref, entry: entry}} ->
-      Process.exit(pid, :kill)
-      Process.demonitor(monitor_ref, [:flush])
-      flush_await_reply(reply_ref)
-      :ok = fail_entry_materialization_claim(entry, :await_timeout)
+  defp next_await_receive_timeout_ms(%{replies: replies}) do
+    now = System.monotonic_time(:millisecond)
 
-      {entry, {:error, :timeout}}
-    end)
+    replies
+    |> Map.values()
+    |> Enum.map(& &1.deadline_ms)
+    |> Enum.min(fn -> now end)
+    |> Kernel.-(now)
+    |> max(0)
+  end
+
+  defp timeout_expired_await_tasks(%{replies: replies, monitors: monitors}) do
+    now = System.monotonic_time(:millisecond)
+
+    {timed_out, next_replies, next_monitors} =
+      Enum.reduce(replies, {[], %{}, monitors}, fn {reply_ref, await},
+                                                   {timed_out, next_replies, next_monitors} ->
+        if await.deadline_ms <= now do
+          Process.exit(await.pid, :kill)
+          Process.demonitor(await.monitor_ref, [:flush])
+          flush_await_reply(reply_ref)
+          :ok = release_entry_lease(await.entry)
+          :ok = fail_entry_materialization_claim(await.entry, :await_timeout)
+
+          {[{await.entry, {:error, :timeout}} | timed_out], next_replies,
+           Map.delete(next_monitors, await.monitor_ref)}
+        else
+          {timed_out, Map.put(next_replies, reply_ref, await), next_monitors}
+        end
+      end)
+
+    {Enum.reverse(timed_out), %{replies: next_replies, monitors: next_monitors}}
   end
 
   defp stop_pending_await_tasks(%{replies: replies}) do

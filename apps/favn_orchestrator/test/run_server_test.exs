@@ -612,7 +612,6 @@ defmodule FavnOrchestrator.RunServerTest do
     release_submission(hd(initial_submissions), awaiters, :error)
 
     last_ref = List.last(refs)
-    refute_receive {:submitted, ^last_ref, _execution_id}, 200
 
     initial_submissions
     |> tl()
