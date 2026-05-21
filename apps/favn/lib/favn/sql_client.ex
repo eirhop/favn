@@ -30,14 +30,36 @@ defmodule Favn.SQLClient do
       {:ok, result} = Favn.SQLClient.query(session, "select 1")
       :ok = Favn.SQLClient.disconnect(session)
 
-  ## Raw landing from an asset
+  ## Asset-scoped session reuse
+
+  Prefer `with_connection/3` when an Elixir asset or helper needs several SQL
+  operations against the same backend. The callback receives one session, all
+  operations inside the callback reuse that session, and Favn disconnects or
+  returns it to the pool when the callback exits:
 
       Favn.SQLClient.with_connection(:warehouse, [], fn session ->
         with {:ok, _} <- Favn.SQLClient.execute(session, "create schema if not exists raw"),
+             {:ok, _} <- Favn.SQLClient.query(session, "describe raw.events"),
              {:ok, _} <- Favn.SQLClient.execute(session, raw_landing_sql()) do
           :ok
         end
       end)
+
+  For DuckDB/DuckLake landing assets, combine the asset relation scope with one
+  callback-owned session so bootstrap, catalog attach, and secret setup are paid
+  once per asset execution instead of once per helper call:
+
+      Favn.SQLClient.with_required_catalogs(ctx.asset.relation, fn ->
+        Favn.SQLClient.with_connection(ctx.asset.relation.connection, [], fn session ->
+          SQLLanding.ensure_schema(session, ctx.asset.relation)
+          SQLLanding.ensure_columns(session, ctx.asset.relation, rows)
+          SQLLanding.replace_partition_from_rows(session, ctx.asset.relation, rows, :month, month)
+        end)
+      end)
+
+  Sessions are process-owned handles. Do not share one session concurrently across
+  child tasks. A child task should open its own session, normally wrapped with
+  `with_required_catalogs/2` or an explicit `required_catalogs: [...]` option.
 
   For source-system assets, declare source IDs and tokens with
   `Favn.Asset.source_config/2`, read them from `ctx.config`, and return only
@@ -58,7 +80,8 @@ defmodule Favn.SQLClient do
   - `with_required_catalogs/2` and `with_required_catalogs/3`: set a
     process-local default DuckDB/DuckLake catalog scope for nested SQLClient
     calls.
-  - `with_connection/3`: run a callback with auto connect/disconnect handling.
+  - `with_connection/3`: run an asset-scoped callback with one reusable session
+    and automatic connect/disconnect handling.
 
   Runner-executed Elixir assets get a process-local default scope from their
   owned relation when opening the same connection. That default does not cross
@@ -77,6 +100,7 @@ defmodule Favn.SQLClient do
 
   alias Favn.RelationRef
   alias Favn.SQL.Client
+  alias Favn.SQL.Observability
   alias Favn.SQL.Session
 
   @type connection_name :: atom()
@@ -331,32 +355,45 @@ defmodule Favn.SQLClient do
   end
 
   @doc """
-  Runs a callback with automatic connect/disconnect handling.
+  Runs a callback with one automatically managed SQL session.
 
-  Use this for one scoped operation where explicit lifecycle management would be
-  repetitive.
+  Use this as the default Elixir asset pattern when multiple SQL operations
+  should reuse one backend session for the lifetime of an asset execution.
 
   The callback return value is returned directly. The session is always
-  disconnected in an `after` block.
+  disconnected in an `after` block, returning it to the pool or closing it
+  according to the adapter/session safety rules.
+
+  The session keeps the `required_catalogs` scope from `opts` or an enclosing
+  `with_required_catalogs/2`/`with_required_catalogs/3` call. Raw writes inside
+  the callback use that retained scope for catalog admission unless an operation
+  passes explicit `admission: [...]` options.
+
+  The session is process-owned. Do not run concurrent operations on the same
+  session from multiple tasks. Child tasks should open their own scoped session.
+
+  Emits SQL lifecycle telemetry/debug events around the callback so operation
+  telemetry can be correlated with one scoped connection lifetime.
 
   ## Example
 
       Favn.SQLClient.with_connection(:warehouse, [], fn session ->
-        Favn.SQLClient.query(session, "select 1")
+        with {:ok, _} <- Favn.SQLClient.execute(session, setup_sql),
+             {:ok, _} <- Favn.SQLClient.query(session, inspect_sql),
+             {:ok, _} <- Favn.SQLClient.execute(session, landing_sql) do
+          :ok
+        end
       end)
   """
-  @spec with_connection(connection_name(), opts(), (session() -> operation_result())) ::
-          operation_result()
+  @spec with_connection(connection_name(), opts(), (session() -> result)) ::
+          result | {:error, term()}
+        when result: var
   def with_connection(connection, opts \\ [], fun)
 
   def with_connection(connection, opts, fun) when is_function(fun, 1) and is_list(opts) do
     case connect(connection, opts) do
       {:ok, session} ->
-        try do
-          fun.(session)
-        after
-          disconnect(session)
-        end
+        run_with_connection_session(connection, session, fun)
 
       {:error, _reason} = error ->
         error
@@ -379,6 +416,43 @@ defmodule Favn.SQLClient do
        "with_connection/3 expects a 1-arity callback, got: #{inspect(fun)} for #{inspect(connection)}"
      )}
   end
+
+  defp run_with_connection_session(connection, session, fun) do
+    started_at = monotonic_ms()
+    metadata = %{connection: connection, session_reuse: :callback}
+    Observability.emit([:connection, :with_connection, :start], %{}, metadata)
+
+    try do
+      result = fun.(session)
+
+      emit_with_connection_stop(started_at, metadata, result_status(result))
+      result
+    rescue
+      error ->
+        emit_with_connection_stop(started_at, metadata, :raised)
+        reraise error, __STACKTRACE__
+    catch
+      kind, reason ->
+        emit_with_connection_stop(started_at, metadata, kind)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    after
+      disconnect(session)
+    end
+  end
+
+  defp emit_with_connection_stop(started_at, metadata, result) do
+    Observability.emit(
+      [:connection, :with_connection, :stop],
+      %{duration_ms: monotonic_ms() - started_at},
+      Map.put(metadata, :result, result)
+    )
+  end
+
+  defp result_status({:ok, _value}), do: :ok
+  defp result_status({:error, _reason}), do: :error
+  defp result_status(_result), do: :unknown
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 
   defp normalize_relation(relation_ref) do
     {:ok, RelationRef.new!(relation_ref)}

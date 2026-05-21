@@ -476,6 +476,22 @@ default SQLClient scope when they open that same relation connection without
 passing `required_catalogs` explicitly. That default is process-local; spawned
 asset tasks should wrap their child body with `Favn.SQLClient.with_required_catalogs/2`
 or pass `required_catalogs` explicitly.
+For Elixir assets that perform several SQL operations, prefer
+`Favn.SQLClient.with_connection/3` so setup, inspection, and landing writes reuse
+one session for the asset execution:
+
+```elixir
+Favn.SQLClient.with_required_catalogs(ctx.asset.relation, fn ->
+  Favn.SQLClient.with_connection(ctx.asset.relation.connection, [], fn session ->
+    SQLLanding.ensure_schema(session, ctx.asset.relation)
+    SQLLanding.ensure_columns(session, ctx.asset.relation, rows)
+    SQLLanding.replace_partition_from_rows(session, ctx.asset.relation, rows, :month, month)
+  end)
+end)
+```
+
+SQL sessions are process-owned handles. Do not share one session concurrently
+across child tasks; child tasks should open their own scoped session.
 Raw write operations use an explicit `admission: [...]` operation target such as
 `admission: [catalog: "raw"]`, `admission: [target: {:catalog, "raw"}]`, or
 `admission: [required_catalogs: ["raw"]]` when provided; otherwise they use the
@@ -497,10 +513,10 @@ file catalog does not block independent DuckLake writes.
 
 Catalog-level write admission is guaranteed for Favn SQL asset materialization,
 where the target relation carries an explicit catalog. Raw
-`Favn.SQLClient.execute/3` and `Favn.SQLClient.query/3` calls cannot reliably
-infer the write catalog from arbitrary SQL today; use asset materialization for
-protected writes or serialize manual raw SQL at the caller until a future
-explicit `catalog:` option exists.
+`Favn.SQLClient.execute/3` and write-style `Favn.SQLClient.query/3` calls cannot
+reliably infer the write catalog from arbitrary SQL; open the session with
+`required_catalogs: [...]` or pass explicit `admission: [...]` target options for
+protected raw writes.
 
 Safe retries are bounded around DuckDB session creation/bootstrap and read-only
 inspection/query paths. Favn does not blindly retry SQL writes, and operations
@@ -509,10 +525,10 @@ reported with unknown commit state are not retried.
 Low-tier Azure PostgreSQL metadata catalogs can still become the bottleneck for
 DuckLake. Configure finite, conservative DuckLake catalog `write_concurrency`
 values and consider PgBouncer or scaling the metadata database when metadata
-connection or lock pressure appears. Runner-local pooling and single-flight
-creation reduce repeated attach/bootstrap pressure in a single BEAM, but they do
-not replace catalog write admission and do not solve multi-runner distributed
-metadata pressure by themselves.
+connection or lock pressure appears. Runner-local pooling and bounded same-key
+fresh session creation reduce repeated attach/bootstrap pressure in a single
+BEAM, but they do not replace catalog write admission and do not solve
+multi-runner distributed metadata pressure by themselves.
 
 When DuckLake uses PostgreSQL for metadata, one concurrent DuckLake writer can
 use multiple PostgreSQL backend connections. In observed deployments, one writer

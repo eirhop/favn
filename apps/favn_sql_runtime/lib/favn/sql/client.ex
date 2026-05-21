@@ -18,6 +18,11 @@ defmodule Favn.SQL.Client do
   paths discard pooled sessions after mutation unless explicitly marked
   internally as pool-safe.
 
+  Concurrent misses for the same pool key can create fresh sessions in parallel
+  up to the selected finite admission/catalog limit. This avoids serializing
+  expensive DuckDB/DuckLake bootstrap for independent asset windows while keeping
+  arbitrary raw SQL writes on fresh, discarded sessions by default.
+
   Idle pooled sessions keep their catalog admission leases until reuse or idle
   eviction. With finite catalog concurrency, an idle session for one pool key can
   block a new incompatible pool key that needs the same catalog until the idle
@@ -34,6 +39,7 @@ defmodule Favn.SQL.Client do
   alias Favn.Connection.Resolved
   alias Favn.RelationRef
   alias Favn.SQL.Admission
+  alias Favn.SQL.ConcurrencyPolicies
   alias Favn.SQL.ConcurrencyPolicy
   alias Favn.SQL.Error
   alias Favn.SQL.Observability
@@ -491,7 +497,9 @@ defmodule Favn.SQL.Client do
   end
 
   defp checkout_or_create_session(key, resolved, concurrency_policies, adapter_opts) do
-    case SessionPool.checkout_or_create(key) do
+    max_creating_per_key = checkout_max_creating_per_key(concurrency_policies, adapter_opts)
+
+    case SessionPool.checkout_or_create(key, max_creating_per_key: max_creating_per_key) do
       {:ok, %Session{} = session} ->
         case prepare_warm_session(session, resolved, concurrency_policies, adapter_opts) do
           {:ok, %Session{} = session} -> {:ok, session}
@@ -594,6 +602,54 @@ defmodule Favn.SQL.Client do
        ) do
     Admission.adopt_session(lease)
   end
+
+  defp checkout_max_creating_per_key(%ConcurrencyPolicies{} = policies, adapter_opts) do
+    policies
+    |> checkout_creation_policies(adapter_opts)
+    |> strictest_finite_limit()
+  end
+
+  defp checkout_max_creating_per_key(%ConcurrencyPolicy{limit: limit}, _adapter_opts) do
+    finite_limit_or_one(limit)
+  end
+
+  defp checkout_max_creating_per_key(_policy, _adapter_opts), do: 1
+
+  defp checkout_creation_policies(%ConcurrencyPolicies{} = policies, adapter_opts) do
+    case normalized_required_catalogs(adapter_opts) do
+      [] ->
+        case Map.values(policies.catalog) do
+          [] -> List.wrap(policies.default)
+          catalog_policies -> catalog_policies
+        end
+
+      catalogs ->
+        catalog_policies =
+          catalogs
+          |> Enum.map(&ConcurrencyPolicies.catalog_policy(policies, &1))
+          |> Enum.reject(&is_nil/1)
+
+        case catalog_policies do
+          [] -> List.wrap(policies.default)
+          policies -> policies
+        end
+    end
+  end
+
+  defp strictest_finite_limit(policies) do
+    policies
+    |> Enum.map(& &1.limit)
+    |> Enum.filter(&finite_limit?/1)
+    |> case do
+      [] -> 1
+      limits -> Enum.min(limits)
+    end
+  end
+
+  defp finite_limit_or_one(limit) when is_integer(limit) and limit > 0, do: limit
+  defp finite_limit_or_one(_limit), do: 1
+
+  defp finite_limit?(limit), do: is_integer(limit) and limit > 0
 
   defp pool_session_metadata(%PoolKey{} = key, %Resolved{} = resolved) do
     %{

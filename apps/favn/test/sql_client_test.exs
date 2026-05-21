@@ -43,12 +43,17 @@ defmodule Favn.SQLClientTest do
     @impl true
     def connect(%Resolved{}, opts) do
       reject_internal_registry_opt!(opts)
+      conn = {:conn, make_ref()}
       notify({:connect_opts, opts})
-      {:ok, :conn}
+      notify({:connect, conn})
+      {:ok, conn}
     end
 
     @impl true
-    def disconnect(:conn, _opts), do: :ok
+    def disconnect(conn, _opts) do
+      notify({:disconnect, conn})
+      :ok
+    end
 
     @impl true
     def capabilities(%Resolved{}, opts) do
@@ -57,11 +62,16 @@ defmodule Favn.SQLClientTest do
     end
 
     @impl true
-    def execute(:conn, _statement, _opts), do: {:ok, %Result{kind: :execute, rows_affected: 1}}
+    def execute(conn, statement, _opts) do
+      notify({:execute, conn, IO.iodata_to_binary(statement)})
+      {:ok, %Result{kind: :execute, rows_affected: 1}}
+    end
 
     @impl true
-    def query(:conn, statement, _opts),
-      do: {:ok, %Result{kind: :query, command: IO.iodata_to_binary(statement)}}
+    def query(conn, statement, _opts) do
+      notify({:query, conn, IO.iodata_to_binary(statement)})
+      {:ok, %Result{kind: :query, command: IO.iodata_to_binary(statement)}}
+    end
 
     @impl true
     def introspection_query(_kind, _payload, _opts), do: {:ok, "SELECT 1"}
@@ -70,17 +80,17 @@ defmodule Favn.SQLClientTest do
     def materialization_statements(%WritePlan{}, %Favn.SQL.Capabilities{}, _opts), do: {:ok, []}
 
     @impl true
-    def materialize(:conn, %WritePlan{}, _opts), do: {:ok, %Result{kind: :materialize}}
+    def materialize(_conn, %WritePlan{}, _opts), do: {:ok, %Result{kind: :materialize}}
 
     @impl true
-    def relation(:conn, %RelationRef{name: name, schema: schema}, _opts),
+    def relation(_conn, %RelationRef{name: name, schema: schema}, _opts),
       do: {:ok, %Favn.SQL.Relation{name: name, schema: schema || "main", type: :table}}
 
     @impl true
-    def columns(:conn, %RelationRef{}, _opts), do: {:ok, [%Favn.SQL.Column{name: "id"}]}
+    def columns(_conn, %RelationRef{}, _opts), do: {:ok, [%Favn.SQL.Column{name: "id"}]}
 
     @impl true
-    def transaction(:conn, fun, _opts), do: fun.(:conn)
+    def transaction(conn, fun, _opts), do: fun.(conn)
 
     defp reject_internal_registry_opt!(opts) do
       if Keyword.has_key?(opts, :registry_name) do
@@ -171,6 +181,43 @@ defmodule Favn.SQLClientTest do
                assert {:ok, %Result{kind: :query}} = Favn.SQLClient.query(session, "select 1")
                {:ok, :done}
              end)
+  end
+
+  test "with_connection reuses one adapter connection for multiple operations" do
+    assert :ok =
+             Favn.SQLClient.with_connection(:test_sql, [], fn session ->
+               assert {:ok, %Result{kind: :execute}} =
+                        Favn.SQLClient.execute(session, "create schema if not exists raw")
+
+               assert {:ok, %Result{kind: :query}} =
+                        Favn.SQLClient.query(session, "describe raw.events")
+
+               assert {:ok, %Result{kind: :execute}} =
+                        Favn.SQLClient.execute(session, "insert into raw.events select 1")
+
+               :ok
+             end)
+
+    assert_received {:connect, conn}
+    assert_received {:execute, ^conn, "create schema if not exists raw"}
+    assert_received {:query, ^conn, "describe raw.events"}
+    assert_received {:execute, ^conn, "insert into raw.events select 1"}
+    assert_received {:disconnect, ^conn}
+    refute_received {:connect, _other_conn}
+  end
+
+  test "with_connection session retains required catalog scope across operations" do
+    assert :ok =
+             Favn.SQLClient.with_connection(:test_sql, [required_catalogs: ["raw"]], fn session ->
+               assert session.required_catalogs == ["raw"]
+               assert {:ok, %Result{kind: :execute}} = Favn.SQLClient.execute(session, "insert 1")
+               assert session.required_catalogs == ["raw"]
+               assert {:ok, %Result{kind: :query}} = Favn.SQLClient.query(session, "select 1")
+               assert session.required_catalogs == ["raw"]
+               :ok
+             end)
+
+    assert_received {:connect_opts, [required_catalogs: ["raw"]]}
   end
 
   test "with_required_catalogs scopes SQLClient connects in spawned tasks" do

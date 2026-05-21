@@ -514,9 +514,10 @@ Pooling can reduce repeated DuckDB session/bootstrap cost inside one runner, but
 DuckLake metadata writes still hit the configured PostgreSQL metadata service.
 Low-tier Azure PostgreSQL deployments should use conservative DuckLake catalog
 `write_concurrency` values, monitor connection and lock pressure, and consider
-PgBouncer or scaling the metadata database. Pooling and single-flight creation
-reduce repeated attach/bootstrap pressure but are not a replacement for
-metadata-tier capacity planning, especially with multiple runner BEAMs.
+PgBouncer or scaling the metadata database. Pooling and bounded same-key fresh
+session creation reduce repeated attach/bootstrap pressure but are not a
+replacement for metadata-tier capacity planning, especially with multiple runner
+BEAMs.
 
 ## Documentation Plan
 

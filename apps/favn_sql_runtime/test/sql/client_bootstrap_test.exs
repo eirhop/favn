@@ -199,7 +199,8 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
 
     @impl true
     def concurrency_policies(%Resolved{} = resolved) do
-      {:ok, [Favn.SQL.ConcurrencyPolicy.catalog(resolved, "raw", 1)]}
+      limit = Map.get(resolved.config, :raw_write_concurrency, 1)
+      {:ok, [Favn.SQL.ConcurrencyPolicy.catalog(resolved, "raw", limit)]}
     end
 
     @impl true
@@ -635,6 +636,39 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     assert first_session.conn == first_conn
     assert {:ok, second_session} = Task.await(second)
     refute second_session.conn == first_session.conn
+
+    Client.disconnect(first_session)
+    Client.disconnect(second_session)
+  end
+
+  test "concurrent same-key misses create sessions up to catalog capacity", %{
+    registry_name: registry_name
+  } do
+    pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+
+    start_registry(registry_name, AdapterWithPool, %{
+      pool: pool,
+      raw_write_concurrency: 2
+    })
+
+    Application.put_env(:favn, :sql_pool_bootstrap_mode, {:block, self()})
+    connect_opts = [registry_name: registry_name, required_catalogs: ["raw"]]
+
+    first = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
+    assert_receive {:bootstrap_started, first_conn, first_pid}
+
+    second = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
+    assert_receive {:bootstrap_started, second_conn, second_pid}
+    refute second_conn == first_conn
+
+    assert Enum.count(events(), &match?({:connect, :warehouse, _conn}, &1)) == 2
+
+    Application.put_env(:favn, :sql_pool_bootstrap_mode, :ok)
+    send(first_pid, :continue_bootstrap)
+    send(second_pid, :continue_bootstrap)
+
+    assert {:ok, first_session} = Task.await(first)
+    assert {:ok, second_session} = Task.await(second)
 
     Client.disconnect(first_session)
     Client.disconnect(second_session)

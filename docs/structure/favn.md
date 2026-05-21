@@ -20,3 +20,12 @@ Tests:
 
 Use when changing public APIs, public docs breadcrumbs, public SQL client access,
 or public Mix task argument/dispatch behavior, including `mix favn.bootstrap.single` and `mix favn.diagnostics`.
+
+`Favn.SQLClient.with_connection/3` is the recommended public pattern for
+asset-scoped SQL session reuse from Elixir assets and helpers. It opens one
+session, passes it to the callback, and disconnects or returns it to the pool on
+exit. Helpers that perform several SQL operations should accept an existing
+session where practical so DuckDB/DuckLake bootstrap costs are paid once per asset
+execution instead of once per helper call. Sessions are process-owned and should
+not be shared concurrently across child tasks; child tasks should open their own
+scoped session with `with_required_catalogs/2` or explicit `required_catalogs`.

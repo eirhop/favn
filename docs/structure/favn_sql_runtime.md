@@ -30,6 +30,12 @@ concurrency. The SQL client enforces checkout ownership, so copied session struc
 cannot be operated on or disconnected by non-owner processes. Raw
 execute/materialize/transaction paths discard pooled sessions after mutation
 unless explicitly proven pool-safe internally.
+When concurrent work misses the same pool key, Favn may create multiple fresh
+sessions in parallel up to the selected finite admission/catalog limit. This keeps
+fresh connection-per-write paths efficient without making arbitrary raw SQL
+session reuse safe. If the relevant policy is unlimited, same-key fresh creation
+stays conservative unless a finite catalog policy such as DuckLake
+`write_concurrency` is configured.
 Idle pooled sessions retain catalog admission until reuse or eviction. That keeps
 physical pooled sessions inside the configured catalog budget, but with finite
 catalog concurrency an idle session for one pool key can block a different pool

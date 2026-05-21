@@ -38,10 +38,11 @@ with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL
 session may be checked out by only one asset execution at a time, and the runner
 must still honor existing catalog/write concurrency for active work and new
 session/bootstrap. SQL client operations are process-affine to the checkout
-owner. The pool and same-key single-flight creation do not coordinate across
-runner nodes, do not increase catalog/write concurrency, and do not replace
-finite DuckLake catalog `write_concurrency`, especially on low-tier Azure
-PostgreSQL metadata stores.
+owner. Same-key fresh session creation may run in parallel up to the selected
+finite admission/catalog limit, but the pool does not coordinate across runner
+nodes, does not increase catalog/write concurrency, and does not replace finite
+DuckLake catalog `write_concurrency`, especially on low-tier Azure PostgreSQL
+metadata stores.
 For DuckLake with PostgreSQL metadata, one concurrent DuckLake writer can use
 multiple PostgreSQL backend connections; observed deployments used about three,
 so size `write_concurrency` with that multiplier and leave operational headroom.
