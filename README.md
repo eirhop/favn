@@ -476,10 +476,11 @@ default SQLClient scope when they open that same relation connection without
 passing `required_catalogs` explicitly. That default is process-local; spawned
 asset tasks should wrap their child body with `Favn.SQLClient.with_required_catalogs/2`
 or pass `required_catalogs` explicitly.
-Raw write operations use an explicit operation target such as `catalog: "raw"`,
-`target: {:catalog, "raw"}`, or operation `required_catalogs: ["raw"]` when
-provided; otherwise they use the session required catalog scope. Favn does not
-parse arbitrary raw SQL to infer target catalogs.
+Raw write operations use an explicit `admission: [...]` operation target such as
+`admission: [catalog: "raw"]`, `admission: [target: {:catalog, "raw"}]`, or
+`admission: [required_catalogs: ["raw"]]` when provided; otherwise they use the
+session required catalog scope. Favn does not parse arbitrary raw SQL to infer
+target catalogs.
 
 Raw SQL execute/materialize/transaction paths do not return sessions to the idle
 pool after mutation unless Favn has explicitly proven the operation pool-safe

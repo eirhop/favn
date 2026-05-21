@@ -24,9 +24,9 @@ defmodule Favn.SQL.Client do
   session is reused or closed.
 
   SQL sessions retain their normalized `:required_catalogs` scope. Raw write
-  operations use explicit operation catalog targets when provided and otherwise
-  use that retained session scope for catalog admission; arbitrary SQL text is not
-  parsed to infer target catalogs.
+  operations use explicit `admission: [...]` operation catalog targets when
+  provided and otherwise use that retained session scope for catalog admission;
+  arbitrary SQL text is not parsed to infer target catalogs.
   """
 
   alias Favn.Connection.Loader
@@ -162,11 +162,13 @@ defmodule Favn.SQL.Client do
 
   @spec query(Session.t(), iodata(), keyword()) :: operation_result()
   def query(%Session{} = session, statement, opts) when is_list(opts) do
+    {admission_opts, adapter_opts} = split_operation_opts(opts)
+
     session
-    |> run_session_operation(:query, statement, opts, fn ->
-      run_with_optional_retry(:query, opts, fn ->
-        Admission.with_permit(session, :query, {statement, opts}, fn ->
-          session.adapter.query(session.conn, statement, opts)
+    |> run_session_operation(:query, statement, adapter_opts, fn ->
+      run_with_optional_retry(:query, adapter_opts, fn ->
+        Admission.with_permit(session, :query, {statement, admission_opts}, fn ->
+          session.adapter.query(session.conn, statement, adapter_opts)
         end)
       end)
     end)
@@ -180,10 +182,12 @@ defmodule Favn.SQL.Client do
 
   @spec execute(Session.t(), iodata(), keyword()) :: operation_result()
   def execute(%Session{} = session, statement, opts) when is_list(opts) do
+    {admission_opts, adapter_opts} = split_operation_opts(opts)
+
     session
-    |> run_session_operation(:execute, statement, opts, fn ->
-      Admission.with_permit(session, :execute, {statement, opts}, fn ->
-        session.adapter.execute(session.conn, statement, opts)
+    |> run_session_operation(:execute, statement, adapter_opts, fn ->
+      Admission.with_permit(session, :execute, {statement, admission_opts}, fn ->
+        session.adapter.execute(session.conn, statement, adapter_opts)
       end)
     end)
   rescue
@@ -333,14 +337,17 @@ defmodule Favn.SQL.Client do
   def transaction(_session, _fun, _opts), do: {:error, invalid_session_error()}
 
   defp run_transaction(%Session{adapter: adapter, conn: conn} = session, fun, opts) do
+    {admission_opts, adapter_opts} = split_operation_opts(opts)
+    required_catalogs = effective_required_catalogs(session, admission_opts)
+
     if function_exported?(adapter, :transaction, 3) do
       session
-      |> run_session_operation(:transaction, nil, opts, fn ->
-        Admission.with_permit(session, :transaction, opts, fn ->
+      |> run_session_operation(:transaction, nil, adapter_opts, fn ->
+        Admission.with_permit(session, :transaction, admission_opts, fn ->
           adapter.transaction(
             conn,
-            fn tx_conn -> fun.(%Session{session | conn: tx_conn}) end,
-            opts
+            fn tx_conn -> fun.(%Session{session | conn: tx_conn, required_catalogs: required_catalogs}) end,
+            adapter_opts
           )
         end)
       end)
@@ -352,6 +359,47 @@ defmodule Favn.SQL.Client do
   defp split_connect_opts(opts) do
     Keyword.split(opts, @resolution_opt_keys)
   end
+
+  defp split_operation_opts(opts) do
+    {operation_admission_opts(opts), Keyword.delete(opts, :admission)}
+  end
+
+  defp operation_admission_opts(opts) do
+    case Keyword.get(opts, :admission, []) do
+      admission_opts when is_list(admission_opts) ->
+        if Keyword.keyword?(admission_opts), do: admission_opts, else: []
+
+      _other ->
+        []
+    end
+  end
+
+  defp effective_required_catalogs(%Session{required_catalogs: required_catalogs}, admission_opts) do
+    case explicit_required_catalogs(admission_opts) do
+      [] -> required_catalogs
+      catalogs -> catalogs
+    end
+  end
+
+  defp explicit_required_catalogs(admission_opts) when is_list(admission_opts) do
+    cond do
+      Keyword.has_key?(admission_opts, :catalog) ->
+        admission_opts |> Keyword.get(:catalog) |> List.wrap() |> normalize_catalogs()
+
+      Keyword.has_key?(admission_opts, :target) ->
+        admission_opts |> Keyword.get(:target) |> target_catalogs()
+
+      Keyword.has_key?(admission_opts, :required_catalogs) ->
+        admission_opts |> Keyword.get(:required_catalogs) |> List.wrap() |> normalize_catalogs()
+
+      true ->
+        []
+    end
+  end
+
+  defp target_catalogs({:catalog, catalog}), do: normalize_catalogs(List.wrap(catalog))
+  defp target_catalogs(%{catalog: catalog}), do: normalize_catalogs(List.wrap(catalog))
+  defp target_catalogs(_target), do: []
 
   defp maybe_put_default_required_catalogs(connection, adapter_opts) do
     cond do

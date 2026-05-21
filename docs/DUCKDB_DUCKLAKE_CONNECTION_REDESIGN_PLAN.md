@@ -443,10 +443,10 @@ Recommended SQL runtime changes:
   `%Favn.SQL.WritePlan{connection, target: %Favn.SQL.Relation{catalog: catalog}}`.
 - Acquire `{:duckdb_catalog, connection_name, catalog}` for writes to configured
   catalogs.
-- For raw `SQLClient.execute/3`, use explicit operation targets such as
-  `catalog: "raw"` or the retained session `required_catalogs` scope for
-  catalog-aware admission. Favn does not parse arbitrary SQL text to infer target
-  catalogs.
+- For raw `SQLClient.execute/3`, use explicit `admission: [...]` operation
+  targets such as `admission: [catalog: "raw"]` or the retained session
+  `required_catalogs` scope for catalog-aware admission. Favn does not parse
+  arbitrary SQL text to infer target catalogs.
 - Preserve the existing process-local reentrant permit behavior so materialization
   plans using transactions do not deadlock when nested execute calls happen under
   the same target scope.
@@ -627,7 +627,8 @@ tightly coupled. The PR should still keep changes layered internally:
   should treat this as a contract.
 - Raw `SQLClient.execute/3` cannot reliably infer a write catalog from arbitrary
   SQL. Manual execute paths should use session `required_catalogs` or explicit
-  operation catalog targets when catalog-scoped admission is required.
+  `admission: [...]` operation catalog targets when catalog-scoped admission is
+  required.
 - Extension `INSTALL` is intentionally omitted from the new public shape. If local
   dogfooding requires it, add it explicitly rather than reviving the old
   `extensions: [install: ..., load: ...]` nesting.

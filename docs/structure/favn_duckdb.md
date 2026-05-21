@@ -29,9 +29,10 @@ max_idle_per_key: 1, idle_timeout_ms: 300_000]`. Pool reuse is safe only for
 matching connection/config hash, required catalog set, and adapter fingerprint;
 checked-out sessions are exclusive to one asset execution. Pooling must not
 bypass catalog/write admission or retry unknown-outcome writes.
-Raw write admission is SQL-runtime owned: callers provide explicit operation
-catalog targets or rely on the session `required_catalogs` scope; the adapter does
-not parse arbitrary SQL text to infer catalogs.
+Raw write admission is SQL-runtime owned: callers provide explicit
+`admission: [...]` operation catalog targets or rely on the session
+`required_catalogs` scope; the adapter does not parse arbitrary SQL text to infer
+catalogs.
 DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
 backend connections per concurrent DuckLake writer; observed deployments used
 about three. Size DuckLake `write_concurrency` with that multiplier and leave

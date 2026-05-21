@@ -106,9 +106,9 @@ defmodule Favn.AI do
     `write_concurrency` needs PostgreSQL headroom beyond the logical writer count.
   - To run SQL queries or raw landing writes from plain Elixir code using named
     Favn connections, read `Favn.SQLClient`. For raw DuckDB/DuckLake writes,
-    prefer session `required_catalogs` or explicit operation catalog targets over
-    relying on SQL text inference; Favn does not parse arbitrary SQL for target
-    catalogs.
+    prefer session `required_catalogs` or explicit `admission: [...]` operation
+    catalog targets over relying on SQL text inference; Favn does not parse
+    arbitrary SQL for target catalogs.
   - To compile a manifest, read `Favn generate_manifest`; if the project uses
     `config :favn, discovery: [apps: [...], assets: :all, pipelines: :all,
     schedules: :all]`, also read `Favn.ModuleDiscovery`. Read

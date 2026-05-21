@@ -41,10 +41,11 @@ when callers pass `required_catalogs: [...]` to the SQL client; this is how
 DuckDB/DuckLake attach work is serialized before a session opens. The normalized
 required catalog set is retained on the SQL session. Raw write operations such as
 `Favn.SQLClient.execute/3`, write-style `Favn.SQLClient.query/3`, and
-`Favn.SQLClient.transaction/3` use an explicit operation target when one is
-provided, otherwise they use the session required catalog scope. Multi-catalog
-raw writes acquire the configured catalog policies in deterministic order. Favn
-still does not parse arbitrary SQL to infer write catalogs. When
+`Favn.SQLClient.transaction/3` use an explicit `admission: [...]` operation
+target when one is provided, otherwise they use the session required catalog
+scope. Multi-catalog raw writes acquire the configured catalog policies in
+deterministic order. Favn still does not parse arbitrary SQL to infer write
+catalogs. When
 `required_catalogs` is omitted for a connection with configured catalog policies,
 session bootstrap is treated as all-catalog bootstrap and must acquire every
 configured catalog permit before opening the adapter session.

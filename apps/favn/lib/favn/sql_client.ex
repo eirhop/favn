@@ -99,10 +99,11 @@ defmodule Favn.SQLClient do
   DuckLake bootstrap attach only those catalogs and lets catalog-level admission
   protect bootstrap work before the session is opened. The retained session scope
   is also used for raw write admission unless an operation passes an explicit
-  `:catalog`, `target: {:catalog, catalog}`, or operation `:required_catalogs`
-  option. Elixir assets executed by the Favn runner inherit their owned relation
-  catalog as a default scope when they open that same relation connection without
-  an explicit `:required_catalogs` option.
+  `admission: [catalog: catalog]`, `admission: [target: {:catalog, catalog}]`,
+  or `admission: [required_catalogs: catalogs]` option. Elixir assets executed
+  by the Favn runner inherit their owned relation catalog as a default scope when
+  they open that same relation connection without an explicit `:required_catalogs`
+  option.
 
   Public callers should only pass adapter-facing options here. Internal runtime
   routing controls such as `:registry_name` are not accepted by this facade.
@@ -257,8 +258,9 @@ defmodule Favn.SQLClient do
   especially around row handling and command metadata.
 
   Raw SQL is not parsed to infer target catalogs. For catalog-aware admission,
-  open the session with `required_catalogs: [...]` or pass `catalog: "raw"`,
-  `target: {:catalog, "raw"}`, or operation `required_catalogs: ["raw"]`.
+  open the session with `required_catalogs: [...]` or pass
+  `admission: [catalog: "raw"]`, `admission: [target: {:catalog, "raw"}]`, or
+  `admission: [required_catalogs: ["raw"]]`.
   """
   @spec execute(session(), iodata(), opts()) :: operation_result()
   defdelegate execute(session, statement, opts \\ []), to: Client

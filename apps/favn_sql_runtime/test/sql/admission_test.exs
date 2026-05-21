@@ -36,17 +36,31 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       %ConcurrencyPolicy{limit: 1, scope: {:tracker, resolved.name}, applies_to: :all}
     end
 
-    def query(conn, statement, _opts) do
+    def query(conn, statement, opts) do
       tracker = Map.fetch!(conn, :tracker)
+      record_opts(tracker, :query_opts, opts)
       bump_active(tracker, 1)
-      Process.sleep(50)
+
+      if Keyword.get(opts, :block_query?) do
+        send(Map.get(conn, :parent), {:query_started, self()})
+
+        receive do
+          :release_query -> :ok
+        after
+          1_000 -> :ok
+        end
+      else
+        Process.sleep(50)
+      end
+
       bump_active(tracker, -1)
 
       {:ok, %Result{kind: :query, command: IO.iodata_to_binary(statement), rows: [], columns: []}}
     end
 
-    def execute(conn, statement, _opts) do
+    def execute(conn, statement, opts) do
       tracker = Map.fetch!(conn, :tracker)
+      record_opts(tracker, :execute_opts, opts)
 
       bump_active(tracker, 1)
       send(Map.get(conn, :parent), {:execute_started, self()})
@@ -54,12 +68,18 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       receive do
         :release_execute -> :ok
       after
-        50 -> :ok
+        1_000 -> :ok
       end
 
       bump_active(tracker, -1)
 
       {:ok, %Result{kind: :execute, command: IO.iodata_to_binary(statement), rows: [], columns: []}}
+    end
+
+    def transaction(conn, fun, opts) do
+      tracker = Map.fetch!(conn, :tracker)
+      record_opts(tracker, :transaction_opts, opts)
+      fun.(conn)
     end
 
     def relation(conn, relation_ref, _opts) do
@@ -111,6 +131,10 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         sessions = state.sessions + delta
         %{state | sessions: sessions, max_sessions: max(state.max_sessions, sessions)}
       end)
+    end
+
+    defp record_opts(tracker, key, opts) do
+      Agent.update(tracker, &Map.update(&1, key, [opts], fn existing -> [opts | existing] end))
     end
   end
 
@@ -445,6 +469,106 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
     send(second_pid, :release_execute)
 
     assert Enum.all?(Task.await_many([first, second], 1_000), &match?({:ok, %Result{}}, &1))
+  end
+
+  test "explicit execute admission targets are not forwarded to adapters", %{tracker: tracker} do
+    session =
+      catalog_session(tracker, [catalog_policy("raw", 2)],
+        default_policy: ConcurrencyPolicy.single_writer(resolved())
+      )
+
+    first =
+      Task.async(fn ->
+        Client.execute(session, "insert into raw.main.events select ?", params: [1], admission: [catalog: "raw"])
+      end)
+
+    second =
+      Task.async(fn ->
+        Client.execute(session, "insert into raw.main.events select ?",
+          params: [2],
+          admission: [target: {:catalog, "raw"}]
+        )
+      end)
+
+    assert_receive {:execute_started, first_pid}, 500
+    assert_receive {:execute_started, second_pid}, 500
+    assert Agent.get(tracker, & &1.max_active) == 2
+
+    send(first_pid, :release_execute)
+    send(second_pid, :release_execute)
+
+    assert Enum.all?(Task.await_many([first, second], 1_000), &match?({:ok, %Result{}}, &1))
+
+    execute_opts = Agent.get(tracker, &Map.get(&1, :execute_opts, []))
+
+    refute Enum.any?(execute_opts, &Keyword.has_key?(&1, :admission))
+    assert Enum.sort(Enum.map(execute_opts, &Keyword.fetch!(&1, :params))) == [[1], [2]]
+  end
+
+  test "explicit query admission targets scope write-style queries", %{tracker: tracker} do
+    session =
+      catalog_session(tracker, [catalog_policy("raw", 2)],
+        default_policy: ConcurrencyPolicy.single_writer(resolved())
+      )
+
+    tasks =
+      for id <- [1, 2] do
+        Task.async(fn ->
+          Client.query(session, "create table raw.main.events_#{id} as select #{id}",
+            block_query?: true,
+            admission: [required_catalogs: ["raw"]]
+          )
+        end)
+      end
+
+    assert_receive {:query_started, first_pid}, 500
+    assert_receive {:query_started, second_pid}, 500
+    send(first_pid, :release_query)
+    send(second_pid, :release_query)
+
+    assert Enum.all?(Task.await_many(tasks, 1_000), &match?({:ok, %Result{}}, &1))
+    assert Agent.get(tracker, & &1.max_active) == 2
+
+    query_opts = Agent.get(tracker, &Map.get(&1, :query_opts, []))
+    refute Enum.any?(query_opts, &Keyword.has_key?(&1, :admission))
+    assert Enum.all?(query_opts, &Keyword.get(&1, :block_query?))
+  end
+
+  test "transaction admission scope applies to nested operations", %{tracker: tracker} do
+    session =
+      catalog_session(tracker, [catalog_policy("raw", 1), catalog_policy("mart", 1)],
+        default_policy: ConcurrencyPolicy.single_writer(resolved())
+      )
+
+    raw =
+      Task.async(fn ->
+        Client.transaction(
+          session,
+          fn tx_session -> Client.execute(tx_session, "insert into raw.main.events select 1", []) end,
+          admission: [required_catalogs: ["raw"]]
+        )
+      end)
+
+    mart =
+      Task.async(fn ->
+        Client.transaction(
+          session,
+          fn tx_session -> Client.execute(tx_session, "insert into mart.main.events select 1", []) end,
+          admission: [required_catalogs: ["mart"]]
+        )
+      end)
+
+    assert_receive {:execute_started, raw_pid}, 500
+    assert_receive {:execute_started, mart_pid}, 500
+    assert Agent.get(tracker, & &1.max_active) == 2
+
+    send(raw_pid, :release_execute)
+    send(mart_pid, :release_execute)
+
+    assert Enum.all?(Task.await_many([raw, mart], 1_000), &match?({:ok, %Result{}}, &1))
+
+    transaction_opts = Agent.get(tracker, &Map.get(&1, :transaction_opts, []))
+    refute Enum.any?(transaction_opts, &Keyword.has_key?(&1, :admission))
   end
 
   test "materialization target catalog wins over session required catalogs", %{tracker: tracker} do
