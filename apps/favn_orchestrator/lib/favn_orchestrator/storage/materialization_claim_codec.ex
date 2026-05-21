@@ -160,6 +160,9 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
   defp node_key_from_dto(%{"type" => "json", "value" => value}), do: {:ok, value}
   defp node_key_from_dto(value), do: {:error, {:invalid_node_key, value}}
 
+  # Keep identity encoding local to this versioned DTO so the persisted shape can
+  # evolve independently. If another storage codec needs this same shape, extract
+  # a private orchestrator storage identity codec instead of copying it again.
   defp node_identity_to_dto(nil), do: nil
 
   defp node_identity_to_dto(%{kind: _kind, start_at_us: _start_at_us, timezone: _timezone} = key) do
@@ -224,7 +227,9 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
 
   # Materialization claims are trusted orchestrator-owned durable state. The
   # current struct still requires atom refs, so JSON decoding recreates only
-  # atoms read from this storage payload; external inputs must not call this path.
+  # atoms read from this storage payload. The long-term fix is string-backed
+  # persisted identities or a richer identity value object, not broader atom
+  # recreation; external inputs must not call this path.
   defp trusted_persisted_atom(value) when is_binary(value), do: {:ok, String.to_atom(value)}
   defp trusted_persisted_atom(value), do: {:error, {:invalid_atom, value}}
 
