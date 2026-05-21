@@ -73,7 +73,8 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
       bump_active(tracker, -1)
 
-      {:ok, %Result{kind: :execute, command: IO.iodata_to_binary(statement), rows: [], columns: []}}
+      {:ok,
+       %Result{kind: :execute, command: IO.iodata_to_binary(statement), rows: [], columns: []}}
     end
 
     def transaction(conn, fun, opts) do
@@ -111,7 +112,7 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       receive do
         :release_materialize -> :ok
       after
-        50 -> :ok
+        1_000 -> :ok
       end
 
       bump_active(tracker, -1)
@@ -458,8 +459,11 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         required_catalogs: ["raw"]
       )
 
-    first = Task.async(fn -> Client.execute(session, "insert into raw.main.events select 1", []) end)
-    second = Task.async(fn -> Client.execute(session, "insert into raw.main.events select 2", []) end)
+    first =
+      Task.async(fn -> Client.execute(session, "insert into raw.main.events select 1", []) end)
+
+    second =
+      Task.async(fn -> Client.execute(session, "insert into raw.main.events select 2", []) end)
 
     assert_receive {:execute_started, first_pid}, 500
     assert_receive {:execute_started, second_pid}, 500
@@ -479,7 +483,10 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
 
     first =
       Task.async(fn ->
-        Client.execute(session, "insert into raw.main.events select ?", params: [1], admission: [catalog: "raw"])
+        Client.execute(session, "insert into raw.main.events select ?",
+          params: [1],
+          admission: [catalog: "raw"]
+        )
       end)
 
     second =
@@ -544,7 +551,9 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       Task.async(fn ->
         Client.transaction(
           session,
-          fn tx_session -> Client.execute(tx_session, "insert into raw.main.events select 1", []) end,
+          fn tx_session ->
+            Client.execute(tx_session, "insert into raw.main.events select 1", [])
+          end,
           admission: [required_catalogs: ["raw"]]
         )
       end)
@@ -553,7 +562,9 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
       Task.async(fn ->
         Client.transaction(
           session,
-          fn tx_session -> Client.execute(tx_session, "insert into mart.main.events select 1", []) end,
+          fn tx_session ->
+            Client.execute(tx_session, "insert into mart.main.events select 1", [])
+          end,
           admission: [required_catalogs: ["mart"]]
         )
       end)
@@ -577,7 +588,9 @@ defmodule FavnSQLRuntime.SQLAdmissionTest do
         required_catalogs: ["raw"]
       )
 
-    raw_holder = Task.async(fn -> Client.execute(session, "insert into raw.main.events select 1", []) end)
+    raw_holder =
+      Task.async(fn -> Client.execute(session, "insert into raw.main.events select 1", []) end)
+
     assert_receive {:execute_started, raw_pid}, 500
 
     mart = Task.async(fn -> Client.materialize(session, write_plan("mart"), []) end)

@@ -208,7 +208,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
       }
     ]
 
-    refs = Enum.map(assets, & &1.ref)
+    {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
       schema_version: 1,
@@ -225,7 +225,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
         }
       ],
       schedules: [],
-      graph: %Graph{nodes: refs, edges: [], topo_order: refs},
+      graph: graph,
       metadata: %{}
     }
 
@@ -254,6 +254,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
     ]
 
     refs = Enum.map(assets, & &1.ref)
+    {:ok, graph} = Graph.build(assets)
 
     manifest = %Manifest{
       schema_version: 2,
@@ -268,7 +269,7 @@ defmodule FavnOrchestrator.RunnerIntegrationTest do
           max_concurrency: 1
         }
       ],
-      graph: %Graph{nodes: refs, edges: [], topo_order: refs}
+      graph: graph
     }
 
     {:ok, version} = Version.new(manifest, manifest_version_id: manifest_version_id)

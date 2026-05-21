@@ -269,6 +269,29 @@ defmodule Favn.Manifest.VersionTest do
     assert roundtrip.content_hash == original.content_hash
   end
 
+  test "upconverts missing manifest graph at version boundary" do
+    raw = {MyApp.Assets.LegacyRaw, :asset}
+    gold = {MyApp.Assets.LegacyGold, :asset}
+
+    manifest = %Manifest{
+      schema_version: 2,
+      runner_contract_version: 2,
+      assets: [
+        %Asset{ref: raw, module: elem(raw, 0), name: :asset, depends_on: []},
+        %Asset{ref: gold, module: elem(gold, 0), name: :asset, depends_on: [raw]}
+      ],
+      pipelines: [],
+      schedules: [],
+      metadata: %{}
+    }
+
+    assert {:ok, version} = Version.new(manifest, manifest_version_id: "mv_missing_graph")
+
+    assert version.manifest.graph.nodes == [gold, raw]
+    assert version.manifest.graph.edges == [%{from: raw, to: gold}]
+    assert version.manifest.graph.topo_order == [raw, gold]
+  end
+
   test "rehydrates known manifest module atoms without loading user modules" do
     manifest = %{
       "schema_version" => 2,

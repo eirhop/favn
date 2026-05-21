@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
   alias Favn.Contracts.RunnerResult
   alias Favn.Manifest
+  alias Favn.Manifest.Graph
   alias Favn.Manifest.Version
   alias FavnOrchestrator
   alias FavnOrchestrator.AssetStepIdentity
@@ -2521,27 +2522,32 @@ defmodule FavnOrchestrator.RunManagerTest do
   end
 
   defp manifest_version(manifest_version_id, opts \\ []) do
+    assets = [
+      %Favn.Manifest.Asset{
+        ref: {MyApp.Assets.Raw, :asset},
+        module: MyApp.Assets.Raw,
+        name: :asset
+      },
+      %Favn.Manifest.Asset{
+        ref: {MyApp.Assets.Gold, :asset},
+        module: MyApp.Assets.Gold,
+        name: :asset,
+        depends_on: [{MyApp.Assets.Raw, :asset}]
+      },
+      %Favn.Manifest.Asset{
+        ref: {MyApp.Assets.Silver, :asset},
+        module: MyApp.Assets.Silver,
+        name: :asset,
+        depends_on: []
+      }
+    ]
+
+    {:ok, graph} = Graph.build(assets)
+
     manifest =
       %Manifest{
-        assets: [
-          %Favn.Manifest.Asset{
-            ref: {MyApp.Assets.Raw, :asset},
-            module: MyApp.Assets.Raw,
-            name: :asset
-          },
-          %Favn.Manifest.Asset{
-            ref: {MyApp.Assets.Gold, :asset},
-            module: MyApp.Assets.Gold,
-            name: :asset,
-            depends_on: [{MyApp.Assets.Raw, :asset}]
-          },
-          %Favn.Manifest.Asset{
-            ref: {MyApp.Assets.Silver, :asset},
-            module: MyApp.Assets.Silver,
-            name: :asset,
-            depends_on: []
-          }
-        ],
+        assets: assets,
+        graph: graph,
         pipelines: [
           %Favn.Manifest.Pipeline{
             module: MyApp.Pipelines.Daily,

@@ -3,6 +3,7 @@ defmodule Favn.Manifest.IndexTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Graph
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
@@ -20,7 +21,7 @@ defmodule Favn.Manifest.IndexTest do
     assert {:ok, %Schedule{name: :daily}} =
              Index.fetch_schedule(index, {MyApp.Schedules, :daily})
 
-    assert index.graph_index.topo_order == [{MyApp.Raw, :asset}, {MyApp.Gold, :asset}]
+    assert index.planning_index.topo_order == [{MyApp.Raw, :asset}, {MyApp.Gold, :asset}]
   end
 
   test "fails when pipeline refs are duplicated" do
@@ -65,8 +66,8 @@ defmodule Favn.Manifest.IndexTest do
   end
 
   defp sample_manifest do
-    %Manifest{
-      assets: [
+    assets =
+      [
         %Asset{
           ref: {MyApp.Gold, :asset},
           module: MyApp.Gold,
@@ -74,7 +75,13 @@ defmodule Favn.Manifest.IndexTest do
           depends_on: [{MyApp.Raw, :asset}]
         },
         %Asset{ref: {MyApp.Raw, :asset}, module: MyApp.Raw, name: :asset, depends_on: []}
-      ],
+      ]
+
+    {:ok, graph} = Graph.build(assets)
+
+    %Manifest{
+      assets: assets,
+      graph: graph,
       pipelines: [
         %Pipeline{
           module: MyApp.Pipelines.Daily,
