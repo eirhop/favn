@@ -124,31 +124,10 @@ defmodule Favn.Manifest.Rehydrate do
   defp build_window_spec(%Spec{} = value), do: value
 
   defp build_window_spec(value) when is_map(value) do
-    kind = value |> field_value(:kind) |> decode_known_atom([:hour, :day, :month, :year])
-
-    opts = [
-      lookback: field_value(value, :lookback, 0),
-      required: field_value(value, :required, false),
-      timezone: field_value(value, :timezone, "Etc/UTC")
-    ]
-
-    opts =
-      case field_value(value, :refresh_from) do
-        nil ->
-          opts
-
-        refresh_from ->
-          Keyword.put(
-            opts,
-            :refresh_from,
-            decode_known_atom(refresh_from, [:hour, :day, :month, :year])
-          )
-      end
-
-    try do
-      Spec.new!(kind, opts)
-    rescue
-      _error -> plain_map(value)
+    case Spec.from_value(value) do
+      {:ok, %Spec{} = spec} -> spec
+      {:ok, nil} -> nil
+      {:error, _reason} -> plain_map(value)
     end
   end
 

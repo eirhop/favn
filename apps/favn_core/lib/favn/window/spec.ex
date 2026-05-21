@@ -6,6 +6,7 @@ defmodule Favn.Window.Spec do
   particular run request.
   """
 
+  alias Favn.Window.Policy
   alias Favn.Window.Validate
 
   @type kind :: :hour | :day | :month | :year
@@ -70,6 +71,60 @@ defmodule Favn.Window.Spec do
   end
 
   @doc """
+  Normalizes persisted or DSL-shaped values into an asset runtime window spec.
+
+  This accepts the canonical struct, atom/string kind shorthands, persisted maps,
+  and policy-shaped values used by older manifests. Nil and empty option values
+  are omitted so normal `new/2` defaults still apply.
+
+  ## Examples
+
+      iex> Favn.Window.Spec.from_value(%{"kind" => "month", "refresh_from" => "day"})
+      {:ok, %Favn.Window.Spec{kind: :month, lookback: 0, refresh_from: :day, required: false, timezone: "Etc/UTC"}}
+
+      iex> Favn.Window.Spec.from_value(Favn.Window.Policy.new!(:daily))
+      {:ok, %Favn.Window.Spec{kind: :day, lookback: 0, refresh_from: nil, required: false, timezone: "Etc/UTC"}}
+  """
+  @spec from_value(term()) :: {:ok, t() | nil} | {:error, term()}
+  def from_value(nil), do: {:ok, nil}
+
+  def from_value(%__MODULE__{} = spec) do
+    with :ok <- validate(spec), do: {:ok, spec}
+  end
+
+  def from_value(%Policy{kind: kind, timezone: timezone}) do
+    opts = [] |> maybe_put(:timezone, timezone)
+    from_kind_and_opts(kind, opts)
+  end
+
+  def from_value(kind) when is_atom(kind) or is_binary(kind), do: from_kind_and_opts(kind, [])
+
+  def from_value(value) when is_map(value) do
+    kind = field_value(value, :kind)
+
+    with {:ok, refresh_from} <- value |> field_value(:refresh_from) |> normalize_optional_kind() do
+      opts =
+        []
+        |> maybe_put(:lookback, field_value(value, :lookback))
+        |> maybe_put(:required, field_value(value, :required))
+        |> maybe_put(:refresh_from, refresh_from)
+        |> maybe_put(:timezone, field_value(value, :timezone))
+
+      from_kind_and_opts(kind, opts)
+    end
+  end
+
+  def from_value(value) when is_list(value) do
+    if Keyword.keyword?(value) do
+      value |> Map.new() |> from_value()
+    else
+      {:error, {:invalid_window_spec, value}}
+    end
+  end
+
+  def from_value(value), do: {:error, {:invalid_window_spec, value}}
+
+  @doc """
   Validate an existing `%Favn.Window.Spec{}` struct.
   """
   @spec validate(t()) :: :ok | {:error, term()}
@@ -81,6 +136,42 @@ defmodule Favn.Window.Spec do
       Validate.timezone(spec.timezone)
     end
   end
+
+  defp from_kind_and_opts(kind, opts) do
+    with {:ok, kind} <- normalize_kind(kind) do
+      new(kind, opts)
+    end
+  end
+
+  defp normalize_optional_kind(nil), do: {:ok, nil}
+  defp normalize_optional_kind(""), do: {:ok, nil}
+  defp normalize_optional_kind(kind), do: normalize_kind(kind)
+
+  defp normalize_kind(kind) when kind in [:hour, :hourly], do: {:ok, :hour}
+  defp normalize_kind(kind) when kind in [:day, :daily], do: {:ok, :day}
+  defp normalize_kind(kind) when kind in [:month, :monthly], do: {:ok, :month}
+  defp normalize_kind(kind) when kind in [:year, :yearly], do: {:ok, :year}
+  defp normalize_kind(kind) when kind in ["hour", "hourly"], do: {:ok, :hour}
+  defp normalize_kind(kind) when kind in ["day", "daily"], do: {:ok, :day}
+  defp normalize_kind(kind) when kind in ["month", "monthly"], do: {:ok, :month}
+  defp normalize_kind(kind) when kind in ["year", "yearly"], do: {:ok, :year}
+  defp normalize_kind(kind), do: {:error, {:invalid_window_spec_kind, kind}}
+
+  defp field_value(map, key) do
+    string_key = Atom.to_string(key)
+
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Map.get(map, string_key)
+    end
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, _key, ""), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp validate_lookback(lookback) when is_integer(lookback) and lookback >= 0, do: :ok
   defp validate_lookback(lookback), do: {:error, {:invalid_lookback, lookback}}

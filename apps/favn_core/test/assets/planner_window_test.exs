@@ -4,6 +4,7 @@ defmodule Favn.Assets.PlannerWindowTest do
   alias Favn.Assets.GraphIndex
   alias Favn.Assets.Planner
   alias Favn.Window.Anchor
+  alias Favn.Window.Policy
   alias Favn.Window.Spec
 
   test "expands planner runtime windows from calendar anchor and lookback" do
@@ -59,6 +60,68 @@ defmodule Favn.Assets.PlannerWindowTest do
 
     assert {:ok, plan} = Planner.plan(ref, graph_index: index)
     assert [%{execution_pool: :github_api}] = Map.values(plan.nodes)
+  end
+
+  test "expands runtime windows from persisted asset window maps" do
+    ref = {MyApp.Monthly, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: MyApp.Monthly,
+                 name: :asset,
+                 depends_on: [],
+                 window: %{"kind" => "month", "refresh_from" => "day", "timezone" => "Etc/UTC"}
+               }
+             ])
+
+    anchor = Anchor.new!(:month, ~U[2026-01-01 00:00:00Z], ~U[2026-02-01 00:00:00Z])
+
+    assert {:ok, plan} = Planner.plan(ref, graph_index: index, anchor_window: anchor)
+
+    assert [%{window: %{kind: :month, start_at: ~U[2026-01-01 00:00:00Z]}}] =
+             Map.values(plan.nodes)
+  end
+
+  test "expands runtime windows from policy-shaped asset windows" do
+    ref = {MyApp.PolicyWindow, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: MyApp.PolicyWindow,
+                 name: :asset,
+                 depends_on: [],
+                 window: Policy.new!(:daily, timezone: "Etc/UTC")
+               }
+             ])
+
+    anchor = Anchor.new!(:day, ~U[2026-04-26 00:00:00Z], ~U[2026-04-27 00:00:00Z])
+
+    assert {:ok, plan} = Planner.plan(ref, graph_index: index, anchor_window: anchor)
+    assert [%{window: %{kind: :day, start_at: ~U[2026-04-26 00:00:00Z]}}] = Map.values(plan.nodes)
+  end
+
+  test "expands runtime windows from policy-shaped asset windows with default timezone" do
+    ref = {MyApp.PolicyWindowDefaultTimezone, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: MyApp.PolicyWindowDefaultTimezone,
+                 name: :asset,
+                 depends_on: [],
+                 window: Policy.new!(:daily)
+               }
+             ])
+
+    anchor = Anchor.new!(:day, ~U[2026-04-26 00:00:00Z], ~U[2026-04-27 00:00:00Z])
+
+    assert {:ok, plan} = Planner.plan(ref, graph_index: index, anchor_window: anchor)
+    assert [%{window: %{kind: :day, start_at: ~U[2026-04-26 00:00:00Z]}}] = Map.values(plan.nodes)
   end
 
   defp oslo_datetime!(naive) do

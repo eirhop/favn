@@ -32,6 +32,17 @@ defmodule Favn.WindowTest do
     assert runtime.anchor_key == anchor.key
   end
 
+  test "normalizes persisted and policy-shaped window specs" do
+    assert {:ok, %Spec{kind: :month, refresh_from: :day, timezone: "Etc/UTC"}} =
+             Spec.from_value(%{"kind" => "month", "refresh_from" => "day"})
+
+    assert {:ok, %Spec{kind: :day, timezone: "Etc/UTC"}} =
+             Spec.from_value(Policy.new!(:daily))
+
+    assert {:ok, %Spec{kind: :hour, timezone: "Europe/Oslo"}} =
+             Spec.from_value(%{kind: :hourly, timezone: "Europe/Oslo"})
+  end
+
   test "encodes and decodes canonical keys" do
     key = Key.new!(:month, ~U[2026-04-01 00:00:00Z], "Etc/UTC")
 

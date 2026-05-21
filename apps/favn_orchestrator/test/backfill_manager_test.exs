@@ -204,6 +204,12 @@ defmodule FavnOrchestrator.BackfillManagerTest do
     assert Enum.map(children, & &1.id) == child_run_ids
     assert Enum.all?(children, &(&1.root_run_id == parent_run_id))
     assert Enum.all?(children, &(&1.metadata.refresh_policy.mode == :missing))
+
+    assert Enum.all?(children, fn child ->
+             child.plan.nodes
+             |> Map.values()
+             |> Enum.all?(&match?(%Favn.Window.Runtime{}, &1.window))
+           end)
   end
 
   test "defaults child pipeline submissions to refresh missing" do

@@ -304,7 +304,15 @@ defmodule Favn.Assets.Planner do
   end
 
   defp asset_window_spec(%{window_spec: %Spec{} = spec}), do: spec
-  defp asset_window_spec(%{window: %Spec{} = spec}), do: spec
+
+  defp asset_window_spec(%{window: window}) do
+    case Spec.from_value(window) do
+      {:ok, %Spec{} = spec} -> spec
+      {:ok, nil} -> nil
+      {:error, _reason} -> nil
+    end
+  end
+
   defp asset_window_spec(_asset), do: nil
 
   defp expand_windows(%Anchor{} = anchor_window, %Spec{} = spec) do
