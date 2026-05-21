@@ -432,18 +432,19 @@ under `duckdb: [...]`: extension `load`, typed settings, secrets, keyed catalog
 DuckDB ADBC validates first-class DuckDB settings used by DuckLake-on-Postgres
 deployments and emits them before `ATTACH`, so they apply to newly attached
 Postgres-backed catalogs. `pg_pool_max_connections` is per attached Postgres
-database, `pg_pool_acquire_mode: :wait` makes exhausted pools wait instead of
-opening extra connections, `pg_pool_enable_thread_local_cache: false` avoids
-thread-local connection pinning during parallel work, and `threads` bounds DuckDB
-parallel scan workers. Do not use deprecated `pg_connection_limit`.
+database, `pg_pool_enable_thread_local_cache: false` avoids thread-local
+connection pinning during parallel work, and `threads` bounds DuckDB parallel
+scan workers. The current pinned DuckDB/Postgres extension build does not expose
+`pg_pool_acquire_mode`, so Favn rejects it during config validation. Do not use
+deprecated `pg_connection_limit`.
 
 ```elixir
 duckdb: [
   load: [:ducklake, :postgres, :azure],
   settings: [
+    azure_transport_option_type: :curl,
     threads: 4,
     pg_pool_max_connections: 5,
-    pg_pool_acquire_mode: :wait,
     pg_pool_enable_thread_local_cache: false,
     pg_pool_wait_timeout_millis: 60_000,
     pg_pool_idle_timeout_millis: 300_000,
@@ -561,10 +562,11 @@ application traffic.
 The worst-case metadata pressure is shaped by Favn execution concurrency,
 DuckLake catalog `write_concurrency`, DuckDB `threads`, the number of attached
 Postgres-backed catalogs, and each catalog's DuckDB Postgres pool settings.
-Keep the product of admitted concurrent DuckLake work and per-catalog pool limits
-below the managed Postgres metadata database's usable connection slots.
-This bound assumes `pg_pool_acquire_mode: :wait`; with DuckDB's default `:force`,
-`pg_pool_max_connections` is not a hard connection cap.
+Use the product of admitted concurrent DuckLake work and per-catalog pool limits
+as a sizing input for the managed Postgres metadata database's usable connection
+slots, not as the only hard cap. The current pinned DuckDB/Postgres extension
+build does not expose `pg_pool_acquire_mode`, and builds with force-style acquire
+behavior can open connections beyond `pg_pool_max_connections`.
 
 Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module
