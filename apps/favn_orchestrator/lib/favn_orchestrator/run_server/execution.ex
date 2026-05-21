@@ -13,9 +13,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
   """
 
   alias Favn.Contracts.RunnerClient
+  alias Favn.Contracts.RunnerAssetResult
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.Plan.NodeIdentity
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.AssetStepIdentity
@@ -1497,40 +1500,52 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp execution_node_reason(:ok), do: nil
   defp execution_node_reason(status), do: status
 
+  defp asset_result_started_at(%RunnerAssetResult{started_at: started_at}), do: started_at
   defp asset_result_started_at(%AssetResult{started_at: started_at}), do: started_at
   defp asset_result_started_at(%{started_at: started_at}), do: started_at
   defp asset_result_started_at(%{"started_at" => started_at}), do: started_at
   defp asset_result_started_at(_result), do: nil
 
+  defp asset_result_finished_at(%RunnerAssetResult{finished_at: finished_at}), do: finished_at
   defp asset_result_finished_at(%AssetResult{finished_at: finished_at}), do: finished_at
   defp asset_result_finished_at(%{finished_at: finished_at}), do: finished_at
   defp asset_result_finished_at(%{"finished_at" => finished_at}), do: finished_at
   defp asset_result_finished_at(_result), do: nil
 
+  defp asset_result_duration_ms(%RunnerAssetResult{duration_ms: duration_ms}), do: duration_ms
   defp asset_result_duration_ms(%AssetResult{duration_ms: duration_ms}), do: duration_ms
   defp asset_result_duration_ms(%{duration_ms: duration_ms}), do: duration_ms
   defp asset_result_duration_ms(%{"duration_ms" => duration_ms}), do: duration_ms
   defp asset_result_duration_ms(_result), do: nil
+
+  defp asset_result_attempt_count(%RunnerAssetResult{attempt_count: attempt_count}),
+    do: attempt_count
 
   defp asset_result_attempt_count(%AssetResult{attempt_count: attempt_count}), do: attempt_count
   defp asset_result_attempt_count(%{attempt_count: attempt_count}), do: attempt_count
   defp asset_result_attempt_count(%{"attempt_count" => attempt_count}), do: attempt_count
   defp asset_result_attempt_count(_result), do: nil
 
+  defp asset_result_max_attempts(%RunnerAssetResult{max_attempts: max_attempts}), do: max_attempts
   defp asset_result_max_attempts(%AssetResult{max_attempts: max_attempts}), do: max_attempts
   defp asset_result_max_attempts(%{max_attempts: max_attempts}), do: max_attempts
   defp asset_result_max_attempts(%{"max_attempts" => max_attempts}), do: max_attempts
   defp asset_result_max_attempts(_result), do: nil
 
+  defp asset_result_meta(%RunnerAssetResult{meta: meta}) when is_map(meta), do: meta
   defp asset_result_meta(%AssetResult{meta: meta}) when is_map(meta), do: meta
   defp asset_result_meta(%{meta: meta}) when is_map(meta), do: meta
   defp asset_result_meta(%{"meta" => meta}) when is_map(meta), do: meta
   defp asset_result_meta(_result), do: %{}
 
+  defp asset_result_error(%RunnerAssetResult{error: error}), do: error
   defp asset_result_error(%AssetResult{error: error}), do: error
   defp asset_result_error(%{error: error}), do: error
   defp asset_result_error(%{"error" => error}), do: error
   defp asset_result_error(_result), do: nil
+
+  defp asset_result_attempts(%RunnerAssetResult{attempts: attempts}) when is_list(attempts),
+    do: attempts
 
   defp asset_result_attempts(%AssetResult{attempts: attempts}) when is_list(attempts),
     do: attempts
@@ -1538,6 +1553,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp asset_result_attempts(%{attempts: attempts}) when is_list(attempts), do: attempts
   defp asset_result_attempts(%{"attempts" => attempts}) when is_list(attempts), do: attempts
   defp asset_result_attempts(_result), do: []
+
+  defp asset_result_asset_step_id(%RunnerAssetResult{asset_step_id: asset_step_id}),
+    do: asset_step_id
 
   defp asset_result_asset_step_id(%AssetResult{asset_step_id: asset_step_id}), do: asset_step_id
   defp asset_result_asset_step_id(%{asset_step_id: asset_step_id}), do: asset_step_id
@@ -1923,6 +1941,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> Enum.map(fn {result, _index} -> result end)
   end
 
+  defp asset_result_ref(%RunnerAssetResult{ref: ref}), do: ref
   defp asset_result_ref(%AssetResult{ref: ref}), do: ref
   defp asset_result_ref(%{ref: ref}), do: ref
   defp asset_result_ref(%{"ref" => ref}), do: ref
@@ -1951,25 +1970,35 @@ defmodule FavnOrchestrator.RunServer.Execution do
       runner_client = configured_runner_client()
       runner_opts = configured_runner_opts()
       max_attempts = run_state.max_attempts
+      node_key = {asset_ref, nil}
+      asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
+      planned_asset_refs = planned_asset_refs(run_state)
+
+      node_identity =
+        NodeIdentity.new!(%{
+          manifest_version_id: version.manifest_version_id,
+          node_key: node_key,
+          target_refs: run_state.target_refs || [],
+          planned_asset_refs: planned_asset_refs,
+          window: nil,
+          execution_pool: nil
+        })
 
       work = %RunnerWork{
         run_id: run_state.id,
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
+        node_identity: node_identity,
         asset_ref: asset_ref,
         asset_refs: [asset_ref],
-        planned_asset_refs: planned_asset_refs(run_state),
+        planned_asset_refs: planned_asset_refs,
+        attempt: attempt,
+        max_attempts: max_attempts,
+        asset_step_id: asset_step_id,
+        stage: stage,
         params: run_state.params,
         trigger: run_state.trigger,
-        metadata:
-          Map.merge(work_metadata(run_state.metadata), %{
-            attempt: attempt,
-            asset_step_id:
-              AssetStepIdentity.asset_step_id(run_state.id, {asset_ref, nil}, asset_ref),
-            max_attempts: max_attempts,
-            stage: stage,
-            node_key: {asset_ref, nil}
-          })
+        metadata: work_metadata(run_state.metadata)
       }
 
       with :ok <- validate_runner_client(runner_client),
@@ -1978,14 +2007,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
         running_with_execution =
           RunState.transition(run_state,
             runner_execution_id: execution_id,
-            metadata: work.metadata
+            metadata: RunnerWork.lifecycle_metadata(work)
           )
 
         case Persistence.persist_run_step(running_with_execution, :step_started, %{
                asset_ref: asset_ref,
                runner_execution_id: execution_id,
-               node_key: Map.get(work.metadata, :node_key),
-               asset_step_id: Map.get(work.metadata, :asset_step_id),
+               node_key: RunnerWork.node_key(work),
+               asset_step_id: work.asset_step_id,
                stage: stage,
                attempt: attempt,
                max_attempts: max_attempts
@@ -2029,8 +2058,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           case Persistence.persist_run_step(failed, :step_failed, %{
                  asset_ref: asset_ref,
                  error: reason,
-                 node_key: Map.get(work.metadata, :node_key),
-                 asset_step_id: Map.get(work.metadata, :asset_step_id),
+                 node_key: RunnerWork.node_key(work),
+                 asset_step_id: work.asset_step_id,
                  stage: stage,
                  attempt: attempt,
                  max_attempts: max_attempts
@@ -2290,15 +2319,21 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp step_outcome(_other), do: {:step_failed, true}
 
   defp runner_result_retryable?(%RunnerResult{error: error, asset_results: asset_results}) do
-    structured_retryable?(error) and Enum.all?(asset_results || [], &asset_result_retryable?/1)
+    runner_error_retryable?(error) and Enum.all?(asset_results || [], &asset_result_retryable?/1)
   end
 
   defp runner_result_retryable?(_result), do: true
+
+  defp asset_result_retryable?(%RunnerAssetResult{error: error}),
+    do: runner_error_retryable?(error)
 
   defp asset_result_retryable?(%AssetResult{error: error}), do: structured_retryable?(error)
   defp asset_result_retryable?(%{error: error}), do: structured_retryable?(error)
   defp asset_result_retryable?(%{"error" => error}), do: structured_retryable?(error)
   defp asset_result_retryable?(_result), do: true
+
+  defp runner_error_retryable?(%RunnerError{retryable?: retryable?}), do: retryable?
+  defp runner_error_retryable?(error), do: structured_retryable?(error)
 
   defp structured_retryable?(%{details: details}) when is_map(details),
     do: retryable_detail?(Map.get(details, :asset_retryable?))
@@ -2325,6 +2360,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
     }
   end
 
+  defp sanitize_asset_result(%RunnerAssetResult{} = result) do
+    %{result | error: sanitize_error(result.error), attempts: sanitize_attempts(result.attempts)}
+  end
+
   defp sanitize_asset_result(%AssetResult{} = result) do
     %{result | error: sanitize_error(result.error), attempts: sanitize_attempts(result.attempts)}
   end
@@ -2342,6 +2381,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp sanitize_attempts(_attempts), do: []
 
   defp sanitize_error(nil), do: nil
+  defp sanitize_error(%RunnerError{} = error), do: error
 
   defp sanitize_error(
          %{"kind" => _kind, "message" => _message, "reason" => _reason, "type" => _type} = error

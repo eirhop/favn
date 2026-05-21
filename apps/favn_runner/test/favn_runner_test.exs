@@ -3,6 +3,8 @@ defmodule FavnRunnerTest do
 
   alias Favn.Connection.Registry, as: ConnectionRegistry
   alias Favn.Connection.Resolved
+  alias Favn.Contracts.RunnerCancellation
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -211,6 +213,80 @@ defmodule FavnRunnerTest do
     assert {:ok, _result} = FavnRunner.await_result(execution_id, 1_000)
   end
 
+  test "normalizes invalid asset return into a non-retryable runner error" do
+    fixture_ref = {FavnRunnerTest.InvalidReturnAsset, :asset}
+
+    fixture_manifest =
+      build_manifest([
+        %Asset{
+          ref: fixture_ref,
+          module: elem(fixture_ref, 0),
+          name: :asset,
+          type: :elixir,
+          execution: %{entrypoint: :asset, arity: 1}
+        }
+      ])
+
+    {:ok, fixture_version} =
+      Version.new(fixture_manifest,
+        manifest_version_id:
+          "mv_invalid_return_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    assert :ok = FavnRunner.register_manifest(fixture_version)
+
+    work = %RunnerWork{
+      run_id: "run_invalid_return",
+      manifest_version_id: fixture_version.manifest_version_id,
+      manifest_content_hash: fixture_version.content_hash,
+      asset_ref: fixture_ref
+    }
+
+    assert {:ok, result} = FavnRunner.run(work)
+    assert result.status == :error
+    assert %RunnerError{type: :invalid_return_shape, retryable?: false} = result.error
+    assert [%{error: %RunnerError{type: :invalid_return_shape}}] = result.asset_results
+  end
+
+  test "cancellation reports explicit runner outcome" do
+    fixture_ref = {FavnRunnerTest.SleepLogAsset, :asset}
+
+    fixture_manifest =
+      build_manifest([
+        %Asset{
+          ref: fixture_ref,
+          module: elem(fixture_ref, 0),
+          name: :asset,
+          type: :elixir,
+          execution: %{entrypoint: :asset, arity: 1}
+        }
+      ])
+
+    {:ok, fixture_version} =
+      Version.new(fixture_manifest,
+        manifest_version_id:
+          "mv_cancel_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
+
+    assert :ok = FavnRunner.register_manifest(fixture_version)
+
+    work = %RunnerWork{
+      run_id: "run_cancel",
+      manifest_version_id: fixture_version.manifest_version_id,
+      manifest_content_hash: fixture_version.content_hash,
+      asset_ref: fixture_ref
+    }
+
+    assert {:ok, execution_id} = FavnRunner.submit_work(work)
+
+    assert {:ok, %{status: :acknowledged, execution_id: ^execution_id}} =
+             FavnRunner.cancel_work(execution_id, RunnerCancellation.request("run_cancel", :test))
+
+    assert {:ok, result} = FavnRunner.await_result(execution_id, 1_000)
+    assert result.status == :cancelled
+    assert %RunnerError{kind: :cancelled, retryable?: false} = result.error
+  end
+
   test "rejects unknown manifest version" do
     work =
       %RunnerWork{
@@ -277,6 +353,13 @@ defmodule FavnRunnerTest.SleepLogAsset do
     Process.sleep(100)
     :ok
   end
+end
+
+defmodule FavnRunnerTest.InvalidReturnAsset do
+  alias Favn.Run.Context
+
+  @spec asset(Context.t()) :: atom()
+  def asset(%Context{}), do: :not_a_valid_asset_return
 end
 
 defmodule FavnRunnerTest.ConnectionModule do

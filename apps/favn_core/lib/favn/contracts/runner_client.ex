@@ -9,6 +9,8 @@ defmodule Favn.Contracts.RunnerClient do
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerCancellation
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -22,7 +24,8 @@ defmodule Favn.Contracts.RunnerClient do
   @callback await_result(execution_id(), timeout(), keyword()) ::
               {:ok, RunnerResult.t()} | {:error, term()}
 
-  @callback cancel_work(execution_id(), map(), keyword()) :: :ok | {:error, term()}
+  @callback cancel_work(execution_id(), RunnerCancellation.t(), keyword()) ::
+              {:ok, RunnerCancellation.outcome()} | {:error, RunnerError.t()}
 
   @callback subscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok | {:error, term()}
 

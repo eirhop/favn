@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.Plan.NodeIdentity
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.ExecutionAdmission
@@ -102,11 +103,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:error, Snapshots.cancelled_snapshot(current_run), [], Enum.map(acc, & &1.node_key)}
     else
       work = stage_work(current_run, version, node_key, stage, attempt)
-      asset_step_id = Map.fetch!(work.metadata, :asset_step_id)
+      asset_step_id = work.asset_step_id
 
       case ExecutionAdmission.acquire(current_run, %{
              asset_step_id: asset_step_id,
-             execution_pool: Map.get(work.metadata, :execution_pool)
+             execution_pool: RunnerWork.execution_pool(work)
            }) do
         {:ok, lease} ->
           handle_admitted_entry(%{
@@ -173,8 +174,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
         persist_or_defer_queued_entry(%{
           queued_steps: ctx.queued_steps,
-          queue_signature:
-            queue_signature(Map.fetch!(ctx.work.metadata, :asset_step_id), queue_reason, scope),
+          queue_signature: queue_signature(ctx.work.asset_step_id, queue_reason, scope),
           current_run: current_run,
           work: ctx.work,
           stage: ctx.stage,
@@ -273,21 +273,26 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp submit_admitted_entry(ctx) do
     asset_ref = ctx.work.asset_ref
-    asset_step_id = Map.fetch!(ctx.work.metadata, :asset_step_id)
+    asset_step_id = ctx.work.asset_step_id
 
     case ctx.runner_client.submit_work(ctx.work, ctx.runner_opts) do
       {:ok, execution_id} ->
-        updated_run = with_inflight_execution(ctx.current_run, execution_id, ctx.work.metadata)
+        updated_run =
+          with_inflight_execution(
+            ctx.current_run,
+            execution_id,
+            RunnerWork.lifecycle_metadata(ctx.work)
+          )
 
         case Persistence.persist_run_step(updated_run, :step_started, %{
                asset_ref: asset_ref,
                runner_execution_id: execution_id,
                asset_step_id: asset_step_id,
-               window: Map.get(ctx.work.metadata, :window),
+               window: RunnerWork.window(ctx.work),
                stage: ctx.stage,
                attempt: ctx.attempt,
                max_attempts: ctx.current_run.max_attempts,
-               execution_pool: Map.get(ctx.work.metadata, :execution_pool),
+               execution_pool: RunnerWork.execution_pool(ctx.work),
                freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
              }) do
           :ok ->
@@ -296,7 +301,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
               asset_step_id: asset_step_id,
               asset_ref: asset_ref,
               node_key: ctx.node_key,
-              window: Map.get(ctx.work.metadata, :window),
+              window: RunnerWork.window(ctx.work),
               execution_id: execution_id,
               runner_execution_id: execution_id,
               version: ctx.version,
@@ -306,7 +311,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
               stage: ctx.stage,
               lease: ctx.lease,
               materialization_claim: ctx.materialization_claim,
-              execution_pool: Map.get(ctx.work.metadata, :execution_pool),
+              execution_pool: RunnerWork.execution_pool(ctx.work),
               freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
             }
 
@@ -367,13 +372,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         case Persistence.persist_run_step(failed, :step_failed, %{
                asset_ref: asset_ref,
                error: reason,
-               node_key: Map.get(ctx.work.metadata, :node_key),
-               asset_step_id: Map.get(ctx.work.metadata, :asset_step_id),
-               window: Map.get(ctx.work.metadata, :window),
+               node_key: RunnerWork.node_key(ctx.work),
+               asset_step_id: ctx.work.asset_step_id,
+               window: RunnerWork.window(ctx.work),
                stage: ctx.stage,
                attempt: ctx.attempt,
                max_attempts: ctx.current_run.max_attempts,
-               execution_pool: Map.get(ctx.work.metadata, :execution_pool)
+               execution_pool: RunnerWork.execution_pool(ctx.work)
              }) do
           :ok ->
             {:error, failed, [], Enum.map(ctx.acc, & &1.node_key)}
@@ -389,13 +394,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
     case Persistence.persist_run_step(queued_run, :step_queued, %{
            asset_ref: work.asset_ref,
-           node_key: Map.get(work.metadata, :node_key),
-           asset_step_id: Map.get(work.metadata, :asset_step_id),
-           window: Map.get(work.metadata, :window),
+           node_key: RunnerWork.node_key(work),
+           asset_step_id: work.asset_step_id,
+           window: RunnerWork.window(work),
            stage: stage,
            attempt: attempt,
            max_attempts: run_state.max_attempts,
-           execution_pool: Map.get(work.metadata, :execution_pool),
+           execution_pool: RunnerWork.execution_pool(work),
            queue_reason: queue_reason,
            admission_scope: scope
          }) do
@@ -514,29 +519,37 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     node = Map.fetch!(run_state.plan.nodes, node_key)
     asset_ref = node.ref
     asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
+    execution_pool = effective_execution_pool(run_state, node_key)
+    planned_asset_refs = planned_asset_refs(run_state)
+
+    node_identity =
+      NodeIdentity.new!(%{
+        manifest_version_id: version.manifest_version_id,
+        node_key: node_key,
+        target_refs: run_state.target_refs || [],
+        planned_asset_refs: planned_asset_refs,
+        window: node.window,
+        execution_pool: execution_pool
+      })
 
     %RunnerWork{
       run_id: run_state.id,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
+      node_identity: node_identity,
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
-      planned_asset_refs: planned_asset_refs(run_state),
+      planned_asset_refs: planned_asset_refs,
+      attempt: attempt,
+      max_attempts: run_state.max_attempts,
+      asset_step_id: asset_step_id,
+      stage: stage,
       params: run_state.params,
       trigger:
         run_state.trigger
         |> Map.put(:window, node.window)
         |> maybe_put_pipeline_trigger(Map.get(run_state.metadata, :pipeline_context)),
-      metadata:
-        Map.merge(work_metadata(run_state.metadata), %{
-          attempt: attempt,
-          asset_step_id: asset_step_id,
-          max_attempts: run_state.max_attempts,
-          stage: stage,
-          node_key: node_key,
-          window: node.window,
-          execution_pool: effective_execution_pool(run_state, node_key)
-        })
+      metadata: work_metadata(run_state.metadata)
     }
   end
 

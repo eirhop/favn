@@ -10,7 +10,8 @@ Code:
 - `apps/favn_runner/lib/favn_runner/production_runtime_config.ex` owns
   runner-side production env validation for the first local single-node setup
 - `apps/favn_runner/lib/favn_runner/sql_runtime_preflight.ex` validates planned SQL
-  connection runtime config before worker execution begins
+  connection runtime config from explicit runner work planned scope before worker
+  execution begins
 - `apps/favn_runner/lib/favn_runner/runtime_config_diagnostic.ex` normalizes
   runner runtime-config failures into stable redacted run diagnostics
 - `apps/favn_runner/lib/favn_runner/sql/materialization_planner.ex` owns runner SQL
@@ -30,8 +31,9 @@ Tests:
 
 Use when changing asset execution, runner protocol behavior, cancellation,
 timeouts, manifest registration/resolution, plugin config, SQL asset execution,
-SQL asset materialization planning, runner production config validation, or
-runner-owned inspection.
+SQL asset materialization planning, runner production config validation,
+runner-owned inspection, or runner-side normalization into shared work/result,
+error, and cancellation contracts.
 
 DuckDB/ADBC session pooling is default-on for poolable adapters unless disabled
 with `pool: [enabled: false]`. It is runner-local and per BEAM. A pooled SQL

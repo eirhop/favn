@@ -3,13 +3,14 @@ defmodule FavnRunner.Worker do
 
   use GenServer
 
+  alias Favn.Contracts.RunnerAssetResult
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerEvent
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Version
   alias Favn.RelationRef
-  alias Favn.Run.AssetResult
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
   alias Favn.RuntimeConfig.Redactor, as: RuntimeConfigRedactor
@@ -67,14 +68,23 @@ defmodule FavnRunner.Worker do
               |> redact_execution_result(asset, context)
 
             {:error, error} ->
-              {:error, RuntimeConfigDiagnostic.asset_resolution_failed(error, asset)}
+              {:error,
+               RunnerError.normalize(
+                 RuntimeConfigDiagnostic.asset_resolution_failed(error, asset),
+                 type: :asset_resolution_failed,
+                 retryable?: false
+               )}
           end
 
         :sql ->
           execute_sql_asset(asset, version, work)
 
         _ ->
-          {:error, %{kind: :error, reason: {:unsupported_asset_type, asset.type}, stacktrace: []}}
+          {:error,
+           RunnerError.normalize({:unsupported_asset_type, asset.type},
+             type: :unsupported_asset_type,
+             retryable?: false
+           )}
       end
 
     finished_at = DateTime.utc_now()
@@ -87,7 +97,7 @@ defmodule FavnRunner.Worker do
         build_runner_result(
           work,
           version,
-          [asset_result(asset, started_at, finished_at, :ok, meta, nil)],
+          [asset_result(work, asset, started_at, finished_at, :ok, meta, nil)],
           status: :ok
         )
 
@@ -104,7 +114,7 @@ defmodule FavnRunner.Worker do
         build_runner_result(
           work,
           version,
-          [asset_result(asset, started_at, finished_at, :error, %{}, error)],
+          [asset_result(work, asset, started_at, finished_at, :error, %{}, error)],
           status: :error,
           error: error
         )
@@ -120,18 +130,25 @@ defmodule FavnRunner.Worker do
 
     cond do
       not is_atom(asset.module) ->
-        {:error, %{kind: :error, reason: {:invalid_module, asset.module}, stacktrace: []}}
+        {:error,
+         RunnerError.normalize({:invalid_module, asset.module},
+           type: :invalid_module,
+           retryable?: false
+         )}
 
       not is_atom(entrypoint) ->
-        {:error, %{kind: :error, reason: {:invalid_entrypoint, entrypoint}, stacktrace: []}}
+        {:error,
+         RunnerError.normalize({:invalid_entrypoint, entrypoint},
+           type: :invalid_entrypoint,
+           retryable?: false
+         )}
 
       arity != 1 ->
         {:error,
-         %{
-           kind: :error,
-           reason: {:unsupported_entrypoint_arity, arity, expected: 1},
-           stacktrace: []
-         }}
+         RunnerError.normalize({:unsupported_entrypoint_arity, arity, expected: 1},
+           type: :unsupported_entrypoint_arity,
+           retryable?: false
+         )}
 
       true ->
         with_asset_sql_scope(asset, fn -> invoke_asset(asset.module, entrypoint, context) end)
@@ -182,29 +199,22 @@ defmodule FavnRunner.Worker do
         {:ok, meta}
 
       {:error, reason} ->
-        {:error, %{kind: :error, reason: reason, stacktrace: []}}
+        {:error, RunnerError.normalize(reason)}
 
       other ->
         {:error,
-         %{
-           kind: :error,
-           reason:
-             {:invalid_return_shape, other, expected: ":ok | {:ok, map()} | {:error, reason}"},
-           stacktrace: []
-         }}
+         RunnerError.normalize(
+           {:invalid_return_shape, other, expected: ":ok | {:ok, map()} | {:error, reason}"},
+           type: :invalid_return_shape,
+           retryable?: false
+         )}
     end
   rescue
     error ->
-      {:error,
-       %{
-         kind: :error,
-         reason: error,
-         stacktrace: __STACKTRACE__,
-         message: Exception.message(error)
-       }}
+      {:error, RunnerError.exception(:error, error, __STACKTRACE__)}
   catch
-    :throw, reason -> {:error, %{kind: :throw, reason: reason, stacktrace: __STACKTRACE__}}
-    :exit, reason -> {:error, %{kind: :exit, reason: reason, stacktrace: __STACKTRACE__}}
+    :throw, reason -> {:error, RunnerError.exception(:throw, reason, __STACKTRACE__)}
+    :exit, reason -> {:error, RunnerError.exception(:exit, reason, __STACKTRACE__)}
   end
 
   defp build_runner_result(%RunnerWork{} = work, %Version{} = version, asset_results, opts)
@@ -215,24 +225,38 @@ defmodule FavnRunner.Worker do
       manifest_content_hash: version.content_hash,
       status: Keyword.get(opts, :status, :ok),
       asset_results: asset_results,
-      error: Keyword.get(opts, :error),
-      metadata: Map.put(work.metadata, :execution_id, Keyword.get(opts, :execution_id))
+      error: normalize_error(Keyword.get(opts, :error)),
+      metadata:
+        Map.put(
+          RunnerWork.lifecycle_metadata(work),
+          :execution_id,
+          Keyword.get(opts, :execution_id)
+        )
     }
   end
 
-  defp asset_result(%Asset{} = asset, started_at, finished_at, status, meta, error) do
+  defp asset_result(
+         %RunnerWork{} = work,
+         %Asset{} = asset,
+         started_at,
+         finished_at,
+         status,
+         meta,
+         error
+       ) do
     meta = RuntimeConfigRedactor.redact(meta, asset.runtime_config || %{})
     duration_ms = duration_ms(started_at, finished_at)
 
-    %AssetResult{
+    normalized_error = normalize_error(error)
+
+    %RunnerAssetResult{
       ref: asset.ref,
-      stage: 0,
       status: status,
       started_at: started_at,
       finished_at: finished_at,
       duration_ms: duration_ms,
       meta: meta,
-      error: error,
+      error: normalized_error,
       attempt_count: 1,
       max_attempts: 1,
       attempts: [
@@ -243,11 +267,16 @@ defmodule FavnRunner.Worker do
           duration_ms: duration_ms,
           status: status,
           meta: meta,
-          error: error
+          error: normalized_error
         }
-      ]
+      ],
+      asset_step_id: work.asset_step_id
     }
   end
+
+  defp normalize_error(nil), do: nil
+  defp normalize_error(%RunnerError{} = error), do: error
+  defp normalize_error(error), do: RunnerError.normalize(error)
 
   defp duration_ms(started_at, finished_at) do
     max(DateTime.diff(finished_at, started_at, :millisecond), 0)
@@ -279,7 +308,10 @@ defmodule FavnRunner.Worker do
     producer_id = "runner:" <> execution_id
 
     metadata =
-      work.metadata |> Map.put(:runner_execution_id, execution_id) |> Map.merge(extra_metadata)
+      work
+      |> RunnerWork.lifecycle_metadata()
+      |> Map.put(:runner_execution_id, execution_id)
+      |> Map.merge(extra_metadata)
 
     LogSink.emit(server, execution_id, %{
       source: :runner,
@@ -290,7 +322,7 @@ defmodule FavnRunner.Worker do
       manifest_content_hash: work.manifest_content_hash,
       asset_ref: asset.ref,
       runner_execution_id: execution_id,
-      attempt: Map.get(work.metadata, :attempt),
+      attempt: work.attempt,
       metadata: metadata,
       occurred_at: DateTime.utc_now(),
       producer_id: producer_id,
@@ -302,12 +334,6 @@ defmodule FavnRunner.Worker do
     SQLAssetRuntime.run_manifest(asset, version, work)
   rescue
     error ->
-      %{
-        kind: :error,
-        reason: error,
-        stacktrace: __STACKTRACE__,
-        message: Exception.message(error)
-      }
-      |> then(&{:error, &1})
+      {:error, RunnerError.exception(:error, error, __STACKTRACE__)}
   end
 end

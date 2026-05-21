@@ -13,7 +13,7 @@ defmodule FavnRunner.ManifestResolver do
   @spec resolve_target_ref(RunnerWork.t()) ::
           {:ok, Favn.Ref.t()} | {:error, resolve_target_error()}
   def resolve_target_ref(%RunnerWork{} = work) do
-    with {:ok, refs} <- normalize_refs(work.asset_ref, work.asset_refs) do
+    with {:ok, refs} <- normalize_refs(RunnerWork.asset_ref(work), work.asset_refs) do
       case refs do
         [] -> {:error, :missing_asset_target}
         [ref] -> {:ok, ref}
