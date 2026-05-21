@@ -17,15 +17,18 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage.Adapter.Memory
 
   @spec child_specs() :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
-  def child_specs do
-    adapter = adapter_module()
+  @spec child_specs(RuntimeConfig.t()) :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
+  def child_specs(runtime_config \\ RuntimeConfig.current())
+
+  def child_specs(%RuntimeConfig{} = runtime_config) do
+    adapter = runtime_config.storage_adapter
 
     with :ok <- validate_adapter(adapter),
-         child_spec_result <- adapter.child_spec(adapter_opts()),
+         child_spec_result <- adapter.child_spec(runtime_config.storage_adapter_opts),
          {:ok, child_spec} <- normalize_child_spec_result(child_spec_result) do
       {:ok, maybe_child_to_list(child_spec)}
     end
@@ -480,12 +483,12 @@ defmodule FavnOrchestrator.Storage do
 
   @spec adapter_module() :: module()
   def adapter_module do
-    Application.get_env(:favn_orchestrator, :storage_adapter, Memory)
+    RuntimeConfig.current().storage_adapter
   end
 
   @spec adapter_opts() :: keyword()
   def adapter_opts do
-    Application.get_env(:favn_orchestrator, :storage_adapter_opts, [])
+    RuntimeConfig.current().storage_adapter_opts
   end
 
   defp redact_log_entries(entries) do
@@ -519,7 +522,7 @@ defmodule FavnOrchestrator.Storage do
   end
 
   defp log_redaction_policy do
-    Application.get_env(:favn_orchestrator, :log_redaction_policy)
+    RuntimeConfig.current().log_redaction_policy
   end
 
   @spec validate_adapter(module()) :: :ok | {:error, term()}

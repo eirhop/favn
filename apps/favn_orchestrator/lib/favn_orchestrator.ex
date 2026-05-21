@@ -36,6 +36,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunEvent
   alias FavnOrchestrator.RunManager
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.ManifestEntries
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.SchedulerEntry
@@ -3169,11 +3170,11 @@ defmodule FavnOrchestrator do
   end
 
   defp configured_runner_client do
-    Application.get_env(:favn_orchestrator, :runner_client, nil)
+    RuntimeConfig.current().runner_client
   end
 
   defp configured_runner_opts do
-    Application.get_env(:favn_orchestrator, :runner_client_opts, [])
+    RuntimeConfig.current().runner_client_opts
   end
 
   defp default_log_filter do

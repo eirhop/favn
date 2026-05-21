@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.Diagnostics do
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
@@ -115,8 +116,9 @@ defmodule FavnOrchestrator.Diagnostics do
   end
 
   defp runner_check do
-    module = Application.get_env(:favn_orchestrator, :runner_client, nil)
-    opts = Application.get_env(:favn_orchestrator, :runner_client_opts, [])
+    runtime_config = RuntimeConfig.current()
+    module = runtime_config.runner_client
+    opts = runtime_config.runner_client_opts
 
     case validate_runner_client(module) do
       :ok ->

@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.ProductionRuntimeConfig
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
 
@@ -18,19 +19,21 @@ defmodule FavnOrchestrator.Application do
     with :ok <- ProductionRuntimeConfig.apply_from_env_if_configured(),
          _timezone_database <- Favn.Timezone.database!(),
          :ok <- APIConfig.validate(),
-         {:ok, storage_children} <- Storage.child_specs() do
+         runtime_config <- RuntimeConfig.from_app_env(),
+         {:ok, storage_children} <- Storage.child_specs(runtime_config) do
       OperationalEvents.emit(
         :orchestrator_starting,
         %{storage_child_count: length(storage_children)},
         %{
-          storage_adapter: Storage.adapter_module(),
+          storage_adapter: runtime_config.storage_adapter,
           scheduler_enabled?: scheduler_enabled?(),
           api_enabled?: api_enabled?()
         }
       )
 
       children =
-        storage_children ++
+        [{RuntimeConfig, runtime_config}] ++
+          storage_children ++
           [
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},

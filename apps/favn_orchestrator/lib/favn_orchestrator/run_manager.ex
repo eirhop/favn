@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.RefreshPolicy
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
@@ -822,8 +823,9 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   defp forward_cancel_result(%RunState{} = run, reason) do
-    runner_client = Application.get_env(:favn_orchestrator, :runner_client, nil)
-    runner_opts = Application.get_env(:favn_orchestrator, :runner_client_opts, [])
+    runtime_config = RuntimeConfig.current()
+    runner_client = runtime_config.runner_client
+    runner_opts = runtime_config.runner_client_opts
     execution_ids = inflight_execution_ids(run)
 
     if execution_ids == [] do
