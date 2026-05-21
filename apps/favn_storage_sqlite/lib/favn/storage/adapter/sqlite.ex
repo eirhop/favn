@@ -1835,10 +1835,11 @@ defmodule Favn.Storage.Adapter.SQLite do
           parent_run_id,
           root_run_id,
           submit_kind,
+          trigger_type,
           asset_ref_text,
           target_refs_text,
           window_key
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
         ON CONFLICT(run_id) DO UPDATE SET
           manifest_version_id = excluded.manifest_version_id,
           manifest_content_hash = excluded.manifest_content_hash,
@@ -1853,6 +1854,7 @@ defmodule Favn.Storage.Adapter.SQLite do
           parent_run_id = excluded.parent_run_id,
           root_run_id = excluded.root_run_id,
           submit_kind = excluded.submit_kind,
+          trigger_type = excluded.trigger_type,
           asset_ref_text = excluded.asset_ref_text,
           target_refs_text = excluded.target_refs_text,
           window_key = excluded.window_key
@@ -1874,6 +1876,7 @@ defmodule Favn.Storage.Adapter.SQLite do
         query_metadata.parent_run_id,
         query_metadata.root_run_id,
         query_metadata.submit_kind,
+        query_metadata.trigger_type,
         query_metadata.asset_ref_text,
         query_metadata.target_refs_text,
         query_metadata.window_key
@@ -2707,7 +2710,7 @@ defmodule Favn.Storage.Adapter.SQLite do
            MAX(CASE WHEN r.status IN ('error', 'partial', 'cancelled', 'timed_out') THEN 1 ELSE 0 END) AS failed,
            MAX(CASE WHEN r.status IN ('pending', 'running') THEN 1 ELSE 0 END) AS running,
            MAX(CASE WHEN r.run_id = r.root_execution_group_id THEN r.status ELSE NULL END) AS root_status,
-           MAX(CASE WHEN r.run_id = r.root_execution_group_id THEN r.submit_kind ELSE NULL END) AS root_submit_kind,
+           MAX(CASE WHEN r.run_id = r.root_execution_group_id THEN r.trigger_type ELSE NULL END) AS root_trigger_type,
            MAX(CASE WHEN r.run_id = r.root_execution_group_id THEN r.target_refs_text ELSE NULL END) AS root_targets,
            MAX(CASE WHEN r.window_key IS NOT NULL AND r.window_key != '' THEN 1 ELSE 0 END) AS has_window
          FROM favn_runs AS r
@@ -2727,25 +2730,22 @@ defmodule Favn.Storage.Adapter.SQLite do
       {:status, status}, {clauses, params} when not is_nil(status) ->
         {clauses ++ ["root_status = ?#{length(params) + 1}"], params ++ [Atom.to_string(status)]}
 
-      {:trigger_type, :backfill}, {clauses, params} ->
-        {clauses ++ ["root_submit_kind IN ('backfill_asset', 'backfill_pipeline')"], params}
-
-      {:trigger_type, :retry}, {clauses, params} ->
-        {clauses ++ ["root_submit_kind = 'rerun'"], params}
-
       {:trigger_type, trigger}, {clauses, params} when not is_nil(trigger) ->
-        {clauses ++ ["root_submit_kind = ?#{length(params) + 1}"],
+        {clauses ++ ["root_trigger_type = ?#{length(params) + 1}"],
          params ++ [Atom.to_string(trigger)]}
 
       {:target_asset, target}, {clauses, params} when is_binary(target) and target != "" ->
-        {clauses ++ ["root_targets LIKE ?#{length(params) + 1}"], params ++ ["%#{target}%"]}
+        {clauses ++
+           [
+             "instr(char(10) || root_targets || char(10), char(10) || ?#{length(params) + 1} || char(10)) > 0"
+           ], params ++ [target]}
 
       {:search, search}, {clauses, params} when is_binary(search) and search != "" ->
         placeholder = "?#{length(params) + 1}"
 
         {clauses ++
            [
-             "(group_id LIKE #{placeholder} OR root_targets LIKE #{placeholder} OR root_submit_kind LIKE #{placeholder})"
+             "(group_id LIKE #{placeholder} OR root_targets LIKE #{placeholder} OR root_trigger_type LIKE #{placeholder})"
            ], params ++ ["%#{search}%"]}
 
       {:window, :has_window}, {clauses, params} ->
@@ -2884,10 +2884,11 @@ defmodule Favn.Storage.Adapter.SQLite do
           parent_run_id = ?2,
           root_run_id = ?3,
           submit_kind = ?4,
-          asset_ref_text = ?5,
-          target_refs_text = ?6,
-          window_key = ?7
-      WHERE run_id = ?8
+          trigger_type = ?5,
+          asset_ref_text = ?6,
+          target_refs_text = ?7,
+          window_key = ?8
+      WHERE run_id = ?9
       """
 
     params = [
@@ -2895,6 +2896,7 @@ defmodule Favn.Storage.Adapter.SQLite do
       metadata.parent_run_id,
       metadata.root_run_id,
       metadata.submit_kind,
+      metadata.trigger_type,
       metadata.asset_ref_text,
       metadata.target_refs_text,
       metadata.window_key,

@@ -9,6 +9,7 @@ defmodule FavnStorageSqlite.Migrations.AddRunGroupQueryColumns do
       add(:parent_run_id, :string)
       add(:root_run_id, :string)
       add(:submit_kind, :string)
+      add(:trigger_type, :string)
       add(:asset_ref_text, :text)
       add(:target_refs_text, :text)
       add(:window_key, :text)

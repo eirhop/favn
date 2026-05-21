@@ -260,7 +260,7 @@ defmodule FavnView.RunsListLive do
   defp group_from_public(group) do
     targets = targets(Map.get(group, :target_assets, []), nil)
     target = List.first(targets) || "No target"
-    status = display_status(group)
+    status = display_group_status(Map.get(group, :status))
     current_activity = current_activity(Map.get(group, :currently_running_asset_attempts, []))
     window = window_range_label(group)
     progress = progress(group)
@@ -273,7 +273,7 @@ defmodule FavnView.RunsListLive do
       target_title: target,
       targets: targets,
       status: status,
-      raw_status: Map.get(group, :root_status),
+      raw_status: Map.get(group, :status),
       trigger: label(Map.get(group, :trigger_type)),
       trigger_type: Map.get(group, :trigger_type),
       window: window,
@@ -363,47 +363,15 @@ defmodule FavnView.RunsListLive do
   defp health_bucket(:incomplete), do: :queued
   defp health_bucket(_status), do: :succeeded
 
-  defp display_status(group) do
-    cond do
-      Map.get(group, :failed_asset_attempts, 0) > 0 or Map.get(group, :failed_windows, 0) > 0 ->
-        :failed
-
-      Map.get(group, :running_asset_attempts, 0) > 0 or Map.get(group, :root_status) == :running ->
-        :running
-
-      Map.get(group, :queued_asset_attempts, 0) > 0 or Map.get(group, :root_status) == :pending ->
-        :queued
-
-      incomplete_public_group?(group) ->
-        :incomplete
-
-      Map.get(group, :root_status) == :partial ->
-        :partial
-
-      Map.get(group, :root_status) == :ok ->
-        :succeeded
-
-      true ->
-        display_run_status(Map.get(group, :root_status))
-    end
-  end
+  defp display_group_status(:ok), do: :succeeded
+  defp display_group_status(:error), do: :failed
+  defp display_group_status(:pending), do: :queued
+  defp display_group_status(status), do: status || :unknown
 
   defp display_run_status(:ok), do: :succeeded
   defp display_run_status(:error), do: :failed
   defp display_run_status(:pending), do: :queued
   defp display_run_status(status), do: status || :unknown
-
-  defp incomplete_public_group?(group) do
-    root_status = Map.get(group, :root_status)
-
-    root_status in [:pending, :running] or
-      Map.get(group, :running_asset_attempts, 0) > 0 or
-      Map.get(group, :queued_asset_attempts, 0) > 0 or
-      (Map.get(group, :total_windows, 0) > 0 and
-         Map.get(group, :completed_windows, 0) < Map.get(group, :total_windows, 0)) or
-      (Map.get(group, :total_asset_attempts, 0) > 0 and
-         Map.get(group, :completed_asset_attempts, 0) < Map.get(group, :total_asset_attempts, 0))
-  end
 
   defp current_activity([attempt | _]) do
     window = window_label(Map.get(attempt, :window)) || "current window"
@@ -413,10 +381,20 @@ defmodule FavnView.RunsListLive do
   defp current_activity(_attempts), do: nil
 
   defp progress(group) do
-    window_label = "#{group.completed_windows} / #{group.total_windows} windows"
-    attempt_label = "#{group.completed_asset_attempts} / #{group.total_asset_attempts} attempts"
-    total = max(group.total_asset_attempts, 1)
-    percent = min(100, round(group.completed_asset_attempts * 100 / total))
+    totals = Map.get(group, :summary_totals, %{})
+    window_counts = Map.get(totals, :windows, %{})
+
+    attempt_counts =
+      Map.get(totals, :asset_attempts, Map.get(group, :progress, %{})[:counts] || %{})
+
+    completed_windows = Map.get(window_counts, :completed, group.completed_windows)
+    total_windows = Map.get(window_counts, :total, group.total_windows)
+    completed_attempts = Map.get(attempt_counts, :completed, group.completed_asset_attempts)
+    total_attempts = Map.get(attempt_counts, :total, group.total_asset_attempts)
+    window_label = "#{completed_windows} / #{total_windows} windows"
+    attempt_label = "#{completed_attempts} / #{total_attempts} attempts"
+    total = max(total_attempts, 1)
+    percent = min(100, round(completed_attempts * 100 / total))
 
     %{
       window_label: if(group.total_windows > 0, do: window_label, else: "No windows"),
@@ -430,15 +408,26 @@ defmodule FavnView.RunsListLive do
   defp progress_tone(%{status: :failed}), do: :error
   defp progress_tone(%{status: :partial}), do: :warning
   defp progress_tone(%{status: :running}), do: :info
+  defp progress_tone(%{health: :error}), do: :error
+  defp progress_tone(%{health: :warning}), do: :warning
+  defp progress_tone(%{health: :active}), do: :info
   defp progress_tone(_group), do: :success
 
   defp health(group) do
-    succeeded = max(group.completed_asset_attempts - group.failed_asset_attempts, 0)
-    failed = group.failed_asset_attempts
-    running = group.running_asset_attempts
-    queued = group.queued_asset_attempts
+    counts = group |> Map.get(:summary_totals, %{}) |> Map.get(:asset_attempts, %{})
+    failed = Map.get(counts, :failed, group.failed_asset_attempts)
+    running = Map.get(counts, :running, group.running_asset_attempts)
+    queued = Map.get(counts, :queued, group.queued_asset_attempts)
+    completed = Map.get(counts, :completed, group.completed_asset_attempts)
+    succeeded = max(completed - failed, 0)
 
-    %{succeeded: succeeded, failed: failed, running: running, queued: queued}
+    %{
+      succeeded: succeeded,
+      failed: failed,
+      running: running,
+      queued: queued,
+      status: group.health
+    }
   end
 
   defp window_range_label(%{total_windows: 0}), do: "-"

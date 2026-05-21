@@ -621,8 +621,8 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp execution_group_status(root_status, attempt_counts, window_counts, active?) do
     cond do
-      active? -> :running
       attempt_counts.failed > 0 or window_counts.failed > 0 -> :error
+      active? -> :running
       root_status -> root_status
       true -> :pending
     end
@@ -649,16 +649,7 @@ defmodule FavnOrchestrator.RunReadModel do
   defp target_assets(%RunState{asset_ref: ref}), do: [public_ref(ref)]
 
   defp trigger_type(%RunState{submit_kind: :rerun}), do: :retry
-
-  defp trigger_type(%RunState{submit_kind: submit_kind})
-       when submit_kind in [:backfill_asset, :backfill_pipeline],
-       do: :backfill
-
-  defp trigger_type(%RunState{trigger: trigger}) when is_map(trigger) do
-    Map.get(trigger, :kind) || Map.get(trigger, "kind") || :manual
-  end
-
-  defp trigger_type(_run), do: :manual
+  defp trigger_type(%RunState{} = run), do: RunQuery.trigger_type(run)
 
   defp execution_group_asset_attempts(group, mode) do
     windows_by_child_run_id =

@@ -139,6 +139,67 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, group_page} = Storage.list_execution_groups(search: run.id, limit: 10, offset: 0)
     assert run.id in group_page.items
 
+    schedule =
+      RunState.new(
+        id: "run_contract_#{label}_schedule_#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        trigger: %{kind: :schedule}
+      )
+
+    backfill =
+      RunState.new(
+        id: "run_contract_#{label}_backfill_#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        submit_kind: :backfill_asset
+      )
+
+    retry =
+      RunState.new(
+        id: "run_contract_#{label}_retry_#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        submit_kind: :rerun
+      )
+
+    target_prefix =
+      RunState.new(
+        id: "run_contract_#{label}_target_prefix_#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset_extra}
+      )
+
+    Enum.each([schedule, backfill, retry, target_prefix], &assert(:ok = Storage.put_run(&1)))
+
+    assert {:ok, manual_page} = Storage.list_execution_groups(trigger_type: :manual, limit: 20)
+    assert run.id in manual_page.items
+    refute schedule.id in manual_page.items
+
+    assert {:ok, schedule_page} =
+             Storage.list_execution_groups(trigger_type: :schedule, limit: 20)
+
+    assert schedule.id in schedule_page.items
+    refute run.id in schedule_page.items
+
+    assert {:ok, backfill_page} =
+             Storage.list_execution_groups(trigger_type: :backfill, limit: 20)
+
+    assert backfill.id in backfill_page.items
+
+    assert {:ok, retry_page} = Storage.list_execution_groups(trigger_type: :retry, limit: 20)
+    assert retry.id in retry_page.items
+
+    assert {:ok, target_page} =
+             Storage.list_execution_groups(target_asset: "MyApp.Asset.asset", limit: 20)
+
+    assert run.id in target_page.items
+    refute target_prefix.id in target_page.items
+
     event = %{
       sequence: 1,
       event_type: :run_started,
@@ -173,6 +234,18 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert :ok = Storage.append_run_event(child.id, next_event)
     assert {:ok, [cursor_event]} = Storage.list_run_events(child.id, after_sequence: 1, limit: 1)
     assert cursor_event.sequence == 2
+
+    assert {:ok, group_events} = Storage.list_execution_group_events(run.id)
+    assert Enum.map(group_events, & &1.run_id) == [run.id, child.id, child.id]
+    [first_group_event | _] = group_events
+
+    assert {:ok, [group_cursor_event]} =
+             Storage.list_execution_group_events(run.id,
+               after_global_sequence: first_group_event.global_sequence,
+               limit: 1
+             )
+
+    assert group_cursor_event.run_id == child.id
 
     now = DateTime.utc_now()
     lease = execution_lease(run.id, "step-1", now, [%{kind: :run, key: run.id, limit: 1}])

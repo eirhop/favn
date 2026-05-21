@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.Storage.RunQuery do
           required(:parent_run_id) => String.t() | nil,
           required(:root_run_id) => String.t() | nil,
           required(:submit_kind) => String.t(),
+          required(:trigger_type) => String.t(),
           required(:asset_ref_text) => String.t(),
           required(:target_refs_text) => String.t(),
           required(:window_key) => String.t() | nil
@@ -22,6 +23,7 @@ defmodule FavnOrchestrator.Storage.RunQuery do
       parent_run_id: run.parent_run_id,
       root_run_id: run.root_run_id,
       submit_kind: Atom.to_string(run.submit_kind),
+      trigger_type: Atom.to_string(trigger_type(run)),
       asset_ref_text: public_ref(run.asset_ref),
       target_refs_text: Enum.join(Enum.map(targets, &public_ref/1), "\n"),
       window_key: window_key(run)
@@ -50,6 +52,26 @@ defmodule FavnOrchestrator.Storage.RunQuery do
   @spec target_refs(RunState.t()) :: [term()]
   def target_refs(%RunState{target_refs: [_ | _] = refs}), do: refs
   def target_refs(%RunState{asset_ref: ref}), do: [ref]
+
+  @spec trigger_type(RunState.t()) :: atom()
+  def trigger_type(%RunState{submit_kind: :rerun}), do: :retry
+
+  def trigger_type(%RunState{submit_kind: submit_kind})
+      when submit_kind in [:backfill_asset, :backfill_pipeline],
+      do: :backfill
+
+  def trigger_type(%RunState{trigger: trigger}) when is_map(trigger) do
+    case map_get(trigger, :kind) do
+      kind when is_atom(kind) and not is_nil(kind) -> kind
+      "schedule" -> :schedule
+      "manual" -> :manual
+      "backfill" -> :backfill
+      "retry" -> :retry
+      _other -> :manual
+    end
+  end
+
+  def trigger_type(_run), do: :manual
 
   defp module_label(module) when is_atom(module),
     do: module |> Atom.to_string() |> strip_elixir_prefix()

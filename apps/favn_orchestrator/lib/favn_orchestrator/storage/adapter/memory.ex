@@ -880,7 +880,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       |> List.flatten()
       |> Enum.filter(&(Map.get(&1, :run_id) in run_ids))
       |> Enum.sort_by(&event_sort_key/1)
-      |> filter_run_events(run_event_opts)
+      |> filter_execution_group_events(run_event_opts)
 
     {:reply, {:ok, events}, state}
   end
@@ -1515,7 +1515,9 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp matches_execution_group_status?(%{root: root}, status), do: root.status == status
 
   defp matches_execution_group_trigger?(_group, nil), do: true
-  defp matches_execution_group_trigger?(%{root: root}, trigger), do: trigger_type(root) == trigger
+
+  defp matches_execution_group_trigger?(%{root: root}, trigger),
+    do: RunQuery.trigger_type(root) == trigger
 
   defp matches_execution_group_target?(_group, nil), do: true
 
@@ -1534,7 +1536,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
     [
       id,
-      metadata.submit_kind,
+      metadata.trigger_type,
       metadata.asset_ref_text,
       metadata.target_refs_text,
       metadata.window_key
@@ -1577,16 +1579,6 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     end
   end
 
-  defp trigger_type(%RunState{submit_kind: :rerun}), do: :retry
-
-  defp trigger_type(%RunState{submit_kind: kind})
-       when kind in [:backfill_asset, :backfill_pipeline], do: :backfill
-
-  defp trigger_type(%RunState{trigger: trigger}) when is_map(trigger),
-    do: Map.get(trigger, :kind) || Map.get(trigger, "kind") || :manual
-
-  defp trigger_type(_run), do: :manual
-
   defp execution_group_has_window?(%{runs: runs}) do
     Enum.any?(runs, fn run -> RunQuery.metadata(run).window_key not in [nil, ""] end)
   end
@@ -1614,6 +1606,20 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       case Keyword.get(opts, :after_sequence) do
         sequence when is_integer(sequence) and sequence >= 0 ->
           Map.get(event, :sequence) > sequence
+
+        _other ->
+          true
+      end
+    end)
+    |> maybe_limit_events(opts)
+  end
+
+  defp filter_execution_group_events(events, opts) do
+    events
+    |> Enum.filter(fn event ->
+      case Keyword.get(opts, :after_global_sequence) do
+        sequence when is_integer(sequence) and sequence >= 0 ->
+          Map.get(event, :global_sequence, 0) > sequence
 
         _other ->
           true
