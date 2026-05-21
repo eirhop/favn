@@ -37,3 +37,14 @@ DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
 backend connections per concurrent DuckLake writer; observed deployments used
 about three. Size DuckLake `write_concurrency` with that multiplier and leave
 headroom for admin tools, migrations, monitoring, and other application traffic.
+DuckDB ADBC bootstrap validates and emits `duckdb.settings` before secrets and
+`ATTACH`, including `threads` and DuckDB Postgres extension pool settings such as
+`pg_pool_max_connections`, `pg_pool_acquire_mode`,
+`pg_pool_enable_thread_local_cache`, timeout settings, and the reaper-thread flag.
+For DuckLake-on-Postgres deployments, prefer `pg_pool_acquire_mode: :wait`, a
+finite per-attached-database `pg_pool_max_connections`, and
+`pg_pool_enable_thread_local_cache: false`. The deprecated `pg_connection_limit`
+setting is not supported. Capacity planning must account for Favn execution
+concurrency, DuckLake catalog `write_concurrency`, DuckDB `threads`, number of
+Postgres-backed attaches, per-catalog DuckDB Postgres pool limits, and the
+metadata database's usable connection slots.

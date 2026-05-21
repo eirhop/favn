@@ -9,6 +9,17 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   @config_key :duckdb
   @old_config_message "DuckDB connection config now uses open: [database: ...] and duckdb: [...]; move duckdb_bootstrap entries under duckdb and move write_concurrency under duckdb.attach.<catalog>.write_concurrency"
   @azure_transport_option_type_values ~w(default curl)
+  @pg_pool_acquire_mode_values ~w(force wait try)
+  @non_negative_integer_settings [
+    :pg_pool_max_connections,
+    :pg_pool_wait_timeout_millis,
+    :pg_pool_max_lifetime_millis,
+    :pg_pool_idle_timeout_millis
+  ]
+  @boolean_settings [
+    :pg_pool_enable_thread_local_cache,
+    :pg_pool_enable_reaper_thread
+  ]
   @azure_credential_chain_values ~w(cli managed_identity workload_identity env default)
   @postgres_sslmodes ~w(disable allow prefer require verify-ca verify-full)
 
@@ -186,25 +197,68 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
   end
 
   defp normalize_setting(:azure_transport_option_type, value) do
-    case normalize_azure_transport_option_type(value) do
-      {:ok, normalized} -> {:ok, %{name: "azure_transport_option_type", value: normalized}}
+    case normalize_enum_setting(:azure_transport_option_type, value, @azure_transport_option_type_values) do
+      {:ok, normalized} -> setting(:azure_transport_option_type, normalized)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp normalize_setting(name, _value), do: {:error, {:unsupported_setting, name}}
-
-  defp normalize_azure_transport_option_type(value) when is_atom(value),
-    do: value |> Atom.to_string() |> normalize_azure_transport_option_type()
-
-  defp normalize_azure_transport_option_type(value) when is_binary(value) do
-    if value in @azure_transport_option_type_values,
-      do: {:ok, value},
-      else: {:error, {:invalid_setting_value, :azure_transport_option_type, value}}
+  defp normalize_setting(:pg_pool_acquire_mode, value) do
+    case normalize_enum_setting(:pg_pool_acquire_mode, value, @pg_pool_acquire_mode_values) do
+      {:ok, normalized} -> setting(:pg_pool_acquire_mode, normalized)
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp normalize_azure_transport_option_type(value),
-    do: {:error, {:invalid_setting_value, :azure_transport_option_type, value}}
+  defp normalize_setting(:threads, value), do: normalize_positive_integer_setting(:threads, value)
+
+  defp normalize_setting(name, value) when name in @non_negative_integer_settings,
+    do: normalize_non_negative_integer_setting(name, value)
+
+  defp normalize_setting(name, value) when name in @boolean_settings,
+    do: normalize_boolean_setting(name, value)
+
+  defp normalize_setting(:pg_pool_health_check_query, value) when is_binary(value),
+    do: setting(:pg_pool_health_check_query, value)
+
+  defp normalize_setting(:pg_pool_health_check_query, value),
+    do: {:error, {:invalid_setting_value, :pg_pool_health_check_query, value}}
+
+  defp normalize_setting(:pg_connection_limit, _value),
+    do: {:error, {:deprecated_setting, :pg_connection_limit, :pg_pool_max_connections}}
+
+  defp normalize_setting(name, _value), do: {:error, {:unsupported_setting, name}}
+
+  defp normalize_enum_setting(name, value, allowed) when is_atom(value),
+    do: normalize_enum_setting(name, Atom.to_string(value), allowed)
+
+  defp normalize_enum_setting(name, value, allowed) when is_binary(value) do
+    if value in allowed,
+      do: {:ok, value},
+      else: {:error, {:invalid_setting_value, name, value}}
+  end
+
+  defp normalize_enum_setting(name, value, _allowed),
+    do: {:error, {:invalid_setting_value, name, value}}
+
+  defp normalize_positive_integer_setting(name, value) when is_integer(value) and value > 0,
+    do: setting(name, value)
+
+  defp normalize_positive_integer_setting(name, value),
+    do: {:error, {:invalid_setting_value, name, value}}
+
+  defp normalize_non_negative_integer_setting(name, value) when is_integer(value) and value >= 0,
+    do: setting(name, value)
+
+  defp normalize_non_negative_integer_setting(name, value),
+    do: {:error, {:invalid_setting_value, name, value}}
+
+  defp normalize_boolean_setting(name, value) when is_boolean(value), do: setting(name, value)
+
+  defp normalize_boolean_setting(name, value),
+    do: {:error, {:invalid_setting_value, name, value}}
+
+  defp setting(name, value), do: {:ok, %{name: Atom.to_string(name), value: value}}
 
   defp normalize_secrets(config) do
     with {:ok, secrets} <- normalize_keyword_config(config, :secrets) do
@@ -606,7 +660,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp setting_steps(settings) do
     Enum.map(settings, fn %{name: name, value: value} ->
-      sql = ["SET ", name, " = ", quote_literal(value)]
+      sql = ["SET ", name, " = ", setting_value(value)]
 
       %{
         id: step_id(:set, name),
@@ -842,6 +896,11 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Bootstrap do
 
   defp quote_ident(identifier),
     do: [~s("), String.replace(to_string(identifier), ~s("), ~s("")), ~s(")]
+
+  defp setting_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp setting_value(true), do: "true"
+  defp setting_value(false), do: "false"
+  defp setting_value(value), do: quote_literal(value)
 
   defp quote_literal(value), do: ["'", String.replace(to_string(value), "'", "''"), "'"]
 
