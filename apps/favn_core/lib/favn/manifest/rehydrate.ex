@@ -58,13 +58,16 @@ defmodule Favn.Manifest.Rehydrate do
   def manifest(other), do: {:error, {:invalid_manifest_input, other}}
 
   defp build_manifest(value) do
+    assets = value |> field_value(:assets, []) |> build_assets()
+    graph = value |> field_value(:graph, %Graph{}) |> build_graph() |> normalize_graph(assets)
+
     %Manifest{
       schema_version: field_value(value, :schema_version),
       runner_contract_version: field_value(value, :runner_contract_version),
-      assets: value |> field_value(:assets, []) |> build_assets(),
+      assets: assets,
       pipelines: value |> field_value(:pipelines, []) |> build_pipelines(),
       schedules: value |> field_value(:schedules, []) |> build_schedules(),
-      graph: value |> field_value(:graph, %Graph{}) |> build_graph(),
+      graph: graph,
       metadata: value |> field_value(:metadata, %{}) |> plain_map()
     }
   end
@@ -630,6 +633,15 @@ defmodule Favn.Manifest.Rehydrate do
   end
 
   defp build_graph(_other), do: %Graph{}
+
+  defp normalize_graph(%Graph{nodes: [], edges: [], topo_order: []}, assets) when assets != [] do
+    case Graph.build(assets) do
+      {:ok, graph} -> graph
+      {:error, reason} -> raise ArgumentError, "invalid manifest graph: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_graph(%Graph{} = graph, _assets), do: graph
 
   defp build_edges(values) when is_list(values) do
     Enum.map(values, fn

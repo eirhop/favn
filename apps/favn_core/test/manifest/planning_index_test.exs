@@ -38,6 +38,11 @@ defmodule Favn.Manifest.PlanningIndexTest do
              PlanningIndex.build(%Manifest{assets: sample_assets(), graph: graph})
   end
 
+  test "fails clearly when non-empty assets have no manifest graph" do
+    assert {:error, {:missing_manifest_graph, :non_empty_assets}} =
+             PlanningIndex.build(%Manifest{assets: sample_assets()})
+  end
+
   test "fails when manifest graph edges differ from manifest asset dependencies" do
     assert {:ok, graph} = Graph.build(sample_assets())
     graph = %{graph | edges: []}
@@ -65,6 +70,14 @@ defmodule Favn.Manifest.PlanningIndexTest do
     assert projected.topo_order == [{MyApp.Stage, :asset}, {MyApp.Gold, :asset}]
     assert projected.upstream[{MyApp.Gold, :asset}] == MapSet.new([{MyApp.Stage, :asset}])
     assert projected.upstream[{MyApp.Stage, :asset}] == MapSet.new()
+  end
+
+  test "returns deterministic errors for unknown projection refs" do
+    assert {:ok, graph} = Graph.build(sample_assets())
+    assert {:ok, index} = PlanningIndex.build(%Manifest{assets: sample_assets(), graph: graph})
+
+    assert {:error, {:unknown_projection_ref, {MyApp.Missing, :asset}}} =
+             PlanningIndex.project(index, MapSet.new([{MyApp.Missing, :asset}]))
   end
 
   defp sample_assets do

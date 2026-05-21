@@ -1,6 +1,10 @@
 defmodule Favn.Assets.Planner do
   @moduledoc """
-  Build deterministic execution plans from the global graph index.
+  Build deterministic execution plans from an explicit planning index.
+
+  Runtime callers should pass `:planning_index` built from a pinned manifest.
+  `:graph_index` and `:asset_modules` remain authoring conveniences for local
+  developer paths and tests.
 
   The planner produces a deduplicated run graph for one or more targets and
   groups plan nodes into topological stages for parallel execution.

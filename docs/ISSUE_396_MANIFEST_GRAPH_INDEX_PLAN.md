@@ -31,6 +31,9 @@ cache state.
   code. A suitable module name is `Favn.Manifest.PlanningIndex`.
 - Build the planning index only from `%Favn.Manifest{}` or from an explicit
   `%Favn.Manifest.Graph{}` plus manifest assets.
+- Keep missing legacy graph upconversion at the manifest rehydration/version
+  boundary. `PlanningIndex` must not rebuild a missing graph during runtime
+  planning; it should fail clearly if it receives non-empty assets with no graph.
 - Store manifest assets in the planning index as `%Favn.Manifest.Asset{}` values,
   not compiled authoring asset maps.
 - Validate that manifest assets and manifest graph agree exactly: same asset refs,

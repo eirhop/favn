@@ -34,7 +34,9 @@ defmodule Favn.Manifest.PlanningIndex do
           :invalid_manifest
           | {:invalid_asset_ref, term()}
           | {:duplicate_asset_ref, Ref.t()}
+          | {:missing_manifest_graph, :non_empty_assets}
           | {:manifest_graph_mismatch, :nodes | :edges | :topo_order}
+          | {:unknown_projection_ref, Ref.t()}
           | Graph.error()
 
   defstruct assets_by_ref: %{},
@@ -59,6 +61,10 @@ defmodule Favn.Manifest.PlanningIndex do
   Builds a planning index from an explicit manifest graph and asset list.
   """
   @spec build(Graph.t(), [Asset.t()]) :: {:ok, t()} | {:error, error()}
+  def build(%Graph{nodes: [], edges: [], topo_order: []}, assets)
+      when is_list(assets) and assets != [],
+      do: {:error, {:missing_manifest_graph, :non_empty_assets}}
+
   def build(%Graph{} = graph, assets) when is_list(assets) do
     with {:ok, assets_by_ref} <- build_assets_by_ref(assets),
          {:ok, expected_graph} <- Graph.build(assets),
@@ -89,16 +95,26 @@ defmodule Favn.Manifest.PlanningIndex do
   """
   @spec project(t(), MapSet.t(Ref.t())) :: {:ok, t()} | {:error, error()}
   def project(%__MODULE__{} = index, %MapSet{} = refs) do
-    assets =
-      refs
-      |> Enum.map(&Map.fetch!(index.assets_by_ref, &1))
-      |> Enum.map(fn %Asset{} = asset ->
-        %{asset | depends_on: Enum.filter(asset.depends_on, &MapSet.member?(refs, &1))}
-      end)
-
-    with {:ok, graph} <- Graph.build(assets) do
+    with :ok <- validate_projection_refs(index, refs),
+         assets <- project_assets(index, refs),
+         {:ok, graph} <- Graph.build(assets) do
       build(graph, assets)
     end
+  end
+
+  defp validate_projection_refs(%__MODULE__{} = index, %MapSet{} = refs) do
+    case Enum.find(refs, &(not Map.has_key?(index.assets_by_ref, &1))) do
+      nil -> :ok
+      ref -> {:error, {:unknown_projection_ref, ref}}
+    end
+  end
+
+  defp project_assets(%__MODULE__{} = index, %MapSet{} = refs) do
+    refs
+    |> Enum.map(&Map.fetch!(index.assets_by_ref, &1))
+    |> Enum.map(fn %Asset{} = asset ->
+      %{asset | depends_on: Enum.filter(asset.depends_on, &MapSet.member?(refs, &1))}
+    end)
   end
 
   defp build_assets_by_ref(assets) do
