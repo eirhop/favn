@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.RunReadModel do
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.JsonSafe
+  alias FavnOrchestrator.Storage.RunQuery
 
   @backfill_failure_detail_limit 10
   @execution_group_overview_default_scan_limit 500
@@ -133,6 +134,9 @@ defmodule FavnOrchestrator.RunReadModel do
   @type execution_group_summary :: %{
           required(:id) => String.t(),
           required(:root_execution_group_id) => String.t(),
+          required(:status) => RunState.status(),
+          required(:health) => :ok | :warning | :error | :active,
+          required(:active?) => boolean(),
           required(:trigger_type) => atom() | nil,
           required(:target_assets) => [String.t()],
           required(:root_status) => RunState.status(),
@@ -147,6 +151,10 @@ defmodule FavnOrchestrator.RunReadModel do
           required(:failed_asset_attempts) => non_neg_integer(),
           required(:running_asset_attempts) => non_neg_integer(),
           required(:queued_asset_attempts) => non_neg_integer(),
+          required(:failure_count) => non_neg_integer(),
+          required(:progress) => progress_summary() | nil,
+          required(:summary_totals) => map(),
+          required(:last_activity_at) => DateTime.t() | nil,
           required(:currently_running_asset_attempts) => [asset_attempt_summary()],
           required(:child_run_ids) => [String.t()]
         }
@@ -239,15 +247,26 @@ defmodule FavnOrchestrator.RunReadModel do
   """
   @spec list_execution_groups(keyword()) :: {:ok, [execution_group_summary()]} | {:error, term()}
   def list_execution_groups(filters \\ []) when is_list(filters) do
-    with {:ok, runs} <- Storage.list_runs(limit: execution_group_scan_limit(filters)) do
-      runs = include_missing_execution_group_roots(runs)
-      groups = execution_groups(runs)
+    with {:ok, page} <- page_execution_groups(filters) do
+      {:ok, page.items}
+    end
+  end
 
-      {:ok,
-       groups
-       |> Enum.map(&execution_group_summary(&1, :overview))
-       |> filter_execution_group_summaries(filters)
-       |> maybe_limit_execution_groups(filters)}
+  @doc """
+  Returns a bounded page of execution groups for operator list screens.
+  """
+  @spec page_execution_groups(keyword()) ::
+          {:ok, Page.t(execution_group_summary())} | {:error, term()}
+  def page_execution_groups(filters \\ []) when is_list(filters) do
+    case Storage.list_execution_groups(normalize_execution_group_filters(filters)) do
+      {:ok, %Page{} = page} ->
+        hydrate_execution_group_page(page)
+
+      {:error, :execution_group_reads_not_supported} ->
+        page_execution_groups_from_run_scan(filters)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -258,8 +277,7 @@ defmodule FavnOrchestrator.RunReadModel do
           {:ok, execution_group_detail()} | {:error, term()}
   def get_execution_group_detail(group_id, filters \\ [])
       when is_binary(group_id) and is_list(filters) do
-    with {:ok, runs} <- Storage.list_runs(),
-         {:ok, group} <- find_execution_group(runs, group_id) do
+    with {:ok, group} <- load_execution_group(group_id) do
       attempts =
         group |> execution_group_asset_attempts(:detail) |> filter_asset_attempts(filters)
 
@@ -283,14 +301,36 @@ defmodule FavnOrchestrator.RunReadModel do
   end
 
   @doc """
+  Returns execution group detail for any run id in the group.
+  """
+  @spec get_execution_group_detail_for_run(String.t(), keyword()) ::
+          {:ok, execution_group_detail()} | {:error, term()}
+  def get_execution_group_detail_for_run(run_id, filters \\ [])
+      when is_binary(run_id) and is_list(filters) do
+    with {:ok, %RunState{} = run} <- Storage.get_run(run_id) do
+      run
+      |> RunQuery.root_execution_group_id()
+      |> get_execution_group_detail(filters)
+    end
+  end
+
+  @doc """
   Lists persisted events for an execution group, including child/window runs.
   """
   @spec list_execution_group_events(String.t(), keyword()) ::
           {:ok, [RunEvent.t()]} | {:error, term()}
-  def list_execution_group_events(group_id, _filters \\ []) when is_binary(group_id) do
-    with {:ok, runs} <- Storage.list_runs(),
-         {:ok, group} <- find_execution_group(runs, group_id) do
-      {:ok, execution_group_events(group)}
+  def list_execution_group_events(group_id, filters \\ []) when is_binary(group_id) do
+    case Storage.list_execution_group_events(group_id, filters) do
+      {:ok, events} ->
+        {:ok, Enum.map(events, &RunEvent.from_map/1)}
+
+      {:error, :execution_group_reads_not_supported} ->
+        with {:ok, group} <- load_execution_group(group_id) do
+          {:ok, execution_group_events(group)}
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -397,6 +437,98 @@ defmodule FavnOrchestrator.RunReadModel do
     |> Enum.sort_by(&group_run_activity_sort_key/1, :desc)
   end
 
+  defp hydrate_execution_group_page(%Page{} = page) do
+    page.items
+    |> Enum.reduce_while({:ok, []}, fn group_id, {:ok, acc} ->
+      case get_execution_group_summary(group_id) do
+        {:ok, summary} -> {:cont, {:ok, [summary | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, summaries} -> {:ok, %{page | items: Enum.reverse(summaries)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp page_execution_groups_from_run_scan(filters) do
+    with {:ok, runs} <- Storage.list_runs(limit: execution_group_scan_limit(filters)),
+         {:ok, page_opts} <- Page.normalize_opts(filters) do
+      runs = include_missing_execution_group_roots(runs)
+
+      page =
+        runs
+        |> execution_groups()
+        |> Enum.map(&execution_group_summary(&1, :overview))
+        |> filter_execution_group_summaries(filters)
+        |> Enum.drop(Keyword.fetch!(page_opts, :offset))
+        |> Enum.take(Keyword.fetch!(page_opts, :limit) + 1)
+        |> Page.from_fetched(page_opts)
+
+      {:ok, page}
+    end
+  end
+
+  defp get_execution_group_summary(group_id) do
+    with {:ok, group} <- load_execution_group(group_id) do
+      {:ok, execution_group_summary(group, :overview)}
+    end
+  end
+
+  defp load_execution_group(group_id) do
+    case Storage.list_execution_group_runs(group_id) do
+      {:ok, [_ | _] = runs} ->
+        find_execution_group(runs, group_id)
+
+      {:ok, []} ->
+        {:error, :not_found}
+
+      {:error, :execution_group_reads_not_supported} ->
+        with {:ok, runs} <- Storage.list_runs() do
+          find_execution_group(runs, group_id)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp normalize_execution_group_filters(filters) do
+    filters
+    |> Keyword.update(:sort, :started_desc, &normalize_execution_group_sort/1)
+    |> normalize_execution_group_filter(:status, &normalize_existing_atom/1)
+    |> normalize_execution_group_filter(:trigger_type, &normalize_existing_atom/1)
+    |> normalize_execution_group_filter(:window, &normalize_existing_atom/1)
+  end
+
+  defp normalize_execution_group_filter(filters, key, fun) do
+    case Keyword.fetch(filters, key) do
+      {:ok, value} -> Keyword.put(filters, key, fun.(value))
+      :error -> filters
+    end
+  end
+
+  defp normalize_execution_group_sort(value)
+       when value in [:started_desc, :failed_first, :running_first, :status_priority], do: value
+
+  defp normalize_execution_group_sort(value)
+       when value in ["started_desc", "failed_first", "running_first", "status_priority"],
+       do: String.to_existing_atom(value)
+
+  defp normalize_execution_group_sort(_value), do: :started_desc
+
+  defp normalize_existing_atom(value) when is_atom(value), do: value
+
+  defp normalize_existing_atom(value) when is_binary(value) do
+    try do
+      String.to_existing_atom(value)
+    rescue
+      ArgumentError -> value
+    end
+  end
+
+  defp normalize_existing_atom(value), do: value
+
   defp include_missing_execution_group_roots(runs) do
     runs_by_id = Map.new(runs, &{&1.id, &1})
 
@@ -444,10 +576,16 @@ defmodule FavnOrchestrator.RunReadModel do
     window_counts = window_counts(windows)
     root = with_public_status(group.root)
     timing = execution_group_timing(group, attempts, windows, attempt_counts)
+    active? = execution_group_active?(group, windows, attempt_counts)
+    status = execution_group_status(root.status, attempt_counts, window_counts, active?)
+    failure_count = attempt_counts.failed + window_counts.failed
 
     %{
       id: root.id,
       root_execution_group_id: root.id,
+      status: status,
+      health: execution_group_health(status, failure_count, active?),
+      active?: active?,
       trigger_type: trigger_type(root),
       target_assets: target_assets(root),
       root_status: root.status,
@@ -462,8 +600,46 @@ defmodule FavnOrchestrator.RunReadModel do
       failed_asset_attempts: attempt_counts.failed,
       running_asset_attempts: attempt_counts.running,
       queued_asset_attempts: attempt_counts.queued,
+      failure_count: failure_count,
+      progress: execution_group_progress(attempt_counts),
+      summary_totals: %{
+        windows: window_counts,
+        asset_attempts: attempt_counts
+      },
+      last_activity_at:
+        latest_datetime(Enum.flat_map(group.runs, &[&1.updated_at, &1.inserted_at])),
       currently_running_asset_attempts: Enum.filter(attempts, &running_status?(&1.status)),
       child_run_ids: Enum.map(group.children, & &1.id)
+    }
+  end
+
+  defp execution_group_active?(group, windows, attempt_counts) do
+    attempt_counts.running > 0 or attempt_counts.queued > 0 or
+      Enum.any?(group.runs, &(with_public_status(&1).status in [:pending, :running])) or
+      Enum.any?(windows, &(Map.get(&1, :status) in [:pending, :queued, :running]))
+  end
+
+  defp execution_group_status(root_status, attempt_counts, window_counts, active?) do
+    cond do
+      active? -> :running
+      attempt_counts.failed > 0 or window_counts.failed > 0 -> :error
+      root_status -> root_status
+      true -> :pending
+    end
+  end
+
+  defp execution_group_health(_status, failure_count, _active?) when failure_count > 0, do: :error
+  defp execution_group_health(_status, _failure_count, true), do: :active
+  defp execution_group_health(:partial, _failure_count, _active?), do: :warning
+  defp execution_group_health(_status, _failure_count, _active?), do: :ok
+
+  defp execution_group_progress(%{total: 0}), do: nil
+
+  defp execution_group_progress(attempt_counts) do
+    %{
+      unit: :assets,
+      label: "#{attempt_counts.completed} / #{attempt_counts.total} asset attempts",
+      counts: attempt_counts
     }
   end
 
@@ -676,13 +852,6 @@ defmodule FavnOrchestrator.RunReadModel do
         matches_target_asset?(group, Keyword.get(filters, :target_asset)) and
         matches_group_only_filters?(group, filters)
     end)
-  end
-
-  defp maybe_limit_execution_groups(groups, filters) do
-    case Keyword.get(filters, :limit) do
-      limit when is_integer(limit) and limit > 0 -> Enum.take(groups, limit)
-      _other -> groups
-    end
   end
 
   defp execution_group_scan_limit(filters) do

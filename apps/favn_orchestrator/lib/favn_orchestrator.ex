@@ -1327,6 +1327,15 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
+  Returns a bounded page of execution groups with orchestrator-owned semantics.
+  """
+  @spec page_execution_groups(keyword()) ::
+          {:ok, FavnOrchestrator.Page.t(execution_group_summary())} | {:error, term()}
+  def page_execution_groups(filters \\ []) when is_list(filters) do
+    RunReadModel.page_execution_groups(filters)
+  end
+
+  @doc """
   Returns one execution group detail for redesigned run views.
   """
   @spec get_execution_group_detail(run_id(), keyword()) ::
@@ -1334,6 +1343,16 @@ defmodule FavnOrchestrator do
   def get_execution_group_detail(group_id, filters \\ [])
       when is_binary(group_id) and is_list(filters) do
     RunReadModel.get_execution_group_detail(group_id, filters)
+  end
+
+  @doc """
+  Returns execution group detail for any run id in that group.
+  """
+  @spec get_execution_group_detail_for_run(run_id(), keyword()) ::
+          {:ok, execution_group_detail()} | {:error, term()}
+  def get_execution_group_detail_for_run(run_id, filters \\ [])
+      when is_binary(run_id) and is_list(filters) do
+    RunReadModel.get_execution_group_detail_for_run(run_id, filters)
   end
 
   @doc """
@@ -1401,13 +1420,9 @@ defmodule FavnOrchestrator do
   """
   @spec list_run_events(run_id(), keyword()) :: {:ok, [RunEvent.t()]} | {:error, term()}
   def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
-    with {:ok, events} <- Storage.list_run_events(run_id),
-         :ok <- validate_run_event_opts(opts) do
-      {:ok,
-       events
-       |> Enum.map(&RunEvent.from_map/1)
-       |> filter_run_events(opts)
-       |> maybe_limit_run_events(opts)}
+    with :ok <- validate_run_event_opts(opts),
+         {:ok, events} <- Storage.list_run_events(run_id, opts) do
+      {:ok, Enum.map(events, &RunEvent.from_map/1)}
     end
   end
 
@@ -1420,13 +1435,16 @@ defmodule FavnOrchestrator do
     limit = Keyword.get(opts, :limit, 200)
 
     with true <- is_integer(limit) and limit > 0,
-         {:ok, events} <- list_run_events(run_id) do
+         {:ok, cursor_valid?} <- run_event_cursor_valid?(run_id, after_sequence),
+         true <- cursor_valid?,
+         {:ok, events} <-
+           list_run_events(run_id, after_sequence: after_sequence || 0, limit: limit) do
       case after_sequence do
         nil ->
-          {:ok, Enum.take(events, limit)}
+          {:ok, events}
 
         sequence when is_integer(sequence) and sequence >= 0 ->
-          replay_after_sequence(events, sequence, limit)
+          {:ok, events}
 
         _ ->
           {:error, :cursor_invalid}
@@ -1574,37 +1592,16 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp filter_run_events(events, opts) do
-    case Keyword.get(opts, :after_sequence) do
-      sequence when is_integer(sequence) and sequence >= 0 ->
-        Enum.filter(events, &(&1.sequence > sequence))
+  defp run_event_cursor_valid?(_run_id, nil), do: {:ok, true}
+  defp run_event_cursor_valid?(_run_id, 0), do: {:ok, true}
 
-      _ ->
-        events
+  defp run_event_cursor_valid?(run_id, sequence) when is_integer(sequence) and sequence > 0 do
+    with {:ok, events} <- list_run_events(run_id, after_sequence: sequence - 1, limit: 1) do
+      {:ok, match?([%RunEvent{sequence: ^sequence}], events)}
     end
   end
 
-  defp maybe_limit_run_events(events, opts) do
-    case Keyword.get(opts, :limit) do
-      limit when is_integer(limit) and limit > 0 -> Enum.take(events, limit)
-      _ -> events
-    end
-  end
-
-  defp replay_after_sequence(events, sequence, limit) do
-    if sequence == 0 do
-      {:ok, Enum.take(events, limit)}
-    else
-      if Enum.any?(events, &(&1.sequence == sequence)) do
-        {:ok,
-         events
-         |> Enum.filter(&(&1.sequence > sequence))
-         |> Enum.take(limit)}
-      else
-        {:error, :cursor_invalid}
-      end
-    end
-  end
+  defp run_event_cursor_valid?(_run_id, _sequence), do: {:ok, false}
 
   defp list_schedule_entries_from_active_manifest do
     with {:ok, manifest_version_id} <- active_manifest(),

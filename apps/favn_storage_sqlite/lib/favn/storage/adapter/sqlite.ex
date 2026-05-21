@@ -26,6 +26,7 @@ defmodule Favn.Storage.Adapter.SQLite do
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunEventCodec
+  alias FavnOrchestrator.Storage.RunQuery
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
@@ -263,6 +264,53 @@ defmodule Favn.Storage.Adapter.SQLite do
   end
 
   @impl true
+  def list_execution_group_runs(group_id, opts) when is_binary(group_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         :ok <- repair_missing_run_query_metadata(repo) do
+      sql =
+        run_snapshot_select() <>
+          " WHERE r.root_execution_group_id = ?1 ORDER BY CASE WHEN r.run_id = r.root_execution_group_id THEN 0 ELSE 1 END, r.inserted_at ASC, r.run_id ASC"
+
+      case SQL.query(repo, sql, [group_id]) do
+        {:ok, %{rows: rows}} -> decode_run_rows(rows)
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_execution_group_run_ids(group_id, opts) when is_binary(group_id) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         :ok <- repair_missing_run_query_metadata(repo) do
+      sql =
+        "SELECT run_id FROM favn_runs WHERE root_execution_group_id = ?1 ORDER BY CASE WHEN run_id = root_execution_group_id THEN 0 ELSE 1 END, inserted_at ASC, run_id ASC"
+
+      case SQL.query(repo, sql, [group_id]) do
+        {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, fn [run_id] -> run_id end)}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_execution_groups(group_opts, opts) when is_list(group_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         :ok <- repair_missing_run_query_metadata(repo),
+         {:ok, query, params, page_opts} <- execution_groups_query(group_opts) do
+      case SQL.query(repo, query, params) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.map(fn [group_id] -> group_id end)
+          |> Page.from_fetched(page_opts)
+          |> then(&{:ok, &1})
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl true
   def append_run_event(run_id, event, opts)
       when is_binary(run_id) and is_map(event) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts),
@@ -282,6 +330,46 @@ defmodule Favn.Storage.Adapter.SQLite do
         "SELECT global_sequence, event_blob FROM favn_run_events WHERE run_id = ?1 ORDER BY sequence ASC"
 
       case SQL.query(repo, sql, [run_id]) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> decode_event_rows()
+          |> case do
+            {:ok, events} -> {:ok, Enum.reverse(events)}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_run_events(run_id, run_event_opts, opts)
+      when is_binary(run_id) and is_list(run_event_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, query, params} <- run_events_query(run_id, run_event_opts) do
+      case SQL.query(repo, query, params) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> decode_event_rows()
+          |> case do
+            {:ok, events} -> {:ok, Enum.reverse(events)}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def list_execution_group_events(group_id, run_event_opts, opts)
+      when is_binary(group_id) and is_list(run_event_opts) and is_list(opts) do
+    with {:ok, repo} <- repo_name(opts),
+         {:ok, query, params} <- execution_group_events_query(group_id, run_event_opts) do
+      case SQL.query(repo, query, params) do
         {:ok, %{rows: rows}} ->
           rows
           |> decode_event_rows()
@@ -1728,6 +1816,8 @@ defmodule Favn.Storage.Adapter.SQLite do
 
   defp guarded_put_run(repo, run) do
     with {:ok, updated_seq} <- next_updated_seq(repo) do
+      query_metadata = RunQuery.metadata(run)
+
       sql =
         """
         INSERT INTO favn_runs (
@@ -1740,8 +1830,15 @@ defmodule Favn.Storage.Adapter.SQLite do
           updated_seq,
           inserted_at,
           updated_at,
-          run_blob
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+          run_blob,
+          root_execution_group_id,
+          parent_run_id,
+          root_run_id,
+          submit_kind,
+          asset_ref_text,
+          target_refs_text,
+          window_key
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         ON CONFLICT(run_id) DO UPDATE SET
           manifest_version_id = excluded.manifest_version_id,
           manifest_content_hash = excluded.manifest_content_hash,
@@ -1751,7 +1848,14 @@ defmodule Favn.Storage.Adapter.SQLite do
           updated_seq = excluded.updated_seq,
           inserted_at = excluded.inserted_at,
           updated_at = excluded.updated_at,
-          run_blob = excluded.run_blob
+          run_blob = excluded.run_blob,
+          root_execution_group_id = excluded.root_execution_group_id,
+          parent_run_id = excluded.parent_run_id,
+          root_run_id = excluded.root_run_id,
+          submit_kind = excluded.submit_kind,
+          asset_ref_text = excluded.asset_ref_text,
+          target_refs_text = excluded.target_refs_text,
+          window_key = excluded.window_key
         WHERE excluded.event_seq > favn_runs.event_seq
         """
 
@@ -1765,7 +1869,14 @@ defmodule Favn.Storage.Adapter.SQLite do
         updated_seq,
         run.inserted_at,
         run.updated_at,
-        encode_run_snapshot(run)
+        encode_run_snapshot(run),
+        query_metadata.root_execution_group_id,
+        query_metadata.parent_run_id,
+        query_metadata.root_run_id,
+        query_metadata.submit_kind,
+        query_metadata.asset_ref_text,
+        query_metadata.target_refs_text,
+        query_metadata.window_key
       ]
 
       case SQL.query(repo, sql, params) do
@@ -2578,6 +2689,224 @@ defmodule Favn.Storage.Adapter.SQLite do
        where_sql <> " ORDER BY r.updated_seq DESC, r.run_id DESC" <> limit_sql, params}
   end
 
+  defp execution_groups_query(group_opts) do
+    with {:ok, page_opts} <- Page.normalize_opts(group_opts) do
+      filters = Keyword.drop(group_opts, [:limit, :offset, :sort])
+      {where_sql, params} = execution_group_filter_sql(filters)
+      sort_sql = execution_group_sort_sql(Keyword.get(group_opts, :sort, :started_desc))
+      limit_placeholder = "?#{length(params) + 1}"
+      offset_placeholder = "?#{length(params) + 2}"
+
+      {:ok,
+       """
+       SELECT group_id
+       FROM (
+         SELECT
+           r.root_execution_group_id AS group_id,
+           MAX(r.updated_seq) AS activity_seq,
+           MAX(CASE WHEN r.status IN ('error', 'partial', 'cancelled', 'timed_out') THEN 1 ELSE 0 END) AS failed,
+           MAX(CASE WHEN r.status IN ('pending', 'running') THEN 1 ELSE 0 END) AS running,
+           MAX(CASE WHEN r.run_id = r.root_execution_group_id THEN r.status ELSE NULL END) AS root_status,
+           MAX(CASE WHEN r.run_id = r.root_execution_group_id THEN r.submit_kind ELSE NULL END) AS root_submit_kind,
+           MAX(CASE WHEN r.run_id = r.root_execution_group_id THEN r.target_refs_text ELSE NULL END) AS root_targets,
+           MAX(CASE WHEN r.window_key IS NOT NULL AND r.window_key != '' THEN 1 ELSE 0 END) AS has_window
+         FROM favn_runs AS r
+         GROUP BY r.root_execution_group_id
+       ) AS groups
+       #{where_sql}
+       ORDER BY #{sort_sql}, group_id DESC
+       LIMIT #{limit_placeholder} OFFSET #{offset_placeholder}
+       """, params ++ [Keyword.fetch!(page_opts, :limit) + 1, Keyword.fetch!(page_opts, :offset)],
+       page_opts}
+    end
+  end
+
+  defp execution_group_filter_sql(filters) do
+    filters
+    |> Enum.reduce({[], []}, fn
+      {:status, status}, {clauses, params} when not is_nil(status) ->
+        {clauses ++ ["root_status = ?#{length(params) + 1}"], params ++ [Atom.to_string(status)]}
+
+      {:trigger_type, :backfill}, {clauses, params} ->
+        {clauses ++ ["root_submit_kind IN ('backfill_asset', 'backfill_pipeline')"], params}
+
+      {:trigger_type, :retry}, {clauses, params} ->
+        {clauses ++ ["root_submit_kind = 'rerun'"], params}
+
+      {:trigger_type, trigger}, {clauses, params} when not is_nil(trigger) ->
+        {clauses ++ ["root_submit_kind = ?#{length(params) + 1}"],
+         params ++ [Atom.to_string(trigger)]}
+
+      {:target_asset, target}, {clauses, params} when is_binary(target) and target != "" ->
+        {clauses ++ ["root_targets LIKE ?#{length(params) + 1}"], params ++ ["%#{target}%"]}
+
+      {:search, search}, {clauses, params} when is_binary(search) and search != "" ->
+        placeholder = "?#{length(params) + 1}"
+
+        {clauses ++
+           [
+             "(group_id LIKE #{placeholder} OR root_targets LIKE #{placeholder} OR root_submit_kind LIKE #{placeholder})"
+           ], params ++ ["%#{search}%"]}
+
+      {:window, :has_window}, {clauses, params} ->
+        {clauses ++ ["has_window = 1"], params}
+
+      {:window, :no_window}, {clauses, params} ->
+        {clauses ++ ["has_window = 0"], params}
+
+      {:only_failed, true}, {clauses, params} ->
+        {clauses ++ ["failed = 1"], params}
+
+      {:only_running, true}, {clauses, params} ->
+        {clauses ++ ["running = 1"], params}
+
+      {:only_incomplete, true}, {clauses, params} ->
+        {clauses ++ ["running = 1"], params}
+
+      _other, acc ->
+        acc
+    end)
+    |> case do
+      {[], params} -> {"", params}
+      {clauses, params} -> {"WHERE " <> Enum.join(clauses, " AND "), params}
+    end
+  end
+
+  defp execution_group_sort_sql(:failed_first), do: "failed DESC, activity_seq DESC"
+  defp execution_group_sort_sql(:running_first), do: "running DESC, activity_seq DESC"
+
+  defp execution_group_sort_sql(:status_priority),
+    do: "failed DESC, running DESC, activity_seq DESC"
+
+  defp execution_group_sort_sql(_sort), do: "activity_seq DESC"
+
+  defp run_events_query(run_id, opts) do
+    after_sequence = Keyword.get(opts, :after_sequence)
+    limit = Keyword.get(opts, :limit)
+
+    cond do
+      not is_nil(after_sequence) and (not is_integer(after_sequence) or after_sequence < 0) ->
+        {:error, :invalid_opts}
+
+      not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
+        {:error, :invalid_opts}
+
+      true ->
+        clauses = ["run_id = ?1"]
+        params = [run_id]
+        {clauses, params} = maybe_after_sequence_clause(clauses, params, after_sequence)
+        {limit_sql, params} = maybe_limit_clause(params, limit)
+
+        {:ok,
+         "SELECT global_sequence, event_blob FROM favn_run_events WHERE #{Enum.join(clauses, " AND ")} ORDER BY sequence ASC#{limit_sql}",
+         params}
+    end
+  end
+
+  defp execution_group_events_query(group_id, opts) do
+    after_global_sequence = Keyword.get(opts, :after_global_sequence)
+    limit = Keyword.get(opts, :limit)
+
+    cond do
+      not is_nil(after_global_sequence) and
+          (not is_integer(after_global_sequence) or after_global_sequence < 0) ->
+        {:error, :invalid_opts}
+
+      not is_nil(limit) and (not is_integer(limit) or limit <= 0) ->
+        {:error, :invalid_opts}
+
+      true ->
+        clauses = ["r.root_execution_group_id = ?1"]
+        params = [group_id]
+
+        {clauses, params} =
+          case after_global_sequence do
+            sequence when is_integer(sequence) and sequence >= 0 ->
+              {clauses ++ ["e.global_sequence > ?#{length(params) + 1}"], params ++ [sequence]}
+
+            _other ->
+              {clauses, params}
+          end
+
+        {limit_sql, params} = maybe_limit_clause(params, limit)
+
+        {:ok,
+         """
+         SELECT e.global_sequence, e.event_blob
+         FROM favn_run_events AS e
+         INNER JOIN favn_runs AS r ON r.run_id = e.run_id
+         WHERE #{Enum.join(clauses, " AND ")}
+         ORDER BY e.global_sequence ASC, e.run_id ASC, e.sequence ASC#{limit_sql}
+         """, params}
+    end
+  end
+
+  defp maybe_after_sequence_clause(clauses, params, sequence)
+       when is_integer(sequence) and sequence >= 0,
+       do: {clauses ++ ["sequence > ?#{length(params) + 1}"], params ++ [sequence]}
+
+  defp maybe_after_sequence_clause(clauses, params, _sequence), do: {clauses, params}
+
+  defp maybe_limit_clause(params, limit) when is_integer(limit) and limit > 0,
+    do: {" LIMIT ?#{length(params) + 1}", params ++ [limit]}
+
+  defp maybe_limit_clause(params, _limit), do: {"", params}
+
+  defp repair_missing_run_query_metadata(repo) do
+    sql = run_snapshot_select() <> " WHERE r.root_execution_group_id IS NULL"
+
+    case SQL.query(repo, sql, []) do
+      {:ok, %{rows: []}} ->
+        :ok
+
+      {:ok, %{rows: rows}} ->
+        with {:ok, runs} <- decode_run_rows(rows) do
+          Enum.reduce_while(runs, :ok, fn run, :ok ->
+            case update_run_query_metadata(repo, run) do
+              :ok -> {:cont, :ok}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp update_run_query_metadata(repo, run) do
+    metadata = RunQuery.metadata(run)
+
+    sql =
+      """
+      UPDATE favn_runs
+      SET root_execution_group_id = ?1,
+          parent_run_id = ?2,
+          root_run_id = ?3,
+          submit_kind = ?4,
+          asset_ref_text = ?5,
+          target_refs_text = ?6,
+          window_key = ?7
+      WHERE run_id = ?8
+      """
+
+    params = [
+      metadata.root_execution_group_id,
+      metadata.parent_run_id,
+      metadata.root_run_id,
+      metadata.submit_kind,
+      metadata.asset_ref_text,
+      metadata.target_refs_text,
+      metadata.window_key,
+      run.id
+    ]
+
+    case SQL.query(repo, sql, params) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp run_filter_sql(filters) do
     filters
     |> Enum.reduce({[], []}, fn
@@ -2600,6 +2929,20 @@ defmodule Favn.Storage.Adapter.SQLite do
     FROM favn_runs AS r
     LEFT JOIN favn_manifest_versions AS m ON m.manifest_version_id = r.manifest_version_id
     """
+  end
+
+  defp decode_run_rows(rows) do
+    rows
+    |> Enum.reduce_while({:ok, []}, fn row, {:ok, acc} ->
+      case decode_run_row(row) do
+        {:ok, run} -> {:cont, {:ok, [run | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, runs} -> {:ok, Enum.reverse(runs)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp decode_run_row([

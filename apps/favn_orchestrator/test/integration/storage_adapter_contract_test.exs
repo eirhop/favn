@@ -121,6 +121,24 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, listed} = Storage.list_runs(status: :pending, limit: 10)
     assert Enum.any?(listed, &(&1.id == run.id))
 
+    child =
+      RunState.new(
+        id: "run_contract_#{label}_child_#{System.unique_integer([:positive])}",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: {MyApp.Asset, :asset},
+        parent_run_id: run.id,
+        root_run_id: run.id,
+        lineage_depth: 1
+      )
+
+    assert :ok = Storage.put_run(child)
+    assert {:ok, group_runs} = Storage.list_execution_group_runs(run.id)
+    assert Enum.map(group_runs, & &1.id) == [run.id, child.id]
+    assert {:ok, [run.id, child.id]} == Storage.list_execution_group_run_ids(run.id)
+    assert {:ok, group_page} = Storage.list_execution_groups(search: run.id, limit: 10, offset: 0)
+    assert run.id in group_page.items
+
     event = %{
       sequence: 1,
       event_type: :run_started,
@@ -136,6 +154,25 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert {:ok, [stored_event]} = Storage.list_run_events(run.id)
     assert stored_event.sequence == 1
+
+    assert :ok =
+             Storage.append_run_event(child.id, %{
+               sequence: 1,
+               event_type: :run_started,
+               occurred_at: DateTime.utc_now(),
+               data: %{kind: label}
+             })
+
+    next_event = %{
+      sequence: 2,
+      event_type: :run_updated,
+      occurred_at: DateTime.utc_now(),
+      data: %{kind: label}
+    }
+
+    assert :ok = Storage.append_run_event(child.id, next_event)
+    assert {:ok, [cursor_event]} = Storage.list_run_events(child.id, after_sequence: 1, limit: 1)
+    assert cursor_event.sequence == 2
 
     now = DateTime.utc_now()
     lease = execution_lease(run.id, "step-1", now, [%{kind: :run, key: run.id, limit: 1}])

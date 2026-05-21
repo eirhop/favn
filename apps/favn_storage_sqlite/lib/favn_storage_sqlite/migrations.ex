@@ -9,6 +9,7 @@ defmodule FavnStorageSqlite.Migrations do
   alias FavnStorageSqlite.Migrations.AddExecutionLeases
   alias FavnStorageSqlite.Migrations.AddLogEntries
   alias FavnStorageSqlite.Migrations.AddMaterializationClaims
+  alias FavnStorageSqlite.Migrations.AddRunGroupQueryColumns
   alias FavnStorageSqlite.Migrations.AddRunEventGlobalSequence
   alias FavnStorageSqlite.Migrations.CreateFoundation
   alias FavnStorageSqlite.Migrations.RebuildBackfillReadModelsForDtos
@@ -23,7 +24,8 @@ defmodule FavnStorageSqlite.Migrations do
     {20_260_509_100_000, AddAssetFreshnessState},
     {20_260_510_100_000, AddLogEntries},
     {20_260_520_100_000, AddExecutionLeases},
-    {20_260_521_100_000, AddMaterializationClaims}
+    {20_260_521_100_000, AddMaterializationClaims},
+    {20_260_521_200_000, AddRunGroupQueryColumns}
   ]
   @required_tables [
     "favn_manifest_versions",

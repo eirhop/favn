@@ -193,27 +193,9 @@ defmodule FavnView.RunDetailLive do
   end
 
   defp load_run(run_id, existing_back_asset_href \\ nil) do
-    group_id = execution_group_id(run_id)
-
-    case FavnOrchestrator.get_execution_group_detail(group_id) do
+    case FavnOrchestrator.get_execution_group_detail_for_run(run_id) do
       {:ok, detail} -> detail_from_execution_group(detail, run_id, existing_back_asset_href)
       {:error, reason} -> %{id: run_id, found?: false, error: error_label(reason)}
-    end
-  end
-
-  defp execution_group_id(run_id) do
-    case FavnOrchestrator.get_run_detail(run_id) do
-      {:ok, %{summary: %{root_run_id: root_run_id}}} when is_binary(root_run_id) ->
-        root_run_id
-
-      {:ok, %{summary: %{parent_run_id: parent_run_id}}} when is_binary(parent_run_id) ->
-        parent_run_id
-
-      {:ok, %{summary: %{id: id}}} ->
-        id
-
-      {:error, _reason} ->
-        run_id
     end
   end
 
