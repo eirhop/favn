@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
   alias Favn.Manifest.Version
   alias Favn.Plan
   alias Favn.Run.NodeResult
+  alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Repair.RuntimeState
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunState
@@ -169,6 +170,56 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
     assert report.errors == []
   end
 
+  test "apply reconciles stale active backfill windows from terminal child runs" do
+    now = DateTime.utc_now()
+
+    parent =
+      "repair_backfill_parent"
+      |> backfill_parent_run()
+      |> RunState.transition(status: :error, error: %{message: "orphaned"})
+
+    child = backfill_child_run(parent.id, "repair_backfill_child", "day:2026-05-21")
+
+    terminal_child =
+      RunState.transition(child,
+        status: :cancelled,
+        error: %{message: "cancelled"},
+        result: %{status: :cancelled, asset_results: [], metadata: %{}}
+      )
+
+    window =
+      %{
+        backfill_window(parent.id, child.trigger.window_key, now)
+        | status: :running,
+          child_run_id: child.id,
+          latest_attempt_run_id: child.id,
+          attempt_count: 1
+      }
+
+    assert :ok = Storage.put_run(parent)
+    assert :ok = Storage.put_run(terminal_child)
+    assert :ok = Storage.put_backfill_window(window)
+
+    assert {:ok, report} =
+             RuntimeState.repair(dry_run: false, backfill_id: parent.id, freshness: false)
+
+    assert report.runs_scanned == 0
+    assert report.backfill_windows_reconciled == 1
+
+    assert {:ok, repaired_window} =
+             Storage.get_backfill_window(
+               parent.id,
+               MyApp.Pipelines.Repair,
+               child.trigger.window_key
+             )
+
+    assert repaired_window.status == :cancelled
+    assert repaired_window.last_error == %{message: "cancelled"}
+
+    assert {:ok, repaired_parent} = Storage.get_run(parent.id)
+    assert repaired_parent.status == :cancelled
+  end
+
   defp persist_running_run_with_started_step(%RunState{} = run) do
     pending = %{run | status: :pending, event_seq: 1}
 
@@ -232,6 +283,56 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
   end
 
   defp asset_step_id(%RunState{} = run), do: "#{run.id}:gold"
+
+  defp backfill_parent_run(run_id) do
+    RunState.new(
+      id: run_id,
+      manifest_version_id: "mv_repair_runtime_state",
+      manifest_content_hash: "hash_repair_runtime_state",
+      asset_ref: {MyApp.Assets.Gold, :asset},
+      target_refs: [{MyApp.Assets.Gold, :asset}],
+      trigger: %{kind: :backfill, pipeline_module: MyApp.Pipelines.Repair},
+      metadata: %{pipeline_submit_ref: MyApp.Pipelines.Repair},
+      submit_kind: :backfill_pipeline
+    )
+    |> Map.put(:status, :running)
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp backfill_child_run(parent_run_id, run_id, window_key) do
+    RunState.new(
+      id: run_id,
+      manifest_version_id: "mv_repair_runtime_state",
+      manifest_content_hash: "hash_repair_runtime_state",
+      asset_ref: {MyApp.Assets.Gold, :asset},
+      target_refs: [{MyApp.Assets.Gold, :asset}],
+      trigger: %{kind: :backfill, backfill_run_id: parent_run_id, window_key: window_key},
+      metadata: %{pipeline_submit_ref: MyApp.Pipelines.Repair},
+      submit_kind: :pipeline,
+      parent_run_id: parent_run_id,
+      root_run_id: parent_run_id,
+      lineage_depth: 1
+    )
+  end
+
+  defp backfill_window(backfill_run_id, window_key, start_at) do
+    {:ok, window} =
+      BackfillWindow.new(%{
+        backfill_run_id: backfill_run_id,
+        pipeline_module: MyApp.Pipelines.Repair,
+        manifest_version_id: "mv_repair_runtime_state",
+        window_kind: :day,
+        window_start_at: start_at,
+        window_end_at: DateTime.add(start_at, 1, :day),
+        timezone: "Etc/UTC",
+        window_key: window_key,
+        status: :pending,
+        created_at: start_at,
+        updated_at: start_at
+      })
+
+    window
+  end
 
   defp restore_env(app, key, nil), do: Application.delete_env(app, key)
   defp restore_env(app, key, value), do: Application.put_env(app, key, value)

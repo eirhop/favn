@@ -5,8 +5,9 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   The repair workflow is safe to run as a dry-run first. Apply mode terminalizes
   orphaned active run snapshots, emits terminal step events for stale active step
   events, releases execution leases, expires stale materialization claims,
-  reprojects affected backfill parents, and conservatively rebuilds missing
-  freshness state for successful independent node results.
+  reconciles stale backfill windows, reprojects affected backfill parents, and
+  conservatively rebuilds missing freshness state for successful independent
+  node results.
 
   ## Options
 
@@ -18,6 +19,7 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
     only active runtime state should be reconciled.
   """
 
+  alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.Projector, as: BackfillProjector
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.Repair.Passes.Freshness
@@ -28,6 +30,8 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   alias FavnOrchestrator.TransitionWriter
 
   @active_run_statuses [:pending, :running]
+  @active_backfill_window_statuses [:pending, :running]
+  @terminal_run_statuses [:ok, :partial, :error, :cancelled, :timed_out]
   @active_step_events [:step_started, :step_queued, :step_retry_scheduled]
   @terminal_step_events [
     :step_finished,
@@ -56,6 +60,7 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
       |> expire_execution_leases(opts)
       |> expire_materialization_claims(opts)
       |> repair_active_runs(opts)
+      |> repair_backfill_windows(opts)
       |> maybe_repair_freshness(opts)
 
     if report.errors == [], do: {:ok, report}, else: {:error, report}
@@ -287,9 +292,12 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
     end
   end
 
-  defp backfill_parent_id(%RunState{trigger: trigger}) when is_map(trigger) do
-    case {Map.get(trigger, :kind), Map.get(trigger, :backfill_run_id)} do
+  defp backfill_parent_id(%RunState{} = run) do
+    case {trigger_field(run, :kind), trigger_field(run, :backfill_run_id)} do
       {:backfill, backfill_run_id} when is_binary(backfill_run_id) and backfill_run_id != "" ->
+        backfill_run_id
+
+      {"backfill", backfill_run_id} when is_binary(backfill_run_id) and backfill_run_id != "" ->
         backfill_run_id
 
       _other ->
@@ -297,7 +305,130 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
     end
   end
 
-  defp backfill_parent_id(_run), do: nil
+  defp repair_backfill_windows(%Report{} = report, opts) do
+    case active_backfill_windows(opts) do
+      {:ok, windows} ->
+        Enum.reduce(windows, report, fn window, acc ->
+          repair_backfill_window(window, acc, opts)
+        end)
+
+      {:error, reason} ->
+        Report.error(report, {:list_active_backfill_windows_failed, reason})
+    end
+  end
+
+  defp active_backfill_windows(opts) do
+    @active_backfill_window_statuses
+    |> Enum.reduce_while({:ok, []}, fn status, {:ok, acc} ->
+      filters = window_filters(status, opts)
+
+      case BackfillProjector.list_all_backfill_windows(filters) do
+        {:ok, windows} -> {:cont, {:ok, acc ++ windows}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp window_filters(status, opts) do
+    filters = [status: status]
+
+    case Keyword.get(opts, :backfill_id) do
+      backfill_id when is_binary(backfill_id) ->
+        Keyword.put(filters, :backfill_run_id, backfill_id)
+
+      _other ->
+        filters
+    end
+  end
+
+  defp repair_backfill_window(%BackfillWindow{} = window, %Report{} = report, opts) do
+    case terminal_window_child(window) do
+      {:ok, %RunState{} = run} ->
+        repair_backfill_window(window, run, report, opts)
+
+      :ignore ->
+        report
+
+      {:error, reason} ->
+        Report.error(report, {:backfill_window_repair_failed, window_id(window), reason})
+    end
+  end
+
+  defp repair_backfill_window(
+         %BackfillWindow{} = window,
+         %RunState{} = run,
+         %Report{mode: :dry_run} = report,
+         opts
+       ) do
+    if matches_filters?(run, opts) and run_matches_window?(run, window) do
+      Report.bump(report, :backfill_windows_reconciled)
+    else
+      report
+    end
+  end
+
+  defp repair_backfill_window(
+         %BackfillWindow{} = window,
+         %RunState{} = run,
+         %Report{mode: :apply} = report,
+         opts
+       ) do
+    if matches_filters?(run, opts) and run_matches_window?(run, window) do
+      case BackfillProjector.reproject_child_window(run) do
+        :ok ->
+          Report.bump(report, :backfill_windows_reconciled)
+
+        :ignore ->
+          report
+
+        {:error, reason} ->
+          Report.error(report, {:backfill_window_repair_failed, window_id(window), reason})
+      end
+    else
+      report
+    end
+  end
+
+  defp terminal_window_child(%BackfillWindow{} = window) do
+    case window.latest_attempt_run_id || window.child_run_id do
+      run_id when is_binary(run_id) and run_id != "" ->
+        case Storage.get_run(run_id) do
+          {:ok, %RunState{status: status} = run} when status in @terminal_run_statuses ->
+            {:ok, run}
+
+          {:ok, %RunState{}} ->
+            :ignore
+
+          {:error, :not_found} ->
+            :ignore
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      _other ->
+        :ignore
+    end
+  end
+
+  defp run_matches_window?(%RunState{} = run, %BackfillWindow{} = window) do
+    backfill_parent_id(run) == window.backfill_run_id and
+      trigger_field(run, :window_key) == window.window_key
+  end
+
+  defp trigger_field(%RunState{trigger: trigger}, key) when is_map(trigger) do
+    Map.get(trigger, key) || Map.get(trigger, Atom.to_string(key))
+  end
+
+  defp trigger_field(%RunState{}, _key), do: nil
+
+  defp window_id(%BackfillWindow{} = window) do
+    %{
+      backfill_run_id: window.backfill_run_id,
+      pipeline_module: window.pipeline_module,
+      window_key: window.window_key
+    }
+  end
 
   defp maybe_repair_freshness(%Report{} = report, opts) do
     if Keyword.get(opts, :freshness, true), do: Freshness.run(report, opts), else: report

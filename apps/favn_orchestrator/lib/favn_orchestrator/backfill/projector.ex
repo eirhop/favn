@@ -16,6 +16,7 @@ defmodule FavnOrchestrator.Backfill.Projector do
 
   @running_events [:run_created, :run_started]
   @terminal_events [:run_finished, :run_failed, :run_cancelled, :run_timed_out]
+  @terminal_run_statuses [:ok, :partial, :error, :cancelled, :timed_out]
 
   @spec project_transition(RunState.t(), atom(), map()) :: :ok | {:error, term()}
   def project_transition(%RunState{} = run_state, event_type, data \\ %{})
@@ -39,11 +40,11 @@ defmodule FavnOrchestrator.Backfill.Projector do
   end
 
   defp backfill_child_context(%RunState{trigger: trigger} = run_state) when is_map(trigger) do
-    with :backfill <- Map.get(trigger, :kind),
+    with kind when kind in [:backfill, "backfill"] <- trigger_field(trigger, :kind),
          backfill_run_id when is_binary(backfill_run_id) and backfill_run_id != "" <-
-           Map.get(trigger, :backfill_run_id),
+           trigger_field(trigger, :backfill_run_id),
          window_key when is_binary(window_key) and window_key != "" <-
-           Map.get(trigger, :window_key),
+           trigger_field(trigger, :window_key),
          {:ok, pipeline_module} <- pipeline_module(run_state) do
       {:ok,
        %{
@@ -54,6 +55,10 @@ defmodule FavnOrchestrator.Backfill.Projector do
     else
       _other -> :ignore
     end
+  end
+
+  defp trigger_field(trigger, key) when is_map(trigger) do
+    Map.get(trigger, key) || Map.get(trigger, Atom.to_string(key))
   end
 
   defp project_running(context, %RunState{} = run_state) do
@@ -110,6 +115,24 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp maybe_project_parent(backfill_run_id) do
     reproject_parent(backfill_run_id)
   end
+
+  @doc "Reprojects a terminal child backfill run into its persisted window."
+  @spec reproject_child_window(RunState.t()) :: :ok | :ignore | {:error, term()}
+  def reproject_child_window(%RunState{status: status} = run_state)
+      when status in @terminal_run_statuses do
+    case backfill_child_context(run_state) do
+      {:ok, context} ->
+        project_terminal(context, run_state, terminal_event_type(status), %{
+          status: status,
+          error: run_state.error
+        })
+
+      :ignore ->
+        :ignore
+    end
+  end
+
+  def reproject_child_window(%RunState{}), do: :ignore
 
   @doc "Reprojects a backfill parent run status from its persisted windows."
   @spec reproject_parent(String.t()) :: :ok | {:error, term()}
@@ -314,6 +337,11 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp terminal_window_status(:run_failed), do: :error
   defp terminal_window_status(:run_cancelled), do: :cancelled
   defp terminal_window_status(:run_timed_out), do: :timed_out
+
+  defp terminal_event_type(:ok), do: :run_finished
+  defp terminal_event_type(:cancelled), do: :run_cancelled
+  defp terminal_event_type(:timed_out), do: :run_timed_out
+  defp terminal_event_type(_status), do: :run_failed
 
   defp terminal_error(:ok, _run_state, _data), do: nil
   defp terminal_error(_status, %RunState{error: nil}, data), do: Map.get(data, :error)
