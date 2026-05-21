@@ -19,6 +19,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
           storage_adapter_opts: keyword(),
           log_redaction_policy: term()
         }
+  @type error :: {:invalid_runtime_config, {atom(), term()}}
 
   defstruct runner_client: nil,
             runner_client_opts: [],
@@ -35,7 +36,12 @@ defmodule FavnOrchestrator.RuntimeConfig do
   end
 
   def start_link(opts) when is_list(opts) do
-    config = Keyword.get(opts, :config, from_app_env())
+    config =
+      case Keyword.fetch(opts, :config) do
+        {:ok, config} -> normalize!(config)
+        :error -> from_app_env()
+      end
+
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, config, name: name)
   end
@@ -47,7 +53,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
   normalization from application env so unit tests and standalone helper calls
   keep their existing ergonomics.
   """
-  @spec current(GenServer.server()) :: t()
+  @spec current(atom()) :: t()
   def current(name \\ __MODULE__) do
     if dynamic_env_override?(name) do
       from_app_env()
@@ -64,7 +70,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
   """
   @spec from_app_env() :: t()
   def from_app_env do
-    normalize(
+    normalize!(
       runner_client: Application.get_env(:favn_orchestrator, :runner_client, nil),
       runner_client_opts: Application.get_env(:favn_orchestrator, :runner_client_opts, []),
       storage_adapter: Application.get_env(:favn_orchestrator, :storage_adapter, Memory),
@@ -76,8 +82,8 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @doc """
   Normalizes runtime dependency options into a stable struct.
   """
-  @spec normalize(keyword() | map() | t()) :: t()
-  def normalize(%__MODULE__{} = config), do: config
+  @spec normalize(keyword() | map() | t()) :: {:ok, t()} | {:error, error()}
+  def normalize(%__MODULE__{} = config), do: {:ok, config}
 
   def normalize(attrs) when is_map(attrs) do
     attrs
@@ -86,13 +92,39 @@ defmodule FavnOrchestrator.RuntimeConfig do
   end
 
   def normalize(attrs) when is_list(attrs) do
-    %__MODULE__{
-      runner_client: Keyword.get(attrs, :runner_client, nil),
-      runner_client_opts: normalize_keyword(Keyword.get(attrs, :runner_client_opts, [])),
-      storage_adapter: Keyword.get(attrs, :storage_adapter, Memory),
-      storage_adapter_opts: normalize_keyword(Keyword.get(attrs, :storage_adapter_opts, [])),
-      log_redaction_policy: Keyword.get(attrs, :log_redaction_policy)
-    }
+    runner_client = Keyword.get(attrs, :runner_client, nil)
+    runner_client_opts = Keyword.get(attrs, :runner_client_opts, [])
+    storage_adapter = Keyword.get(attrs, :storage_adapter, Memory)
+    storage_adapter_opts = Keyword.get(attrs, :storage_adapter_opts, [])
+
+    with :ok <- validate_module_or_nil(:runner_client, runner_client),
+         {:ok, runner_client_opts} <- validate_keyword(:runner_client_opts, runner_client_opts),
+         :ok <- validate_module(:storage_adapter, storage_adapter),
+         {:ok, storage_adapter_opts} <-
+           validate_keyword(:storage_adapter_opts, storage_adapter_opts) do
+      {:ok,
+       %__MODULE__{
+         runner_client: runner_client,
+         runner_client_opts: runner_client_opts,
+         storage_adapter: storage_adapter,
+         storage_adapter_opts: storage_adapter_opts,
+         log_redaction_policy: Keyword.get(attrs, :log_redaction_policy)
+       }}
+    end
+  end
+
+  @doc """
+  Normalizes runtime dependency options or raises on invalid boot config.
+  """
+  @spec normalize!(keyword() | map() | t()) :: t()
+  def normalize!(attrs) do
+    case normalize(attrs) do
+      {:ok, config} ->
+        config
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid orchestrator runtime config: #{inspect(reason)}"
+    end
   end
 
   @impl true
@@ -107,6 +139,19 @@ defmodule FavnOrchestrator.RuntimeConfig do
 
   defp dynamic_env_override?(_name), do: false
 
-  defp normalize_keyword(opts) when is_list(opts), do: opts
-  defp normalize_keyword(_opts), do: []
+  defp validate_module_or_nil(_field, nil), do: :ok
+  defp validate_module_or_nil(field, module), do: validate_module(field, module)
+
+  defp validate_module(_field, module) when is_atom(module), do: :ok
+  defp validate_module(field, value), do: {:error, {:invalid_runtime_config, {field, value}}}
+
+  defp validate_keyword(field, opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      {:ok, opts}
+    else
+      {:error, {:invalid_runtime_config, {field, opts}}}
+    end
+  end
+
+  defp validate_keyword(field, value), do: {:error, {:invalid_runtime_config, {field, value}}}
 end

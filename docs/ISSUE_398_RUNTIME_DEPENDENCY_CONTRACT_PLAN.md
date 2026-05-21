@@ -10,6 +10,8 @@ startup when application env mutates.
 
 - Add `FavnOrchestrator.RuntimeConfig` as an internal normalized struct and
   supervised process.
+- Fail fast on invalid runtime dependency option shapes instead of silently
+  replacing malformed options with defaults.
 - Keep application env as the boot-time input for production config and local-dev
   launch ergonomics.
 - Start `RuntimeConfig` before storage, run recovery, run manager, scheduler, and
@@ -33,7 +35,8 @@ startup when application env mutates.
   test and helper behavior.
 - `config/test.exs` keeps the default runtime config name in dynamic-env mode so
   existing app-env based tests remain small. Tests that need startup-freeze
-  semantics can start a named `RuntimeConfig` process directly.
+  semantics can disable the override and start the default `RuntimeConfig`
+  process directly.
 
 ## Follow-Up Scope
 
@@ -47,8 +50,10 @@ startup when application env mutates.
 
 ## Tests
 
-- Unit coverage for runtime config normalization.
+- Unit coverage for runtime config normalization and invalid option rejection.
 - Regression coverage that a supervised runtime config remains stable after app
   env mutation.
+- Default-name regression coverage showing storage and runner lookups stay frozen
+  when test dynamic-env compatibility is disabled.
 - Existing readiness, diagnostics, run manager, run server, and storage tests
   should continue to exercise the same public behavior through the new contract.
