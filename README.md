@@ -563,6 +563,8 @@ DuckLake catalog `write_concurrency`, DuckDB `threads`, the number of attached
 Postgres-backed catalogs, and each catalog's DuckDB Postgres pool settings.
 Keep the product of admitted concurrent DuckLake work and per-catalog pool limits
 below the managed Postgres metadata database's usable connection slots.
+This bound assumes `pg_pool_acquire_mode: :wait`; with DuckDB's default `:force`,
+`pg_pool_max_connections` is not a hard connection cap.
 
 Add `Favn.SQL.Adapter.DuckDB.config_schema_fields/0` or
 `Favn.SQL.Adapter.DuckDB.ADBC.config_schema_fields/0` to DuckDB connection module
@@ -571,7 +573,9 @@ session databases should reject `:memory:`, relative paths, missing parents, and
 unwritable parents before opening DuckDB. SQLite control-plane backups do not
 include DuckDB data-plane files or DuckLake object storage. Secret runtime refs
 inside nested DuckDB config are resolved on the runner side and redacted from
-diagnostics. DuckDB worker unavailability,
+diagnostics. Typed DuckDB settings are validated after runtime refs resolve;
+integer and boolean settings currently need typed values rather than string env
+values. DuckDB worker unavailability,
 worker-call timeouts, bootstrap failures, materialization failures, and appender
 failures are normalized into structured SQL errors suitable for logs, API/UI
 payloads, and run diagnostics without exposing configured secrets. Worker-call

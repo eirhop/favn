@@ -89,10 +89,15 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
                  pg_pool_acquire_mode: :wait,
                  pg_pool_enable_thread_local_cache: false,
                  pg_pool_wait_timeout_millis: 60_000,
+                 pg_pool_max_lifetime_millis: 900_000,
                  pg_pool_idle_timeout_millis: 300_000,
-                 pg_pool_enable_reaper_thread: true
+                 pg_pool_enable_reaper_thread: true,
+                 pg_pool_health_check_query: "SELECT 1"
                ]
              )
+
+    assert :ok = validator.(settings: [pg_pool_max_connections: 0])
+    assert :ok = validator.(settings: [pg_pool_health_check_query: ""])
 
     assert {:error, {:unsupported_setting, :some_unknown_setting}} =
              validator.(settings: [some_unknown_setting: "value"])
