@@ -153,6 +153,8 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, 1} = Storage.expire_execution_leases(DateTime.add(now, 6, :second))
     assert {:ok, []} = Storage.list_execution_leases()
 
+    assert_materialization_claim_contract(label, run)
+
     concurrent_now = DateTime.utc_now()
     shared_scope = [%{kind: :pool, key: "shared_api", limit: 1}]
     first_concurrent = execution_lease(run.id, "step-3", concurrent_now, shared_scope)
@@ -256,6 +258,84 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
       scopes: scopes,
       acquired_at: now,
       expires_at: DateTime.add(now, 5, :second)
+    }
+  end
+
+  defp assert_materialization_claim_contract(label, run) do
+    now = DateTime.utc_now()
+    claim = materialization_claim(label, run, "claim-1", now)
+
+    assert {:ok, ^claim} = Storage.try_acquire_materialization_claim(claim)
+    assert {:already_claimed, ^claim} = Storage.try_acquire_materialization_claim(claim)
+    assert {:ok, ^claim} = Storage.get_materialization_claim(claim.claim_key)
+
+    assert {:ok, [^claim]} =
+             Storage.list_materialization_claims(
+               asset_ref_module: MyApp.Asset,
+               asset_ref_name: :asset,
+               freshness_key: "freshness-#{label}",
+               status: :claimed
+             )
+
+    assert {:ok, completed} =
+             Storage.complete_materialization_claim(claim.claim_key, %{
+               freshness_version: "freshness-version-1",
+               finished_at: DateTime.add(now, 1, :second),
+               metadata: %{rows_written: 10}
+             })
+
+    assert completed.status == :succeeded
+    assert completed.freshness_version == "freshness-version-1"
+    assert completed.metadata == %{rows_written: 10}
+
+    assert {:error, :not_found} =
+             Storage.fail_materialization_claim(claim.claim_key, %{status: :failed})
+
+    assert {:already_succeeded, ^completed} = Storage.try_acquire_materialization_claim(claim)
+
+    expired_claim = materialization_claim(label, run, "claim-2", DateTime.add(now, -10, :second))
+    reclaim = materialization_claim(label, run, "claim-2", DateTime.add(now, 10, :second))
+
+    assert {:ok, ^expired_claim} = Storage.try_acquire_materialization_claim(expired_claim)
+    assert {:ok, 1} = Storage.expire_materialization_claims(now)
+    assert {:ok, expired} = Storage.get_materialization_claim(expired_claim.claim_key)
+    assert expired.status == :expired
+    assert {:error, :not_found} = Storage.complete_materialization_claim(expired.claim_key, %{})
+    assert {:ok, ^reclaim} = Storage.try_acquire_materialization_claim(reclaim)
+
+    failed_claim = materialization_claim(label, run, "claim-3", now)
+    assert {:ok, ^failed_claim} = Storage.try_acquire_materialization_claim(failed_claim)
+
+    assert {:ok, failed} =
+             Storage.fail_materialization_claim(failed_claim.claim_key, %{
+               status: :timed_out,
+               error: %{message: "timeout"},
+               finished_at: DateTime.add(now, 2, :second)
+             })
+
+    assert failed.status == :timed_out
+    assert failed.error == %{message: "timeout"}
+    assert {:ok, ^failed_claim} = Storage.try_acquire_materialization_claim(failed_claim)
+  end
+
+  defp materialization_claim(label, run, suffix, now) do
+    %FavnOrchestrator.MaterializationClaim{
+      claim_key: "#{run.id}:#{suffix}",
+      asset_ref_module: MyApp.Asset,
+      asset_ref_name: :asset,
+      freshness_key: "freshness-#{label}",
+      input_fingerprint: "input-#{suffix}",
+      run_id: run.id,
+      asset_step_id: "asset-step-#{suffix}",
+      node_key: "node-#{suffix}",
+      runner_execution_id: "runner-#{suffix}",
+      manifest_version_id: run.manifest_version_id,
+      manifest_content_hash: run.manifest_content_hash,
+      status: :claimed,
+      claimed_at: now,
+      heartbeat_at: now,
+      expires_at: DateTime.add(now, 5, :second),
+      metadata: %{label: label}
     }
   end
 

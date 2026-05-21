@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServerTest do
   alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.MaterializationClaim.Identity, as: MaterializationClaimIdentity
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
 
@@ -51,11 +52,14 @@ defmodule FavnOrchestrator.RunServerTest do
   defmodule RunnerClientRecordingStub do
     @behaviour Favn.Contracts.RunnerClient
 
+    import ExUnit.Assertions
+
     @impl true
     def register_manifest(_version, _opts), do: :ok
 
     @impl true
     def submit_work(work, opts) do
+      assert_required_freshness(work, opts)
       submit_log = Keyword.fetch!(opts, :submit_log)
       Agent.update(submit_log, &[work | &1])
       {:ok, execution_id(work)}
@@ -83,6 +87,22 @@ defmodule FavnOrchestrator.RunServerTest do
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp assert_required_freshness(work, opts) do
+      opts
+      |> Keyword.get(:assert_freshness_before_submit, %{})
+      |> Map.get(work.asset_ref)
+      |> case do
+        nil ->
+          :ok
+
+        {module, name} ->
+          assert {:ok, %FavnOrchestrator.AssetFreshnessState{latest_success_run_id: run_id}} =
+                   Storage.get_asset_freshness_state(module, name, Key.latest())
+
+          assert run_id == work.run_id
+      end
+    end
 
     defp execution_id(work) do
       {module, name} = work.asset_ref
@@ -130,12 +150,16 @@ defmodule FavnOrchestrator.RunServerTest do
     Application.put_env(:favn_orchestrator, :runner_client, nil)
     Application.put_env(:favn_orchestrator, :runner_client_opts, [])
 
+    start_memory_if_needed()
     Memory.reset()
 
     on_exit(fn ->
       Application.put_env(:favn_orchestrator, :runner_client, previous_client)
       Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
-      Memory.reset()
+
+      if Process.whereis(Memory) do
+        Memory.reset()
+      end
     end)
 
     :ok
@@ -472,6 +496,180 @@ defmodule FavnOrchestrator.RunServerTest do
     assert raw_version == raw_state.freshness_version
   end
 
+  test "successful upstream step writes freshness before downstream submit" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_log: submit_log,
+      assert_freshness_before_submit: %{
+        {MyApp.Assets.Gold, :asset} => {MyApp.Assets.Raw, :asset}
+      }
+    )
+
+    version = manifest_version("mv_pipeline_success_writes_before_downstream_submit")
+    plan = raw_to_gold_plan()
+
+    run_state =
+      pipeline_run_state("run_pipeline_success_writes_before_downstream_submit", version, plan, [
+        {MyApp.Assets.Gold, :asset}
+      ])
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, raw_state} =
+             Storage.get_asset_freshness_state(MyApp.Assets.Raw, :asset, Key.latest())
+
+    assert raw_state.latest_success_run_id == run_state.id
+  end
+
+  test "already succeeded non-reusable materialization claim does not skip runner submission" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    version = manifest_version("mv_pipeline_already_succeeded_claim")
+    plan = single_node_plan({MyApp.Assets.Gold, :asset}, window: nil)
+
+    run_state =
+      pipeline_run_state("run_pipeline_already_succeeded_claim", version, plan, [
+        {MyApp.Assets.Gold, :asset}
+      ])
+
+    node_key = {{MyApp.Assets.Gold, :asset}, nil}
+    previous_run = %{run_state | id: "previous_run_pipeline_already_succeeded_claim"}
+
+    assert {:ok, claim} =
+             materialization_claim(previous_run, version, node_key, Key.latest())
+             |> Storage.try_acquire_materialization_claim()
+
+    assert {:ok, _claim} =
+             Storage.complete_materialization_claim(claim.claim_key, %{
+               finished_at: DateTime.utc_now(),
+               metadata: %{test: :already_succeeded}
+             })
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert [_submitted] = Agent.get(submit_log, & &1)
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+
+    assert [
+             %Favn.Run.NodeResult{
+               status: :ok,
+               reason: nil
+             }
+           ] =
+             stored.result.node_results
+  end
+
+  test "always freshness executes despite an existing succeeded claim" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    version =
+      manifest_version("mv_pipeline_always_claim",
+        freshness: Policy.from_value!(%{mode: :always})
+      )
+
+    plan = single_node_plan({MyApp.Assets.Gold, :asset}, window: nil)
+
+    run_state =
+      pipeline_run_state("run_pipeline_always_claim", version, plan, [
+        {MyApp.Assets.Gold, :asset}
+      ])
+
+    node_key = {{MyApp.Assets.Gold, :asset}, nil}
+    previous_run = %{run_state | id: "previous_run_pipeline_always_claim"}
+
+    assert {:ok, claim} =
+             materialization_claim(previous_run, version, node_key, Key.latest())
+             |> Storage.try_acquire_materialization_claim()
+
+    assert {:ok, _claim} =
+             Storage.complete_materialization_claim(claim.claim_key, %{
+               finished_at: DateTime.utc_now()
+             })
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert [_submitted] = Agent.get(submit_log, & &1)
+  end
+
+  test "upstream refreshed downstream always asset reuses matching concurrent claim" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    version =
+      manifest_version("mv_pipeline_downstream_always_reuses_upstream_refreshed_claim",
+        freshness: Policy.from_value!(%{mode: :always})
+      )
+
+    plan = raw_to_gold_plan()
+    raw_ref = {MyApp.Assets.Raw, :asset}
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    raw_key = {raw_ref, nil}
+    gold_key = {gold_ref, nil}
+
+    run_state =
+      pipeline_run_state(
+        "run_pipeline_downstream_always_reuses_upstream_refreshed_claim",
+        version,
+        plan,
+        [gold_ref]
+      )
+
+    input_versions = [
+      %{
+        upstream_ref: raw_ref,
+        upstream_node_key: raw_key,
+        freshness_version: freshness_version(run_state, raw_key),
+        success_run_id: run_state.id
+      }
+    ]
+
+    assert {:ok, claim} =
+             materialization_claim(run_state, version, gold_key, Key.latest(),
+               input_versions: input_versions,
+               reusable: true
+             )
+             |> Storage.try_acquire_materialization_claim()
+
+    assert {:ok, _claim} =
+             Storage.complete_materialization_claim(claim.claim_key, %{
+               finished_at: DateTime.utc_now()
+             })
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert [%{asset_ref: ^raw_ref}] = Agent.get(submit_log, & &1)
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    statuses = Map.new(stored.result.node_results, &{&1.node_key, {&1.status, &1.reason}})
+
+    assert statuses[raw_key] == {:ok, nil}
+    assert statuses[gold_key] == {:skipped_fresh, :concurrent_materialization_succeeded}
+  end
+
   test "same-ref stage records freshness only for the node that actually succeeded" do
     {:ok, submit_log} = Agent.start_link(fn -> [] end)
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
@@ -684,5 +882,73 @@ defmodule FavnOrchestrator.RunServerTest do
       })
 
     state
+  end
+
+  defp materialization_claim(
+         %RunState{} = run_state,
+         %Version{} = version,
+         node_key,
+         freshness_key,
+         opts \\ []
+       ) do
+    node = Map.fetch!(run_state.plan.nodes, node_key)
+    {module, name} = node.ref
+    now = DateTime.utc_now()
+    input_versions = Keyword.get(opts, :input_versions, [])
+    input_fingerprint = MaterializationClaimIdentity.input_fingerprint(input_versions)
+
+    producer_identity =
+      if Keyword.get(opts, :reusable, false) do
+        version.content_hash
+      else
+        materialization_producer_identity(run_state, version, node_key)
+      end
+
+    %{
+      claim_key:
+        MaterializationClaimIdentity.claim_key(
+          node.ref,
+          freshness_key,
+          input_fingerprint,
+          producer_identity
+        ),
+      run_id: "previous_claim_run",
+      asset_step_id: "previous_claim_step",
+      node_key: node_key,
+      asset_ref_module: module,
+      asset_ref_name: name,
+      freshness_key: freshness_key,
+      input_fingerprint: input_fingerprint,
+      input_versions: input_versions,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      status: :claimed,
+      claimed_at: now,
+      heartbeat_at: now,
+      expires_at: DateTime.add(now, 60_000, :millisecond)
+    }
+  end
+
+  defp materialization_producer_identity(%RunState{} = run_state, %Version{} = version, node_key) do
+    node_token = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+    Enum.join([version.content_hash, run_state.id, node_token], ":")
+  end
+
+  defp freshness_version(%RunState{} = run_state, node_key) do
+    encoded_node_key = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+    "#{run_state.id}:#{encoded_node_key}"
+  end
+
+  defp start_memory_if_needed do
+    case Process.whereis(Memory) do
+      nil ->
+        start_supervised!(%{
+          id: Memory,
+          start: {Memory, :start_link, [[name: Memory]]}
+        })
+
+      _pid ->
+        :ok
+    end
   end
 end

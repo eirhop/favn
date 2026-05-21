@@ -11,6 +11,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
@@ -21,6 +22,7 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.ManifestCodec
+  alias FavnOrchestrator.Storage.MaterializationClaimCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunSnapshotCodec
   alias FavnOrchestrator.Storage.RunStateCodec
@@ -380,6 +382,84 @@ defmodule Favn.Storage.Adapter.Postgres do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  @impl true
+  def try_acquire_materialization_claim(claim, opts) when is_map(claim) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, normalized} <- MaterializationClaimCodec.normalize(claim) do
+      repo.transact(fn ->
+        with :ok <- lock_materialization_claim(repo, normalized.claim_key),
+             {:ok, _expired} <-
+               expire_materialization_claims_in_transaction(repo, normalized.claimed_at),
+             {:ok, existing} <- fetch_materialization_claim(repo, normalized.claim_key) do
+          case materialization_claim_acquire_decision(existing, normalized.claimed_at) do
+            decision when decision in [:insert, :reclaim] ->
+              case upsert_materialization_claim(repo, normalized) do
+                :ok -> {:ok, {:ok, normalized}}
+                {:error, reason} -> repo.rollback(reason)
+              end
+
+            result ->
+              {:ok, result}
+          end
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def complete_materialization_claim(claim_key, completion, opts)
+      when is_binary(claim_key) and is_map(completion) and is_list(opts) do
+    guarded_materialization_claim_transition(claim_key, opts, fn claim ->
+      apply_materialization_completion(claim, completion)
+    end)
+  end
+
+  @impl true
+  def fail_materialization_claim(claim_key, failure, opts)
+      when is_binary(claim_key) and is_map(failure) and is_list(opts) do
+    guarded_materialization_claim_transition(claim_key, opts, fn claim ->
+      apply_materialization_failure(claim, failure)
+    end)
+  end
+
+  @impl true
+  def expire_materialization_claims(%DateTime{} = now, opts) when is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      expire_materialization_claims_in_transaction(repo, now)
+    end
+  end
+
+  @impl true
+  def get_materialization_claim(claim_key, opts) when is_binary(claim_key) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, claim} <- fetch_materialization_claim(repo, claim_key) do
+      case claim do
+        nil -> {:error, :not_found}
+        %MaterializationClaim{} -> {:ok, claim}
+      end
+    end
+  end
+
+  @impl true
+  def list_materialization_claims(filters, opts) when is_list(filters) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts),
+         {:ok, sql, params} <-
+           build_select_query(
+             materialization_claim_select(),
+             read_filters(filters),
+             materialization_claim_filter_specs(),
+             "ORDER BY claimed_at DESC, claim_key ASC"
+           ) do
+      query_and_decode_rows(repo, sql, params, &decode_materialization_claim_row/1)
     end
   end
 
@@ -922,6 +1002,14 @@ defmodule Favn.Storage.Adapter.Postgres do
     |> String.trim_trailing()
   end
 
+  defp materialization_claim_select do
+    """
+    SELECT record_payload
+    FROM favn_materialization_claims
+    """
+    |> String.trim_trailing()
+  end
+
   defp coverage_baseline_filter_specs do
     %{
       baseline_id: {"baseline_id", & &1},
@@ -970,6 +1058,24 @@ defmodule Favn.Storage.Adapter.Postgres do
       latest_attempt_status: {"latest_attempt_status", &Atom.to_string/1},
       manifest_version_id: {"manifest_version_id", & &1},
       manifest_content_hash: {"manifest_content_hash", & &1}
+    }
+  end
+
+  defp materialization_claim_filter_specs do
+    %{
+      claim_key: {"claim_key", & &1},
+      asset_ref_module: {"asset_ref_module", &Atom.to_string/1},
+      asset_ref_name: {"asset_ref_name", &Atom.to_string/1},
+      freshness_key: {"freshness_key", & &1},
+      input_fingerprint: {"input_fingerprint", & &1},
+      run_id: {"run_id", & &1},
+      asset_step_id: {"asset_step_id", & &1},
+      node_key: {"node_key", &encode_node_key/1},
+      runner_execution_id: {"runner_execution_id", & &1},
+      manifest_version_id: {"manifest_version_id", & &1},
+      manifest_content_hash: {"manifest_content_hash", & &1},
+      freshness_version: {"freshness_version", & &1},
+      status: {"status", &Atom.to_string/1}
     }
   end
 
@@ -1098,6 +1204,9 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp decode_asset_freshness_state_row([record_payload]),
     do: AssetFreshnessStateCodec.decode(record_payload)
+
+  defp decode_materialization_claim_row([record_payload]),
+    do: MaterializationClaimCodec.decode(record_payload)
 
   defp decode_log_entry_row([payload]), do: LogEntryCodec.decode(payload)
 
@@ -2070,6 +2179,239 @@ defmodule Favn.Storage.Adapter.Postgres do
         raise ArgumentError, "invalid scheduler state payload: #{inspect(reason)}"
     end
   end
+
+  defp encode_materialization_claim(%MaterializationClaim{} = claim) do
+    case MaterializationClaimCodec.encode(claim) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid materialization claim payload: #{inspect(reason)}"
+    end
+  end
+
+  defp fetch_materialization_claim(repo, claim_key) do
+    sql = "SELECT record_payload FROM favn_materialization_claims WHERE claim_key = $1 LIMIT 1"
+
+    case SQL.query(repo, sql, [claim_key]) do
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:ok, %{rows: [row]}} -> decode_materialization_claim_row(row)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp upsert_materialization_claim(repo, %MaterializationClaim{} = claim) do
+    sql = """
+    INSERT INTO favn_materialization_claims (
+      claim_key, asset_ref_module, asset_ref_name, freshness_key, input_fingerprint,
+      run_id, asset_step_id, node_key, runner_execution_id, manifest_version_id,
+      manifest_content_hash, freshness_version, status, claimed_at, heartbeat_at,
+      expires_at, finished_at, record_payload
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+    ON CONFLICT(claim_key) DO UPDATE SET
+      asset_ref_module = EXCLUDED.asset_ref_module,
+      asset_ref_name = EXCLUDED.asset_ref_name,
+      freshness_key = EXCLUDED.freshness_key,
+      input_fingerprint = EXCLUDED.input_fingerprint,
+      run_id = EXCLUDED.run_id,
+      asset_step_id = EXCLUDED.asset_step_id,
+      node_key = EXCLUDED.node_key,
+      runner_execution_id = EXCLUDED.runner_execution_id,
+      manifest_version_id = EXCLUDED.manifest_version_id,
+      manifest_content_hash = EXCLUDED.manifest_content_hash,
+      freshness_version = EXCLUDED.freshness_version,
+      status = EXCLUDED.status,
+      claimed_at = EXCLUDED.claimed_at,
+      heartbeat_at = EXCLUDED.heartbeat_at,
+      expires_at = EXCLUDED.expires_at,
+      finished_at = EXCLUDED.finished_at,
+      record_payload = EXCLUDED.record_payload
+    """
+
+    case SQL.query(repo, sql, materialization_claim_params(claim)) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp update_claimed_materialization_claim(repo, %MaterializationClaim{} = claim) do
+    sql = """
+    UPDATE favn_materialization_claims SET
+      asset_ref_module = $2,
+      asset_ref_name = $3,
+      freshness_key = $4,
+      input_fingerprint = $5,
+      run_id = $6,
+      asset_step_id = $7,
+      node_key = $8,
+      runner_execution_id = $9,
+      manifest_version_id = $10,
+      manifest_content_hash = $11,
+      freshness_version = $12,
+      status = $13,
+      claimed_at = $14,
+      heartbeat_at = $15,
+      expires_at = $16,
+      finished_at = $17,
+      record_payload = $18
+    WHERE claim_key = $1 AND status = 'claimed'
+    """
+
+    case SQL.query(repo, sql, materialization_claim_params(claim)) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, %{num_rows: 0}} -> :conflict
+      {:ok, _result} -> :conflict
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp guarded_materialization_claim_transition(claim_key, opts, transition)
+       when is_function(transition, 1) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      repo.transact(fn ->
+        with {:ok, %MaterializationClaim{status: :claimed} = claim} <-
+               fetch_materialization_claim(repo, claim_key),
+             updated = transition.(claim),
+             :ok <- update_claimed_materialization_claim(repo, updated) do
+          {:ok, {:ok, updated}}
+        else
+          {:ok, nil} -> repo.rollback(:not_found)
+          {:ok, %MaterializationClaim{}} -> repo.rollback(:not_found)
+          :conflict -> repo.rollback(:not_found)
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp materialization_claim_params(%MaterializationClaim{} = claim) do
+    [
+      claim.claim_key,
+      Atom.to_string(claim.asset_ref_module),
+      Atom.to_string(claim.asset_ref_name),
+      claim.freshness_key,
+      claim.input_fingerprint,
+      claim.run_id,
+      claim.asset_step_id,
+      encode_node_key(claim.node_key),
+      claim.runner_execution_id,
+      claim.manifest_version_id,
+      claim.manifest_content_hash,
+      claim.freshness_version,
+      Atom.to_string(claim.status),
+      claim.claimed_at,
+      claim.heartbeat_at,
+      claim.expires_at,
+      claim.finished_at,
+      encode_materialization_claim(claim)
+    ]
+  end
+
+  defp expire_materialization_claims_in_transaction(repo, %DateTime{} = now) do
+    repo.transact(fn ->
+      sql =
+        "SELECT record_payload FROM favn_materialization_claims WHERE status = $1 AND expires_at <= $2"
+
+      case SQL.query(repo, sql, ["claimed", now]) do
+        {:ok, %{rows: rows}} ->
+          rows
+          |> Enum.reduce_while({:ok, 0}, fn row, {:ok, count} ->
+            with {:ok, claim} <- decode_materialization_claim_row(row),
+                 expired = %{claim | status: :expired, finished_at: now} do
+              case update_claimed_materialization_claim(repo, expired) do
+                :ok -> {:cont, {:ok, count + 1}}
+                :conflict -> {:cont, {:ok, count}}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
+            else
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
+          end)
+          |> case do
+            {:ok, count} -> {:ok, count}
+            {:error, reason} -> repo.rollback(reason)
+          end
+
+        {:error, reason} ->
+          repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, count} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp lock_materialization_claim(repo, claim_key) do
+    case SQL.query(repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [
+           "materialization:#{claim_key}"
+         ]) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp materialization_claim_acquire_decision(nil, %DateTime{}), do: :insert
+
+  defp materialization_claim_acquire_decision(
+         %MaterializationClaim{status: :succeeded} = claim,
+         %DateTime{}
+       ),
+       do: {:already_succeeded, claim}
+
+  defp materialization_claim_acquire_decision(
+         %MaterializationClaim{status: :claimed} = claim,
+         %DateTime{} = now
+       ) do
+    if MaterializationClaim.active?(claim, now), do: {:already_claimed, claim}, else: :reclaim
+  end
+
+  defp materialization_claim_acquire_decision(%MaterializationClaim{}, %DateTime{}), do: :reclaim
+
+  defp apply_materialization_completion(%MaterializationClaim{} = claim, completion) do
+    %{
+      claim
+      | status: :succeeded,
+        freshness_version: field_value(completion, :freshness_version) || claim.freshness_version,
+        finished_at: field_value(completion, :finished_at) || DateTime.utc_now(),
+        metadata: field_value(completion, :metadata) || claim.metadata,
+        error: field_value(completion, :error)
+    }
+  end
+
+  defp apply_materialization_failure(%MaterializationClaim{} = claim, failure) do
+    status = normalize_materialization_failure_status(field_value(failure, :status) || :failed)
+
+    %{
+      claim
+      | status: status,
+        error: field_value(failure, :error),
+        finished_at: field_value(failure, :finished_at) || DateTime.utc_now(),
+        metadata: field_value(failure, :metadata) || claim.metadata
+    }
+  end
+
+  defp normalize_materialization_failure_status(status) when is_atom(status) do
+    if status in MaterializationClaim.terminal_failure_statuses(), do: status, else: :failed
+  end
+
+  defp normalize_materialization_failure_status(status) when is_binary(status) do
+    Enum.find(
+      MaterializationClaim.terminal_failure_statuses(),
+      :failed,
+      &(Atom.to_string(&1) == status)
+    )
+  end
+
+  defp encode_node_key(nil), do: nil
+  defp encode_node_key(value) when is_binary(value), do: value
+  defp encode_node_key(value), do: inspect(value)
+
+  defp field_value(map, field), do: Map.get(map, field) || Map.get(map, Atom.to_string(field))
 
   defp delete_expired_execution_leases(repo, %DateTime{} = now) do
     repo.transact(fn ->

@@ -22,7 +22,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.AssetFreshnessState
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.Freshness.Decider
+  alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.Freshness.Staleness
+  alias FavnOrchestrator.MaterializationClaim.Identity, as: MaterializationClaimIdentity
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RefreshPolicy
@@ -33,6 +35,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Storage
 
   @await_task_timeout_buffer_ms 2_000
+  @materialization_claim_timeout_buffer_ms 60_000
 
   def execute_plan(%RunState{submit_kind: :pipeline} = run_state, %Version{} = version),
     do: execute_pipeline_parallel_once(run_state, version)
@@ -135,6 +138,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                        stage,
                        runnable_node_keys,
                        decisions,
+                       classified_context,
                        runner_client,
                        runner_opts
                      ) do
@@ -217,6 +221,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          stage,
          node_keys,
          decisions,
+         freshness_context,
          runner_client,
          runner_opts
        ) do
@@ -226,6 +231,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            stage,
            node_keys,
            decisions,
+           freshness_context,
            1,
            runner_client,
            runner_opts,
@@ -287,6 +293,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
               {:error, :external_cancel} ->
                 {:halt, {:error, Snapshots.cancelled_snapshot(current_run)}}
+
+              {:error, reason} ->
+                failed = RunState.transition(current_run, status: :error, error: reason)
+                {:halt, {:error, failed}}
             end
         end
       end
@@ -341,17 +351,17 @@ defmodule FavnOrchestrator.RunServer.Execution do
            freshness_key: freshness_key
          }) do
       :ok ->
-        :ok =
-          record_attempt_freshness_state(
-            next_run,
-            version,
-            node_key,
-            status,
-            freshness_key,
-            decision
-          )
-
-        {:ok, next_run}
+        case StateWriter.put_attempt_state(
+               next_run,
+               version,
+               node_key,
+               status,
+               freshness_key,
+               decision
+             ) do
+          {:ok, _state} -> {:ok, next_run}
+          {:error, reason} -> {:error, {:freshness_state_write_failed, reason}}
+        end
 
       {:error, :external_cancel} ->
         {:error, :external_cancel}
@@ -383,6 +393,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          stage,
          node_keys,
          decisions,
+         freshness_context,
          attempt,
          runner_client,
          runner_opts,
@@ -397,6 +408,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
              stage,
              node_keys,
              decisions,
+             freshness_context,
              attempt,
              runner_client,
              runner_opts
@@ -423,6 +435,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                 stage,
                 deferred_node_keys,
                 decisions,
+                freshness_context,
                 attempt,
                 runner_client,
                 runner_opts,
@@ -438,6 +451,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                 deferred_node_keys,
                 retry_refs,
                 decisions,
+                freshness_context,
                 attempt,
                 runner_client,
                 runner_opts,
@@ -461,6 +475,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          _stage,
          [],
          _decisions,
+         _freshness_context,
          _attempt,
          _runner_client,
          _runner_opts,
@@ -476,6 +491,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          stage,
          deferred_node_keys,
          decisions,
+         freshness_context,
          attempt,
          runner_client,
          runner_opts,
@@ -488,6 +504,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            stage,
            deferred_node_keys,
            decisions,
+           freshness_context,
            attempt,
            runner_client,
            runner_opts,
@@ -509,6 +526,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          deferred_node_keys,
          retry_refs,
          decisions,
+         freshness_context,
          attempt,
          runner_client,
          runner_opts,
@@ -532,6 +550,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  stage,
                  deferred_node_keys,
                  decisions,
+                 freshness_context,
                  attempt,
                  runner_client,
                  runner_opts,
@@ -554,6 +573,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
            stage,
            retry_refs,
            decisions,
+           freshness_context,
            attempt + 1,
            runner_client,
            runner_opts,
@@ -576,6 +596,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          stage,
          node_keys,
          decisions,
+         freshness_context,
          attempt,
          runner_client,
          runner_opts
@@ -586,6 +607,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       version,
       stage,
       decisions,
+      freshness_context,
       attempt,
       runner_client,
       runner_opts,
@@ -600,6 +622,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          _version,
          _stage,
          _decisions,
+         _freshness_context,
          _attempt,
          _runner_client,
          _runner_opts,
@@ -615,6 +638,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          %Version{} = version,
          stage,
          decisions,
+         freshness_context,
          attempt,
          runner_client,
          runner_opts,
@@ -632,21 +656,138 @@ defmodule FavnOrchestrator.RunServer.Execution do
              execution_pool: Map.get(work.metadata, :execution_pool)
            }) do
         {:ok, lease} ->
-          submit_admitted_stage_entry(
-            rest,
-            current_run,
-            version,
-            stage,
-            decisions,
-            attempt,
-            runner_client,
-            runner_opts,
-            acc,
-            queued_steps,
-            node_key,
-            work,
-            lease
-          )
+          case acquire_materialization_claim(
+                 current_run,
+                 version,
+                 node_key,
+                 decisions,
+                 freshness_context,
+                 work
+               ) do
+            {:ok, claim} ->
+              submit_admitted_stage_entry(
+                rest,
+                current_run,
+                version,
+                stage,
+                decisions,
+                freshness_context,
+                attempt,
+                runner_client,
+                runner_opts,
+                acc,
+                queued_steps,
+                node_key,
+                work,
+                lease,
+                claim
+              )
+
+            {:already_succeeded, claim} ->
+              :ok = release_entry_lease(%{lease: lease})
+
+              if reusable_materialization_success?(decisions, node_key) do
+                decision =
+                  decisions
+                  |> Map.get(node_key, %{})
+                  |> Map.merge(%{
+                    decision: :skipped_fresh,
+                    reason: materialization_skip_reason(claim)
+                  })
+
+                case persist_decision_result(
+                       current_run,
+                       version,
+                       node_key,
+                       stage,
+                       :skipped_fresh,
+                       decision
+                     ) do
+                  {:ok, skipped_run} ->
+                    submit_stage_entries(
+                      rest,
+                      skipped_run,
+                      version,
+                      stage,
+                      decisions,
+                      freshness_context,
+                      attempt,
+                      runner_client,
+                      runner_opts,
+                      acc,
+                      queued_steps
+                    )
+
+                  {:error, :external_cancel} ->
+                    {:error, Snapshots.cancelled_snapshot(current_run), [],
+                     Enum.map(acc, & &1.node_key)}
+
+                  {:error, reason} ->
+                    failed = RunState.transition(current_run, status: :error, error: reason)
+                    {:error, failed, [], Enum.map(acc, & &1.node_key)}
+                end
+              else
+                failed =
+                  RunState.transition(current_run,
+                    status: :error,
+                    error:
+                      {:non_reusable_materialization_claim_succeeded,
+                       materialization_claim_key(claim)}
+                  )
+
+                {:error, failed, [], Enum.map(acc, & &1.node_key)}
+              end
+
+            {:already_claimed, claim} ->
+              :ok = release_entry_lease(%{lease: lease})
+              queue_reason = :materialization_claim
+              scope = materialization_claim_scope(claim)
+              queue_signature = queue_signature(asset_step_id, queue_reason, scope)
+
+              case maybe_persist_step_queued(
+                     queued_steps,
+                     queue_signature,
+                     current_run,
+                     work,
+                     stage,
+                     attempt,
+                     queue_reason,
+                     scope
+                   ) do
+                {:ok, queued_run, next_queued_steps} when acc == [] ->
+                  Process.sleep(100)
+
+                  submit_stage_entries(
+                    node_keys,
+                    queued_run,
+                    version,
+                    stage,
+                    decisions,
+                    freshness_context,
+                    attempt,
+                    runner_client,
+                    runner_opts,
+                    acc,
+                    next_queued_steps
+                  )
+
+                {:ok, queued_run, _next_queued_steps} ->
+                  {:ok, queued_run, acc, node_keys}
+
+                {:error, :external_cancel} ->
+                  {:error, Snapshots.cancelled_snapshot(current_run), [],
+                   Enum.map(acc, & &1.node_key)}
+
+                {:error, reason} ->
+                  failed = RunState.transition(current_run, status: :error, error: reason)
+                  {:error, failed, [], Enum.map(acc, & &1.node_key)}
+              end
+
+            {:error, reason} ->
+              :ok = release_entry_lease(%{lease: lease})
+              failed = RunState.transition(current_run, status: :error, error: reason)
+              {:error, failed, [], Enum.map(acc, & &1.node_key)}
+          end
 
         {:queued, queue_reason, scope} ->
           queue_signature = queue_signature(asset_step_id, queue_reason, scope)
@@ -670,6 +811,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
                 version,
                 stage,
                 decisions,
+                freshness_context,
                 attempt,
                 runner_client,
                 runner_opts,
@@ -702,6 +844,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          version,
          stage,
          decisions,
+         freshness_context,
          attempt,
          runner_client,
          runner_opts,
@@ -709,7 +852,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
          queued_steps,
          node_key,
          work,
-         lease
+         lease,
+         materialization_claim
        ) do
     asset_ref = work.asset_ref
     asset_step_id = Map.fetch!(work.metadata, :asset_step_id)
@@ -738,9 +882,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
               window: Map.get(work.metadata, :window),
               execution_id: execution_id,
               runner_execution_id: execution_id,
+              version: version,
+              decision: Map.get(decisions, node_key, %{}),
+              freshness_context: freshness_context,
               attempt: attempt,
               stage: stage,
               lease: lease,
+              materialization_claim: materialization_claim,
               execution_pool: Map.get(work.metadata, :execution_pool),
               freshness_key: decision_freshness_key(decisions, node_key)
             }
@@ -751,6 +899,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
               version,
               stage,
               decisions,
+              freshness_context,
               attempt,
               runner_client,
               runner_opts,
@@ -760,6 +909,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
           {:error, :external_cancel} ->
             :ok = release_entry_lease(%{lease: lease})
+            :ok = fail_materialization_claim(materialization_claim, :external_cancel)
             :ok = release_entry_leases(acc)
 
             cancelled =
@@ -777,6 +927,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: lease})
+        :ok = fail_materialization_claim(materialization_claim, reason)
         :ok = release_entry_leases(acc)
 
         cancelled =
@@ -1142,6 +1293,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       Process.exit(pid, :kill)
       Process.demonitor(monitor_ref, [:flush])
       flush_await_reply(reply_ref)
+      :ok = fail_entry_materialization_claim(entry, :await_timeout)
 
       {entry, {:error, :timeout}}
     end)
@@ -1153,6 +1305,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       Process.demonitor(monitor_ref, [:flush])
       flush_await_reply(reply_ref)
       :ok = release_entry_lease(entry)
+      :ok = fail_entry_materialization_claim(entry, :stopped_pending_await)
     end)
   end
 
@@ -1203,9 +1356,189 @@ defmodule FavnOrchestrator.RunServer.Execution do
     {asset_step_id, queue_reason, scope_kind, scope_key}
   end
 
+  defp acquire_materialization_claim(
+         %RunState{} = run_state,
+         %Version{} = version,
+         node_key,
+         decisions,
+         freshness_context,
+         %RunnerWork{} = work
+       ) do
+    node = Map.fetch!(run_state.plan.nodes, node_key)
+    {module, name} = node.ref
+    now = DateTime.utc_now()
+    freshness_key = decision_freshness_key(decisions, node_key)
+
+    input_versions =
+      Staleness.consumed_input_versions(node, current_upstream_states(node, freshness_context))
+
+    input_fingerprint = MaterializationClaimIdentity.input_fingerprint(input_versions)
+    producer_identity = materialization_producer_identity(run_state, version, node_key, decisions)
+
+    claim_key =
+      MaterializationClaimIdentity.claim_key(
+        node.ref,
+        freshness_key,
+        input_fingerprint,
+        producer_identity
+      )
+
+    asset_step_id = Map.fetch!(work.metadata, :asset_step_id)
+
+    claim = %{
+      claim_key: claim_key,
+      run_id: run_state.id,
+      asset_step_id: asset_step_id,
+      node_key: node_key,
+      asset_ref_module: module,
+      asset_ref_name: name,
+      freshness_key: freshness_key,
+      input_fingerprint: input_fingerprint,
+      input_versions: input_versions,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      status: :claimed,
+      claimed_at: now,
+      heartbeat_at: now,
+      expires_at: DateTime.add(now, materialization_claim_ttl_ms(run_state), :millisecond)
+    }
+
+    case Storage.try_acquire_materialization_claim(claim) do
+      {:ok, claim} -> {:ok, claim}
+      {:already_succeeded, claim} -> {:already_succeeded, claim}
+      {:already_claimed, claim} -> {:already_claimed, claim}
+      {:error, {:already_succeeded, claim}} -> {:already_succeeded, claim}
+      {:error, {:already_claimed, claim}} -> {:already_claimed, claim}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp materialization_claim_scope(claim) when is_map(claim) do
+    %{
+      kind: :materialization_claim,
+      key: materialization_claim_key(claim)
+    }
+  end
+
+  defp materialization_skip_reason(claim) when is_map(claim) do
+    case Map.get(claim, :status) || Map.get(claim, "status") do
+      status when status in [:succeeded, "succeeded", :ok, "ok"] ->
+        :concurrent_materialization_succeeded
+
+      _other ->
+        :existing_success
+    end
+  end
+
+  defp reusable_materialization_success?(decisions, node_key) when is_map(decisions) do
+    decisions
+    |> Map.get(node_key, %{})
+    |> Map.get(:reason)
+    |> reusable_materialization_reason?()
+  end
+
+  defp reusable_materialization_reason?(reason)
+       when reason in [:upstream_refreshed, :upstream_version_changed],
+       do: true
+
+  defp reusable_materialization_reason?(_reason), do: false
+
+  defp materialization_producer_identity(
+         %RunState{} = run_state,
+         %Version{} = version,
+         node_key,
+         decisions
+       ) do
+    base = version.content_hash || version.manifest_version_id || "unknown_manifest"
+
+    if reusable_materialization_success?(decisions, node_key) do
+      base
+    else
+      node_token = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+      Enum.join([base, run_state.id, node_token], ":")
+    end
+  end
+
+  defp materialization_claim_ttl_ms(%RunState{timeout_ms: timeout_ms})
+       when is_integer(timeout_ms) and timeout_ms > 0 do
+    timeout_ms + @materialization_claim_timeout_buffer_ms
+  end
+
+  defp materialization_claim_ttl_ms(%RunState{}), do: 360_000
+
   defp release_entry_leases(entries) when is_list(entries) do
     Enum.each(entries, &release_entry_lease/1)
     :ok
+  end
+
+  defp fail_entry_materialization_claim(%{materialization_claim: claim}, reason),
+    do: fail_materialization_claim(claim, reason)
+
+  defp fail_entry_materialization_claim(_entry, _reason), do: :ok
+
+  defp complete_materialization_claim(nil, _result, _freshness_state), do: :ok
+
+  defp complete_materialization_claim(claim, result, %AssetFreshnessState{} = freshness_state)
+       when is_map(claim) do
+    claim_id = materialization_claim_key(claim)
+
+    case Storage.complete_materialization_claim(claim_id, %{
+           finished_at: DateTime.utc_now(),
+           freshness_version: freshness_state.freshness_version,
+           metadata: %{result_status: result.status}
+         }) do
+      :ok -> :ok
+      {:ok, _claim} -> :ok
+      {:error, reason} -> {:error, {:complete_materialization_claim_failed, reason}}
+    end
+  end
+
+  defp fail_materialization_claim(nil, _reason), do: :ok
+
+  defp fail_materialization_claim(claim, reason) when is_map(claim) do
+    claim_id = materialization_claim_key(claim)
+
+    case Storage.fail_materialization_claim(claim_id, %{
+           status: materialization_failure_status(reason),
+           finished_at: DateTime.utc_now(),
+           error: reason
+         }) do
+      :ok -> :ok
+      {:ok, _claim} -> :ok
+      {:error, reason} -> {:error, {:fail_materialization_claim_failed, reason}}
+    end
+  end
+
+  defp materialization_failure_status(:timeout), do: :timed_out
+  defp materialization_failure_status(:await_timeout), do: :timed_out
+  defp materialization_failure_status(:external_cancel), do: :cancelled
+  defp materialization_failure_status(:stopped_pending_await), do: :cancelled
+  defp materialization_failure_status(:cancelled), do: :cancelled
+  defp materialization_failure_status(:timed_out), do: :timed_out
+  defp materialization_failure_status(_reason), do: :failed
+
+  defp materialization_claim_key(claim) when is_map(claim),
+    do: Map.get(claim, :claim_key) || Map.get(claim, "claim_key")
+
+  defp record_stage_attempt_freshness(%RunState{} = run_state, entry, :ok) do
+    StateWriter.put_success_state(
+      run_state,
+      Map.fetch!(entry, :version),
+      Map.fetch!(entry, :node_key),
+      Map.get(entry, :decision, %{}),
+      Map.fetch!(entry, :freshness_context)
+    )
+  end
+
+  defp record_stage_attempt_freshness(%RunState{} = run_state, entry, status) do
+    StateWriter.put_attempt_state(
+      run_state,
+      Map.fetch!(entry, :version),
+      Map.fetch!(entry, :node_key),
+      status,
+      Map.fetch!(entry, :freshness_key),
+      Map.get(entry, :decision, %{})
+    )
   end
 
   defp release_entry_lease(%{lease: lease}), do: release_entry_lease(lease)
@@ -1385,12 +1718,19 @@ defmodule FavnOrchestrator.RunServer.Execution do
         step_state =
           put_execution_node_result(step_state, entry, stage, attempt, step_status, asset_results)
 
-        outcome =
-          if retryable? and attempt < run_state.max_attempts,
-            do: :retry,
-            else: if(retryable?, do: :error, else: :ok)
+        case persist_post_step_state(step_state, entry, step_status, result) do
+          :ok ->
+            outcome =
+              if retryable? and attempt < run_state.max_attempts,
+                do: :retry,
+                else: if(retryable?, do: :error, else: :ok)
 
-        {step_state, outcome, asset_results}
+            {step_state, outcome, asset_results}
+
+          {:error, reason} ->
+            failed = post_step_persistence_failure(step_state, reason)
+            {failed, :error, asset_results}
+        end
 
       {:error, :external_cancel} ->
         return_external_cancel(run_state, asset_results)
@@ -1434,8 +1774,16 @@ defmodule FavnOrchestrator.RunServer.Execution do
          }) do
       :ok ->
         step_state = put_execution_node_result(step_state, entry, stage, attempt, :timed_out, [])
-        outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
-        {step_state, outcome, []}
+
+        case persist_post_step_state(step_state, entry, :timed_out, :timeout) do
+          :ok ->
+            outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
+            {step_state, outcome, []}
+
+          {:error, reason} ->
+            failed = post_step_persistence_failure(step_state, reason)
+            {failed, :error, []}
+        end
 
       {:error, :external_cancel} ->
         return_external_cancel(run_state, [])
@@ -1485,12 +1833,51 @@ defmodule FavnOrchestrator.RunServer.Execution do
          }) do
       :ok ->
         step_state = put_execution_node_result(step_state, entry, stage, attempt, :error, [])
-        outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
-        {step_state, outcome, []}
+
+        case persist_post_step_state(step_state, entry, :error, reason) do
+          :ok ->
+            outcome = if attempt < run_state.max_attempts, do: :retry, else: :error
+            {step_state, outcome, []}
+
+          {:error, persistence_reason} ->
+            failed = post_step_persistence_failure(step_state, persistence_reason)
+            {failed, :error, []}
+        end
 
       {:error, :external_cancel} ->
         return_external_cancel(run_state, [])
     end
+  end
+
+  defp persist_post_step_state(%RunState{} = step_state, entry, :ok, %RunnerResult{} = result) do
+    with {:ok, freshness_state} <- record_stage_attempt_freshness(step_state, entry, :ok),
+         :ok <-
+           complete_materialization_claim(
+             Map.get(entry, :materialization_claim),
+             result,
+             freshness_state
+           ) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp persist_post_step_state(%RunState{} = step_state, entry, status, failure_reason) do
+    with {:ok, _state} <- record_stage_attempt_freshness(step_state, entry, status),
+         :ok <- fail_entry_materialization_claim(entry, failure_reason) do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp post_step_persistence_failure(%RunState{} = step_state, reason) do
+    RunState.transition(step_state,
+      status: :error,
+      error: %{type: :post_step_persistence_failed, reason: reason},
+      runner_execution_id: nil
+    )
   end
 
   defp put_execution_node_result(
@@ -1870,8 +2257,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
     successful = successful_node_keys(run_state, node_keys, stage_results)
 
     Enum.reduce(successful, {freshness_context, run_state}, fn node_key, {context, current_run} ->
-      state = build_success_freshness_state(current_run, version, node_key, decisions, context)
-      :ok = Storage.put_asset_freshness_state(state)
+      state =
+        StateWriter.build_success_state(
+          current_run,
+          version,
+          node_key,
+          Map.get(decisions, node_key, %{}),
+          context
+        )
 
       next_context = %{
         context
@@ -1916,18 +2309,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           acc
         else
           status = latest_node_result_status(next_run, node_key) || failed_status
-          decision = Map.get(decisions, node_key, %{})
-          freshness_key = decision_freshness_key(decisions, node_key)
-
-          :ok =
-            record_attempt_freshness_state(
-              next_run,
-              version,
-              node_key,
-              status,
-              freshness_key,
-              decision
-            )
+          _decision = Map.get(decisions, node_key, %{})
 
           %{
             acc
@@ -1974,118 +2356,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> node_result_status()
   end
 
-  defp build_success_freshness_state(
-         %RunState{} = run_state,
-         %Version{} = version,
-         node_key,
-         decisions,
-         freshness_context
-       ) do
-    node = Map.fetch!(run_state.plan.nodes, node_key)
-    {module, name} = node.ref
-    now = DateTime.utc_now()
-    upstream_states = current_upstream_states(node, freshness_context)
-
-    {:ok, state} =
-      AssetFreshnessState.new(%{
-        asset_ref_module: module,
-        asset_ref_name: name,
-        freshness_key: decision_freshness_key(decisions, node_key),
-        status: :ok,
-        freshness_version: freshness_version(run_state, node_key),
-        latest_success_run_id: run_state.id,
-        latest_success_node_key: node_key,
-        latest_success_at: now,
-        latest_attempt_run_id: run_state.id,
-        latest_attempt_status: :ok,
-        latest_attempt_at: now,
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        input_versions: Staleness.consumed_input_versions(node, upstream_states),
-        metadata: %{reason: Map.get(Map.get(decisions, node_key, %{}), :reason)},
-        updated_at: now
-      })
-
-    state
-  end
-
-  defp record_attempt_freshness_state(
-         %RunState{} = run_state,
-         %Version{} = version,
-         node_key,
-         status,
-         freshness_key,
-         decision
-       ) do
-    node = Map.fetch!(run_state.plan.nodes, node_key)
-    {module, name} = node.ref
-    now = DateTime.utc_now()
-
-    previous =
-      case Storage.get_asset_freshness_state(module, name, freshness_key) do
-        {:ok, %AssetFreshnessState{} = state} -> state
-        _other -> nil
-      end
-
-    {:ok, state} =
-      AssetFreshnessState.new(%{
-        asset_ref_module: module,
-        asset_ref_name: name,
-        freshness_key: freshness_key,
-        status: status,
-        freshness_version: previous_freshness_version(previous),
-        latest_success_run_id: previous_latest_success_run_id(previous),
-        latest_success_node_key: previous_latest_success_node_key(previous),
-        latest_success_at: previous_latest_success_at(previous),
-        latest_attempt_run_id: run_state.id,
-        latest_attempt_status: status,
-        latest_attempt_at: now,
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        input_versions: previous_input_versions(previous),
-        metadata: attempt_freshness_metadata(previous, decision),
-        updated_at: now
-      })
-
-    Storage.put_asset_freshness_state(state)
-  end
-
-  defp previous_freshness_version(%AssetFreshnessState{} = state), do: state.freshness_version
-  defp previous_freshness_version(_state), do: nil
-
-  defp previous_latest_success_run_id(%AssetFreshnessState{} = state),
-    do: state.latest_success_run_id
-
-  defp previous_latest_success_run_id(_state), do: nil
-
-  defp previous_latest_success_node_key(%AssetFreshnessState{} = state),
-    do: state.latest_success_node_key
-
-  defp previous_latest_success_node_key(_state), do: nil
-
-  defp previous_latest_success_at(%AssetFreshnessState{} = state), do: state.latest_success_at
-  defp previous_latest_success_at(_state), do: nil
-
-  defp previous_input_versions(%AssetFreshnessState{} = state), do: state.input_versions
-  defp previous_input_versions(_state), do: %{}
-
-  defp attempt_freshness_metadata(%AssetFreshnessState{metadata: metadata}, decision)
-       when is_map(metadata) do
-    Map.merge(metadata, %{latest_attempt_reason: Map.get(decision, :reason)})
-  end
-
-  defp attempt_freshness_metadata(_state, decision),
-    do: %{latest_attempt_reason: Map.get(decision, :reason)}
-
   defp current_upstream_states(%{upstream: upstream}, freshness_context) do
     Map.new(upstream, fn upstream_node_key ->
       {upstream_node_key, Map.get(freshness_context.current_states, upstream_node_key)}
     end)
-  end
-
-  defp freshness_version(%RunState{} = run_state, node_key) do
-    encoded_node_key = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
-    "#{run_state.id}:#{encoded_node_key}"
   end
 
   defp state_asset_ref(%AssetFreshnessState{} = state) do

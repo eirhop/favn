@@ -108,6 +108,12 @@ defmodule FavnOrchestrator.Backfill.Projector do
   end
 
   defp maybe_project_parent(backfill_run_id) do
+    reproject_parent(backfill_run_id)
+  end
+
+  @doc "Reprojects a backfill parent run status from its persisted windows."
+  @spec reproject_parent(String.t()) :: :ok | {:error, term()}
+  def reproject_parent(backfill_run_id) when is_binary(backfill_run_id) do
     with {:ok, windows} <- list_all_backfill_windows(backfill_run_id: backfill_run_id),
          {:ok, parent} <- Storage.get_run(backfill_run_id),
          status <- parent_status(windows),

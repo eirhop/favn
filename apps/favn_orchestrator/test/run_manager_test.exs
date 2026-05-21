@@ -2195,6 +2195,23 @@ defmodule FavnOrchestrator.RunManagerTest do
                status: :running
              })
 
+    assert {:ok, started_running} = Storage.get_run(running.id)
+
+    assert :ok =
+             started_running
+             |> RunState.transition(status: :running)
+             |> FavnOrchestrator.TransitionWriter.persist_transition(:step_started, %{
+               asset_step_id:
+                 AssetStepIdentity.asset_step_id(
+                   running.id,
+                   nil,
+                   {MyApp.Assets.Gold, :asset}
+                 ),
+               asset_ref: {MyApp.Assets.Gold, :asset},
+               stage: 0,
+               runner_execution_id: "exec_orphaned_running"
+             })
+
     assert :ok = FavnOrchestrator.RunRecovery.reconcile_orphaned_runs()
 
     assert {:ok, reconciled_pending} = Storage.get_run(pending.id)
@@ -2209,6 +2226,23 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert reconciled_running.error.type == :orphaned_run_reconciled
     assert reconciled_running.error.previous_status == :running
     assert reconciled_running.error.scope == :local_single_node
+
+    assert {:ok, events} = Storage.list_run_events(running.id)
+
+    assert Enum.map(events, & &1.event_type) == [
+             :run_created,
+             :run_started,
+             :step_started,
+             :step_failed,
+             :run_failed
+           ]
+
+    latest_step_event =
+      events
+      |> Enum.filter(&String.starts_with?(Atom.to_string(&1.event_type), "step_"))
+      |> List.last()
+
+    assert latest_step_event.event_type == :step_failed
   end
 
   test "run manager startup does not reconcile persisted in-flight runs" do

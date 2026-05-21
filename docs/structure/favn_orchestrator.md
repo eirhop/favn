@@ -8,12 +8,13 @@ Code:
 - `apps/favn_orchestrator/lib/favn_orchestrator.ex`
 - `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Auth/session/service-token helpers under `apps/favn_orchestrator/lib/favn_orchestrator/auth/`
-- Run submission, execution admission, and recovery in `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex`, `apps/favn_orchestrator/lib/favn_orchestrator/execution_admission.ex`, and `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
+- Run submission, execution admission, materialization-claim admission, and recovery in `apps/favn_orchestrator/lib/favn_orchestrator/run_manager.ex`, `apps/favn_orchestrator/lib/favn_orchestrator/execution_admission.ex`, `apps/favn_orchestrator/lib/favn_orchestrator/materialization_claim.ex`, and `apps/favn_orchestrator/lib/favn_orchestrator/run_recovery.ex`
 - Run process internals under `apps/favn_orchestrator/lib/favn_orchestrator/run_server/`
 - Run read models in `apps/favn_orchestrator/lib/favn_orchestrator/run_read_model.ex`,
   including execution-group summaries/details, asset attempts, windows, and
   timeline entries for thin operator clients.
 - Freshness execution/query helpers under `apps/favn_orchestrator/lib/favn_orchestrator/freshness/`
+- Reusable runtime-state repair passes under `apps/favn_orchestrator/lib/favn_orchestrator/repair/`
 - Refresh policy normalization and forced-run selection in
   `apps/favn_orchestrator/lib/favn_orchestrator/refresh_policy.ex`
 - Operational pipeline and asset backfill range expansion, parent/child run
@@ -43,5 +44,6 @@ Tests:
 Use when changing run lifecycle, freshness decisions/queries, scheduling,
 private API behavior, SSE/events, auth, command idempotency, bootstrap
 service-token/runner-registration endpoints, same-BEAM readiness facade behavior,
-backfill orchestration, execution leases, control-plane concurrency/admission,
-queue reasons, or storage contract semantics.
+backfill orchestration, execution leases, materialization claims, runtime-state
+repair, control-plane concurrency/admission, queue reasons, or storage contract
+semantics.

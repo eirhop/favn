@@ -15,6 +15,7 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -145,6 +146,70 @@ defmodule FavnOrchestrator.Storage do
   @spec list_execution_leases() :: {:ok, [map()]} | {:error, term()}
   def list_execution_leases do
     adapter_call(fn adapter, opts -> adapter.list_execution_leases(opts) end)
+  end
+
+  @spec try_acquire_materialization_claim(MaterializationClaim.t() | map()) ::
+          {:ok, MaterializationClaim.t()}
+          | {:already_succeeded, MaterializationClaim.t()}
+          | {:already_claimed, MaterializationClaim.t()}
+          | {:error, term()}
+  def try_acquire_materialization_claim(claim) when is_map(claim) do
+    optional_adapter_call(
+      :try_acquire_materialization_claim,
+      [claim],
+      :materialization_claims_not_supported
+    )
+  end
+
+  @spec complete_materialization_claim(String.t(), map()) ::
+          {:ok, MaterializationClaim.t()} | {:error, term()}
+  def complete_materialization_claim(claim_key, completion)
+      when is_binary(claim_key) and is_map(completion) do
+    optional_adapter_call(
+      :complete_materialization_claim,
+      [claim_key, completion],
+      :materialization_claims_not_supported
+    )
+  end
+
+  @spec fail_materialization_claim(String.t(), map()) ::
+          {:ok, MaterializationClaim.t()} | {:error, term()}
+  def fail_materialization_claim(claim_key, failure)
+      when is_binary(claim_key) and is_map(failure) do
+    optional_adapter_call(
+      :fail_materialization_claim,
+      [claim_key, failure],
+      :materialization_claims_not_supported
+    )
+  end
+
+  @spec expire_materialization_claims(DateTime.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def expire_materialization_claims(%DateTime{} = now) do
+    optional_adapter_call(
+      :expire_materialization_claims,
+      [now],
+      :materialization_claims_not_supported
+    )
+  end
+
+  @spec get_materialization_claim(String.t()) ::
+          {:ok, MaterializationClaim.t()} | {:error, term()}
+  def get_materialization_claim(claim_key) when is_binary(claim_key) do
+    optional_adapter_call(
+      :get_materialization_claim,
+      [claim_key],
+      :materialization_claims_not_supported
+    )
+  end
+
+  @spec list_materialization_claims(keyword()) ::
+          {:ok, [MaterializationClaim.t()]} | {:error, term()}
+  def list_materialization_claims(filters \\ []) when is_list(filters) do
+    optional_adapter_call(
+      :list_materialization_claims,
+      [filters],
+      :materialization_claims_not_supported
+    )
   end
 
   @spec persist_log_entries([Favn.Log.Entry.t()]) ::
