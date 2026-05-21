@@ -68,11 +68,21 @@ defmodule Favn.Storage.Adapter do
   @callback put_run(RunState.t(), adapter_opts()) :: :ok | {:error, error()}
   @callback get_run(String.t(), adapter_opts()) :: {:ok, RunState.t()} | {:error, error()}
   @callback list_runs(list_opts(), adapter_opts()) :: {:ok, [RunState.t()]} | {:error, error()}
+  @callback list_execution_group_runs(String.t(), adapter_opts()) ::
+              {:ok, [RunState.t()]} | {:error, error()}
+  @callback list_execution_group_run_ids(String.t(), adapter_opts()) ::
+              {:ok, [String.t()]} | {:error, error()}
+  @callback list_execution_groups(filter_opts(), adapter_opts()) ::
+              {:ok, Page.t(String.t())} | {:error, error()}
   @callback persist_run_transition(RunState.t(), map(), adapter_opts()) ::
               :ok | :idempotent | {:error, error()}
 
   @callback append_run_event(String.t(), map(), adapter_opts()) :: :ok | {:error, error()}
   @callback list_run_events(String.t(), adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+  @callback list_run_events(String.t(), filter_opts(), adapter_opts()) ::
+              {:ok, [map()]} | {:error, error()}
+  @callback list_execution_group_events(String.t(), filter_opts(), adapter_opts()) ::
+              {:ok, [map()]} | {:error, error()}
   @callback list_global_run_events(filter_opts(), adapter_opts()) ::
               {:ok, [map()]} | {:error, error()}
 
@@ -202,6 +212,11 @@ defmodule Favn.Storage.Adapter do
                       reserve_idempotency_record: 2,
                       complete_idempotency_record: 3,
                       get_idempotency_record: 2,
+                      list_execution_group_runs: 2,
+                      list_execution_group_run_ids: 2,
+                      list_execution_groups: 2,
+                      list_run_events: 3,
+                      list_execution_group_events: 3,
                       put_asset_freshness_state: 2,
                       get_asset_freshness_state: 4,
                       list_asset_freshness_states: 2,

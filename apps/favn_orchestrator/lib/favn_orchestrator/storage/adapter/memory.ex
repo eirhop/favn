@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Storage.LogEntryCodec
   alias FavnOrchestrator.Storage.MaterializationClaimCodec
   alias FavnOrchestrator.Storage.RunEventCodec
+  alias FavnOrchestrator.Storage.RunQuery
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
   alias FavnOrchestrator.Storage.WriteSemantics
@@ -215,6 +216,26 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def list_execution_group_runs(group_id, opts \\ [])
+      when is_binary(group_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_execution_group_runs, group_id})
+  end
+
+  @impl true
+  def list_execution_group_run_ids(group_id, opts \\ [])
+      when is_binary(group_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_execution_group_run_ids, group_id})
+  end
+
+  @impl true
+  def list_execution_groups(group_opts, opts) when is_list(group_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_execution_groups, group_opts})
+  end
+
+  @impl true
   def append_run_event(run_id, event, opts \\ [])
       when is_binary(run_id) and is_map(event) and is_list(opts) do
     with {:ok, normalized} <- RunEventCodec.normalize(run_id, event) do
@@ -227,6 +248,20 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def list_run_events(run_id, opts \\ []) when is_binary(run_id) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:list_run_events, run_id})
+  end
+
+  @impl true
+  def list_run_events(run_id, run_event_opts, opts)
+      when is_binary(run_id) and is_list(run_event_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_run_events, run_id, run_event_opts})
+  end
+
+  @impl true
+  def list_execution_group_events(group_id, run_event_opts, opts)
+      when is_binary(group_id) and is_list(run_event_opts) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:list_execution_group_events, group_id, run_event_opts})
   end
 
   @impl true
@@ -777,6 +812,33 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, runs}, state}
   end
 
+  def handle_call({:list_execution_group_runs, group_id}, _from, state) do
+    runs = execution_group_runs(state.runs, group_id)
+    {:reply, {:ok, runs}, state}
+  end
+
+  def handle_call({:list_execution_group_run_ids, group_id}, _from, state) do
+    run_ids =
+      state.runs
+      |> execution_group_runs(group_id)
+      |> Enum.map(& &1.id)
+
+    {:reply, {:ok, run_ids}, state}
+  end
+
+  def handle_call({:list_execution_groups, group_opts}, _from, state) do
+    page_opts = page_opts(group_opts)
+
+    page =
+      state.runs
+      |> execution_group_ids(group_opts)
+      |> Enum.drop(Keyword.fetch!(page_opts, :offset))
+      |> Enum.take(Keyword.fetch!(page_opts, :limit) + 1)
+      |> Page.from_fetched(page_opts)
+
+    {:reply, {:ok, page}, state}
+  end
+
   def handle_call({:append_run_event, run_id, event}, _from, state) do
     current = Map.get(state.run_events, run_id, [])
 
@@ -797,6 +859,29 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
 
   def handle_call({:list_run_events, run_id}, _from, state) do
     events = Map.get(state.run_events, run_id, [])
+    {:reply, {:ok, events}, state}
+  end
+
+  def handle_call({:list_run_events, run_id, run_event_opts}, _from, state) do
+    events =
+      state.run_events
+      |> Map.get(run_id, [])
+      |> filter_run_events(run_event_opts)
+
+    {:reply, {:ok, events}, state}
+  end
+
+  def handle_call({:list_execution_group_events, group_id, run_event_opts}, _from, state) do
+    run_ids = MapSet.new(Enum.map(execution_group_runs(state.runs, group_id), & &1.id))
+
+    events =
+      state.run_events
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.filter(&(Map.get(&1, :run_id) in run_ids))
+      |> Enum.sort_by(&event_sort_key/1)
+      |> filter_execution_group_events(run_event_opts)
+
     {:reply, {:ok, events}, state}
   end
 
@@ -1388,6 +1473,171 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           Keyword.get(run_opts, :manifest_version_id)
         )
     end)
+  end
+
+  defp execution_group_runs(runs, group_id) when is_map(runs) do
+    runs
+    |> Map.values()
+    |> Enum.filter(&(RunQuery.root_execution_group_id(&1) == group_id))
+    |> Enum.sort_by(&execution_group_run_sort_key/1)
+  end
+
+  defp execution_group_ids(runs, group_opts) when is_map(runs) do
+    runs
+    |> Map.values()
+    |> Enum.group_by(&RunQuery.root_execution_group_id/1)
+    |> Enum.map(fn {group_id, group_runs} ->
+      root =
+        Enum.find(group_runs, &(&1.id == group_id)) || Enum.min_by(group_runs, &run_sort_key/1)
+
+      %{
+        id: group_id,
+        root: root,
+        runs: group_runs,
+        activity: Enum.map(group_runs, &run_sort_key/1) |> Enum.max(fn -> 0 end)
+      }
+    end)
+    |> Enum.filter(&matches_execution_group_filters?(&1, group_opts))
+    |> sort_execution_groups(Keyword.get(group_opts, :sort, :started_desc))
+    |> Enum.map(& &1.id)
+  end
+
+  defp matches_execution_group_filters?(group, opts) do
+    matches_execution_group_status?(group, Keyword.get(opts, :status)) and
+      matches_execution_group_trigger?(group, Keyword.get(opts, :trigger_type)) and
+      matches_execution_group_target?(group, Keyword.get(opts, :target_asset)) and
+      matches_execution_group_search?(group, Keyword.get(opts, :search)) and
+      matches_execution_group_window?(group, Keyword.get(opts, :window)) and
+      matches_execution_group_only_filters?(group, opts)
+  end
+
+  defp matches_execution_group_status?(_group, nil), do: true
+  defp matches_execution_group_status?(%{root: root}, status), do: root.status == status
+
+  defp matches_execution_group_trigger?(_group, nil), do: true
+
+  defp matches_execution_group_trigger?(%{root: root}, trigger),
+    do: RunQuery.trigger_type(root) == trigger
+
+  defp matches_execution_group_target?(_group, nil), do: true
+
+  defp matches_execution_group_target?(%{root: root}, target) do
+    root
+    |> RunQuery.target_refs()
+    |> Enum.map(&RunQuery.public_ref/1)
+    |> Enum.member?(target)
+  end
+
+  defp matches_execution_group_search?(_group, value) when value in [nil, ""], do: true
+
+  defp matches_execution_group_search?(%{id: id, root: root}, search) do
+    search = String.downcase(to_string(search))
+    metadata = RunQuery.metadata(root)
+
+    [
+      id,
+      metadata.trigger_type,
+      metadata.asset_ref_text,
+      metadata.target_refs_text,
+      metadata.window_key
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+    |> String.downcase()
+    |> String.contains?(search)
+  end
+
+  defp matches_execution_group_window?(_group, nil), do: true
+  defp matches_execution_group_window?(group, :has_window), do: execution_group_has_window?(group)
+
+  defp matches_execution_group_window?(group, :no_window),
+    do: not execution_group_has_window?(group)
+
+  defp matches_execution_group_window?(_group, _window), do: true
+
+  defp matches_execution_group_only_filters?(group, opts) do
+    (not Keyword.get(opts, :only_failed, false) or failed_execution_group?(group)) and
+      (not Keyword.get(opts, :only_running, false) or running_execution_group?(group)) and
+      (not Keyword.get(opts, :only_incomplete, false) or running_execution_group?(group))
+  end
+
+  defp sort_execution_groups(groups, :failed_first),
+    do: Enum.sort_by(groups, &{if(failed_execution_group?(&1), do: 0, else: 1), -&1.activity})
+
+  defp sort_execution_groups(groups, :running_first),
+    do: Enum.sort_by(groups, &{if(running_execution_group?(&1), do: 0, else: 1), -&1.activity})
+
+  defp sort_execution_groups(groups, :status_priority),
+    do: Enum.sort_by(groups, &{execution_group_status_priority(&1), -&1.activity})
+
+  defp sort_execution_groups(groups, _sort), do: Enum.sort_by(groups, & &1.activity, :desc)
+
+  defp execution_group_run_sort_key(%RunState{id: id} = run) do
+    case RunQuery.root_execution_group_id(run) do
+      ^id -> {0, id}
+      _other -> {1, id}
+    end
+  end
+
+  defp execution_group_has_window?(%{runs: runs}) do
+    Enum.any?(runs, fn run -> RunQuery.metadata(run).window_key not in [nil, ""] end)
+  end
+
+  defp failed_execution_group?(%{root: root, runs: runs}) do
+    root.status in [:error, :partial, :cancelled, :timed_out] or
+      Enum.any?(runs, &(&1.status in [:error, :partial, :cancelled, :timed_out]))
+  end
+
+  defp running_execution_group?(%{root: root, runs: runs}) do
+    root.status in [:pending, :running] or Enum.any?(runs, &(&1.status in [:pending, :running]))
+  end
+
+  defp execution_group_status_priority(group) do
+    cond do
+      failed_execution_group?(group) -> 0
+      running_execution_group?(group) -> 1
+      true -> 2
+    end
+  end
+
+  defp filter_run_events(events, opts) do
+    events
+    |> Enum.filter(fn event ->
+      case Keyword.get(opts, :after_sequence) do
+        sequence when is_integer(sequence) and sequence >= 0 ->
+          Map.get(event, :sequence) > sequence
+
+        _other ->
+          true
+      end
+    end)
+    |> maybe_limit_events(opts)
+  end
+
+  defp filter_execution_group_events(events, opts) do
+    events
+    |> Enum.filter(fn event ->
+      case Keyword.get(opts, :after_global_sequence) do
+        sequence when is_integer(sequence) and sequence >= 0 ->
+          Map.get(event, :global_sequence, 0) > sequence
+
+        _other ->
+          true
+      end
+    end)
+    |> maybe_limit_events(opts)
+  end
+
+  defp maybe_limit_events(events, opts) do
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> Enum.take(events, limit)
+      _other -> events
+    end
+  end
+
+  defp event_sort_key(event) do
+    {Map.get(event, :global_sequence) || 0, Map.get(event, :run_id) || "",
+     Map.get(event, :sequence) || 0}
   end
 
   defp matches_run_filter?(_run, _field, nil), do: true

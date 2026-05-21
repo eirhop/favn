@@ -115,14 +115,62 @@ defmodule FavnOrchestrator.Storage do
     adapter_call(fn adapter, opts -> adapter.list_runs(run_opts, opts) end)
   end
 
+  @spec list_execution_group_runs(String.t()) :: {:ok, [RunState.t()]} | {:error, term()}
+  def list_execution_group_runs(group_id) when is_binary(group_id) do
+    optional_adapter_call(
+      :list_execution_group_runs,
+      [group_id],
+      :execution_group_reads_not_supported
+    )
+  end
+
+  @spec list_execution_group_run_ids(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_execution_group_run_ids(group_id) when is_binary(group_id) do
+    optional_adapter_call(
+      :list_execution_group_run_ids,
+      [group_id],
+      :execution_group_reads_not_supported
+    )
+  end
+
+  @spec list_execution_groups(keyword()) :: {:ok, Page.t(String.t())} | {:error, term()}
+  def list_execution_groups(group_opts \\ []) when is_list(group_opts) do
+    paginated_adapter_call(group_opts, fn adapter, filters, opts ->
+      if function_exported?(adapter, :list_execution_groups, 2) do
+        adapter.list_execution_groups(filters, opts)
+      else
+        {:error, :execution_group_reads_not_supported}
+      end
+    end)
+  end
+
   @spec append_run_event(String.t(), map()) :: :ok | {:error, term()}
   def append_run_event(run_id, event) when is_binary(run_id) and is_map(event) do
     adapter_call(fn adapter, opts -> adapter.append_run_event(run_id, event, opts) end)
   end
 
-  @spec list_run_events(String.t()) :: {:ok, [map()]} | {:error, term()}
-  def list_run_events(run_id) when is_binary(run_id) do
-    adapter_call(fn adapter, opts -> adapter.list_run_events(run_id, opts) end)
+  @spec list_run_events(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_run_events(run_id, run_event_opts \\ [])
+      when is_binary(run_id) and is_list(run_event_opts) do
+    adapter_call(fn adapter, opts ->
+      if function_exported?(adapter, :list_run_events, 3) do
+        adapter.list_run_events(run_id, run_event_opts, opts)
+      else
+        with {:ok, events} <- adapter.list_run_events(run_id, opts) do
+          {:ok, filter_run_events(events, run_event_opts)}
+        end
+      end
+    end)
+  end
+
+  @spec list_execution_group_events(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_execution_group_events(group_id, run_event_opts \\ [])
+      when is_binary(group_id) and is_list(run_event_opts) do
+    optional_adapter_call(
+      :list_execution_group_events,
+      [group_id, run_event_opts],
+      :execution_group_reads_not_supported
+    )
   end
 
   @spec list_global_run_events(keyword()) :: {:ok, [map()]} | {:error, term()}
@@ -521,6 +569,27 @@ defmodule FavnOrchestrator.Storage do
     error -> {:error, {:invalid_log_entry, error}}
   catch
     kind, reason -> {:error, {:invalid_log_entry, {kind, reason}}}
+  end
+
+  defp filter_run_events(events, opts) do
+    events
+    |> Enum.filter(fn event ->
+      case Keyword.get(opts, :after_sequence) do
+        sequence when is_integer(sequence) and sequence >= 0 ->
+          Map.get(event, :sequence) > sequence
+
+        _other ->
+          true
+      end
+    end)
+    |> maybe_limit_run_events(opts)
+  end
+
+  defp maybe_limit_run_events(events, opts) do
+    case Keyword.get(opts, :limit) do
+      limit when is_integer(limit) and limit > 0 -> Enum.take(events, limit)
+      _other -> events
+    end
   end
 
   @spec validate_adapter(module()) :: :ok | {:error, term()}

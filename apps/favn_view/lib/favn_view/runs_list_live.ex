@@ -23,13 +23,13 @@ defmodule FavnView.RunsListLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {groups, error} = load_groups()
     filters = @default_filters
+    {groups, error} = load_groups(filters)
 
     socket =
       assign(socket,
         groups: groups,
-        visible_groups: filtered_groups(groups, filters),
+        visible_groups: groups,
         group_details: %{},
         expanded_group_ids: MapSet.new(),
         filters: filters,
@@ -49,7 +49,7 @@ defmodule FavnView.RunsListLive do
 
   @impl true
   def handle_info(:refresh_runs, socket) do
-    {groups, error} = load_groups()
+    {groups, error} = load_groups(socket.assigns.filters)
 
     {:noreply,
      socket
@@ -59,7 +59,7 @@ defmodule FavnView.RunsListLive do
   end
 
   def handle_info({:favn_run_event, _event}, socket) do
-    {groups, error} = load_groups()
+    {groups, error} = load_groups(socket.assigns.filters)
 
     {:noreply,
      socket
@@ -77,11 +77,14 @@ defmodule FavnView.RunsListLive do
 
   def handle_event("filter_groups", %{"filters" => params}, socket) do
     filters = normalize_filters(socket.assigns.filters, params)
+    {visible_groups, error} = load_groups(filters)
 
     {:noreply,
      assign(socket,
        filters: filters,
-       visible_groups: filtered_groups(socket.assigns.groups, filters)
+       visible_groups: visible_groups,
+       summary: overview_summary(visible_groups),
+       error: error
      )}
   end
 
@@ -101,11 +104,12 @@ defmodule FavnView.RunsListLive do
   end
 
   def handle_event("clear_filters", _params, socket) do
+    {groups, error} = load_groups(@default_filters)
+
     {:noreply,
-     assign(socket,
-       filters: @default_filters,
-       visible_groups: filtered_groups(socket.assigns.groups, @default_filters)
-     )}
+     socket
+     |> assign_groups(groups, error)
+     |> assign(filters: @default_filters)}
   end
 
   @impl true
@@ -136,9 +140,9 @@ defmodule FavnView.RunsListLive do
     :ok
   end
 
-  defp load_groups do
-    case FavnOrchestrator.list_execution_groups(limit: 100) do
-      {:ok, groups} -> {Enum.map(groups, &group_from_public/1), nil}
+  defp load_groups(filters) do
+    case FavnOrchestrator.page_execution_groups(orchestrator_filters(filters)) do
+      {:ok, %{items: groups}} -> {Enum.map(groups, &group_from_public/1), nil}
       {:error, reason} -> {[], inspect(reason)}
     end
   end
@@ -165,16 +169,69 @@ defmodule FavnView.RunsListLive do
   end
 
   defp assign_groups(socket, groups, error) do
-    filters = socket.assigns.filters
-
     assign(socket,
       groups: groups,
-      visible_groups: filtered_groups(groups, filters),
+      visible_groups: groups,
       filter_options: filter_options(groups),
       summary: overview_summary(groups),
       error: error
     )
   end
+
+  defp orchestrator_filters(filters) do
+    []
+    |> Keyword.put(:limit, 100)
+    |> maybe_put_search_filter(Map.get(filters, "search"))
+    |> maybe_put_status_filter(Map.get(filters, "status"))
+    |> maybe_put_atom_filter(:trigger_type, Map.get(filters, "trigger"))
+    |> maybe_put_filter(:target_asset, Map.get(filters, "target"))
+    |> maybe_put_atom_filter(:window, Map.get(filters, "window"))
+    |> maybe_put_boolean_filter(:only_failed, Map.get(filters, "only_failed"))
+    |> maybe_put_boolean_filter(:only_running, Map.get(filters, "only_running"))
+    |> maybe_put_boolean_filter(:only_incomplete, Map.get(filters, "only_incomplete"))
+    |> Keyword.put(:sort, sort_filter(Map.get(filters, "sort")))
+  end
+
+  defp maybe_put_search_filter(opts, value) when is_binary(value) and value != "",
+    do: Keyword.put(opts, :search, value)
+
+  defp maybe_put_search_filter(opts, _value), do: opts
+
+  defp maybe_put_status_filter(opts, "failed"), do: Keyword.put(opts, :only_failed, true)
+  defp maybe_put_status_filter(opts, "running"), do: Keyword.put(opts, :only_running, true)
+  defp maybe_put_status_filter(opts, "incomplete"), do: Keyword.put(opts, :only_incomplete, true)
+  defp maybe_put_status_filter(opts, "succeeded"), do: Keyword.put(opts, :status, :ok)
+  defp maybe_put_status_filter(opts, "partial"), do: Keyword.put(opts, :status, :partial)
+  defp maybe_put_status_filter(opts, "queued"), do: Keyword.put(opts, :status, :pending)
+  defp maybe_put_status_filter(opts, _value), do: opts
+
+  defp maybe_put_atom_filter(opts, _key, value) when value in [nil, "", "all"], do: opts
+
+  defp maybe_put_atom_filter(opts, key, value) do
+    case known_filter_atom(value) do
+      nil -> opts
+      atom -> Keyword.put(opts, key, atom)
+    end
+  end
+
+  defp maybe_put_filter(opts, _key, value) when value in [nil, "", "all"], do: opts
+  defp maybe_put_filter(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp maybe_put_boolean_filter(opts, key, "true"), do: Keyword.put(opts, key, true)
+  defp maybe_put_boolean_filter(opts, _key, _value), do: opts
+
+  defp sort_filter(value) when value in ["status_priority", "failed_first", "running_first"],
+    do: String.to_existing_atom(value)
+
+  defp sort_filter(_value), do: :started_desc
+
+  defp known_filter_atom("backfill"), do: :backfill
+  defp known_filter_atom("manual"), do: :manual
+  defp known_filter_atom("schedule"), do: :schedule
+  defp known_filter_atom("retry"), do: :retry
+  defp known_filter_atom("has_window"), do: :has_window
+  defp known_filter_atom("no_window"), do: :no_window
+  defp known_filter_atom(_value), do: nil
 
   defp ensure_group_detail(socket, group_id) do
     if Map.has_key?(socket.assigns.group_details, group_id) do
@@ -203,7 +260,7 @@ defmodule FavnView.RunsListLive do
   defp group_from_public(group) do
     targets = targets(Map.get(group, :target_assets, []), nil)
     target = List.first(targets) || "No target"
-    status = display_status(group)
+    status = display_group_status(Map.get(group, :status))
     current_activity = current_activity(Map.get(group, :currently_running_asset_attempts, []))
     window = window_range_label(group)
     progress = progress(group)
@@ -216,7 +273,7 @@ defmodule FavnView.RunsListLive do
       target_title: target,
       targets: targets,
       status: status,
-      raw_status: Map.get(group, :root_status),
+      raw_status: Map.get(group, :status),
       trigger: label(Map.get(group, :trigger_type)),
       trigger_type: Map.get(group, :trigger_type),
       window: window,
@@ -260,59 +317,6 @@ defmodule FavnView.RunsListLive do
       duration: LogsViewModel.duration_ms_label(Map.get(run, :duration_ms))
     }
   end
-
-  defp filtered_groups(groups, filters) do
-    groups
-    |> Enum.filter(&matches_filters?(&1, filters))
-    |> sort_groups(Map.get(filters, "sort", "started_desc"))
-  end
-
-  defp matches_filters?(group, filters) do
-    matches_search?(group, Map.get(filters, "search", "")) and
-      matches_select?(to_string(group.status), Map.get(filters, "status", "all")) and
-      matches_select?(
-        to_string(group.trigger_type || "unknown"),
-        Map.get(filters, "trigger", "all")
-      ) and
-      matches_target?(group, Map.get(filters, "target", "all")) and
-      matches_window?(group, Map.get(filters, "window", "all")) and
-      (Map.get(filters, "only_failed") != "true" or failed_group?(group)) and
-      (Map.get(filters, "only_running") != "true" or running_group?(group)) and
-      (Map.get(filters, "only_incomplete") != "true" or incomplete_group?(group))
-  end
-
-  defp matches_search?(_group, ""), do: true
-
-  defp matches_search?(group, search) do
-    haystack =
-      [group.id, group.short_id, group.trigger, group.window | group.targets]
-      |> Enum.join(" ")
-      |> String.downcase()
-
-    String.contains?(haystack, String.downcase(search))
-  end
-
-  defp matches_select?(_value, value) when value in [nil, "", "all"], do: true
-  defp matches_select?(value, expected), do: value == expected
-
-  defp matches_target?(_group, value) when value in [nil, "", "all"], do: true
-  defp matches_target?(group, value), do: value in group.targets
-
-  defp matches_window?(_group, value) when value in [nil, "", "all"], do: true
-  defp matches_window?(group, "has_window"), do: group.total_windows > 0
-  defp matches_window?(group, "no_window"), do: group.total_windows == 0
-  defp matches_window?(_group, _value), do: true
-
-  defp sort_groups(groups, "failed_first"),
-    do: Enum.sort_by(groups, &{if(failed_group?(&1), do: 0, else: 1), -&1.started_at_sort})
-
-  defp sort_groups(groups, "running_first"),
-    do: Enum.sort_by(groups, &{if(running_group?(&1), do: 0, else: 1), -&1.started_at_sort})
-
-  defp sort_groups(groups, "status_priority"),
-    do: Enum.sort_by(groups, &{status_priority(&1.status), -&1.started_at_sort})
-
-  defp sort_groups(groups, _sort), do: Enum.sort_by(groups, & &1.started_at_sort, :desc)
 
   defp normalize_filters(existing, params) do
     @default_filters
@@ -359,65 +363,15 @@ defmodule FavnView.RunsListLive do
   defp health_bucket(:incomplete), do: :queued
   defp health_bucket(_status), do: :succeeded
 
-  defp display_status(group) do
-    cond do
-      Map.get(group, :failed_asset_attempts, 0) > 0 or Map.get(group, :failed_windows, 0) > 0 ->
-        :failed
-
-      Map.get(group, :running_asset_attempts, 0) > 0 or Map.get(group, :root_status) == :running ->
-        :running
-
-      Map.get(group, :queued_asset_attempts, 0) > 0 or Map.get(group, :root_status) == :pending ->
-        :queued
-
-      incomplete_public_group?(group) ->
-        :incomplete
-
-      Map.get(group, :root_status) == :partial ->
-        :partial
-
-      Map.get(group, :root_status) == :ok ->
-        :succeeded
-
-      true ->
-        display_run_status(Map.get(group, :root_status))
-    end
-  end
+  defp display_group_status(:ok), do: :succeeded
+  defp display_group_status(:error), do: :failed
+  defp display_group_status(:pending), do: :queued
+  defp display_group_status(status), do: status || :unknown
 
   defp display_run_status(:ok), do: :succeeded
   defp display_run_status(:error), do: :failed
   defp display_run_status(:pending), do: :queued
   defp display_run_status(status), do: status || :unknown
-
-  defp failed_group?(group), do: group.status in [:failed, :partial]
-  defp running_group?(group), do: group.status == :running
-
-  defp incomplete_public_group?(group) do
-    root_status = Map.get(group, :root_status)
-
-    root_status in [:pending, :running] or
-      Map.get(group, :running_asset_attempts, 0) > 0 or
-      Map.get(group, :queued_asset_attempts, 0) > 0 or
-      (Map.get(group, :total_windows, 0) > 0 and
-         Map.get(group, :completed_windows, 0) < Map.get(group, :total_windows, 0)) or
-      (Map.get(group, :total_asset_attempts, 0) > 0 and
-         Map.get(group, :completed_asset_attempts, 0) < Map.get(group, :total_asset_attempts, 0))
-  end
-
-  defp incomplete_group?(group) do
-    group.status in [:queued, :running, :incomplete] or
-      (group.total_windows > 0 and group.completed_windows < group.total_windows) or
-      (group.total_asset_attempts > 0 and
-         group.completed_asset_attempts < group.total_asset_attempts)
-  end
-
-  defp status_priority(:failed), do: 0
-  defp status_priority(:partial), do: 1
-  defp status_priority(:running), do: 2
-  defp status_priority(:queued), do: 3
-  defp status_priority(:incomplete), do: 4
-  defp status_priority(:succeeded), do: 5
-  defp status_priority(_status), do: 6
 
   defp current_activity([attempt | _]) do
     window = window_label(Map.get(attempt, :window)) || "current window"
@@ -427,10 +381,20 @@ defmodule FavnView.RunsListLive do
   defp current_activity(_attempts), do: nil
 
   defp progress(group) do
-    window_label = "#{group.completed_windows} / #{group.total_windows} windows"
-    attempt_label = "#{group.completed_asset_attempts} / #{group.total_asset_attempts} attempts"
-    total = max(group.total_asset_attempts, 1)
-    percent = min(100, round(group.completed_asset_attempts * 100 / total))
+    totals = Map.get(group, :summary_totals, %{})
+    window_counts = Map.get(totals, :windows, %{})
+
+    attempt_counts =
+      Map.get(totals, :asset_attempts, Map.get(group, :progress, %{})[:counts] || %{})
+
+    completed_windows = Map.get(window_counts, :completed, group.completed_windows)
+    total_windows = Map.get(window_counts, :total, group.total_windows)
+    completed_attempts = Map.get(attempt_counts, :completed, group.completed_asset_attempts)
+    total_attempts = Map.get(attempt_counts, :total, group.total_asset_attempts)
+    window_label = "#{completed_windows} / #{total_windows} windows"
+    attempt_label = "#{completed_attempts} / #{total_attempts} attempts"
+    total = max(total_attempts, 1)
+    percent = min(100, round(completed_attempts * 100 / total))
 
     %{
       window_label: if(group.total_windows > 0, do: window_label, else: "No windows"),
@@ -444,15 +408,26 @@ defmodule FavnView.RunsListLive do
   defp progress_tone(%{status: :failed}), do: :error
   defp progress_tone(%{status: :partial}), do: :warning
   defp progress_tone(%{status: :running}), do: :info
+  defp progress_tone(%{health: :error}), do: :error
+  defp progress_tone(%{health: :warning}), do: :warning
+  defp progress_tone(%{health: :active}), do: :info
   defp progress_tone(_group), do: :success
 
   defp health(group) do
-    succeeded = max(group.completed_asset_attempts - group.failed_asset_attempts, 0)
-    failed = group.failed_asset_attempts
-    running = group.running_asset_attempts
-    queued = group.queued_asset_attempts
+    counts = group |> Map.get(:summary_totals, %{}) |> Map.get(:asset_attempts, %{})
+    failed = Map.get(counts, :failed, group.failed_asset_attempts)
+    running = Map.get(counts, :running, group.running_asset_attempts)
+    queued = Map.get(counts, :queued, group.queued_asset_attempts)
+    completed = Map.get(counts, :completed, group.completed_asset_attempts)
+    succeeded = max(completed - failed, 0)
 
-    %{succeeded: succeeded, failed: failed, running: running, queued: queued}
+    %{
+      succeeded: succeeded,
+      failed: failed,
+      running: running,
+      queued: queued,
+      status: group.health
+    }
   end
 
   defp window_range_label(%{total_windows: 0}), do: "-"
