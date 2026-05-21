@@ -223,6 +223,25 @@ defmodule FavnOrchestrator.Backfill.ProjectorTest do
              )
   end
 
+  test "reprojects parent status from persisted windows" do
+    now = DateTime.utc_now()
+    parent = parent_run("run_backfill_reproject")
+    child = child_run(parent.id, "run_child_reproject", "day:2026-04-27")
+
+    assert :ok = Storage.put_run(parent)
+
+    window = %{backfill_window(parent.id, child.trigger.window_key, now) | status: :error}
+    assert :ok = Storage.put_backfill_window(window)
+
+    assert :ok = FavnOrchestrator.Backfill.Projector.reproject_parent(parent.id)
+
+    assert {:ok, failed_parent} = Storage.get_run(parent.id)
+    assert failed_parent.status == :error
+
+    assert {:ok, parent_events} = Storage.list_run_events(parent.id)
+    assert Enum.map(parent_events, & &1.event_type) == [:backfill_failed]
+  end
+
   defp parent_run(run_id) do
     RunState.new(
       id: run_id,

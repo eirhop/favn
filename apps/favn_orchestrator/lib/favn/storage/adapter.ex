@@ -38,6 +38,7 @@ defmodule Favn.Storage.Adapter do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
 
@@ -81,6 +82,22 @@ defmodule Favn.Storage.Adapter do
   @callback expire_execution_leases(DateTime.t(), adapter_opts()) ::
               {:ok, non_neg_integer()} | {:error, error()}
   @callback list_execution_leases(adapter_opts()) :: {:ok, [map()]} | {:error, error()}
+
+  @callback try_acquire_materialization_claim(MaterializationClaim.t() | map(), adapter_opts()) ::
+              {:ok, MaterializationClaim.t()}
+              | {:already_succeeded, MaterializationClaim.t()}
+              | {:already_claimed, MaterializationClaim.t()}
+              | {:error, error()}
+  @callback complete_materialization_claim(String.t(), map(), adapter_opts()) ::
+              {:ok, MaterializationClaim.t()} | {:error, error()}
+  @callback fail_materialization_claim(String.t(), map(), adapter_opts()) ::
+              {:ok, MaterializationClaim.t()} | {:error, error()}
+  @callback expire_materialization_claims(DateTime.t(), adapter_opts()) ::
+              {:ok, non_neg_integer()} | {:error, error()}
+  @callback get_materialization_claim(String.t(), adapter_opts()) ::
+              {:ok, MaterializationClaim.t()} | {:error, error()}
+  @callback list_materialization_claims(filter_opts(), adapter_opts()) ::
+              {:ok, [MaterializationClaim.t()]} | {:error, error()}
 
   @callback persist_log_entries([Favn.Log.Entry.t()], adapter_opts()) ::
               {:ok, [Favn.Log.Entry.t()]} | {:error, error()}
@@ -187,5 +204,11 @@ defmodule Favn.Storage.Adapter do
                       get_idempotency_record: 2,
                       put_asset_freshness_state: 2,
                       get_asset_freshness_state: 4,
-                      list_asset_freshness_states: 2
+                      list_asset_freshness_states: 2,
+                      try_acquire_materialization_claim: 2,
+                      complete_materialization_claim: 3,
+                      fail_materialization_claim: 3,
+                      expire_materialization_claims: 2,
+                      get_materialization_claim: 2,
+                      list_materialization_claims: 2
 end

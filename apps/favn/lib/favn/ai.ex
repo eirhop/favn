@@ -69,6 +69,14 @@ defmodule Favn.AI do
     serialize independent assets, and do not confuse these controls with SQL
     `write_concurrency`, which protects writer/backend admission after asset
     execution has already started.
+  - To debug duplicate materializations, reruns that should skip already-finished
+    work, or crash recovery after a stopped orchestrator, read
+    `FavnOrchestrator.MaterializationClaim`,
+    `FavnOrchestrator.Freshness.StateWriter`,
+    `FavnOrchestrator.Repair.RuntimeState`, and `Mix.Tasks.Favn.RepairRuntimeState`.
+    `mix favn.repair_runtime_state --dry-run` inspects stale active runs, steps,
+    execution leases, materialization claims, backfill parents, and conservative
+    freshness repairs before `--apply` mutates runtime state.
   - To work with windows or one-off run input, read `Favn.Window`, then
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
@@ -128,8 +136,8 @@ defmodule Favn.AI do
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
     `mix favn.build.web`, `mix favn.build.orchestrator`,
-    `mix favn.build.single`, `mix favn.bootstrap.single`, and
-    `mix favn.read_doc`.
+    `mix favn.build.single`, `mix favn.bootstrap.single`,
+    `mix favn.repair_runtime_state`, and `mix favn.read_doc`.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
   ## About `Favn`
@@ -154,6 +162,14 @@ defmodule Favn.AI do
   - `FavnOrchestrator.ExecutionAdmission`: when working inside the orchestrator
     on persisted execution leases, run-level concurrency limits, global/pool
     admission, queue reasons, lease release, and recovery semantics
+  - `FavnOrchestrator.MaterializationClaim`: when working inside the orchestrator
+    on duplicate materialization prevention, active/succeeded/expired claims, or
+    claim-backed skip behavior across overlapping runs
+  - `FavnOrchestrator.Freshness.StateWriter`: when execution code needs to build
+    or persist latest asset freshness state immediately after step completion
+  - `FavnOrchestrator.Repair.RuntimeState`: when implementing or running
+    reusable crash repair for orphaned runs, stale active step events, claims,
+    leases, backfill parent reprojection, or conservative freshness rebuilds
   - `Favn.Freshness.Policy`: when you need accepted `@freshness` values such as
     `:daily`, `{:daily, timezone: "Europe/Oslo"}`, `[max_age: {:hours, 6}]`,
     `[window_success: true]`, and `:always`
@@ -213,6 +229,10 @@ defmodule Favn.AI do
     a task mentions `max_concurrency`, `execution_pool`, rate-limited APIs,
     runner-local versus orchestrator-owned limits, queue reasons, execution
     leases, or why many independent assets should not start at once.
+  - Read `FavnOrchestrator.MaterializationClaim` and
+    `FavnOrchestrator.Repair.RuntimeState` when a task mentions duplicate asset
+    materializations, stuck runs after a crash, orphaned `running`/`queued` steps,
+    stale materialization claims, or repairing persisted runtime state.
   - Read `Favn.Backfill.RangeRequest`, `Favn.Backfill.RangeResolver`, and
     `FavnOrchestrator.RefreshPolicy` when a task mentions operational backfill
     ranges, relative `last` ranges, baseline cutover, force-refresh repair,

@@ -1,8 +1,9 @@
 # favn_storage_sqlite
 
 Purpose: SQLite implementation of the orchestrator storage adapter, including
-schema migrations, command idempotency records, JSON-safe run/event/backfill and
-freshness DTO persistence, and canonical payload persistence.
+schema migrations, command idempotency records, JSON-safe run/event/backfill,
+freshness, and materialization-claim DTO persistence, and canonical payload
+persistence.
 
 Code:
 - `apps/favn_storage_sqlite/lib/favn/storage/adapter/sqlite.ex`
@@ -11,6 +12,7 @@ Code:
 - Command idempotency schema migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_idempotency_records.ex`
 - Run-event global sequence migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_run_event_global_sequence.ex`
 - Asset freshness state migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_asset_freshness_state.ex`
+- Materialization claim migration: `apps/favn_storage_sqlite/lib/favn_storage_sqlite/migrations/add_materialization_claims.ex`
 - `apps/favn_storage_sqlite/lib/favn_storage_sqlite/diagnostics.ex`
 
 Tests:
@@ -21,5 +23,5 @@ Tests:
 - Single-node bootstrap acceptance verification: `apps/favn_storage_sqlite/test/sqlite_single_node_bootstrap_acceptance_test.exs`
 
 Use when changing SQLite persistence, migrations, adapter lifecycle, readiness
-diagnostics, local SQLite storage semantics, or single-node bootstrap persistence
-acceptance coverage.
+diagnostics, local SQLite storage semantics, materialization claim acquisition,
+or single-node bootstrap persistence acceptance coverage.

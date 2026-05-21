@@ -5,6 +5,7 @@ defmodule FavnStoragePostgres.Migrations do
   alias FavnStoragePostgres.Migrations.AddAssetFreshnessState
   alias FavnStoragePostgres.Migrations.AddExecutionLeases
   alias FavnStoragePostgres.Migrations.AddLogEntries
+  alias FavnStoragePostgres.Migrations.AddMaterializationClaims
   alias FavnStoragePostgres.Migrations.AddBackfillState
   alias FavnStoragePostgres.Migrations.AddRunEventGlobalSequence
   alias FavnStoragePostgres.Migrations.CreateFoundation
@@ -17,7 +18,8 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_505_100_000, RebuildBackfillReadModelsForDtos},
     {20_260_509_100_000, AddAssetFreshnessState},
     {20_260_510_100_000, AddLogEntries},
-    {20_260_520_100_000, AddExecutionLeases}
+    {20_260_520_100_000, AddExecutionLeases},
+    {20_260_521_100_000, AddMaterializationClaims}
   ]
   @required_tables [
     "public.favn_manifest_versions",
@@ -34,7 +36,8 @@ defmodule FavnStoragePostgres.Migrations do
     "public.favn_log_entries",
     "public.favn_log_global_seq",
     "public.favn_execution_leases",
-    "public.favn_execution_lease_scopes"
+    "public.favn_execution_lease_scopes",
+    "public.favn_materialization_claims"
   ]
   @expected_versions Enum.map(@migrations, fn {version, _module} -> to_string(version) end)
 

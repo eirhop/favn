@@ -11,9 +11,11 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.LogEntryCodec
+  alias FavnOrchestrator.Storage.MaterializationClaimCodec
   alias FavnOrchestrator.Storage.RunEventCodec
   alias FavnOrchestrator.Storage.RunStateCodec
   alias FavnOrchestrator.Storage.SchedulerStateCodec
@@ -42,6 +44,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           run_events: %{required(String.t()) => [map()]},
           run_event_global_sequence: non_neg_integer(),
           execution_leases: %{required(String.t()) => map()},
+          materialization_claims: %{required(String.t()) => MaterializationClaim.t()},
           log_entries: [Favn.Log.Entry.t()],
           log_global_sequence: non_neg_integer(),
           scheduler_states: %{required({module(), atom() | nil}) => map()},
@@ -71,6 +74,22 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     :latest_attempt_status,
     :manifest_version_id,
     :manifest_content_hash
+  ]
+
+  @materialization_claim_filters [
+    :claim_key,
+    :asset_ref_module,
+    :asset_ref_name,
+    :freshness_key,
+    :input_fingerprint,
+    :run_id,
+    :asset_step_id,
+    :node_key,
+    :runner_execution_id,
+    :manifest_version_id,
+    :manifest_content_hash,
+    :freshness_version,
+    :status
   ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -241,6 +260,48 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def list_execution_leases(opts) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, :list_execution_leases)
+  end
+
+  @impl true
+  def try_acquire_materialization_claim(claim, opts) when is_map(claim) and is_list(opts) do
+    with {:ok, normalized} <- MaterializationClaimCodec.normalize(claim) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:try_acquire_materialization_claim, normalized})
+    end
+  end
+
+  @impl true
+  def complete_materialization_claim(claim_key, completion, opts)
+      when is_binary(claim_key) and is_map(completion) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:complete_materialization_claim, claim_key, completion})
+  end
+
+  @impl true
+  def fail_materialization_claim(claim_key, failure, opts)
+      when is_binary(claim_key) and is_map(failure) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:fail_materialization_claim, claim_key, failure})
+  end
+
+  @impl true
+  def expire_materialization_claims(%DateTime{} = now, opts) when is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:expire_materialization_claims, now})
+  end
+
+  @impl true
+  def get_materialization_claim(claim_key, opts) when is_binary(claim_key) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_materialization_claim, claim_key})
+  end
+
+  @impl true
+  def list_materialization_claims(filters, opts) when is_list(filters) and is_list(opts) do
+    with :ok <- validate_filters(filters, @materialization_claim_filters) do
+      server = Keyword.get(opts, :server, __MODULE__)
+      GenServer.call(server, {:list_materialization_claims, filters})
+    end
   end
 
   @impl true
@@ -548,6 +609,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       run_events: %{},
       run_event_global_sequence: 0,
       execution_leases: %{},
+      materialization_claims: %{},
       log_entries: [],
       log_global_sequence: 0,
       scheduler_states: %{},
@@ -808,6 +870,82 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def handle_call(:list_execution_leases, _from, state) do
     leases = state.execution_leases |> Map.values() |> Enum.sort_by(& &1.lease_id)
     {:reply, {:ok, leases}, state}
+  end
+
+  def handle_call({:try_acquire_materialization_claim, claim}, _from, state) do
+    {materialization_claims, _expired_count} =
+      expire_materialization_claims_in_memory(state.materialization_claims, claim.claimed_at)
+
+    existing = Map.get(materialization_claims, claim.claim_key)
+
+    case materialization_claim_acquire_decision(existing, claim.claimed_at) do
+      :insert ->
+        next_claims = Map.put(materialization_claims, claim.claim_key, claim)
+        {:reply, {:ok, claim}, %{state | materialization_claims: next_claims}}
+
+      :reclaim ->
+        next_claims = Map.put(materialization_claims, claim.claim_key, claim)
+        {:reply, {:ok, claim}, %{state | materialization_claims: next_claims}}
+
+      {:already_succeeded, existing} ->
+        {:reply, {:already_succeeded, existing},
+         %{state | materialization_claims: materialization_claims}}
+
+      {:already_claimed, existing} ->
+        {:reply, {:already_claimed, existing},
+         %{state | materialization_claims: materialization_claims}}
+    end
+  end
+
+  def handle_call({:complete_materialization_claim, claim_key, completion}, _from, state) do
+    case Map.fetch(state.materialization_claims, claim_key) do
+      {:ok, %MaterializationClaim{status: :claimed} = claim} ->
+        completed = apply_materialization_completion(claim, completion)
+        next_claims = Map.put(state.materialization_claims, claim_key, completed)
+        {:reply, {:ok, completed}, %{state | materialization_claims: next_claims}}
+
+      {:ok, _claim} ->
+        {:reply, {:error, :not_found}, state}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:fail_materialization_claim, claim_key, failure}, _from, state) do
+    case Map.fetch(state.materialization_claims, claim_key) do
+      {:ok, %MaterializationClaim{status: :claimed} = claim} ->
+        failed = apply_materialization_failure(claim, failure)
+        next_claims = Map.put(state.materialization_claims, claim_key, failed)
+        {:reply, {:ok, failed}, %{state | materialization_claims: next_claims}}
+
+      {:ok, _claim} ->
+        {:reply, {:error, :not_found}, state}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:expire_materialization_claims, now}, _from, state) do
+    {claims, expired_count} =
+      expire_materialization_claims_in_memory(state.materialization_claims, now)
+
+    {:reply, {:ok, expired_count}, %{state | materialization_claims: claims}}
+  end
+
+  def handle_call({:get_materialization_claim, claim_key}, _from, state) do
+    {:reply, fetch_or_not_found(state.materialization_claims, claim_key), state}
+  end
+
+  def handle_call({:list_materialization_claims, filters}, _from, state) do
+    claims =
+      state.materialization_claims
+      |> Map.values()
+      |> filter_by(filters)
+      |> Enum.sort_by(& &1.claim_key)
+
+    {:reply, {:ok, claims}, state}
   end
 
   def handle_call({:persist_log_entries, entries}, _from, state) do
@@ -1616,6 +1754,74 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   defp execution_scope_identity(scope), do: {to_string(scope.kind), scope.key}
+
+  defp materialization_claim_acquire_decision(nil, %DateTime{}), do: :insert
+
+  defp materialization_claim_acquire_decision(
+         %MaterializationClaim{status: :succeeded} = claim,
+         %DateTime{}
+       ),
+       do: {:already_succeeded, claim}
+
+  defp materialization_claim_acquire_decision(
+         %MaterializationClaim{status: :claimed} = claim,
+         %DateTime{} = now
+       ) do
+    if MaterializationClaim.active?(claim, now), do: {:already_claimed, claim}, else: :reclaim
+  end
+
+  defp materialization_claim_acquire_decision(%MaterializationClaim{}, %DateTime{}), do: :reclaim
+
+  defp expire_materialization_claims_in_memory(claims, %DateTime{} = now) do
+    Enum.reduce(claims, {%{}, 0}, fn {claim_key, claim}, {acc, count} ->
+      if claim.status == :claimed and DateTime.compare(claim.expires_at, now) != :gt do
+        expired = %{claim | status: :expired, finished_at: now}
+        {Map.put(acc, claim_key, expired), count + 1}
+      else
+        {Map.put(acc, claim_key, claim), count}
+      end
+    end)
+  end
+
+  defp apply_materialization_completion(%MaterializationClaim{} = claim, completion) do
+    %{
+      claim
+      | status: :succeeded,
+        freshness_version: field_value(completion, :freshness_version) || claim.freshness_version,
+        finished_at: field_value(completion, :finished_at) || DateTime.utc_now(),
+        metadata: field_value(completion, :metadata) || claim.metadata,
+        error: field_value(completion, :error)
+    }
+  end
+
+  defp apply_materialization_failure(%MaterializationClaim{} = claim, failure) do
+    status = normalize_materialization_failure_status(field_value(failure, :status) || :failed)
+
+    status =
+      if status in MaterializationClaim.terminal_failure_statuses() do
+        status
+      else
+        :failed
+      end
+
+    %{
+      claim
+      | status: status,
+        error: field_value(failure, :error),
+        finished_at: field_value(failure, :finished_at) || DateTime.utc_now(),
+        metadata: field_value(failure, :metadata) || claim.metadata
+    }
+  end
+
+  defp normalize_materialization_failure_status(status) when is_atom(status), do: status
+
+  defp normalize_materialization_failure_status(status) when is_binary(status) do
+    Enum.find(
+      MaterializationClaim.terminal_failure_statuses(),
+      :failed,
+      &(Atom.to_string(&1) == status)
+    )
+  end
 
   defp fetch_string_field(map, field) do
     case field_value(map, field) do

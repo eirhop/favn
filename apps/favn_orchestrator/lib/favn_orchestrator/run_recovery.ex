@@ -2,9 +2,7 @@ defmodule FavnOrchestrator.RunRecovery do
   @moduledoc false
 
   alias FavnOrchestrator.OperationalEvents
-  alias FavnOrchestrator.RunState
-  alias FavnOrchestrator.Storage
-  alias FavnOrchestrator.TransitionWriter
+  alias FavnOrchestrator.Repair.RuntimeState
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -27,46 +25,19 @@ defmodule FavnOrchestrator.RunRecovery do
 
   @spec reconcile_orphaned_runs() :: :ok
   def reconcile_orphaned_runs do
-    [:pending, :running]
-    |> Enum.each(fn status ->
-      case Storage.list_runs(status: status) do
-        {:ok, runs} ->
-          Enum.each(runs, fn run ->
-            terminalize_run(run, orphaned_run_error(run))
-          end)
+    case RuntimeState.repair(dry_run: false, freshness: false) do
+      {:ok, _report} ->
+        :ok
 
-        {:error, reason} ->
-          OperationalEvents.emit(
-            :run_reconciliation_failed,
-            %{},
-            %{status: status, reason: reason},
-            level: :error
-          )
-      end
-    end)
-  end
+      {:error, report} ->
+        OperationalEvents.emit(
+          :run_reconciliation_failed,
+          %{},
+          %{errors: report.errors},
+          level: :error
+        )
 
-  defp terminalize_run(%RunState{} = run, error) when is_map(error) do
-    failed =
-      RunState.transition(run,
-        status: :error,
-        error: error,
-        runner_execution_id: nil,
-        metadata: Map.put(run.metadata, :terminal_event_type, :run_failed)
-      )
-
-    TransitionWriter.persist_transition(failed, :run_failed, %{
-      status: failed.status,
-      error: failed.error
-    })
-  end
-
-  defp orphaned_run_error(%RunState{} = run) do
-    %{
-      type: :orphaned_run_reconciled,
-      scope: :local_single_node,
-      previous_status: run.status,
-      reconciled_at: DateTime.utc_now()
-    }
+        :ok
+    end
   end
 end
