@@ -73,9 +73,8 @@ defmodule FavnRunner.WorkerTest do
     assert [asset_result] = result.asset_results
     assert asset_result.status == :error
 
-    assert asset_result.error.reason ==
-             {:invalid_return_shape, {:ok, :bad_shape},
-              expected: ":ok | {:ok, map()} | {:error, reason}"}
+    assert asset_result.error.reason =~ "invalid_return_shape"
+    assert asset_result.error.reason =~ ":bad_shape"
   end
 
   test "worker rejects unsupported entrypoint arity" do
@@ -87,8 +86,8 @@ defmodule FavnRunner.WorkerTest do
     assert result.status == :error
     assert [asset_result] = result.asset_results
 
-    assert asset_result.error.reason ==
-             {:unsupported_entrypoint_arity, 2, expected: 1}
+    assert asset_result.error.reason =~ "unsupported_entrypoint_arity"
+    assert asset_result.error.reason =~ "2"
   end
 
   test "worker resolves runtime config into context before asset invocation" do
@@ -198,8 +197,8 @@ defmodule FavnRunner.WorkerTest do
 
       assert result.status == :error
 
-      assert result.error.reason ==
-               {:auth_failed, "redacted", %{source_system: %{token: :redacted}}}
+      assert result.error.reason =~ "auth_failed"
+      assert result.error.reason =~ "redacted"
 
       assert [%{error: error, attempts: [%{error: attempt_error}]}] = result.asset_results
       assert error == result.error
@@ -231,7 +230,7 @@ defmodule FavnRunner.WorkerTest do
 
       assert result.status == :error
       assert result.error.message == "request failed with token redacted"
-      assert result.error.reason.message == "request failed with token redacted"
+      assert result.error.reason == "request failed with token redacted"
       refute inspect(result) =~ "raise-secret-token"
 
       assert_receive {:runner_event, _execution_id,

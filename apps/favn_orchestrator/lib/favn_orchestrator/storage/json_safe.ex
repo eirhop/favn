@@ -1,6 +1,8 @@
 defmodule FavnOrchestrator.Storage.JsonSafe do
   @moduledoc false
 
+  alias Favn.Contracts.RunnerAssetResult
+  alias Favn.Contracts.RunnerError
   alias Favn.Run.AssetResult
   alias FavnOrchestrator.Redaction
 
@@ -18,6 +20,22 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   @spec error(term()) :: map() | nil
   def error(nil), do: nil
+
+  def error(%RunnerError{} = value) do
+    %{
+      "kind" => scalar_string(value.kind, "error"),
+      "type" => scalar_string(value.type, "term"),
+      "phase" => scalar_string(value.phase, nil),
+      "message" => safe_error_message(value.message),
+      "reason" => safe_existing_error_reason(value.reason),
+      "details" => data(value.details, "details", @max_depth - 1),
+      "retryable" => value.retryable?,
+      "redacted" => true,
+      "truncated" => false
+    }
+    |> Enum.reject(fn {_key, child_value} -> is_nil(child_value) end)
+    |> Map.new()
+  end
 
   def error(%{type: :missing_runtime_config} = value), do: runtime_config_diagnostic(value)
   def error(%{"type" => "missing_runtime_config"} = value), do: runtime_config_diagnostic(value)
@@ -78,6 +96,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp data(_value, _key, depth) when depth <= 0, do: "[TRUNCATED]"
   defp data(%DateTime{} = value, _key, _depth), do: DateTime.to_iso8601(value)
+  defp data(%RunnerAssetResult{} = value, _key, depth), do: runner_asset_result(value, depth)
   defp data(%AssetResult{} = value, _key, depth), do: asset_result(value, depth)
 
   defp data(%{__exception__: true} = value, _key, _depth), do: error(value)
@@ -143,6 +162,24 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "attempts" => Enum.map(result.attempts || [], &attempt(&1, depth - 1)),
       "next_retry_at" => data(result.next_retry_at, nil, depth - 1)
     }
+  end
+
+  defp runner_asset_result(%RunnerAssetResult{} = result, depth) do
+    %{
+      "ref" => ref(result.ref),
+      "status" => atom_string(result.status),
+      "started_at" => data(result.started_at, nil, depth - 1),
+      "finished_at" => data(result.finished_at, nil, depth - 1),
+      "duration_ms" => result.duration_ms,
+      "meta" => data(result.meta, "meta", depth - 1),
+      "error" => error(result.error),
+      "attempt_count" => result.attempt_count,
+      "max_attempts" => result.max_attempts,
+      "attempts" => Enum.map(result.attempts || [], &attempt(&1, depth - 1)),
+      "asset_step_id" => result.asset_step_id
+    }
+    |> Enum.reject(fn {_key, child_value} -> is_nil(child_value) end)
+    |> Map.new()
   end
 
   defp attempt(%{} = attempt, depth) do

@@ -71,7 +71,6 @@ defmodule FavnRunner.Worker do
               {:error,
                RunnerError.normalize(
                  RuntimeConfigDiagnostic.asset_resolution_failed(error, asset),
-                 type: :asset_resolution_failed,
                  retryable?: false
                )}
           end
@@ -257,11 +256,11 @@ defmodule FavnRunner.Worker do
       duration_ms: duration_ms,
       meta: meta,
       error: normalized_error,
-      attempt_count: 1,
-      max_attempts: 1,
+      attempt_count: work.attempt,
+      max_attempts: work.max_attempts,
       attempts: [
         %{
-          attempt: 1,
+          attempt: work.attempt,
           started_at: started_at,
           finished_at: finished_at,
           duration_ms: duration_ms,

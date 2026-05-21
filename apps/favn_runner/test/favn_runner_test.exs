@@ -143,6 +143,8 @@ defmodule FavnRunnerTest do
         manifest_version_id: version.manifest_version_id,
         manifest_content_hash: version.content_hash,
         asset_ref: {FavnRunnerTest.ElixirAsset, :asset},
+        attempt: 2,
+        max_attempts: 3,
         params: %{value: 42},
         metadata: %{attempt: 1}
       }
@@ -150,7 +152,12 @@ defmodule FavnRunnerTest do
     assert {:ok, result} = FavnRunner.run(work)
     assert result.status == :ok
     assert result.manifest_version_id == version.manifest_version_id
-    assert [%{ref: {FavnRunnerTest.ElixirAsset, :asset}, status: :ok}] = result.asset_results
+    assert [asset_result] = result.asset_results
+    assert asset_result.ref == {FavnRunnerTest.ElixirAsset, :asset}
+    assert asset_result.status == :ok
+    assert asset_result.attempt_count == 2
+    assert asset_result.max_attempts == 3
+    assert [%{attempt: 2}] = asset_result.attempts
   end
 
   test "runs one source asset as observe/no-op", %{version: version} do

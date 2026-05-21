@@ -1292,9 +1292,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
         case persist_post_step_state(step_state, entry, step_status, result) do
           :ok ->
             outcome =
-              if retryable? and attempt < run_state.max_attempts,
-                do: :retry,
-                else: if(retryable?, do: :error, else: :ok)
+              cond do
+                step_status == :ok -> :ok
+                retryable? and attempt < run_state.max_attempts -> :retry
+                true -> :error
+              end
 
             {step_state, outcome, asset_results}
 

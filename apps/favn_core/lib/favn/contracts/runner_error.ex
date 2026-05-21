@@ -13,6 +13,7 @@ defmodule Favn.Contracts.RunnerError do
   @type t :: %__MODULE__{
           kind: kind(),
           type: atom() | String.t(),
+          phase: atom() | String.t() | nil,
           message: String.t(),
           reason: String.t() | nil,
           details: map(),
@@ -22,6 +23,7 @@ defmodule Favn.Contracts.RunnerError do
 
   defstruct kind: :error,
             type: :runner_error,
+            phase: nil,
             message: "Runner error",
             reason: nil,
             details: %{},
@@ -39,6 +41,7 @@ defmodule Favn.Contracts.RunnerError do
     struct!(__MODULE__, %{
       kind: Map.get(fields, :kind, :error),
       type: Map.get(fields, :type, type_from_reason(reason)),
+      phase: Map.get(fields, :phase, phase_from_reason(reason)),
       message: message(Map.get(fields, :message), reason),
       reason: safe_reason(reason),
       details: details(Map.get(fields, :details, %{})),
@@ -58,9 +61,10 @@ defmodule Favn.Contracts.RunnerError do
     new(
       kind: Keyword.get(opts, :kind, :error),
       type: Keyword.get(opts, :type, type_from_reason(error)),
+      phase: Keyword.get(opts, :phase, phase_from_reason(error)),
       message: Keyword.get(opts, :message) || error_message(error) || "Runner error",
       reason: error,
-      details: Keyword.get(opts, :details, %{}),
+      details: Keyword.get(opts, :details, details_from_error(error)),
       retryable?: Keyword.get(opts, :retryable?, retryable_from_error(error))
     )
   end
@@ -93,8 +97,38 @@ defmodule Favn.Contracts.RunnerError do
   defp message(nil, reason), do: error_message(reason) || "Runner error"
   defp message(value, _reason), do: string_value(value)
 
-  defp details(details) when is_map(details), do: redact(details)
+  defp details(details) when is_map(details), do: sanitize_value(details)
   defp details(_details), do: %{}
+
+  defp details_from_error(%_{} = error) do
+    error
+    |> Map.from_struct()
+    |> Map.drop([:message, :reason, :stack, :stacktrace])
+  end
+
+  defp details_from_error(%{details: details}) when is_map(details), do: details
+  defp details_from_error(%{"details" => details}) when is_map(details), do: details
+
+  defp details_from_error(%{} = error),
+    do:
+      Map.drop(error, [
+        :kind,
+        "kind",
+        :type,
+        "type",
+        :phase,
+        "phase",
+        :message,
+        "message",
+        :reason,
+        "reason",
+        :stack,
+        "stack",
+        :stacktrace,
+        "stacktrace"
+      ])
+
+  defp details_from_error(_error), do: %{}
 
   defp retryable_from_error(%{details: details}) when is_map(details) do
     Map.get(details, :asset_retryable?, Map.get(details, "asset_retryable?", true)) != false
@@ -122,39 +156,68 @@ defmodule Favn.Contracts.RunnerError do
   defp type_from_reason(reason) when is_atom(reason), do: reason
   defp type_from_reason(reason), do: term_type(reason)
 
+  defp phase_from_reason(%{phase: phase}), do: phase
+  defp phase_from_reason(%{"phase" => phase}), do: phase
+  defp phase_from_reason(_reason), do: nil
+
   defp safe_reason(nil), do: nil
-  defp safe_reason(reason), do: inspect(reason, limit: 20, printable_limit: 4_096)
+  defp safe_reason(%{__exception__: true} = exception), do: error_message(exception)
+
+  defp safe_reason(%_{} = reason),
+    do: error_message(reason) || inspect_value(type_from_reason(reason))
+
+  defp safe_reason(%{} = reason),
+    do: reason |> reason_only() |> sanitize_value() |> inspect_value()
+
+  defp safe_reason(reason), do: reason |> sanitize_value() |> inspect_value()
+
+  defp reason_only(%{reason: reason}), do: reason
+  defp reason_only(%{"reason" => reason}), do: reason
+  defp reason_only(reason), do: reason
 
   defp string_value(value) when is_binary(value), do: value
   defp string_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp string_value(value), do: inspect(value, limit: 20, printable_limit: 4_096)
+  defp string_value(value), do: inspect_value(value)
 
-  defp redact(value) when is_map(value) do
-    Map.new(value, fn {key, map_value} -> {key, redact(key, map_value)} end)
+  defp inspect_value(value), do: inspect(value, limit: 20, printable_limit: 4_096)
+
+  defp sanitize_value(%DateTime{} = value), do: value
+
+  defp sanitize_value(%_{} = value) do
+    value
+    |> Map.from_struct()
+    |> sanitize_value()
   end
 
-  defp redact(value) when is_list(value), do: Enum.map(value, &redact/1)
+  defp sanitize_value(value) when is_map(value) do
+    Map.new(value, fn {key, map_value} -> {key, sanitize_value(key, map_value)} end)
+  end
 
-  defp redact(value) when is_tuple(value),
-    do: value |> Tuple.to_list() |> Enum.map(&redact/1) |> List.to_tuple()
+  defp sanitize_value(value) when is_list(value), do: Enum.map(value, &sanitize_value/1)
 
-  defp redact(value) when is_binary(value), do: value
-  defp redact(value) when is_atom(value), do: value
-  defp redact(value) when is_number(value), do: value
-  defp redact(value) when is_boolean(value), do: value
-  defp redact(nil), do: nil
-  defp redact(value), do: inspect(value, limit: 20, printable_limit: 4_096)
+  defp sanitize_value(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> Enum.map(&sanitize_value/1) |> List.to_tuple()
 
-  defp redact(key, _value) when key in [:token, :password, :secret, :credential, :database],
-    do: "[REDACTED]"
+  defp sanitize_value(value) when is_binary(value), do: value
+  defp sanitize_value(value) when is_atom(value), do: value
+  defp sanitize_value(value) when is_number(value), do: value
+  defp sanitize_value(value) when is_boolean(value), do: value
+  defp sanitize_value(nil), do: nil
+  defp sanitize_value(value), do: inspect_value(value)
 
-  defp redact(key, value) when is_atom(key),
-    do: if(sensitive_key?(Atom.to_string(key)), do: "[REDACTED]", else: redact(value))
+  defp sanitize_value(key, _value)
+       when key in [:token, :password, :secret, :credential, :database],
+       do: :redacted
 
-  defp redact(key, value) when is_binary(key),
-    do: if(sensitive_key?(key), do: "[REDACTED]", else: redact(value))
+  defp sanitize_value(key, value) when key in [:secret?, "secret?"], do: sanitize_value(value)
 
-  defp redact(_key, value), do: redact(value)
+  defp sanitize_value(key, value) when is_atom(key),
+    do: if(sensitive_key?(Atom.to_string(key)), do: :redacted, else: sanitize_value(value))
+
+  defp sanitize_value(key, value) when is_binary(key),
+    do: if(sensitive_key?(key), do: :redacted, else: sanitize_value(value))
+
+  defp sanitize_value(_key, value), do: sanitize_value(value)
 
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
