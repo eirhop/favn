@@ -81,11 +81,44 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
     assert :ok = validator.(settings: [azure_transport_option_type: :curl])
     assert :ok = validator.(settings: [azure_transport_option_type: "default"])
 
+    assert :ok =
+             validator.(
+               settings: [
+                 threads: 4,
+                 pg_pool_max_connections: 5,
+                 pg_pool_acquire_mode: :wait,
+                 pg_pool_enable_thread_local_cache: false,
+                 pg_pool_wait_timeout_millis: 60_000,
+                 pg_pool_max_lifetime_millis: 900_000,
+                 pg_pool_idle_timeout_millis: 300_000,
+                 pg_pool_enable_reaper_thread: true,
+                 pg_pool_health_check_query: "SELECT 1"
+               ]
+             )
+
+    assert :ok = validator.(settings: [pg_pool_max_connections: 0])
+    assert :ok = validator.(settings: [pg_pool_health_check_query: ""])
+
     assert {:error, {:unsupported_setting, :some_unknown_setting}} =
              validator.(settings: [some_unknown_setting: "value"])
 
     assert {:error, {:invalid_setting_value, :azure_transport_option_type, "bad"}} =
              validator.(settings: [azure_transport_option_type: :bad])
+
+    assert {:error, {:invalid_setting_value, :pg_pool_acquire_mode, "bad"}} =
+             validator.(settings: [pg_pool_acquire_mode: :bad])
+
+    assert {:error, {:invalid_setting_value, :threads, 0}} =
+             validator.(settings: [threads: 0])
+
+    assert {:error, {:invalid_setting_value, :pg_pool_max_connections, -1}} =
+             validator.(settings: [pg_pool_max_connections: -1])
+
+    assert {:error, {:invalid_setting_value, :pg_pool_enable_thread_local_cache, "false"}} =
+             validator.(settings: [pg_pool_enable_thread_local_cache: "false"])
+
+    assert {:error, {:deprecated_setting, :pg_connection_limit, :pg_pool_max_connections}} =
+             validator.(settings: [pg_connection_limit: 5])
   end
 
   test "normalizes setting atom and string values into SET statements" do
@@ -193,6 +226,42 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCBootstrapTest do
              "LOAD postgres",
              "LOAD azure",
              "SET azure_transport_option_type = 'curl'",
+             "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
+             "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
+             "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",
+             ~s(USE "lakehouse_lake")
+            ]
+  end
+
+  test "runs Postgres pool settings before DuckLake attach" do
+    resolved =
+      ducklake_postgres_resolved(
+        settings: [
+          threads: 4,
+          pg_pool_max_connections: 5,
+          pg_pool_acquire_mode: :wait,
+          pg_pool_enable_thread_local_cache: false,
+          pg_pool_wait_timeout_millis: 60_000,
+          pg_pool_idle_timeout_millis: 300_000,
+          pg_pool_enable_reaper_thread: true
+        ]
+      )
+
+    {:ok, conn} = ADBC.connect(resolved, duckdb_adbc_client: FakeClient)
+
+    assert :ok = ADBC.bootstrap(conn, resolved, [])
+
+    assert statements() == [
+             "LOAD ducklake",
+             "LOAD postgres",
+             "LOAD azure",
+             "SET threads = 4",
+             "SET pg_pool_max_connections = 5",
+             "SET pg_pool_acquire_mode = 'wait'",
+             "SET pg_pool_enable_thread_local_cache = false",
+             "SET pg_pool_wait_timeout_millis = 60000",
+             "SET pg_pool_idle_timeout_millis = 300000",
+             "SET pg_pool_enable_reaper_thread = true",
              "CREATE SECRET \"azure_adls\" (TYPE azure, PROVIDER credential_chain, ACCOUNT_NAME 'storageaccount', CHAIN 'cli;env', SCOPE 'abfss://lake@storageaccount.dfs.core.windows.net/')",
              "CREATE SECRET \"lakehouse_meta\" (TYPE postgres, HOST 'pg.example.com', PORT 5432, DATABASE 'ducklake', USER 'ducklake_user', PASSWORD 'super-secret')",
              "ATTACH 'ducklake:postgres:sslmode=require' AS \"lakehouse_lake\" (DATA_PATH 'abfss://lake@storageaccount.dfs.core.windows.net/data/', META_SECRET \"lakehouse_meta\")",

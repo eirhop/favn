@@ -519,27 +519,18 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     node = Map.fetch!(run_state.plan.nodes, node_key)
     asset_ref = node.ref
     asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
-    execution_pool = effective_execution_pool(run_state, node_key)
-    planned_asset_refs = planned_asset_refs(run_state)
 
-    node_identity =
-      NodeIdentity.new!(%{
-        manifest_version_id: version.manifest_version_id,
-        node_key: node_key,
-        target_refs: run_state.target_refs || [],
-        planned_asset_refs: planned_asset_refs,
-        window: node.window,
-        execution_pool: execution_pool
-      })
+    {:ok, node_identity} =
+      NodeIdentity.from_plan(version.manifest_version_id, run_state.plan, node_key)
 
     %RunnerWork{
       run_id: run_state.id,
-      manifest_version_id: version.manifest_version_id,
+      manifest_version_id: node_identity.manifest_version_id,
       manifest_content_hash: version.content_hash,
       node_identity: node_identity,
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
-      planned_asset_refs: planned_asset_refs,
+      planned_asset_refs: node_identity.planned_asset_refs,
       attempt: attempt,
       max_attempts: run_state.max_attempts,
       asset_step_id: asset_step_id,
@@ -547,14 +538,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       params: run_state.params,
       trigger:
         run_state.trigger
-        |> Map.put(:window, node.window)
+        |> Map.put(:window, node_identity.window)
         |> maybe_put_pipeline_trigger(Map.get(run_state.metadata, :pipeline_context)),
       metadata: work_metadata(run_state.metadata)
     }
   end
-
-  defp planned_asset_refs(%RunState{target_refs: refs}) when is_list(refs), do: refs
-  defp planned_asset_refs(_run_state), do: []
 
   defp effective_execution_pool(%RunState{} = run_state, node_key) do
     node_pool =

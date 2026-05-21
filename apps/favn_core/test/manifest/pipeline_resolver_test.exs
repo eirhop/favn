@@ -3,6 +3,7 @@ defmodule Favn.Manifest.PipelineResolverTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.Graph
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
@@ -54,8 +55,8 @@ defmodule Favn.Manifest.PipelineResolverTest do
   end
 
   defp sample_manifest do
-    %Manifest{
-      assets: [
+    assets =
+      [
         %Asset{
           ref: {MyApp.Gold, :asset},
           module: MyApp.Gold,
@@ -70,7 +71,13 @@ defmodule Favn.Manifest.PipelineResolverTest do
           depends_on: [],
           metadata: %{tags: [:daily], category: :raw}
         }
-      ],
+      ]
+
+    {:ok, graph} = Graph.build(assets)
+
+    %Manifest{
+      assets: assets,
+      graph: graph,
       pipelines: [
         %Pipeline{
           module: MyApp.Pipelines.Daily,

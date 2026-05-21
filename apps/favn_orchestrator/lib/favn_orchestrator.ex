@@ -1943,7 +1943,7 @@ defmodule FavnOrchestrator do
 
   defp asset_freshness_plan(asset, version, now) do
     with {:ok, index} <- Index.build_from_version(version) do
-      opts = [dependencies: :all, graph_index: index.graph_index]
+      opts = [dependencies: :all, planning_index: index.planning_index]
 
       opts =
         case asset_current_anchor_window(asset, now) do

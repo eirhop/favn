@@ -1,31 +1,36 @@
 defmodule Favn.Plan.NodeIdentity do
   @moduledoc """
-  Planned-node identity shared by orchestrator and runner contracts.
+  Manifest/planning-owned identity for one planned node.
 
-  This struct carries manifest/planning-owned fields only. Runner lifecycle
-  fields such as attempt number, retry state, admission state, and cancellation
-  state belong to runner/orchestrator runtime contracts instead.
+  This struct deliberately contains only data produced from a pinned manifest
+  version and a plan. Runner lifecycle data such as execution IDs, attempts,
+  retry state, admission state, and cancellation state belongs outside this
+  contract.
   """
 
   alias Favn.Plan
   alias Favn.Ref
   alias Favn.Window.Runtime
 
+  @type node_key :: Plan.node_key()
+
   @type t :: %__MODULE__{
           manifest_version_id: String.t(),
-          node_key: Plan.node_key(),
+          node_key: node_key(),
           target_refs: [Ref.t()],
           planned_asset_refs: [Ref.t()],
           window: Runtime.t() | nil,
           execution_pool: atom() | nil
         }
 
-  defstruct manifest_version_id: nil,
-            node_key: nil,
-            target_refs: [],
-            planned_asset_refs: [],
-            window: nil,
-            execution_pool: nil
+  defstruct [
+    :manifest_version_id,
+    :node_key,
+    target_refs: [],
+    planned_asset_refs: [],
+    window: nil,
+    execution_pool: nil
+  ]
 
   @doc """
   Builds a planned-node identity from validated fields.
@@ -51,6 +56,28 @@ defmodule Favn.Plan.NodeIdentity do
     case new(fields) do
       {:ok, identity} -> identity
       {:error, reason} -> raise ArgumentError, "invalid node identity: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Builds node identity from a pinned manifest version id and plan node key.
+  """
+  @spec from_plan(String.t(), Plan.t(), node_key()) :: {:ok, t()} | {:error, term()}
+  def from_plan(manifest_version_id, %Plan{} = plan, node_key)
+      when is_binary(manifest_version_id) do
+    case Map.fetch(plan.nodes, node_key) do
+      {:ok, node} ->
+        new(%{
+          manifest_version_id: manifest_version_id,
+          node_key: node_key,
+          target_refs: plan.target_refs,
+          planned_asset_refs: plan.topo_order,
+          window: Map.get(node, :window),
+          execution_pool: Map.get(node, :execution_pool)
+        })
+
+      :error ->
+        {:error, :plan_node_not_found}
     end
   end
 

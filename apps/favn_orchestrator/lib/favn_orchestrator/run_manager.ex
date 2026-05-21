@@ -314,7 +314,7 @@ defmodule FavnOrchestrator.RunManager do
          {:ok, _asset} <- Index.fetch_asset(index, asset_ref),
          {:ok, plan} <-
            Planner.plan(asset_ref,
-             graph_index: index.graph_index,
+             planning_index: index.planning_index,
              dependencies: dependencies,
              anchor_window: anchor_window,
              exact_windows: exact_windows
@@ -371,7 +371,7 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- ensure_assets_exist(index, target_refs),
          {:ok, plan} <-
            Planner.plan(target_refs,
-             graph_index: index.graph_index,
+             planning_index: index.planning_index,
              dependencies: dependencies,
              anchor_window: anchor_window
            ) do
@@ -552,7 +552,7 @@ defmodule FavnOrchestrator.RunManager do
          :ok <- validate_anchor_window(anchor_window),
          {:ok, plan} <-
            Planner.plan(rerun_targets,
-             graph_index: index.graph_index,
+             planning_index: index.planning_index,
              dependencies: rerun_dependencies,
              anchor_window: anchor_window
            ) do

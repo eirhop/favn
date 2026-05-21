@@ -66,6 +66,12 @@ backend connections per admitted DuckLake writer. Observed deployments used abou
 three PostgreSQL backends per concurrent writer, so operators should size
 DuckLake `write_concurrency` with that multiplier and leave headroom for admin
 tools, migrations, monitoring, and other traffic.
+DuckDB ADBC deployments can further bound newly attached Postgres-backed catalogs
+with `duckdb.settings` such as `threads`, `pg_pool_max_connections`,
+`pg_pool_acquire_mode: :wait`, and `pg_pool_enable_thread_local_cache: false`.
+Those settings complement, but do not replace, Favn admission: total metadata
+pressure is a product of admitted Favn work, DuckLake catalog concurrency, DuckDB
+parallelism, attached Postgres-backed catalogs, and each catalog's pool limit.
 
 Retry handling must stay operation-aware. Bounded retries are acceptable around
 session creation/bootstrap and read-only inspection/query paths. Blind retries of
