@@ -23,7 +23,7 @@ defmodule Favn.SQL.PoolKey do
       resolved.name,
       resolved.adapter,
       resolved.config,
-      Enum.sort(adapter_opts),
+      adapter_opts |> Keyword.delete(:required_catalogs) |> Enum.sort(),
       normalize_catalogs(required_catalogs),
       adapter_fingerprint
     }
@@ -40,6 +40,8 @@ defmodule Favn.SQL.PoolKey do
   defp normalize_catalogs(catalogs) do
     catalogs
     |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
     |> Enum.sort()
   end
 end

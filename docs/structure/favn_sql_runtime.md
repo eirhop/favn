@@ -38,13 +38,17 @@ key that needs the same catalog until the idle session is reused or closed.
 Catalog-level admission is driven by materialization write plans whose target
 relations include a catalog. Session bootstrap can also acquire catalog permits
 when callers pass `required_catalogs: [...]` to the SQL client; this is how
-DuckDB/DuckLake attach work is serialized before a session opens. Raw
-`Favn.SQLClient.execute/3` and `Favn.SQLClient.query/3` do not parse arbitrary SQL
-to infer write catalogs; callers that issue manual raw writes must handle any
-needed serialization until the client contract grows an explicit target catalog
-option. When `required_catalogs` is omitted for a connection with configured
-catalog policies, session bootstrap is treated as all-catalog bootstrap and must
-acquire every configured catalog permit before opening the adapter session.
+DuckDB/DuckLake attach work is serialized before a session opens. The normalized
+required catalog set is retained on the SQL session. Raw write operations such as
+`Favn.SQLClient.execute/3`, write-style `Favn.SQLClient.query/3`, and
+`Favn.SQLClient.transaction/3` use an explicit `admission: [...]` operation
+target when one is provided, otherwise they use the session required catalog
+scope. Multi-catalog raw writes acquire the configured catalog policies in
+deterministic order. Favn still does not parse arbitrary SQL to infer write
+catalogs. When
+`required_catalogs` is omitted for a connection with configured catalog policies,
+session bootstrap is treated as all-catalog bootstrap and must acquire every
+configured catalog permit before opening the adapter session.
 Elixir assets executed by the runner get a process-local default scope from
 their owned relation catalog when they open that same relation connection without
 passing `required_catalogs` explicitly. Spawned asset tasks do not inherit that

@@ -97,8 +97,11 @@ defmodule Favn.SQLClient do
   DuckDB-backed connections also accept `required_catalogs: [catalog]` when the
   caller knows which catalog-qualified relations are needed. That lets DuckDB and
   DuckLake bootstrap attach only those catalogs and lets catalog-level admission
-  protect bootstrap work before the session is opened. Elixir assets executed by
-  the Favn runner inherit their owned relation catalog as a default scope when
+  protect bootstrap work before the session is opened. The retained session scope
+  is also used for raw write admission unless an operation passes an explicit
+  `admission: [catalog: catalog]`, `admission: [target: {:catalog, catalog}]`,
+  or `admission: [required_catalogs: catalogs]` option. Elixir assets executed
+  by the Favn runner inherit their owned relation catalog as a default scope when
   they open that same relation connection without an explicit `:required_catalogs`
   option.
 
@@ -235,7 +238,8 @@ defmodule Favn.SQLClient do
 
   `opts` are forwarded to the adapter. Parameters should be passed with
   adapter-appropriate option keys (for example `params: [...]` when supported by
-  the selected adapter).
+  the selected adapter). Write-style queries use the same catalog admission
+  targeting rules as `execute/3`.
 
   ## Example
 
@@ -252,6 +256,11 @@ defmodule Favn.SQLClient do
 
   In many backends this differs from `query/3` in intent and result shape,
   especially around row handling and command metadata.
+
+  Raw SQL is not parsed to infer target catalogs. For catalog-aware admission,
+  open the session with `required_catalogs: [...]` or pass
+  `admission: [catalog: "raw"]`, `admission: [target: {:catalog, "raw"}]`, or
+  `admission: [required_catalogs: ["raw"]]`.
   """
   @spec execute(session(), iodata(), opts()) :: operation_result()
   defdelegate execute(session, statement, opts \\ []), to: Client

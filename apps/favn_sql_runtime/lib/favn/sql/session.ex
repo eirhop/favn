@@ -14,17 +14,19 @@ defmodule Favn.SQL.Session do
     :concurrency_policy,
     :concurrency_policies,
     :admission_lease,
-    :pool_checkout
+    :pool_checkout,
+    required_catalogs: []
   ]
 
   @type t :: %__MODULE__{
           adapter: module(),
           resolved: Resolved.t(),
           conn: term(),
-          capabilities: Capabilities.t(),
-          concurrency_policy: ConcurrencyPolicy.t() | nil,
-          concurrency_policies: ConcurrencyPolicies.t() | nil,
-          admission_lease: term(),
-          pool_checkout: Checkout.t() | nil
-        }
+           capabilities: Capabilities.t(),
+           concurrency_policy: ConcurrencyPolicy.t() | nil,
+           concurrency_policies: ConcurrencyPolicies.t() | nil,
+           required_catalogs: [binary()],
+           admission_lease: term(),
+           pool_checkout: Checkout.t() | nil
+         }
 end

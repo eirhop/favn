@@ -426,6 +426,29 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     refute Enum.any?(events(), &match?({:validate, _conn}, &1))
   end
 
+  test "equivalent required catalog sets reuse pooled sessions", %{
+    registry_name: registry_name
+  } do
+    pool = %PoolConfig{enabled: true, max_idle_per_key: 2, idle_timeout_ms: 60_000}
+    start_registry(registry_name, AdapterWithPool, %{pool: pool})
+
+    assert {:ok, first} =
+             Client.connect(:warehouse,
+               registry_name: registry_name,
+               required_catalogs: ["raw", :raw, ""]
+             )
+
+    Client.disconnect(first)
+
+    assert {:ok, second} =
+             Client.connect(:warehouse, registry_name: registry_name, required_catalogs: ["raw"])
+
+    Client.disconnect(second)
+
+    assert Enum.count(events(), &match?({:connect, :warehouse, _conn}, &1)) == 1
+    assert Enum.any?(events(), &match?({:validate, _conn}, &1))
+  end
+
   test "two concurrent checkouts never receive the same pooled session", %{
     registry_name: registry_name
   } do

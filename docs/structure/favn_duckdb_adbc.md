@@ -29,6 +29,10 @@ adapter fingerprint match. Checked-out sessions are exclusive to one asset
 execution, and pooling must not increase catalog/write concurrency or retry
 unknown-outcome writes. Safe bounded retries are limited to session
 creation/bootstrap and read-only inspection/query paths.
+Raw write admission is SQL-runtime owned: callers provide explicit
+`admission: [...]` operation catalog targets or rely on the session
+`required_catalogs` scope; the adapter does not parse arbitrary SQL text to infer
+catalogs.
 DuckLake catalogs backed by PostgreSQL metadata can use multiple PostgreSQL
 backend connections per concurrent DuckLake writer; observed deployments used
 about three. Size DuckLake `write_concurrency` with that multiplier and leave

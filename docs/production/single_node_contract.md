@@ -189,6 +189,10 @@ Production DuckDB behavior covers or must preserve:
   and adapter fingerprint match. Checked-out sessions are exclusive to one asset
   execution and owner process, and catalog/write concurrency still bounds active
   work and new session/bootstrap.
+- Catalog-scoped raw SQL admission for DuckDB/DuckLake writes. Raw write
+  operations use an explicit `admission: [...]` operation target when provided,
+  otherwise the SQL session's retained `required_catalogs` scope. Favn does not
+  parse arbitrary raw SQL text to infer write catalogs.
 - Pooling is not distributed across runner nodes and does not by itself solve
   multi-runner DuckLake metadata pressure. Low-tier Azure PostgreSQL metadata
   catalogs should still use finite, conservative DuckLake catalog
