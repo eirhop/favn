@@ -287,6 +287,10 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert completed.status == :succeeded
     assert completed.freshness_version == "freshness-version-1"
     assert completed.metadata == %{rows_written: 10}
+
+    assert {:error, :not_found} =
+             Storage.fail_materialization_claim(claim.claim_key, %{status: :failed})
+
     assert {:already_succeeded, ^completed} = Storage.try_acquire_materialization_claim(claim)
 
     expired_claim = materialization_claim(label, run, "claim-2", DateTime.add(now, -10, :second))
@@ -296,6 +300,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert {:ok, 1} = Storage.expire_materialization_claims(now)
     assert {:ok, expired} = Storage.get_materialization_claim(expired_claim.claim_key)
     assert expired.status == :expired
+    assert {:error, :not_found} = Storage.complete_materialization_claim(expired.claim_key, %{})
     assert {:ok, ^reclaim} = Storage.try_acquire_materialization_claim(reclaim)
 
     failed_claim = materialization_claim(label, run, "claim-3", now)

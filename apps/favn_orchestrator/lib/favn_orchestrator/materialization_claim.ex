@@ -4,8 +4,9 @@ defmodule FavnOrchestrator.MaterializationClaim do
 
   A claim is keyed by an execution-supplied deterministic `claim_key`. Storage
   adapters use that key to prevent duplicate materialization for the same asset,
-  freshness, and input fingerprint while preserving enough terminal state for
-  crash recovery to skip already-succeeded work or reclaim expired/failed work.
+  freshness, manifest producer identity, and input fingerprint while preserving
+  enough terminal state for crash recovery to skip already-succeeded reusable work
+  or reclaim expired/failed work.
   """
 
   @enforce_keys [

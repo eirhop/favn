@@ -12,11 +12,56 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
   alias FavnOrchestrator.Storage.Adapter.Memory
   alias FavnOrchestrator.TransitionWriter
 
+  defmodule NoClaimAdapter do
+    @behaviour Favn.Storage.Adapter
+
+    defdelegate child_spec(opts), to: Memory
+    defdelegate put_manifest_version(version, opts), to: Memory
+    defdelegate get_manifest_version(id, opts), to: Memory
+    defdelegate get_manifest_version_by_content_hash(hash, opts), to: Memory
+    defdelegate list_manifest_versions(opts), to: Memory
+    defdelegate set_active_manifest_version(id, opts), to: Memory
+    defdelegate get_active_manifest_version(opts), to: Memory
+    defdelegate put_run(run, opts), to: Memory
+    defdelegate get_run(id, opts), to: Memory
+    defdelegate list_runs(run_opts, opts), to: Memory
+    defdelegate persist_run_transition(run, event, opts), to: Memory
+    defdelegate append_run_event(run_id, event, opts), to: Memory
+    defdelegate list_run_events(run_id, opts), to: Memory
+    defdelegate list_global_run_events(filters, opts), to: Memory
+    defdelegate try_acquire_execution_lease(lease, opts), to: Memory
+    defdelegate release_execution_lease(lease_id, opts), to: Memory
+    defdelegate expire_execution_leases(now, opts), to: Memory
+    defdelegate list_execution_leases(opts), to: Memory
+    defdelegate persist_log_entries(entries, opts), to: Memory
+    defdelegate list_logs(filter, opts, adapter_opts), to: Memory
+    defdelegate replay_logs_after(cursor, filter, opts, adapter_opts), to: Memory
+    defdelegate put_scheduler_state(key, state, opts), to: Memory
+    defdelegate get_scheduler_state(key, opts), to: Memory
+    defdelegate put_coverage_baseline(baseline, opts), to: Memory
+    defdelegate get_coverage_baseline(id, opts), to: Memory
+    defdelegate list_coverage_baselines(filters, opts), to: Memory
+    defdelegate put_backfill_window(window, opts), to: Memory
+    defdelegate get_backfill_window(backfill_id, module, window_key, opts), to: Memory
+    defdelegate list_backfill_windows(filters, opts), to: Memory
+    defdelegate put_asset_window_state(state, opts), to: Memory
+    defdelegate get_asset_window_state(module, name, freshness_key, opts), to: Memory
+    defdelegate list_asset_window_states(filters, opts), to: Memory
+
+    defdelegate replace_backfill_read_models(filters, baselines, windows, states, opts),
+      to: Memory
+  end
+
   setup do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+
     Memory.reset()
 
     on_exit(fn ->
       Memory.reset()
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
     end)
 
     :ok
@@ -115,6 +160,15 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
     assert state.latest_success_node_key == node_key
   end
 
+  test "apply ignores adapters without materialization claim callbacks" do
+    Application.put_env(:favn_orchestrator, :storage_adapter, NoClaimAdapter)
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, server: Memory)
+
+    assert {:ok, report} = RuntimeState.repair(dry_run: false, freshness: false)
+    assert report.materialization_claims_expired == 0
+    assert report.errors == []
+  end
+
   defp persist_running_run_with_started_step(%RunState{} = run) do
     pending = %{run | status: :pending, event_seq: 1}
 
@@ -178,4 +232,7 @@ defmodule FavnOrchestrator.Repair.RuntimeStateTest do
   end
 
   defp asset_step_id(%RunState{} = run), do: "#{run.id}:gold"
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 end

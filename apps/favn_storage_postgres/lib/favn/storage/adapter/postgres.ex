@@ -418,39 +418,17 @@ defmodule Favn.Storage.Adapter.Postgres do
   @impl true
   def complete_materialization_claim(claim_key, completion, opts)
       when is_binary(claim_key) and is_map(completion) and is_list(opts) do
-    with {:ok, repo} <- resolve_repo(opts),
-         {:ok, %MaterializationClaim{status: :claimed} = claim} <-
-           fetch_materialization_claim(repo, claim_key) do
-      completed = apply_materialization_completion(claim, completion)
-
-      case upsert_materialization_claim(repo, completed) do
-        :ok -> {:ok, completed}
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:ok, nil} -> {:error, :not_found}
-      {:ok, %MaterializationClaim{}} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
-    end
+    guarded_materialization_claim_transition(claim_key, opts, fn claim ->
+      apply_materialization_completion(claim, completion)
+    end)
   end
 
   @impl true
   def fail_materialization_claim(claim_key, failure, opts)
       when is_binary(claim_key) and is_map(failure) and is_list(opts) do
-    with {:ok, repo} <- resolve_repo(opts),
-         {:ok, %MaterializationClaim{status: :claimed} = claim} <-
-           fetch_materialization_claim(repo, claim_key) do
-      failed = apply_materialization_failure(claim, failure)
-
-      case upsert_materialization_claim(repo, failed) do
-        :ok -> {:ok, failed}
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      {:ok, nil} -> {:error, :not_found}
-      {:ok, %MaterializationClaim{}} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
-    end
+    guarded_materialization_claim_transition(claim_key, opts, fn claim ->
+      apply_materialization_failure(claim, failure)
+    end)
   end
 
   @impl true
@@ -2256,6 +2234,60 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
+  defp update_claimed_materialization_claim(repo, %MaterializationClaim{} = claim) do
+    sql = """
+    UPDATE favn_materialization_claims SET
+      asset_ref_module = $2,
+      asset_ref_name = $3,
+      freshness_key = $4,
+      input_fingerprint = $5,
+      run_id = $6,
+      asset_step_id = $7,
+      node_key = $8,
+      runner_execution_id = $9,
+      manifest_version_id = $10,
+      manifest_content_hash = $11,
+      freshness_version = $12,
+      status = $13,
+      claimed_at = $14,
+      heartbeat_at = $15,
+      expires_at = $16,
+      finished_at = $17,
+      record_payload = $18
+    WHERE claim_key = $1 AND status = 'claimed'
+    """
+
+    case SQL.query(repo, sql, materialization_claim_params(claim)) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, %{num_rows: 0}} -> :conflict
+      {:ok, _result} -> :conflict
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp guarded_materialization_claim_transition(claim_key, opts, transition)
+       when is_function(transition, 1) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      repo.transact(fn ->
+        with {:ok, %MaterializationClaim{status: :claimed} = claim} <-
+               fetch_materialization_claim(repo, claim_key),
+             updated = transition.(claim),
+             :ok <- update_claimed_materialization_claim(repo, updated) do
+          {:ok, {:ok, updated}}
+        else
+          {:ok, nil} -> repo.rollback(:not_found)
+          {:ok, %MaterializationClaim{}} -> repo.rollback(:not_found)
+          :conflict -> repo.rollback(:not_found)
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
   defp materialization_claim_params(%MaterializationClaim{} = claim) do
     [
       claim.claim_key,
@@ -2289,9 +2321,12 @@ defmodule Favn.Storage.Adapter.Postgres do
           rows
           |> Enum.reduce_while({:ok, 0}, fn row, {:ok, count} ->
             with {:ok, claim} <- decode_materialization_claim_row(row),
-                 expired = %{claim | status: :expired, finished_at: now},
-                 :ok <- upsert_materialization_claim(repo, expired) do
-              {:cont, {:ok, count + 1}}
+                 expired = %{claim | status: :expired, finished_at: now} do
+              case update_claimed_materialization_claim(repo, expired) do
+                :ok -> {:cont, {:ok, count + 1}}
+                :conflict -> {:cont, {:ok, count}}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
             else
               {:error, reason} -> {:halt, {:error, reason}}
             end

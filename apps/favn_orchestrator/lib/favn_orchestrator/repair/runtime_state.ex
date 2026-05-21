@@ -106,6 +106,7 @@ defmodule FavnOrchestrator.Repair.RuntimeState do
   defp expire_materialization_claims_for_mode(%Report{mode: :apply} = report, _mode) do
     case apply(Storage, :expire_materialization_claims, [DateTime.utc_now()]) do
       {:ok, count} -> Report.bump(report, :materialization_claims_expired, count)
+      {:error, :materialization_claims_not_supported} -> report
       {:error, reason} -> Report.error(report, {:materialization_claim_expiry_failed, reason})
     end
   end

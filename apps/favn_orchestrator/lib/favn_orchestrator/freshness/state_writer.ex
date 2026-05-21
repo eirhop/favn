@@ -2,9 +2,9 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
   @moduledoc """
   Builds and persists execution-time asset freshness state.
 
-  Successful materializations replace the freshness version and consumed input
-  versions. Non-success attempts preserve the last successful freshness fields
-  while updating the latest attempt metadata.
+    Successful materializations replace the freshness version, manifest identity,
+    and consumed input versions. Non-success attempts preserve those success-scoped
+    fields while updating latest-attempt metadata.
   """
 
   alias Favn.Manifest.Version
@@ -127,10 +127,10 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
         latest_attempt_run_id: run_state.id,
         latest_attempt_status: status,
         latest_attempt_at: now,
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
+        manifest_version_id: previous_manifest_version_id(previous),
+        manifest_content_hash: previous_manifest_content_hash(previous),
         input_versions: previous_input_versions(previous),
-        metadata: attempt_freshness_metadata(previous, decision),
+        metadata: attempt_freshness_metadata(previous, decision, version),
         updated_at: now
       })
 
@@ -190,11 +190,27 @@ defmodule FavnOrchestrator.Freshness.StateWriter do
   defp previous_input_versions(%AssetFreshnessState{} = state), do: state.input_versions
   defp previous_input_versions(_state), do: %{}
 
-  defp attempt_freshness_metadata(%AssetFreshnessState{metadata: metadata}, decision)
+  defp previous_manifest_version_id(%AssetFreshnessState{} = state), do: state.manifest_version_id
+  defp previous_manifest_version_id(_state), do: nil
+
+  defp previous_manifest_content_hash(%AssetFreshnessState{} = state),
+    do: state.manifest_content_hash
+
+  defp previous_manifest_content_hash(_state), do: nil
+
+  defp attempt_freshness_metadata(%AssetFreshnessState{metadata: metadata}, decision, version)
        when is_map(metadata) do
-    Map.merge(metadata, %{latest_attempt_reason: Map.get(decision, :reason)})
+    Map.merge(metadata, latest_attempt_metadata(decision, version))
   end
 
-  defp attempt_freshness_metadata(_state, decision),
-    do: %{latest_attempt_reason: Map.get(decision, :reason)}
+  defp attempt_freshness_metadata(_state, decision, version),
+    do: latest_attempt_metadata(decision, version)
+
+  defp latest_attempt_metadata(decision, %Version{} = version) do
+    %{
+      latest_attempt_reason: Map.get(decision, :reason),
+      latest_attempt_manifest_version_id: version.manifest_version_id,
+      latest_attempt_manifest_content_hash: version.content_hash
+    }
+  end
 end

@@ -2,8 +2,8 @@ defmodule FavnOrchestrator.MaterializationClaim.Identity do
   @moduledoc """
   Deterministic materialization claim identity helpers.
 
-  Claims are scoped by asset ref, freshness key, and the exact upstream freshness
-  versions consumed by the materialization attempt.
+  Claims are scoped by asset ref, freshness key, producer identity, and the exact
+  upstream freshness versions consumed by the materialization attempt.
 
   Execution code uses this identity before submitting runner work. Storage then
   admits only one active claim for the same identity, lets overlapping runs wait
@@ -23,13 +23,19 @@ defmodule FavnOrchestrator.MaterializationClaim.Identity do
   end
 
   @doc """
-  Returns a deterministic claim key for one asset/freshness/input tuple.
+  Returns a deterministic claim key for one asset/freshness/producer/input tuple.
   """
-  @spec claim_key(Favn.Ref.t(), String.t(), String.t()) :: String.t()
-  def claim_key({module, name}, freshness_key, input_fingerprint)
+  @spec claim_key(Favn.Ref.t(), String.t(), String.t(), String.t()) :: String.t()
+  def claim_key({module, name}, freshness_key, input_fingerprint, producer_identity)
       when is_atom(module) and is_atom(name) and is_binary(freshness_key) and
-             is_binary(input_fingerprint) do
-    [Atom.to_string(module), Atom.to_string(name), freshness_key, input_fingerprint]
+             is_binary(input_fingerprint) and is_binary(producer_identity) do
+    [
+      Atom.to_string(module),
+      Atom.to_string(name),
+      freshness_key,
+      producer_identity,
+      input_fingerprint
+    ]
     |> :erlang.term_to_binary()
     |> sha256_base16()
   end
