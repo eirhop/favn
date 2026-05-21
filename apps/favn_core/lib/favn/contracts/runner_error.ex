@@ -11,6 +11,24 @@ defmodule Favn.Contracts.RunnerError do
   @type kind :: :error | :exit | :throw | :cancelled | :preflight | :boundary
 
   @operational_untrusted_keys [:reason, :message, :detail, :details, :error, :exception]
+  @sensitive_fragments [
+    "token",
+    "password",
+    "secret",
+    "authorization",
+    "cookie",
+    "credential",
+    "database",
+    "dsn",
+    "url",
+    "uri",
+    "api_key",
+    "apikey",
+    "access_key",
+    "accesskey",
+    "private_key",
+    "privatekey"
+  ]
   @sensitive_assignment ~r/(token|password|secret|authorization|cookie|credential|database|dsn|url|uri|api_key|apikey|access_key|accesskey|private_key|privatekey)\s*[:=]\s*((?:Bearer\s+)?[^\s,;]+)/i
   @bearer_token ~r/(bearer)\s+([^\s,;]+)/i
   @url_userinfo ~r/([a-z][a-z0-9+.-]*:\/\/)([^\s\/@:]+):([^\s\/@]+)@([^\s,;]+)/i
@@ -276,10 +294,7 @@ defmodule Favn.Contracts.RunnerError do
 
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
-
-    String.contains?(key, "token") or String.contains?(key, "password") or
-      String.contains?(key, "secret") or String.contains?(key, "credential") or
-      String.contains?(key, "database")
+    Enum.any?(@sensitive_fragments, &String.contains?(key, &1))
   end
 
   defp operational_untrusted_key?(key) when is_binary(key) do

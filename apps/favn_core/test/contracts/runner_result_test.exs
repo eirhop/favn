@@ -52,4 +52,25 @@ defmodule Favn.Contracts.RunnerResultTest do
     assert error.details.cause.message =~ "token=[REDACTED]"
     assert error.details.cause.message =~ "Authorization=[REDACTED]"
   end
+
+  test "runner errors redact structured sensitive detail keys" do
+    error =
+      RunnerError.normalize(%{
+        type: :backend_execution_failed,
+        details: %{
+          authorization: "Bearer raw-token",
+          api_key: "raw-key",
+          url: "postgres://user:password@example/db"
+        }
+      })
+
+    rendered = inspect(error)
+
+    refute rendered =~ "raw-token"
+    refute rendered =~ "raw-key"
+    refute rendered =~ "user:password"
+    assert error.details.authorization == :redacted
+    assert error.details.api_key == :redacted
+    assert error.details.url == :redacted
+  end
 end
