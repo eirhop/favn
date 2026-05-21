@@ -2,7 +2,7 @@ defmodule Favn.SQL.Admission do
   @moduledoc false
 
   alias Favn.SQL.Admission.Limiter
-  alias Favn.SQL.{ConcurrencyPolicies, ConcurrencyPolicy, Error, Session, WritePlan}
+  alias Favn.SQL.{ConcurrencyPolicies, ConcurrencyPolicy, Error, Observability, Session, WritePlan}
 
   @permit_key {__MODULE__, :permits}
   @write_prefixes ~w(
@@ -381,20 +381,72 @@ defmodule Favn.SQL.Admission do
       |> Enum.sort_by(&inspect(&1.scope))
 
     if policies == [] do
-      fun.()
+      run_and_emit(policies, operation, fun)
     else
+      started_at = monotonic_ms()
+
       case acquire_operation_leases(policies, operation) do
         {:error, %Error{}} = error ->
+          emit_operation_admission_wait(:error, started_at, operation, policies)
           error
 
         leases ->
+          emit_operation_admission_wait(:ok, started_at, operation, policies)
+
           try do
-            fun.()
+            run_and_emit(policies, operation, fun)
           after
             release_session(leases)
           end
       end
     end
+  end
+
+  defp run_and_emit(policies, operation, fun) do
+    started_at = monotonic_ms()
+
+    try do
+      result = fun.()
+      emit_operation_run(result_status(result), started_at, operation, policies)
+      result
+    rescue
+      error ->
+        emit_operation_run(:raised, started_at, operation, policies)
+        reraise error, __STACKTRACE__
+    catch
+      kind, reason ->
+        emit_operation_run(kind, started_at, operation, policies)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
+
+  defp result_status({:ok, _value}), do: :ok
+  defp result_status({:error, _reason}), do: :error
+  defp result_status(_result), do: :unknown
+
+  defp emit_operation_admission_wait(result, started_at, operation, policies) do
+    Observability.emit(
+      [:admission, :operation, :wait],
+      %{wait_time_ms: monotonic_ms() - started_at},
+      Map.put(operation_policy_metadata(operation, policies), :result, result)
+    )
+  end
+
+  defp emit_operation_run(result, started_at, operation, policies) do
+    Observability.emit(
+      [:operation, :run],
+      %{duration_ms: monotonic_ms() - started_at},
+      Map.put(operation_policy_metadata(operation, policies), :result, result)
+    )
+  end
+
+  defp operation_policy_metadata(operation, policies) do
+    %{
+      operation: operation,
+      policy_count: length(policies),
+      policy_targets: Enum.map(policies, & &1.target),
+      policy_scopes: Enum.map(policies, &inspect(&1.scope))
+    }
   end
 
   defp acquire_operation_leases(policies, operation) do
@@ -472,4 +524,6 @@ defmodule Favn.SQL.Admission do
       _ -> %{}
     end
   end
+
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
 end

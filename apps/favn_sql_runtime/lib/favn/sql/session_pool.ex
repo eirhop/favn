@@ -92,15 +92,19 @@ defmodule Favn.SQL.SessionPool do
   end
 
   @doc """
-  Checks out an idle session or reserves the caller as the single creator for `key`.
+  Checks out an idle session or reserves the caller as a creator for `key`.
 
-  Concurrent misses for the same key are serialized. Waiters block until the
-  current creator finishes, then either receive an idle session or become the next
-  creator.
+  Concurrent misses for the same key may create fresh sessions in parallel up to
+  `:max_creating_per_key`. Waiters block until an idle session is available or
+  capacity opens for another creator.
   """
   @spec checkout_or_create(PoolKey.t(), keyword()) :: {:ok, Session.t()} | :create
   def checkout_or_create(%PoolKey{} = key, opts \\ []) do
-    GenServer.call(pool_name(opts), {:checkout_or_create, key, self()}, :infinity)
+    GenServer.call(
+      pool_name(opts),
+      {:checkout_or_create, key, self(), max_creating_per_key(opts)},
+      :infinity
+    )
   end
 
   @doc """
@@ -108,7 +112,7 @@ defmodule Favn.SQL.SessionPool do
   """
   @spec creation_finished(PoolKey.t(), keyword()) :: :ok
   def creation_finished(%PoolKey{} = key, opts \\ []) do
-    GenServer.cast(pool_name(opts), {:creation_finished, key})
+    GenServer.cast(pool_name(opts), {:creation_finished, key, self()})
   end
 
   @doc """
@@ -196,9 +200,13 @@ defmodule Favn.SQL.SessionPool do
     end
   end
 
-  def handle_call({:checkout_or_create, %PoolKey{} = key, owner}, from, %__MODULE__{} = state) do
+  def handle_call(
+        {:checkout_or_create, %PoolKey{} = key, owner, max_creating_per_key},
+        from,
+        %__MODULE__{} = state
+      ) do
     state
-    |> checkout_or_reserve(key, owner, from)
+    |> checkout_or_reserve(key, owner, from, max_creating_per_key)
     |> case do
       {:reply, reply, state} -> {:reply, reply, state}
       {:noreply, state} -> {:noreply, state}
@@ -269,19 +277,20 @@ defmodule Favn.SQL.SessionPool do
         cond do
           not is_nil(discard_reason) ->
             close_session(session, discard_reason)
-            {:reply, :ok, state}
+            {:reply, :ok, drain_waiters(state, checkout.key.hash)}
 
           owner == caller ->
             {:reply, :ok,
-             return_to_idle(
-               state,
-               session,
-               checkout
-             )}
+              return_to_idle(
+                state,
+                session,
+                checkout
+              )
+              |> drain_waiters(checkout.key.hash)}
 
           true ->
             close_session(session)
-            {:reply, :ok, state}
+            {:reply, :ok, drain_waiters(state, checkout.key.hash)}
         end
     end
   end
@@ -296,13 +305,14 @@ defmodule Favn.SQL.SessionPool do
     if entry, do: Process.demonitor(entry.monitor, [:flush])
     close_session(session, reason)
 
-    {:reply, :ok,
-     %__MODULE__{
-       state
-       | active: active,
-         monitors: monitors,
-         discard_reasons: Map.delete(state.discard_reasons, checkout.token)
-     }}
+    state = %__MODULE__{
+      state
+      | active: active,
+        monitors: monitors,
+        discard_reasons: Map.delete(state.discard_reasons, checkout.token)
+    }
+
+    {:reply, :ok, drain_waiters(state, checkout.key.hash)}
   end
 
   def handle_call({:checkin, %Session{} = session, _status}, _from, %__MODULE__{} = state) do
@@ -336,8 +346,8 @@ defmodule Favn.SQL.SessionPool do
   end
 
   @impl true
-  def handle_cast({:creation_finished, %PoolKey{} = key}, %__MODULE__{} = state) do
-    {:noreply, state |> finish_creation(key) |> drain_waiters(key.hash)}
+  def handle_cast({:creation_finished, %PoolKey{} = key, owner}, %__MODULE__{} = state) do
+    {:noreply, state |> finish_creation(key, owner) |> drain_waiters(key.hash)}
   end
 
   @impl true
@@ -358,14 +368,14 @@ defmodule Favn.SQL.SessionPool do
 
               {hash, creator_monitors} ->
                 {:noreply,
-                 %__MODULE__{
-                   state
-                   | monitors: monitors,
-                     waiter_monitors: waiter_monitors,
-                     creator_monitors: creator_monitors,
-                     creating: Map.delete(state.creating, hash)
-                 }
-                 |> drain_waiters(hash)}
+                  %__MODULE__{
+                    state
+                    | monitors: monitors,
+                      waiter_monitors: waiter_monitors,
+                      creator_monitors: creator_monitors,
+                      creating: remove_creator(state.creating, hash, monitor)
+                  }
+                  |> drain_waiters(hash)}
             end
 
           {hash, waiter_monitors} ->
@@ -382,13 +392,16 @@ defmodule Favn.SQL.SessionPool do
         {entry, active} = Map.pop(state.active, token)
         if entry, do: close_session(entry.session, reason)
 
-        {:noreply,
-         %__MODULE__{
-           state
-           | monitors: monitors,
-             active: active,
-             discard_reasons: Map.delete(state.discard_reasons, token)
-         }}
+        state = %__MODULE__{
+          state
+          | monitors: monitors,
+            active: active,
+            discard_reasons: Map.delete(state.discard_reasons, token)
+        }
+
+        state = if entry, do: drain_waiters(state, entry.key.hash), else: state
+
+        {:noreply, state}
     end
   end
 
@@ -404,7 +417,13 @@ defmodule Favn.SQL.SessionPool do
     :ok
   end
 
-  defp checkout_or_reserve(%__MODULE__{} = state, %PoolKey{} = key, owner, from) do
+  defp checkout_or_reserve(
+         %__MODULE__{} = state,
+         %PoolKey{} = key,
+         owner,
+         from,
+         max_creating_per_key
+       ) do
     {entry, idle} = pop_idle(state.idle, key)
     state = %__MODULE__{state | idle: idle}
 
@@ -415,7 +434,7 @@ defmodule Favn.SQL.SessionPool do
         {:reply, {:ok, session}, state}
 
       nil ->
-        reserve_or_wait(state, key, owner, from)
+        reserve_or_wait(state, key, owner, from, max_creating_per_key)
     end
   end
 
@@ -441,8 +460,17 @@ defmodule Favn.SQL.SessionPool do
      }}
   end
 
-  defp reserve_or_wait(%__MODULE__{} = state, %PoolKey{hash: hash} = key, owner, from) do
-    if Map.has_key?(state.creating, hash) do
+  defp reserve_or_wait(
+         %__MODULE__{} = state,
+         %PoolKey{hash: hash} = key,
+         owner,
+         from,
+         max_creating_per_key
+       ) do
+    if can_reserve_creator?(state, hash, max_creating_per_key) do
+      emit_pool_checkout(:miss, hash, 0)
+      {:reply, :create, reserve_creator(state, key, owner)}
+    else
       monitor = Process.monitor(owner)
 
       waiter = %{
@@ -450,38 +478,39 @@ defmodule Favn.SQL.SessionPool do
         key: key,
         owner: owner,
         monitor: monitor,
-        wait_started_at: monotonic_ms()
+        wait_started_at: monotonic_ms(),
+        max_creating_per_key: max_creating_per_key
       }
 
       {:noreply,
        %__MODULE__{
          state
-         | waiters:
-             Map.update(state.waiters, hash, :queue.from_list([waiter]), &:queue.in(waiter, &1)),
-           waiter_monitors: Map.put(state.waiter_monitors, monitor, hash)
-       }}
-    else
-      emit_pool_checkout(:miss, hash, 0)
-      {:reply, :create, reserve_creator(state, key, owner)}
+          | waiters:
+              Map.update(state.waiters, hash, :queue.from_list([waiter]), &:queue.in(waiter, &1)),
+            waiter_monitors: Map.put(state.waiter_monitors, monitor, hash)
+        }}
     end
   end
 
   defp reserve_creator(%__MODULE__{} = state, %PoolKey{hash: hash} = key, owner) do
     monitor = Process.monitor(owner)
+    creator = %{key: key, owner: owner, monitor: monitor}
 
     %__MODULE__{
       state
-      | creating: Map.put(state.creating, hash, %{key: key, owner: owner, monitor: monitor}),
+      | creating: Map.update(state.creating, hash, [creator], &[creator | &1]),
         creator_monitors: Map.put(state.creator_monitors, monitor, hash)
     }
   end
 
-  defp finish_creation(%__MODULE__{} = state, %PoolKey{hash: hash}) do
-    case Map.pop(state.creating, hash) do
-      {nil, creating} ->
+  defp finish_creation(%__MODULE__{} = state, %PoolKey{hash: hash}, owner) do
+    {creator, creating} = pop_creator(state.creating, hash, &(&1.owner == owner))
+
+    case creator do
+      nil ->
         %__MODULE__{state | creating: creating}
 
-      {%{monitor: monitor}, creating} ->
+      %{monitor: monitor} ->
         Process.demonitor(monitor, [:flush])
 
         %__MODULE__{
@@ -525,10 +554,9 @@ defmodule Favn.SQL.SessionPool do
             |> drain_waiters(hash)
 
           {nil, _idle} ->
-            if Map.has_key?(state.creating, hash) do
-              state
-            else
-              {{:value, waiter}, queue} = :queue.out(queue)
+            {{:value, waiter}, queue} = :queue.out(queue)
+
+            if can_reserve_creator?(state, hash, waiter.max_creating_per_key) do
               {waiter_monitors, wait_ms} = release_waiter_monitor(state.waiter_monitors, waiter)
               GenServer.reply(waiter.from, :create)
               emit_pool_checkout(:miss, hash, wait_ms)
@@ -538,9 +566,20 @@ defmodule Favn.SQL.SessionPool do
                 | waiters: put_waiters(state.waiters, hash, queue),
                   waiter_monitors: waiter_monitors
               }
+              |> drain_waiters(hash)
+            else
+              state
             end
         end
     end
+  end
+
+  defp can_reserve_creator?(%__MODULE__{} = state, hash, max_creating_per_key) do
+    creating_count(state, hash) < max_creating_per_key
+  end
+
+  defp creating_count(%__MODULE__{} = state, hash) do
+    state.creating |> Map.get(hash, []) |> length()
   end
 
   defp return_to_idle(%__MODULE__{} = state, %Session{} = session, %Checkout{
@@ -641,6 +680,28 @@ defmodule Favn.SQL.SessionPool do
     |> then(&put_waiters(waiters, hash, &1))
   end
 
+  defp pop_creator(creating, hash, predicate) do
+    creators = Map.get(creating, hash, [])
+    {creator, creators} = pop_first(creators, predicate)
+    {creator, put_or_delete(creating, hash, creators)}
+  end
+
+  defp remove_creator(creating, hash, monitor) do
+    {_creator, creating} = pop_creator(creating, hash, &(&1.monitor == monitor))
+    creating
+  end
+
+  defp pop_first([], _predicate), do: {nil, []}
+
+  defp pop_first([entry | rest], predicate) do
+    if predicate.(entry) do
+      {entry, rest}
+    else
+      {found, entries} = pop_first(rest, predicate)
+      {found, [entry | entries]}
+    end
+  end
+
   defp close_session(
          %Session{adapter: adapter, conn: conn, admission_lease: lease},
          reason \\ :discard
@@ -701,7 +762,11 @@ defmodule Favn.SQL.SessionPool do
     %{
       active: map_size(state.active),
       idle: Enum.sum(Map.values(idle_counts)),
-      creating: map_size(state.creating),
+      creating:
+        state.creating
+        |> Map.values()
+        |> Enum.map(&length/1)
+        |> Enum.sum(),
       waiters:
         state.waiters
         |> Map.values()
@@ -721,4 +786,11 @@ defmodule Favn.SQL.SessionPool do
 
   defp monotonic_ms, do: System.monotonic_time(:millisecond)
   defp pool_name(opts), do: Keyword.get(opts, :name, __MODULE__)
+
+  defp max_creating_per_key(opts) do
+    case Keyword.get(opts, :max_creating_per_key, 1) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> 1
+    end
+  end
 end

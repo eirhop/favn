@@ -197,8 +197,8 @@ Production DuckDB behavior covers or must preserve:
   multi-runner DuckLake metadata pressure. Low-tier Azure PostgreSQL metadata
   catalogs should still use finite, conservative DuckLake catalog
   `write_concurrency` and consider PgBouncer or metadata database scaling when
-  pressure appears; pooling and single-flight creation reduce attach/bootstrap
-  pressure but do not replace metadata-tier capacity planning.
+  pressure appears; pooling and bounded same-key fresh session creation reduce
+  attach/bootstrap pressure but do not replace metadata-tier capacity planning.
 - Safe retries for DuckDB are bounded around session creation/bootstrap and
   read-only inspection/query. Favn must not blindly retry SQL writes, and unknown
   commit state must be surfaced rather than retried.
