@@ -74,9 +74,6 @@ defmodule Favn.AI do
     `FavnOrchestrator.MaterializationClaim`,
     `FavnOrchestrator.Freshness.StateWriter`,
     `FavnOrchestrator.Repair.RuntimeState`, and `Mix.Tasks.Favn.RepairRuntimeState`.
-    `mix favn.repair_runtime_state --dry-run` inspects stale active runs, steps,
-    execution leases, materialization claims, backfill parents, and conservative
-    freshness repairs before `--apply` mutates runtime state.
   - To work with windows or one-off run input, read `Favn.Window`, then
     `Favn.Window.Policy` for pipeline/scheduler policy, `Favn.Window.Request`
     for CLI/API run input, and `Favn plan_asset_run` if you need planning
@@ -139,8 +136,8 @@ defmodule Favn.AI do
     `mix favn.query`, `mix favn.diagnostics`, `mix favn.reload`,
     `mix favn.stop`, `mix favn.reset`, `mix favn.build.runner`,
     `mix favn.build.web`, `mix favn.build.orchestrator`,
-    `mix favn.build.single`, `mix favn.bootstrap.single`,
-    `mix favn.repair_runtime_state`, and `mix favn.read_doc`.
+    `mix favn.build.single`, `mix favn.bootstrap.single`, and
+    `mix favn.read_doc`.
   - To inspect the public helper functions collected in one place, read `Favn`.
 
   ## About `Favn`
