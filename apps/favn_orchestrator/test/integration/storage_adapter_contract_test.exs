@@ -281,12 +281,12 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
              Storage.complete_materialization_claim(claim.claim_key, %{
                freshness_version: "freshness-version-1",
                finished_at: DateTime.add(now, 1, :second),
-               metadata: %{rows_written: 10}
+               metadata: %{"rows_written" => 10}
              })
 
     assert completed.status == :succeeded
     assert completed.freshness_version == "freshness-version-1"
-    assert completed.metadata == %{rows_written: 10}
+    assert completed.metadata == %{"rows_written" => 10}
 
     assert {:error, :not_found} =
              Storage.fail_materialization_claim(claim.claim_key, %{status: :failed})
@@ -335,7 +335,7 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
       claimed_at: now,
       heartbeat_at: now,
       expires_at: DateTime.add(now, 5, :second),
-      metadata: %{label: label}
+      metadata: %{"label" => label}
     }
   end
 

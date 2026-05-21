@@ -21,6 +21,8 @@ defmodule Favn.SQLiteStorageTest do
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
   alias FavnOrchestrator.Idempotency
+  alias FavnOrchestrator.MaterializationClaim
+  alias FavnOrchestrator.Repair.RuntimeState
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
   alias FavnOrchestrator.Storage.PayloadCodec
   alias FavnStorageSqlite.Migrations
@@ -105,6 +107,40 @@ defmodule Favn.SQLiteStorageTest do
 
   test "returns :not_found for missing run id" do
     assert {:error, :not_found} = Storage.get_run("missing-sqlite-run")
+  end
+
+  test "runtime repair expires JSON and legacy materialization claim payloads" do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    json_claim = materialization_claim("json", DateTime.add(now, -120, :second))
+    legacy_claim = materialization_claim("legacy", DateTime.add(now, -120, :second))
+
+    assert {:ok, ^json_claim} = OrchestratorStorage.try_acquire_materialization_claim(json_claim)
+    assert :ok = insert_legacy_materialization_claim(legacy_claim)
+
+    assert {:ok, report} = RuntimeState.repair(dry_run: false, freshness: false)
+    assert report.materialization_claims_expired == 2
+
+    assert {:ok, json_expired} =
+             OrchestratorStorage.get_materialization_claim(json_claim.claim_key)
+
+    assert json_expired.status == :expired
+
+    assert {:ok, legacy_expired} =
+             OrchestratorStorage.get_materialization_claim(legacy_claim.claim_key)
+
+    assert legacy_expired.status == :expired
+
+    assert {:ok, %{rows: [[payload]]}} =
+             SQL.query(
+               Repo,
+               "SELECT record_payload FROM favn_materialization_claims WHERE claim_key = ?1",
+               [
+                 legacy_claim.claim_key
+               ]
+             )
+
+    assert {:ok, dto} = Jason.decode(payload)
+    assert dto["format"] == "favn.materialization_claim.storage.v1"
   end
 
   test "persists lists replays and deduplicates log entries" do
@@ -1378,6 +1414,72 @@ defmodule Favn.SQLiteStorageTest do
   end
 
   defp manifest_content_hash, do: manifest_version("manifest_v1").content_hash
+
+  defp materialization_claim(label, claimed_at) do
+    {:ok, claim} =
+      MaterializationClaim.new(%{
+        claim_key: "sqlite_claim_#{label}_#{System.unique_integer([:positive])}",
+        asset_ref_module: Favn.SQLiteStorageTest.Asset,
+        asset_ref_name: :sample_asset,
+        freshness_key: "freshness:#{label}",
+        input_fingerprint: "sha256:#{label}",
+        run_id: "run:#{label}",
+        asset_step_id: "step:#{label}",
+        node_key: "node:#{label}",
+        runner_execution_id: "runner:#{label}",
+        manifest_version_id: "manifest_v1",
+        manifest_content_hash: manifest_content_hash(),
+        status: :claimed,
+        claimed_at: claimed_at,
+        heartbeat_at: claimed_at,
+        expires_at: DateTime.add(claimed_at, 60, :second),
+        metadata: %{"label" => label}
+      })
+
+    claim
+  end
+
+  defp insert_legacy_materialization_claim(%MaterializationClaim{} = claim) do
+    payload = Base.encode64(:erlang.term_to_binary(claim))
+
+    sql = """
+    INSERT INTO favn_materialization_claims (
+      claim_key, asset_ref_module, asset_ref_name, freshness_key, input_fingerprint,
+      run_id, asset_step_id, node_key, runner_execution_id, manifest_version_id,
+      manifest_content_hash, freshness_version, status, claimed_at, heartbeat_at,
+      expires_at, finished_at, record_payload
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+    """
+
+    params = [
+      claim.claim_key,
+      Atom.to_string(claim.asset_ref_module),
+      Atom.to_string(claim.asset_ref_name),
+      claim.freshness_key,
+      claim.input_fingerprint,
+      claim.run_id,
+      claim.asset_step_id,
+      claim.node_key,
+      claim.runner_execution_id,
+      claim.manifest_version_id,
+      claim.manifest_content_hash,
+      claim.freshness_version,
+      Atom.to_string(claim.status),
+      sqlite_datetime(claim.claimed_at),
+      sqlite_datetime(claim.heartbeat_at),
+      sqlite_datetime(claim.expires_at),
+      sqlite_datetime(claim.finished_at),
+      payload
+    ]
+
+    case SQL.query(Repo, sql, params) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp sqlite_datetime(nil), do: nil
+  defp sqlite_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
   defp configure_router_boundary! do
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
