@@ -35,6 +35,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Storage
 
   @await_task_timeout_buffer_ms 2_000
+  @stage_admission_retry_ms 100
   @materialization_claim_timeout_buffer_ms 60_000
 
   def execute_plan(%RunState{submit_kind: :pipeline} = run_state, %Version{} = version),
@@ -413,42 +414,35 @@ defmodule FavnOrchestrator.RunServer.Execution do
              runner_client,
              runner_opts
            ) do
-        {:ok, run_after_submit, entries, deferred_node_keys} ->
-          attempted_node_keys = entry_node_keys(entries)
-
+        {:ok, run_after_submit, entries, deferred_node_keys, queued_steps} ->
           result =
             process_stage_attempt_results(
-              run_after_submit,
-              entries,
+              stage_attempt_state(
+                run_after_submit,
+                acc_results,
+                entries,
+                deferred_node_keys,
+                queued_steps
+              ),
               stage,
               attempt,
-              acc_results,
+              version,
+              decisions,
+              freshness_context,
               runner_client,
               runner_opts
             )
 
           case result do
-            {:ok, next_run, next_acc_results, []} ->
-              continue_deferred_stage_attempt(
-                next_run,
-                version,
-                stage,
-                deferred_node_keys,
-                decisions,
-                freshness_context,
-                attempt,
-                runner_client,
-                runner_opts,
-                next_acc_results,
-                attempted_node_keys
-              )
+            {:ok, next_run, next_acc_results, [], _attempted_node_keys} ->
+              {:ok, next_run, next_acc_results}
 
-            {:ok, next_run, next_acc_results, retry_refs} ->
+            {:ok, next_run, next_acc_results, retry_refs, attempted_node_keys} ->
               continue_retry_stage_attempt(
                 next_run,
                 version,
                 stage,
-                deferred_node_keys,
+                [],
                 retry_refs,
                 decisions,
                 freshness_context,
@@ -459,63 +453,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
                 attempted_node_keys
               )
 
-            {:error, failed_run, next_acc_results} ->
+            {:error, failed_run, next_acc_results, attempted_node_keys} ->
               {:error, failed_run, next_acc_results, attempted_node_keys}
           end
 
         {:error, failed_run, step_results, attempted_node_keys} ->
           {:error, failed_run, step_results, attempted_node_keys}
       end
-    end
-  end
-
-  defp continue_deferred_stage_attempt(
-         next_run,
-         _version,
-         _stage,
-         [],
-         _decisions,
-         _freshness_context,
-         _attempt,
-         _runner_client,
-         _runner_opts,
-         next_acc_results,
-         _attempted_node_keys
-       ) do
-    {:ok, next_run, next_acc_results}
-  end
-
-  defp continue_deferred_stage_attempt(
-         next_run,
-         version,
-         stage,
-         deferred_node_keys,
-         decisions,
-         freshness_context,
-         attempt,
-         runner_client,
-         runner_opts,
-         next_acc_results,
-         attempted_node_keys
-       ) do
-    case run_stage_attempt(
-           next_run,
-           version,
-           stage,
-           deferred_node_keys,
-           decisions,
-           freshness_context,
-           attempt,
-           runner_client,
-           runner_opts,
-           next_acc_results
-         ) do
-      {:ok, deferred_run, deferred_results} ->
-        {:ok, deferred_run, deferred_results}
-
-      {:error, deferred_failed_run, deferred_results, deferred_attempted_node_keys} ->
-        {:error, deferred_failed_run, deferred_results,
-         Enum.uniq(attempted_node_keys ++ deferred_attempted_node_keys)}
     end
   end
 
@@ -602,6 +546,32 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_opts
        ) do
     submit_stage_entries(
+      run_state,
+      version,
+      stage,
+      node_keys,
+      decisions,
+      freshness_context,
+      attempt,
+      runner_client,
+      runner_opts,
+      MapSet.new()
+    )
+  end
+
+  defp submit_stage_entries(
+         %RunState{} = run_state,
+         %Version{} = version,
+         stage,
+         node_keys,
+         decisions,
+         freshness_context,
+         attempt,
+         runner_client,
+         runner_opts,
+         queued_steps
+       ) do
+    submit_stage_entries(
       node_keys,
       run_state,
       version,
@@ -612,7 +582,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       runner_client,
       runner_opts,
       [],
-      MapSet.new()
+      queued_steps
     )
   end
 
@@ -627,9 +597,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
          _runner_client,
          _runner_opts,
          entries,
-         _queued_steps
+         queued_steps
        ) do
-    {:ok, run_state, entries, []}
+    {:ok, run_state, entries, [], queued_steps}
   end
 
   defp submit_stage_entries(
@@ -755,24 +725,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
                      scope
                    ) do
                 {:ok, queued_run, next_queued_steps} when acc == [] ->
-                  Process.sleep(100)
+                  {:ok, queued_run, [], node_keys, next_queued_steps}
 
-                  submit_stage_entries(
-                    node_keys,
-                    queued_run,
-                    version,
-                    stage,
-                    decisions,
-                    freshness_context,
-                    attempt,
-                    runner_client,
-                    runner_opts,
-                    acc,
-                    next_queued_steps
-                  )
-
-                {:ok, queued_run, _next_queued_steps} ->
-                  {:ok, queued_run, acc, node_keys}
+                {:ok, queued_run, next_queued_steps} ->
+                  {:ok, queued_run, acc, node_keys, next_queued_steps}
 
                 {:error, :external_cancel} ->
                   {:error, Snapshots.cancelled_snapshot(current_run), [],
@@ -803,24 +759,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  scope
                ) do
             {:ok, queued_run, next_queued_steps} when acc == [] ->
-              Process.sleep(100)
+              {:ok, queued_run, [], node_keys, next_queued_steps}
 
-              submit_stage_entries(
-                node_keys,
-                queued_run,
-                version,
-                stage,
-                decisions,
-                freshness_context,
-                attempt,
-                runner_client,
-                runner_opts,
-                acc,
-                next_queued_steps
-              )
-
-            {:ok, queued_run, _next_queued_steps} ->
-              {:ok, queued_run, acc, node_keys}
+            {:ok, queued_run, next_queued_steps} ->
+              {:ok, queued_run, acc, node_keys, next_queued_steps}
 
             {:error, :external_cancel} ->
               {:error, Snapshots.cancelled_snapshot(current_run), [],
@@ -970,6 +912,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp entry_node_keys(entries), do: Enum.map(entries, & &1.node_key)
 
+  defp stage_attempt_state(run_state, acc_results, entries, deferred_node_keys, queued_steps) do
+    %{
+      run: run_state,
+      results: acc_results,
+      retry_refs: [],
+      terminal_failure: nil,
+      pending_ids: pending_execution_ids(entries),
+      deferred_node_keys: deferred_node_keys,
+      queued_steps: queued_steps,
+      initial_entries: entries,
+      attempted_node_keys: entry_node_keys(entries)
+    }
+  end
+
   defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
     parent = self()
 
@@ -985,13 +941,25 @@ defmodule FavnOrchestrator.RunServer.Execution do
           )
         end)
 
-      await = %{pid: pid, monitor_ref: monitor_ref, entry: entry}
+      await = %{
+        pid: pid,
+        monitor_ref: monitor_ref,
+        deadline_ms: await_deadline(timeout_ms),
+        entry: entry
+      }
 
       %{
         replies: Map.put(acc.replies, reply_ref, await),
         monitors: Map.put(acc.monitors, monitor_ref, reply_ref)
       }
     end)
+  end
+
+  defp merge_pending_tasks(left, right) do
+    %{
+      replies: Map.merge(left.replies, right.replies),
+      monitors: Map.merge(left.monitors, right.monitors)
+    }
   end
 
   defp await_runner_result(entry, timeout_ms, runner_client, runner_opts) do
@@ -1033,39 +1001,81 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp process_stage_attempt_results(
-         %RunState{} = run_state,
-         entries,
+         %{run: %RunState{} = run_state} = state,
          stage,
          attempt,
-         acc_results,
+         version,
+         decisions,
+         freshness_context,
          runner_client,
          runner_opts
        ) do
-    pending_ids = pending_execution_ids(entries)
-
-    entries
+    state.initial_entries
     |> start_await_tasks(run_state.timeout_ms, runner_client, runner_opts)
     |> collect_stage_attempt_results(
       await_deadline(run_state.timeout_ms),
-      {:ok, run_state, acc_results, [], nil, pending_ids},
+      state,
       stage,
       attempt,
+      version,
+      decisions,
+      freshness_context,
       runner_client,
       runner_opts
     )
   end
 
   defp collect_stage_attempt_results(
-         %{replies: replies},
-         _deadline,
+         %{replies: replies} = pending_tasks,
+         deadline,
          state,
-         _stage,
-         _attempt,
-         _runner_client,
-         _runner_opts
+         stage,
+         attempt,
+         version,
+         decisions,
+         freshness_context,
+         runner_client,
+         runner_opts
        )
        when map_size(replies) == 0 do
-    finalize_stage_attempt_state(state)
+    if state.terminal_failure == nil and state.deferred_node_keys != [] do
+      case wait_for_stage_admission_retry(deadline) do
+        :ok ->
+          case refill_stage_attempt_capacity(
+                 pending_tasks,
+                 state,
+                 stage,
+                 attempt,
+                 version,
+                 decisions,
+                 freshness_context,
+                 runner_client,
+                 runner_opts
+               ) do
+            {:cont, next_pending_tasks, next_state} ->
+              collect_stage_attempt_results(
+                next_pending_tasks,
+                deadline,
+                next_state,
+                stage,
+                attempt,
+                version,
+                decisions,
+                freshness_context,
+                runner_client,
+                runner_opts
+              )
+
+            {:halt, result} ->
+              result
+          end
+
+        :timeout ->
+          timeout_deferred_stage_attempt(state)
+      end
+    else
+      finalize_stage_attempt_state(state)
+    end
   end
 
   defp collect_stage_attempt_results(
@@ -1074,10 +1084,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
          state,
          stage,
          attempt,
+         version,
+         decisions,
+         freshness_context,
          runner_client,
          runner_opts
        ) do
-    receive_timeout_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+    receive_timeout_ms = next_await_receive_timeout_ms(pending_tasks)
 
     receive do
       {reply_ref, result} when is_map_key(replies, reply_ref) ->
@@ -1096,6 +1109,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
           {entry, result},
           stage,
           attempt,
+          version,
+          decisions,
+          freshness_context,
           runner_client,
           runner_opts
         )
@@ -1113,19 +1129,26 @@ defmodule FavnOrchestrator.RunServer.Execution do
           {entry, await_exit_to_error(reason)},
           stage,
           attempt,
+          version,
+          decisions,
+          freshness_context,
           runner_client,
           runner_opts
         )
     after
       receive_timeout_ms ->
-        pending_tasks
-        |> timeout_pending_await_tasks()
-        |> process_stage_attempt_result_list(
-          %{replies: %{}, monitors: %{}},
+        {timed_out, next_pending_tasks} = timeout_expired_await_tasks(pending_tasks)
+
+        process_stage_attempt_result_list(
+          timed_out,
+          next_pending_tasks,
           deadline,
           state,
           stage,
           attempt,
+          version,
+          decisions,
+          freshness_context,
           runner_client,
           runner_opts
         )
@@ -1139,6 +1162,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
          {entry, await_result},
          stage,
          attempt,
+         version,
+         decisions,
+         freshness_context,
          runner_client,
          runner_opts
        ) do
@@ -1152,15 +1178,35 @@ defmodule FavnOrchestrator.RunServer.Execution do
            runner_opts
          ) do
       {:cont, next_state} ->
-        collect_stage_attempt_results(
-          pending_tasks,
-          deadline,
-          next_state,
-          stage,
-          attempt,
-          runner_client,
-          runner_opts
-        )
+        case refill_stage_attempt_capacity(
+               pending_tasks,
+               next_state,
+               stage,
+               attempt,
+               version,
+               decisions,
+               freshness_context,
+               runner_client,
+               runner_opts
+             ) do
+          {:cont, next_pending_tasks, refilled_state} ->
+            collect_stage_attempt_results(
+              next_pending_tasks,
+              deadline,
+              refilled_state,
+              stage,
+              attempt,
+              version,
+              decisions,
+              freshness_context,
+              runner_client,
+              runner_opts
+            )
+
+          {:halt, result} ->
+            stop_pending_await_tasks(pending_tasks)
+            result
+        end
 
       {:halt, result} ->
         stop_pending_await_tasks(pending_tasks)
@@ -1175,6 +1221,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
          state,
          stage,
          attempt,
+         version,
+         decisions,
+         freshness_context,
          runner_client,
          runner_opts
        ) do
@@ -1184,6 +1233,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
       state,
       stage,
       attempt,
+      version,
+      decisions,
+      freshness_context,
       runner_client,
       runner_opts
     )
@@ -1196,6 +1248,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
          state,
          stage,
          attempt,
+         version,
+         decisions,
+         freshness_context,
          runner_client,
          runner_opts
        ) do
@@ -1209,25 +1264,182 @@ defmodule FavnOrchestrator.RunServer.Execution do
            runner_opts
          ) do
       {:cont, next_state} ->
-        process_stage_attempt_result_list(
-          rest,
-          pending_tasks,
-          deadline,
-          next_state,
-          stage,
-          attempt,
-          runner_client,
-          runner_opts
-        )
+        case refill_stage_attempt_capacity(
+               pending_tasks,
+               next_state,
+               stage,
+               attempt,
+               version,
+               decisions,
+               freshness_context,
+               runner_client,
+               runner_opts
+             ) do
+          {:cont, next_pending_tasks, refilled_state} ->
+            process_stage_attempt_result_list(
+              rest,
+              next_pending_tasks,
+              deadline,
+              refilled_state,
+              stage,
+              attempt,
+              version,
+              decisions,
+              freshness_context,
+              runner_client,
+              runner_opts
+            )
+
+          {:halt, result} ->
+            fail_unprocessed_stage_attempt_results(rest)
+            stop_pending_await_tasks(pending_tasks)
+            result
+        end
 
       {:halt, result} ->
+        fail_unprocessed_stage_attempt_results(rest)
         stop_pending_await_tasks(pending_tasks)
         result
     end
   end
 
+  defp fail_unprocessed_stage_attempt_results(results) when is_list(results) do
+    Enum.each(results, fn
+      {entry, {:error, :timeout}} ->
+        :ok = fail_entry_materialization_claim(entry, :await_timeout)
+
+      {_entry, _result} ->
+        :ok
+    end)
+  end
+
+  defp refill_stage_attempt_capacity(
+         pending_tasks,
+         %{terminal_failure: terminal_failure} = state,
+         _stage,
+         _attempt,
+         _version,
+         _decisions,
+         _freshness_context,
+         _runner_client,
+         _runner_opts
+       )
+       when not is_nil(terminal_failure) do
+    {:cont, pending_tasks, state}
+  end
+
+  defp refill_stage_attempt_capacity(
+         pending_tasks,
+         %{deferred_node_keys: []} = state,
+         _stage,
+         _attempt,
+         _version,
+         _decisions,
+         _freshness_context,
+         _runner_client,
+         _runner_opts
+       ) do
+    {:cont, pending_tasks, state}
+  end
+
+  defp refill_stage_attempt_capacity(
+         pending_tasks,
+         %{run: %RunState{} = run_state, deferred_node_keys: deferred_node_keys} = state,
+         stage,
+         attempt,
+         version,
+         decisions,
+         freshness_context,
+         runner_client,
+         runner_opts
+       ) do
+    case submit_stage_entries(
+           run_state,
+           version,
+           stage,
+           deferred_node_keys,
+           decisions,
+           freshness_context,
+           attempt,
+           runner_client,
+           runner_opts,
+           state.queued_steps
+         ) do
+      {:ok, next_run, [], next_deferred_node_keys, next_queued_steps} ->
+        {:cont, pending_tasks,
+         %{
+           state
+           | run: next_run,
+             deferred_node_keys: next_deferred_node_keys,
+             queued_steps: next_queued_steps
+         }}
+
+      {:ok, next_run, entries, next_deferred_node_keys, next_queued_steps} ->
+        next_pending_tasks =
+          entries
+          |> start_await_tasks(next_run.timeout_ms, runner_client, runner_opts)
+          |> then(&merge_pending_tasks(pending_tasks, &1))
+
+        next_pending_ids =
+          entries
+          |> pending_execution_ids()
+          |> MapSet.union(state.pending_ids)
+
+        next_attempted_node_keys =
+          Enum.uniq(state.attempted_node_keys ++ entry_node_keys(entries))
+
+        {:cont, next_pending_tasks,
+         %{
+           state
+           | run: next_run,
+             pending_ids: next_pending_ids,
+             deferred_node_keys: next_deferred_node_keys,
+             queued_steps: next_queued_steps,
+             attempted_node_keys: next_attempted_node_keys
+         }}
+
+      {:error, failed_run, step_results, attempted_node_keys} ->
+        {:halt,
+         {:error, failed_run, state.results ++ step_results,
+          Enum.uniq(state.attempted_node_keys ++ attempted_node_keys)}}
+    end
+  end
+
+  defp wait_for_stage_admission_retry(deadline) do
+    now = System.monotonic_time(:millisecond)
+    wait_ms = min(@stage_admission_retry_ms, max(deadline - now, 0))
+
+    if wait_ms == 0 do
+      :timeout
+    else
+      retry_ref = make_ref()
+      Process.send_after(self(), {:retry_stage_admission, retry_ref}, wait_ms)
+
+      receive do
+        {:retry_stage_admission, ^retry_ref} -> :ok
+      end
+    end
+  end
+
+  defp timeout_deferred_stage_attempt(%{run: %RunState{} = run_state} = state) do
+    timed_out =
+      RunState.transition(run_state,
+        status: :timed_out,
+        error: :timeout,
+        runner_execution_id: nil
+      )
+
+    {:error, timed_out, state.results, state.attempted_node_keys}
+  end
+
   defp process_stage_attempt_result(
-         {:ok, current_run, current_results, retry_refs, terminal_failure, pending_ids},
+         %{
+           run: current_run,
+           results: current_results,
+           retry_refs: retry_refs,
+           terminal_failure: terminal_failure,
+           pending_ids: pending_ids
+         } = state,
          entry,
          await_result,
          stage,
@@ -1245,7 +1457,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
           runner_opts
         )
 
-      {:halt, {:error, Snapshots.cancelled_terminal(cancelled, current_results), current_results}}
+      :ok = fail_entry_materialization_claim(entry, :external_cancel)
+
+      {:halt,
+       {:error, Snapshots.cancelled_terminal(cancelled, current_results), current_results,
+        state.attempted_node_keys}}
     else
       {next_run, outcome, step_results} =
         process_one_stage_attempt_result(
@@ -1266,6 +1482,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       reduce_stage_attempt_outcome(
         outcome,
         %{
+          state: state,
           run: next_run,
           results: next_results,
           retry_refs: retry_refs,
@@ -1277,26 +1494,57 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp finalize_stage_attempt_state({:ok, next_run, next_results, retry_refs, nil, _pending_ids}) do
-    {:ok, next_run, next_results, retry_refs}
+  defp finalize_stage_attempt_state(%{
+         run: next_run,
+         results: next_results,
+         retry_refs: retry_refs,
+         terminal_failure: nil,
+         attempted_node_keys: attempted_node_keys
+       }) do
+    {:ok, next_run, next_results, retry_refs, attempted_node_keys}
   end
 
-  defp finalize_stage_attempt_state(
-         {:ok, next_run, next_results, _retry_refs, terminal_failure, _pending_ids}
-       ) do
+  defp finalize_stage_attempt_state(%{
+         run: next_run,
+         results: next_results,
+         terminal_failure: terminal_failure,
+         attempted_node_keys: attempted_node_keys
+       }) do
     failed_run = failed_stage_terminal_state(next_run, terminal_failure)
-    {:error, failed_run, next_results}
+    {:error, failed_run, next_results, attempted_node_keys}
   end
 
-  defp timeout_pending_await_tasks(%{replies: replies}) do
-    Enum.map(replies, fn {reply_ref, %{pid: pid, monitor_ref: monitor_ref, entry: entry}} ->
-      Process.exit(pid, :kill)
-      Process.demonitor(monitor_ref, [:flush])
-      flush_await_reply(reply_ref)
-      :ok = fail_entry_materialization_claim(entry, :await_timeout)
+  defp next_await_receive_timeout_ms(%{replies: replies}) do
+    now = System.monotonic_time(:millisecond)
 
-      {entry, {:error, :timeout}}
-    end)
+    replies
+    |> Map.values()
+    |> Enum.map(& &1.deadline_ms)
+    |> Enum.min(fn -> now end)
+    |> Kernel.-(now)
+    |> max(0)
+  end
+
+  defp timeout_expired_await_tasks(%{replies: replies, monitors: monitors}) do
+    now = System.monotonic_time(:millisecond)
+
+    {timed_out, next_replies, next_monitors} =
+      Enum.reduce(replies, {[], %{}, monitors}, fn {reply_ref, await},
+                                                   {timed_out, next_replies, next_monitors} ->
+        if await.deadline_ms <= now do
+          Process.exit(await.pid, :kill)
+          Process.demonitor(await.monitor_ref, [:flush])
+          flush_await_reply(reply_ref)
+          :ok = release_entry_lease(await.entry)
+
+          {[{await.entry, {:error, :timeout}} | timed_out], next_replies,
+           Map.delete(next_monitors, await.monitor_ref)}
+        else
+          {timed_out, Map.put(next_replies, reply_ref, await), next_monitors}
+        end
+      end)
+
+    {Enum.reverse(timed_out), %{replies: next_replies, monitors: next_monitors}}
   end
 
   defp stop_pending_await_tasks(%{replies: replies}) do
@@ -1554,6 +1802,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp reduce_stage_attempt_outcome(
          :ok,
          %{
+           state: state,
            run: %RunState{} = next_run,
            results: next_results,
            retry_refs: retry_refs,
@@ -1562,12 +1811,21 @@ defmodule FavnOrchestrator.RunServer.Execution do
          },
          _context
        ) do
-    {:cont, {:ok, next_run, next_results, retry_refs, terminal_failure, pending_ids}}
+    {:cont,
+     %{
+       state
+       | run: next_run,
+         results: next_results,
+         retry_refs: retry_refs,
+         terminal_failure: terminal_failure,
+         pending_ids: pending_ids
+     }}
   end
 
   defp reduce_stage_attempt_outcome(
          :retry,
          %{
+           state: state,
            run: %RunState{} = next_run,
            results: next_results,
            retry_refs: retry_refs,
@@ -1579,20 +1837,35 @@ defmodule FavnOrchestrator.RunServer.Execution do
     next_retry_refs =
       if terminal_failure == nil, do: retry_refs ++ [entry.node_key], else: retry_refs
 
-    {:cont, {:ok, next_run, next_results, next_retry_refs, terminal_failure, pending_ids}}
-  end
-
-  defp reduce_stage_attempt_outcome(
-         :error,
-         %{run: %RunState{status: :cancelled} = next_run, results: next_results},
-         _context
-       ) do
-    {:halt, {:error, Snapshots.cancelled_terminal(next_run, next_results), next_results}}
+    {:cont,
+     %{
+       state
+       | run: next_run,
+         results: next_results,
+         retry_refs: next_retry_refs,
+         terminal_failure: terminal_failure,
+         pending_ids: pending_ids
+     }}
   end
 
   defp reduce_stage_attempt_outcome(
          :error,
          %{
+           state: state,
+           run: %RunState{status: :cancelled} = next_run,
+           results: next_results
+         },
+         _context
+       ) do
+    {:halt,
+     {:error, Snapshots.cancelled_terminal(next_run, next_results), next_results,
+      state.attempted_node_keys}}
+  end
+
+  defp reduce_stage_attempt_outcome(
+         :error,
+         %{
+           state: state,
            run: %RunState{} = next_run,
            results: next_results,
            retry_refs: retry_refs,
@@ -1603,10 +1876,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ) do
     case remember_stage_failure(next_run, terminal_failure, entry, stage, attempt, pending_ids) do
       {:ok, failure_run, next_terminal_failure} ->
-        {:cont, {:ok, failure_run, next_results, retry_refs, next_terminal_failure, pending_ids}}
+        {:cont,
+         %{
+           state
+           | run: failure_run,
+             results: next_results,
+             retry_refs: retry_refs,
+             terminal_failure: next_terminal_failure,
+             pending_ids: pending_ids
+         }}
 
       {:error, cancelled} ->
-        {:halt, {:error, Snapshots.cancelled_terminal(cancelled, next_results), next_results}}
+        {:halt,
+         {:error, Snapshots.cancelled_terminal(cancelled, next_results), next_results,
+          state.attempted_node_keys}}
     end
   end
 
