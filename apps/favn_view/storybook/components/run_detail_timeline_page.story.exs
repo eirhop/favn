@@ -57,6 +57,25 @@ defmodule FavnView.Storybook.Components.RunDetailTimelinePage do
             running_only?: false
           }
         }
+      },
+      %Variation{
+        id: :skipped_filter,
+        attributes: %{
+          run: RunDetailPage.sample_completed_timeline_run(),
+          run_id: "run_sales_backfill_timeline_done",
+          nav_items: RunDetailPage.sample_nav_items(),
+          active_mode: :timeline,
+          timeline_state: %{
+            mode: :fit,
+            zoom: "full",
+            live_follow?: false,
+            search: "",
+            status: "skipped",
+            window: "all",
+            failed_only?: false,
+            running_only?: false
+          }
+        }
       }
     ]
   end

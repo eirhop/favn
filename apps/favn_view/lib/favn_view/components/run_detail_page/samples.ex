@@ -293,6 +293,17 @@ defmodule FavnView.Components.RunDetailPage.Samples do
         error_summary: nil
       }),
       sample_attempt(%{
+        id: "returns-mar",
+        asset: "returns",
+        window: Enum.at(windows, 2),
+        status: :skipped_fresh,
+        duration: "0 ms",
+        start_min: 24,
+        duration_min: 0,
+        child_run_id: "run_sales_mar",
+        error_summary: "existing_success"
+      }),
+      sample_attempt(%{
         id: "taxes-apr",
         asset: "taxes",
         window: Enum.at(windows, 3),
@@ -366,13 +377,12 @@ defmodule FavnView.Components.RunDetailPage.Samples do
       completed_windows: 3,
       failed_windows: length(failures),
       total_asset_attempts: length(attempts),
-      completed_asset_attempts: Enum.count(attempts, &(&1.status_tone in [:success, :error])),
+      completed_asset_attempts: completed_sample_attempts(attempts),
       succeeded_asset_attempts: Enum.count(attempts, &(&1.status_tone == :success)),
       failed_asset_attempts: length(failures),
       running_asset_attempts: length(running),
       queued_asset_attempts: Enum.count(attempts, &(&1.status_tone == :warning)),
-      progress_label:
-        "#{Enum.count(attempts, &(&1.status_tone in [:success, :error]))} / #{length(attempts)}",
+      progress_label: "#{completed_sample_attempts(attempts)} / #{length(attempts)}",
       matrix: matrix,
       assets: matrix.assets,
       windows: windows,
@@ -429,7 +439,7 @@ defmodule FavnView.Components.RunDetailPage.Samples do
         finished_at: "May 19, 2026 17:00 UTC",
         duration: "36m",
         elapsed_duration: "36m",
-        completed_asset_attempts: Enum.count(attempts, &(&1.status_tone in [:success, :error])),
+        completed_asset_attempts: completed_sample_attempts(attempts),
         succeeded_asset_attempts: Enum.count(attempts, &(&1.status_tone == :success)),
         failed_asset_attempts: length(failures),
         running_asset_attempts: 0,
@@ -755,8 +765,7 @@ defmodule FavnView.Components.RunDetailPage.Samples do
         window_label: window.label,
         status: child_status(child_attempts),
         status_tone: child_tone(child_attempts),
-        progress:
-          "#{Enum.count(child_attempts, &(&1.status_tone in [:success, :error]))} / #{length(child_attempts)}",
+        progress: "#{completed_sample_attempts(child_attempts)} / #{length(child_attempts)}",
         started_at: "May 19, 2026 16:26 UTC",
         finished_at: "-",
         duration: "5m 41s",
@@ -785,6 +794,10 @@ defmodule FavnView.Components.RunDetailPage.Samples do
       Enum.any?(attempts, &(&1.status_tone == :warning)) -> :warning
       true -> :success
     end
+  end
+
+  defp completed_sample_attempts(attempts) do
+    Enum.count(attempts, &(&1.status_tone not in [:info, :warning]))
   end
 
   defp sample_events(status) do

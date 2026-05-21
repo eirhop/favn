@@ -105,7 +105,7 @@ defmodule FavnView.LogsViewModel do
   def status_label(status) when status in [:error, "error"], do: "Failed"
   def status_label(status) when status in [:blocked, "blocked"], do: "Blocked"
   def status_label(status) when status in [:cancelled, "cancelled"], do: "Cancelled"
-  def status_label(status) when status in [:skipped_fresh, "skipped_fresh"], do: "Skipped fresh"
+  def status_label(status) when status in [:skipped_fresh, "skipped_fresh"], do: "Skipped"
   def status_label(status) when status in [:timed_out, "timed_out"], do: "Timed out"
   def status_label(nil), do: "Unknown"
   def status_label(status), do: humanize(status)
