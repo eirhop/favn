@@ -72,7 +72,7 @@ defmodule Favn.Assets.PlannerWindowTest do
                  module: MyApp.Monthly,
                  name: :asset,
                  depends_on: [],
-                 window: %{"kind" => "month", "timezone" => "Etc/UTC"}
+                 window: %{"kind" => "month", "refresh_from" => "day", "timezone" => "Etc/UTC"}
                }
              ])
 
@@ -95,6 +95,26 @@ defmodule Favn.Assets.PlannerWindowTest do
                  name: :asset,
                  depends_on: [],
                  window: Policy.new!(:daily, timezone: "Etc/UTC")
+               }
+             ])
+
+    anchor = Anchor.new!(:day, ~U[2026-04-26 00:00:00Z], ~U[2026-04-27 00:00:00Z])
+
+    assert {:ok, plan} = Planner.plan(ref, graph_index: index, anchor_window: anchor)
+    assert [%{window: %{kind: :day, start_at: ~U[2026-04-26 00:00:00Z]}}] = Map.values(plan.nodes)
+  end
+
+  test "expands runtime windows from policy-shaped asset windows with default timezone" do
+    ref = {MyApp.PolicyWindowDefaultTimezone, :asset}
+
+    assert {:ok, index} =
+             GraphIndex.build_index([
+               %{
+                 ref: ref,
+                 module: MyApp.PolicyWindowDefaultTimezone,
+                 name: :asset,
+                 depends_on: [],
+                 window: Policy.new!(:daily)
                }
              ])
 
