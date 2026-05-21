@@ -16,7 +16,7 @@ defmodule FavnOrchestrator.Storage.Backfill.BackfillWindowCodec do
   @spec decode(String.t()) :: {:ok, BackfillWindow.t()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
     with {:ok, %{"format" => @format, "schema_version" => 1} = dto} <- Jason.decode(payload),
-         {:ok, pipeline_module} <- existing_atom(Map.get(dto, "pipeline_module")),
+         {:ok, pipeline_module} <- module_atom(Map.get(dto, "pipeline_module")),
          {:ok, window_start_at} <- datetime(Map.get(dto, "window_start_at")),
          {:ok, window_end_at} <- datetime(Map.get(dto, "window_end_at")),
          {:ok, started_at} <- optional_datetime(Map.get(dto, "started_at")),
@@ -105,6 +105,9 @@ defmodule FavnOrchestrator.Storage.Backfill.BackfillWindowCodec do
   end
 
   defp existing_atom(value), do: {:error, {:invalid_atom, value}}
+
+  defp module_atom("Elixir." <> _rest = value), do: {:ok, String.to_atom(value)}
+  defp module_atom(value), do: existing_atom(value)
 
   defp error_field(dto, field) do
     case Map.fetch(dto, field) do
