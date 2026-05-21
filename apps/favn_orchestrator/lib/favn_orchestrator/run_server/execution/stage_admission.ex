@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
+  alias Favn.Plan.NodeIdentity
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.ExecutionAdmission
@@ -515,17 +516,20 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     asset_ref = node.ref
     asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
 
+    {:ok, identity} =
+      NodeIdentity.from_plan(version.manifest_version_id, run_state.plan, node_key)
+
     %RunnerWork{
       run_id: run_state.id,
-      manifest_version_id: version.manifest_version_id,
+      manifest_version_id: identity.manifest_version_id,
       manifest_content_hash: version.content_hash,
       asset_ref: asset_ref,
       asset_refs: [asset_ref],
-      planned_asset_refs: planned_asset_refs(run_state),
+      planned_asset_refs: identity.planned_asset_refs,
       params: run_state.params,
       trigger:
         run_state.trigger
-        |> Map.put(:window, node.window)
+        |> Map.put(:window, identity.window)
         |> maybe_put_pipeline_trigger(Map.get(run_state.metadata, :pipeline_context)),
       metadata:
         Map.merge(work_metadata(run_state.metadata), %{
@@ -533,15 +537,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           asset_step_id: asset_step_id,
           max_attempts: run_state.max_attempts,
           stage: stage,
-          node_key: node_key,
-          window: node.window,
+          node_key: identity.node_key,
+          window: identity.window,
           execution_pool: effective_execution_pool(run_state, node_key)
         })
     }
   end
-
-  defp planned_asset_refs(%RunState{target_refs: refs}) when is_list(refs), do: refs
-  defp planned_asset_refs(_run_state), do: []
 
   defp effective_execution_pool(%RunState{} = run_state, node_key) do
     node_pool =

@@ -13,6 +13,7 @@ defmodule Favn.Assets.Planner do
   """
 
   alias Favn.Assets.GraphIndex
+  alias Favn.Manifest.PlanningIndex
   alias Favn.Plan
   alias Favn.Ref
   alias Favn.TimePeriod
@@ -39,6 +40,7 @@ defmodule Favn.Assets.Planner do
           anchor_windows: [Anchor.t()],
           anchor_ranges: [backfill_anchor_range()],
           exact_windows: %{optional(Ref.t()) => [Runtime.t()]},
+          planning_index: PlanningIndex.t() | nil,
           graph_index: GraphIndex.t() | nil,
           asset_modules: [module()]
         ]
@@ -50,6 +52,7 @@ defmodule Favn.Assets.Planner do
     anchor_windows = Keyword.get(opts, :anchor_windows, [])
     anchor_ranges = Keyword.get(opts, :anchor_ranges, [])
     exact_windows = Keyword.get(opts, :exact_windows, %{})
+    planning_index = Keyword.get(opts, :planning_index)
     graph_index = Keyword.get(opts, :graph_index)
     asset_modules = Keyword.get(opts, :asset_modules)
 
@@ -58,7 +61,7 @@ defmodule Favn.Assets.Planner do
          :ok <- validate_dependencies_mode(dependencies),
          {:ok, anchors} <- normalize_anchors(anchor_window, anchor_windows, anchor_ranges),
          :ok <- validate_exact_windows(exact_windows),
-         {:ok, index} <- resolve_graph_index(graph_index, asset_modules),
+         {:ok, index} <- resolve_index(planning_index, graph_index, asset_modules),
          :ok <- validate_target_refs(index, target_refs),
          {:ok, refs} <- selected_refs(index, target_refs, dependencies),
          {:ok, projected_index} <- projected_index(index, refs),
@@ -106,6 +109,7 @@ defmodule Favn.Assets.Planner do
         :anchor_windows,
         :anchor_ranges,
         :exact_windows,
+        :planning_index,
         :graph_index,
         :asset_modules
       ])
@@ -194,14 +198,20 @@ defmodule Favn.Assets.Planner do
 
   defp anchor_sort_key(%Anchor{key: key}), do: Key.encode(key)
 
-  defp resolve_graph_index(%GraphIndex{} = index, _asset_modules), do: {:ok, index}
+  defp resolve_index(%PlanningIndex{} = index, _graph_index, _asset_modules), do: {:ok, index}
 
-  defp resolve_graph_index(nil, modules) when is_list(modules),
+  defp resolve_index(invalid_planning_index, _graph_index, _asset_modules)
+       when not is_nil(invalid_planning_index),
+       do: {:error, :invalid_planning_index}
+
+  defp resolve_index(nil, %GraphIndex{} = index, _asset_modules), do: {:ok, index}
+
+  defp resolve_index(nil, nil, modules) when is_list(modules),
     do: GraphIndex.index_for_modules(modules)
 
-  defp resolve_graph_index(nil, nil), do: {:error, :missing_graph_index_input}
-  defp resolve_graph_index(nil, _other), do: {:error, :invalid_asset_modules}
-  defp resolve_graph_index(_other, _asset_modules), do: {:error, :invalid_graph_index}
+  defp resolve_index(nil, nil, nil), do: {:error, :missing_graph_index_input}
+  defp resolve_index(nil, nil, _other), do: {:error, :invalid_asset_modules}
+  defp resolve_index(nil, _other, _asset_modules), do: {:error, :invalid_graph_index}
 
   defp validate_target_refs(index, refs) do
     case Enum.find(refs, &(not Map.has_key?(index.assets_by_ref, &1))) do
@@ -226,6 +236,12 @@ defmodule Favn.Assets.Planner do
   end
 
   defp projected_index(index, refs) do
+    project_index(index, refs)
+  end
+
+  defp project_index(%PlanningIndex{} = index, refs), do: PlanningIndex.project(index, refs)
+
+  defp project_index(%GraphIndex{} = index, refs) do
     refs
     |> Enum.map(&Map.fetch!(index.assets_by_ref, &1))
     |> project_assets(refs)

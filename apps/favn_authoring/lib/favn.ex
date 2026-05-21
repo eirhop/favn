@@ -27,6 +27,7 @@ defmodule FavnAuthoring do
   alias Favn.Manifest.Build
   alias Favn.Manifest.Compatibility
   alias Favn.Manifest.Generator
+  alias Favn.Manifest.Index
   alias Favn.Manifest.Serializer
   alias Favn.Manifest.Version
   alias Favn.ModuleDiscovery
@@ -270,8 +271,15 @@ defmodule FavnAuthoring do
   @spec plan_asset_run(asset_ref() | [asset_ref()], keyword()) ::
           {:ok, Favn.Plan.t()} | {:error, term()}
   def plan_asset_run(target_refs, opts \\ []) do
-    with {:ok, asset_modules} <- default_asset_modules() do
-      opts = Keyword.put_new(opts, :asset_modules, asset_modules)
+    with {:ok, default_asset_modules} <- default_asset_modules(),
+         asset_modules <- Keyword.get(opts, :asset_modules, default_asset_modules),
+         {:ok, manifest} <- Generator.generate(asset_modules: asset_modules),
+         {:ok, index} <- Index.build(manifest) do
+      opts =
+        opts
+        |> Keyword.delete(:asset_modules)
+        |> Keyword.put(:planning_index, index.planning_index)
+
       Planner.plan(target_refs, opts)
     end
   end

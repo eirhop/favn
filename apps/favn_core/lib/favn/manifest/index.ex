@@ -3,9 +3,9 @@ defmodule Favn.Manifest.Index do
   Deterministic lookup/index helpers built from a persisted manifest payload.
   """
 
-  alias Favn.Assets.GraphIndex
   alias Favn.Manifest
   alias Favn.Manifest.Asset
+  alias Favn.Manifest.PlanningIndex
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.Schedule
   alias Favn.Manifest.Version
@@ -14,7 +14,7 @@ defmodule Favn.Manifest.Index do
 
   @type t :: %__MODULE__{
           manifest: Manifest.t(),
-          graph_index: GraphIndex.t(),
+          planning_index: PlanningIndex.t(),
           assets_by_ref: %{required(ref()) => Asset.t()},
           pipelines_by_ref: %{required(ref()) => Pipeline.t()},
           schedules_by_ref: %{required(ref()) => Schedule.t()}
@@ -28,11 +28,11 @@ defmodule Favn.Manifest.Index do
           | {:duplicate_asset_ref, ref()}
           | {:duplicate_pipeline_ref, ref()}
           | {:duplicate_schedule_ref, ref()}
-          | GraphIndex.error()
+          | PlanningIndex.error()
 
   defstruct [
     :manifest,
-    :graph_index,
+    :planning_index,
     assets_by_ref: %{},
     pipelines_by_ref: %{},
     schedules_by_ref: %{}
@@ -41,13 +41,13 @@ defmodule Favn.Manifest.Index do
   @spec build(Manifest.t()) :: {:ok, t()} | {:error, error()}
   def build(%Manifest{} = manifest) do
     with {:ok, assets_by_ref} <- build_assets_by_ref(manifest.assets),
-         {:ok, graph_index} <- GraphIndex.build_index(Map.values(assets_by_ref)),
+         {:ok, planning_index} <- PlanningIndex.build(manifest),
          {:ok, pipelines_by_ref} <- build_pipelines_by_ref(manifest.pipelines),
          {:ok, schedules_by_ref} <- build_schedules_by_ref(manifest.schedules) do
       {:ok,
        %__MODULE__{
          manifest: manifest,
-         graph_index: graph_index,
+         planning_index: planning_index,
          assets_by_ref: assets_by_ref,
          pipelines_by_ref: pipelines_by_ref,
          schedules_by_ref: schedules_by_ref
