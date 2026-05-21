@@ -610,6 +610,66 @@ defmodule FavnOrchestrator.RunServerTest do
     assert [_submitted] = Agent.get(submit_log, & &1)
   end
 
+  test "upstream refreshed downstream always asset reuses matching concurrent claim" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    version =
+      manifest_version("mv_pipeline_downstream_always_reuses_upstream_refreshed_claim",
+        freshness: Policy.from_value!(%{mode: :always})
+      )
+
+    plan = raw_to_gold_plan()
+    raw_ref = {MyApp.Assets.Raw, :asset}
+    gold_ref = {MyApp.Assets.Gold, :asset}
+    raw_key = {raw_ref, nil}
+    gold_key = {gold_ref, nil}
+
+    run_state =
+      pipeline_run_state(
+        "run_pipeline_downstream_always_reuses_upstream_refreshed_claim",
+        version,
+        plan,
+        [gold_ref]
+      )
+
+    input_versions = [
+      %{
+        upstream_ref: raw_ref,
+        upstream_node_key: raw_key,
+        freshness_version: freshness_version(run_state, raw_key),
+        success_run_id: run_state.id
+      }
+    ]
+
+    assert {:ok, claim} =
+             materialization_claim(run_state, version, gold_key, Key.latest(),
+               input_versions: input_versions,
+               reusable: true
+             )
+             |> Storage.try_acquire_materialization_claim()
+
+    assert {:ok, _claim} =
+             Storage.complete_materialization_claim(claim.claim_key, %{
+               finished_at: DateTime.utc_now()
+             })
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert [%{asset_ref: ^raw_ref}] = Agent.get(submit_log, & &1)
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    statuses = Map.new(stored.result.node_results, &{&1.node_key, {&1.status, &1.reason}})
+
+    assert statuses[raw_key] == {:ok, nil}
+    assert statuses[gold_key] == {:skipped_fresh, :concurrent_materialization_succeeded}
+  end
+
   test "same-ref stage records freshness only for the node that actually succeeded" do
     {:ok, submit_log} = Agent.start_link(fn -> [] end)
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
@@ -828,14 +888,21 @@ defmodule FavnOrchestrator.RunServerTest do
          %RunState{} = run_state,
          %Version{} = version,
          node_key,
-         freshness_key
+         freshness_key,
+         opts \\ []
        ) do
     node = Map.fetch!(run_state.plan.nodes, node_key)
     {module, name} = node.ref
     now = DateTime.utc_now()
-    input_fingerprint = MaterializationClaimIdentity.input_fingerprint([])
+    input_versions = Keyword.get(opts, :input_versions, [])
+    input_fingerprint = MaterializationClaimIdentity.input_fingerprint(input_versions)
 
-    producer_identity = materialization_producer_identity(run_state, version, node_key)
+    producer_identity =
+      if Keyword.get(opts, :reusable, false) do
+        version.content_hash
+      else
+        materialization_producer_identity(run_state, version, node_key)
+      end
 
     %{
       claim_key:
@@ -852,6 +919,7 @@ defmodule FavnOrchestrator.RunServerTest do
       asset_ref_name: name,
       freshness_key: freshness_key,
       input_fingerprint: input_fingerprint,
+      input_versions: input_versions,
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
       status: :claimed,
@@ -864,6 +932,11 @@ defmodule FavnOrchestrator.RunServerTest do
   defp materialization_producer_identity(%RunState{} = run_state, %Version{} = version, node_key) do
     node_token = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
     Enum.join([version.content_hash, run_state.id, node_token], ":")
+  end
+
+  defp freshness_version(%RunState{} = run_state, node_key) do
+    encoded_node_key = node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+    "#{run_state.id}:#{encoded_node_key}"
   end
 
   defp start_memory_if_needed do
