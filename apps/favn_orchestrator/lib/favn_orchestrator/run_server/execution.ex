@@ -1264,24 +1264,53 @@ defmodule FavnOrchestrator.RunServer.Execution do
            runner_opts
          ) do
       {:cont, next_state} ->
-        process_stage_attempt_result_list(
-          rest,
-          pending_tasks,
-          deadline,
-          next_state,
-          stage,
-          attempt,
-          version,
-          decisions,
-          freshness_context,
-          runner_client,
-          runner_opts
-        )
+        case refill_stage_attempt_capacity(
+               pending_tasks,
+               next_state,
+               stage,
+               attempt,
+               version,
+               decisions,
+               freshness_context,
+               runner_client,
+               runner_opts
+             ) do
+          {:cont, next_pending_tasks, refilled_state} ->
+            process_stage_attempt_result_list(
+              rest,
+              next_pending_tasks,
+              deadline,
+              refilled_state,
+              stage,
+              attempt,
+              version,
+              decisions,
+              freshness_context,
+              runner_client,
+              runner_opts
+            )
+
+          {:halt, result} ->
+            fail_unprocessed_stage_attempt_results(rest)
+            stop_pending_await_tasks(pending_tasks)
+            result
+        end
 
       {:halt, result} ->
+        fail_unprocessed_stage_attempt_results(rest)
         stop_pending_await_tasks(pending_tasks)
         result
     end
+  end
+
+  defp fail_unprocessed_stage_attempt_results(results) when is_list(results) do
+    Enum.each(results, fn
+      {entry, {:error, :timeout}} ->
+        :ok = fail_entry_materialization_claim(entry, :await_timeout)
+
+      {_entry, _result} ->
+        :ok
+    end)
   end
 
   defp refill_stage_attempt_capacity(
@@ -1428,6 +1457,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           runner_opts
         )
 
+      :ok = fail_entry_materialization_claim(entry, :external_cancel)
+
       {:halt,
        {:error, Snapshots.cancelled_terminal(cancelled, current_results), current_results,
         state.attempted_node_keys}}
@@ -1505,7 +1536,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
           Process.demonitor(await.monitor_ref, [:flush])
           flush_await_reply(reply_ref)
           :ok = release_entry_lease(await.entry)
-          :ok = fail_entry_materialization_claim(await.entry, :await_timeout)
 
           {[{await.entry, {:error, :timeout}} | timed_out], next_replies,
            Map.delete(next_monitors, await.monitor_ref)}
