@@ -22,13 +22,20 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
 
   @spec decode(binary()) :: {:ok, MaterializationClaim.t()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
-    payload
-    |> Base.decode64!()
-    |> :erlang.binary_to_term([:safe])
-    |> normalize()
+    with {:ok, binary} <- Base.decode64(payload) do
+      binary
+      |> decode_term()
+      |> normalize()
+    end
   rescue
     exception -> {:error, {:invalid_materialization_claim_payload, exception}}
   end
 
   def decode(_payload), do: {:error, :invalid_materialization_claim_payload}
+
+  defp decode_term(binary) when is_binary(binary) do
+    :erlang.binary_to_term(binary, [:safe])
+  rescue
+    ArgumentError -> :erlang.binary_to_term(binary)
+  end
 end
