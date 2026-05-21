@@ -655,10 +655,10 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
     connect_opts = [registry_name: registry_name, required_catalogs: ["raw"]]
 
     first = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
-    assert_receive {:bootstrap_started, first_conn, first_pid}
+    assert_receive {:bootstrap_started, first_conn, first_pid}, 500
 
     second = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
-    assert_receive {:bootstrap_started, second_conn, second_pid}
+    assert_receive {:bootstrap_started, second_conn, second_pid}, 500
     refute second_conn == first_conn
 
     assert Enum.count(events(), &match?({:connect, :warehouse, _conn}, &1)) == 2
@@ -672,6 +672,50 @@ defmodule FavnSQLRuntime.SQLClientBootstrapTest do
 
     Client.disconnect(first_session)
     Client.disconnect(second_session)
+  end
+
+  test "concurrent same-key misses do not create beyond catalog capacity", %{
+    registry_name: registry_name
+  } do
+    pool = %PoolConfig{enabled: true, max_idle_per_key: 1, idle_timeout_ms: 60_000}
+
+    start_registry(registry_name, AdapterWithPool, %{
+      pool: pool,
+      raw_write_concurrency: 2
+    })
+
+    Application.put_env(:favn, :sql_pool_bootstrap_mode, {:block, self()})
+    connect_opts = [registry_name: registry_name, required_catalogs: ["raw"]]
+
+    first = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
+    assert_receive {:bootstrap_started, first_conn, first_pid}, 500
+
+    second = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
+    assert_receive {:bootstrap_started, second_conn, second_pid}, 500
+    refute second_conn == first_conn
+
+    third = Task.async(fn -> Client.connect(:warehouse, connect_opts) end)
+
+    refute_receive {:bootstrap_started, _third_conn, _third_pid}, 50
+    assert Enum.count(events(), &match?({:connect, :warehouse, _conn}, &1)) == 2
+
+    send(first_pid, :continue_bootstrap)
+
+    assert {:ok, first_session} = Task.await(first)
+
+    assert_receive {:bootstrap_started, third_conn, third_pid}, 500
+    refute third_conn in [first_conn, second_conn]
+
+    Application.put_env(:favn, :sql_pool_bootstrap_mode, :ok)
+    send(second_pid, :continue_bootstrap)
+    send(third_pid, :continue_bootstrap)
+
+    assert {:ok, second_session} = Task.await(second)
+    assert {:ok, third_session} = Task.await(third)
+
+    Client.disconnect(first_session)
+    Client.disconnect(second_session)
+    Client.disconnect(third_session)
   end
 
   defp start_registry(registry_name, adapter, config \\ %{}) do
