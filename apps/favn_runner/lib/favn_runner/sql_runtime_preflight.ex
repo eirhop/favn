@@ -26,7 +26,8 @@ defmodule FavnRunner.SQLRuntimePreflight do
     by_ref = Map.new(assets, &{&1.ref, &1})
 
     work
-    |> planned_refs()
+    |> RunnerWork.planned_asset_refs()
+    |> normalize_refs()
     |> Enum.flat_map(fn ref ->
       case Map.fetch(by_ref, ref) do
         {:ok, %Asset{} = asset} -> [asset]
@@ -36,19 +37,6 @@ defmodule FavnRunner.SQLRuntimePreflight do
   end
 
   defp planned_assets(_version, _work), do: []
-
-  defp planned_refs(%RunnerWork{planned_asset_refs: refs}) when is_list(refs) and refs != [],
-    do: normalize_refs(refs)
-
-  defp planned_refs(%RunnerWork{} = work), do: planned_refs_without_plan(work)
-
-  defp planned_refs_without_plan(%RunnerWork{asset_refs: refs})
-       when is_list(refs) and refs != [] do
-    normalize_refs(refs)
-  end
-
-  defp planned_refs_without_plan(%RunnerWork{asset_ref: ref}) when is_tuple(ref), do: [ref]
-  defp planned_refs_without_plan(_work), do: []
 
   defp normalize_refs(refs) do
     refs

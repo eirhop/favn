@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Storage.JsonSafeTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Contracts.RunnerError
   alias FavnOrchestrator.Storage.JsonSafe
 
   defmodule ArbitraryStruct do
@@ -202,6 +203,31 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     assert reason == message
     refute message =~ "abc123"
     refute message =~ "user:pass"
+  end
+
+  test "normalizes runner error without leaking nested operational detail text" do
+    error =
+      RunnerError.normalize(%{
+        type: :backend_execution_failed,
+        details: %{
+          cause: %{
+            message:
+              "failed postgres://user:password@example/db token=abc123 Authorization: Bearer raw-token",
+            reason: "retry failed with api_key=raw-key"
+          }
+        }
+      })
+
+    normalized = JsonSafe.error(error)
+    rendered = inspect(normalized)
+
+    refute inspect(error) =~ "user:password"
+    refute rendered =~ "user:password"
+    refute rendered =~ "abc123"
+    refute rendered =~ "raw-token"
+    refute rendered =~ "raw-key"
+    assert normalized["details"]["cause"]["message"] =~ "[REDACTED_URL]"
+    assert normalized["details"]["cause"]["reason"] =~ "api_key=[REDACTED]"
   end
 
   test "bounds map entries and nested depth" do

@@ -183,7 +183,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     refute inspect(asset_result.error) =~ "super-secret"
     refute inspect(asset_result.error) =~ "user:password"
     refute inspect(asset_result.error) =~ "credential=raw"
-    assert asset_result.error.cause.details.password == :redacted
+    assert asset_result.error.details.cause.details.password == :redacted
   end
 
   test "inspection normalizes malformed include values at the runner boundary" do

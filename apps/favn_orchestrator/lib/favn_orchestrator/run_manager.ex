@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunManager do
 
   alias Favn.Assets.Planner
   alias Favn.Contracts.RunnerClient
+  alias Favn.Contracts.RunnerCancellation
   alias Favn.Manifest.Index
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.PipelineResolver
@@ -842,11 +843,23 @@ defmodule FavnOrchestrator.RunManager do
   defp cancel_execution_id(run_id, execution_id, reason, runner_client, runner_opts) do
     case runner_client.cancel_work(
            execution_id,
-           %{run_id: run_id, reason: reason, requested_at: DateTime.utc_now()},
+           RunnerCancellation.request(run_id, reason),
            runner_opts
          ) do
-      :ok -> {:ok, execution_id}
-      {:error, reason} -> {:error, execution_id, reason}
+      {:ok, %{status: status}} when status in [:acknowledged, :already_completed] ->
+        {:ok, execution_id}
+
+      {:ok, %{status: :not_found}} ->
+        {:error, execution_id, :not_found}
+
+      {:ok, %{status: status}} ->
+        {:error, execution_id, status}
+
+      :ok ->
+        {:ok, execution_id}
+
+      {:error, reason} ->
+        {:error, execution_id, reason}
     end
   end
 

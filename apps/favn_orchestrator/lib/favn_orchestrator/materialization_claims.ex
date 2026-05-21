@@ -50,7 +50,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
       claim_key:
         Identity.claim_key(node.ref, freshness_key, input_fingerprint, producer_identity),
       run_id: run_state.id,
-      asset_step_id: Map.fetch!(work.metadata, :asset_step_id),
+      asset_step_id: work.asset_step_id,
       node_key: node_key,
       asset_ref_module: module,
       asset_ref_name: name,

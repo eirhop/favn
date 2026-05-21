@@ -11,12 +11,17 @@ defmodule Favn.Contracts.ContractLockTest do
       [
         :asset_ref,
         :asset_refs,
+        :asset_step_id,
+        :attempt,
         :manifest_content_hash,
         :manifest_version_id,
+        :max_attempts,
         :metadata,
+        :node_identity,
         :params,
         :planned_asset_refs,
         :run_id,
+        :stage,
         :trigger
       ]
     )

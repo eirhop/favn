@@ -9,6 +9,9 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     "Elixir.Favn.Contracts.RelationInspectionResult" =>
       :"Elixir.Favn.Contracts.RelationInspectionResult",
     "Elixir.Favn.Contracts.RunnerEvent" => :"Elixir.Favn.Contracts.RunnerEvent",
+    "Elixir.Favn.Contracts.RunnerAssetResult" => :"Elixir.Favn.Contracts.RunnerAssetResult",
+    "Elixir.Favn.Contracts.RunnerCancellation" => :"Elixir.Favn.Contracts.RunnerCancellation",
+    "Elixir.Favn.Contracts.RunnerError" => :"Elixir.Favn.Contracts.RunnerError",
     "Elixir.Favn.Contracts.RunnerResult" => :"Elixir.Favn.Contracts.RunnerResult",
     "Elixir.Favn.Contracts.RunnerWork" => :"Elixir.Favn.Contracts.RunnerWork",
     "Elixir.Favn.Manifest" => :"Elixir.Favn.Manifest",
@@ -20,6 +23,7 @@ defmodule FavnOrchestrator.Storage.PayloadCodec do
     "Elixir.Favn.Manifest.SQLExecution" => :"Elixir.Favn.Manifest.SQLExecution",
     "Elixir.Favn.Manifest.Version" => :"Elixir.Favn.Manifest.Version",
     "Elixir.Favn.Plan" => :"Elixir.Favn.Plan",
+    "Elixir.Favn.Plan.NodeIdentity" => :"Elixir.Favn.Plan.NodeIdentity",
     "Elixir.Favn.Pipeline.Definition" => :"Elixir.Favn.Pipeline.Definition",
     "Elixir.Favn.Pipeline.Resolution" => :"Elixir.Favn.Pipeline.Resolution",
     "Elixir.Favn.RelationRef" => :"Elixir.Favn.RelationRef",

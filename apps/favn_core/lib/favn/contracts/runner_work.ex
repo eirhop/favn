@@ -2,18 +2,26 @@ defmodule Favn.Contracts.RunnerWork do
   @moduledoc """
   Runner work request contract pinned to an immutable manifest version.
 
-  `planned_asset_refs` carries the complete selected asset set for the current
-  logical run. Runners use it for plan-level preflight checks before invoking
-  the current `asset_ref`.
+  `node_identity` carries the manifest/planning identity for the current planned
+  node. Attempt, retry, admission, and cancellation fields are explicit runner
+  lifecycle fields and are not encoded in `metadata`.
   """
+
+  alias Favn.Plan.NodeIdentity
+  alias Favn.Ref
 
   @type t :: %__MODULE__{
           run_id: String.t() | nil,
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
-          asset_ref: {module(), atom()} | nil,
-          asset_refs: [{module(), atom()}],
-          planned_asset_refs: [{module(), atom()}],
+          node_identity: NodeIdentity.t() | nil,
+          asset_ref: Ref.t() | nil,
+          asset_refs: [Ref.t()],
+          planned_asset_refs: [Ref.t()],
+          attempt: pos_integer(),
+          max_attempts: pos_integer(),
+          asset_step_id: String.t() | nil,
+          stage: non_neg_integer(),
           params: map(),
           trigger: map(),
           metadata: map()
@@ -22,10 +30,86 @@ defmodule Favn.Contracts.RunnerWork do
   defstruct run_id: nil,
             manifest_version_id: nil,
             manifest_content_hash: nil,
+            node_identity: nil,
             asset_ref: nil,
             asset_refs: [],
             planned_asset_refs: [],
+            attempt: 1,
+            max_attempts: 1,
+            asset_step_id: nil,
+            stage: 0,
             params: %{},
             trigger: %{},
             metadata: %{}
+
+  @doc """
+  Returns the current planned asset reference for this work request.
+  """
+  @spec asset_ref(t()) :: Ref.t() | nil
+  def asset_ref(%__MODULE__{asset_ref: ref}) when is_tuple(ref), do: ref
+
+  def asset_ref(%__MODULE__{node_identity: %NodeIdentity{node_key: {ref, _window_key}}}),
+    do: ref
+
+  def asset_ref(%__MODULE__{}), do: nil
+
+  @doc """
+  Returns the complete planned asset scope visible to the runner.
+  """
+  @spec planned_asset_refs(t()) :: [Ref.t()]
+  def planned_asset_refs(%__MODULE__{node_identity: %NodeIdentity{planned_asset_refs: refs}})
+      when is_list(refs) and refs != [],
+      do: refs
+
+  def planned_asset_refs(%__MODULE__{planned_asset_refs: refs}) when is_list(refs) and refs != [],
+    do: refs
+
+  def planned_asset_refs(%__MODULE__{asset_refs: refs}) when is_list(refs) and refs != [],
+    do: refs
+
+  def planned_asset_refs(%__MODULE__{} = work) do
+    case asset_ref(work) do
+      nil -> []
+      ref -> [ref]
+    end
+  end
+
+  @doc """
+  Returns the planned node key, if present.
+  """
+  @spec node_key(t()) :: Favn.Plan.node_key() | nil
+  def node_key(%__MODULE__{node_identity: %NodeIdentity{node_key: node_key}}), do: node_key
+  def node_key(%__MODULE__{metadata: %{node_key: node_key}}), do: node_key
+  def node_key(%__MODULE__{}), do: nil
+
+  @doc """
+  Returns the planned runtime window, if present.
+  """
+  @spec window(t()) :: Favn.Window.Runtime.t() | nil
+  def window(%__MODULE__{node_identity: %NodeIdentity{window: window}}), do: window
+  def window(%__MODULE__{metadata: %{window: window}}), do: window
+  def window(%__MODULE__{}), do: nil
+
+  @doc """
+  Returns the effective execution pool for the planned node.
+  """
+  @spec execution_pool(t()) :: atom() | nil
+  def execution_pool(%__MODULE__{node_identity: %NodeIdentity{execution_pool: pool}}), do: pool
+  def execution_pool(%__MODULE__{metadata: %{execution_pool: pool}}), do: pool
+  def execution_pool(%__MODULE__{}), do: nil
+
+  @doc """
+  Derives orchestrator lifecycle metadata from explicit work fields.
+  """
+  @spec lifecycle_metadata(t()) :: map()
+  def lifecycle_metadata(%__MODULE__{} = work) do
+    work.metadata
+    |> Map.put(:attempt, work.attempt)
+    |> Map.put(:asset_step_id, work.asset_step_id)
+    |> Map.put(:max_attempts, work.max_attempts)
+    |> Map.put(:stage, work.stage)
+    |> Map.put(:node_key, node_key(work))
+    |> Map.put(:window, window(work))
+    |> Map.put(:execution_pool, execution_pool(work))
+  end
 end

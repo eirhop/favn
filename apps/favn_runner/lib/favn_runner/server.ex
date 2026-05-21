@@ -8,6 +8,8 @@ defmodule FavnRunner.Server do
   alias Favn.Connection.Registry, as: ConnectionRegistry
   alias Favn.Connection.Resolved
   alias Favn.Contracts.RelationInspectionRequest
+  alias Favn.Contracts.RunnerCancellation
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -72,16 +74,24 @@ defmodule FavnRunner.Server do
 
   def await_result(_execution_id, _timeout, _opts), do: {:error, :invalid_await_args}
 
-  @spec cancel_work(execution_id(), map(), keyword()) :: :ok | {:error, term()}
+  @spec cancel_work(execution_id(), RunnerCancellation.t(), keyword()) ::
+          {:ok, RunnerCancellation.outcome()} | {:error, RunnerError.t()}
   def cancel_work(execution_id, reason \\ %{}, opts \\ [])
 
   def cancel_work(execution_id, reason, opts)
       when is_binary(execution_id) and is_map(reason) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
-    GenServer.call(server, {:cancel_work, execution_id, reason})
+    GenServer.call(server, {:cancel_work, execution_id, RunnerCancellation.from_map(reason)})
   end
 
-  def cancel_work(_execution_id, _reason, _opts), do: {:error, :invalid_cancel_args}
+  def cancel_work(_execution_id, _reason, _opts) do
+    {:error,
+     RunnerError.normalize(:invalid_cancel_args,
+       kind: :boundary,
+       type: :invalid_cancel_args,
+       retryable?: false
+     )}
+  end
 
   @spec subscribe_execution_logs(execution_id(), pid(), keyword()) :: :ok | {:error, term()}
   def subscribe_execution_logs(execution_id, subscriber, opts \\ [])
@@ -203,7 +213,8 @@ defmodule FavnRunner.Server do
   def handle_call({:cancel_work, execution_id, reason}, _from, state) do
     case Map.fetch(state.executions, execution_id) do
       {:ok, %{status: :completed}} ->
-        {:reply, :ok, state}
+        {:reply,
+         {:ok, RunnerCancellation.outcome(:already_completed, execution_id: execution_id)}, state}
 
       {:ok, %{status: :running, pid: pid, work: work, monitor_ref: monitor_ref}} ->
         _ = DynamicSupervisor.terminate_child(FavnRunner.WorkerSupervisor, pid)
@@ -216,10 +227,11 @@ defmodule FavnRunner.Server do
           | monitor_to_execution: Map.delete(next_state.monitor_to_execution, monitor_ref)
         }
 
-        {:reply, :ok, next_state}
+        {:reply, {:ok, RunnerCancellation.outcome(:acknowledged, execution_id: execution_id)},
+         next_state}
 
       :error ->
-        {:reply, {:error, :execution_not_found}, state}
+        {:reply, {:ok, RunnerCancellation.outcome(:not_found, execution_id: execution_id)}, state}
     end
   end
 
@@ -433,8 +445,8 @@ defmodule FavnRunner.Server do
       manifest_content_hash: work.manifest_content_hash,
       status: :cancelled,
       asset_results: [],
-      error: {:cancelled, reason},
-      metadata: work.metadata
+      error: RunnerError.cancelled(reason),
+      metadata: RunnerWork.lifecycle_metadata(work)
     }
   end
 
@@ -445,8 +457,8 @@ defmodule FavnRunner.Server do
       manifest_content_hash: work.manifest_content_hash,
       status: :error,
       asset_results: [],
-      error: {:worker_crash, reason},
-      metadata: work.metadata
+      error: RunnerError.normalize(reason, kind: :exit, type: :worker_crash),
+      metadata: RunnerWork.lifecycle_metadata(work)
     }
   end
 
@@ -457,8 +469,15 @@ defmodule FavnRunner.Server do
       manifest_content_hash: version.content_hash,
       status: :error,
       asset_results: [],
-      error: diagnostic,
-      metadata: Map.put(work.metadata, :preflight, :sql_runtime_config)
+      error:
+        RunnerError.normalize(diagnostic,
+          kind: :preflight,
+          type: :missing_runtime_config,
+          message: Map.get(diagnostic, :message, "runner preflight failed"),
+          details: Map.get(diagnostic, :details, %{}),
+          retryable?: false
+        ),
+      metadata: Map.put(RunnerWork.lifecycle_metadata(work), :preflight, :sql_runtime_config)
     }
   end
 

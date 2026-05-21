@@ -6,22 +6,19 @@ defmodule FavnOrchestrator.RunServer.Cancellation do
   responsible for any local run-state cleanup after dispatching cancellation.
   """
 
+  alias Favn.Contracts.RunnerCancellation
   alias FavnOrchestrator.RunState
 
   @type execution_id :: String.t()
   @type reason :: term()
-  @type envelope :: %{
-          required(:run_id) => String.t(),
-          required(:reason) => reason(),
-          required(:requested_at) => DateTime.t()
-        }
+  @type envelope :: RunnerCancellation.t()
 
   @doc """
   Wraps a runner cancellation reason in the control-plane cancellation envelope.
   """
   @spec envelope(RunState.t(), reason()) :: envelope()
   def envelope(%RunState{id: run_id}, reason) do
-    %{run_id: run_id, reason: reason, requested_at: DateTime.utc_now()}
+    RunnerCancellation.request(run_id, reason)
   end
 
   @doc """

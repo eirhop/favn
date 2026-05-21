@@ -2,6 +2,8 @@ defmodule FavnOrchestrator.RunServerTest do
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerWork
   alias Favn.Freshness.{Key, Policy}
   alias Favn.Manifest
   alias Favn.Manifest.Version
@@ -69,15 +71,24 @@ defmodule FavnOrchestrator.RunServerTest do
     def await_result(execution_id, _timeout, opts) do
       result_by_ref = Keyword.get(opts, :result_by_ref, %{})
       result_by_node_key = Keyword.get(opts, :result_by_node_key, %{})
+      error_by_ref = Keyword.get(opts, :error_by_ref, %{})
+      error_by_node_key = Keyword.get(opts, :error_by_node_key, %{})
+      asset_result_by_ref = Keyword.get(opts, :asset_result_by_ref, %{})
+      asset_result_by_node_key = Keyword.get(opts, :asset_result_by_node_key, %{})
       ref = execution_ref(execution_id)
       node_key = execution_node_key(execution_id)
       status = Map.get(result_by_node_key, node_key, Map.get(result_by_ref, ref, :ok))
+      error = Map.get(error_by_node_key, node_key, Map.get(error_by_ref, ref, :runner_failed))
+
+      asset_result =
+        Map.get(asset_result_by_node_key, node_key, Map.get(asset_result_by_ref, ref)) ||
+          asset_result(ref, status, error)
 
       {:ok,
        %RunnerResult{
          status: status,
-         error: if(status == :ok, do: nil, else: :runner_failed),
-         asset_results: [asset_result(ref, status)],
+         error: if(status == :ok, do: nil, else: error),
+         asset_results: [asset_result],
          metadata: %{}
        }}
     end
@@ -108,7 +119,7 @@ defmodule FavnOrchestrator.RunServerTest do
       {module, name} = work.asset_ref
 
       encoded_node_key =
-        work.metadata.node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+        work |> RunnerWork.node_key() |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
 
       "exec:#{work.run_id}:#{Atom.to_string(module)}:#{Atom.to_string(name)}:#{encoded_node_key}"
     end
@@ -126,7 +137,7 @@ defmodule FavnOrchestrator.RunServerTest do
       |> :erlang.binary_to_term()
     end
 
-    defp asset_result(ref, status) do
+    defp asset_result(ref, status, error) do
       %Favn.Run.AssetResult{
         ref: ref,
         stage: 0,
@@ -135,7 +146,7 @@ defmodule FavnOrchestrator.RunServerTest do
         finished_at: DateTime.utc_now(),
         duration_ms: 0,
         meta: %{},
-        error: if(status == :ok, do: nil, else: :runner_failed),
+        error: if(status == :ok, do: nil, else: error),
         attempt_count: 1,
         max_attempts: 1,
         attempts: []
@@ -185,7 +196,7 @@ defmodule FavnOrchestrator.RunServerTest do
       {module, name} = work.asset_ref
 
       encoded_node_key =
-        work.metadata.node_key |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+        work |> RunnerWork.node_key() |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
 
       Enum.join(
         [
@@ -494,6 +505,97 @@ defmodule FavnOrchestrator.RunServerTest do
     assert state.latest_success_run_id == "previous_run"
     assert state.latest_attempt_run_id == run_state.id
     assert state.latest_attempt_status == :error
+  end
+
+  test "non-retryable runner error does not schedule another attempt" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+
+    non_retryable =
+      RunnerError.normalize(:bad_config, type: :missing_runtime_config, retryable?: false)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_log: submit_log,
+      result_by_ref: %{{MyApp.Assets.Gold, :asset} => :error},
+      error_by_ref: %{{MyApp.Assets.Gold, :asset} => non_retryable}
+    )
+
+    version = manifest_version("mv_pipeline_non_retryable_error")
+    plan = single_node_plan({MyApp.Assets.Gold, :asset}, window: nil)
+
+    run_state =
+      "run_pipeline_non_retryable_error"
+      |> pipeline_run_state(version, plan, [{MyApp.Assets.Gold, :asset}])
+      |> RunState.transition(max_attempts: 2)
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert [_single_submit] = Agent.get(submit_log, & &1)
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :error
+    assert %RunnerError{retryable?: false} = stored.error
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+    refute :step_retry_scheduled in Enum.map(events, & &1.event_type)
+  end
+
+  test "orchestrator node result preserves runner attempt metadata" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+
+    asset_ref = {MyApp.Assets.Gold, :asset}
+    started_at = DateTime.utc_now()
+    finished_at = DateTime.add(started_at, 10, :millisecond)
+
+    runner_asset_result = %Favn.Contracts.RunnerAssetResult{
+      ref: asset_ref,
+      status: :ok,
+      started_at: started_at,
+      finished_at: finished_at,
+      duration_ms: 10,
+      attempt_count: 2,
+      max_attempts: 3,
+      attempts: [
+        %{
+          attempt: 2,
+          status: :ok,
+          started_at: started_at,
+          finished_at: finished_at,
+          duration_ms: 10,
+          meta: %{}
+        }
+      ]
+    }
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      submit_log: submit_log,
+      asset_result_by_ref: %{asset_ref => runner_asset_result}
+    )
+
+    version = manifest_version("mv_pipeline_runner_attempt_metadata")
+    plan = single_node_plan(asset_ref, window: nil)
+
+    run_state =
+      "run_pipeline_runner_attempt_metadata"
+      |> pipeline_run_state(version, plan, [asset_ref])
+      |> RunState.transition(max_attempts: 3)
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert [%Favn.Run.NodeResult{} = node_result] = stored.result.node_results
+    assert node_result.attempt_count == 2
+    assert node_result.max_attempts == 3
+    assert [%{attempt: 2}] = node_result.attempts
   end
 
   test "pipeline blocks downstream after upstream failure" do

@@ -1,12 +1,17 @@
 defmodule FavnOrchestrator.Storage.PayloadCodecTest do
   use ExUnit.Case, async: true
 
+  alias Favn.Contracts.RunnerAssetResult
+  alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Pipeline
   alias Favn.Manifest.SQLExecution
   alias Favn.Manifest.Version
+  alias Favn.Plan.NodeIdentity
   alias Favn.Pipeline.Definition, as: PipelineDefinition
   alias Favn.RelationRef
   alias Favn.SQL.Template
@@ -112,6 +117,75 @@ defmodule FavnOrchestrator.Storage.PayloadCodecTest do
 
     assert %PipelineDefinition{schedule: {:inline, %Schedule{}}} = decoded
     assert decoded == definition
+  end
+
+  test "round-trips runner results with explicit runner error and asset result contracts" do
+    started_at = DateTime.utc_now() |> DateTime.truncate(:second)
+    finished_at = DateTime.add(started_at, 25, :millisecond)
+
+    error =
+      RunnerError.normalize(%{
+        type: :missing_runtime_config,
+        phase: :asset_runtime_config,
+        message: "missing required asset runtime config",
+        details: %{provider: :env, token: "secret-token", asset_retryable?: false}
+      })
+
+    result = %RunnerResult{
+      run_id: "run_payload_runner_result",
+      manifest_version_id: "mv_payload_runner_result",
+      manifest_content_hash: String.duplicate("b", 64),
+      status: :error,
+      error: error,
+      asset_results: [
+        %RunnerAssetResult{
+          ref: {MyApp.Asset, :asset},
+          status: :error,
+          started_at: started_at,
+          finished_at: finished_at,
+          duration_ms: 25,
+          error: error,
+          attempt_count: 2,
+          max_attempts: 3,
+          attempts: [%{attempt: 2, status: :error, error: error, meta: %{}}]
+        }
+      ]
+    }
+
+    assert {:ok, encoded} = PayloadCodec.encode(result)
+    assert {:ok, decoded} = PayloadCodec.decode(encoded)
+
+    assert decoded == result
+    assert decoded.error.details.token == :redacted
+  end
+
+  test "round-trips runner work with explicit node identity" do
+    identity = %NodeIdentity{
+      manifest_version_id: "mv_payload_runner_work",
+      node_key: {{MyApp.Asset, :asset}, nil},
+      target_refs: [{MyApp.Asset, :asset}],
+      planned_asset_refs: [{MyApp.Dependency, :asset}, {MyApp.Asset, :asset}],
+      execution_pool: :default
+    }
+
+    work = %RunnerWork{
+      run_id: "run_payload_runner_work",
+      manifest_version_id: "mv_payload_runner_work",
+      manifest_content_hash: String.duplicate("c", 64),
+      node_identity: identity,
+      asset_ref: {MyApp.Asset, :asset},
+      asset_refs: [{MyApp.Asset, :asset}],
+      planned_asset_refs: identity.planned_asset_refs,
+      attempt: 2,
+      max_attempts: 3,
+      asset_step_id: "step_payload_runner_work",
+      stage: 1
+    }
+
+    assert {:ok, encoded} = PayloadCodec.encode(work)
+    assert {:ok, decoded} = PayloadCodec.decode(encoded)
+
+    assert decoded == work
   end
 
   test "rejects unknown atoms during decode" do

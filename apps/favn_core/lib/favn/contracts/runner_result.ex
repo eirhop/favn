@@ -3,6 +3,9 @@ defmodule Favn.Contracts.RunnerResult do
   Runner execution result contract for manifest-pinned work.
   """
 
+  alias Favn.Contracts.RunnerAssetResult
+  alias Favn.Contracts.RunnerError
+
   @type status :: :ok | :error | :cancelled | :timed_out
 
   @type t :: %__MODULE__{
@@ -10,8 +13,8 @@ defmodule Favn.Contracts.RunnerResult do
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
           status: status(),
-          asset_results: [map()],
-          error: term() | nil,
+          asset_results: [RunnerAssetResult.t()],
+          error: RunnerError.t() | nil,
           metadata: map()
         }
 

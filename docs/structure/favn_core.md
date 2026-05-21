@@ -6,6 +6,10 @@ types.
 
 Code:
 - `apps/favn_core/lib/favn/`
+- `apps/favn_core/lib/favn/contracts/` owns shared runner-facing work, result,
+  error, cancellation, logging, and inspection contract structs
+- `apps/favn_core/lib/favn/plan/node_identity.ex` owns the planned-node identity
+  seam consumed by runner work without exposing graph/index internals
 
 Tests:
 - `apps/favn_core/test/`

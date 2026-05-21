@@ -10,6 +10,8 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerCancellation
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -43,10 +45,11 @@ defmodule FavnOrchestrator.RunnerClient.LocalNode do
   end
 
   @impl true
-  @spec cancel_work(String.t(), map(), [opt()]) :: :ok | {:error, term()}
+  @spec cancel_work(String.t(), RunnerCancellation.t(), [opt()]) ::
+          {:ok, RunnerCancellation.outcome()} | {:error, RunnerError.t()}
   def cancel_work(execution_id, reason \\ %{}, opts \\ [])
       when is_binary(execution_id) and is_map(reason) and is_list(opts) do
-    dispatch(opts, :cancel_work, [execution_id, reason, opts])
+    dispatch(opts, :cancel_work, [execution_id, RunnerCancellation.from_map(reason), opts])
   end
 
   @impl true

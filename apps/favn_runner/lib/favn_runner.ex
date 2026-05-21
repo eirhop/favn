@@ -10,6 +10,8 @@ defmodule FavnRunner do
 
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerCancellation
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
@@ -73,15 +75,23 @@ defmodule FavnRunner do
   @doc """
   Cancels one in-flight execution.
   """
-  @spec cancel_work(execution_id(), map(), keyword()) :: :ok | {:error, term()}
+  @spec cancel_work(execution_id(), RunnerCancellation.t(), keyword()) ::
+          {:ok, RunnerCancellation.outcome()} | {:error, RunnerError.t()}
   def cancel_work(execution_id, reason \\ %{}, opts \\ [])
 
   def cancel_work(execution_id, reason, opts)
       when is_binary(execution_id) and is_map(reason) and is_list(opts) do
-    Server.cancel_work(execution_id, reason)
+    Server.cancel_work(execution_id, RunnerCancellation.from_map(reason))
   end
 
-  def cancel_work(_execution_id, _reason, _opts), do: {:error, :invalid_cancel_args}
+  def cancel_work(_execution_id, _reason, _opts) do
+    {:error,
+     RunnerError.normalize(:invalid_cancel_args,
+       kind: :boundary,
+       type: :invalid_cancel_args,
+       retryable?: false
+     )}
+  end
 
   @doc """
   Subscribes a process to live logs for one runner execution.

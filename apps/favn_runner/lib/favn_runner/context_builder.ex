@@ -17,9 +17,9 @@ defmodule FavnRunner.ContextBuilder do
   @spec build(RunnerWork.t(), Asset.t(), String.t()) :: {:ok, Context.t()} | {:error, term()}
   def build(%RunnerWork{} = work, %Asset{} = asset, execution_id) when is_binary(execution_id) do
     run_id = work.run_id || execution_id
-    stage = normalized_stage(work.metadata)
-    attempt = normalized_attempt(work.metadata)
-    max_attempts = normalized_max_attempts(work.metadata)
+    stage = normalized_stage(work.stage)
+    attempt = normalized_attempt(work.attempt)
+    max_attempts = normalized_max_attempts(work.max_attempts)
 
     with {:ok, runtime_config} <- RuntimeConfigResolver.resolve_asset(asset.runtime_config || %{}) do
       asset_config = ergonomic_asset_config(asset)
@@ -32,7 +32,7 @@ defmodule FavnRunner.ContextBuilder do
          asset: %{ref: asset.ref, relation: asset.relation, config: asset_config},
          config: runtime_config,
          params: normalized_map(work.params),
-         window: Map.get(work.trigger, :window),
+         window: RunnerWork.window(work) || Map.get(work.trigger, :window),
          pipeline: Map.get(work.trigger, :pipeline),
          run_started_at: DateTime.utc_now(),
          stage: stage,
@@ -128,30 +128,24 @@ defmodule FavnRunner.ContextBuilder do
 
   defp decode_known_enum(value, _allowed), do: value
 
-  defp normalized_stage(metadata) when is_map(metadata) do
-    case Map.get(metadata, :stage, 0) do
+  defp normalized_stage(stage) do
+    case stage do
       stage when is_integer(stage) and stage >= 0 -> stage
       _other -> 0
     end
   end
 
-  defp normalized_stage(_metadata), do: 0
-
-  defp normalized_attempt(metadata) when is_map(metadata) do
-    case Map.get(metadata, :attempt, 1) do
+  defp normalized_attempt(attempt) do
+    case attempt do
       attempt when is_integer(attempt) and attempt > 0 -> attempt
       _other -> 1
     end
   end
 
-  defp normalized_attempt(_metadata), do: 1
-
-  defp normalized_max_attempts(metadata) when is_map(metadata) do
-    case Map.get(metadata, :max_attempts, 1) do
+  defp normalized_max_attempts(max_attempts) do
+    case max_attempts do
       max_attempts when is_integer(max_attempts) and max_attempts > 0 -> max_attempts
       _other -> 1
     end
   end
-
-  defp normalized_max_attempts(_metadata), do: 1
 end
