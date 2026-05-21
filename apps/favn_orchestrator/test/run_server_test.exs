@@ -232,6 +232,45 @@ defmodule FavnOrchestrator.RunServerTest do
     end
   end
 
+  defmodule RunnerClientSubmitFailureStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      parent = Keyword.fetch!(opts, :parent)
+      execution_id = execution_id(work)
+      send(parent, {:submitted, work.asset_ref, execution_id})
+
+      if work.asset_ref == Keyword.fetch!(opts, :fail_ref) do
+        {:error, :submit_failed}
+      else
+        {:ok, execution_id}
+      end
+    end
+
+    @impl true
+    def await_result(_execution_id, _timeout, _opts) do
+      raise "await_result/3 should not be called after submit failure cancels admitted work"
+    end
+
+    @impl true
+    def cancel_work(execution_id, reason, opts) do
+      send(Keyword.fetch!(opts, :parent), {:cancelled, execution_id, reason})
+      :ok
+    end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp execution_id(work) do
+      encoded_ref = work.asset_ref |> :erlang.term_to_binary() |> Base.encode16(case: :lower)
+      "submit_failure_exec:#{work.run_id}:#{encoded_ref}"
+    end
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -629,6 +668,50 @@ defmodule FavnOrchestrator.RunServerTest do
       events |> Enum.filter(&(&1.event_type == :step_started)) |> Enum.map(& &1.asset_ref)
 
     refute last_ref in started_refs
+  end
+
+  test "pipeline submit failure cancels admitted same-stage work with wrapped reason" do
+    [first_ref, fail_ref] =
+      Enum.map(1..2, fn index ->
+        {Module.concat([MyApp.Assets.PipelineSubmitFailure, "Asset#{index}"]), :asset}
+      end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSubmitFailureStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      fail_ref: fail_ref
+    )
+
+    refs = [first_ref, fail_ref]
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_submit_failure_cancel_reason", refs)
+
+    run_state =
+      pipeline_run_state("run_pipeline_submit_failure_cancel_reason", version, plan, refs)
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, ^first_ref, first_execution_id}, 1_000
+    assert_receive {:submitted, ^fail_ref, _failed_execution_id}, 1_000
+
+    assert_receive {:cancelled, ^first_execution_id, cancellation_reason}, 1_000
+    assert cancellation_reason.run_id == run_state.id
+    assert %DateTime{} = cancellation_reason.requested_at
+
+    assert %{
+             kind: :submit_failure,
+             asset_ref: ^fail_ref,
+             error: :submit_failed
+           } = cancellation_reason.reason
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :error
   end
 
   test "actual upstream success refreshes downstream in same pipeline" do

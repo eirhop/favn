@@ -134,15 +134,6 @@ defmodule FavnOrchestrator.RunServer.Execution.AwaitTasks do
     end)
   end
 
-  @spec fail_unprocessed_timeout_results([event()], cleanup_fun()) :: :ok
-  def fail_unprocessed_timeout_results(results, cleanup_fun)
-      when is_list(results) and is_function(cleanup_fun, 1) do
-    Enum.each(results, fn
-      {entry, {:error, :timeout}} -> :ok = cleanup_fun.(entry)
-      {_entry, _result} -> :ok
-    end)
-  end
-
   defp drain_available(%__MODULE__{replies: replies, monitors: monitors} = tasks, acc) do
     receive do
       {reply_ref, result} when is_map_key(replies, reply_ref) ->

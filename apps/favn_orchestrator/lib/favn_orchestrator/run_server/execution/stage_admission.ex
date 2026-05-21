@@ -616,7 +616,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     |> Enum.filter(&is_binary/1)
     |> Enum.uniq()
     |> Enum.each(fn execution_id ->
-      runner_client.cancel_work(execution_id, reason, runner_opts)
+      _ =
+        runner_client.cancel_work(
+          execution_id,
+          %{run_id: run_state.id, reason: reason, requested_at: DateTime.utc_now()},
+          runner_opts
+        )
     end)
 
     clear_inflight_executions(run_state, execution_ids)
