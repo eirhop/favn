@@ -11,9 +11,6 @@ defmodule Favn.Storage do
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage, as: OrchestratorStorage
-  alias FavnOrchestrator.Storage.Adapter.Memory, as: MemoryAdapter
-
-  @default_adapter MemoryAdapter
 
   @type error :: :not_found | :invalid_opts | {:store_error, term()}
 
@@ -59,12 +56,12 @@ defmodule Favn.Storage do
 
   @spec adapter_module() :: module()
   def adapter_module do
-    Application.get_env(:favn_orchestrator, :storage_adapter, @default_adapter)
+    OrchestratorStorage.adapter_module()
   end
 
   @spec adapter_opts() :: keyword()
   def adapter_opts do
-    Application.get_env(:favn_orchestrator, :storage_adapter_opts, [])
+    OrchestratorStorage.adapter_opts()
   end
 
   @spec validate_adapter(module()) :: :ok | {:error, error()}

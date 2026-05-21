@@ -6,6 +6,7 @@ defmodule FavnOrchestrator.Readiness do
   alias Favn.Contracts.RunnerClient
   alias FavnOrchestrator.API.Config, as: APIConfig
   alias FavnOrchestrator.Redaction
+  alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.Scheduler.Runtime, as: SchedulerRuntime
   alias FavnOrchestrator.Storage
 
@@ -71,7 +72,7 @@ defmodule FavnOrchestrator.Readiness do
   end
 
   defp runner_check do
-    module = Application.get_env(:favn_orchestrator, :runner_client, nil)
+    module = RuntimeConfig.current().runner_client
 
     with true <- is_atom(module),
          {:module, ^module} <- Code.ensure_loaded(module),
@@ -89,7 +90,7 @@ defmodule FavnOrchestrator.Readiness do
   end
 
   defp runner_runtime_check(FavnOrchestrator.RunnerClient.LocalNode) do
-    runner_opts = Application.get_env(:favn_orchestrator, :runner_client_opts, [])
+    runner_opts = RuntimeConfig.current().runner_client_opts
     runner_module = Keyword.get(runner_opts, :runner_module, Module.concat([FavnRunner]))
 
     with {:module, ^runner_module} <- Code.ensure_loaded(runner_module),

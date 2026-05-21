@@ -24,7 +24,7 @@ Code:
 - preserved public contracts under `apps/favn_orchestrator/lib/favn/`
 - Private API router and DTO boundary under `apps/favn_orchestrator/lib/favn_orchestrator/api/`
 - HTTP contract schemas for private API JSON-safe DTOs under `apps/favn_orchestrator/priv/http_contract/v1/`
-- Production runtime config, readiness, diagnostics, redaction, and operational event modules under `apps/favn_orchestrator/lib/favn_orchestrator/`
+- Production runtime config, normalized runtime dependency config, readiness, diagnostics, redaction, and operational event modules under `apps/favn_orchestrator/lib/favn_orchestrator/`
 - Public facade readiness and diagnostics entrypoints on `FavnOrchestrator`, used
   by same-BEAM web readiness and operator tooling.
 - Command idempotency helpers under `apps/favn_orchestrator/lib/favn_orchestrator/idempotency.ex`
@@ -34,7 +34,7 @@ Tests:
 - API contract tests under `apps/favn_orchestrator/test/api/`
 - HTTP schema shape tests under `apps/favn_orchestrator/test/http_contract/`
 - Auth storage/facade tests under `apps/favn_orchestrator/test/auth/`
-- Production runtime config/readiness/diagnostics tests under `apps/favn_orchestrator/test/production_runtime_config_test.exs`, `apps/favn_orchestrator/test/readiness_test.exs`, and `apps/favn_orchestrator/test/diagnostics_test.exs`
+- Production runtime config/runtime dependency config/readiness/diagnostics tests under `apps/favn_orchestrator/test/production_runtime_config_test.exs`, `apps/favn_orchestrator/test/runtime_config_test.exs`, `apps/favn_orchestrator/test/readiness_test.exs`, and `apps/favn_orchestrator/test/diagnostics_test.exs`
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`
 - Freshness decision/query tests under `apps/favn_orchestrator/test/freshness/`
 - cross-app runner integration coverage under `apps/favn_orchestrator/test/orchestrator_runner_integration_test.exs`
