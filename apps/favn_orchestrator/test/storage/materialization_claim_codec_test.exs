@@ -30,9 +30,16 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodecTest do
   test "decodes persisted claims containing unloaded consumer module atoms" do
     assert {:ok, restored} = MaterializationClaimCodec.decode(@external_module_payload)
 
-    assert restored.asset_ref_module == ExternalApp.MaterializationClaimAsset
+    assert Atom.to_string(restored.asset_ref_module) ==
+             "Elixir.ExternalApp.MaterializationClaimAsset"
 
-    assert restored.node_key ==
-             {{ExternalApp.MaterializationClaimAsset, :asset}, %{window: "test"}}
+    assert {{module, :asset}, %{window: "test"}} = restored.node_key
+
+    assert Atom.to_string(module) == "Elixir.ExternalApp.MaterializationClaimAsset"
+  end
+
+  test "rejects invalid base64 payloads with tuple error shape" do
+    assert {:error, :invalid_materialization_claim_payload} =
+             MaterializationClaimCodec.decode("not valid base64")
   end
 end
