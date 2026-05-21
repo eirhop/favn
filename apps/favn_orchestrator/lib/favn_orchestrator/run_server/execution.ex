@@ -28,6 +28,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunnerLogBridge
+  alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.AwaitTasks
   alias FavnOrchestrator.RunServer.Execution.StageAdmission
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
@@ -1652,16 +1653,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
          runner_opts
        )
        when is_list(execution_ids) do
-    unique_ids = execution_ids |> Enum.filter(&is_binary/1) |> Enum.uniq()
-
-    Enum.each(unique_ids, fn execution_id ->
-      _ =
-        runner_client.cancel_work(
-          execution_id,
-          %{run_id: run_state.id, reason: reason, requested_at: DateTime.utc_now()},
-          runner_opts
-        )
-    end)
+    unique_ids =
+      Cancellation.cancel_runner_work(
+        run_state,
+        execution_ids,
+        reason,
+        runner_client,
+        runner_opts
+      )
 
     clear_inflight_executions(run_state, unique_ids)
   end
