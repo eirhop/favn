@@ -648,7 +648,6 @@ defmodule FavnOrchestrator.RunReadModel do
 
   defp target_assets(%RunState{asset_ref: ref}), do: [public_ref(ref)]
 
-  defp trigger_type(%RunState{submit_kind: :rerun}), do: :retry
   defp trigger_type(%RunState{} = run), do: RunQuery.trigger_type(run)
 
   defp execution_group_asset_attempts(group, mode) do
