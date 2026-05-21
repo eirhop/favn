@@ -22,13 +22,25 @@ defmodule FavnOrchestrator.Storage.MaterializationClaimCodec do
 
   @spec decode(binary()) :: {:ok, MaterializationClaim.t()} | {:error, term()}
   def decode(payload) when is_binary(payload) do
-    payload
-    |> Base.decode64!()
-    |> :erlang.binary_to_term([:safe])
-    |> normalize()
+    with {:ok, binary} <- Base.decode64(payload) do
+      binary
+      |> decode_trusted_legacy_term()
+      |> normalize()
+    else
+      :error -> {:error, :invalid_materialization_claim_payload}
+    end
   rescue
     exception -> {:error, {:invalid_materialization_claim_payload, exception}}
   end
 
   def decode(_payload), do: {:error, :invalid_materialization_claim_payload}
+
+  # Claims are internal durable state written by storage adapters, not external
+  # input. Older claim payloads used ETF and may contain consumer module atoms
+  # before those modules are loaded; the fallback recreates those trusted atoms.
+  defp decode_trusted_legacy_term(binary) when is_binary(binary) do
+    :erlang.binary_to_term(binary, [:safe])
+  rescue
+    ArgumentError -> :erlang.binary_to_term(binary)
+  end
 end

@@ -84,6 +84,18 @@ defmodule FavnOrchestrator.Storage.BackfillReadModelCodecTest do
     assert restored.metadata["source"] == "backfill"
   end
 
+  test "backfill window codec restores unloaded pipeline module identities" do
+    pipeline_module =
+      "Elixir.FavnOrchestrator.Test.UnloadedPipeline#{System.unique_integer([:positive])}"
+
+    assert {:ok, restored} =
+             encoded_backfill_window_payload()
+             |> put_payload_field("pipeline_module", pipeline_module)
+             |> BackfillWindowCodec.decode()
+
+    assert Atom.to_string(restored.pipeline_module) == pipeline_module
+  end
+
   test "asset window state codec preserves identity fields and JSON-shaped payloads" do
     {:ok, state} =
       AssetWindowState.new(%{
