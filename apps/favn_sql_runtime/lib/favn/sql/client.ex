@@ -22,6 +22,11 @@ defmodule Favn.SQL.Client do
   eviction. With finite catalog concurrency, an idle session for one pool key can
   block a new incompatible pool key that needs the same catalog until the idle
   session is reused or closed.
+
+  SQL sessions retain their normalized `:required_catalogs` scope. Raw write
+  operations use explicit operation catalog targets when provided and otherwise
+  use that retained session scope for catalog admission; arbitrary SQL text is not
+  parsed to infer target catalogs.
   """
 
   alias Favn.Connection.Loader
@@ -160,7 +165,7 @@ defmodule Favn.SQL.Client do
     session
     |> run_session_operation(:query, statement, opts, fn ->
       run_with_optional_retry(:query, opts, fn ->
-        Admission.with_permit(session, :query, statement, fn ->
+        Admission.with_permit(session, :query, {statement, opts}, fn ->
           session.adapter.query(session.conn, statement, opts)
         end)
       end)
@@ -177,7 +182,7 @@ defmodule Favn.SQL.Client do
   def execute(%Session{} = session, statement, opts) when is_list(opts) do
     session
     |> run_session_operation(:execute, statement, opts, fn ->
-      Admission.with_permit(session, :execute, statement, fn ->
+      Admission.with_permit(session, :execute, {statement, opts}, fn ->
         session.adapter.execute(session.conn, statement, opts)
       end)
     end)
@@ -331,7 +336,7 @@ defmodule Favn.SQL.Client do
     if function_exported?(adapter, :transaction, 3) do
       session
       |> run_session_operation(:transaction, nil, opts, fn ->
-        Admission.with_permit(session, :transaction, nil, fn ->
+        Admission.with_permit(session, :transaction, opts, fn ->
           adapter.transaction(
             conn,
             fn tx_conn -> fun.(%Session{session | conn: tx_conn}) end,
@@ -454,7 +459,7 @@ defmodule Favn.SQL.Client do
   defp prepare_warm_session(%Session{} = session, resolved, concurrency_policies, adapter_opts) do
     case checkout_warm_session_lease(session, concurrency_policies, adapter_opts) do
       {:ok, lease} ->
-        session = put_session_runtime(session, resolved, concurrency_policies, lease)
+        session = put_session_runtime(session, resolved, concurrency_policies, adapter_opts, lease)
         :ok = SessionPool.update_checkout(session)
 
         with :ok <- validate_pooled_session(session, adapter_opts),
@@ -492,7 +497,7 @@ defmodule Favn.SQL.Client do
             session =
               session
               |> SessionPool.attach_checkout(key, pool_config)
-              |> put_session_runtime(resolved, concurrency_policies, lease)
+              |> put_session_runtime(resolved, concurrency_policies, adapter_opts, lease)
 
             :ok = SessionPool.track_checkout(session)
 
@@ -611,12 +616,13 @@ defmodule Favn.SQL.Client do
     :exit, _ -> adapter
   end
 
-  defp put_session_runtime(%Session{} = session, resolved, concurrency_policies, lease) do
+  defp put_session_runtime(%Session{} = session, resolved, concurrency_policies, adapter_opts, lease) do
     %Session{
       session
       | resolved: resolved,
         concurrency_policy: singular_policy(concurrency_policies),
         concurrency_policies: policy_container(concurrency_policies),
+        required_catalogs: normalized_required_catalogs(adapter_opts),
         admission_lease: lease
     }
   end
@@ -696,11 +702,12 @@ defmodule Favn.SQL.Client do
            adapter: resolved.adapter,
            resolved: resolved,
            conn: conn,
-           capabilities: capabilities,
-           concurrency_policy: singular_policy(concurrency_policies),
-           concurrency_policies: policy_container(concurrency_policies),
-           admission_lease: lease
-         }}
+            capabilities: capabilities,
+            concurrency_policy: singular_policy(concurrency_policies),
+            concurrency_policies: policy_container(concurrency_policies),
+            required_catalogs: normalized_required_catalogs(adapter_opts),
+            admission_lease: lease
+          }}
 
       {:error, _reason} = error ->
         disconnect_after_connect_error(resolved.adapter, conn, lease, error)

@@ -18,13 +18,9 @@ defmodule Favn.SQL.Admission do
         fun
       )
       when is_function(fun, 0) do
-    policy = policy_for(session, operation, payload)
-
-    if permit_required?(policy, operation, payload) do
-      acquire_and_run(policy, operation, fun)
-    else
-      fun.()
-    end
+    session
+    |> policies_for(operation, payload)
+    |> acquire_and_run(operation, payload, fun)
   end
 
   def with_permit(%Session{}, _operation, _payload, fun) when is_function(fun, 0), do: fun.()
@@ -233,29 +229,42 @@ defmodule Favn.SQL.Admission do
     end
   end
 
-  defp policy_for(
-         %Session{concurrency_policies: %ConcurrencyPolicies{} = policies},
+  defp policies_for(
+         %Session{concurrency_policies: %ConcurrencyPolicies{} = policies} = session,
          operation,
          payload
        ) do
-    case catalog_target(operation, payload) do
-      {_connection, catalog} when is_binary(catalog) ->
-        ConcurrencyPolicies.catalog_policy(policies, catalog) || policies.default
+    catalog_policies =
+      session
+      |> catalog_targets(operation, payload)
+      |> Enum.map(&(ConcurrencyPolicies.catalog_policy(policies, &1) || policies.default))
+      |> Enum.reject(&is_nil/1)
 
-      _target ->
-        policies.default
+    case catalog_policies do
+      [] -> List.wrap(policies.default)
+      policies -> Enum.uniq_by(policies, & &1.scope)
     end
   end
 
-  defp policy_for(
+  defp policies_for(
          %Session{concurrency_policy: %ConcurrencyPolicy{} = policy},
          _operation,
          _payload
        ) do
-    policy
+    [policy]
   end
 
-  defp policy_for(%Session{}, _operation, _payload), do: nil
+  defp policies_for(%Session{}, _operation, _payload), do: []
+
+  defp catalog_targets(%Session{} = session, operation, payload) do
+    case catalog_target(operation, payload) do
+      {_connection, catalog} when is_binary(catalog) ->
+        [catalog]
+
+      _target ->
+        operation_catalog_scope(session, operation, payload)
+    end
+  end
 
   defp catalog_target(:materialize, %WritePlan{
          connection: connection,
@@ -270,13 +279,79 @@ defmodule Favn.SQL.Admission do
 
   defp catalog_target(_operation, _payload), do: nil
 
+  defp operation_catalog_scope(%Session{} = session, operation, payload) do
+    case explicit_catalogs(payload) do
+      [] -> session_required_catalogs(session, operation, payload)
+      catalogs -> catalogs
+    end
+  end
+
+  defp explicit_catalogs({_statement, opts}) when is_list(opts), do: explicit_catalogs(opts)
+
+  defp explicit_catalogs(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      cond do
+        Keyword.has_key?(opts, :catalog) ->
+          opts |> Keyword.get(:catalog) |> normalize_catalog_list()
+
+        Keyword.has_key?(opts, :target) ->
+          opts |> Keyword.get(:target) |> target_catalogs()
+
+        Keyword.has_key?(opts, :required_catalogs) ->
+          opts |> Keyword.get(:required_catalogs) |> normalize_catalog_list()
+
+        true ->
+          []
+      end
+    else
+      []
+    end
+  end
+
+  defp explicit_catalogs(_payload), do: []
+
+  defp target_catalogs({:catalog, catalog}), do: normalize_catalog_list(catalog)
+  defp target_catalogs(%{catalog: catalog}), do: normalize_catalog_list(catalog)
+  defp target_catalogs(_target), do: []
+
+  defp session_required_catalogs(%Session{required_catalogs: catalogs}, :execute, _payload), do: catalogs
+
+  defp session_required_catalogs(%Session{required_catalogs: catalogs}, :transaction, _payload),
+    do: catalogs
+
+  defp session_required_catalogs(%Session{required_catalogs: catalogs}, :query, payload) do
+    statement = statement_payload(payload)
+
+    if write_query?(:query, statement), do: catalogs, else: []
+  end
+
+  defp session_required_catalogs(%Session{}, _operation, _payload), do: []
+
+  defp statement_payload({statement, opts}) when is_list(opts), do: statement
+  defp statement_payload(statement), do: statement
+
+  defp normalize_catalog_list(catalogs) do
+    catalogs
+    |> List.wrap()
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+  end
+
   defp permit_required?(%ConcurrencyPolicy{limit: :unlimited}, _operation, _payload), do: false
   defp permit_required?(%ConcurrencyPolicy{applies_to: :all}, _operation, _payload), do: true
   defp permit_required?(nil, _operation, _payload), do: false
 
   defp permit_required?(%ConcurrencyPolicy{applies_to: :writes}, operation, payload) do
-    operation in [:execute, :materialize, :transaction] or write_query?(operation, payload)
+    write_operation?(operation, payload)
   end
+
+  defp write_operation?(operation, _payload) when operation in [:execute, :materialize, :transaction],
+    do: true
+
+  defp write_operation?(operation, payload), do: write_query?(operation, payload)
+
+  defp write_query?(:query, {statement, opts}) when is_list(opts), do: write_query?(:query, statement)
 
   defp write_query?(:query, statement) do
     statement
@@ -299,21 +374,49 @@ defmodule Favn.SQL.Admission do
     |> List.first()
   end
 
-  defp acquire_and_run(%ConcurrencyPolicy{scope: scope} = policy, operation, fun) do
-    if already_holding?(scope) do
+  defp acquire_and_run(policies, operation, payload, fun) do
+    policies =
+      policies
+      |> Enum.filter(&permit_required?(&1, operation, payload))
+      |> Enum.sort_by(&inspect(&1.scope))
+
+    if policies == [] do
       fun.()
     else
-      case acquire_lease(policy, operation) do
+      case acquire_operation_leases(policies, operation) do
         {:error, %Error{}} = error ->
           error
 
-        _lease ->
+        leases ->
           try do
             fun.()
           after
-            release_held_scope(scope)
+            release_session(leases)
           end
       end
+    end
+  end
+
+  defp acquire_operation_leases(policies, operation) do
+    Enum.reduce_while(policies, [], fn %ConcurrencyPolicy{scope: scope} = policy, leases ->
+      cond do
+        already_holding?(scope) ->
+          {:cont, leases}
+
+        true ->
+          case acquire_lease(policy, operation) do
+            {:error, %Error{}} = error ->
+              release_session(leases)
+              {:halt, error}
+
+            lease ->
+              {:cont, [lease | leases]}
+          end
+      end
+    end)
+    |> case do
+      {:error, %Error{}} = error -> error
+      leases -> leases
     end
   end
 
