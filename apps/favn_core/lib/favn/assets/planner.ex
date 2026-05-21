@@ -16,7 +16,7 @@ defmodule Favn.Assets.Planner do
   alias Favn.Plan
   alias Favn.Ref
   alias Favn.TimePeriod
-  alias Favn.Window.{Anchor, Key, Runtime, Spec, Validate}
+  alias Favn.Window.{Anchor, Key, Policy, Runtime, Spec, Validate}
 
   @typedoc """
   Planner options.
@@ -305,7 +305,63 @@ defmodule Favn.Assets.Planner do
 
   defp asset_window_spec(%{window_spec: %Spec{} = spec}), do: spec
   defp asset_window_spec(%{window: %Spec{} = spec}), do: spec
+
+  defp asset_window_spec(%{window: %Policy{kind: kind, timezone: timezone}}) do
+    spec_from_window(kind, timezone: timezone)
+  end
+
+  defp asset_window_spec(%{window: kind}) when is_atom(kind), do: spec_from_window(kind)
+
+  defp asset_window_spec(%{window: %{} = window}) do
+    kind = field_value(window, :kind)
+
+    opts =
+      []
+      |> maybe_put(:lookback, field_value(window, :lookback))
+      |> maybe_put(:refresh_from, field_value(window, :refresh_from))
+      |> maybe_put(:required, field_value(window, :required))
+      |> maybe_put(:timezone, field_value(window, :timezone))
+
+    spec_from_window(kind, opts)
+  end
+
   defp asset_window_spec(_asset), do: nil
+
+  defp spec_from_window(kind, opts \\ []) do
+    case normalize_kind(kind) do
+      {:ok, kind} ->
+        case Spec.new(kind, opts) do
+          {:ok, spec} -> spec
+          {:error, _reason} -> nil
+        end
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp normalize_kind(kind) when kind in [:hour, :day, :month, :year], do: {:ok, kind}
+
+  defp normalize_kind(kind) when is_binary(kind) do
+    case Policy.from_value(kind) do
+      {:ok, %Policy{kind: kind}} -> {:ok, kind}
+      {:ok, nil} -> {:error, {:invalid_window_policy_kind, kind}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp normalize_kind(kind) do
+    case Policy.normalize_kind(kind) do
+      {:ok, kind} -> {:ok, kind}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp field_value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, _key, ""), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp expand_windows(%Anchor{} = anchor_window, %Spec{} = spec) do
     window_count =
