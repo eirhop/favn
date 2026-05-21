@@ -29,4 +29,27 @@ defmodule Favn.Contracts.RunnerResultTest do
     assert error.retryable? == false
     assert is_binary(error.reason)
   end
+
+  test "runner errors redact nested operational detail text" do
+    error =
+      RunnerError.normalize(%{
+        type: :backend_execution_failed,
+        details: %{
+          cause: %{
+            message:
+              "failed postgres://user:password@example/db token=abc123 Authorization: Bearer raw-token",
+            reason: "retry failed with api_key=raw-key"
+          }
+        }
+      })
+
+    rendered = inspect(error)
+    refute rendered =~ "user:password"
+    refute rendered =~ "abc123"
+    refute rendered =~ "raw-token"
+    refute rendered =~ "raw-key"
+    assert error.details.cause.message =~ "[REDACTED_URL]"
+    assert error.details.cause.message =~ "token=[REDACTED]"
+    assert error.details.cause.message =~ "Authorization=[REDACTED]"
+  end
 end

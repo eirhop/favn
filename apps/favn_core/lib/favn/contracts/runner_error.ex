@@ -10,6 +10,11 @@ defmodule Favn.Contracts.RunnerError do
 
   @type kind :: :error | :exit | :throw | :cancelled | :preflight | :boundary
 
+  @operational_untrusted_keys [:reason, :message, :detail, :details, :error, :exception]
+  @sensitive_assignment ~r/(token|password|secret|authorization|cookie|credential|database|dsn|url|uri|api_key|apikey|access_key|accesskey|private_key|privatekey)\s*[:=]\s*((?:Bearer\s+)?[^\s,;]+)/i
+  @bearer_token ~r/(bearer)\s+([^\s,;]+)/i
+  @url_userinfo ~r/([a-z][a-z0-9+.-]*:\/\/)([^\s\/@:]+):([^\s\/@]+)@([^\s,;]+)/i
+
   @type t :: %__MODULE__{
           kind: kind(),
           type: atom() | String.t(),
@@ -94,8 +99,8 @@ defmodule Favn.Contracts.RunnerError do
     )
   end
 
-  defp message(nil, reason), do: error_message(reason) || "Runner error"
-  defp message(value, _reason), do: string_value(value)
+  defp message(nil, reason), do: sanitize_text(error_message(reason) || "Runner error")
+  defp message(value, _reason), do: value |> string_value() |> sanitize_text()
 
   defp details(details) when is_map(details), do: sanitize_value(details)
   defp details(_details), do: %{}
@@ -161,10 +166,14 @@ defmodule Favn.Contracts.RunnerError do
   defp phase_from_reason(_reason), do: nil
 
   defp safe_reason(nil), do: nil
-  defp safe_reason(%{__exception__: true} = exception), do: error_message(exception)
 
-  defp safe_reason(%_{} = reason),
-    do: error_message(reason) || inspect_value(type_from_reason(reason))
+  defp safe_reason(%{__exception__: true} = exception),
+    do: exception |> error_message() |> sanitize_text()
+
+  defp safe_reason(%_{} = reason) do
+    (error_message(reason) || inspect_value(type_from_reason(reason)))
+    |> sanitize_text()
+  end
 
   defp safe_reason(%{} = reason),
     do: reason |> reason_only() |> sanitize_value() |> inspect_value()
@@ -205,6 +214,9 @@ defmodule Favn.Contracts.RunnerError do
   defp sanitize_value(nil), do: nil
   defp sanitize_value(value), do: inspect_value(value)
 
+  defp sanitize_value(key, value) when key in @operational_untrusted_keys,
+    do: sanitize_untrusted_value(value)
+
   defp sanitize_value(key, _value)
        when key in [:token, :password, :secret, :credential, :database],
        do: :redacted
@@ -212,12 +224,55 @@ defmodule Favn.Contracts.RunnerError do
   defp sanitize_value(key, value) when key in [:secret?, "secret?"], do: sanitize_value(value)
 
   defp sanitize_value(key, value) when is_atom(key),
-    do: if(sensitive_key?(Atom.to_string(key)), do: :redacted, else: sanitize_value(value))
+    do: key |> Atom.to_string() |> sanitize_value(value)
 
   defp sanitize_value(key, value) when is_binary(key),
-    do: if(sensitive_key?(key), do: :redacted, else: sanitize_value(value))
+    do: sanitize_keyed_value(key, value)
 
   defp sanitize_value(_key, value), do: sanitize_value(value)
+
+  defp sanitize_keyed_value(key, value) do
+    cond do
+      operational_untrusted_key?(key) -> sanitize_untrusted_value(value)
+      sensitive_key?(key) -> :redacted
+      true -> sanitize_value(value)
+    end
+  end
+
+  defp sanitize_untrusted_value(%DateTime{} = value), do: value
+
+  defp sanitize_untrusted_value(%_{} = value),
+    do: value |> Map.from_struct() |> sanitize_untrusted_value()
+
+  defp sanitize_untrusted_value(value) when is_map(value) do
+    Map.new(value, fn {key, map_value} -> {key, sanitize_value(key, map_value)} end)
+  end
+
+  defp sanitize_untrusted_value(value) when is_list(value),
+    do: Enum.map(value, &sanitize_untrusted_value/1)
+
+  defp sanitize_untrusted_value(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&sanitize_untrusted_value/1)
+    |> List.to_tuple()
+  end
+
+  defp sanitize_untrusted_value(value) when is_binary(value), do: sanitize_text(value)
+  defp sanitize_untrusted_value(value) when is_atom(value), do: value
+  defp sanitize_untrusted_value(value) when is_number(value), do: value
+  defp sanitize_untrusted_value(value) when is_boolean(value), do: value
+  defp sanitize_untrusted_value(nil), do: nil
+  defp sanitize_untrusted_value(value), do: value |> inspect_value() |> sanitize_text()
+
+  defp sanitize_text(nil), do: nil
+
+  defp sanitize_text(value) when is_binary(value) do
+    value
+    |> String.replace(@url_userinfo, "[REDACTED_URL]")
+    |> String.replace(@bearer_token, "\\1 [REDACTED]")
+    |> String.replace(@sensitive_assignment, "\\1=[REDACTED]")
+  end
 
   defp sensitive_key?(key) when is_binary(key) do
     key = String.downcase(key)
@@ -225,6 +280,11 @@ defmodule Favn.Contracts.RunnerError do
     String.contains?(key, "token") or String.contains?(key, "password") or
       String.contains?(key, "secret") or String.contains?(key, "credential") or
       String.contains?(key, "database")
+  end
+
+  defp operational_untrusted_key?(key) when is_binary(key) do
+    key = String.downcase(key)
+    Enum.any?(@operational_untrusted_keys, &(key == Atom.to_string(&1)))
   end
 
   defp term_type(term) when is_map(term), do: :map
