@@ -810,9 +810,9 @@ defmodule Favn.Storage.Adapter.SQLite do
       when is_list(asset_window_states) and is_list(opts) do
     with {:ok, repo} <- repo_name(opts) do
       repo.transact(fn ->
-        old_status = fetch_backfill_window_status(repo, window)
-
-        with :ok <- put_backfill_window(window, opts),
+        with :ok <- lock_backfill_window(repo, window),
+             old_status <- fetch_backfill_window_status(repo, window),
+             :ok <- put_backfill_window(window, opts),
              :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)),
              {:ok, progress} <-
                upsert_backfill_progress_after_window_change(repo, window, old_status) do
@@ -1760,12 +1760,24 @@ defmodule Favn.Storage.Adapter.SQLite do
     end
   end
 
+  defp lock_backfill_window(repo, %BackfillWindow{} = window) do
+    sql =
+      "UPDATE favn_backfill_windows SET updated_at = updated_at WHERE backfill_run_id = ?1 AND pipeline_module = ?2 AND window_key = ?3"
+
+    params = [window.backfill_run_id, encode_atom(window.pipeline_module), window.window_key]
+
+    case SQL.query(repo, sql, params) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp get_backfill_progress_with_repo(repo, backfill_run_id) do
     sql = "SELECT record_payload FROM favn_backfill_progress WHERE backfill_run_id = ?1 LIMIT 1"
 
     case SQL.query(repo, sql, [backfill_run_id]) do
       {:ok, %{rows: [row]}} -> decode_backfill_progress_row(row)
-      {:ok, %{rows: []}} -> {:error, :not_found}
+      {:ok, %{rows: []}} -> rebuild_backfill_progress_with_repo(repo, backfill_run_id)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -1784,11 +1796,14 @@ defmodule Favn.Storage.Adapter.SQLite do
           {:ok, next_progress}
         end
 
-      {:error, :not_found} ->
-        rebuild_backfill_progress_with_repo(repo, window.backfill_run_id)
-
       {:error, reason} ->
-        {:error, reason}
+        case reason do
+          {:stale_backfill_progress, _old_status, _new_status, _counts} ->
+            rebuild_backfill_progress_with_repo(repo, window.backfill_run_id)
+
+          _other ->
+            {:error, reason}
+        end
     end
   end
 

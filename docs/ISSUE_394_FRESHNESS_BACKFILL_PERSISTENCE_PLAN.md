@@ -144,8 +144,15 @@ Contract rules:
   backfill, and returns the new aggregate in one storage operation.
 - The operation computes count deltas from the previously persisted window
   status, so repeated writes with the same status are idempotent for counts.
+- SQL adapters must serialize the old-status read with the window update for the
+  same `{backfill_run_id, pipeline_module, window_key}`. Postgres should use row
+  locking; SQLite should acquire its write lock before reading the previous
+  status.
 - If an aggregate row is missing, the operation repairs it from window rows in
   the same transaction before returning.
+- `get_backfill_progress/2` may lazily rebuild a missing aggregate row from
+  existing windows. This is the compatibility path for databases upgraded before
+  aggregate rows existed.
 - `rebuild_backfill_progress/2` recomputes aggregate truth from
   `favn_backfill_windows` and is the explicit repair path for migrations,
   manual repair, and consistency checks.
@@ -190,6 +197,9 @@ Migration/backfill rules:
 - If migration-time decoding is not practical, adapter startup or first access
   should call the same `rebuild_backfill_progress/2` path and document the lazy
   repair behavior.
+- This issue intentionally makes the new freshness and backfill projection
+  callbacks required adapter contracts. External storage adapters must implement
+  them before they can pass `Storage.validate_adapter/1`.
 - `replace_backfill_read_models/4` should replace aggregate rows consistently
   with windows, either by accepting progress rows or by rebuilding progress after
   replacement inside the same adapter transaction.

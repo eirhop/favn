@@ -435,10 +435,17 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert :ok = Storage.put_backfill_window(first)
     assert :ok = Storage.put_backfill_window(second)
 
+    assert {:ok, progress} = Storage.get_backfill_progress(backfill_run_id)
+    assert progress.total_count == 2
+    assert progress.pending_count == 2
+    assert progress.status == :running
+
     assert {:ok, progress} = Storage.rebuild_backfill_progress(backfill_run_id)
     assert progress.total_count == 2
     assert progress.pending_count == 2
     assert progress.status == :running
+
+    assert_concurrent_same_window_projection(label, run)
 
     ok_window = %{
       first
@@ -487,6 +494,48 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     assert stored_progress.status == :partial
     assert stored_progress.ok_count == 1
     assert stored_progress.error_count == 1
+  end
+
+  defp assert_concurrent_same_window_projection(label, run) do
+    now = DateTime.utc_now()
+    backfill_run_id = "backfill_race_#{label}_#{System.unique_integer([:positive])}"
+
+    assert {:ok, first} = backfill_window(backfill_run_id, run, "race-window", :pending, now)
+    assert {:ok, second} = backfill_window(backfill_run_id, run, "other-window", :pending, now)
+    assert :ok = Storage.put_backfill_window(first)
+    assert :ok = Storage.put_backfill_window(second)
+    assert {:ok, _progress} = Storage.rebuild_backfill_progress(backfill_run_id)
+
+    ok_window = %{
+      first
+      | status: :ok,
+        child_run_id: "#{backfill_run_id}_ok",
+        latest_attempt_run_id: "#{backfill_run_id}_ok",
+        last_success_run_id: "#{backfill_run_id}_ok",
+        finished_at: DateTime.add(now, 1, :second),
+        updated_at: DateTime.add(now, 1, :second)
+    }
+
+    error_window = %{
+      first
+      | status: :error,
+        child_run_id: "#{backfill_run_id}_error",
+        latest_attempt_run_id: "#{backfill_run_id}_error",
+        last_error: %{message: "failed"},
+        errors: [%{message: "failed"}],
+        finished_at: DateTime.add(now, 2, :second),
+        updated_at: DateTime.add(now, 2, :second)
+    }
+
+    [ok_window, error_window]
+    |> Enum.map(&Task.async(fn -> Storage.apply_backfill_child_projection(&1, []) end))
+    |> Enum.each(fn task -> assert {:ok, _progress} = Task.await(task, 5_000) end)
+
+    assert {:ok, progress} = Storage.get_backfill_progress(backfill_run_id)
+    assert progress.total_count == 2
+    assert progress.pending_count == 1
+    assert progress.ok_count + progress.error_count == 1
+    assert progress.status == :running
   end
 
   defp backfill_window(backfill_run_id, run, window_key, status, now) do

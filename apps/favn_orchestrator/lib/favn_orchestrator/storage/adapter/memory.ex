@@ -1234,7 +1234,20 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   def handle_call({:get_backfill_progress, backfill_run_id}, _from, state) do
-    {:reply, fetch_or_not_found(state.backfill_progress, backfill_run_id), state}
+    case Map.fetch(state.backfill_progress, backfill_run_id) do
+      {:ok, %BackfillProgress{} = progress} ->
+        {:reply, {:ok, progress}, state}
+
+      :error ->
+        case rebuild_progress_from_windows(state.backfill_windows, backfill_run_id) do
+          {:ok, progress} ->
+            {:reply, {:ok, progress},
+             put_in(state, [:backfill_progress, backfill_run_id], progress)}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+    end
   end
 
   def handle_call({:rebuild_backfill_progress, backfill_run_id}, _from, state) do
@@ -1974,7 +1987,21 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   defp next_progress(state, backfill_run_id, old_status, new_status) do
     case Map.fetch(state.backfill_progress, backfill_run_id) do
       {:ok, %BackfillProgress{} = progress} ->
-        BackfillProgress.apply_status_change(progress, old_status, new_status, DateTime.utc_now())
+        case BackfillProgress.apply_status_change(
+               progress,
+               old_status,
+               new_status,
+               DateTime.utc_now()
+             ) do
+          {:ok, %BackfillProgress{} = next_progress} ->
+            {:ok, next_progress}
+
+          {:error, {:stale_backfill_progress, _old_status, _new_status, _counts}} ->
+            rebuild_progress_from_windows(state.backfill_windows, backfill_run_id)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       :error ->
         rebuild_progress_from_windows(state.backfill_windows, backfill_run_id)

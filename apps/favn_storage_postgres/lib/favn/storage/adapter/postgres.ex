@@ -762,9 +762,8 @@ defmodule Favn.Storage.Adapter.Postgres do
       when is_list(asset_window_states) and is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts) do
       repo.transact(fn ->
-        old_status = fetch_backfill_window_status(repo, window)
-
-        with :ok <- put_backfill_window(window, opts),
+        with {:ok, old_status} <- lock_and_fetch_backfill_window_status(repo, window),
+             :ok <- put_backfill_window(window, opts),
              :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)),
              {:ok, progress} <-
                upsert_backfill_progress_after_window_change(repo, window, old_status) do
@@ -1407,15 +1406,16 @@ defmodule Favn.Storage.Adapter.Postgres do
     end
   end
 
-  defp fetch_backfill_window_status(repo, %BackfillWindow{} = window) do
+  defp lock_and_fetch_backfill_window_status(repo, %BackfillWindow{} = window) do
     sql =
-      "SELECT status FROM favn_backfill_windows WHERE backfill_run_id = $1 AND pipeline_module = $2 AND window_key = $3 LIMIT 1"
+      "SELECT status FROM favn_backfill_windows WHERE backfill_run_id = $1 AND pipeline_module = $2 AND window_key = $3 LIMIT 1 FOR UPDATE"
 
     params = [window.backfill_run_id, Atom.to_string(window.pipeline_module), window.window_key]
 
     case SQL.query(repo, sql, params) do
-      {:ok, %{rows: [[status]]}} when is_binary(status) -> String.to_existing_atom(status)
-      _other -> nil
+      {:ok, %{rows: [[status]]}} when is_binary(status) -> {:ok, String.to_existing_atom(status)}
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -1425,7 +1425,7 @@ defmodule Favn.Storage.Adapter.Postgres do
 
     case SQL.query(repo, sql, [backfill_run_id]) do
       {:ok, %{rows: [row]}} -> decode_backfill_progress_row(row)
-      {:ok, %{rows: []}} -> {:error, :not_found}
+      {:ok, %{rows: []}} -> rebuild_backfill_progress_with_repo(repo, backfill_run_id)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -1444,11 +1444,14 @@ defmodule Favn.Storage.Adapter.Postgres do
           {:ok, next_progress}
         end
 
-      {:error, :not_found} ->
-        rebuild_backfill_progress_with_repo(repo, window.backfill_run_id)
-
       {:error, reason} ->
-        {:error, reason}
+        case reason do
+          {:stale_backfill_progress, _old_status, _new_status, _counts} ->
+            rebuild_backfill_progress_with_repo(repo, window.backfill_run_id)
+
+          _other ->
+            {:error, reason}
+        end
     end
   end
 

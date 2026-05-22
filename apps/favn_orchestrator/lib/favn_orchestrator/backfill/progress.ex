@@ -69,6 +69,7 @@ defmodule FavnOrchestrator.Backfill.Progress do
     with {:ok, attrs} <- normalize_attrs(attrs),
          :ok <- require_keys(attrs, @enforce_keys),
          :ok <- validate_counts(attrs),
+         :ok <- validate_total_count(attrs),
          :ok <- validate_status(Map.fetch!(attrs, :status)),
          :ok <- validate_metadata(Map.get(attrs, :metadata, %{})) do
       {:ok, struct(__MODULE__, Map.merge(%{metadata: %{}}, attrs))}
@@ -139,32 +140,50 @@ defmodule FavnOrchestrator.Backfill.Progress do
   @doc false
   @spec apply_status_change(t(), status() | nil, status(), DateTime.t()) ::
           {:ok, t()} | {:error, term()}
+  def apply_status_change(%__MODULE__{} = progress, old_status, new_status, %DateTime{} = now)
+      when not (is_nil(old_status) or old_status in @statuses) do
+    {:error, {:invalid_old_status, progress.backfill_run_id, old_status, new_status, now}}
+  end
+
+  def apply_status_change(%__MODULE__{} = progress, old_status, new_status, %DateTime{} = now)
+      when new_status not in @statuses do
+    {:error, {:invalid_new_status, progress.backfill_run_id, old_status, new_status, now}}
+  end
+
   def apply_status_change(%__MODULE__{} = progress, old_status, new_status, %DateTime{} = now) do
     counts = counts(progress)
 
-    {counts, total_count} =
-      cond do
-        is_nil(old_status) ->
-          {Map.update!(counts, new_status, &(&1 + 1)), progress.total_count + 1}
+    case status_change_counts(counts, progress.total_count, old_status, new_status) do
+      {:ok, counts, total_count} ->
+        from_counts(
+          progress.backfill_run_id,
+          Map.put(counts, :__total__, total_count),
+          now,
+          progress.metadata
+        )
 
-        old_status == new_status ->
-          {counts, progress.total_count}
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
-        true ->
-          counts =
-            counts
-            |> Map.update!(old_status, &max(&1 - 1, 0))
-            |> Map.update!(new_status, &(&1 + 1))
+  defp status_change_counts(counts, total_count, nil, new_status),
+    do: {:ok, Map.update!(counts, new_status, &(&1 + 1)), total_count + 1}
 
-          {counts, progress.total_count}
-      end
+  defp status_change_counts(counts, total_count, old_status, old_status),
+    do: {:ok, counts, total_count}
 
-    from_counts(
-      progress.backfill_run_id,
-      Map.put(counts, :__total__, total_count),
-      now,
-      progress.metadata
-    )
+  defp status_change_counts(counts, total_count, old_status, new_status) do
+    if Map.fetch!(counts, old_status) > 0 do
+      counts =
+        counts
+        |> Map.update!(old_status, &(&1 - 1))
+        |> Map.update!(new_status, &(&1 + 1))
+
+      {:ok, counts, total_count}
+    else
+      {:error, {:stale_backfill_progress, old_status, new_status, counts}}
+    end
   end
 
   defp normalize_attrs(attrs) do
@@ -199,6 +218,26 @@ defmodule FavnOrchestrator.Backfill.Progress do
       count = Map.fetch!(attrs, key)
       if is_integer(count) and count >= 0, do: false, else: {:error, {:invalid_count, key, count}}
     end)
+  end
+
+  defp validate_total_count(attrs) do
+    total = Map.fetch!(attrs, :total_count)
+
+    sum =
+      attrs
+      |> Map.take([
+        :pending_count,
+        :running_count,
+        :ok_count,
+        :partial_count,
+        :error_count,
+        :cancelled_count,
+        :timed_out_count
+      ])
+      |> Map.values()
+      |> Enum.sum()
+
+    if total == sum, do: :ok, else: {:error, {:invalid_total_count, total, sum}}
   end
 
   defp validate_status(status) when status in @statuses, do: :ok
