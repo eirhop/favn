@@ -24,7 +24,11 @@ defmodule FavnOrchestrator.OperatorCommands.PipelineRunRequest do
   Normalizes map, keyword, or struct input into a pipeline run request.
   """
   @spec from_input(t() | map() | keyword() | nil) :: {:ok, t()} | {:error, term()}
-  def from_input(%__MODULE__{} = request), do: {:ok, request}
+  def from_input(%__MODULE__{} = request) do
+    request
+    |> Map.from_struct()
+    |> from_input()
+  end
 
   def from_input(input) when is_map(input) or is_list(input) or is_nil(input) do
     input = input || %{}

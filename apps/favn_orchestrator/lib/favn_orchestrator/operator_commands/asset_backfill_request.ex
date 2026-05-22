@@ -31,7 +31,11 @@ defmodule FavnOrchestrator.OperatorCommands.AssetBackfillRequest do
   Normalizes map, keyword, or struct input into an asset backfill request.
   """
   @spec from_input(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
-  def from_input(%__MODULE__{} = request), do: {:ok, request}
+  def from_input(%__MODULE__{} = request) do
+    request
+    |> Map.from_struct()
+    |> from_input()
+  end
 
   def from_input(input) when is_map(input) or is_list(input) do
     dependency_value =

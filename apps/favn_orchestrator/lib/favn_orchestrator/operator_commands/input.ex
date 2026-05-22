@@ -74,23 +74,29 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
   end
 
   def window(nil), do: {:ok, nil}
-  def window(%WindowRequest{} = request), do: WindowRequest.from_value(request)
+
+  def window(%WindowRequest{} = request) do
+    normalize_window_result(request, fn -> WindowRequest.from_value(request) end)
+  end
 
   def window(value) when is_binary(value) do
-    case WindowRequest.parse(value) do
-      {:ok, %WindowRequest{} = request} -> {:ok, request}
-      {:error, _reason} -> {:error, {:invalid_operator_window, value}}
-    end
+    normalize_window_result(value, fn -> WindowRequest.parse(value) end)
   end
 
   def window(value) when is_map(value) do
-    case WindowRequest.from_value(value) do
-      {:ok, %WindowRequest{} = request} -> {:ok, request}
-      {:error, _reason} -> {:error, {:invalid_operator_window, value}}
-    end
+    normalize_window_result(value, fn -> WindowRequest.from_value(value) end)
   end
 
   def window(value), do: {:error, {:invalid_operator_window, value}}
+
+  defp normalize_window_result(original, fun) do
+    case fun.() do
+      {:ok, %WindowRequest{} = request} -> {:ok, request}
+      {:error, _reason} -> {:error, {:invalid_operator_window, original}}
+    end
+  rescue
+    _exception -> {:error, {:invalid_operator_window, original}}
+  end
 
   defp refresh_mode(:force, modes), do: maybe_refresh_mode(:force_all, modes, :force)
 

@@ -66,6 +66,27 @@ defmodule FavnOrchestrator.OperatorCommands.RequestTest do
              })
   end
 
+  test "prebuilt request structs are validated like map input" do
+    assert {:error, {:invalid_operator_refresh_mode, :bogus}} =
+             AssetRunRequest.from_input(%AssetRunRequest{refresh_mode: :bogus})
+
+    assert {:error, {:invalid_operator_refresh_mode, :bogus}} =
+             AssetBackfillRequest.from_input(%AssetBackfillRequest{refresh_mode: :bogus})
+
+    assert {:error, {:invalid_operator_refresh_mode, :force_selected}} =
+             PipelineRunRequest.from_input(%PipelineRunRequest{refresh_mode: :force_selected})
+
+    assert {:error, {:invalid_operator_refresh_mode, :force_selected}} =
+             PipelineBackfillRequest.from_input(%PipelineBackfillRequest{
+               refresh_mode: :force_selected
+             })
+  end
+
+  test "pipeline window maps normalize lower-level request errors" do
+    assert {:error, {:invalid_operator_window, %{mode: "bad"}}} =
+             PipelineRunRequest.from_input(%{window: %{mode: "bad"}})
+  end
+
   test "pipeline backfill requests return stable range errors" do
     assert {:error, {:invalid_operator_range, %{kind: "day"}}} =
              PipelineBackfillRequest.from_input(%{range: %{kind: "day"}})
