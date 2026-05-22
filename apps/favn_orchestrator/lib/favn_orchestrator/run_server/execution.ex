@@ -27,7 +27,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.Freshness.Decider
   alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.MaterializationClaims
-  alias FavnOrchestrator.Page
   alias FavnOrchestrator.Redaction
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RuntimeConfig
@@ -114,9 +113,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
     runner_opts = configured_runner_opts()
 
     with :ok <- validate_runner_client(runner_client),
-         :ok <- runner_client.register_manifest(version, runner_opts) do
+         :ok <- runner_client.register_manifest(version, runner_opts),
+         {:ok, freshness_context} <- initial_freshness_context(run_state, version) do
       stage_groups = pipeline_stage_groups(run_state)
-      freshness_context = initial_freshness_context(run_state, version)
 
       stage_groups
       |> Enum.reduce_while({run_state, [], freshness_context, nil}, fn {stage, node_keys},
@@ -269,7 +268,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         completed_node_keys: freshness_context.completed_node_keys,
         refreshed_node_keys: freshness_context.refreshed_node_keys,
         upstream_statuses: freshness_context.upstream_statuses,
-        now: DateTime.utc_now()
+        now: freshness_context.now
       )
 
     Enum.reduce_while(
@@ -1700,51 +1699,49 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp initial_freshness_context(%RunState{} = run_state, %Version{} = version) do
-    prior_states = load_prior_freshness_states(run_state)
+    assets_by_ref = assets_by_ref(version)
+    refresh_policy = refresh_policy_from_metadata(run_state.metadata)
+    now = DateTime.utc_now()
 
-    %{
-      assets_by_ref: assets_by_ref(version),
-      refresh_policy: refresh_policy_from_metadata(run_state.metadata),
-      prior_states: prior_states,
-      current_states: prior_states,
-      completed_node_keys: MapSet.new(),
-      refreshed_node_keys: MapSet.new(),
-      upstream_statuses: %{}
-    }
-  end
-
-  defp load_prior_freshness_states(%RunState{plan: %Favn.Plan{} = plan}) do
-    case load_prior_freshness_state_pages(plan, 0, []) do
-      {:ok, states} ->
-        states
-        |> index_freshness_states()
-
-      _other ->
-        %{}
+    with {:ok, prior_states} <-
+           load_prior_freshness_states(run_state, assets_by_ref, refresh_policy, now) do
+      {:ok,
+       %{
+         assets_by_ref: assets_by_ref,
+         refresh_policy: refresh_policy,
+         prior_states: prior_states,
+         current_states: prior_states,
+         completed_node_keys: MapSet.new(),
+         refreshed_node_keys: MapSet.new(),
+         upstream_statuses: %{},
+         now: now
+       }}
     end
   end
 
-  defp load_prior_freshness_state_pages(%Favn.Plan{} = plan, offset, acc) do
-    case Storage.list_asset_freshness_states(limit: Page.max_limit(), offset: offset) do
-      {:ok, %Page{} = page} ->
-        states = Enum.filter(page.items, &planned_freshness_state?(plan, &1))
-        acc = acc ++ states
+  defp load_prior_freshness_states(
+         %RunState{plan: %Favn.Plan{} = plan},
+         assets_by_ref,
+         refresh_policy,
+         now
+       ) do
+    keys =
+      Decider.planned_lookup_keys(plan,
+        assets_by_ref: assets_by_ref,
+        refresh_policy: refresh_policy,
+        now: now
+      )
 
-        if page.has_more? do
-          load_prior_freshness_state_pages(plan, page.next_offset, acc)
-        else
-          {:ok, acc}
-        end
+    case Storage.get_asset_freshness_states_by_keys(keys) do
+      {:ok, states_by_key} ->
+        {:ok,
+         states_by_key
+         |> Map.values()
+         |> index_freshness_states()}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, {:freshness_state_lookup_failed, reason}}
     end
-  end
-
-  defp planned_freshness_state?(%Favn.Plan{nodes: nodes}, %AssetFreshnessState{} = state) do
-    Enum.any?(nodes, fn {_node_key, %{ref: {module, name}}} ->
-      state.asset_ref_module == module and state.asset_ref_name == name
-    end)
   end
 
   defp index_freshness_states(states) do

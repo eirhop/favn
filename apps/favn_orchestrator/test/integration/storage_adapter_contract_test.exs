@@ -3,6 +3,9 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
   alias Favn.Manifest
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.AssetFreshnessState
+  alias FavnOrchestrator.Backfill.AssetWindowState
+  alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.Storage.Adapter.Memory
@@ -347,6 +350,9 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
 
     assert :ok = Storage.put_scheduler_state(nil_key, %{version: 1})
     assert {:ok, %Favn.Scheduler.State{schedule_id: nil}} = Storage.get_scheduler_state(nil_key)
+
+    assert_freshness_lookup_contract(label, run)
+    assert_backfill_progress_contract(label, run)
   end
 
   defp manifest_version(manifest_version_id) do
@@ -369,6 +375,205 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
       acquired_at: now,
       expires_at: DateTime.add(now, 5, :second)
     }
+  end
+
+  defp assert_freshness_lookup_contract(label, run) do
+    now = DateTime.utc_now()
+    key = {MyApp.Asset, :asset, "freshness-#{label}"}
+    missing_key = {MyApp.Asset, :asset, "missing-#{label}"}
+    unrelated_key = {MyApp.Asset, :other, "freshness-#{label}"}
+
+    assert {:ok, wanted} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Asset,
+               asset_ref_name: :asset,
+               freshness_key: "freshness-#{label}",
+               status: :ok,
+               freshness_version: "version-#{label}",
+               latest_success_run_id: run.id,
+               latest_success_at: now,
+               updated_at: now
+             })
+
+    assert {:ok, unrelated} =
+             AssetFreshnessState.new(%{
+               asset_ref_module: MyApp.Asset,
+               asset_ref_name: :other,
+               freshness_key: "freshness-#{label}",
+               status: :ok,
+               freshness_version: "other-version-#{label}",
+               latest_success_run_id: run.id,
+               latest_success_at: now,
+               updated_at: now
+             })
+
+    assert :ok = Storage.put_asset_freshness_state(wanted)
+    assert :ok = Storage.put_asset_freshness_state(unrelated)
+
+    assert {:ok, %{^key => fetched}} =
+             Storage.get_asset_freshness_states_by_keys([key, key, missing_key])
+
+    assert fetched.asset_ref_module == wanted.asset_ref_module
+    assert fetched.asset_ref_name == wanted.asset_ref_name
+    assert fetched.freshness_key == wanted.freshness_key
+    assert fetched.freshness_version == wanted.freshness_version
+    assert fetched.latest_success_run_id == wanted.latest_success_run_id
+
+    assert {:ok, states} = Storage.get_asset_freshness_states_by_keys([key, missing_key])
+    assert Map.keys(states) == [key]
+    refute Map.has_key?(states, unrelated_key)
+    assert {:ok, %{}} = Storage.get_asset_freshness_states_by_keys([])
+  end
+
+  defp assert_backfill_progress_contract(label, run) do
+    now = DateTime.utc_now()
+    backfill_run_id = "backfill_progress_#{label}_#{System.unique_integer([:positive])}"
+
+    assert {:error, :not_found} = Storage.get_backfill_progress("#{backfill_run_id}_missing")
+
+    assert {:ok, first} = backfill_window(backfill_run_id, run, "window-1", :pending, now)
+    assert {:ok, second} = backfill_window(backfill_run_id, run, "window-2", :pending, now)
+
+    assert :ok = Storage.put_backfill_window(first)
+    assert :ok = Storage.put_backfill_window(second)
+
+    assert {:ok, progress} = Storage.get_backfill_progress(backfill_run_id)
+    assert progress.total_count == 2
+    assert progress.pending_count == 2
+    assert progress.status == :running
+
+    assert {:ok, progress} = Storage.rebuild_backfill_progress(backfill_run_id)
+    assert progress.total_count == 2
+    assert progress.pending_count == 2
+    assert progress.status == :running
+
+    assert_concurrent_same_window_projection(label, run)
+
+    ok_window = %{
+      first
+      | status: :ok,
+        child_run_id: "#{backfill_run_id}_child_1",
+        latest_attempt_run_id: "#{backfill_run_id}_child_1",
+        last_success_run_id: "#{backfill_run_id}_child_1",
+        finished_at: DateTime.add(now, 1, :second),
+        updated_at: DateTime.add(now, 1, :second)
+    }
+
+    assert {:ok, asset_state} = asset_window_state(ok_window, run, :ok)
+    assert {:ok, progress} = Storage.apply_backfill_child_projection(ok_window, [asset_state])
+    assert progress.total_count == 2
+    assert progress.pending_count == 1
+    assert progress.ok_count == 1
+    assert progress.status == :running
+
+    assert {:ok, ^asset_state} =
+             Storage.get_asset_window_state(MyApp.Asset, :asset, ok_window.window_key)
+
+    assert {:ok, repeated} = Storage.apply_backfill_child_projection(ok_window, [asset_state])
+    assert repeated.total_count == 2
+    assert repeated.pending_count == 1
+    assert repeated.ok_count == 1
+
+    error_window = %{
+      second
+      | status: :error,
+        child_run_id: "#{backfill_run_id}_child_2",
+        latest_attempt_run_id: "#{backfill_run_id}_child_2",
+        last_error: %{message: "failed"},
+        errors: [%{message: "failed"}],
+        finished_at: DateTime.add(now, 2, :second),
+        updated_at: DateTime.add(now, 2, :second)
+    }
+
+    assert {:ok, progress} = Storage.apply_backfill_child_projection(error_window, [])
+    assert progress.total_count == 2
+    assert progress.pending_count == 0
+    assert progress.ok_count == 1
+    assert progress.error_count == 1
+    assert progress.status == :partial
+
+    assert {:ok, stored_progress} = Storage.get_backfill_progress(backfill_run_id)
+    assert stored_progress.status == :partial
+    assert stored_progress.ok_count == 1
+    assert stored_progress.error_count == 1
+  end
+
+  defp assert_concurrent_same_window_projection(label, run) do
+    now = DateTime.utc_now()
+    backfill_run_id = "backfill_race_#{label}_#{System.unique_integer([:positive])}"
+
+    assert {:ok, first} = backfill_window(backfill_run_id, run, "race-window", :pending, now)
+    assert {:ok, second} = backfill_window(backfill_run_id, run, "other-window", :pending, now)
+    assert :ok = Storage.put_backfill_window(first)
+    assert :ok = Storage.put_backfill_window(second)
+    assert {:ok, _progress} = Storage.rebuild_backfill_progress(backfill_run_id)
+
+    ok_window = %{
+      first
+      | status: :ok,
+        child_run_id: "#{backfill_run_id}_ok",
+        latest_attempt_run_id: "#{backfill_run_id}_ok",
+        last_success_run_id: "#{backfill_run_id}_ok",
+        finished_at: DateTime.add(now, 1, :second),
+        updated_at: DateTime.add(now, 1, :second)
+    }
+
+    error_window = %{
+      first
+      | status: :error,
+        child_run_id: "#{backfill_run_id}_error",
+        latest_attempt_run_id: "#{backfill_run_id}_error",
+        last_error: %{message: "failed"},
+        errors: [%{message: "failed"}],
+        finished_at: DateTime.add(now, 2, :second),
+        updated_at: DateTime.add(now, 2, :second)
+    }
+
+    [ok_window, error_window]
+    |> Enum.map(&Task.async(fn -> Storage.apply_backfill_child_projection(&1, []) end))
+    |> Enum.each(fn task -> assert {:ok, _progress} = Task.await(task, 5_000) end)
+
+    assert {:ok, progress} = Storage.get_backfill_progress(backfill_run_id)
+    assert progress.total_count == 2
+    assert progress.pending_count == 1
+    assert progress.ok_count + progress.error_count == 1
+    assert progress.status == :running
+  end
+
+  defp backfill_window(backfill_run_id, run, window_key, status, now) do
+    BackfillWindow.new(%{
+      backfill_run_id: backfill_run_id,
+      pipeline_module: MyApp.Pipeline,
+      manifest_version_id: run.manifest_version_id,
+      window_kind: :day,
+      window_start_at: now,
+      window_end_at: DateTime.add(now, 86_400, :second),
+      timezone: "Etc/UTC",
+      window_key: window_key,
+      status: status,
+      attempt_count: 0,
+      created_at: now,
+      updated_at: now
+    })
+  end
+
+  defp asset_window_state(window, run, status) do
+    AssetWindowState.new(%{
+      asset_ref_module: MyApp.Asset,
+      asset_ref_name: :asset,
+      pipeline_module: window.pipeline_module,
+      manifest_version_id: run.manifest_version_id,
+      window_kind: window.window_kind,
+      window_start_at: window.window_start_at,
+      window_end_at: window.window_end_at,
+      timezone: window.timezone,
+      window_key: window.window_key,
+      status: status,
+      latest_run_id: window.latest_attempt_run_id,
+      latest_parent_run_id: window.backfill_run_id,
+      latest_success_run_id: if(status == :ok, do: window.latest_attempt_run_id),
+      updated_at: window.updated_at
+    })
   end
 
   defp assert_materialization_claim_contract(label, run) do

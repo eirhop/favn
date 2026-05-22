@@ -298,29 +298,33 @@ defmodule FavnOrchestrator.BackfillManager do
     now = DateTime.utc_now()
     coverage_baseline_id = Keyword.get(opts, :coverage_baseline_id)
 
-    Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
-      with {:ok, window} <-
-             BackfillWindow.new(%{
-               backfill_run_id: backfill_run_id,
-               pipeline_module: pipeline_module,
-               manifest_version_id: manifest_version_id,
-               coverage_baseline_id: coverage_baseline_id,
-               window_kind: anchor.kind,
-               window_start_at: anchor.start_at,
-               window_end_at: anchor.end_at,
-               timezone: anchor.timezone,
-               window_key: WindowKey.encode(anchor.key),
-               status: :pending,
-               attempt_count: 0,
-               created_at: now,
-               updated_at: now
-             }),
-           :ok <- Storage.put_backfill_window(window) do
-        {:cont, :ok}
-      else
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
+    with :ok <-
+           Enum.reduce_while(range.anchors, :ok, fn anchor, :ok ->
+             with {:ok, window} <-
+                    BackfillWindow.new(%{
+                      backfill_run_id: backfill_run_id,
+                      pipeline_module: pipeline_module,
+                      manifest_version_id: manifest_version_id,
+                      coverage_baseline_id: coverage_baseline_id,
+                      window_kind: anchor.kind,
+                      window_start_at: anchor.start_at,
+                      window_end_at: anchor.end_at,
+                      timezone: anchor.timezone,
+                      window_key: WindowKey.encode(anchor.key),
+                      status: :pending,
+                      attempt_count: 0,
+                      created_at: now,
+                      updated_at: now
+                    }),
+                  :ok <- Storage.put_backfill_window(window) do
+               {:cont, :ok}
+             else
+               {:error, _reason} = error -> {:halt, error}
+             end
+           end),
+         {:ok, _progress} <- Storage.rebuild_backfill_progress(backfill_run_id) do
+      :ok
+    end
   end
 
   defp submit_child_runs(%RunState{} = parent, pipeline_module, range, opts) do

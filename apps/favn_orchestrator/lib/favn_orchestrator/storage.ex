@@ -15,10 +15,13 @@ defmodule FavnOrchestrator.Storage do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunState
+
+  @type freshness_state_key :: StorageAdapter.freshness_state_key()
 
   @spec child_specs() :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
   @spec child_specs(RuntimeConfig.t()) :: {:ok, [Supervisor.child_spec()]} | {:error, term()}
@@ -345,6 +348,25 @@ defmodule FavnOrchestrator.Storage do
     end)
   end
 
+  @spec apply_backfill_child_projection(BackfillWindow.t(), [AssetWindowState.t()]) ::
+          {:ok, BackfillProgress.t()} | {:error, term()}
+  def apply_backfill_child_projection(%BackfillWindow{} = window, asset_window_states)
+      when is_list(asset_window_states) do
+    adapter_call(fn adapter, opts ->
+      adapter.apply_backfill_child_projection(window, asset_window_states, opts)
+    end)
+  end
+
+  @spec get_backfill_progress(String.t()) :: {:ok, BackfillProgress.t()} | {:error, term()}
+  def get_backfill_progress(backfill_run_id) when is_binary(backfill_run_id) do
+    adapter_call(fn adapter, opts -> adapter.get_backfill_progress(backfill_run_id, opts) end)
+  end
+
+  @spec rebuild_backfill_progress(String.t()) :: {:ok, BackfillProgress.t()} | {:error, term()}
+  def rebuild_backfill_progress(backfill_run_id) when is_binary(backfill_run_id) do
+    adapter_call(fn adapter, opts -> adapter.rebuild_backfill_progress(backfill_run_id, opts) end)
+  end
+
   @spec put_asset_window_state(AssetWindowState.t()) :: :ok | {:error, term()}
   def put_asset_window_state(%AssetWindowState{} = state) do
     adapter_call(fn adapter, opts -> adapter.put_asset_window_state(state, opts) end)
@@ -385,6 +407,14 @@ defmodule FavnOrchestrator.Storage do
       [asset_ref_module, asset_ref_name, freshness_key],
       :asset_freshness_state_not_supported
     )
+  end
+
+  @spec get_asset_freshness_states_by_keys([freshness_state_key()]) ::
+          {:ok, %{freshness_state_key() => AssetFreshnessState.t()}} | {:error, term()}
+  def get_asset_freshness_states_by_keys(keys) when is_list(keys) do
+    with {:ok, keys} <- normalize_freshness_state_keys(keys) do
+      adapter_call(fn adapter, opts -> adapter.get_asset_freshness_states_by_keys(keys, opts) end)
+    end
   end
 
   @spec list_asset_freshness_states(keyword()) ::
@@ -589,6 +619,22 @@ defmodule FavnOrchestrator.Storage do
     case Keyword.get(opts, :limit) do
       limit when is_integer(limit) and limit > 0 -> Enum.take(events, limit)
       _other -> events
+    end
+  end
+
+  defp normalize_freshness_state_keys(keys) do
+    keys
+    |> Enum.reduce_while({:ok, MapSet.new()}, fn
+      {module, name, freshness_key} = key, {:ok, acc}
+      when is_atom(module) and is_atom(name) and is_binary(freshness_key) ->
+        {:cont, {:ok, MapSet.put(acc, key)}}
+
+      key, {:ok, _acc} ->
+        {:halt, {:error, {:invalid_freshness_state_key, key}}}
+    end)
+    |> case do
+      {:ok, set} -> {:ok, MapSet.to_list(set)}
+      {:error, reason} -> {:error, reason}
     end
   end
 

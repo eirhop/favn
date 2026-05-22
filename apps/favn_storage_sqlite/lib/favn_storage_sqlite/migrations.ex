@@ -5,6 +5,7 @@ defmodule FavnStorageSqlite.Migrations do
   alias FavnStorageSqlite.Migrations.AddAuthState
   alias FavnStorageSqlite.Migrations.AddAssetFreshnessState
   alias FavnStorageSqlite.Migrations.AddBackfillState
+  alias FavnStorageSqlite.Migrations.AddBackfillProgress
   alias FavnStorageSqlite.Migrations.AddIdempotencyRecords
   alias FavnStorageSqlite.Migrations.AddExecutionLeases
   alias FavnStorageSqlite.Migrations.AddLogEntries
@@ -25,7 +26,8 @@ defmodule FavnStorageSqlite.Migrations do
     {20_260_510_100_000, AddLogEntries},
     {20_260_520_100_000, AddExecutionLeases},
     {20_260_521_100_000, AddMaterializationClaims},
-    {20_260_521_200_000, AddRunGroupQueryColumns}
+    {20_260_521_200_000, AddRunGroupQueryColumns},
+    {20_260_522_100_000, AddBackfillProgress}
   ]
   @required_tables [
     "favn_manifest_versions",
@@ -35,6 +37,7 @@ defmodule FavnStorageSqlite.Migrations do
     "favn_scheduler_cursors",
     "favn_pipeline_coverage_baselines",
     "favn_backfill_windows",
+    "favn_backfill_progress",
     "favn_asset_window_states",
     "favn_asset_freshness_states",
     "favn_auth_actors",

@@ -11,12 +11,14 @@ defmodule Favn.Storage.Adapter.Postgres do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage.Backfill.AssetWindowStateCodec
   alias FavnOrchestrator.Storage.Backfill.BackfillWindowCodec
   alias FavnOrchestrator.Storage.Backfill.CoverageBaselineCodec
+  alias FavnOrchestrator.Storage.Backfill.ProgressCodec
   alias FavnOrchestrator.Storage.ExecutionLeaseCodec
   alias FavnOrchestrator.Storage.Freshness.AssetFreshnessStateCodec
   alias FavnOrchestrator.Storage.JsonSafe
@@ -756,6 +758,44 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
+  def apply_backfill_child_projection(%BackfillWindow{} = window, asset_window_states, opts)
+      when is_list(asset_window_states) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      repo.transact(fn ->
+        with {:ok, old_status} <- lock_and_fetch_backfill_window_status(repo, window),
+             :ok <- put_backfill_window(window, opts),
+             :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)),
+             {:ok, progress} <-
+               upsert_backfill_progress_after_window_change(repo, window, old_status) do
+          {:ok, progress}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+      |> case do
+        {:ok, %BackfillProgress{} = progress} -> {:ok, progress}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  @impl true
+  def get_backfill_progress(backfill_run_id, opts)
+      when is_binary(backfill_run_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      get_backfill_progress_with_repo(repo, backfill_run_id)
+    end
+  end
+
+  @impl true
+  def rebuild_backfill_progress(backfill_run_id, opts)
+      when is_binary(backfill_run_id) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      rebuild_backfill_progress_with_repo(repo, backfill_run_id)
+    end
+  end
+
+  @impl true
   def put_asset_window_state(%AssetWindowState{} = state, opts) when is_list(opts) do
     with {:ok, repo} <- resolve_repo(opts) do
       sql =
@@ -886,6 +926,21 @@ defmodule Favn.Storage.Adapter.Postgres do
   end
 
   @impl true
+  def get_asset_freshness_states_by_keys(keys, opts) when is_list(keys) and is_list(opts) do
+    with {:ok, repo} <- resolve_repo(opts) do
+      keys
+      |> Enum.uniq()
+      |> Enum.chunk_every(250)
+      |> Enum.reduce_while({:ok, %{}}, fn chunk, {:ok, acc} ->
+        case get_asset_freshness_state_key_chunk(repo, chunk) do
+          {:ok, rows} -> {:cont, {:ok, Map.merge(acc, rows)}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  @impl true
   def replace_backfill_read_models(
         scope,
         coverage_baselines,
@@ -913,9 +968,12 @@ defmodule Favn.Storage.Adapter.Postgres do
                  scope,
                  asset_window_state_filter_specs()
                ),
+             :ok <-
+               delete_scoped(repo, "favn_backfill_progress", [], backfill_progress_filter_specs()),
              :ok <- put_all(coverage_baselines, &put_coverage_baseline(&1, opts)),
              :ok <- put_all(backfill_windows, &put_backfill_window(&1, opts)),
-             :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)) do
+             :ok <- put_all(asset_window_states, &put_asset_window_state(&1, opts)),
+             :ok <- rebuild_all_backfill_progress(repo) do
           {:ok, :ok}
         else
           {:error, reason} -> repo.rollback(reason)
@@ -1058,6 +1116,23 @@ defmodule Favn.Storage.Adapter.Postgres do
     ]
   end
 
+  defp backfill_progress_params(%BackfillProgress{} = progress) do
+    [
+      progress.backfill_run_id,
+      progress.total_count,
+      progress.pending_count,
+      progress.running_count,
+      progress.ok_count,
+      progress.partial_count,
+      progress.error_count,
+      progress.cancelled_count,
+      progress.timed_out_count,
+      Atom.to_string(progress.status),
+      encode_backfill_progress(progress),
+      progress.updated_at
+    ]
+  end
+
   defp coverage_baseline_select do
     """
     SELECT record_payload
@@ -1119,6 +1194,13 @@ defmodule Favn.Storage.Adapter.Postgres do
       status: {"status", &Atom.to_string/1},
       coverage_baseline_id: {"coverage_baseline_id", & &1},
       manifest_version_id: {"manifest_version_id", & &1}
+    }
+  end
+
+  defp backfill_progress_filter_specs do
+    %{
+      backfill_run_id: {"backfill_run_id", & &1},
+      status: {"status", &Atom.to_string/1}
     }
   end
 
@@ -1292,6 +1374,154 @@ defmodule Favn.Storage.Adapter.Postgres do
 
   defp decode_asset_freshness_state_row([record_payload]),
     do: AssetFreshnessStateCodec.decode(record_payload)
+
+  defp decode_backfill_progress_row([record_payload]),
+    do: ProgressCodec.decode(record_payload)
+
+  defp get_asset_freshness_state_key_chunk(_repo, []), do: {:ok, %{}}
+
+  defp get_asset_freshness_state_key_chunk(repo, keys) do
+    clauses =
+      keys
+      |> Enum.with_index()
+      |> Enum.map(fn {_key, index} ->
+        base = index * 3
+
+        "(asset_ref_module = $#{base + 1} AND asset_ref_name = $#{base + 2} AND freshness_key = $#{base + 3})"
+      end)
+
+    params =
+      Enum.flat_map(keys, fn {module, name, freshness_key} ->
+        [Atom.to_string(module), Atom.to_string(name), freshness_key]
+      end)
+
+    sql = asset_freshness_state_select() <> "\nWHERE " <> Enum.join(clauses, " OR ")
+
+    with {:ok, states} <-
+           query_and_decode_rows(repo, sql, params, &decode_asset_freshness_state_row/1) do
+      {:ok,
+       Map.new(states, fn %AssetFreshnessState{} = state ->
+         {{state.asset_ref_module, state.asset_ref_name, state.freshness_key}, state}
+       end)}
+    end
+  end
+
+  defp lock_and_fetch_backfill_window_status(repo, %BackfillWindow{} = window) do
+    sql =
+      "SELECT status FROM favn_backfill_windows WHERE backfill_run_id = $1 AND pipeline_module = $2 AND window_key = $3 LIMIT 1 FOR UPDATE"
+
+    params = [window.backfill_run_id, Atom.to_string(window.pipeline_module), window.window_key]
+
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: [[status]]}} when is_binary(status) -> {:ok, String.to_existing_atom(status)}
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp get_backfill_progress_with_repo(repo, backfill_run_id) do
+    sql =
+      "SELECT record_payload FROM favn_backfill_progress WHERE backfill_run_id = $1 LIMIT 1 FOR UPDATE"
+
+    case SQL.query(repo, sql, [backfill_run_id]) do
+      {:ok, %{rows: [row]}} -> decode_backfill_progress_row(row)
+      {:ok, %{rows: []}} -> rebuild_backfill_progress_with_repo(repo, backfill_run_id)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp upsert_backfill_progress_after_window_change(repo, %BackfillWindow{} = window, old_status) do
+    case get_backfill_progress_with_repo(repo, window.backfill_run_id) do
+      {:ok, %BackfillProgress{} = progress} ->
+        with {:ok, next_progress} <-
+               BackfillProgress.apply_status_change(
+                 progress,
+                 old_status,
+                 window.status,
+                 DateTime.utc_now()
+               ),
+             :ok <- put_backfill_progress(repo, next_progress) do
+          {:ok, next_progress}
+        end
+
+      {:error, reason} ->
+        case reason do
+          {:stale_backfill_progress, _old_status, _new_status, _counts} ->
+            rebuild_backfill_progress_with_repo(repo, window.backfill_run_id)
+
+          _other ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp rebuild_backfill_progress_with_repo(repo, backfill_run_id) do
+    sql =
+      "SELECT status, COUNT(*) FROM favn_backfill_windows WHERE backfill_run_id = $1 GROUP BY status"
+
+    case SQL.query(repo, sql, [backfill_run_id]) do
+      {:ok, %{rows: rows}} ->
+        if rows == [] do
+          {:error, :not_found}
+        else
+          counts =
+            Map.new(rows, fn [status, count] -> {String.to_existing_atom(status), count} end)
+
+          with {:ok, progress} <-
+                 BackfillProgress.from_counts(backfill_run_id, counts, DateTime.utc_now()),
+               :ok <- put_backfill_progress(repo, progress) do
+            {:ok, progress}
+          end
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp rebuild_all_backfill_progress(repo) do
+    case SQL.query(repo, "SELECT DISTINCT backfill_run_id FROM favn_backfill_windows", []) do
+      {:ok, %{rows: rows}} ->
+        rows
+        |> Enum.map(fn [backfill_run_id] -> backfill_run_id end)
+        |> Enum.reduce_while(:ok, fn backfill_run_id, :ok ->
+          case rebuild_backfill_progress_with_repo(repo, backfill_run_id) do
+            {:ok, %BackfillProgress{}} -> {:cont, :ok}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp put_backfill_progress(repo, %BackfillProgress{} = progress) do
+    sql = """
+    INSERT INTO favn_backfill_progress (
+      backfill_run_id, total_count, pending_count, running_count, ok_count,
+      partial_count, error_count, cancelled_count, timed_out_count, status,
+      record_payload, updated_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    ON CONFLICT(backfill_run_id) DO UPDATE SET
+      total_count = EXCLUDED.total_count,
+      pending_count = EXCLUDED.pending_count,
+      running_count = EXCLUDED.running_count,
+      ok_count = EXCLUDED.ok_count,
+      partial_count = EXCLUDED.partial_count,
+      error_count = EXCLUDED.error_count,
+      cancelled_count = EXCLUDED.cancelled_count,
+      timed_out_count = EXCLUDED.timed_out_count,
+      status = EXCLUDED.status,
+      record_payload = EXCLUDED.record_payload,
+      updated_at = EXCLUDED.updated_at
+    """
+
+    case SQL.query(repo, sql, backfill_progress_params(progress)) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp decode_materialization_claim_row([record_payload]),
     do: MaterializationClaimCodec.decode(record_payload)
@@ -2488,6 +2718,16 @@ defmodule Favn.Storage.Adapter.Postgres do
 
       {:error, reason} ->
         raise ArgumentError, "invalid asset freshness state payload: #{inspect(reason)}"
+    end
+  end
+
+  defp encode_backfill_progress(%BackfillProgress{} = progress) do
+    case ProgressCodec.encode(progress) do
+      {:ok, payload} ->
+        payload
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid backfill progress payload: #{inspect(reason)}"
     end
   end
 

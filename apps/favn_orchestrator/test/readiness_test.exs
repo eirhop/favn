@@ -142,6 +142,15 @@ defmodule FavnOrchestrator.ReadinessTest do
     def list_backfill_windows(_filters, _opts), do: {:ok, []}
 
     @impl true
+    def apply_backfill_child_projection(_window, _states, _opts), do: {:error, :not_found}
+
+    @impl true
+    def get_backfill_progress(_backfill_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
+    def rebuild_backfill_progress(_backfill_run_id, _opts), do: {:error, :not_found}
+
+    @impl true
     def put_asset_window_state(_state, _opts), do: :ok
 
     @impl true
@@ -160,6 +169,9 @@ defmodule FavnOrchestrator.ReadinessTest do
 
     @impl true
     def list_asset_freshness_states(_filters, _opts), do: {:ok, []}
+
+    @impl true
+    def get_asset_freshness_states_by_keys(_keys, _opts), do: {:ok, %{}}
 
     @impl true
     def replace_backfill_read_models(_scope, _baselines, _windows, _states, _opts), do: :ok
