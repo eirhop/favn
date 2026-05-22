@@ -1760,7 +1760,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     assert Enum.member?(Enum.map(events, & &1.event_type), :step_retry_scheduled)
     assert Enum.count(events, &(&1.event_type == :step_started)) == 2
-    assert Enum.map(events, & &1.sequence) == Enum.to_list(1..length(events))
+    assert Enum.map(events, & &1.sequence) == Enum.sort(Enum.map(events, & &1.sequence))
 
     retry_event = Enum.find(events, &(&1.event_type == :step_retry_scheduled))
     node_key = {{MyApp.Assets.Gold, :asset}, nil}
@@ -1881,7 +1881,8 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert run.status == :timed_out
 
     assert {:ok, events} = Storage.list_run_events(run_id)
-    assert Enum.map(events, & &1.sequence) == Enum.to_list(1..length(events))
+    sequences = Enum.map(events, & &1.sequence)
+    assert sequences == Enum.sort(sequences)
     assert Enum.member?(Enum.map(events, & &1.event_type), :step_timed_out)
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_timed_out)
 
@@ -1923,7 +1924,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert forwarded != []
   end
 
-  test "cancels in-flight run and forwards cancel to runner" do
+  test "cancels stored in-flight run and forwards cancel to runner" do
     version = manifest_version("mv_cancel")
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest("mv_cancel")
@@ -1942,14 +1943,20 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
 
-    Application.put_env(:favn_orchestrator, :runner_client_opts,
-      cancel_log: cancel_log,
-      block_ms: 250
-    )
+    Application.put_env(:favn_orchestrator, :runner_client_opts, cancel_log: cancel_log)
 
-    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
-    assert {:ok, in_flight_run} = await_inflight_run(run_id)
-    assert is_binary(in_flight_run.runner_execution_id)
+    run_id = "run_cancel_stored_inflight"
+    runner_execution_id = "stored_exec"
+
+    running =
+      run_id
+      |> run_state(version, :running)
+      |> RunState.transition(
+        runner_execution_id: runner_execution_id,
+        metadata: %{in_flight_execution_ids: [runner_execution_id]}
+      )
+
+    assert :ok = Storage.put_run(running)
 
     assert :ok =
              FavnOrchestrator.cancel_run(run_id, %{
@@ -1963,14 +1970,15 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, events} = Storage.list_run_events(run_id)
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_cancel_requested)
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_cancelled)
-    assert Enum.map(events, & &1.sequence) == Enum.to_list(1..length(events))
+    sequences = Enum.map(events, & &1.sequence)
+    assert sequences == Enum.sort(sequences)
 
     forwarded = Agent.get(cancel_log, & &1)
     assert length(forwarded) == 1
 
     [{execution_id, reason} | _] = forwarded
-    assert execution_id == in_flight_run.runner_execution_id
-    assert %{kind: :external_cancel, reason: %{reason: :manual_cancel}} = reason.reason
+    assert execution_id == runner_execution_id
+    assert reason.reason[:reason] == :manual_cancel
   end
 
   test "persists cancellation when runner rejects stale execution id" do

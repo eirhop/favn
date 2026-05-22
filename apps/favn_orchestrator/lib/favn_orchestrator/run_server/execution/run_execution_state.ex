@@ -54,7 +54,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           retry_timers: %{optional(reference()) => timer_entry()},
           admission_timers: %{optional(reference()) => timer_entry()},
           accumulated_results: [term()],
-          sequential_refs: [{Favn.Ref.t(), non_neg_integer()}],
+          sequential_refs: [{Favn.Ref.t(), Favn.Plan.node_key(), non_neg_integer()}],
           sequential_index: non_neg_integer(),
           stage_groups: [{non_neg_integer(), [Favn.Plan.node_key()]}],
           stage_index: non_neg_integer(),

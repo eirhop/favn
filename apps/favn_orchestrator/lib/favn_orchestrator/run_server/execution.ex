@@ -254,14 +254,18 @@ defmodule FavnOrchestrator.RunServer.Execution do
          }
        )}
     else
-      {asset_ref, stage} = Enum.at(state.sequential_refs, state.sequential_index)
-      submit_sequential_attempt(state, asset_ref, stage, 1)
+      {asset_ref, node_key, stage} = Enum.at(state.sequential_refs, state.sequential_index)
+      submit_sequential_attempt(state, asset_ref, node_key, stage, 1)
     end
   end
 
-  defp submit_sequential_attempt(%RunExecutionState{} = state, asset_ref, stage, attempt) do
-    node_key = {asset_ref, nil}
-
+  defp submit_sequential_attempt(
+         %RunExecutionState{} = state,
+         asset_ref,
+         node_key,
+         stage,
+         attempt
+       ) do
     with :ok <- validate_runner_client(state.runner_client),
          :ok <- state.runner_client.register_manifest(state.version, state.runner_opts),
          {:ok, %{work: work} = lifecycle} <-
@@ -582,7 +586,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp resume_retry(%RunExecutionState{mode: :sequential} = state, retry) do
-    submit_sequential_attempt(state, retry.asset_ref, retry.stage, retry.next_attempt)
+    submit_sequential_attempt(
+      state,
+      retry.asset_ref,
+      retry.node_key,
+      retry.stage,
+      retry.next_attempt
+    )
   end
 
   defp resume_retry(%RunExecutionState{mode: :pipeline} = state, retry) do
@@ -695,7 +705,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
         state
         |> start_pipeline_awaits(entries)
-        |> after_pipeline_progress()
+        |> after_starting_pipeline_awaits(entries)
 
       {:error, failed_run, step_results, _attempted_node_keys} ->
         {:terminal,
@@ -810,7 +820,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
         %{state | run: next_run, stage_state: stage_state}
         |> start_pipeline_awaits(entries)
-        |> after_pipeline_progress()
+        |> after_starting_pipeline_awaits(entries)
 
       {:error, failed_run, step_results, _attempted_node_keys} ->
         {:terminal,
@@ -821,6 +831,17 @@ defmodule FavnOrchestrator.RunServer.Execution do
          )}
     end
   end
+
+  defp after_starting_pipeline_awaits(%RunExecutionState{} = state, [_ | _]) do
+    if state.stage_state.deferred_node_keys != [] and map_size(state.awaits) > 0 do
+      {:cont, %{state | status: :awaiting}}
+    else
+      after_pipeline_progress(state)
+    end
+  end
+
+  defp after_starting_pipeline_awaits(%RunExecutionState{} = state, []),
+    do: after_pipeline_progress(state)
 
   defp schedule_admission_retry(%RunExecutionState{} = state) do
     now = System.monotonic_time(:millisecond)
@@ -1803,12 +1824,15 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp asset_result_asset_step_id(%{"asset_step_id" => asset_step_id}), do: asset_step_id
   defp asset_result_asset_step_id(_result), do: nil
 
-  defp node_asset_ref(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
+  defp node_asset_ref(%Favn.Plan{nodes: nodes}, node_key) do
     case Map.fetch(nodes, node_key) do
       {:ok, node} -> node.ref
       :error -> elem(node_key, 0)
     end
   end
+
+  defp node_asset_ref(%RunState{plan: %Favn.Plan{} = plan}, node_key),
+    do: node_asset_ref(plan, node_key)
 
   defp node_window(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
     case Map.fetch(nodes, node_key) do
@@ -2177,15 +2201,31 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp execution_refs_with_stage(%RunState{submit_kind: :pipeline, plan: %Favn.Plan{} = plan}) do
-    plan.topo_order
+    plan.node_stages
     |> Enum.with_index()
-    |> Enum.map(fn {ref, fallback_stage} -> {ref, stage_from_plan(plan, ref, fallback_stage)} end)
+    |> Enum.flat_map(fn {node_keys, stage} ->
+      Enum.map(node_keys, fn node_key -> {node_asset_ref(plan, node_key), node_key, stage} end)
+    end)
   end
 
-  defp execution_refs_with_stage(%RunState{} = run_state), do: [{run_state.asset_ref, 0}]
+  defp execution_refs_with_stage(%RunState{plan: %Favn.Plan{} = plan} = run_state) do
+    node_keys =
+      case plan.target_node_keys do
+        [_ | _] = target_node_keys -> target_node_keys
+        _other -> [{run_state.asset_ref, nil}]
+      end
 
-  defp stage_from_plan(%Favn.Plan{nodes: nodes}, ref, fallback_stage) do
-    case Map.get(nodes, {ref, nil}) do
+    Enum.map(node_keys, fn node_key ->
+      asset_ref = node_asset_ref(plan, node_key)
+      {asset_ref, node_key, stage_from_plan(plan, node_key, 0)}
+    end)
+  end
+
+  defp execution_refs_with_stage(%RunState{} = run_state),
+    do: [{run_state.asset_ref, {run_state.asset_ref, nil}, 0}]
+
+  defp stage_from_plan(%Favn.Plan{nodes: nodes}, node_key, fallback_stage) do
+    case Map.get(nodes, node_key) do
       %{stage: stage} when is_integer(stage) and stage >= 0 -> stage
       _other -> fallback_stage
     end
