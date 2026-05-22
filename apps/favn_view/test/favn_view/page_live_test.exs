@@ -708,7 +708,9 @@ defmodule FavnView.PageLiveTest do
     })
   end
 
-  test "run asset range defaults visible refresh and child runs to missing", %{conn: conn} do
+  test "run asset range keeps operator refresh intent and child runs default to missing", %{
+    conn: conn
+  } do
     {:ok, view, _html} = live(conn, detail_path(:customer_orders_daily))
 
     open_run_config(view)
@@ -735,7 +737,7 @@ defmodule FavnView.PageLiveTest do
       }
     })
 
-    assert has_element?(view, ~s(input[name="run_config[refresh]"][value="missing"][checked]))
+    assert has_element?(view, ~s(input[name="run_config[refresh]"][value="auto"][checked]))
 
     view
     |> element(~s([data-testid="run-config-form"]))

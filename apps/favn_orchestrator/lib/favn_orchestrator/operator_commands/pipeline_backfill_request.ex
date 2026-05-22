@@ -1,0 +1,55 @@
+defmodule FavnOrchestrator.OperatorCommands.PipelineBackfillRequest do
+  @moduledoc """
+  Operator intent for submitting a manifest pipeline backfill.
+  """
+
+  alias Favn.Backfill.RangeRequest
+  alias FavnOrchestrator.OperatorCommands.Input
+
+  @type refresh_mode :: :auto | :missing | :force_all
+
+  @type t :: %__MODULE__{
+          refresh_mode: refresh_mode(),
+          range: RangeRequest.t(),
+          metadata: map() | nil,
+          coverage_baseline_id: String.t() | nil,
+          max_attempts: pos_integer() | nil,
+          retry_backoff_ms: non_neg_integer() | nil,
+          timeout_ms: non_neg_integer() | nil
+        }
+
+  defstruct refresh_mode: :auto,
+            range: nil,
+            metadata: nil,
+            coverage_baseline_id: nil,
+            max_attempts: nil,
+            retry_backoff_ms: nil,
+            timeout_ms: nil
+
+  @doc """
+  Normalizes map, keyword, or struct input into a pipeline backfill request.
+  """
+  @spec from_input(t() | map() | keyword()) :: {:ok, t()} | {:error, term()}
+  def from_input(%__MODULE__{} = request), do: {:ok, request}
+
+  def from_input(input) when is_map(input) or is_list(input) do
+    refresh_value = Input.field(input, :refresh_mode, Input.field(input, :refresh, :auto))
+    range_value = Input.field(input, :range, Input.field(input, :range_request))
+
+    with {:ok, refresh_mode} <- Input.pipeline_refresh_mode(refresh_value),
+         {:ok, range} <- Input.range(range_value) do
+      {:ok,
+       %__MODULE__{
+         refresh_mode: refresh_mode,
+         range: range,
+         metadata: Input.field(input, :metadata),
+         coverage_baseline_id: Input.field(input, :coverage_baseline_id),
+         max_attempts: Input.field(input, :max_attempts),
+         retry_backoff_ms: Input.field(input, :retry_backoff_ms),
+         timeout_ms: Input.field(input, :timeout_ms)
+       }}
+    end
+  end
+
+  def from_input(input), do: {:error, {:invalid_operator_pipeline_backfill_request, input}}
+end

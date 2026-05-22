@@ -88,7 +88,7 @@ defmodule FavnView.PipelineDetailLive do
              actor_context(socket),
              pipeline.manifest_version_id,
              pipeline.id,
-             %{range: Map.drop(config, [:refresh]), refresh: refresh_option(config.refresh)}
+             %{range: Map.drop(config, [:refresh]), refresh_mode: config.refresh}
            ) do
       {:noreply,
        socket
@@ -240,10 +240,6 @@ defmodule FavnView.PipelineDetailLive do
     }
   end
 
-  defp refresh_option("force"), do: :force
-  defp refresh_option("auto"), do: :auto
-  defp refresh_option(_refresh), do: :missing
-
   defp window_kind(nil), do: :month
 
   defp window_kind(window) do
@@ -394,6 +390,12 @@ defmodule FavnView.PipelineDetailLive do
 
   defp submit_error_label({:invalid_backfill_range_request, _value}),
     do: "Invalid backfill range."
+
+  defp submit_error_label({:invalid_operator_range, _value}),
+    do: "Invalid backfill range."
+
+  defp submit_error_label({:invalid_operator_refresh_mode, _value}),
+    do: "Refresh behavior is invalid."
 
   defp submit_error_label({:missing_window_request, kind}),
     do: "This #{kind} pipeline requires an explicit window request."

@@ -143,7 +143,7 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
                operator_context,
                "missing_manifest",
                "pipeline:missing",
-               []
+               valid_range_request()
              )
   end
 
@@ -211,4 +211,8 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
+
+  defp valid_range_request do
+    %{range: %{kind: "day", from: "2026-05-01", to: "2026-05-03", timezone: "Etc/UTC"}}
+  end
 end
