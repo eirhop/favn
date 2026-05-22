@@ -2,19 +2,28 @@
 
 Issue: #389
 
-Status: planning.
+Status: phase 1 contract extraction in PR #405; full message-driven execution
+state machine still pending.
 
 ## Goal
 
 Extract explicit orchestrator-owned runtime contracts for step attempts and
 in-flight runner work without changing observable run semantics in the first
-pass. The refactor should make submit, await, timeout, retry, cancellation,
-persistence conflict handling, admission cleanup, and materialization claim
-cleanup consistent between sequential and pipeline execution.
+pass. The full #389 refactor should make submit, await, timeout, retry,
+cancellation, persistence conflict handling, admission cleanup, and
+materialization claim cleanup consistent between sequential and pipeline
+execution.
 
 This follows `docs/refactor_review_standard.md`: expose real lifecycle
 contracts that already exist implicitly, do not split files for cosmetic
 reasons, and keep orchestrator control-plane behavior in `favn_orchestrator`.
+
+PR #405 is intentionally phase 1 only. It adds `StepAttemptLifecycle` and
+`RunWorkSet` seams and improves submit-failure cleanup, but it does not close
+#389 because `RunServer` still executes through a blocking callback stack. The
+remaining work is to make `RunServer` own execution as a message-driven state
+machine with explicit timers, monitors, await result messages, retry messages,
+admission retry messages, and cancellation handling.
 
 ## Current Baseline
 

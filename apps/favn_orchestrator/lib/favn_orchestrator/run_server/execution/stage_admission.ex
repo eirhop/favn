@@ -333,7 +333,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           {:error, :external_cancel} ->
             :ok = release_entry_lease(%{lease: ctx.lease})
             :ok = MaterializationClaims.fail(ctx.materialization_claim, :external_cancel)
-            :ok = release_entry_leases(ctx.acc)
+            :ok = cleanup_entries(ctx.current_run, ctx.acc, :external_cancel)
 
             cancelled =
               cancel_execution_ids(
@@ -356,7 +356,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
         :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
-        :ok = release_entry_leases(ctx.acc)
+        :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
 
         cancelled =
           cancel_execution_ids(
@@ -566,9 +566,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     end
   end
 
-  defp release_entry_leases(entries) when is_list(entries) do
-    Enum.each(entries, &release_entry_lease/1)
-    :ok
+  defp cleanup_entries(%RunState{} = run_state, entries, reason) when is_list(entries) do
+    run_state
+    |> RunWorkSet.from_entries(entries)
+    |> RunWorkSet.cleanup_all(reason)
   end
 
   defp release_entry_lease(entry), do: RunWorkSet.release_entry(entry)

@@ -900,6 +900,12 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert {:ok, stored} = Storage.get_run(run_state.id)
     assert stored.status == :error
+
+    first_claim_key =
+      materialization_claim(run_state, version, {first_ref, nil}, Key.latest()).claim_key
+
+    assert {:ok, %{status: status}} = Storage.get_materialization_claim(first_claim_key)
+    assert status in [:failed, "failed"]
   end
 
   test "actual upstream success refreshes downstream in same pipeline" do

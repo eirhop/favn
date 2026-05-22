@@ -244,8 +244,6 @@ defmodule FavnOrchestrator.RunManager do
                  TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
                    reason: reason
                  }) do
-            notify_active_run_server(state, run_id, reason)
-
             case forward_cancel_result(run, reason) do
               :ok ->
                 TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
@@ -823,15 +821,6 @@ defmodule FavnOrchestrator.RunManager do
       )
 
     {:ok, cancel_requested, cancelled}
-  end
-
-  defp notify_active_run_server(state, run_id, reason) do
-    case Map.get(state.run_pids, run_id) do
-      pid when is_pid(pid) -> send(pid, {:favn_run_cancel_requested, reason})
-      _other -> :ok
-    end
-
-    :ok
   end
 
   defp forward_cancel_result(%RunState{} = run, reason) do

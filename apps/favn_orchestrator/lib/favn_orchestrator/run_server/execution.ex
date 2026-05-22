@@ -741,10 +741,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
         :timeout ->
           timeout_deferred_stage_attempt(state)
-
-        {:cancelled, _reason} ->
-          {:error, Snapshots.cancelled_snapshot(state.run), state.results,
-           StageAttemptState.attempted_node_keys(state)}
       end
     else
       finalize_stage_attempt_state(state)
@@ -963,20 +959,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       receive do
         {:retry_stage_admission, ^retry_ref} -> :ok
-        {:favn_run_cancel_requested, reason} -> {:cancelled, reason}
       end
-    end
-  end
-
-  defp wait_for_retry_or_cancel(wait_ms) when not is_integer(wait_ms) or wait_ms <= 0, do: :ok
-
-  defp wait_for_retry_or_cancel(wait_ms) do
-    retry_ref = make_ref()
-    Process.send_after(self(), {:retry_step_attempt, retry_ref}, wait_ms)
-
-    receive do
-      {:retry_step_attempt, ^retry_ref} -> :ok
-      {:favn_run_cancel_requested, reason} -> {:cancelled, reason}
     end
   end
 
@@ -1598,10 +1581,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
            retry_backoff_ms: run_state.retry_backoff_ms
          }) do
       :ok ->
-        case wait_for_retry_or_cancel(run_state.retry_backoff_ms) do
-          :ok -> retrying
-          {:cancelled, _reason} -> Snapshots.cancelled_snapshot(retrying)
-        end
+        if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
+        retrying
 
       {:error, :external_cancel} ->
         Snapshots.cancelled_snapshot(retrying)
@@ -2266,10 +2247,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
                retry_backoff_ms: run_state.retry_backoff_ms
              }) do
           :ok ->
-            case wait_for_retry_or_cancel(run_state.retry_backoff_ms) do
-              :ok -> execute_ref_with_retry(retrying, version, asset_ref, stage, attempt + 1)
-              {:cancelled, _reason} -> Snapshots.cancelled_state(retrying)
-            end
+            if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
+
+            execute_ref_with_retry(retrying, version, asset_ref, stage, attempt + 1)
 
           {:error, :external_cancel} ->
             Snapshots.cancelled_state(run_state)

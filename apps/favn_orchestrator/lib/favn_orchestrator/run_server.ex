@@ -59,9 +59,4 @@ defmodule FavnOrchestrator.RunServer do
         {:stop, :normal, %{state | run_state: Snapshots.cancelled_snapshot(running)}}
     end
   end
-
-  @impl true
-  def handle_info({:favn_run_cancel_requested, _reason}, state) do
-    {:noreply, state}
-  end
 end
