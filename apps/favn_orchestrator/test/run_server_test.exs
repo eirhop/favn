@@ -1071,6 +1071,52 @@ defmodule FavnOrchestrator.RunServerTest do
     assert stored.status == :ok
   end
 
+  test "pipeline deferred admission uses one fixed timeout deadline" do
+    {:ok, submit_log} = Agent.start_link(fn -> [] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, submit_log: submit_log)
+
+    ref = {MyApp.Assets.PipelineAdmissionTimeout.Asset, :asset}
+    refs = [ref]
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_admission_timeout", refs)
+
+    run_state =
+      "run_pipeline_admission_timeout"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(
+        timeout_ms: 25,
+        metadata: %{pipeline_execution_policy: %{max_concurrency: 1}}
+      )
+
+    now = DateTime.utc_now()
+
+    assert {:ok, _lease} =
+             Storage.try_acquire_execution_lease(%{
+               lease_id: "#{run_state.id}:held",
+               run_id: run_state.id,
+               asset_step_id: "held",
+               scopes: [%{kind: :run, key: run_state.id, limit: 1}],
+               acquired_at: now,
+               expires_at: DateTime.add(now, 60_000, :millisecond)
+             })
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    monitor_ref = Process.monitor(pid)
+
+    assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :normal}, 3_500
+    assert Agent.get(submit_log, & &1) == []
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :timed_out
+    assert stored.error == :timeout
+
+    assert {:ok, []} = Storage.list_execution_leases()
+    assert {:ok, []} = Storage.list_materialization_claims()
+  end
+
   test "pipeline submit failure cancels admitted same-stage work with wrapped reason" do
     [first_ref, fail_ref] =
       Enum.map(1..2, fn index ->

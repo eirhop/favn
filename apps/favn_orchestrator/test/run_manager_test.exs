@@ -1004,7 +1004,9 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest("mv_active")
 
-    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset}, dependencies: :none)
+
     assert {:ok, run} = await_terminal_run(run_id)
     assert run.manifest_version_id == "mv_active"
   end
@@ -1319,7 +1321,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     Application.put_env(:favn_orchestrator, :runner_client_opts,
       cancel_log: cancel_log,
-      block_ms: 250
+      block_ms: 2_000
     )
 
     assert {:ok, run_id} =
@@ -1342,6 +1344,61 @@ defmodule FavnOrchestrator.RunManagerTest do
     forwarded = Agent.get(cancel_log, & &1)
     assert forwarded != []
     assert Enum.any?(forwarded, fn {execution_id, _reason} -> is_binary(execution_id) end)
+  end
+
+  test "public cancel of active run has one terminal cancellation outcome" do
+    version = manifest_version("mv_active_public_cancel")
+    assert :ok = FavnOrchestrator.register_manifest(version)
+    assert :ok = FavnOrchestrator.activate_manifest("mv_active_public_cancel")
+
+    {:ok, cancel_log} = Agent.start_link(fn -> [] end)
+
+    previous_client = Application.get_env(:favn_orchestrator, :runner_client)
+    previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
+
+    on_exit(fn ->
+      Application.put_env(:favn_orchestrator, :runner_client, previous_client)
+      Application.put_env(:favn_orchestrator, :runner_client_opts, previous_opts)
+
+      stop_agent(cancel_log)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSlowCancelableStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      cancel_log: cancel_log,
+      block_ms: 2_000
+    )
+
+    assert {:ok, run_id} =
+             FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset},
+               dependencies: :none
+             )
+
+    assert {:ok, _in_flight_run} = await_inflight_run(run_id)
+
+    assert :ok =
+             FavnOrchestrator.cancel_run(run_id, %{
+               requested_by: :operator,
+               reason: :manual_cancel_active
+             })
+
+    assert {:ok, cancelled} = await_cancelled_run(run_id)
+    assert cancelled.status == :cancelled
+
+    assert cancelled.error ==
+             {:cancelled, %{requested_by: :operator, reason: :manual_cancel_active}}
+
+    assert [{execution_id, _reason}] = await_cancel_log(cancel_log, 1)
+    assert is_binary(execution_id)
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    event_types = Enum.map(events, & &1.event_type)
+
+    assert Enum.count(event_types, &(&1 == :run_cancel_requested)) == 1
+    assert Enum.count(event_types, &(&1 == :run_cancelled)) == 1
+    refute :run_finished in event_types
+    refute :run_failed in event_types
   end
 
   test "cancels DTO-restored run and forwards restored in-flight execution ids" do
@@ -1828,7 +1885,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert Enum.member?(Enum.map(events, & &1.event_type), :step_timed_out)
     assert Enum.member?(Enum.map(events, & &1.event_type), :run_timed_out)
 
-    forwarded = Agent.get(cancel_log, & &1)
+    forwarded = await_cancel_log(cancel_log, 1)
     assert length(forwarded) == 1
   end
 
@@ -1913,7 +1970,7 @@ defmodule FavnOrchestrator.RunManagerTest do
 
     [{execution_id, reason} | _] = forwarded
     assert execution_id == in_flight_run.runner_execution_id
-    assert reason.reason[:reason] == :manual_cancel
+    assert %{kind: :external_cancel, reason: %{reason: :manual_cancel}} = reason.reason
   end
 
   test "persists cancellation when runner rejects stale execution id" do
@@ -1932,8 +1989,17 @@ defmodule FavnOrchestrator.RunManagerTest do
     Application.put_env(:favn_orchestrator, :runner_client, RunnerClientStaleCancelStub)
     Application.put_env(:favn_orchestrator, :runner_client_opts, block_ms: 250)
 
-    assert {:ok, run_id} = FavnOrchestrator.submit_asset_run({MyApp.Assets.Gold, :asset})
-    assert {:ok, _in_flight_run} = await_inflight_run(run_id)
+    run_id = "run_cancel_stale_execution"
+
+    running =
+      run_id
+      |> run_state(version, :running)
+      |> RunState.transition(
+        runner_execution_id: "stale_exec",
+        metadata: %{in_flight_execution_ids: ["stale_exec"]}
+      )
+
+    assert :ok = Storage.put_run(running)
 
     assert :ok =
              FavnOrchestrator.cancel_run(run_id, %{
@@ -2442,6 +2508,21 @@ defmodule FavnOrchestrator.RunManagerTest do
   end
 
   defp await_cancelled_run(_run_id, 0), do: {:error, :timeout_waiting_for_cancelled_state}
+
+  defp await_cancel_log(agent, expected_count, attempts \\ 40)
+
+  defp await_cancel_log(agent, expected_count, attempts) when attempts > 0 do
+    entries = Agent.get(agent, & &1)
+
+    if length(entries) >= expected_count do
+      entries
+    else
+      Process.sleep(15)
+      await_cancel_log(agent, expected_count, attempts - 1)
+    end
+  end
+
+  defp await_cancel_log(agent, _expected_count, 0), do: Agent.get(agent, & &1)
 
   defp collect_run_events(count, timeout \\ 2_000) when count > 0 do
     Enum.map(1..count, fn _index ->

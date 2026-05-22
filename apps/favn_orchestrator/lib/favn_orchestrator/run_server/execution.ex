@@ -197,8 +197,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   def handle_event(%RunExecutionState{} = state, {:stage_admission_retry, timer_ref}) do
     case RunExecutionState.pop_admission_timer(state, timer_ref) do
-      {nil, state} -> {:cont, state}
-      {%{payload: _retry}, state} -> after_pipeline_progress(state)
+      {nil, state} ->
+        {:cont, state}
+
+      {%{payload: _retry}, state} when map_size(state.awaits) > 0 ->
+        {:cont, %{state | status: :awaiting}}
+
+      {%{payload: _retry}, state} ->
+        after_pipeline_progress(state)
     end
   end
 
@@ -683,6 +689,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
           | run: run_after_submit,
             stage_state: stage_state,
             stage_attempt: attempt,
+            stage_admission_deadline_ms: stage_admission_deadline(run_after_submit.timeout_ms),
             stage_executed_node_keys: StageAttemptState.attempted_node_keys(stage_state)
         }
 
@@ -817,7 +824,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp schedule_admission_retry(%RunExecutionState{} = state) do
     now = System.monotonic_time(:millisecond)
-    deadline = stage_admission_deadline(state.run.timeout_ms)
+    deadline = state.stage_admission_deadline_ms || stage_admission_deadline(state.run.timeout_ms)
     wait_ms = min(@stage_admission_retry_ms, max(deadline - now, 0))
 
     if wait_ms == 0 do
