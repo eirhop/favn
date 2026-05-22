@@ -1813,12 +1813,17 @@ defmodule Favn.Storage.Adapter.SQLite do
 
     case SQL.query(repo, sql, [backfill_run_id]) do
       {:ok, %{rows: rows}} ->
-        counts = Map.new(rows, fn [status, count] -> {String.to_existing_atom(status), count} end)
+        if rows == [] do
+          {:error, :not_found}
+        else
+          counts =
+            Map.new(rows, fn [status, count] -> {String.to_existing_atom(status), count} end)
 
-        with {:ok, progress} <-
-               BackfillProgress.from_counts(backfill_run_id, counts, DateTime.utc_now()),
-             :ok <- put_backfill_progress(repo, progress) do
-          {:ok, progress}
+          with {:ok, progress} <-
+                 BackfillProgress.from_counts(backfill_run_id, counts, DateTime.utc_now()),
+               :ok <- put_backfill_progress(repo, progress) do
+            {:ok, progress}
+          end
         end
 
       {:error, reason} ->

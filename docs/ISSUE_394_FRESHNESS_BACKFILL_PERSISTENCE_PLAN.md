@@ -152,7 +152,8 @@ Contract rules:
   the same transaction before returning.
 - `get_backfill_progress/2` may lazily rebuild a missing aggregate row from
   existing windows. This is the compatibility path for databases upgraded before
-  aggregate rows existed.
+  aggregate rows existed. Unknown backfill ids with no window rows should return
+  `{:error, :not_found}` rather than creating zero-window progress truth.
 - `rebuild_backfill_progress/2` recomputes aggregate truth from
   `favn_backfill_windows` and is the explicit repair path for migrations,
   manual repair, and consistency checks.

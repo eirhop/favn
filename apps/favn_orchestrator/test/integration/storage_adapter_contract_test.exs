@@ -429,6 +429,8 @@ defmodule FavnOrchestrator.Integration.StorageAdapterContractTest do
     now = DateTime.utc_now()
     backfill_run_id = "backfill_progress_#{label}_#{System.unique_integer([:positive])}"
 
+    assert {:error, :not_found} = Storage.get_backfill_progress("#{backfill_run_id}_missing")
+
     assert {:ok, first} = backfill_window(backfill_run_id, run, "window-1", :pending, now)
     assert {:ok, second} = backfill_window(backfill_run_id, run, "window-2", :pending, now)
 

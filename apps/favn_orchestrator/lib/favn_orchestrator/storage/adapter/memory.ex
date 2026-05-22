@@ -2014,7 +2014,10 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       |> Map.values()
       |> Enum.filter(&(&1.backfill_run_id == backfill_run_id))
 
-    BackfillProgress.from_windows(backfill_run_id, windows, DateTime.utc_now())
+    case windows do
+      [] -> {:error, :not_found}
+      windows -> BackfillProgress.from_windows(backfill_run_id, windows, DateTime.utc_now())
+    end
   end
 
   defp rebuild_all_progress(progress, backfill_windows) do

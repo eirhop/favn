@@ -282,6 +282,53 @@ defmodule FavnOrchestrator.RunServerTest do
     end
   end
 
+  defmodule FreshnessLookupFailingStorageAdapter do
+    @moduledoc false
+    @behaviour Favn.Storage.Adapter
+
+    defdelegate child_spec(opts), to: Memory
+    defdelegate put_manifest_version(version, opts), to: Memory
+    defdelegate get_manifest_version(id, opts), to: Memory
+    defdelegate get_manifest_version_by_content_hash(hash, opts), to: Memory
+    defdelegate list_manifest_versions(opts), to: Memory
+    defdelegate set_active_manifest_version(id, opts), to: Memory
+    defdelegate get_active_manifest_version(opts), to: Memory
+    defdelegate put_run(run, opts), to: Memory
+    defdelegate get_run(id, opts), to: Memory
+    defdelegate list_runs(run_opts, opts), to: Memory
+    defdelegate persist_run_transition(run, event, opts), to: Memory
+    defdelegate append_run_event(run_id, event, opts), to: Memory
+    defdelegate list_run_events(run_id, opts), to: Memory
+    defdelegate list_global_run_events(filters, opts), to: Memory
+    defdelegate try_acquire_execution_lease(lease, opts), to: Memory
+    defdelegate release_execution_lease(lease_id, opts), to: Memory
+    defdelegate expire_execution_leases(now, opts), to: Memory
+    defdelegate list_execution_leases(opts), to: Memory
+    defdelegate persist_log_entries(entries, opts), to: Memory
+    defdelegate list_logs(filter, opts, adapter_opts), to: Memory
+    defdelegate replay_logs_after(cursor, filter, opts, adapter_opts), to: Memory
+    defdelegate put_scheduler_state(key, state, opts), to: Memory
+    defdelegate get_scheduler_state(key, opts), to: Memory
+    defdelegate put_coverage_baseline(baseline, opts), to: Memory
+    defdelegate get_coverage_baseline(id, opts), to: Memory
+    defdelegate list_coverage_baselines(filters, opts), to: Memory
+    defdelegate put_backfill_window(window, opts), to: Memory
+    defdelegate get_backfill_window(backfill_id, module, window_key, opts), to: Memory
+    defdelegate list_backfill_windows(filters, opts), to: Memory
+    defdelegate apply_backfill_child_projection(window, states, opts), to: Memory
+    defdelegate get_backfill_progress(backfill_id, opts), to: Memory
+    defdelegate rebuild_backfill_progress(backfill_id, opts), to: Memory
+    defdelegate put_asset_window_state(state, opts), to: Memory
+    defdelegate get_asset_window_state(module, name, freshness_key, opts), to: Memory
+    defdelegate list_asset_window_states(filters, opts), to: Memory
+
+    def get_asset_freshness_states_by_keys(_keys, _opts),
+      do: {:error, :freshness_lookup_unavailable}
+
+    defdelegate replace_backfill_read_models(filters, baselines, windows, states, opts),
+      to: Memory
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -463,6 +510,45 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert {:ok, events} = Storage.list_run_events(run_state.id)
     assert Enum.map(events, & &1.event_type) == [:run_started, :step_skipped_fresh, :run_finished]
+  end
+
+  test "pipeline marks run as failed when prior freshness lookup fails" do
+    previous_adapter = Application.get_env(:favn_orchestrator, :storage_adapter)
+    previous_opts = Application.get_env(:favn_orchestrator, :storage_adapter_opts)
+
+    on_exit(fn ->
+      restore_env(:favn_orchestrator, :storage_adapter, previous_adapter)
+      restore_env(:favn_orchestrator, :storage_adapter_opts, previous_opts)
+    end)
+
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientRecordingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, [])
+
+    Application.put_env(
+      :favn_orchestrator,
+      :storage_adapter,
+      FreshnessLookupFailingStorageAdapter
+    )
+
+    Application.put_env(:favn_orchestrator, :storage_adapter_opts, [])
+
+    version = manifest_version("mv_pipeline_freshness_lookup_failure")
+    plan = single_node_plan({MyApp.Assets.Gold, :asset}, [])
+
+    run_state =
+      pipeline_run_state("run_pipeline_freshness_lookup_failure", version, plan, [
+        {MyApp.Assets.Gold, :asset}
+      ])
+
+    assert :ok = Storage.put_run(run_state)
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+
+    ref = Process.monitor(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :error
+    assert stored.error == {:freshness_state_lookup_failed, :freshness_lookup_unavailable}
   end
 
   test "failed attempt updates latest attempt without replacing prior freshness success" do
@@ -1389,4 +1475,7 @@ defmodule FavnOrchestrator.RunServerTest do
         :ok
     end
   end
+
+  defp restore_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_env(app, key, value), do: Application.put_env(app, key, value)
 end
