@@ -15,7 +15,12 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
   setup do
     {:ok, tracker} = Agent.start_link(fn -> %{disconnects: 0} end)
     pool_name = Module.concat(__MODULE__, "Pool#{System.unique_integer([:positive])}")
-    pool_pid = start_supervised!({SessionPool, name: pool_name})
+
+    pool_pid =
+      start_supervised!(%{
+        id: pool_name,
+        start: {SessionPool, :start_link, [[name: pool_name]]}
+      })
 
     on_exit(fn -> if Process.alive?(tracker), do: Agent.stop(tracker) end)
 
@@ -125,7 +130,7 @@ defmodule FavnSQLRuntime.SQLSessionPoolTest do
     assert :ok = SessionPool.checkin(idle, :ok, name: context.pool_name)
     assert :ok = SessionPool.track_checkout(active, name: context.pool_name)
 
-    GenServer.stop(context.pool_pid, :shutdown)
+    assert :ok = stop_supervised(context.pool_name)
 
     assert eventually(fn -> Agent.get(context.tracker, & &1.disconnects) == 2 end)
   end
