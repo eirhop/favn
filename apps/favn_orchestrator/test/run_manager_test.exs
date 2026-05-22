@@ -1300,7 +1300,7 @@ defmodule FavnOrchestrator.RunManagerTest do
     refute Map.has_key?(second_submit, :runner_metadata)
   end
 
-  test "cancels multi-target pipeline run and forwards all in-flight execution ids" do
+  test "cancels active multi-target pipeline run through the active run server" do
     version = manifest_version("mv_pipeline_cancel_multi")
     assert :ok = FavnOrchestrator.register_manifest(version)
     assert :ok = FavnOrchestrator.activate_manifest("mv_pipeline_cancel_multi")
@@ -1341,9 +1341,16 @@ defmodule FavnOrchestrator.RunManagerTest do
     assert {:ok, cancelled} = await_cancelled_run(run_id)
     assert cancelled.status == :cancelled
 
-    forwarded = Agent.get(cancel_log, & &1)
-    assert forwarded != []
-    assert Enum.any?(forwarded, fn {execution_id, _reason} -> is_binary(execution_id) end)
+    assert cancelled.error ==
+             {:cancelled, %{requested_by: :operator, reason: :manual_cancel_pipeline}}
+
+    assert {:ok, events} = Storage.list_run_events(run_id)
+    event_types = Enum.map(events, & &1.event_type)
+
+    assert Enum.count(event_types, &(&1 == :run_cancel_requested)) == 1
+    assert Enum.count(event_types, &(&1 == :run_cancelled)) == 1
+    refute :run_finished in event_types
+    refute :run_failed in event_types
   end
 
   test "public cancel of active run has one terminal cancellation outcome" do
