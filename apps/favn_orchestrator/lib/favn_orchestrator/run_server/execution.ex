@@ -76,14 +76,26 @@ defmodule FavnOrchestrator.RunServer.Execution do
           :ok ->
             case runner_client.register_manifest(version, runner_opts) do
               :ok ->
-                {:ok,
-                 RunExecutionState.new(run_state, version,
-                   mode: :pipeline,
-                   runner_client: runner_client,
-                   runner_opts: runner_opts,
-                   stage_groups: pipeline_stage_groups(run_state),
-                   freshness_context: initial_freshness_context(run_state, version)
-                 )}
+                case initial_freshness_context(run_state, version) do
+                  {:ok, freshness_context} ->
+                    {:ok,
+                     RunExecutionState.new(run_state, version,
+                       mode: :pipeline,
+                       runner_client: runner_client,
+                       runner_opts: runner_opts,
+                       stage_groups: pipeline_stage_groups(run_state),
+                       freshness_context: freshness_context
+                     )}
+
+                  {:error, reason} ->
+                    {:terminal,
+                     Snapshots.snapshot_update(run_state,
+                       status: :error,
+                       error: reason,
+                       runner_execution_id: nil,
+                       result: pipeline_result(run_state, :error, [])
+                     )}
+                end
 
               {:error, reason} ->
                 {:terminal,
