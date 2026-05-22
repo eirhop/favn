@@ -67,6 +67,8 @@ If only the success path is clear, the design is not ready.
 ## BEAM/OTP Quality
 
 - Prefer messages, monitors, timers, supervision, and explicit process ownership over polling, sleeps, hidden spawned processes, or blocking GenServer calls.
+- For lifecycle work, check whether the owning GenServer can return to its mailbox while waiting. A helper that wraps `Process.send_after/3` with a local `receive` is still blocking; prefer storing explicit state and continuing through `handle_info/2` messages.
+- Treat responsiveness as behavior: retry waits, awaits, admission waits, and cancellation should be event/message-driven when the process owns runtime lifecycle state.
 - Long-lived processes need a supervision or ownership story.
 - Cancellation and cleanup should be idempotent and centralized around the owning contract.
 - Admission, concurrency limits, and backpressure should be explicit when runtime capacity is bounded.

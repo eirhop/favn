@@ -244,20 +244,33 @@ defmodule FavnOrchestrator.RunManager do
                  TransitionWriter.persist_transition(cancel_requested, :run_cancel_requested, %{
                    reason: reason
                  }) do
-            case forward_cancel_result(run, reason) do
-              :ok ->
-                TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
+            if active_run_server?(state, run_id) do
+              case TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
+                     reason: reason
+                   }) do
+                :ok ->
+                  notify_active_run_server(state, run_id, reason)
+                  :ok
 
-              {:recoverable, cancel_error} ->
-                cancelled = maybe_put_cancel_forward_error(cancelled, cancel_error)
+                error ->
+                  error
+              end
+            else
+              case forward_cancel_result(run, reason) do
+                :ok ->
+                  TransitionWriter.persist_transition(cancelled, :run_cancelled, %{reason: reason})
 
-                TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
-                  reason: reason,
-                  cancel_forward_error: cancel_error
-                })
+                {:recoverable, cancel_error} ->
+                  cancelled = maybe_put_cancel_forward_error(cancelled, cancel_error)
 
-              {:error, cancel_error} ->
-                {:error, {:runner_cancel_failed, cancel_error}}
+                  TransitionWriter.persist_transition(cancelled, :run_cancelled, %{
+                    reason: reason,
+                    cancel_forward_error: cancel_error
+                  })
+
+                {:error, cancel_error} ->
+                  {:error, {:runner_cancel_failed, cancel_error}}
+              end
             end
           end
 
@@ -821,6 +834,22 @@ defmodule FavnOrchestrator.RunManager do
       )
 
     {:ok, cancel_requested, cancelled}
+  end
+
+  defp active_run_server?(state, run_id) do
+    case Map.get(state.run_pids, run_id) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      _other -> false
+    end
+  end
+
+  defp notify_active_run_server(state, run_id, reason) do
+    case Map.get(state.run_pids, run_id) do
+      pid when is_pid(pid) -> send(pid, {:favn_run_cancel_requested, reason})
+      _other -> :ok
+    end
+
+    :ok
   end
 
   defp forward_cancel_result(%RunState{} = run, reason) do

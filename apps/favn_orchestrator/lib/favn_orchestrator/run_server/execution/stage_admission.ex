@@ -10,13 +10,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
-  alias Favn.Plan.NodeIdentity
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.AssetStepIdentity
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.Freshness.StateWriter
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.RunServer.Cancellation
+  alias FavnOrchestrator.RunServer.Execution.RunWorkSet
+  alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -332,7 +333,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           {:error, :external_cancel} ->
             :ok = release_entry_lease(%{lease: ctx.lease})
             :ok = MaterializationClaims.fail(ctx.materialization_claim, :external_cancel)
-            :ok = release_entry_leases(ctx.acc)
+            :ok = cleanup_entries(ctx.current_run, ctx.acc, :external_cancel)
 
             cancelled =
               cancel_execution_ids(
@@ -355,7 +356,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:error, reason} ->
         :ok = release_entry_lease(%{lease: ctx.lease})
         :ok = MaterializationClaims.fail(ctx.materialization_claim, reason)
-        :ok = release_entry_leases(ctx.acc)
+        :ok = cleanup_entries(ctx.current_run, ctx.acc, reason)
 
         cancelled =
           cancel_execution_ids(
@@ -516,32 +517,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp existing_node_results(_run_state), do: []
 
   defp stage_work(%RunState{} = run_state, %Version{} = version, node_key, stage, attempt) do
-    node = Map.fetch!(run_state.plan.nodes, node_key)
-    asset_ref = node.ref
-    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
+    {:ok, %{work: work}} =
+      run_state
+      |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
+      |> StepAttemptLifecycle.build_work()
 
-    {:ok, node_identity} =
-      NodeIdentity.from_plan(version.manifest_version_id, run_state.plan, node_key)
-
-    %RunnerWork{
-      run_id: run_state.id,
-      manifest_version_id: node_identity.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      node_identity: node_identity,
-      asset_ref: asset_ref,
-      asset_refs: [asset_ref],
-      planned_asset_refs: node_identity.planned_asset_refs,
-      attempt: attempt,
-      max_attempts: run_state.max_attempts,
-      asset_step_id: asset_step_id,
-      stage: stage,
-      params: run_state.params,
-      trigger:
-        run_state.trigger
-        |> Map.put(:window, node_identity.window)
-        |> maybe_put_pipeline_trigger(Map.get(run_state.metadata, :pipeline_context)),
-      metadata: work_metadata(run_state.metadata)
-    }
+    work
   end
 
   defp effective_execution_pool(%RunState{} = run_state, node_key) do
@@ -564,13 +545,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp pipeline_default_execution_pool(%RunState{}), do: nil
 
-  defp maybe_put_pipeline_trigger(trigger, pipeline_context) when is_map(pipeline_context),
-    do: Map.put(trigger, :pipeline, pipeline_context)
-
-  defp maybe_put_pipeline_trigger(trigger, _pipeline_context), do: trigger
-
-  defp work_metadata(metadata) when is_map(metadata), do: Map.delete(metadata, :runner_metadata)
-
   defp with_inflight_execution(%RunState{} = run_state, execution_id, metadata) do
     ids =
       run_state
@@ -592,20 +566,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     end
   end
 
-  defp release_entry_leases(entries) when is_list(entries) do
-    Enum.each(entries, &release_entry_lease/1)
-    :ok
+  defp cleanup_entries(%RunState{} = run_state, entries, reason) when is_list(entries) do
+    run_state
+    |> RunWorkSet.from_entries(entries)
+    |> RunWorkSet.cleanup_all(reason)
   end
 
-  defp release_entry_lease(%{lease: lease}), do: release_entry_lease(lease)
-  defp release_entry_lease(nil), do: :ok
-
-  defp release_entry_lease(lease) when is_map(lease) do
-    case ExecutionAdmission.release(lease) do
-      :ok -> :ok
-      {:error, _reason} -> :ok
-    end
-  end
+  defp release_entry_lease(entry), do: RunWorkSet.release_entry(entry)
 
   defp cancel_execution_ids(
          %RunState{} = run_state,
