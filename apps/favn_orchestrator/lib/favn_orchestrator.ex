@@ -30,6 +30,10 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.Logs
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
+  alias FavnOrchestrator.OperatorCommands.AssetRunRequest
+  alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
+  alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RefreshPolicy
@@ -521,11 +525,16 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
-  Submits one asset run for an authenticated operator actor context.
+  Submits one asset run command for an authenticated operator actor context.
 
-  This is the same-BEAM browser boundary for LiveView operator actions. Missing
-  or incomplete actor/session context returns `{:error, :unauthenticated}`;
-  authenticated actors without the operator role return `{:error, :forbidden}`.
+  This is the same-BEAM boundary for browser, API, and CLI operator actions.
+  Callers pass operator intent, such as dependency mode, refresh mode, and
+  selected timeline window. The orchestrator validates that intent and translates
+  it into runtime submit options after resolving the manifest target.
+
+  Missing or incomplete actor/session context returns `{:error,
+  :unauthenticated}`; authenticated actors without the operator role return
+  `{:error, :forbidden}`.
 
   TODO: add a narrow audit event for accepted LiveView operator commands once the
   audit shape for same-BEAM browser actions is finalized.
@@ -539,25 +548,30 @@ defmodule FavnOrchestrator do
           operator_actor_context(),
           String.t(),
           String.t(),
-          keyword() | map()
+          AssetRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
   def submit_operator_asset_run(
         actor_context,
         manifest_version_id,
         target_id,
-        opts_or_request \\ []
+        command_input \\ %{}
       ) do
-    with :ok <- require_operator_context(actor_context) do
-      submit_asset_run_for_manifest(manifest_version_id, target_id, opts_or_request)
+    with :ok <- require_operator_context(actor_context),
+         {:ok, request} <- AssetRunRequest.from_input(command_input),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, asset} <- resolve_asset_target(version, target_id),
+         {:ok, opts} <- operator_asset_run_opts(asset, request) do
+      submit_asset_run(asset.ref, Keyword.put(opts, :manifest_version_id, manifest_version_id))
     end
   end
 
   @doc """
-  Submits an asset backfill range for an authenticated operator actor context.
+  Submits an asset backfill command for an authenticated operator actor context.
 
-  Thin callers pass the unexpanded operator range request. The orchestrator owns
-  range expansion, parent/child grouping, child refresh defaults, and partial
-  submission compensation.
+  Thin callers pass operator intent for the range, dependency mode, and refresh
+  mode. The orchestrator owns range expansion, parent/child grouping, child
+  refresh defaults, selected-asset refresh translation, and partial submission
+  compensation.
   """
   @spec submit_operator_asset_backfill(
           operator_actor_context(),
@@ -568,15 +582,21 @@ defmodule FavnOrchestrator do
           operator_actor_context(),
           String.t(),
           String.t(),
-          keyword() | map()
+          AssetBackfillRequest.t() | map() | keyword()
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_asset_backfill(actor_context, manifest_version_id, target_id, opts \\ []) do
+  def submit_operator_asset_backfill(
+        actor_context,
+        manifest_version_id,
+        target_id,
+        command_input \\ %{}
+      ) do
     with :ok <- require_operator_context(actor_context),
+         {:ok, request} <- AssetBackfillRequest.from_input(command_input),
          {:ok, version} <- get_manifest(manifest_version_id),
-         {:ok, asset_ref} <- resolve_asset_target_ref(version, target_id),
-         {:ok, opts} <- normalize_asset_backfill_submit_opts(opts) do
+         {:ok, asset} <- resolve_asset_target(version, target_id),
+         {:ok, opts} <- operator_asset_backfill_opts(asset, request) do
       BackfillManager.submit_asset_backfill(
-        asset_ref,
+        asset.ref,
         Keyword.put(opts, :manifest_version_id, manifest_version_id)
       )
     end
@@ -745,6 +765,92 @@ defmodule FavnOrchestrator do
   defp request_refresh_option(value, _asset_ref, _dependencies),
     do: {:error, {:invalid_refresh_policy, value}}
 
+  defp operator_asset_run_opts(asset, %AssetRunRequest{} = request) do
+    with {:ok, refresh} <-
+           operator_asset_refresh_option(request.refresh_mode, asset.ref, request.dependency_mode) do
+      opts =
+        []
+        |> Keyword.put(:dependencies, request.dependency_mode)
+        |> Keyword.put(:refresh, refresh)
+        |> maybe_put_opt(:metadata, request.metadata)
+        |> maybe_put_opt(:timeout_ms, request.timeout_ms)
+
+      put_asset_run_selection_opts(opts, asset, request.selection)
+    end
+  end
+
+  defp operator_asset_backfill_opts(asset, %AssetBackfillRequest{} = request) do
+    with {:ok, refresh} <-
+           operator_asset_backfill_refresh_option(
+             request.refresh_mode,
+             asset.ref,
+             request.dependency_mode
+           ) do
+      opts =
+        []
+        |> Keyword.put(:range_request, request.range)
+        |> Keyword.put(:dependencies, request.dependency_mode)
+        |> maybe_put_opt(:refresh, refresh)
+        |> maybe_put_opt(:metadata, request.metadata)
+        |> maybe_put_opt(:max_attempts, request.max_attempts)
+        |> maybe_put_opt(:retry_backoff_ms, request.retry_backoff_ms)
+        |> maybe_put_opt(:timeout_ms, request.timeout_ms)
+
+      {:ok, opts}
+    end
+  end
+
+  defp operator_pipeline_run_opts(%PipelineRunRequest{} = request) do
+    opts =
+      []
+      |> maybe_put_opt(:window_request, request.window)
+      |> maybe_put_opt(:refresh, operator_pipeline_refresh_option(request.refresh_mode))
+      |> maybe_put_opt(:metadata, request.metadata)
+      |> maybe_put_opt(:timeout_ms, request.timeout_ms)
+
+    {:ok, opts}
+  end
+
+  defp operator_pipeline_backfill_opts(%PipelineBackfillRequest{} = request) do
+    opts =
+      []
+      |> Keyword.put(:range_request, request.range)
+      |> maybe_put_opt(:coverage_baseline_id, request.coverage_baseline_id)
+      |> maybe_put_opt(:refresh, operator_pipeline_backfill_refresh_option(request.refresh_mode))
+      |> maybe_put_opt(:metadata, request.metadata)
+      |> maybe_put_opt(:max_attempts, request.max_attempts)
+      |> maybe_put_opt(:retry_backoff_ms, request.retry_backoff_ms)
+      |> maybe_put_opt(:timeout_ms, request.timeout_ms)
+
+    {:ok, opts}
+  end
+
+  defp operator_asset_refresh_option(:auto, _asset_ref, _dependencies), do: {:ok, :auto}
+  defp operator_asset_refresh_option(:missing, _asset_ref, _dependencies), do: {:ok, :missing}
+  defp operator_asset_refresh_option(:force_all, _asset_ref, _dependencies), do: {:ok, :force}
+
+  defp operator_asset_refresh_option(:force_selected, asset_ref, _dependencies),
+    do: {:ok, {:force_assets, [asset_ref]}}
+
+  defp operator_asset_refresh_option(:force_selected_upstream, _asset_ref, :none),
+    do: {:error, {:refresh_include_upstream_requires_dependencies, :all}}
+
+  defp operator_asset_refresh_option(:force_selected_upstream, asset_ref, :all),
+    do: {:ok, {:force_assets, [asset_ref], include_upstream: true}}
+
+  defp operator_asset_backfill_refresh_option(:auto, _asset_ref, _dependencies), do: {:ok, nil}
+
+  defp operator_asset_backfill_refresh_option(refresh_mode, asset_ref, dependencies),
+    do: operator_asset_refresh_option(refresh_mode, asset_ref, dependencies)
+
+  defp operator_pipeline_refresh_option(:auto), do: nil
+  defp operator_pipeline_refresh_option(:missing), do: :missing
+  defp operator_pipeline_refresh_option(:force_all), do: :force
+
+  defp operator_pipeline_backfill_refresh_option(:auto), do: nil
+  defp operator_pipeline_backfill_refresh_option(:missing), do: :missing
+  defp operator_pipeline_backfill_refresh_option(:force_all), do: :force
+
   defp put_window_run_metadata(opts, window_id, %Anchor{} = anchor_window) do
     selected_window_metadata = window_run_metadata(window_id, anchor_window)
 
@@ -818,11 +924,15 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
-  Submits one pipeline run for an authenticated operator actor context.
+  Submits one pipeline run command for an authenticated operator actor context.
 
-  This is the same-BEAM browser boundary for LiveView operator actions. Missing
-  or incomplete actor/session context returns `{:error, :unauthenticated}`;
-  authenticated actors without the operator role return `{:error, :forbidden}`.
+  This is the same-BEAM boundary for browser, API, and CLI operator actions.
+  Callers pass operator intent and the orchestrator translates it into runtime
+  submit options after resolving the manifest pipeline target.
+
+  Missing or incomplete actor/session context returns `{:error,
+  :unauthenticated}`; authenticated actors without the operator role return
+  `{:error, :forbidden}`.
 
   TODO: add a narrow audit event for accepted LiveView operator commands once the
   audit shape for same-BEAM browser actions is finalized.
@@ -836,11 +946,23 @@ defmodule FavnOrchestrator do
           operator_actor_context(),
           String.t(),
           String.t(),
-          keyword() | map()
+          PipelineRunRequest.t() | map() | keyword() | nil
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_pipeline_run(actor_context, manifest_version_id, target_id, opts \\ []) do
-    with :ok <- require_operator_context(actor_context) do
-      submit_pipeline_run_for_manifest(manifest_version_id, target_id, opts)
+  def submit_operator_pipeline_run(
+        actor_context,
+        manifest_version_id,
+        target_id,
+        command_input \\ %{}
+      ) do
+    with :ok <- require_operator_context(actor_context),
+         {:ok, request} <- PipelineRunRequest.from_input(command_input),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
+         {:ok, opts} <- operator_pipeline_run_opts(request) do
+      submit_pipeline_run(
+        pipeline_module,
+        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      )
     end
   end
 
@@ -1018,11 +1140,15 @@ defmodule FavnOrchestrator do
   end
 
   @doc """
-  Submits one pipeline backfill for an authenticated operator actor context.
+  Submits one pipeline backfill command for an authenticated operator actor context.
 
-  This is the same-BEAM browser boundary for LiveView operator actions. Missing
-  or incomplete actor/session context returns `{:error, :unauthenticated}`;
-  authenticated actors without the operator role return `{:error, :forbidden}`.
+  This is the same-BEAM boundary for browser, API, and CLI operator actions.
+  Callers pass operator intent for the range and refresh mode. The orchestrator
+  validates and translates that intent before submitting the runtime backfill.
+
+  Missing or incomplete actor/session context returns `{:error,
+  :unauthenticated}`; authenticated actors without the operator role return
+  `{:error, :forbidden}`.
 
   TODO: add a narrow audit event for accepted LiveView operator commands once the
   audit shape for same-BEAM browser actions is finalized.
@@ -1036,11 +1162,23 @@ defmodule FavnOrchestrator do
           operator_actor_context(),
           String.t(),
           String.t(),
-          keyword() | map()
+          PipelineBackfillRequest.t() | map() | keyword()
         ) :: {:ok, run_id()} | {:error, term()}
-  def submit_operator_pipeline_backfill(actor_context, manifest_version_id, target_id, opts \\ []) do
-    with :ok <- require_operator_context(actor_context) do
-      submit_pipeline_backfill_for_manifest(manifest_version_id, target_id, opts)
+  def submit_operator_pipeline_backfill(
+        actor_context,
+        manifest_version_id,
+        target_id,
+        command_input \\ %{}
+      ) do
+    with :ok <- require_operator_context(actor_context),
+         {:ok, request} <- PipelineBackfillRequest.from_input(command_input),
+         {:ok, version} <- get_manifest(manifest_version_id),
+         {:ok, pipeline_module} <- resolve_pipeline_target_module(version, target_id),
+         {:ok, opts} <- operator_pipeline_backfill_opts(request) do
+      submit_pipeline_backfill(
+        pipeline_module,
+        Keyword.put(opts, :manifest_version_id, manifest_version_id)
+      )
     end
   end
 
@@ -2904,31 +3042,6 @@ defmodule FavnOrchestrator do
         |> Keyword.put(:range_request, range_request)
         |> maybe_put_opt(:metadata, field_value(opts, :metadata))
         |> maybe_put_opt(:coverage_baseline_id, field_value(opts, :coverage_baseline_id))
-        |> maybe_put_opt(:refresh, field_value(opts, :refresh))
-        |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
-        |> maybe_put_opt(:max_attempts, field_value(opts, :max_attempts))
-        |> maybe_put_opt(:retry_backoff_ms, field_value(opts, :retry_backoff_ms))
-        |> maybe_put_opt(:timeout_ms, field_value(opts, :timeout_ms))
-
-      {:ok, submit_opts}
-    end
-  end
-
-  defp normalize_asset_backfill_submit_opts(opts) when is_list(opts) do
-    with {:ok, range_request} <- RangeRequest.from_value(Keyword.get(opts, :range_request)) do
-      {:ok, Keyword.put(opts, :range_request, range_request)}
-    end
-  end
-
-  defp normalize_asset_backfill_submit_opts(opts) when is_map(opts) do
-    range = field_value(opts, :range) || field_value(opts, :range_request)
-
-    with {:ok, range_request} <- RangeRequest.from_value(range) do
-      submit_opts =
-        []
-        |> Keyword.put(:range_request, range_request)
-        |> maybe_put_opt(:metadata, field_value(opts, :metadata))
-        |> maybe_put_opt(:dependencies, field_value(opts, :dependencies))
         |> maybe_put_opt(:refresh, field_value(opts, :refresh))
         |> maybe_put_opt(:refresh_policy, field_value(opts, :refresh_policy))
         |> maybe_put_opt(:max_attempts, field_value(opts, :max_attempts))

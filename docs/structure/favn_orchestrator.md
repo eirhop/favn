@@ -17,6 +17,9 @@ Code:
 - Reusable runtime-state repair passes under `apps/favn_orchestrator/lib/favn_orchestrator/repair/`
 - Refresh policy normalization and forced-run selection in
   `apps/favn_orchestrator/lib/favn_orchestrator/refresh_policy.ex`
+- Operator run/backfill command DTOs under
+  `apps/favn_orchestrator/lib/favn_orchestrator/operator_commands/`, used by the
+  public facade to translate browser/API/CLI intent into runtime submit options.
 - Operational pipeline and asset backfill range expansion, parent/child run
   grouping, ledger rows, and partial-submission compensation in
   `apps/favn_orchestrator/lib/favn_orchestrator/backfill_manager.ex`
@@ -34,6 +37,7 @@ Tests:
 - API contract tests under `apps/favn_orchestrator/test/api/`
 - HTTP schema shape tests under `apps/favn_orchestrator/test/http_contract/`
 - Auth storage/facade tests under `apps/favn_orchestrator/test/auth/`
+- Operator command DTO tests under `apps/favn_orchestrator/test/operator_commands/`
 - Production runtime config/runtime dependency config/readiness/diagnostics tests under `apps/favn_orchestrator/test/production_runtime_config_test.exs`, `apps/favn_orchestrator/test/runtime_config_test.exs`, `apps/favn_orchestrator/test/readiness_test.exs`, and `apps/favn_orchestrator/test/diagnostics_test.exs`
 - storage contract/codec tests under `apps/favn_orchestrator/test/storage/`
 - Freshness decision/query tests under `apps/favn_orchestrator/test/freshness/`

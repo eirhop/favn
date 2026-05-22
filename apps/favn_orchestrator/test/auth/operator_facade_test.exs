@@ -4,6 +4,10 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
   alias FavnOrchestrator
   alias FavnOrchestrator.Auth
   alias FavnOrchestrator.Auth.Store, as: AuthStore
+  alias FavnOrchestrator.OperatorCommands.AssetBackfillRequest
+  alias FavnOrchestrator.OperatorCommands.AssetRunRequest
+  alias FavnOrchestrator.OperatorCommands.PipelineBackfillRequest
+  alias FavnOrchestrator.OperatorCommands.PipelineRunRequest
 
   setup do
     previous_failure_limit = Application.get_env(:favn_orchestrator, :auth_login_failure_limit)
@@ -143,7 +147,7 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
                operator_context,
                "missing_manifest",
                "pipeline:missing",
-               []
+               valid_range_request()
              )
   end
 
@@ -189,6 +193,54 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
              )
   end
 
+  test "operator command wrappers validate malformed DTO structs before manifest lookup" do
+    operator_context = operator_context("operator-malformed-dto")
+
+    assert {:error, {:invalid_operator_refresh_mode, :bogus}} =
+             FavnOrchestrator.submit_operator_asset_run(
+               operator_context,
+               "missing_manifest",
+               "asset:missing",
+               %AssetRunRequest{refresh_mode: :bogus}
+             )
+
+    assert {:error, {:invalid_operator_refresh_mode, :bogus}} =
+             FavnOrchestrator.submit_operator_asset_backfill(
+               operator_context,
+               "missing_manifest",
+               "asset:missing",
+               %AssetBackfillRequest{refresh_mode: :bogus}
+             )
+
+    assert {:error, {:invalid_operator_refresh_mode, :force_selected}} =
+             FavnOrchestrator.submit_operator_pipeline_run(
+               operator_context,
+               "missing_manifest",
+               "pipeline:missing",
+               %PipelineRunRequest{refresh_mode: :force_selected}
+             )
+
+    assert {:error, {:invalid_operator_refresh_mode, :force_selected}} =
+             FavnOrchestrator.submit_operator_pipeline_backfill(
+               operator_context,
+               "missing_manifest",
+               "pipeline:missing",
+               %PipelineBackfillRequest{refresh_mode: :force_selected}
+             )
+  end
+
+  test "operator pipeline run normalizes malformed window input before manifest lookup" do
+    operator_context = operator_context("operator-bad-window")
+
+    assert {:error, {:invalid_operator_window, %{mode: "bad"}}} =
+             FavnOrchestrator.submit_operator_pipeline_run(
+               operator_context,
+               "missing_manifest",
+               "pipeline:missing",
+               %{window: %{mode: "bad"}}
+             )
+  end
+
   defp ensure_auth_store_started do
     case Process.whereis(AuthStore) do
       nil ->
@@ -211,4 +263,18 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
 
   defp restore_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
+
+  defp operator_context(username) do
+    assert {:ok, actor} =
+             Auth.create_actor(username, "operator-password-long", "Operator", [:operator])
+
+    assert {:ok, session, ^actor} =
+             FavnOrchestrator.operator_password_login(username, "operator-password-long")
+
+    %{actor: actor, session: session}
+  end
+
+  defp valid_range_request do
+    %{range: %{kind: "day", from: "2026-05-01", to: "2026-05-03", timezone: "Etc/UTC"}}
+  end
 end
