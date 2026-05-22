@@ -11,7 +11,6 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
   @enforce_keys [
     :asset_ref_module,
     :asset_ref_name,
-    :pipeline_module,
     :manifest_version_id,
     :window_kind,
     :window_start_at,
@@ -48,7 +47,7 @@ defmodule FavnOrchestrator.Backfill.AssetWindowState do
   @type t :: %__MODULE__{
           asset_ref_module: module(),
           asset_ref_name: atom(),
-          pipeline_module: module(),
+          pipeline_module: module() | nil,
           manifest_version_id: String.t(),
           window_kind: atom(),
           window_start_at: DateTime.t(),

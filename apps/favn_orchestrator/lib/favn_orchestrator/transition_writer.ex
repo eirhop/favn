@@ -4,6 +4,7 @@ defmodule FavnOrchestrator.TransitionWriter do
   """
 
   alias FavnOrchestrator.Backfill
+  alias FavnOrchestrator.AssetWindowProjector
   alias FavnOrchestrator.Events
   alias FavnOrchestrator.LogWriter
   alias FavnOrchestrator.OperationalEvents
@@ -56,6 +57,7 @@ defmodule FavnOrchestrator.TransitionWriter do
   defp project_derived_state(%RunState{} = run_state, event_type, data) do
     safe_project(Backfill.Projector, run_state, event_type, data)
     safe_project(Backfill.CoverageProjector, run_state, event_type, data)
+    safe_project(AssetWindowProjector, run_state, event_type, data)
   end
 
   defp safe_emit_transition_log(%RunEvent{entity: :step} = event) do

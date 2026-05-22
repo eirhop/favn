@@ -503,8 +503,8 @@ defmodule Mix.Tasks.Favn.PublicTasksTest do
     assert output =~ "hint: run mix favn.stop to clear stale runtime state"
   end
 
-  test "mix favn.run requires a pipeline module" do
-    assert_raise Mix.Error, ~r/missing pipeline module/, fn ->
+  test "mix favn.run requires a target" do
+    assert_raise Mix.Error, ~r/missing target/, fn ->
       RunTask.run([])
     end
   end
