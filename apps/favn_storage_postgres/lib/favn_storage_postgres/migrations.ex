@@ -7,6 +7,7 @@ defmodule FavnStoragePostgres.Migrations do
   alias FavnStoragePostgres.Migrations.AddLogEntries
   alias FavnStoragePostgres.Migrations.AddMaterializationClaims
   alias FavnStoragePostgres.Migrations.AddBackfillState
+  alias FavnStoragePostgres.Migrations.AddBackfillProgress
   alias FavnStoragePostgres.Migrations.AddRunEventGlobalSequence
   alias FavnStoragePostgres.Migrations.AddRunGroupQueryColumns
   alias FavnStoragePostgres.Migrations.CreateFoundation
@@ -21,7 +22,8 @@ defmodule FavnStoragePostgres.Migrations do
     {20_260_510_100_000, AddLogEntries},
     {20_260_520_100_000, AddExecutionLeases},
     {20_260_521_100_000, AddMaterializationClaims},
-    {20_260_521_200_000, AddRunGroupQueryColumns}
+    {20_260_521_200_000, AddRunGroupQueryColumns},
+    {20_260_522_100_000, AddBackfillProgress}
   ]
   @required_tables [
     "public.favn_manifest_versions",
@@ -31,6 +33,7 @@ defmodule FavnStoragePostgres.Migrations do
     "public.favn_scheduler_cursors",
     "public.favn_pipeline_coverage_baselines",
     "public.favn_backfill_windows",
+    "public.favn_backfill_progress",
     "public.favn_asset_window_states",
     "public.favn_asset_freshness_states",
     "public.favn_run_write_seq",

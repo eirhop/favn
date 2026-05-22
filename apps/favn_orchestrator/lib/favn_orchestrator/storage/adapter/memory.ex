@@ -11,6 +11,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
@@ -51,6 +52,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           scheduler_states: %{required({module(), atom() | nil}) => map()},
           coverage_baselines: %{required(String.t()) => CoverageBaseline.t()},
           backfill_windows: %{required({String.t(), module(), String.t()}) => BackfillWindow.t()},
+          backfill_progress: %{required(String.t()) => BackfillProgress.t()},
           asset_window_states: %{required({module(), atom(), String.t()}) => AssetWindowState.t()},
           asset_freshness_states: %{
             required({module(), atom(), String.t()}) => AssetFreshnessState.t()
@@ -449,6 +451,27 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   end
 
   @impl true
+  def apply_backfill_child_projection(%BackfillWindow{} = window, asset_window_states, opts)
+      when is_list(asset_window_states) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:apply_backfill_child_projection, window, asset_window_states})
+  end
+
+  @impl true
+  def get_backfill_progress(backfill_run_id, opts)
+      when is_binary(backfill_run_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_backfill_progress, backfill_run_id})
+  end
+
+  @impl true
+  def rebuild_backfill_progress(backfill_run_id, opts)
+      when is_binary(backfill_run_id) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:rebuild_backfill_progress, backfill_run_id})
+  end
+
+  @impl true
   def put_asset_window_state(%AssetWindowState{} = state, opts) when is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:put_asset_window_state, state})
@@ -494,6 +517,12 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
   def list_asset_freshness_states(filters, opts) when is_list(filters) and is_list(opts) do
     server = Keyword.get(opts, :server, __MODULE__)
     GenServer.call(server, {:list_asset_freshness_states, filters})
+  end
+
+  @impl true
+  def get_asset_freshness_states_by_keys(keys, opts) when is_list(keys) and is_list(opts) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    GenServer.call(server, {:get_asset_freshness_states_by_keys, keys})
   end
 
   @impl true
@@ -650,6 +679,7 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
       scheduler_states: %{},
       coverage_baselines: %{},
       backfill_windows: %{},
+      backfill_progress: %{},
       asset_window_states: %{},
       asset_freshness_states: %{},
       auth_actors: %{},
@@ -1178,6 +1208,45 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     {:reply, {:ok, Page.from_fetched(rows, page_opts(filters))}, state}
   end
 
+  def handle_call(
+        {:apply_backfill_child_projection, %BackfillWindow{} = window, asset_window_states},
+        _from,
+        state
+      ) do
+    key = {window.backfill_run_id, window.pipeline_module, window.window_key}
+    old_status = state.backfill_windows[key] && state.backfill_windows[key].status
+
+    next_state = %{
+      state
+      | backfill_windows: Map.put(state.backfill_windows, key, window),
+        asset_window_states:
+          put_asset_window_states(state.asset_window_states, asset_window_states)
+    }
+
+    case next_progress(next_state, window.backfill_run_id, old_status, window.status) do
+      {:ok, progress} ->
+        next_state = put_in(next_state, [:backfill_progress, window.backfill_run_id], progress)
+        {:reply, {:ok, progress}, next_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:get_backfill_progress, backfill_run_id}, _from, state) do
+    {:reply, fetch_or_not_found(state.backfill_progress, backfill_run_id), state}
+  end
+
+  def handle_call({:rebuild_backfill_progress, backfill_run_id}, _from, state) do
+    case rebuild_progress_from_windows(state.backfill_windows, backfill_run_id) do
+      {:ok, progress} ->
+        {:reply, {:ok, progress}, put_in(state, [:backfill_progress, backfill_run_id], progress)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:put_asset_window_state, %AssetWindowState{} = window_state}, _from, state) do
     key = {window_state.asset_ref_module, window_state.asset_ref_name, window_state.window_key}
     {:reply, :ok, put_in(state, [:asset_window_states, key], window_state)}
@@ -1238,6 +1307,19 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     end
   end
 
+  def handle_call({:get_asset_freshness_states_by_keys, keys}, _from, state) do
+    rows =
+      keys
+      |> Enum.reduce(%{}, fn key, acc ->
+        case Map.fetch(state.asset_freshness_states, key) do
+          {:ok, %AssetFreshnessState{} = freshness_state} -> Map.put(acc, key, freshness_state)
+          :error -> acc
+        end
+      end)
+
+    {:reply, {:ok, rows}, state}
+  end
+
   def handle_call(
         {:replace_backfill_read_models, scope, coverage_baselines, backfill_windows,
          asset_window_states},
@@ -1254,6 +1336,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
           state.backfill_windows
           |> reject_scoped(scope)
           |> put_backfill_windows(backfill_windows),
+        backfill_progress:
+          state.backfill_progress
+          |> reject_scoped_progress(scope)
+          |> rebuild_all_progress(
+            state.backfill_windows
+            |> reject_scoped(scope)
+            |> put_backfill_windows(backfill_windows)
+          ),
         asset_window_states:
           state.asset_window_states
           |> reject_scoped(scope)
@@ -1847,6 +1937,14 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
     |> Map.new()
   end
 
+  defp reject_scoped_progress(_values, []), do: %{}
+
+  defp reject_scoped_progress(values, backfill_run_id: backfill_run_id) do
+    Map.delete(values, backfill_run_id)
+  end
+
+  defp reject_scoped_progress(_values, _scope), do: %{}
+
   defp scoped?(value, scope) do
     Enum.all?(scope, fn {key, expected} -> Map.get(value, key) == expected end)
   end
@@ -1870,6 +1968,38 @@ defmodule FavnOrchestrator.Storage.Adapter.Memory do
         {window_state.asset_ref_module, window_state.asset_ref_name, window_state.window_key},
         window_state
       )
+    end)
+  end
+
+  defp next_progress(state, backfill_run_id, old_status, new_status) do
+    case Map.fetch(state.backfill_progress, backfill_run_id) do
+      {:ok, %BackfillProgress{} = progress} ->
+        BackfillProgress.apply_status_change(progress, old_status, new_status, DateTime.utc_now())
+
+      :error ->
+        rebuild_progress_from_windows(state.backfill_windows, backfill_run_id)
+    end
+  end
+
+  defp rebuild_progress_from_windows(backfill_windows, backfill_run_id) do
+    windows =
+      backfill_windows
+      |> Map.values()
+      |> Enum.filter(&(&1.backfill_run_id == backfill_run_id))
+
+    BackfillProgress.from_windows(backfill_run_id, windows, DateTime.utc_now())
+  end
+
+  defp rebuild_all_progress(progress, backfill_windows) do
+    backfill_windows
+    |> Map.values()
+    |> Enum.map(& &1.backfill_run_id)
+    |> Enum.uniq()
+    |> Enum.reduce(progress, fn backfill_run_id, acc ->
+      case rebuild_progress_from_windows(backfill_windows, backfill_run_id) do
+        {:ok, %BackfillProgress{} = rebuilt} -> Map.put(acc, backfill_run_id, rebuilt)
+        {:error, _reason} -> acc
+      end
     end)
   end
 

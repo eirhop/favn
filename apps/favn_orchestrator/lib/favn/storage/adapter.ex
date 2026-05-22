@@ -38,6 +38,7 @@ defmodule Favn.Storage.Adapter do
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
   alias FavnOrchestrator.Backfill.CoverageBaseline
+  alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
   alias FavnOrchestrator.MaterializationClaim
   alias FavnOrchestrator.Page
   alias FavnOrchestrator.RunState
@@ -47,6 +48,7 @@ defmodule Favn.Storage.Adapter do
   @type filter_opts :: keyword()
   @type error :: :not_found | :invalid_opts | term()
   @type scheduler_key :: {module(), atom() | nil}
+  @type freshness_state_key :: {module(), atom(), String.t()}
   @type child_spec_result :: {:ok, Supervisor.child_spec()} | :none | {:error, error()}
   @type readiness_diagnostics :: map()
   @type diagnostics :: map()
@@ -139,6 +141,15 @@ defmodule Favn.Storage.Adapter do
               {:ok, BackfillWindow.t()} | {:error, error()}
   @callback list_backfill_windows(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(BackfillWindow.t())} | {:error, error()}
+  @callback apply_backfill_child_projection(
+              BackfillWindow.t(),
+              [AssetWindowState.t()],
+              adapter_opts()
+            ) :: {:ok, BackfillProgress.t()} | {:error, error()}
+  @callback get_backfill_progress(String.t(), adapter_opts()) ::
+              {:ok, BackfillProgress.t()} | {:error, error()}
+  @callback rebuild_backfill_progress(String.t(), adapter_opts()) ::
+              {:ok, BackfillProgress.t()} | {:error, error()}
 
   @callback put_asset_window_state(AssetWindowState.t(), adapter_opts()) ::
               :ok | {:error, error()}
@@ -151,6 +162,8 @@ defmodule Favn.Storage.Adapter do
               :ok | {:error, error()}
   @callback get_asset_freshness_state(module(), atom(), String.t(), adapter_opts()) ::
               {:ok, AssetFreshnessState.t()} | {:error, error()}
+  @callback get_asset_freshness_states_by_keys([freshness_state_key()], adapter_opts()) ::
+              {:ok, %{freshness_state_key() => AssetFreshnessState.t()}} | {:error, error()}
   @callback list_asset_freshness_states(filter_opts(), adapter_opts()) ::
               {:ok, Page.t(AssetFreshnessState.t())} | {:error, error()}
 

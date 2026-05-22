@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Backfill.Projector do
   alias Favn.Run.AssetResult
   alias FavnOrchestrator.Backfill.AssetWindowState
   alias FavnOrchestrator.Backfill.BackfillWindow
+  alias FavnOrchestrator.Backfill.Progress, as: BackfillProgress
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Storage
   alias FavnOrchestrator.TransitionWriter
@@ -74,8 +75,8 @@ defmodule FavnOrchestrator.Backfill.Projector do
              started_at: window.started_at || now,
              updated_at: now
          },
-         :ok <- Storage.put_backfill_window(updated) do
-      maybe_project_parent(context.backfill_run_id)
+         {:ok, progress} <- Storage.apply_backfill_child_projection(updated, []) do
+      maybe_project_parent(progress)
     end
   end
 
@@ -98,9 +99,10 @@ defmodule FavnOrchestrator.Backfill.Projector do
              finished_at: now,
              updated_at: now
          },
-         :ok <- Storage.put_backfill_window(updated),
-         :ok <- project_asset_window_states(updated, run_state) do
-      maybe_project_parent(context.backfill_run_id)
+         {:ok, asset_window_states} <- build_asset_window_states(updated, run_state),
+         {:ok, progress} <-
+           Storage.apply_backfill_child_projection(updated, asset_window_states) do
+      maybe_project_parent(progress)
     end
   end
 
@@ -112,8 +114,8 @@ defmodule FavnOrchestrator.Backfill.Projector do
     Storage.get_backfill_window(backfill_run_id, pipeline_module, window_key)
   end
 
-  defp maybe_project_parent(backfill_run_id) do
-    reproject_parent(backfill_run_id)
+  defp maybe_project_parent(%BackfillProgress{} = progress) do
+    project_parent_from_progress(progress)
   end
 
   @doc "Reprojects a terminal child backfill run into its persisted window."
@@ -137,9 +139,14 @@ defmodule FavnOrchestrator.Backfill.Projector do
   @doc "Reprojects a backfill parent run status from its persisted windows."
   @spec reproject_parent(String.t()) :: :ok | {:error, term()}
   def reproject_parent(backfill_run_id) when is_binary(backfill_run_id) do
-    with {:ok, windows} <- list_all_backfill_windows(backfill_run_id: backfill_run_id),
-         {:ok, parent} <- Storage.get_run(backfill_run_id),
-         status <- parent_status(windows),
+    with {:ok, progress} <- Storage.rebuild_backfill_progress(backfill_run_id) do
+      project_parent_from_progress(progress)
+    end
+  end
+
+  defp project_parent_from_progress(%BackfillProgress{} = progress) do
+    with {:ok, parent} <- Storage.get_run(progress.backfill_run_id),
+         status <- progress.status,
          error <- parent_error(status, parent),
          true <- status != parent.status or error != parent.error do
       event_type = parent_event_type(status)
@@ -148,11 +155,11 @@ defmodule FavnOrchestrator.Backfill.Projector do
       |> RunState.transition(
         status: status,
         error: error,
-        result: %{status: status, backfill_windows: length(windows)}
+        result: %{status: status, backfill_windows: progress.total_count}
       )
       |> TransitionWriter.persist_transition(event_type, %{
         status: status,
-        window_counts: window_counts(windows)
+        window_counts: BackfillProgress.window_counts(progress)
       })
     else
       false -> :ok
@@ -208,27 +215,25 @@ defmodule FavnOrchestrator.Backfill.Projector do
   defp parent_error(:ok, _parent), do: nil
   defp parent_error(_status, %RunState{} = parent), do: parent.error
 
-  defp window_counts(windows) do
-    Enum.reduce(windows, %{}, fn %BackfillWindow{status: status}, acc ->
-      Map.update(acc, status, 1, &(&1 + 1))
-    end)
-  end
-
-  defp project_asset_window_states(%BackfillWindow{} = window, %RunState{} = run_state) do
+  defp build_asset_window_states(%BackfillWindow{} = window, %RunState{} = run_state) do
     run_state
     |> asset_results()
-    |> Enum.reduce_while(:ok, fn result, :ok ->
+    |> Enum.reduce_while({:ok, []}, fn result, {:ok, acc} ->
       case asset_window_state(window, run_state, result) do
         {:ok, state} ->
-          case Storage.put_asset_window_state(state) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
+          {:cont, {:ok, [state | acc]}}
 
         :ignore ->
-          {:cont, :ok}
+          {:cont, {:ok, acc}}
+
+        {:error, _reason} = error ->
+          {:halt, error}
       end
     end)
+    |> case do
+      {:ok, states} -> {:ok, Enum.reverse(states)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp asset_window_state(%BackfillWindow{} = window, %RunState{} = run_state, result) do

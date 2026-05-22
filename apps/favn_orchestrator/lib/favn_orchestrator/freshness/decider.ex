@@ -63,6 +63,24 @@ defmodule FavnOrchestrator.Freshness.Decider do
     Map.new(node_keys, &{&1, decide(plan, &1, opts)})
   end
 
+  @doc """
+  Returns the persisted freshness-state keys a plan may need for decisions.
+
+  The helper shares the same key derivation used by `decide/3`, allowing run
+  startup to fetch only relevant prior freshness rows from storage.
+  """
+  @spec planned_lookup_keys(Plan.t(), opts()) :: [{module(), atom(), String.t()}]
+  def planned_lookup_keys(%Plan{} = plan, opts \\ []) do
+    context = context(plan, opts)
+
+    plan.nodes
+    |> Map.values()
+    |> Enum.map(fn %{ref: {module, name}} = node ->
+      {module, name, freshness_key(node, context)}
+    end)
+    |> Enum.uniq()
+  end
+
   defp dependency_satisfied?(%{upstream: upstream}, context) do
     blocking =
       Enum.filter(upstream, &(Map.get(context.upstream_statuses, &1) in @blocking_statuses))

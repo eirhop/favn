@@ -340,6 +340,15 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
   def list_backfill_windows(filters, _opts), do: {:ok, empty_page(filters)}
 
   @impl true
+  def apply_backfill_child_projection(_window, _states, _opts), do: {:error, :not_found}
+
+  @impl true
+  def get_backfill_progress(_backfill_run_id, _opts), do: {:error, :not_found}
+
+  @impl true
+  def rebuild_backfill_progress(_backfill_run_id, _opts), do: {:error, :not_found}
+
+  @impl true
   def put_asset_window_state(_state, _opts), do: :ok
 
   @impl true
@@ -348,6 +357,9 @@ defmodule Favn.Test.Fixtures.Assets.Runner.TerminalFailingStore do
 
   @impl true
   def list_asset_window_states(filters, _opts), do: {:ok, empty_page(filters)}
+
+  @impl true
+  def get_asset_freshness_states_by_keys(_keys, _opts), do: {:ok, %{}}
 
   @impl true
   def replace_backfill_read_models(
