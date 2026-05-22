@@ -94,7 +94,10 @@ defmodule FavnOrchestrator.RunServerTest do
     end
 
     @impl true
-    def cancel_work(_execution_id, _reason, _opts), do: :ok
+    def cancel_work(execution_id, reason, opts) do
+      send(Keyword.fetch!(opts, :parent), {:cancelled, execution_id, reason})
+      :ok
+    end
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
@@ -187,7 +190,10 @@ defmodule FavnOrchestrator.RunServerTest do
     end
 
     @impl true
-    def cancel_work(_execution_id, _reason, _opts), do: :ok
+    def cancel_work(execution_id, reason, opts) do
+      send(Keyword.fetch!(opts, :parent), {:cancelled, execution_id, reason})
+      :ok
+    end
 
     @impl true
     def inspect_relation(_request, _opts), do: {:error, :not_supported}
@@ -329,6 +335,68 @@ defmodule FavnOrchestrator.RunServerTest do
       to: Memory
   end
 
+  defmodule RunnerClientSequentialStatusStub do
+    @behaviour Favn.Contracts.RunnerClient
+
+    @impl true
+    def register_manifest(_version, _opts), do: :ok
+
+    @impl true
+    def submit_work(work, opts) do
+      execution_id = "seq_exec:#{work.run_id}:#{work.attempt}"
+      send(Keyword.fetch!(opts, :parent), {:submitted, work.attempt, execution_id})
+      {:ok, execution_id}
+    end
+
+    @impl true
+    def await_result(execution_id, _timeout, opts) do
+      parent = Keyword.fetch!(opts, :parent)
+
+      status =
+        opts
+        |> Keyword.fetch!(:statuses)
+        |> Agent.get_and_update(fn
+          [status | rest] -> {status, rest}
+          [] -> {:ok, []}
+        end)
+
+      send(parent, {:awaited, execution_id, status})
+
+      {:ok,
+       %RunnerResult{
+         status: status,
+         error: if(status == :ok, do: nil, else: :runner_failed),
+         asset_results: [asset_result({MyApp.Assets.Gold, :asset}, status)],
+         metadata: %{}
+       }}
+    end
+
+    @impl true
+    def cancel_work(execution_id, reason, opts) do
+      send(Keyword.fetch!(opts, :parent), {:cancelled, execution_id, reason})
+      :ok
+    end
+
+    @impl true
+    def inspect_relation(_request, _opts), do: {:error, :not_supported}
+
+    defp asset_result(ref, status) do
+      %Favn.Run.AssetResult{
+        ref: ref,
+        stage: 0,
+        status: status,
+        started_at: DateTime.utc_now(),
+        finished_at: DateTime.utc_now(),
+        duration_ms: 0,
+        meta: %{},
+        error: if(status == :ok, do: nil, else: :runner_failed),
+        attempt_count: 1,
+        max_attempts: 2,
+        attempts: []
+      }
+    end
+  end
+
   setup do
     previous_client = Application.get_env(:favn_orchestrator, :runner_client)
     previous_opts = Application.get_env(:favn_orchestrator, :runner_client_opts)
@@ -380,6 +448,104 @@ defmodule FavnOrchestrator.RunServerTest do
 
     assert {:ok, events} = Storage.list_run_events("run_server_1")
     assert Enum.map(events, & &1.event_type) == [:run_started, :step_failed, :run_failed]
+  end
+
+  test "sequential success preserves event order" do
+    {:ok, statuses} = Agent.start_link(fn -> [:ok] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSequentialStatusStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      statuses: statuses
+    )
+
+    version = manifest_version("mv_sequential_event_order")
+    run_state = asset_run_state("run_sequential_event_order", version)
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, 1, _execution_id}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, events} = Storage.list_run_events(run_state.id)
+
+    assert Enum.map(events, & &1.event_type) == [
+             :run_started,
+             :step_started,
+             :step_finished,
+             :run_finished
+           ]
+  end
+
+  test "sequential cancellation during retry wait wins before next submit" do
+    {:ok, statuses} = Agent.start_link(fn -> [:error, :ok] end)
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientSequentialStatusStub)
+
+    Application.put_env(:favn_orchestrator, :runner_client_opts,
+      parent: self(),
+      statuses: statuses
+    )
+
+    version = manifest_version("mv_sequential_cancel_retry_wait")
+
+    run_state =
+      "run_sequential_cancel_retry_wait"
+      |> asset_run_state(version)
+      |> RunState.transition(max_attempts: 2, retry_backoff_ms: 1_000)
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, 1, _execution_id}, 1_000
+    assert {:ok, _event} = wait_for_run_event(run_state.id, :step_retry_scheduled)
+
+    send(pid, {:favn_run_cancel_requested, %{reason: :test_cancel}})
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    refute_received {:submitted, 2, _execution_id}
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :cancelled
+  end
+
+  test "sequential cancellation while awaiting runner result cancels active work" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, parent: self())
+
+    version = manifest_version("mv_sequential_cancel_await")
+    run_state = asset_run_state("run_sequential_cancel_await", version)
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    assert_receive {:submitted, {MyApp.Assets.Gold, :asset}, execution_id}, 1_000
+    assert_receive {:awaiting, ^execution_id, {MyApp.Assets.Gold, :asset}, _awaiter}, 1_000
+
+    send(pid, {:favn_run_cancel_requested, %{reason: :test_cancel}})
+
+    assert_receive {:cancelled, ^execution_id, _reason}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :cancelled
+    assert stored.metadata.in_flight_execution_ids == []
+  end
+
+  test "run execution paths do not use blocking retry sleeps" do
+    execution_source =
+      File.read!(
+        Path.expand(
+          "../lib/favn_orchestrator/run_server/execution.ex",
+          __DIR__
+        )
+      )
+
+    refute execution_source =~ "Process.sleep"
   end
 
   test "does not crash when run_started persist loses to external cancel" do
@@ -1376,6 +1542,16 @@ defmodule FavnOrchestrator.RunServerTest do
       target_refs: target_refs,
       plan: plan,
       submit_kind: :pipeline
+    )
+  end
+
+  defp asset_run_state(id, version) do
+    RunState.new(
+      id: id,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      asset_ref: {MyApp.Assets.Gold, :asset},
+      target_refs: [{MyApp.Assets.Gold, :asset}]
     )
   end
 

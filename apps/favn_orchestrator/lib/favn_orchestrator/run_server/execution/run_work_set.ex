@@ -109,10 +109,12 @@ defmodule FavnOrchestrator.RunServer.Execution.RunWorkSet do
         runner_client,
         runner_opts
       ) do
+    active_ids = Enum.uniq(execution_ids(work_set) ++ inflight_execution_ids(run_state))
+
     cancelled_ids =
       Cancellation.cancel_runner_work(
         run_state,
-        execution_ids(work_set),
+        active_ids,
         reason,
         runner_client,
         runner_opts
