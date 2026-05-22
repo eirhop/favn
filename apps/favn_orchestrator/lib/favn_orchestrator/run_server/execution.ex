@@ -31,7 +31,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RuntimeConfig
   alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.RunServer.Cancellation
-  alias FavnOrchestrator.RunServer.Execution.AwaitTasks
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageAdmission
@@ -130,7 +129,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         {:cont, state}
 
       {await, state} ->
-        Process.cancel_timer(await.timer_ref)
+        Process.cancel_timer(await.timeout_ref)
         Process.demonitor(await.monitor_ref, [:flush])
         handle_await_result(state, await.entry, result, await.kind)
     end
@@ -146,7 +145,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {await, state} ->
         if await.monitor_ref == monitor_ref do
-          Process.cancel_timer(await.timer_ref)
+          Process.cancel_timer(await.timeout_ref)
 
           handle_await_result(
             state,
@@ -166,7 +165,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         {:cont, state}
 
       {await, state} ->
-        if await.timer_ref == timer_ref do
+        if await.timeout_token == timer_ref do
           Process.exit(await.pid, :kill)
           Process.demonitor(await.monitor_ref, [:flush])
           :ok = RunWorkSet.release_entry(await.entry)
@@ -180,21 +179,21 @@ defmodule FavnOrchestrator.RunServer.Execution do
   def handle_event(%RunExecutionState{} = state, {:retry_attempt, timer_ref}) do
     case RunExecutionState.pop_retry_timer(state, timer_ref) do
       {nil, state} -> {:cont, state}
-      {retry, state} -> resume_retry(state, retry)
+      {%{payload: retry}, state} -> resume_retry(state, retry)
     end
   end
 
   def handle_event(%RunExecutionState{} = state, {:stage_admission_retry, timer_ref}) do
     case RunExecutionState.pop_admission_timer(state, timer_ref) do
       {nil, state} -> {:cont, state}
-      {_retry, state} -> after_pipeline_progress(state)
+      {%{payload: _retry}, state} -> after_pipeline_progress(state)
     end
   end
 
   @spec cancel(RunExecutionState.t(), term()) :: RunState.t()
   def cancel(%RunExecutionState{} = state, reason) do
     reason = %{kind: :external_cancel, reason: reason}
-    state = stop_all_awaits(state, reason)
+    state = state |> stop_all_awaits(reason) |> RunExecutionState.cancel_timers()
 
     {cancelled_run, _work_set} =
       RunWorkSet.cancel_all(
@@ -345,18 +344,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
         )
       end)
 
-    timer_ref = make_ref()
+    timeout_token = make_ref()
 
-    Process.send_after(
-      parent,
-      {:attempt_timeout, execution_id, timer_ref},
-      timeout_ms + @await_task_timeout_buffer_ms
-    )
+    timeout_ref =
+      Process.send_after(
+        parent,
+        {:attempt_timeout, execution_id, timeout_token},
+        timeout_ms + @await_task_timeout_buffer_ms
+      )
 
     RunExecutionState.put_await(state, execution_id, %{
       pid: pid,
       monitor_ref: monitor_ref,
-      timer_ref: timer_ref,
+      timeout_token: timeout_token,
+      timeout_ref: timeout_ref,
       entry: entry,
       kind: kind
     })
@@ -525,11 +526,18 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  StepAttemptLifecycle.retry_event_payload(retry)
                ) do
             :ok ->
-              timer_ref = make_ref()
-              Process.send_after(self(), {:retry_attempt, timer_ref}, retry.retry_after_ms)
+              timer_token = make_ref()
+
+              timer_ref =
+                Process.send_after(self(), {:retry_attempt, timer_token}, retry.retry_after_ms)
 
               {:cont,
-               RunExecutionState.put_retry_timer(%{state | run: retrying}, timer_ref, retry)}
+               RunExecutionState.put_retry_timer(
+                 %{state | run: retrying},
+                 timer_token,
+                 timer_ref,
+                 retry
+               )}
 
             {:error, :external_cancel} ->
               {:terminal, elem(Snapshots.cancelled_state(state.run), 1)}
@@ -720,14 +728,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp after_pipeline_progress(%RunExecutionState{} = state) do
     cond do
-      state.stage_state.retry_refs != [] and state.stage_state.terminal_failure == nil ->
-        schedule_pipeline_retry(state)
-
       state.stage_state.deferred_node_keys != [] and state.stage_state.terminal_failure == nil ->
         refill_or_schedule_admission(state)
 
       map_size(state.awaits) > 0 ->
         {:cont, %{state | status: :awaiting}}
+
+      state.stage_state.retry_refs != [] and state.stage_state.terminal_failure == nil ->
+        schedule_pipeline_retry(state)
 
       true ->
         finalize_pipeline_stage(state)
@@ -807,11 +815,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
          1
        )}
     else
-      timer_ref = make_ref()
-      Process.send_after(self(), {:stage_admission_retry, timer_ref}, wait_ms)
+      timer_token = make_ref()
+      timer_ref = Process.send_after(self(), {:stage_admission_retry, timer_token}, wait_ms)
 
       {:cont,
-       RunExecutionState.put_admission_timer(state, timer_ref, %{stage_index: state.stage_index})}
+       RunExecutionState.put_admission_timer(state, timer_token, timer_ref, %{
+         stage_index: state.stage_index
+       })}
     end
   end
 
@@ -823,8 +833,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
         persist_retry_for_ref(current, node_key, stage, state.stage_attempt)
       end)
 
-    timer_ref = make_ref()
-    Process.send_after(self(), {:retry_attempt, timer_ref}, max(retry_run.retry_backoff_ms, 0))
+    timer_token = make_ref()
+
+    timer_ref =
+      Process.send_after(
+        self(),
+        {:retry_attempt, timer_token},
+        max(retry_run.retry_backoff_ms, 0)
+      )
 
     retry = %{
       node_keys: state.stage_state.retry_refs,
@@ -836,7 +852,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
      state
      |> Map.put(:run, retry_run)
      |> Map.put(:stage_state, %{state.stage_state | run: retry_run, retry_refs: []})
-     |> RunExecutionState.put_retry_timer(timer_ref, retry)}
+     |> RunExecutionState.put_retry_timer(timer_token, timer_ref, retry)}
   end
 
   defp finalize_pipeline_stage(%RunExecutionState{} = state) do
@@ -926,7 +942,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
           Process.exit(await.pid, :kill)
           Process.demonitor(await.monitor_ref, [:flush])
-          Process.cancel_timer(await.timer_ref)
+          Process.cancel_timer(await.timeout_ref)
           :ok = RunWorkSet.release_entry(await.entry)
           :ok = RunWorkSet.fail_entry_claim(await.entry, reason)
           elem(RunExecutionState.complete_work(next, execution_id), 1)
@@ -960,214 +976,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
          }) do
       :ok -> retrying
       {:error, :external_cancel} -> Snapshots.cancelled_snapshot(retrying)
-    end
-  end
-
-  def execute_plan(%RunState{submit_kind: :pipeline} = run_state, %Version{} = version),
-    do: execute_pipeline_parallel_once(run_state, version)
-
-  def execute_plan(%RunState{submit_kind: submit_kind} = run_state, %Version{})
-      when submit_kind in [:backfill_asset, :backfill_pipeline] do
-    Snapshots.snapshot_update(run_state,
-      status: :error,
-      error: {:unsupported_submit_kind, submit_kind},
-      runner_execution_id: nil,
-      result: %{status: :error, asset_results: [], metadata: run_state.metadata}
-    )
-  end
-
-  def execute_plan(
-        %RunState{submit_kind: :rerun, metadata: metadata} = run_state,
-        %Version{} = version
-      )
-      when is_map(metadata) do
-    if Map.get(metadata, :replay_submit_kind) == :pipeline do
-      execute_pipeline_parallel_once(run_state, version)
-    else
-      execute_plan_sequential(run_state, version)
-    end
-  end
-
-  def execute_plan(%RunState{} = run_state, %Version{} = version),
-    do: execute_plan_sequential(run_state, version)
-
-  defp execute_plan_sequential(%RunState{} = run_state, %Version{} = version) do
-    refs_with_stage = execution_refs_with_stage(run_state)
-
-    refs_with_stage
-    |> Enum.reduce_while({run_state, []}, fn {asset_ref, stage}, {current_run, acc_results} ->
-      case execute_ref_with_retry(current_run, version, asset_ref, stage, 1) do
-        {:ok, next_run, step_results} ->
-          {:cont, {next_run, acc_results ++ step_results}}
-
-        {:error, failed_run, step_results} ->
-          terminal =
-            Snapshots.snapshot_update(failed_run,
-              runner_execution_id: nil,
-              result: %{
-                status: failed_run.status,
-                asset_results: acc_results ++ step_results,
-                metadata: failed_run.metadata
-              }
-            )
-
-          {:halt, terminal}
-      end
-    end)
-    |> case do
-      {final_run, all_results} ->
-        Snapshots.snapshot_update(final_run,
-          status: :ok,
-          error: nil,
-          runner_execution_id: nil,
-          result: %{status: :ok, asset_results: all_results, metadata: final_run.metadata}
-        )
-
-      %RunState{} = terminal ->
-        terminal
-    end
-  end
-
-  defp execute_pipeline_parallel_once(%RunState{} = run_state, %Version{} = version) do
-    runner_client = configured_runner_client()
-    runner_opts = configured_runner_opts()
-
-    with :ok <- validate_runner_client(runner_client),
-         :ok <- runner_client.register_manifest(version, runner_opts),
-         {:ok, freshness_context} <- initial_freshness_context(run_state, version) do
-      stage_groups = pipeline_stage_groups(run_state)
-
-      stage_groups
-      |> Enum.reduce_while({run_state, [], freshness_context, nil}, fn {stage, node_keys},
-                                                                       {current_run, acc_results,
-                                                                        freshness_context,
-                                                                        terminal_failure} ->
-        if Persistence.externally_cancelled?(current_run.id) do
-          {:halt, Snapshots.cancelled_terminal(current_run, acc_results)}
-        else
-          case classify_pipeline_stage(
-                 current_run,
-                 version,
-                 stage,
-                 node_keys,
-                 freshness_context,
-                 terminal_failure
-               ) do
-            {:ok, classified_run, runnable_node_keys, decisions, classified_context,
-             next_terminal_failure} ->
-              if runnable_node_keys == [] do
-                {:cont, {classified_run, acc_results, classified_context, next_terminal_failure}}
-              else
-                case run_stage_parallel_once(
-                       classified_run,
-                       version,
-                       stage,
-                       runnable_node_keys,
-                       decisions,
-                       classified_context,
-                       runner_client,
-                       runner_opts
-                     ) do
-                  {:ok, next_run, stage_results, executed_node_keys} ->
-                    {next_context, persisted_run} =
-                      record_successful_freshness(
-                        next_run,
-                        version,
-                        executed_node_keys,
-                        decisions,
-                        stage_results,
-                        classified_context
-                      )
-
-                    {:cont,
-                     {persisted_run, acc_results ++ stage_results, next_context,
-                      next_terminal_failure}}
-
-                  {:error, failed_run, stage_results, executed_node_keys} ->
-                    {next_context, persisted_run} =
-                      record_completed_stage_after_failure(
-                        failed_run,
-                        version,
-                        executed_node_keys,
-                        decisions,
-                        stage_results,
-                        classified_context
-                      )
-
-                    terminal_failure =
-                      next_terminal_failure ||
-                        %{status: persisted_run.status, error: persisted_run.error}
-
-                    {:cont,
-                     {persisted_run, acc_results ++ stage_results, next_context, terminal_failure}}
-                end
-              end
-
-            {:error, failed_run} ->
-              all_results = sort_asset_results(failed_run, acc_results)
-              {:halt, terminalize_pipeline_failed_run(failed_run, all_results)}
-          end
-        end
-      end)
-      |> case do
-        {final_run, all_results, _freshness_context, nil} ->
-          :ok = ExecutionAdmission.release_run(final_run.id)
-          all_results = sort_asset_results(final_run, all_results)
-
-          Snapshots.snapshot_update(final_run,
-            status: :ok,
-            error: nil,
-            runner_execution_id: nil,
-            result: pipeline_result(final_run, :ok, all_results)
-          )
-
-        {failed_run, all_results, _freshness_context, terminal_failure} ->
-          :ok = ExecutionAdmission.release_run(failed_run.id)
-          all_results = sort_asset_results(failed_run, all_results)
-          terminalize_pipeline_failed_run(failed_run, all_results, terminal_failure)
-
-        %RunState{} = terminal ->
-          :ok = ExecutionAdmission.release_run(terminal.id)
-          terminal
-      end
-    else
-      {:error, reason} ->
-        Snapshots.snapshot_update(run_state,
-          status: :error,
-          error: reason,
-          runner_execution_id: nil,
-          result: pipeline_result(run_state, :error, [])
-        )
-    end
-  end
-
-  defp run_stage_parallel_once(
-         %RunState{} = run_state,
-         %Version{} = version,
-         stage,
-         node_keys,
-         decisions,
-         freshness_context,
-         runner_client,
-         runner_opts
-       ) do
-    case run_stage_attempt(
-           run_state,
-           version,
-           stage,
-           node_keys,
-           decisions,
-           freshness_context,
-           1,
-           runner_client,
-           runner_opts,
-           []
-         ) do
-      {:ok, next_run, stage_results} ->
-        {:ok, next_run, stage_results, node_keys}
-
-      {:error, failed_run, stage_results, attempted_node_keys} ->
-        {:error, failed_run, stage_results, attempted_node_keys}
     end
   end
 
@@ -1313,152 +1121,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
     RunState.transition(run_state, result: result_map)
   end
 
-  defp run_stage_attempt(
-         %RunState{} = run_state,
-         %Version{} = version,
-         stage,
-         node_keys,
-         decisions,
-         freshness_context,
-         attempt,
-         runner_client,
-         runner_opts,
-         acc_results
-       ) do
-    if Persistence.externally_cancelled?(run_state.id) do
-      {:error, Snapshots.cancelled_snapshot(run_state), acc_results, []}
-    else
-      case submit_stage_entries(
-             run_state,
-             version,
-             stage,
-             node_keys,
-             decisions,
-             freshness_context,
-             attempt,
-             runner_client,
-             runner_opts
-           ) do
-        {:ok, run_after_submit, entries, deferred_node_keys, queued_steps} ->
-          result =
-            process_stage_attempt_results(
-              StageAttemptState.new(
-                run_after_submit,
-                acc_results,
-                entries,
-                deferred_node_keys,
-                queued_steps
-              ),
-              stage,
-              attempt,
-              version,
-              decisions,
-              freshness_context,
-              runner_client,
-              runner_opts
-            )
-
-          case result do
-            {:ok, next_run, next_acc_results, [], _attempted_node_keys} ->
-              {:ok, next_run, next_acc_results}
-
-            {:ok, next_run, next_acc_results, retry_refs, attempted_node_keys} ->
-              continue_retry_stage_attempt(
-                next_run,
-                version,
-                stage,
-                [],
-                retry_refs,
-                decisions,
-                freshness_context,
-                attempt,
-                runner_client,
-                runner_opts,
-                next_acc_results,
-                attempted_node_keys
-              )
-
-            {:error, failed_run, next_acc_results, attempted_node_keys} ->
-              {:error, failed_run, next_acc_results, attempted_node_keys}
-          end
-
-        {:error, failed_run, step_results, attempted_node_keys} ->
-          {:error, failed_run, step_results, attempted_node_keys}
-      end
-    end
-  end
-
-  defp continue_retry_stage_attempt(
-         next_run,
-         version,
-         stage,
-         deferred_node_keys,
-         retry_refs,
-         decisions,
-         freshness_context,
-         attempt,
-         runner_client,
-         runner_opts,
-         next_acc_results,
-         attempted_node_keys
-       ) do
-    retry_run =
-      Enum.reduce(retry_refs, next_run, fn node_key, current ->
-        schedule_retry_for_ref(current, node_key, stage, attempt)
-      end)
-
-    {run_before_retry, results_before_retry, attempted_before_retry} =
-      case deferred_node_keys do
-        [] ->
-          {retry_run, next_acc_results, attempted_node_keys}
-
-        [_ | _] ->
-          case run_stage_attempt(
-                 retry_run,
-                 version,
-                 stage,
-                 deferred_node_keys,
-                 decisions,
-                 freshness_context,
-                 attempt,
-                 runner_client,
-                 runner_opts,
-                 next_acc_results
-               ) do
-            {:ok, deferred_run, deferred_results} ->
-              {deferred_run, deferred_results, attempted_node_keys}
-
-            {:error, deferred_failed_run, deferred_results, deferred_attempted_node_keys} ->
-              throw(
-                {:deferred_failed, deferred_failed_run, deferred_results,
-                 Enum.uniq(attempted_node_keys ++ deferred_attempted_node_keys)}
-              )
-          end
-      end
-
-    case run_stage_attempt(
-           run_before_retry,
-           version,
-           stage,
-           retry_refs,
-           decisions,
-           freshness_context,
-           attempt + 1,
-           runner_client,
-           runner_opts,
-           results_before_retry
-         ) do
-      {:ok, retry_run, retry_results} ->
-        {:ok, retry_run, retry_results}
-
-      {:error, retry_failed_run, retry_results, retry_attempted_node_keys} ->
-        {:error, retry_failed_run, retry_results,
-         Enum.uniq(attempted_before_retry ++ retry_attempted_node_keys)}
-    end
-  catch
-    {:deferred_failed, failed_run, results, attempted} -> {:error, failed_run, results, attempted}
-  end
-
   defp submit_stage_entries(
          %RunState{} = run_state,
          %Version{} = version,
@@ -1533,349 +1195,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
       {:error, %{type: :await_task_failed, kind: kind, reason: inspect(reason)}}
   end
 
-  defp start_await_tasks(entries, timeout_ms, runner_client, runner_opts) do
-    AwaitTasks.start(entries, timeout_ms, fn entry ->
-      await_runner_result(entry, timeout_ms, runner_client, runner_opts)
-    end)
-  end
-
   defp stage_admission_deadline(timeout_ms),
     do: System.monotonic_time(:millisecond) + timeout_ms + @stage_admission_timeout_buffer_ms
-
-  defp process_stage_attempt_results(
-         %StageAttemptState{run: %RunState{} = run_state} = state,
-         stage,
-         attempt,
-         version,
-         decisions,
-         freshness_context,
-         runner_client,
-         runner_opts
-       ) do
-    state.initial_entries
-    |> start_await_tasks(run_state.timeout_ms, runner_client, runner_opts)
-    |> collect_stage_attempt_results(
-      stage_admission_deadline(run_state.timeout_ms),
-      state,
-      stage,
-      attempt,
-      version,
-      decisions,
-      freshness_context,
-      runner_client,
-      runner_opts
-    )
-  end
-
-  defp collect_stage_attempt_results(
-         %AwaitTasks{} = pending_tasks,
-         deadline,
-         state,
-         stage,
-         attempt,
-         version,
-         decisions,
-         freshness_context,
-         runner_client,
-         runner_opts
-       ) do
-    if AwaitTasks.empty?(pending_tasks) do
-      collect_idle_stage_attempt(
-        pending_tasks,
-        deadline,
-        state,
-        stage,
-        attempt,
-        version,
-        decisions,
-        freshness_context,
-        runner_client,
-        runner_opts
-      )
-    else
-      {:events, events, next_pending_tasks} =
-        AwaitTasks.receive_next(pending_tasks, &release_entry_lease/1)
-
-      {available_events, drained_pending_tasks} = AwaitTasks.drain_available(next_pending_tasks)
-
-      process_stage_attempt_result_batch(
-        events ++ available_events,
-        drained_pending_tasks,
-        deadline,
-        state,
-        stage,
-        attempt,
-        version,
-        decisions,
-        freshness_context,
-        runner_client,
-        runner_opts
-      )
-    end
-  end
-
-  defp collect_idle_stage_attempt(
-         pending_tasks,
-         deadline,
-         %StageAttemptState{} = state,
-         stage,
-         attempt,
-         version,
-         decisions,
-         freshness_context,
-         runner_client,
-         runner_opts
-       ) do
-    if not StageAttemptState.terminal_failure?(state) and StageAttemptState.deferred?(state) do
-      case wait_for_stage_admission_retry(deadline) do
-        :ok ->
-          case refill_stage_attempt_capacity(
-                 pending_tasks,
-                 state,
-                 stage,
-                 attempt,
-                 version,
-                 decisions,
-                 freshness_context,
-                 runner_client,
-                 runner_opts
-               ) do
-            {:cont, next_pending_tasks, next_state} ->
-              collect_stage_attempt_results(
-                next_pending_tasks,
-                deadline,
-                next_state,
-                stage,
-                attempt,
-                version,
-                decisions,
-                freshness_context,
-                runner_client,
-                runner_opts
-              )
-
-            {:halt, result} ->
-              result
-          end
-
-        :timeout ->
-          timeout_deferred_stage_attempt(state)
-      end
-    else
-      finalize_stage_attempt_state(state)
-    end
-  end
-
-  defp process_stage_attempt_result_batch(
-         events,
-         pending_tasks,
-         deadline,
-         state,
-         stage,
-         attempt,
-         version,
-         decisions,
-         freshness_context,
-         runner_client,
-         runner_opts
-       )
-       when is_list(events) do
-    case process_stage_attempt_result_list(
-           events,
-           pending_tasks,
-           state,
-           stage,
-           attempt,
-           runner_client,
-           runner_opts
-         ) do
-      {:cont, next_state} ->
-        case refill_stage_attempt_capacity(
-               pending_tasks,
-               next_state,
-               stage,
-               attempt,
-               version,
-               decisions,
-               freshness_context,
-               runner_client,
-               runner_opts
-             ) do
-          {:cont, next_pending_tasks, refilled_state} ->
-            collect_stage_attempt_results(
-              next_pending_tasks,
-              deadline,
-              refilled_state,
-              stage,
-              attempt,
-              version,
-              decisions,
-              freshness_context,
-              runner_client,
-              runner_opts
-            )
-
-          {:halt, result} ->
-            stop_pending_await_tasks(pending_tasks)
-            result
-        end
-
-      {:halt, result} ->
-        result
-    end
-  end
-
-  defp process_stage_attempt_result_list(
-         [],
-         _pending_tasks,
-         state,
-         _stage,
-         _attempt,
-         _runner_client,
-         _runner_opts
-       ),
-       do: {:cont, state}
-
-  defp process_stage_attempt_result_list(
-         [{entry, await_result} | rest],
-         pending_tasks,
-         state,
-         stage,
-         attempt,
-         runner_client,
-         runner_opts
-       ) do
-    case process_stage_attempt_result(
-           state,
-           entry,
-           await_result,
-           stage,
-           attempt,
-           runner_client,
-           runner_opts
-         ) do
-      {:cont, next_state} ->
-        process_stage_attempt_result_list(
-          rest,
-          pending_tasks,
-          next_state,
-          stage,
-          attempt,
-          runner_client,
-          runner_opts
-        )
-
-      {:halt, result} ->
-        fail_unprocessed_stage_attempt_results(rest)
-        stop_pending_await_tasks(pending_tasks)
-        {:halt, result}
-    end
-  end
-
-  defp fail_unprocessed_stage_attempt_results(results) when is_list(results) do
-    Enum.each(results, fn
-      {entry, {:error, :timeout}} ->
-        :ok = MaterializationClaims.fail_entry(entry, :await_timeout)
-
-      {_entry, _result} ->
-        :ok
-    end)
-  end
-
-  defp refill_stage_attempt_capacity(
-         pending_tasks,
-         %StageAttemptState{terminal_failure: terminal_failure} = state,
-         _stage,
-         _attempt,
-         _version,
-         _decisions,
-         _freshness_context,
-         _runner_client,
-         _runner_opts
-       )
-       when not is_nil(terminal_failure) do
-    {:cont, pending_tasks, state}
-  end
-
-  defp refill_stage_attempt_capacity(
-         pending_tasks,
-         %StageAttemptState{deferred_node_keys: []} = state,
-         _stage,
-         _attempt,
-         _version,
-         _decisions,
-         _freshness_context,
-         _runner_client,
-         _runner_opts
-       ) do
-    {:cont, pending_tasks, state}
-  end
-
-  defp refill_stage_attempt_capacity(
-         pending_tasks,
-         %StageAttemptState{run: %RunState{} = run_state, deferred_node_keys: deferred_node_keys} =
-           state,
-         stage,
-         attempt,
-         version,
-         decisions,
-         freshness_context,
-         runner_client,
-         runner_opts
-       ) do
-    case submit_stage_entries(
-           run_state,
-           version,
-           stage,
-           deferred_node_keys,
-           decisions,
-           freshness_context,
-           attempt,
-           runner_client,
-           runner_opts,
-           state.queued_steps
-         ) do
-      {:ok, next_run, [], next_deferred_node_keys, next_queued_steps} ->
-        {:cont, pending_tasks,
-         StageAttemptState.defer_only(
-           state,
-           next_run,
-           next_deferred_node_keys,
-           next_queued_steps
-         )}
-
-      {:ok, next_run, entries, next_deferred_node_keys, next_queued_steps} ->
-        next_pending_tasks =
-          entries
-          |> start_await_tasks(next_run.timeout_ms, runner_client, runner_opts)
-          |> then(&AwaitTasks.merge(pending_tasks, &1))
-
-        {:cont, next_pending_tasks,
-         StageAttemptState.add_entries(
-           state,
-           entries,
-           next_run,
-           next_deferred_node_keys,
-           next_queued_steps
-         )}
-
-      {:error, failed_run, step_results, attempted_node_keys} ->
-        {:halt,
-         {:error, failed_run, state.results ++ step_results,
-          Enum.uniq(StageAttemptState.attempted_node_keys(state) ++ attempted_node_keys)}}
-    end
-  end
-
-  defp wait_for_stage_admission_retry(deadline) do
-    now = System.monotonic_time(:millisecond)
-    wait_ms = min(@stage_admission_retry_ms, max(deadline - now, 0))
-
-    if wait_ms == 0 do
-      :timeout
-    else
-      :ok
-    end
-  end
 
   defp timeout_deferred_stage_attempt(%{run: %RunState{} = run_state} = state) do
     timed_out =
@@ -1968,13 +1289,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
        }) do
     failed_run = failed_stage_terminal_state(next_run, terminal_failure)
     {:error, failed_run, next_results, attempted_node_keys}
-  end
-
-  defp stop_pending_await_tasks(%AwaitTasks{} = pending_tasks) do
-    AwaitTasks.stop(pending_tasks, fn entry ->
-      :ok = RunWorkSet.release_entry(entry)
-      :ok = RunWorkSet.fail_entry_claim(entry, :stopped_pending_await)
-    end)
   end
 
   defp record_stage_attempt_freshness(%RunState{} = run_state, entry, :ok) do
@@ -2470,38 +1784,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp asset_result_asset_step_id(%{"asset_step_id" => asset_step_id}), do: asset_step_id
   defp asset_result_asset_step_id(_result), do: nil
 
-  defp schedule_retry_for_ref(%RunState{} = run_state, node_key, stage, attempt) do
-    asset_ref = node_asset_ref(run_state, node_key)
-    asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
-
-    retrying =
-      RunState.transition(run_state,
-        status: :running,
-        error: nil,
-        runner_execution_id: nil,
-        metadata: Map.merge(run_state.metadata, %{retrying: true, next_attempt: attempt + 1})
-      )
-
-    case Persistence.persist_run_step(retrying, :step_retry_scheduled, %{
-           asset_ref: asset_ref,
-           node_key: node_key,
-           asset_step_id: asset_step_id,
-           window: node_window(run_state, node_key),
-           stage: stage,
-           attempt: attempt,
-           max_attempts: run_state.max_attempts,
-           execution_pool: effective_execution_pool(run_state, node_key),
-           next_attempt: attempt + 1,
-           retry_backoff_ms: run_state.retry_backoff_ms
-         }) do
-      :ok ->
-        retrying
-
-      {:error, :external_cancel} ->
-        Snapshots.cancelled_snapshot(retrying)
-    end
-  end
-
   defp node_asset_ref(%RunState{plan: %Favn.Plan{nodes: nodes}}, node_key) do
     case Map.fetch(nodes, node_key) do
       {:ok, node} -> node.ref
@@ -2862,240 +2144,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp planned_asset_refs(%RunState{asset_ref: ref}) when is_tuple(ref), do: [ref]
   defp planned_asset_refs(_run_state), do: []
 
-  defp execute_ref_with_retry(
-         %RunState{} = run_state,
-         %Version{} = version,
-         asset_ref,
-         stage,
-         attempt
-       ) do
-    if Persistence.externally_cancelled?(run_state.id) do
-      Snapshots.cancelled_state(run_state)
-    else
-      runner_client = configured_runner_client()
-      runner_opts = configured_runner_opts()
-      max_attempts = run_state.max_attempts
-      node_key = {asset_ref, nil}
-      asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
-
-      with :ok <- validate_runner_client(runner_client),
-           :ok <- runner_client.register_manifest(version, runner_opts),
-           {:ok, %{work: work}} <-
-             run_state
-             |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
-             |> StepAttemptLifecycle.build_work(),
-           {:ok, execution_id} <- runner_client.submit_work(work, runner_opts) do
-        running_with_execution =
-          RunState.transition(run_state,
-            runner_execution_id: execution_id,
-            metadata: RunnerWork.lifecycle_metadata(work)
-          )
-
-        case Persistence.persist_run_step(running_with_execution, :step_started, %{
-               asset_ref: asset_ref,
-               runner_execution_id: execution_id,
-               node_key: node_key,
-               asset_step_id: asset_step_id,
-               stage: stage,
-               attempt: attempt,
-               max_attempts: max_attempts
-             }) do
-          :ok ->
-            await_sequential_result(
-              running_with_execution,
-              version,
-              asset_ref,
-              %{
-                stage: stage,
-                attempt: attempt,
-                execution_id: execution_id,
-                max_attempts: max_attempts
-              },
-              runner_client,
-              runner_opts
-            )
-
-          {:error, :external_cancel} ->
-            cancelled =
-              cancel_execution_ids(
-                running_with_execution,
-                [execution_id],
-                %{kind: :external_cancel, asset_ref: asset_ref, stage: stage, attempt: attempt},
-                runner_client,
-                runner_opts
-              )
-
-            {:error, Snapshots.cancelled_snapshot(cancelled), []}
-        end
-      else
-        {:error, reason} ->
-          failed =
-            RunState.transition(run_state,
-              status: :error,
-              runner_execution_id: nil,
-              error: reason
-            )
-
-          case Persistence.persist_run_step(failed, :step_failed, %{
-                 asset_ref: asset_ref,
-                 error: reason,
-                 node_key: node_key,
-                 asset_step_id: asset_step_id,
-                 stage: stage,
-                 attempt: attempt,
-                 max_attempts: max_attempts
-               }) do
-            :ok -> maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
-            {:error, :external_cancel} -> Snapshots.cancelled_state(failed)
-          end
-      end
-    end
-  end
-
-  defp await_sequential_result(
-         %RunState{} = running_with_execution,
-         %Version{} = version,
-         asset_ref,
-         %{
-           stage: stage,
-           attempt: attempt,
-           execution_id: execution_id,
-           max_attempts: max_attempts
-         },
-         runner_client,
-         runner_opts
-       ) do
-    bridge =
-      start_runner_log_bridge(runner_client, execution_id, runner_opts, %{
-        run_id: running_with_execution.id,
-        asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
-        node_key: Map.get(running_with_execution.metadata, :node_key),
-        asset_ref: asset_ref,
-        runner_execution_id: execution_id,
-        attempt: attempt
-      })
-
-    await_result =
-      try do
-        runner_client.await_result(execution_id, running_with_execution.timeout_ms, runner_opts)
-      after
-        stop_runner_log_bridge(bridge, runner_client, execution_id, runner_opts)
-      end
-
-    case await_result do
-      {:ok, %RunnerResult{} = result} ->
-        result = sanitize_runner_result(result)
-
-        step_finished =
-          RunState.transition(running_with_execution,
-            status: StepAttemptLifecycle.map_runner_status(result.status),
-            runner_execution_id: nil,
-            error: result.error,
-            metadata: merge_runner_metadata(running_with_execution.metadata, result.metadata)
-          )
-
-        {event_type, retryable?} = StepAttemptLifecycle.step_outcome(step_finished.status)
-        retryable? = retryable? and StepAttemptLifecycle.runner_result_retryable?(result)
-
-        case Persistence.persist_run_step(step_finished, event_type, %{
-               asset_ref: asset_ref,
-               result_status: result.status,
-               error: result.error,
-               node_key: Map.get(running_with_execution.metadata, :node_key),
-               asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
-               stage: stage,
-               attempt: attempt,
-               max_attempts: max_attempts
-             }) do
-          :ok ->
-            maybe_retry_step(
-              step_finished,
-              version,
-              asset_ref,
-              stage,
-              attempt,
-              retryable?,
-              result.asset_results
-            )
-
-          {:error, :external_cancel} ->
-            Snapshots.cancelled_state(running_with_execution)
-        end
-
-      {:error, :timeout} ->
-        cancelled =
-          cancel_execution_ids(
-            running_with_execution,
-            [execution_id],
-            %{kind: :await_timeout, asset_ref: asset_ref, stage: stage, attempt: attempt},
-            runner_client,
-            runner_opts
-          )
-
-        timeout_state =
-          RunState.transition(cancelled,
-            status: :timed_out,
-            runner_execution_id: nil,
-            error: :timeout
-          )
-
-        case Persistence.persist_run_step(timeout_state, :step_timed_out, %{
-               asset_ref: asset_ref,
-               error: :timeout,
-               node_key: Map.get(running_with_execution.metadata, :node_key),
-               asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
-               stage: stage,
-               attempt: attempt,
-               max_attempts: max_attempts
-             }) do
-          :ok ->
-            maybe_retry_step(timeout_state, version, asset_ref, stage, attempt, true, [])
-
-          {:error, :external_cancel} ->
-            Snapshots.cancelled_state(running_with_execution)
-        end
-
-      {:error, reason} ->
-        cancelled =
-          cancel_execution_ids(
-            running_with_execution,
-            [execution_id],
-            %{
-              kind: :await_error,
-              asset_ref: asset_ref,
-              stage: stage,
-              attempt: attempt,
-              error: reason
-            },
-            runner_client,
-            runner_opts
-          )
-
-        failed =
-          RunState.transition(cancelled,
-            status: :error,
-            runner_execution_id: nil,
-            error: reason
-          )
-
-        case Persistence.persist_run_step(failed, :step_failed, %{
-               asset_ref: asset_ref,
-               error: reason,
-               node_key: Map.get(running_with_execution.metadata, :node_key),
-               asset_step_id: Map.get(running_with_execution.metadata, :asset_step_id),
-               stage: stage,
-               attempt: attempt,
-               max_attempts: max_attempts
-             }) do
-          :ok ->
-            maybe_retry_step(failed, version, asset_ref, stage, attempt, true, [])
-
-          {:error, :external_cancel} ->
-            Snapshots.cancelled_state(running_with_execution)
-        end
-    end
-  end
-
   defp start_runner_log_bridge(runner_client, execution_id, runner_opts, context) do
     case RunnerLogBridge.start(runner_client, execution_id, runner_opts, context) do
       {:ok, pid} -> pid
@@ -3107,68 +2155,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp stop_runner_log_bridge(pid, runner_client, execution_id, runner_opts) when is_pid(pid) do
     RunnerLogBridge.stop(pid, runner_client, execution_id, runner_opts)
-  end
-
-  defp maybe_retry_step(
-         %RunState{status: status} = run_state,
-         _version,
-         _asset_ref,
-         _stage,
-         _attempt,
-         _retryable,
-         step_results
-       )
-       when status in [:ok, :cancelled] do
-    {:ok, run_state, normalize_results(step_results)}
-  end
-
-  defp maybe_retry_step(
-         %RunState{} = run_state,
-         version,
-         asset_ref,
-         stage,
-         attempt,
-         retryable,
-         step_results
-       ) do
-    if Persistence.externally_cancelled?(run_state.id) do
-      Snapshots.cancelled_state(run_state)
-    else
-      if retryable and attempt < run_state.max_attempts do
-        node_key = Map.get(run_state.metadata, :node_key) || {asset_ref, nil}
-
-        asset_step_id =
-          Map.get(run_state.metadata, :asset_step_id) ||
-            AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
-
-        retrying =
-          RunState.transition(run_state,
-            status: :running,
-            error: nil,
-            runner_execution_id: nil,
-            metadata: Map.merge(run_state.metadata, %{retrying: true, next_attempt: attempt + 1})
-          )
-
-        case Persistence.persist_run_step(retrying, :step_retry_scheduled, %{
-               asset_ref: asset_ref,
-               node_key: node_key,
-               asset_step_id: asset_step_id,
-               stage: stage,
-               attempt: attempt,
-               max_attempts: run_state.max_attempts,
-               next_attempt: attempt + 1,
-               retry_backoff_ms: run_state.retry_backoff_ms
-             }) do
-          :ok ->
-            execute_ref_with_retry(retrying, version, asset_ref, stage, attempt + 1)
-
-          {:error, :external_cancel} ->
-            Snapshots.cancelled_state(run_state)
-        end
-      else
-        {:error, run_state, normalize_results(step_results)}
-      end
-    end
   end
 
   defp execution_refs_with_stage(%RunState{submit_kind: :pipeline, plan: %Favn.Plan{} = plan}) do

@@ -27,9 +27,15 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   @type await :: %{
           required(:pid) => pid(),
           required(:monitor_ref) => reference(),
-          required(:timer_ref) => reference(),
+          required(:timeout_token) => reference(),
+          required(:timeout_ref) => reference(),
           required(:entry) => map(),
           required(:kind) => :sequential | :pipeline
+        }
+
+  @type timer_entry :: %{
+          required(:timer_ref) => reference(),
+          required(:payload) => map()
         }
 
   @type t :: %__MODULE__{
@@ -45,8 +51,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           awaits: %{optional(String.t()) => await()},
           await_monitors: %{optional(reference()) => String.t()},
           await_timers: %{optional(reference()) => String.t()},
-          retry_timers: %{optional(reference()) => map()},
-          admission_timers: %{optional(reference()) => map()},
+          retry_timers: %{optional(reference()) => timer_entry()},
+          admission_timers: %{optional(reference()) => timer_entry()},
           accumulated_results: [term()],
           sequential_refs: [{Favn.Ref.t(), non_neg_integer()}],
           sequential_index: non_neg_integer(),
@@ -127,7 +133,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
       state
       | awaits: Map.put(state.awaits, execution_id, await),
         await_monitors: Map.put(state.await_monitors, await.monitor_ref, execution_id),
-        await_timers: Map.put(state.await_timers, await.timer_ref, execution_id)
+        await_timers: Map.put(state.await_timers, await.timeout_token, execution_id)
     }
   end
 
@@ -142,7 +148,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           state
           | awaits: awaits,
             await_monitors: Map.delete(state.await_monitors, await.monitor_ref),
-            await_timers: Map.delete(state.await_timers, await.timer_ref)
+            await_timers: Map.delete(state.await_timers, await.timeout_token)
         }
       else
         %{state | awaits: awaits}
@@ -152,32 +158,53 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   end
 
   @doc "Stores a retry timer."
-  @spec put_retry_timer(t(), reference(), map()) :: t()
-  def put_retry_timer(%__MODULE__{} = state, timer_ref, retry) do
-    %{state | retry_timers: Map.put(state.retry_timers, timer_ref, retry), status: :retry_wait}
+  @spec put_retry_timer(t(), reference(), reference(), map()) :: t()
+  def put_retry_timer(%__MODULE__{} = state, timer_token, timer_ref, retry) do
+    entry = %{timer_ref: timer_ref, payload: retry}
+    %{state | retry_timers: Map.put(state.retry_timers, timer_token, entry), status: :retry_wait}
   end
 
   @doc "Removes a retry timer."
-  @spec pop_retry_timer(t(), reference()) :: {map() | nil, t()}
-  def pop_retry_timer(%__MODULE__{} = state, timer_ref) do
-    {retry, timers} = Map.pop(state.retry_timers, timer_ref)
+  @spec pop_retry_timer(t(), reference()) :: {timer_entry() | nil, t()}
+  def pop_retry_timer(%__MODULE__{} = state, timer_token) do
+    {retry, timers} = Map.pop(state.retry_timers, timer_token)
     {retry, %{state | retry_timers: timers}}
   end
 
   @doc "Stores an admission retry timer."
-  @spec put_admission_timer(t(), reference(), map()) :: t()
-  def put_admission_timer(%__MODULE__{} = state, timer_ref, retry) do
+  @spec put_admission_timer(t(), reference(), reference(), map()) :: t()
+  def put_admission_timer(%__MODULE__{} = state, timer_token, timer_ref, retry) do
+    entry = %{timer_ref: timer_ref, payload: retry}
+
     %{
       state
-      | admission_timers: Map.put(state.admission_timers, timer_ref, retry),
+      | admission_timers: Map.put(state.admission_timers, timer_token, entry),
         status: :admission_wait
     }
   end
 
   @doc "Removes an admission retry timer."
-  @spec pop_admission_timer(t(), reference()) :: {map() | nil, t()}
-  def pop_admission_timer(%__MODULE__{} = state, timer_ref) do
-    {retry, timers} = Map.pop(state.admission_timers, timer_ref)
+  @spec pop_admission_timer(t(), reference()) :: {timer_entry() | nil, t()}
+  def pop_admission_timer(%__MODULE__{} = state, timer_token) do
+    {retry, timers} = Map.pop(state.admission_timers, timer_token)
     {retry, %{state | admission_timers: timers}}
+  end
+
+  @doc "Cancels all owned timers and clears timer indexes."
+  @spec cancel_timers(t()) :: t()
+  def cancel_timers(%__MODULE__{} = state) do
+    state.awaits
+    |> Map.values()
+    |> Enum.each(&Process.cancel_timer(&1.timeout_ref))
+
+    state.retry_timers
+    |> Map.values()
+    |> Enum.each(&Process.cancel_timer(&1.timer_ref))
+
+    state.admission_timers
+    |> Map.values()
+    |> Enum.each(&Process.cancel_timer(&1.timer_ref))
+
+    %{state | await_timers: %{}, retry_timers: %{}, admission_timers: %{}}
   end
 end

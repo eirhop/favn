@@ -1024,6 +1024,53 @@ defmodule FavnOrchestrator.RunServerTest do
     refute last_ref in started_refs
   end
 
+  test "pipeline retry waits for same-stage sibling work to drain" do
+    Application.put_env(:favn_orchestrator, :runner_client, RunnerClientBlockingStub)
+    Application.put_env(:favn_orchestrator, :runner_client_opts, parent: self())
+
+    refs =
+      Enum.map(1..2, fn index ->
+        {Module.concat([MyApp.Assets.PipelineRetryDrain, "Asset#{index}"]), :asset}
+      end)
+
+    retry_ref = hd(refs)
+    sibling_ref = List.last(refs)
+    plan = same_stage_plan(refs)
+    version = manifest_version_for_refs("mv_pipeline_retry_waits_for_drain", refs)
+
+    run_state =
+      "run_pipeline_retry_waits_for_drain"
+      |> pipeline_run_state(version, plan, refs)
+      |> RunState.transition(max_attempts: 2, retry_backoff_ms: 0)
+
+    assert :ok = Storage.put_run(run_state)
+
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run_state, version: version})
+    ref = Process.monitor(pid)
+
+    initial_submissions = receive_submissions(2)
+    awaiters = receive_awaiters(initial_submissions)
+
+    retry_submission =
+      Enum.find(initial_submissions, fn {asset_ref, _id} -> asset_ref == retry_ref end)
+
+    sibling_submission =
+      Enum.find(initial_submissions, fn {asset_ref, _id} -> asset_ref == sibling_ref end)
+
+    release_submission(retry_submission, awaiters, :error)
+    refute_receive {:submitted, ^retry_ref, _execution_id}, 100
+
+    release_submission(sibling_submission, awaiters, :ok)
+
+    assert_receive {:submitted, ^retry_ref, retry_execution_id}, 1_000
+    retry_awaiters = receive_awaiters([{retry_ref, retry_execution_id}])
+    release_submission({retry_ref, retry_execution_id}, retry_awaiters, :ok)
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert {:ok, stored} = Storage.get_run(run_state.id)
+    assert stored.status == :ok
+  end
+
   test "pipeline submit failure cancels admitted same-stage work with wrapped reason" do
     [first_ref, fail_ref] =
       Enum.map(1..2, fn index ->
