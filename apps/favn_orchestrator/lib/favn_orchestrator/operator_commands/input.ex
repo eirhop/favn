@@ -89,6 +89,10 @@ defmodule FavnOrchestrator.OperatorCommands.Input do
 
   def window(value), do: {:error, {:invalid_operator_window, value}}
 
+  def timeout_ms(nil), do: {:ok, nil}
+  def timeout_ms(value) when is_integer(value) and value > 0, do: {:ok, value}
+  def timeout_ms(value), do: {:error, {:invalid_operator_timeout_ms, value}}
+
   defp normalize_window_result(original, fun) do
     case fun.() do
       {:ok, %WindowRequest{} = request} -> {:ok, request}

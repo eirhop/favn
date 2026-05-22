@@ -1426,16 +1426,6 @@ defmodule FavnOrchestrator do
   defp ensure_window_rerunnable(_window), do: {:error, :backfill_window_not_rerunnable}
 
   defp require_operator_context(actor_context) when is_map(actor_context) do
-    if Map.get(actor_context, :__trusted_operator_context__) == true do
-      trusted_operator_context(actor_context)
-    else
-      persisted_operator_context(actor_context)
-    end
-  end
-
-  defp require_operator_context(_actor_context), do: {:error, :unauthenticated}
-
-  defp persisted_operator_context(actor_context) do
     with {:ok, actor} <- actor_context_object(actor_context, :actor),
          {:ok, session} <- actor_context_object(actor_context, :session),
          {:ok, persisted_actor, persisted_session} <- load_operator_context(actor, session),
@@ -1447,14 +1437,7 @@ defmodule FavnOrchestrator do
     end
   end
 
-  defp trusted_operator_context(actor_context) do
-    with {:ok, actor} <- actor_context_object(actor_context, :actor),
-         {:ok, _session} <- actor_context_object(actor_context, :session) do
-      if Auth.has_role?(actor, :operator), do: :ok, else: {:error, :forbidden}
-    else
-      {:error, :missing_context} -> {:error, :unauthenticated}
-    end
-  end
+  defp require_operator_context(_actor_context), do: {:error, :unauthenticated}
 
   defp actor_context_object(actor_context, key) do
     case Map.get(actor_context, key) || Map.get(actor_context, Atom.to_string(key)) do

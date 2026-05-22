@@ -54,14 +54,22 @@ defmodule FavnOrchestrator.AssetWindowProjector do
   defp put_asset_window_state(%RunState{} = run_state, result, %Runtime{} = window) do
     with {:ok, {module, name}} <- result_ref(result),
          {:ok, status} <- result_status(result),
-         {:ok, state} <- build_state(run_state, result, window, module, name, status) do
+         {:ok, existing} <- existing_state(module, name, Key.encode(window.key)),
+         {:ok, state} <- build_state(run_state, result, window, module, name, status, existing) do
       Storage.put_asset_window_state(state)
     end
   end
 
-  defp build_state(%RunState{} = run_state, result, %Runtime{} = window, module, name, status) do
+  defp build_state(
+         %RunState{} = run_state,
+         result,
+         %Runtime{} = window,
+         module,
+         name,
+         status,
+         existing
+       ) do
     window_key = Key.encode(window.key)
-    existing = existing_state(module, name, window_key)
     now = run_state.updated_at || DateTime.utc_now()
 
     AssetWindowState.new(%{
@@ -99,9 +107,9 @@ defmodule FavnOrchestrator.AssetWindowProjector do
 
   defp existing_state(module, name, window_key) do
     case Storage.get_asset_window_state(module, name, window_key) do
-      {:ok, %AssetWindowState{} = state} -> state
-      {:error, :not_found} -> nil
-      {:error, _reason} -> nil
+      {:ok, %AssetWindowState{} = state} -> {:ok, state}
+      {:error, :not_found} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
     end
   end
 

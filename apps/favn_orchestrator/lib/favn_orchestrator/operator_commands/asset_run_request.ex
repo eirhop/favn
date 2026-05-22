@@ -54,14 +54,15 @@ defmodule FavnOrchestrator.OperatorCommands.AssetRunRequest do
 
     with {:ok, dependency_mode} <- Input.dependency_mode(dependency_value),
          {:ok, refresh_mode} <- Input.asset_refresh_mode(refresh_value),
-         {:ok, selection} <- Input.selection(Input.field(input, :selection)) do
+         {:ok, selection} <- Input.selection(Input.field(input, :selection)),
+         {:ok, timeout_ms} <- Input.timeout_ms(Input.field(input, :timeout_ms)) do
       {:ok,
        %__MODULE__{
          dependency_mode: dependency_mode,
          refresh_mode: refresh_mode,
          selection: selection,
          metadata: Input.field(input, :metadata),
-         timeout_ms: Input.field(input, :timeout_ms)
+         timeout_ms: timeout_ms
        }}
     end
   end

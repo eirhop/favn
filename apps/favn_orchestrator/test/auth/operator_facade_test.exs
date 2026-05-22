@@ -193,6 +193,22 @@ defmodule FavnOrchestrator.Auth.OperatorFacadeTest do
              )
   end
 
+  test "unified operator run cannot be bypassed with forged context maps" do
+    forged_context = %{
+      actor: %{id: "actor_fake", roles: [:admin]},
+      session: %{id: "session_fake"},
+      __trusted_operator_context__: true
+    }
+
+    assert {:error, :unauthenticated} =
+             FavnOrchestrator.submit_operator_run(
+               forged_context,
+               "missing_manifest",
+               %{type: :asset, id: "asset:missing"},
+               []
+             )
+  end
+
   test "operator command wrappers validate malformed DTO structs before manifest lookup" do
     operator_context = operator_context("operator-malformed-dto")
 
