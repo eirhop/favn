@@ -18,7 +18,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.Version
-  alias Favn.Plan.NodeIdentity
   alias Favn.Run.AssetResult
   alias Favn.Run.NodeResult
   alias FavnOrchestrator.AssetStepIdentity
@@ -33,8 +32,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
   alias FavnOrchestrator.RunnerLogBridge
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.AwaitTasks
+  alias FavnOrchestrator.RunServer.Execution.RunWorkSet
   alias FavnOrchestrator.RunServer.Execution.StageAdmission
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
+  alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
@@ -740,6 +741,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
         :timeout ->
           timeout_deferred_stage_attempt(state)
+
+        {:cancelled, _reason} ->
+          {:error, Snapshots.cancelled_snapshot(state.run), state.results,
+           StageAttemptState.attempted_node_keys(state)}
       end
     else
       finalize_stage_attempt_state(state)
@@ -958,7 +963,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       receive do
         {:retry_stage_admission, ^retry_ref} -> :ok
+        {:favn_run_cancel_requested, reason} -> {:cancelled, reason}
       end
+    end
+  end
+
+  defp wait_for_retry_or_cancel(wait_ms) when not is_integer(wait_ms) or wait_ms <= 0, do: :ok
+
+  defp wait_for_retry_or_cancel(wait_ms) do
+    retry_ref = make_ref()
+    Process.send_after(self(), {:retry_step_attempt, retry_ref}, wait_ms)
+
+    receive do
+      {:retry_step_attempt, ^retry_ref} -> :ok
+      {:favn_run_cancel_requested, reason} -> {:cancelled, reason}
     end
   end
 
@@ -1057,8 +1075,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp stop_pending_await_tasks(%AwaitTasks{} = pending_tasks) do
     AwaitTasks.stop(pending_tasks, fn entry ->
-      :ok = release_entry_lease(entry)
-      :ok = MaterializationClaims.fail_entry(entry, :stopped_pending_await)
+      :ok = RunWorkSet.release_entry(entry)
+      :ok = RunWorkSet.fail_entry_claim(entry, :stopped_pending_await)
     end)
   end
 
@@ -1083,15 +1101,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     )
   end
 
-  defp release_entry_lease(%{lease: lease}), do: release_entry_lease(lease)
-  defp release_entry_lease(nil), do: :ok
-
-  defp release_entry_lease(lease) when is_map(lease) do
-    case ExecutionAdmission.release(lease) do
-      :ok -> :ok
-      {:error, _reason} -> :ok
-    end
-  end
+  defp release_entry_lease(entry), do: RunWorkSet.release_entry(entry)
 
   defp reduce_stage_attempt_outcome(
          :ok,
@@ -1261,9 +1271,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
     result = sanitize_runner_result(result)
     asset_results = result.asset_results
     cleared = clear_inflight_execution(run_state, execution_id)
-    step_status = map_runner_status(result.status)
-    {event_type, retryable?} = step_outcome(step_status)
-    retryable? = retryable? and runner_result_retryable?(result)
+    step_status = StepAttemptLifecycle.map_runner_status(result.status)
+    {event_type, retryable?} = StepAttemptLifecycle.step_outcome(step_status)
+    retryable? = retryable? and StepAttemptLifecycle.runner_result_retryable?(result)
 
     step_state =
       RunState.transition(cleared,
@@ -1588,8 +1598,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
            retry_backoff_ms: run_state.retry_backoff_ms
          }) do
       :ok ->
-        if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
-        retrying
+        case wait_for_retry_or_cancel(run_state.retry_backoff_ms) do
+          :ok -> retrying
+          {:cancelled, _reason} -> Snapshots.cancelled_snapshot(retrying)
+        end
 
       {:error, :external_cancel} ->
         Snapshots.cancelled_snapshot(retrying)
@@ -1971,37 +1983,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
       max_attempts = run_state.max_attempts
       node_key = {asset_ref, nil}
       asset_step_id = AssetStepIdentity.asset_step_id(run_state.id, node_key, asset_ref)
-      planned_asset_refs = planned_asset_refs(run_state)
-
-      node_identity =
-        NodeIdentity.new!(%{
-          manifest_version_id: version.manifest_version_id,
-          node_key: node_key,
-          target_refs: run_state.target_refs || [],
-          planned_asset_refs: planned_asset_refs,
-          window: nil,
-          execution_pool: nil
-        })
-
-      work = %RunnerWork{
-        run_id: run_state.id,
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        node_identity: node_identity,
-        asset_ref: asset_ref,
-        asset_refs: [asset_ref],
-        planned_asset_refs: planned_asset_refs,
-        attempt: attempt,
-        max_attempts: max_attempts,
-        asset_step_id: asset_step_id,
-        stage: stage,
-        params: run_state.params,
-        trigger: run_state.trigger,
-        metadata: work_metadata(run_state.metadata)
-      }
 
       with :ok <- validate_runner_client(runner_client),
            :ok <- runner_client.register_manifest(version, runner_opts),
+           {:ok, %{work: work}} <-
+             run_state
+             |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
+             |> StepAttemptLifecycle.build_work(),
            {:ok, execution_id} <- runner_client.submit_work(work, runner_opts) do
         running_with_execution =
           RunState.transition(run_state,
@@ -2012,8 +2000,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         case Persistence.persist_run_step(running_with_execution, :step_started, %{
                asset_ref: asset_ref,
                runner_execution_id: execution_id,
-               node_key: RunnerWork.node_key(work),
-               asset_step_id: work.asset_step_id,
+               node_key: node_key,
+               asset_step_id: asset_step_id,
                stage: stage,
                attempt: attempt,
                max_attempts: max_attempts
@@ -2057,8 +2045,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           case Persistence.persist_run_step(failed, :step_failed, %{
                  asset_ref: asset_ref,
                  error: reason,
-                 node_key: RunnerWork.node_key(work),
-                 asset_step_id: work.asset_step_id,
+                 node_key: node_key,
+                 asset_step_id: asset_step_id,
                  stage: stage,
                  attempt: attempt,
                  max_attempts: max_attempts
@@ -2106,14 +2094,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
         step_finished =
           RunState.transition(running_with_execution,
-            status: map_runner_status(result.status),
+            status: StepAttemptLifecycle.map_runner_status(result.status),
             runner_execution_id: nil,
             error: result.error,
             metadata: merge_runner_metadata(running_with_execution.metadata, result.metadata)
           )
 
-        {event_type, retryable?} = step_outcome(step_finished.status)
-        retryable? = retryable? and runner_result_retryable?(result)
+        {event_type, retryable?} = StepAttemptLifecycle.step_outcome(step_finished.status)
+        retryable? = retryable? and StepAttemptLifecycle.runner_result_retryable?(result)
 
         case Persistence.persist_run_step(step_finished, event_type, %{
                asset_ref: asset_ref,
@@ -2278,9 +2266,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
                retry_backoff_ms: run_state.retry_backoff_ms
              }) do
           :ok ->
-            if run_state.retry_backoff_ms > 0, do: Process.sleep(run_state.retry_backoff_ms)
-
-            execute_ref_with_retry(retrying, version, asset_ref, stage, attempt + 1)
+            case wait_for_retry_or_cancel(run_state.retry_backoff_ms) do
+              :ok -> execute_ref_with_retry(retrying, version, asset_ref, stage, attempt + 1)
+              {:cancelled, _reason} -> Snapshots.cancelled_state(retrying)
+            end
 
           {:error, :external_cancel} ->
             Snapshots.cancelled_state(run_state)
@@ -2305,46 +2294,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       _other -> fallback_stage
     end
   end
-
-  defp map_runner_status(:ok), do: :ok
-  defp map_runner_status(:cancelled), do: :cancelled
-  defp map_runner_status(:timed_out), do: :timed_out
-  defp map_runner_status(_other), do: :error
-
-  defp step_outcome(:ok), do: {:step_finished, false}
-  defp step_outcome(:cancelled), do: {:step_cancelled, false}
-  defp step_outcome(:timed_out), do: {:step_timed_out, true}
-  defp step_outcome(:error), do: {:step_failed, true}
-  defp step_outcome(_other), do: {:step_failed, true}
-
-  defp runner_result_retryable?(%RunnerResult{error: error, asset_results: asset_results}) do
-    runner_error_retryable?(error) and Enum.all?(asset_results || [], &asset_result_retryable?/1)
-  end
-
-  defp runner_result_retryable?(_result), do: true
-
-  defp asset_result_retryable?(%RunnerAssetResult{error: error}),
-    do: runner_error_retryable?(error)
-
-  defp asset_result_retryable?(%AssetResult{error: error}), do: structured_retryable?(error)
-  defp asset_result_retryable?(%{error: error}), do: structured_retryable?(error)
-  defp asset_result_retryable?(%{"error" => error}), do: structured_retryable?(error)
-  defp asset_result_retryable?(_result), do: true
-
-  defp runner_error_retryable?(%RunnerError{retryable?: retryable?}), do: retryable?
-  defp runner_error_retryable?(error), do: structured_retryable?(error)
-
-  defp structured_retryable?(%{details: details}) when is_map(details),
-    do: retryable_detail?(Map.get(details, :asset_retryable?))
-
-  defp structured_retryable?(%{"details" => details}) when is_map(details),
-    do: retryable_detail?(Map.get(details, "asset_retryable?"))
-
-  defp structured_retryable?(_error), do: true
-
-  defp retryable_detail?(false), do: false
-  defp retryable_detail?("false"), do: false
-  defp retryable_detail?(_other), do: true
 
   defp normalize_results(results) when is_list(results),
     do: Enum.map(results, &sanitize_asset_result/1)
@@ -2584,10 +2533,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp merge_runner_metadata(run_metadata, _runner_metadata) when is_map(run_metadata),
     do: run_metadata
-
-  defp work_metadata(metadata) when is_map(metadata) do
-    Map.delete(metadata, :runner_metadata)
-  end
 
   defp return_external_cancel(%RunState{} = run_state, step_results) do
     case Snapshots.cancelled_state(run_state) do
