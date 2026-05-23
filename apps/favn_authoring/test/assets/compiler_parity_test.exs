@@ -52,6 +52,14 @@ defmodule FavnAuthoring.Assets.CompilerParityTest do
     assert_raise ArgumentError, ~r/asset meta category must be an atom or string/, fn ->
       Asset.normalize_meta!(category: 123)
     end
+
+    assert_raise ArgumentError, ~r/manifest label must be an atom or string/, fn ->
+      Asset.normalize_meta!(category: nil)
+    end
+
+    assert_raise ArgumentError, ~r/manifest label must be an atom or string/, fn ->
+      Asset.normalize_meta!(tags: [nil])
+    end
   end
 
   test "single-asset module rejects module shorthand for multi-asset dependency modules" do

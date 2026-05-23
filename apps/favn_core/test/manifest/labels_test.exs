@@ -17,6 +17,10 @@ defmodule Favn.Manifest.LabelsTest do
   end
 
   test "rejects non-label values" do
+    assert Labels.normalize_label(nil) == {:error, {:invalid_manifest_label, nil}}
+    assert Labels.normalize_label(true) == {:error, {:invalid_manifest_label, true}}
+    assert Labels.normalize_label(false) == {:error, {:invalid_manifest_label, false}}
+    assert Labels.normalize_label(__MODULE__) == {:error, {:invalid_manifest_label, __MODULE__}}
     assert Labels.normalize_label(123) == {:error, {:invalid_manifest_label, 123}}
     assert Labels.normalize_labels(:daily) == {:error, {:invalid_manifest_labels, :daily}}
   end

@@ -5,7 +5,8 @@ defmodule Favn.Manifest.Labels do
   Tags and categories are user-facing labels in the manifest contract. They are
   persisted and matched as strings so authored atoms and strings behave the same
   before and after JSON persistence without creating atoms from persisted label
-  data.
+  data. Boolean, nil, and module atoms are rejected because they are not stable
+  user-facing classification labels.
   """
 
   @type label_input :: atom() | String.t()
@@ -16,7 +17,19 @@ defmodule Favn.Manifest.Labels do
   Normalizes one authored or persisted selector label to a string.
   """
   @spec normalize_label(label_input()) :: {:ok, label()} | {:error, error()}
-  def normalize_label(value) when is_atom(value), do: {:ok, Atom.to_string(value)}
+  def normalize_label(value) when value in [nil, true, false],
+    do: {:error, {:invalid_manifest_label, value}}
+
+  def normalize_label(value) when is_atom(value) do
+    label = Atom.to_string(value)
+
+    if String.starts_with?(label, "Elixir.") do
+      {:error, {:invalid_manifest_label, value}}
+    else
+      {:ok, label}
+    end
+  end
+
   def normalize_label(value) when is_binary(value), do: {:ok, value}
   def normalize_label(value), do: {:error, {:invalid_manifest_label, value}}
 
