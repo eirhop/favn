@@ -922,6 +922,22 @@ defmodule FavnView.PageLiveTest do
     assert run.status == :cancelled
   end
 
+  test "run detail can cancel an unhealthy active root run", %{conn: conn} do
+    assert :ok = Storage.put_run(active_failed_run_state())
+
+    {:ok, view, _html} = live(conn, ~p"/runs/run_failed_active")
+
+    assert has_element?(view, ~s([data-testid="run-overview-panel"]), "Failed")
+    assert has_element?(view, ~s([data-testid="cancel-run-button"]), "Cancel run")
+
+    view
+    |> element(~s([data-testid="cancel-run-button"]))
+    |> render_click()
+
+    assert {:ok, run} = Storage.get_run("run_failed_active")
+    assert run.status == :cancelled
+  end
+
   test "run detail does not render cancel for terminal runs", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/runs/run_customer_orders_daily")
 
@@ -2945,6 +2961,45 @@ defmodule FavnView.PageLiveTest do
       asset_dependencies: :none,
       refresh_policy: %{mode: :force, refs: [], include_upstream?: false}
     })
+    |> RunState.with_snapshot_hash()
+  end
+
+  defp active_failed_run_state do
+    failed_ref = {__MODULE__.Assets, :raw_payments}
+    running_ref = {__MODULE__.Assets, :stg_payments}
+    started_at = DateTime.add(DateTime.utc_now(), -30, :second)
+
+    RunState.new(
+      id: "run_failed_active",
+      manifest_version_id: "mv_view_assets",
+      manifest_content_hash: "hash_view_assets",
+      asset_ref: running_ref,
+      target_refs: [failed_ref, running_ref]
+    )
+    |> RunState.transition(
+      status: :running,
+      result: %{
+        asset_results: [
+          %AssetResult{
+            ref: failed_ref,
+            stage: 0,
+            status: :error,
+            started_at: started_at,
+            finished_at: DateTime.add(started_at, 1, :second),
+            duration_ms: 1_000,
+            error: %{message: "upstream failed"}
+          },
+          %AssetResult{
+            ref: running_ref,
+            stage: 1,
+            status: :running,
+            started_at: DateTime.add(started_at, 2, :second)
+          }
+        ]
+      }
+    )
+    |> Map.put(:inserted_at, started_at)
+    |> Map.put(:updated_at, DateTime.add(started_at, 2, :second))
     |> RunState.with_snapshot_hash()
   end
 

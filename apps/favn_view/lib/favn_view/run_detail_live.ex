@@ -740,7 +740,7 @@ defmodule FavnView.RunDetailLive do
     end
   end
 
-  defp active_group?(summary), do: group_status(summary) in @active_statuses
+  defp active_group?(summary), do: Map.get(summary, :active?, false)
 
   defp cancel_target(summary, root_run, child_runs, run_id) do
     cond do
