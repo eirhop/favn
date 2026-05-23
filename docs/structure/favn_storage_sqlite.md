@@ -18,7 +18,7 @@ Code:
 Tests:
 - `apps/favn_storage_sqlite/test/`
 - SQLite readiness diagnostics: `apps/favn_storage_sqlite/test/sqlite_readiness_test.exs`
-- Stopped-backend control-plane restore verification: `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs`
+- Stopped-backend control-plane restore verification, including auth/session/audit and command-idempotency state: `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs`
 - Auth/session/audit and command-idempotency storage restart coverage: `apps/favn_storage_sqlite/test/sqlite_storage_test.exs`
 - Single-node bootstrap acceptance verification: `apps/favn_storage_sqlite/test/sqlite_single_node_bootstrap_acceptance_test.exs`
 

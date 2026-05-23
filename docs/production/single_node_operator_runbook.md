@@ -559,7 +559,8 @@ Evidence:
   survival, and artifact immutability.
 - `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs` verifies
   stopped-backend SQLite restore semantics for manifests, active manifest, runs,
-  run events, scheduler state, and operational-backfill read models.
+  run events, scheduler state, auth/session/audit state, command idempotency,
+  and operational-backfill read models.
 - `apps/favn_storage_sqlite/test/sqlite_single_node_bootstrap_acceptance_test.exs`
   verifies SQLite restart survival for bootstrap/scheduler state.
 - `apps/favn_storage_sqlite/test/sqlite_readiness_test.exs` verifies SQLite path
@@ -576,7 +577,5 @@ Known limits:
 
 - Favn does not yet ship a SQLite backup, backup-verification, or migration
   command. Track #350.
-- Focused SQLite restore coverage for auth/session/audit and idempotency state is
-  tracked by #349; do not overstate that coverage beyond existing tests.
 - Favn does not yet automate DuckDB data-plane backup/restore. Track #351.
 - Postgres production mode and distributed execution are out of scope.

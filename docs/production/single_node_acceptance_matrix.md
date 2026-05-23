@@ -30,7 +30,7 @@ feature testing.
 | Contract item | Classification | Evidence |
 | --- | --- | --- |
 | SQLite scheduler state row survival | product-critical | `apps/favn_storage_sqlite/test/sqlite_single_node_bootstrap_acceptance_test.exs` |
-| SQLite restore semantics | product-critical | `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs` |
+| SQLite restore semantics, including auth/session/audit and idempotency state | product-critical | `apps/favn_storage_sqlite/test/sqlite_control_plane_restore_test.exs` |
 | Auth/session API redaction and revocation | product-critical | `apps/favn_orchestrator/test/api/router_test.exs` |
 | Idempotency storage response encoding | product-critical | `apps/favn_orchestrator/test/storage/idempotency_response_codec_test.exs` |
 | SQL runtime missing-config preflight details | product-critical | `apps/favn_runner/test/sql_runtime_preflight_test.exs` |
@@ -42,7 +42,6 @@ feature testing.
 | --- | --- | --- |
 | SQLite backup/restore operator procedure | product-critical | Covered by `docs/production/single_node_operator_runbook.md`; automation follow-up #350 |
 | DuckDB data-plane backup/restore procedure | product-critical | Covered by `docs/production/single_node_operator_runbook.md`; automation/design follow-up #351 |
-| Focused auth/session/audit and idempotency restore evidence | product-critical | Follow-up #349; runbook avoids overclaiming current restore coverage |
 | Browser smoke | nice-to-have | Follow-up #345 after backend acceptance is stable |
 | favn_view production readiness hardening | product-critical | Follow-up #343 |
 | Deterministic scheduler state diagnostics over HTTP | refactor-enabling | Follow-up #342 if current diagnostics plus focused storage tests are insufficient |
