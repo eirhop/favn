@@ -1210,16 +1210,48 @@ defmodule FavnOrchestrator.RunReadModel do
   end
 
   defp persisted_steps(%RunState{result: result} = run) when is_map(result) do
-    results =
-      Map.get(result, :node_results) || Map.get(result, "node_results") ||
-        Map.get(result, :asset_results) || Map.get(result, "asset_results") || []
+    node_steps =
+      result
+      |> result_entries(:node_results)
+      |> Enum.map(&step_summary(&1, run))
 
-    results
-    |> result_values()
-    |> Enum.map(&step_summary(&1, run))
+    asset_steps =
+      result
+      |> result_entries(:asset_results)
+      |> Enum.map(&step_summary(&1, run))
+
+    merge_persisted_result_steps(node_steps, asset_steps)
   end
 
   defp persisted_steps(_run), do: []
+
+  defp result_entries(result, field) when is_map(result) and is_atom(field) do
+    result
+    |> Map.get(field, Map.get(result, Atom.to_string(field), []))
+    |> result_values()
+  end
+
+  defp merge_persisted_result_steps([], asset_steps), do: asset_steps
+  defp merge_persisted_result_steps(node_steps, []), do: node_steps
+
+  defp merge_persisted_result_steps(node_steps, asset_steps) do
+    if terminal_step_count(asset_steps) > terminal_step_count(node_steps) do
+      node_steps ++ missing_asset_steps(node_steps, asset_steps)
+    else
+      node_steps
+    end
+  end
+
+  defp missing_asset_steps(node_steps, asset_steps) do
+    node_ids = node_steps |> Enum.map(& &1.id) |> Enum.reject(&is_nil/1) |> MapSet.new()
+    unique_refs = unique_asset_refs(node_steps, asset_steps)
+    node_refs = MapSet.new(node_steps, & &1.asset_ref)
+
+    Enum.reject(asset_steps, fn step ->
+      MapSet.member?(node_ids, step.id) ||
+        (MapSet.member?(unique_refs, step.asset_ref) && MapSet.member?(node_refs, step.asset_ref))
+    end)
+  end
 
   defp event_steps(%RunState{} = run, events) do
     events
